@@ -58,12 +58,10 @@ public sealed class SettingsStore(ModularCADbContext db, IAuditService audit, IS
     {
         var rows = await db.Settings.AsNoTracking().ToListAsync(cancellationToken);
         var secrets = await db.SettingsSecrets.AsNoTracking().ToListAsync(cancellationToken);
-        var revision = await db.SettingsState.AsNoTracking()
-            .Where(s => s.Id == SettingsStateEntity.SingletonId)
-            .Select(s => (long?)s.Revision)
-            .FirstOrDefaultAsync(cancellationToken) ?? 0;
+        var state = await db.SettingsState.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == SettingsStateEntity.SingletonId, cancellationToken);
         return new SettingsSnapshot(
-            revision,
+            state?.Revision ?? 0,
             rows.ToDictionary(
                 r => r.Key,
                 r => new StoredSetting(r.Key, r.ValueJson, r.Version, r.Revision, r.UpdatedAt, r.ActorName, r.Source),
@@ -72,7 +70,33 @@ public sealed class SettingsStore(ModularCADbContext db, IAuditService audit, IS
                 r => r.Key,
                 r => new StoredSecret(r.Key, r.Kind == HashKind ? SettingSecretKind.Hashed : SettingSecretKind.Wrapped,
                     r.Value, r.Version, r.Revision, r.UpdatedAt, r.ActorName, r.Source),
-                StringComparer.Ordinal));
+                StringComparer.Ordinal),
+            state?.ImportedAt);
+    }
+
+    /// <inheritdoc />
+    public async Task MarkImportedAsync(string importedBy, CancellationToken cancellationToken = default)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            var state = await db.SettingsState.FirstOrDefaultAsync(s => s.Id == SettingsStateEntity.SingletonId, cancellationToken);
+            if (state?.ImportedAt != null) return;
+            if (state == null)
+                db.SettingsState.Add(state = new SettingsStateEntity());
+            state.ImportedAt = DateTime.UtcNow;
+            state.ImportedBy = importedBy;
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+                return;
+            }
+            catch (DbUpdateException ex) when (attempt < MaxAttempts
+                && (ex is DbUpdateConcurrencyException || PostgresErrorUtil.IsUniqueViolation(ex)))
+            {
+                // A settings write, or another start doing the same, got in first. Read again.
+                db.ChangeTracker.Clear();
+            }
+        }
     }
 
     /// <inheritdoc />

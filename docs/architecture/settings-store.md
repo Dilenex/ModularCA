@@ -911,24 +911,66 @@ secret.
 
 ### Built so far
 
-2026-10-06, the foundation of stage 1a. Nothing reads the store at run time yet, so behaviour is
-unchanged.
+As of 2026-10-06. The instance-wide settings are read from the store and saved to it. The
+secrets are in the store's code and not yet in its use.
 
 - `[Setting]` on every leaf of `SystemConfig`, and `SettingsCatalog`: the keys, the classes, and
   the check and canonical spelling of a value.
-- The `Settings`, `SettingsHistory` and `SettingsState` tables (migration `SettingsStore`).
+- The `Settings`, `SettingsSecrets`, `SettingsHistory` and `SettingsState` tables (migration
+  `SettingsStore`).
 - `ISettingsStore`: load, write (set and clear, expected versions, one revision per write,
   history, audit before save, retry on a lost race) and per-setting history. It refuses a key
   that is unknown, host-local, signer-local or bootstrap, and a value of the wrong type.
-- `SettingsSnapshot.ApplyTo`: stored values onto a `SystemConfig`, reporting rows it cannot use.
-- Secrets: the `SettingsSecrets` table, wrapping through the signer bound to the setting's key,
-  hashing for the two API keys, and `ApplySecretsAsync` to read wrapped secrets back. In the
-  signer: envelope version 2, the `SettingSecret` kind and the `Configuration` purpose.
+- Secrets in the store: wrapping through the signer bound to the setting's key, hashing for
+  the two API keys, and `ApplySecretsAsync` to read wrapped secrets back. In the signer:
+  envelope version 2, the `SettingSecret` kind and the `Configuration` purpose.
+- **The move** (`SettingsRuntime.ImportAsync`): at the control role's first start, every
+  instance-wide setting that differs from its default is written to the store with source
+  `Import` and actor `host:<name>:import`, and `SettingsState.ImportedAt` is set. It runs once.
+- **The read path** (`SettingsRuntime.Apply`, from `SettingsStartup` after the schema check):
+  once the settings are moved, each instance-wide setting is put back to its default and the
+  stored values are applied, so the file cannot decide one. A value the file still gives is
+  reported in the log. The few settings startup reads before the database is reachable (the
+  log level, RSA padding, the cron checks) are read again afterwards.
+- **The save path** (`SettingsPersistence`, called through `ConfigSave` by every settings
+  endpoint): the endpoints still change `SystemConfig` in memory; saving then writes whatever
+  differs from the store to the store, and the file with host-local settings only.
+- **The file** (`ConfigYamlWriter.Serialize(config, withoutPaths)`): the control role rewrites
+  its `config.yaml` without the stored settings whenever the file still sets one, keeping a
+  copy as `config.yaml.pre-settings-<time>.bak`.
+- **`--settings`** (`SettingsCommand`): `list`, `get`, `set`, `clear` and `history`, over the
+  same store, with the `db.yaml` credentials and a host actor.
 
-Not built: per-section validators and change policies, the import and strip, bootstrap
-seeding, the write sites, startup reading the store, the generic endpoint, the CLI, and all of
-stages 2 to 6. The store does not yet link a row to its audit record, so the integrity check in
-section 2 has nothing to check against.
+Where this differs from the sections above:
+
+- **The secrets are not moved.** They stay in `config.yaml`, and the store is given a signer
+  that refuses (`NoSecretsSigner`) wherever the node has none yet. Moving them needs the node
+  to reach its signer before the web host is built, and to say what it does when it cannot,
+  which is the availability question in `signer-hardening.md`.
+- **Sparse by value, not by presence in the file.** The console has always written the whole
+  configuration back, so a key being present in `config.yaml` says nothing about whether
+  anyone chose its value. What is stored is what differs from the default.
+- **No `SettingsImports` table.** The move is marked on `SettingsState`. The file's hash and
+  per-section fingerprints are not recorded.
+- **Other hosts do not compare or refuse.** A non-control host leaves its file alone and
+  ignores, with a warning, an instance-wide value in it. Refusing to start on a difference,
+  `--settings adopt` and `--settings import` are not built.
+- **No reload while running.** A change reaches the node that saved it at once, because the
+  endpoint changed its memory, and every other process at its next start. The listener, the
+  poll and `SettingsNodes` are stage 2.
+- **The host command checks a value's type and nothing more.** The per-section validators are
+  still inside the controllers, so `--settings set` can store a value the console would have
+  refused. The cron expressions are the exception: a start refuses a stored one that does not
+  parse.
+- **Two audit records per console save.** The endpoint still writes its own `ConfigUpdated`
+  record naming the section, and the store writes one naming each key with its value before
+  and after.
+- **`--upgrade-check` does not yet report** what will move.
+
+Not built: the secrets' move, per-section validators and change policies as their own types,
+bootstrap seeding the store directly, the generic section endpoint, the rest of the host
+command (`rollback`, `export`, `import`, `adopt`), and stages 2 to 6. The store does not link
+a row to its audit record, so the integrity check in section 2 has nothing to check against.
 
 ## 11. Open questions for the owner
 

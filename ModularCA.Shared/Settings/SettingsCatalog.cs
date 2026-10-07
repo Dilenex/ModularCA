@@ -83,6 +83,15 @@ public static class SettingsCatalog
         return Sorted(JsonSerializer.SerializeToNode(typed, definition.ValueType, JsonOptions))?.ToJsonString() ?? "null";
     }
 
+    /// <summary>
+    /// The empty value of a setting that does not allow null: empty text, an empty list, an
+    /// empty dictionary. What a null in its place is taken to mean.
+    /// </summary>
+    public static JsonNode? EmptyValue(SettingDefinition definition) =>
+        definition.ValueType == typeof(string)
+            ? JsonValue.Create(string.Empty)
+            : JsonSerializer.SerializeToNode(Activator.CreateInstance(definition.ValueType), definition.ValueType, JsonOptions);
+
     private static JsonNode? Sorted(JsonNode? node) => node switch
     {
         JsonObject o => new JsonObject(o.OrderBy(p => p.Key, StringComparer.Ordinal)

@@ -488,6 +488,60 @@ if (args.Contains(ModularCA.API.Startup.UnlockUserCommand.Flag, StringComparer.O
     Environment.Exit(await ModularCA.API.Startup.UnlockUserCommand.RunAsync(unlockDb, unlockAuditDb, unlockName, Console.Out));
 }
 
+// Host-local access to the stored settings, with the db.yaml credentials: the way to read and
+// change an instance-wide setting without the console, above all one that has locked the
+// administrators out of it. See SettingsCommand.
+if (args.Contains(ModularCA.Core.Services.Settings.SettingsCommand.Flag, StringComparer.OrdinalIgnoreCase))
+{
+    var settingsArgs = args.SkipWhile(a => !a.Equals(ModularCA.Core.Services.Settings.SettingsCommand.Flag, StringComparison.OrdinalIgnoreCase)).Skip(1).ToList();
+    var settingsDbYaml = YamlDbConfigLoader.Load(Path.Combine(AppContext.BaseDirectory, "config", "db.yaml"));
+    if (settingsDbYaml == null)
+    {
+        Console.Error.WriteLine("config/db.yaml was not found: --settings runs on an installed node, as the service user.");
+        Console.Error.WriteLine(ModularCA.Core.Services.Settings.SettingsCommand.Usage);
+        Environment.Exit(1);
+    }
+    var settingsDbConfig = new SystemConfig();
+    settingsDbConfig.DB.App.Host = settingsDbYaml.App.Host;
+    settingsDbConfig.DB.App.Port = settingsDbYaml.App.Port;
+    settingsDbConfig.DB.App.Database = settingsDbYaml.App.Database;
+    settingsDbConfig.DB.App.Username = settingsDbYaml.App.Username;
+    settingsDbConfig.DB.App.Password = settingsDbYaml.App.Password;
+    settingsDbConfig.DB.App.SslMode = settingsDbYaml.App.SslMode;
+    settingsDbConfig.DB.Audit.Host = settingsDbYaml.Audit.Host;
+    settingsDbConfig.DB.Audit.Port = settingsDbYaml.Audit.Port;
+    settingsDbConfig.DB.Audit.Database = settingsDbYaml.Audit.Database;
+    settingsDbConfig.DB.Audit.Username = settingsDbYaml.Audit.Username;
+    settingsDbConfig.DB.Audit.Password = settingsDbYaml.Audit.Password;
+    settingsDbConfig.DB.Audit.SslMode = settingsDbYaml.Audit.SslMode;
+    new ModularCA.Shared.Utils.EnvVarConfigOverlay().Apply(settingsDbConfig);
+    var settingsExit = 3;
+    try
+    {
+        using var settingsDb = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>()
+            .UseNpgsql(ModularCA.Shared.Utils.PostgresConnection.Build(settingsDbConfig.DB.App)).Options);
+        using var settingsAuditDb = string.IsNullOrWhiteSpace(settingsDbConfig.DB.Audit.Database) ? null
+            : new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+                .UseNpgsql(ModularCA.Shared.Utils.PostgresConnection.Build(settingsDbConfig.DB.Audit)).Options);
+        // Ordinary settings only: secrets are not in the store on this build, so no signer is asked.
+        var settingsStore = new ModularCA.Core.Services.Settings.SettingsStore(
+            settingsDb,
+            new ModularCA.Core.Services.Settings.HostAuditService(settingsAuditDb),
+            new ModularCA.Core.Services.Settings.NoSecretsSigner(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<ModularCA.Core.Services.Settings.SettingsStore>.Instance);
+        // The verb and the key are logged; a value is not.
+        Log.Warning("Operator triggered --settings {Verb} {Key}", settingsArgs.ElementAtOrDefault(0) ?? "", settingsArgs.ElementAtOrDefault(1) ?? "");
+        settingsExit = await ModularCA.Core.Services.Settings.SettingsCommand.RunAsync(settingsStore, settingsArgs, Console.Out, Console.Error);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"The settings could not be reached: {ex.GetType().Name}: {ex.Message}");
+        Console.Error.WriteLine("If this node has not yet started on a build that keeps settings in the database, start it once first.");
+    }
+    await Log.CloseAndFlushAsync();
+    Environment.Exit(settingsExit);
+}
+
 // Moves a split install's signer onto its own directory; see SignerDirectoryMigration.
 if (ModularCA.API.Startup.SignerDirectoryMigration.IsNamedIn(args))
 {
@@ -594,6 +648,10 @@ else
 // ICF-03/04/05: overlay environment variables for secret fields
 var envOverlay = new ModularCA.Shared.Utils.EnvVarConfigOverlay();
 envOverlay.Apply(config);
+
+// Where a change to the configuration is saved: config.yaml alone until the instance-wide
+// settings have been moved to the database, the settings store and the file after that.
+var settingsPersistence = new ModularCA.Core.Services.Settings.SettingsPersistence(config, envOverlay, configPath);
 
 // CRYPTO-001: apply RSA signature padding mode from CertPolicy config to the
 // central KeyAlgorithmPolicy. This must happen before any certificate or CRL
@@ -923,6 +981,53 @@ if (!isSetupMode)
         Environment.Exit(code);
     }
 
+    // The instance-wide settings come from the database from here on. The control role moves
+    // them there out of config.yaml the first time; every role then takes the stored values,
+    // before anything below is configured from one. A process that is the signer and nothing
+    // else reads no settings.
+    if (activeRoles.HasAnyNodeRole || ingressOnly)
+    {
+        try
+        {
+            await ModularCA.API.Startup.SettingsStartup.RunAsync(config, envOverlay, settingsPersistence, controlActive);
+        }
+        catch (Exception ex)
+        {
+            Log.Fatal(ex, "The settings could not be read from the database.");
+            Console.Error.WriteLine($"[FATAL] The settings could not be read from the database: {ex.GetType().Name}: {ex.Message}");
+            await Log.CloseAndFlushAsync();
+            Environment.Exit(ModularCA.API.Startup.SchemaStartup.ExitCode);
+        }
+
+        // What was read from the configuration above this point, read again from the settings
+        // that are now in force.
+        KeyAlgorithmPolicy.UseRsaPss = config.CertPolicy?.RsaSignaturePadding?.Equals("PSS", StringComparison.OrdinalIgnoreCase) ?? true;
+        loggingLevelSwitch.MinimumLevel = config.Logging.MinLevel?.ToLowerInvariant() switch
+        {
+            "debug" => LogEventLevel.Debug,
+            "warning" => LogEventLevel.Warning,
+            "error" => LogEventLevel.Error,
+            _ => LogEventLevel.Information
+        };
+        var storedCronErrors = ModularCA.Core.Services.SchedulerJobs.CronExpressionValidator.ValidateAll(
+            new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["Backup.Schedule"] = config.Backup.Schedule,
+                ["CertExpiryNotification.Schedule"] = config.CertExpiryNotification.Schedule,
+                ["ComplianceScan.Schedule"] = config.ComplianceScan.Schedule,
+                ["AutoRenewal.Schedule"] = config.AutoRenewal.Schedule,
+                ["Audit.Retention.Schedule"] = config.Audit.Retention.Schedule,
+            });
+        if (storedCronErrors.Count > 0)
+        {
+            Console.WriteLine("[FATAL] Invalid cron expression(s) in the stored settings:");
+            foreach (var err in storedCronErrors)
+                Console.WriteLine($"        {err}");
+            await Log.CloseAndFlushAsync();
+            Environment.Exit(1);
+        }
+    }
+
     try
     {
         using var flagConn = new Npgsql.NpgsqlConnection(appConnStr);
@@ -989,6 +1094,7 @@ else
 
 builder.Services.AddSingleton(config);
 builder.Services.AddSingleton(envOverlay);
+builder.Services.AddSingleton(settingsPersistence);
 builder.Services.AddSingleton<ModularCA.Core.Services.AuditHashChainService>();
 
 // Entitlements are resolved once from a signed licence file and never change while the process

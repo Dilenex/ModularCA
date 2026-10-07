@@ -92,6 +92,18 @@ public class SourceCodeConfig
     ];
 
     /// <summary>
+    /// Whether <paramref name="url"/> is one of <see cref="SupersededUpstreamUrls"/>, give or take
+    /// case and a trailing slash: a default of an earlier build, which nobody chose.
+    /// </summary>
+    public static bool IsSuperseded(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return false;
+        var trimmed = url.Trim().TrimEnd('/');
+        return SupersededUpstreamUrls.Any(s => string.Equals(trimmed, s.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
     /// The URL to publish, resolving an unset or superseded value to <see cref="UpstreamUrl"/>.
     /// </summary>
     public string EffectiveUrl

@@ -146,7 +146,7 @@ public class AdminLdapController(
         if (currentUser.User != null && await controlledUsers.IsSuperAsync(currentUser.User.Id))
             config.LdapAuth.GroupToRoleMappings = await syncService.RewriteRenamedSpaceGroupsAsync(config.LdapAuth.GroupToRoleMappings);
 
-        PersistConfig();
+        await PersistConfigAsync();
 
         await audit.LogAsync(
             AuditActionType.LdapMappingUpdated,
@@ -172,25 +172,16 @@ public class AdminLdapController(
     /// so the file keeps its owner, group and mode). Silently ignores write failures (e.g.
     /// read-only filesystem in containers).
     /// </summary>
-    private void PersistConfig()
+    private async Task PersistConfigAsync()
     {
-        // Secrets that came from the environment must be nulled before serialization, or a
-        // config write persists them in cleartext to config.yaml. WithSecretsProtected covers
-        // JWT.Secret, both DB passwords, LdapAuth.BindPassword, the Email secrets,
-        // IntegrationApi.ApiKey, CertManager.ApiKey and Hsm.Pin. Writing the whole SystemConfig
-        // without it -- as this did -- meant an unrelated settings PUT could drop the JWT
-        // SIGNING KEY on disk, where anyone able to read the file can mint admin tokens.
         try
         {
-            envOverlay.WithSecretsProtected(config, () =>
-            {
-                var configPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
-                ModularCA.Shared.Utils.ConfigYamlWriter.Write(configPath, config);
-            });
+            await ConfigSave.SaveAsync(HttpContext, config, envOverlay, currentUser);
         }
-        catch
+        catch (Exception ex)
         {
-            // Config file may be read-only (container deployments) — in-memory change still applies
+            // The file may be read-only (container deployments); the change still applies in memory.
+            Serilog.Log.Warning(ex, "The LDAP settings were changed in memory and could not be saved.");
         }
     }
 }

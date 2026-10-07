@@ -2909,6 +2909,13 @@ namespace ModularCA.Database.Migrations
                     b.Property<int>("Id")
                         .HasColumnType("integer");
 
+                    b.Property<DateTime?>("ImportedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ImportedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
                     b.Property<long>("Revision")
                         .IsConcurrencyToken()
                         .HasColumnType("bigint");

@@ -514,11 +514,8 @@ public class AdminWebTlsController(
         // performs the same operation and always used the overlay; this path did not.
         try
         {
-            envOverlay.WithSecretsProtected(_config, () =>
-            {
-                var configPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
-                ModularCA.Shared.Utils.ConfigYamlWriter.Write(configPath, _config);
-            });
+            // The PFX password is this host's, so the file alone is written.
+            ConfigSave.WriteFile(HttpContext, _config, envOverlay);
         }
         catch (Exception ex)
         {

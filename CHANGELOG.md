@@ -27,14 +27,37 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ### Changed
 
-- **Groundwork for settings in the database.** Instance-wide settings are moving from
-  `config.yaml` into the database, one row per setting under a name made of its path joined by
-  underscores (`Acme_Http01_MaxAddresses`), so a change reaches every host, is versioned and is
-  audited. This build adds four tables (`Settings`, `SettingsSecrets`, `SettingsHistory`,
-  `SettingsState`) and the store that reads and writes them. Nothing reads them yet:
-  `config.yaml` is still where every setting comes from, and nothing is copied out of it. The
-  database connection, the signer's settings and each host's listeners, paths and certificates
-  stay in files for good. See `docs/architecture/settings-store.md`.
+- **Instance-wide settings are kept in the database.** About 140 settings that are the same
+  for the whole instance (ACME, certificate policy, scheduler, mail, LDAP, audit retention,
+  alerting, the public name, and so on) move out of `config.yaml`. A change made in the console
+  is now versioned, has a history, and is audited with the value before and after. Each
+  setting is one row, named by its path joined with underscores (`Acme_Http01_MaxAddresses`).
+  See `docs/architecture/settings-store.md`.
+
+  **Upgrading: what happens at the first start.**
+  - The control role moves every instance-wide setting that differs from its default into the
+    database, then rewrites `config.yaml` with this host's settings only. The file as it was
+    is kept beside it as `config.yaml.pre-settings-<time>.bak`, readable by its owner only. It
+    holds the same secrets the file held; delete it once you are satisfied.
+  - **From then on `config.yaml` does not decide an instance-wide setting.** A value for one
+    written there is ignored, and every start says so in the log, naming the setting. Change
+    it in the console, or with `--settings` on the host.
+  - What stays in files, for good: the database connection (`db.yaml`), the signer's settings,
+    and each host's listeners, ports, paths, certificates and proxy settings.
+  - **The eight secrets stay in `config.yaml` for now**: the JWT secret, the LDAP bind
+    password, the mail credentials, the webhook endpoints and the two integration API keys.
+    They move in a later build.
+  - Environment variables still win over both.
+  - **On an install split across hosts**, only the control host's file is rewritten. Another
+    host's file is left as it is; an instance-wide value in it is ignored with the same
+    warning. A setting changed in the console reaches the other hosts at their next start,
+    not while they run.
+- **`--settings` on the host**, for reading and changing a stored setting without the console.
+  It is the way back in when a setting has locked the administrators out, which editing
+  `config.yaml` used to be. Run as the service user:
+  `--settings list`, `get <Key>`, `set <Key> <value> [--reason <text>]`, `clear <Key>` and
+  `history <Key>`. A change is recorded in the setting's history and the audit trail under a
+  host actor, and a running service takes it at its next start.
 - **Secret settings will be stored wrapped by the signer, or hashed.** The store keeps the JWT
   secret, the LDAP bind password, the mail credentials and the webhook endpoints as blobs only
   the signer can open, each bound to its own setting so that a blob copied to another row does

@@ -144,4 +144,14 @@ public class SettingsStateEntity
     /// <summary>The revision of the latest write; 0 before the first.</summary>
     [ConcurrencyCheck]
     public long Revision { get; set; }
+
+    /// <summary>
+    /// When the settings were moved out of <c>config.yaml</c>; null until they have been. From
+    /// then on the file no longer decides an instance-wide setting.
+    /// </summary>
+    public DateTime? ImportedAt { get; set; }
+
+    /// <summary>The host actor that moved them.</summary>
+    [MaxLength(256)]
+    public string? ImportedBy { get; set; }
 }

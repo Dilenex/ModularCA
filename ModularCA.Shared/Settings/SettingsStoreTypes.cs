@@ -13,6 +13,9 @@ public static class SettingsSource
     public const string Cli = "Cli";
     public const string Bootstrap = "Bootstrap";
     public const string Rollback = "Rollback";
+
+    /// <summary>A build correcting a stored value at its start: one an earlier build wrote and nobody chose.</summary>
+    public const string Upgrade = "Upgrade";
 }
 
 /// <summary>Who is changing settings.</summary>
@@ -138,10 +141,12 @@ public static class SettingsSecretBinding
 /// <param name="Revision">The revision of the latest write; 0 when nothing was ever written.</param>
 /// <param name="Settings">The stored settings by key, cleared ones included.</param>
 /// <param name="Secrets">The stored secrets by key, wrapped or hashed, cleared ones included.</param>
+/// <param name="ImportedAt">When the settings were moved out of <c>config.yaml</c>; null until they have been.</param>
 public sealed record SettingsSnapshot(
     long Revision,
     IReadOnlyDictionary<string, StoredSetting> Settings,
-    IReadOnlyDictionary<string, StoredSecret> Secrets)
+    IReadOnlyDictionary<string, StoredSecret> Secrets,
+    DateTime? ImportedAt = null)
 {
     /// <summary>
     /// Whether <paramref name="presented"/> is the hashed secret stored under <paramref name="key"/>.
@@ -224,6 +229,12 @@ public interface ISettingsStore
     /// </summary>
     /// <returns>One sentence per secret that was not applied. None of them contains a secret.</returns>
     Task<IReadOnlyList<string>> ApplySecretsAsync(SettingsSnapshot snapshot, SystemConfig config, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Records that the settings have been moved out of <c>config.yaml</c>, by
+    /// <paramref name="importedBy"/>. Does nothing when that is already recorded.
+    /// </summary>
+    Task MarkImportedAsync(string importedBy, CancellationToken cancellationToken = default);
 
     /// <summary>The changes to one setting, newest first.</summary>
     Task<IReadOnlyList<SettingHistoryEntry>> HistoryAsync(string key, int limit = 50, CancellationToken cancellationToken = default);

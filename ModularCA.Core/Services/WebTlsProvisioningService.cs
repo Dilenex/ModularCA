@@ -31,7 +31,8 @@ public class WebTlsProvisioningService(
     ApiCertificateProvider certProvider,
     EnvVarConfigOverlay envOverlay,
     ILogger<WebTlsProvisioningService> logger,
-    TimeProvider? timeProvider = null) : IHostedService
+    TimeProvider? timeProvider = null,
+    Settings.SettingsPersistence? settingsPersistence = null) : IHostedService
 {
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
@@ -303,6 +304,21 @@ public class WebTlsProvisioningService(
     /// </summary>
     private void PersistConfig()
     {
+        // The web TLS settings are this host's, so the file alone is written: through the
+        // settings persistence when there is one, which leaves out what the settings store holds.
+        if (settingsPersistence != null)
+        {
+            try
+            {
+                settingsPersistence.WriteFile();
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to persist config.yaml after TLS provisioning. " +
+                    "In-memory config updated; restart will re-enter Pending mode.");
+            }
+            return;
+        }
         envOverlay.WithSecretsProtected(config, () =>
         {
             try

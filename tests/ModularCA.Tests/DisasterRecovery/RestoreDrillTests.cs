@@ -74,6 +74,13 @@ public sealed class RestoreDrillTests(ITestOutputHelper output)
             await old.StopAsync();
 
             var dbYaml = old.Databases();
+            // The first start moved the instance-wide settings to the database: they are marked as
+            // moved there, and the file the install wrote is down to this host's settings, with
+            // the original kept beside it.
+            Assert.Equal(1, await CountAsync(dbYaml.App, "SELECT count(*) FROM \"SettingsState\" WHERE \"ImportedAt\" IS NOT NULL"));
+            Assert.StartsWith(ConfigYamlWriter.HostOnlyHeader.ReplaceLineEndings("\n"),
+                File.ReadAllText(Path.Combine(old.ConfigDirectory, "config.yaml")).ReplaceLineEndings("\n"));
+            Assert.Single(Directory.GetFiles(old.ConfigDirectory, "config.yaml.pre-settings-*.bak"));
             var certificates = await CountAsync(dbYaml.App, "SELECT count(*) FROM \"Certificates\"");
             var auditRecords = await CountAsync(dbYaml.Audit, "SELECT count(*) FROM \"AuditLogs\"");
             var keyRing = Directory.GetFiles(Path.Combine(old.ConfigDirectory, "dp-keys")).Select(Path.GetFileName).Order().ToList();

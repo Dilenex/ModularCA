@@ -83,7 +83,9 @@ namespace ModularCA.Database.Migrations
                 columns: table => new
                 {
                     Id = table.Column<int>(type: "integer", nullable: false),
-                    Revision = table.Column<long>(type: "bigint", nullable: false)
+                    Revision = table.Column<long>(type: "bigint", nullable: false),
+                    ImportedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
+                    ImportedBy = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: true)
                 },
                 constraints: table =>
                 {

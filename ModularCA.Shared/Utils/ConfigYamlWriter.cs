@@ -1,4 +1,5 @@
 using ModularCA.Shared.Models.Config;
+using YamlDotNet.RepresentationModel;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
@@ -44,14 +45,81 @@ public static class ConfigYamlWriter
         return serializer.Serialize(config);
     }
 
+    /// <summary>The first lines of a <c>config.yaml</c> that no longer holds the instance's settings.</summary>
+    public const string HostOnlyHeader =
+        "# This file holds this host's settings: listeners, files, paths, network position, and the\n"
+        + "# secrets not yet moved. The instance's other settings are in the database. Change them in\n"
+        + "# the console under Settings; a value for one of them written here is ignored.\n";
+
     /// <summary>
-    /// Serialises <paramref name="config"/> with <see cref="Serialize"/> and writes it to
+    /// Serialises the configuration as <see cref="Serialize(SystemConfig)"/> does, leaving out
+    /// the settings named by <paramref name="withoutPaths"/> (dotted, as <c>Acme.Http01.MaxAddresses</c>)
+    /// and any section that is left with nothing in it, under <see cref="HostOnlyHeader"/>. This
+    /// is the file once the settings store holds those settings: what stays is what belongs to
+    /// the host. Only settings are written: a value the configuration computes from others, which
+    /// the plain serialisation also emits, is not one and is left out.
+    /// </summary>
+    /// <param name="config">The configuration to serialise.</param>
+    /// <param name="withoutPaths">The settings that are kept elsewhere.</param>
+    public static string Serialize(SystemConfig config, IEnumerable<string> withoutPaths)
+    {
+        ArgumentNullException.ThrowIfNull(withoutPaths);
+        var stream = new YamlStream();
+        using (var reader = new StringReader(Serialize(config)))
+            stream.Load(reader);
+        if (stream.Documents.Count == 0 || stream.Documents[0].RootNode is not YamlMappingNode root)
+            return HostOnlyHeader;
+
+        var kept = Settings.SettingsCatalog.Definitions.Select(d => d.Path).ToHashSet(StringComparer.Ordinal);
+        kept.ExceptWith(withoutPaths);
+        KeepOnly(root, string.Empty, kept);
+
+        using var writer = new StringWriter();
+        new YamlStream(new YamlDocument(root)).Save(writer, assignAnchors: false);
+        // Save closes the document with "...", which a file holding one document does not need.
+        var body = writer.ToString().TrimEnd();
+        if (body.EndsWith("...", StringComparison.Ordinal))
+            body = body[..^3].TrimEnd();
+        return HostOnlyHeader + (root.Children.Count == 0 ? string.Empty : body + "\n");
+    }
+
+    /// <summary>
+    /// Removes from <paramref name="node"/> everything that is not one of the settings in
+    /// <paramref name="kept"/> or a section leading to one, and each section that is left empty.
+    /// A setting is kept whole: what is inside a list or a dictionary is its value.
+    /// </summary>
+    private static void KeepOnly(YamlMappingNode node, string prefix, HashSet<string> kept)
+    {
+        foreach (var (key, child) in node.Children.ToList())
+        {
+            var path = prefix + ((YamlScalarNode)key).Value;
+            if (kept.Contains(path))
+                continue;
+            if (child is YamlMappingNode section && kept.Any(k => k.StartsWith(path + ".", StringComparison.Ordinal)))
+            {
+                KeepOnly(section, path + ".", kept);
+                if (section.Children.Count > 0)
+                    continue;
+            }
+            node.Children.Remove(key);
+        }
+    }
+
+    /// <summary>
+    /// Serialises <paramref name="config"/> with <see cref="Serialize(SystemConfig)"/> and writes it to
     /// <paramref name="path"/> with <see cref="WriteKeepingAccess"/>.
     /// </summary>
     /// <param name="path">The <c>config.yaml</c> path.</param>
     /// <param name="config">The configuration to persist.</param>
     public static void Write(string path, SystemConfig config) =>
         WriteKeepingAccess(path, Serialize(config));
+
+    /// <summary>
+    /// Writes <paramref name="config"/> without the settings named by <paramref name="withoutPaths"/>;
+    /// see <see cref="Serialize(SystemConfig, IEnumerable{string})"/>.
+    /// </summary>
+    public static void Write(string path, SystemConfig config, IEnumerable<string> withoutPaths) =>
+        WriteKeepingAccess(path, Serialize(config, withoutPaths));
 
     /// <summary>
     /// Writes <paramref name="contents"/> to <paramref name="path"/>. An existing file is
