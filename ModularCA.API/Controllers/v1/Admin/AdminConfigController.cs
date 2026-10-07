@@ -76,7 +76,6 @@ public class AdminConfigController(
             Tokens = _config.Tokens,
             Security = _config.Security,
             Metrics = _config.Metrics,
-            SshCa = _config.SshCa,
             LdapAuth = new
             {
                 _config.LdapAuth.Enabled,
@@ -464,24 +463,6 @@ public class AdminConfigController(
         // Explicit safe projection.
         await AuditConfigChange("Metrics", new { update.Path });
         return Ok(new { message = "Metrics config updated", config = _config.Metrics });
-    }
-
-    /// <summary>
-    /// Updates the SSH CA tool and key storage paths. Requires step-up MFA
-    /// (<see cref="StepUpOps.UpdateConfig"/>).
-    /// </summary>
-    [HttpPut("ssh-ca")]
-    [RequireStepUp(StepUpOps.UpdateConfig)]
-    public async Task<IActionResult> UpdateSshCa([FromBody] SshCaConfig update)
-    {
-        if (!string.IsNullOrEmpty(update.SshKeygenPath)) _config.SshCa.SshKeygenPath = update.SshKeygenPath;
-        if (!string.IsNullOrEmpty(update.KeyStoragePath)) _config.SshCa.KeyStoragePath = update.KeyStoragePath;
-        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
-        // Explicit safe projection. SshKeygenPath / KeyStoragePath are
-        // filesystem locations; any signing-key fields added later would land in the
-        // scrubber but are omitted here at the call site too.
-        await AuditConfigChange("SshCa", new { update.SshKeygenPath, update.KeyStoragePath });
-        return Ok(new { message = "SSH CA config updated", config = _config.SshCa });
     }
 
     /// <summary>

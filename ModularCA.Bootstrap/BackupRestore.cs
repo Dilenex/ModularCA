@@ -178,7 +178,7 @@ public static class BackupRestore
 
             // 3. The Data Protection key ring and the SSH CA keys travel wrapped by the signer,
             // never in the clear: with the database dump the ring opens every DP-protected column.
-            var wrappedTargets = BackupWrappedSecrets.Targets(configDir, config.SshCa?.KeyStoragePath);
+            var wrappedTargets = BackupWrappedSecrets.Targets(configDir, null);
             Console.Write("  Wrapping configuration secrets...");
             IReadOnlyList<string> wrapped;
             try
@@ -760,7 +760,7 @@ public static class BackupRestore
             // every DP-protected column unreadable. The operator is told to replace the archive.
             var archiveConfigDir = Path.Combine(restoreDir, "config");
             var plaintextSecrets = BackupWrappedSecrets.PlaintextTargetsIn(archiveConfigDir,
-                BackupWrappedSecrets.Targets(archiveConfigDir, backupConfig.SshCa?.KeyStoragePath));
+                BackupWrappedSecrets.Targets(archiveConfigDir, null));
             if (plaintextSecrets.Count > 0)
             {
                 Console.WriteLine($"⚠  This archive carries {string.Join(", ", plaintextSecrets)} in plaintext (taken before these travelled wrapped).");

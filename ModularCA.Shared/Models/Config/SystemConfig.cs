@@ -17,7 +17,6 @@ namespace ModularCA.Shared.Models.Config
         public HttpConfig Http { get; set; } = new();
         public SchedulerConfig Scheduler { get; set; } = new();
         public TokenConfig Tokens { get; set; } = new();
-        public SshCaConfig SshCa { get; set; } = new();
         public MetricsConfig Metrics { get; set; } = new();
         public EmailConfig Email { get; set; } = new();
         public HttpsConfig Https { get; set; } = new();
@@ -1074,17 +1073,6 @@ namespace ModularCA.Shared.Models.Config
 
         /// <summary>List of event types this endpoint subscribes to. An empty list means all events.</summary>
         public List<string> Events { get; set; } = new();
-    }
-
-    /// <summary>
-    /// SSH CA configuration. SSH CA is always available — no feature flag needed.
-    /// </summary>
-    public class SshCaConfig
-    {
-        [Setting(SettingClass.HostLocal, SettingReload.Live)]
-        public string SshKeygenPath { get; set; } = "ssh-keygen";
-        [Setting(SettingClass.HostLocal, SettingReload.Live)]
-        public string KeyStoragePath { get; set; } = "config/ssh-ca-keys";
     }
 
     /// <summary>

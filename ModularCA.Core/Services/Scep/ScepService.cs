@@ -1131,7 +1131,7 @@ public class ScepService : IScepService, IEnrollmentProtocol
                     new KeyRef(certEntity.CertificateId),
                     SigningContext.ForCa(SignerCaller, SigningPurpose.Scep, context.Ca.Id, context.Ca.SpaceId));
                 var held = await _signer.ListKeysAsync(key.Context);
-                if (held.Any(k => k.Key.CertificateId == key.Key.CertificateId))
+                if (Helpers.X509SignerKeys.Holds(held, key.Key.CertificateId))
                     return (caCert, key);
             }
         }

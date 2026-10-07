@@ -11,8 +11,7 @@ namespace ModularCA.Core.Services;
 /// This check existed only in the admin controller. The self-service path applied the principal
 /// patterns and merged the required extensions but never consulted <c>AllowedExtensions</c>, so a
 /// user with certificate-request rights could ask for any extension, including a
-/// <c>force-command</c> the profile never offered. Combined with the argument handling at the
-/// time, that value could also carry extra <c>ssh-keygen</c> flags.
+/// <c>force-command</c> the profile never offered.
 /// </para>
 /// <para>
 /// One implementation for both controllers, so "allowed by the profile" cannot drift between the

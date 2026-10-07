@@ -1486,12 +1486,6 @@ export interface SpacePolicyChangeCeremonyParameters {
     caUserQuorums: CaUserQuorumChange[];
 }
 
-/** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
-export interface SshCaConfig {
-    sshKeygenPath: string;
-    keyStoragePath: string;
-}
-
 /** From `ModularCA.Shared/Models/SshKeyCeremonyParameters.cs`. */
 export interface SshKeyCeremonyParameters {
     name: string;
@@ -1539,7 +1533,6 @@ export interface SystemConfig {
     http: HttpConfig;
     scheduler: SchedulerConfig;
     tokens: TokenConfig;
-    sshCa: SshCaConfig;
     metrics: MetricsConfig;
     email: EmailConfig;
     https: HttpsConfig;

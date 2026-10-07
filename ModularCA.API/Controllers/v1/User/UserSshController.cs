@@ -60,9 +60,14 @@ public class UserSshController(
     /// caller-supplied principal cannot trigger catastrophic backtracking in an operator-authored
     /// pattern (bounded match timeout), and a pattern that times out or does not compile is treated
     /// as "did not match" — the request is refused rather than issued unchecked.
+    /// The certificate carries exactly the extensions the profiles and the request come to. A
+    /// locked signer, a key the signer cannot serve and a key awaiting its import into the signer
+    /// are 503 with the reason; a certificate the signer's rules refuse is 400 with its reason.
+    /// The audit entry is written by <see cref="ISshCaService"/>.
     /// </summary>
     [HttpPost("sign-user")]
     [Authorize]
+    [ModularCA.API.Filters.RequireUnlockedSigner]
     public async Task<IActionResult> SignUserKey([FromBody] UserSshSignRequest request)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -206,11 +211,19 @@ public class UserSshController(
                 extensions.Add(ext);
         }
 
-        var cert = await _sshCaService.SignUserKeyAsync(
-            caKeyId, request.PublicKey, request.Principals,
-            validityHours, request.KeyId ?? _currentUser.User.Username,
-            extensions, _currentUser.User.Id,
-            HttpContext.Connection.RemoteIpAddress?.ToString());
+        ModularCA.Shared.Entities.SshCertificateEntity cert;
+        try
+        {
+            cert = await _sshCaService.SignUserKeyAsync(
+                caKeyId, request.PublicKey, request.Principals,
+                validityHours, request.KeyId ?? _currentUser.User.Username,
+                extensions,
+                new SshCaActor(_currentUser.User.Id, _currentUser.User.Username, HttpContext.Connection.RemoteIpAddress?.ToString()));
+        }
+        catch (ModularCA.Shared.Errors.SshCaKeyUnavailableException ex)
+        {
+            return ModularCA.API.Filters.RequireUnlockedSignerAttribute.Unavailable(HttpContext, ex.Message, ex.RetryMayHelp);
+        }
 
         return Ok(new
         {

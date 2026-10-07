@@ -707,7 +707,7 @@ public sealed class ScopedAuthorizationTests
         w.Db.SaveChanges();
         var cache = NewCache();
         var controller = New(Ns + "AdminSshController", w.Operator,
-            null, new CurrentUserStub(w.Operator), new RecordingAuditService(), w.Db, new SystemConfig(),
+            null, new CurrentUserStub(w.Operator), w.Db, new SystemConfig(),
             new KeyCeremonyService(w.Db, new RecordingAuditService()), cache);
         object Request(Guid? spaceId) => Body("GenerateSshCaKeyRequest", ("Name", "ops ssh"), ("SpaceId", spaceId));
 

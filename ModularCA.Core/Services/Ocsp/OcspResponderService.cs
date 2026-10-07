@@ -84,12 +84,13 @@ public class OcspResponderService : IOcspService
     /// Whether the signer holds the key <paramref name="key"/> among the keys of
     /// <paramref name="caEntity"/>. Asked while choosing the responder so a missing key is
     /// reported as it was when the keystore was consulted directly (unauthorized, or the next
-    /// candidate), rather than surfacing as a failure at signing time.
+    /// candidate), rather than surfacing as a failure at signing time. An SSH CA key the
+    /// signer lists is never that key (<see cref="X509SignerKeys"/>).
     /// </summary>
     private async Task<bool> SignerHoldsKeyAsync(CertificateAuthorityEntity caEntity, KeyRef key, CancellationToken ct)
     {
         var keys = await _signer.ListKeysAsync(ContextFor(caEntity), ct);
-        return keys.Any(k => k.Key.CertificateId == key.CertificateId);
+        return X509SignerKeys.Holds(keys, key.CertificateId);
     }
 
     /// <summary>

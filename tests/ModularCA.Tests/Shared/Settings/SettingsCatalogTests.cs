@@ -52,7 +52,6 @@ public class SettingsCatalogTests
     [InlineData("Hsm", SettingClass.SignerLocal)]
     [InlineData("Ingress", SettingClass.HostLocal)]
     [InlineData("Redis", SettingClass.HostLocal)]
-    [InlineData("SshCa", SettingClass.HostLocal)]
     [InlineData("PolicySync", SettingClass.HostLocal)]
     [InlineData("Roles", SettingClass.HostLocal)]
     public void A_section_that_stays_in_files_has_no_setting_in_the_database(string section, SettingClass expected)

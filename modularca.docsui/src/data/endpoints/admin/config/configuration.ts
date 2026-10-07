@@ -111,18 +111,6 @@ export const adminConfiguration: ApiEndpoint[] = [
     },
     {
         method: 'PUT',
-        path: '/api/v1/admin/config/ssh-ca',
-        summary: 'Update SSH CA configuration.',
-        auth: 'Authorize (SystemAdmin)',
-        category: 'Admin Configuration',
-        headers: [
-            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
-            { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token scoped to update-config.' },
-        ],
-        responseDescription: 'Update confirmation.',
-    },
-    {
-        method: 'PUT',
         path: '/api/v1/admin/config/https',
         summary: 'Update HTTPS/TLS configuration.',
         auth: 'Authorize (SystemAdmin)',

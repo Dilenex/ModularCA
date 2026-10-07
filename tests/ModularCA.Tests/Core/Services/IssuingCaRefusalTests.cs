@@ -327,16 +327,18 @@ public class IssuingCaRefusalTests
         db.CertificateAuthorities.Add(ca);
         db.SshCaKeys.Add(key);
         db.SaveChanges();
-        var service = new SshCaService(db, new SystemConfig(), NullLogger<SshCaService>.Instance);
-        const string pub = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOZ3b3xVvYk0Y5Zp2m3YrCw4k9h8B4N1c7m0yY2QmZ4x test";
+        var signer = new UnaskedSigner();
+        var service = new SshCaService(db, signer, new SshAuditLog(), NullLogger<SshCaService>.Instance);
+        var pub = SshNode.SubjectKey();
 
         var user = await Assert.ThrowsAsync<ConfigurationValidationException>(
-            () => service.SignUserKeyAsync(key.Id, pub, ["alice"], 1, null, null, null, null));
+            () => service.SignUserKeyAsync(key.Id, pub, ["alice"], 1, null, null));
         var host = await Assert.ThrowsAsync<ConfigurationValidationException>(
-            () => service.SignHostKeyAsync(key.Id, pub, ["host.example"], 1, null, null, null));
+            () => service.SignHostKeyAsync(key.Id, pub, ["host.example"], 1, null));
 
         Assert.Equal(ErrorCodes.IssuingCaDisabled, user.Code);
         Assert.Equal(ErrorCodes.IssuingCaDisabled, host.Code);
+        Assert.Equal(0, signer.Calls);
     }
 
     /// <summary>

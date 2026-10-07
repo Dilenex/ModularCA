@@ -766,23 +766,6 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         )}
                     </div>
 
-                    {/* SSH CA */}
-                    <div className={cardClass}>
-                        <SectionHeader fields={CARD_FIELDS.sshCa} title="SSH CA" expanded={expanded === 'sshCa'} onToggle={() => toggle('sshCa')}
-                            description={`${config.sshCa?.sshKeygenPath || 'ssh-keygen'}`} tag="restart" />
-                        {expanded === 'sshCa' && (
-                            <div className="p-4 border-t border-line space-y-4">
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigInput label="ssh-keygen Path" value={config.sshCa.sshKeygenPath} path="sshCa.sshKeygenPath" onChange={(v) => update('sshCa', 'sshKeygenPath', v)}
-                                        hint="The OpenSSH binary used to sign SSH certificates. A bare name is resolved on PATH; if it is missing, every SSH issuance fails." />
-                                    <ConfigInput label="Key Storage Path" value={config.sshCa.keyStoragePath} path="sshCa.keyStoragePath" onChange={(v) => update('sshCa', 'keyStoragePath', v)}
-                                        hint="Directory holding SSH CA private keys. Must be writable by the service and is included in backups." />
-                                </div>
-                                <SaveButton saving={saving === 'sshCa'} onClick={() => saveSection('ssh-ca', config.sshCa, 'sshCa')} />
-                            </div>
-                        )}
-                    </div>
-
                     {/* HSM (read-only) */}
                     <div className={cardClass}>
                         <SectionHeader title="HSM" expanded={expanded === 'hsm'} onToggle={() => toggle('hsm')}

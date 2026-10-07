@@ -80,8 +80,11 @@ public class PublicSshController(ISshCaService sshCaService, ModularCA.Shared.Mo
     }
 
     /// <summary>
-    /// Generates and downloads a binary KRL (Key Revocation List) for the specified SSH CA key.
-    /// Configure sshd with RevokedKeys pointing to this endpoint or a cached copy.
+    /// Downloads the binary KRL (Key Revocation List) of the specified SSH CA key, built from its
+    /// public key and its revoked serials, with no signer and no key. Configure sshd with
+    /// RevokedKeys pointing to a copy fetched from this endpoint. With nothing revoked it is a
+    /// KRL with no entries; the 204 below is answered only when
+    /// <see cref="ModularCA.Core.Services.SshCaService.ServeKrlWithNoEntries"/> is turned off.
     /// </summary>
     [HttpGet("ca-keys/{id:guid}/krl")]
     public async Task<IActionResult> DownloadKrl(Guid id)

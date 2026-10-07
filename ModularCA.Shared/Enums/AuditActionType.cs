@@ -67,6 +67,8 @@ public static class AuditActionType
     public const string AcmeOrderFinalized = "AcmeOrderFinalized";
 
     // SSH CA
+    /// <summary>An SSH CA was created and its key committed to the signer, or the attempt failed.</summary>
+    public const string SshCaKeyCreated = "SshCaKeyCreated";
     public const string SshCertIssued = "SshCertIssued";
     public const string SshCertRevoked = "SshCertRevoked";
     public const string SshCaKeyDisabled = "SshCaKeyDisabled";

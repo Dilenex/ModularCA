@@ -755,10 +755,13 @@ public class AdminKeyCeremonyController : ControllerBase
                 if (sshParams == null)
                     return BadRequest(new { error = "Failed to deserialize SSH CA ceremony parameters." });
 
+                // The ceremony's id goes to the signer, which verifies the approval itself before
+                // it generates or commits the key. The service writes the SSH CA's audit entry.
                 var newKey = await _sshCaService.GenerateKeyPairAsync(
                     sshParams.Name, sshParams.KeyType,
                     sshParams.IsUserCa, sshParams.IsHostCa,
-                    sshParams.MaxValidityHours, sshParams.KeySize);
+                    sshParams.MaxValidityHours, sshParams.KeySize,
+                    ceremonyId: ceremony.Id, actor: SshActor());
 
                 await _ceremonySvc.MarkExecutedAsync(id);
 
@@ -778,7 +781,7 @@ public class AdminKeyCeremonyController : ControllerBase
                 if (sshParams?.SshCaKeyId == null)
                     return BadRequest(new { error = "SSH CA key ID missing from ceremony parameters." });
 
-                await _sshCaService.DisableAsync(sshParams.SshCaKeyId.Value);
+                await _sshCaService.DisableAsync(sshParams.SshCaKeyId.Value, SshActor(), ceremony.Id);
 
                 await _ceremonySvc.MarkExecutedAsync(id);
 
@@ -956,6 +959,11 @@ public class AdminKeyCeremonyController : ControllerBase
         {
             return NotFound(new { error = ex.Message, code = ex.Code });
         }
+        catch (ModularCA.Shared.Errors.SshCaKeyUnavailableException ex)
+        {
+            // The ceremony stays Approved: the same execution succeeds once the signer can hold the key.
+            return ModularCA.API.Filters.RequireUnlockedSignerAttribute.Unavailable(HttpContext, ex.Message, ex.RetryMayHelp);
+        }
         catch (ArgumentException ex)
         {
             return BadRequest(new { error = ex.Message });
@@ -966,6 +974,10 @@ public class AdminKeyCeremonyController : ControllerBase
             return StatusCode(500, new { error = "An unexpected error occurred while executing the key ceremony. Please try again." });
         }
     }
+
+    /// <summary>Who executes an SSH CA ceremony, as the SSH service records it in the audit.</summary>
+    private SshCaActor SshActor()
+        => new(_currentUser.User?.Id, _currentUser.User?.Username, HttpContext.Connection.RemoteIpAddress?.ToString());
 
     /// <summary>
     /// The spaces whose ceremonies the caller may see: those where they hold <c>ca.manage</c>

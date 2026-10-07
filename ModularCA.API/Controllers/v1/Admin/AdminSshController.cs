@@ -18,18 +18,23 @@ using ModularCA.API.Startup;
 namespace ModularCA.API.Controllers.v1.Admin;
 
 /// <summary>
-/// Admin endpoints for managing SSH CA keys and issuing SSH certificates.
+/// Admin endpoints for managing SSH CA keys and issuing SSH certificates. The audit entries of
+/// creating, signing, revoking and disabling are written by <see cref="ISshCaService"/>, not here.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/ssh")]
 [Authorize]
 [NodeRole(ProcessRole.Control)]
-public class AdminSshController(ISshCaService sshCaService, ICurrentUserService currentUser, IAuditService audit, ModularCADbContext db, ModularCA.Shared.Models.Config.SystemConfig config, IKeyCeremonyService ceremonySvc, IDistributedCache cache) : ControllerBase
+public class AdminSshController(ISshCaService sshCaService, ICurrentUserService currentUser, ModularCADbContext db, ModularCA.Shared.Models.Config.SystemConfig config, IKeyCeremonyService ceremonySvc, IDistributedCache cache) : ControllerBase
 {
+    /// <summary>Who is asking, as the SSH service records it in the audit and on a certificate row.</summary>
+    private SshCaActor Actor() => new(currentUser.User?.Id, currentUser.User?.Username, HttpContext.Connection.RemoteIpAddress?.ToString());
+
     /// <summary>
     /// Lists the SSH CA keys whose CA is inside the caller's <see cref="SpaceFence"/> (SSH CAs are
     /// instance CAs, so this needs instance scope), with their metadata, including the public KRL
-    /// download URL.
+    /// download URL and where each private key is held (<c>keyStorage</c>: <c>signer</c>,
+    /// <c>legacyFile</c> for a key file still awaiting its import into the signer, or <c>pkcs11</c>).
     /// </summary>
     [HttpGet("ca-keys")]
     [Authorize(Policy = "CaOperator")]
@@ -51,18 +56,19 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         {
             k.Id, k.Name, k.KeyType, k.KeySize, k.PublicKey, k.IsUserCa, k.IsHostCa,
             k.MaxValidityHours, k.IsEnabled, k.CreatedAt,
+            KeyStorage = JsonNamingPolicy.CamelCase.ConvertName(k.KeyStorage),
             KrlUrl = $"{baseUrl}/ssh/ca-keys/{k.Id}/krl",
             PublicKeyUrl = $"{baseUrl}/ssh/ca-keys/{k.Id}",
         }));
     }
 
     /// <summary>
-    /// Generates a new SSH CA key pair using ssh-keygen. SSH CAs are instance CAs: if the
-    /// instance requires key ceremonies, initiates a ceremony instead. A non-null
+    /// Creates an SSH CA whose key the signer generates and holds. SSH CAs are instance CAs: if
+    /// the instance requires key ceremonies, initiates a ceremony instead. A non-null
     /// <c>spaceId</c> is 400, since an SSH CA cannot belong to a space. The derived label is
     /// checked first, ceremony or not: a control character in the name or key type, or an invalid
     /// or reserved label, is 400; a label or name another CA has (or takes while this one is saved)
-    /// is 409.
+    /// is 409. A signer that is locked, or cannot hold SSH CA keys, is 503 with the reason.
     /// </summary>
     [HttpPost("ca-keys")]
     [Authorize(Policy = "SystemOperator")]
@@ -131,12 +137,23 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
             var key = await sshCaService.GenerateKeyPairAsync(
                 request.Name, request.KeyType ?? "ed25519",
                 request.IsUserCa ?? true, request.IsHostCa ?? false,
-                request.MaxValidityHours ?? 24, request.KeySize);
+                request.MaxValidityHours ?? 24, request.KeySize, actor: Actor());
             return Ok(new { key.Id, key.Name, key.KeyType, key.KeySize, key.PublicKey, key.CreatedAt });
         }
         catch (ModularCA.Shared.Errors.ResourceConflictException ex)
         {
             return Conflict(new { error = ex.Message, code = ex.Code });
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or NotSupportedException)
+        {
+            // As X.509 CA creation answers these three (AdminCaController.DescribeCreationFailure):
+            // an unsupported key type or size, or a signer that cannot write the key, is the
+            // operator's to act on. A refusal from the signer is not one of them.
+            return BadRequest(new { error = ex.Message });
+        }
+        catch (ModularCA.Shared.Errors.SshCaKeyUnavailableException ex)
+        {
+            return RequireUnlockedSignerAttribute.Unavailable(HttpContext, ex.Message, ex.RetryMayHelp);
         }
     }
 
@@ -155,9 +172,13 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// Signs a user public key, producing an SSH user certificate.
     /// Requires both an SSH signing profile and cert profile for validation.
     /// The CA key is identified by the route parameter; the signing profile must reference the same key.
+    /// The certificate carries exactly the extensions the profiles and the request come to. A
+    /// locked signer, a key the signer cannot serve and a key awaiting its import into the signer
+    /// are 503 with the reason; a certificate the signer's rules refuse is 400 with its reason.
     /// </summary>
     [HttpPost("ca-keys/{caKeyId:guid}/certificates/sign-user")]
     [Authorize(Policy = "CaOperator")]
+    [RequireUnlockedSigner]
     public async Task<IActionResult> SignUserKey(Guid caKeyId, [FromBody] SignSshUserKeyRequest request)
     {
         await currentUser.EnsureLoadedAsync();
@@ -214,15 +235,17 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
                 extensions.Add(ext);
         }
 
-        var cert = await sshCaService.SignUserKeyAsync(
-            caKeyId, request.PublicKey, request.Principals,
-            validityHours, request.KeyId, extensions,
-            currentUser.User?.Id, HttpContext.Connection.RemoteIpAddress?.ToString());
-
-        await audit.LogAsync(AuditActionType.SshCertIssued, currentUser.User?.Id, currentUser.User?.Username,
-            "SshCertificate", cert.Id.ToString(),
-            new { cert.CertificateType, cert.KeyId, cert.SerialNumber, cert.Principals },
-            HttpContext.Connection.RemoteIpAddress?.ToString());
+        Shared.Entities.SshCertificateEntity cert;
+        try
+        {
+            cert = await sshCaService.SignUserKeyAsync(
+                caKeyId, request.PublicKey, request.Principals,
+                validityHours, request.KeyId, extensions, Actor());
+        }
+        catch (ModularCA.Shared.Errors.SshCaKeyUnavailableException ex)
+        {
+            return RequireUnlockedSignerAttribute.Unavailable(HttpContext, ex.Message, ex.RetryMayHelp);
+        }
 
         return Ok(new { cert.Id, cert.KeyId, cert.SerialNumber, cert.SignedCertificate, cert.ValidAfter, cert.ValidBefore });
     }
@@ -231,9 +254,12 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// Signs a host public key, producing an SSH host certificate.
     /// Requires both an SSH signing profile and cert profile for validation.
     /// The CA key is identified by the route parameter; the signing profile must reference the same key.
+    /// A locked signer, a key the signer cannot serve and a key awaiting its import into the
+    /// signer are 503 with the reason; a certificate the signer's rules refuse is 400 with its reason.
     /// </summary>
     [HttpPost("ca-keys/{caKeyId:guid}/certificates/sign-host")]
     [Authorize(Policy = "CaOperator")]
+    [RequireUnlockedSigner]
     public async Task<IActionResult> SignHostKey(Guid caKeyId, [FromBody] SignSshHostKeyRequest request)
     {
         await currentUser.EnsureLoadedAsync();
@@ -267,15 +293,17 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         if (validationError != null)
             return BadRequest(new { error = validationError });
 
-        var cert = await sshCaService.SignHostKeyAsync(
-            caKeyId, request.PublicKey, request.Hostnames,
-            validityHours, request.KeyId,
-            currentUser.User?.Id, HttpContext.Connection.RemoteIpAddress?.ToString());
-
-        await audit.LogAsync(AuditActionType.SshCertIssued, currentUser.User?.Id, currentUser.User?.Username,
-            "SshCertificate", cert.Id.ToString(),
-            new { cert.CertificateType, cert.KeyId, cert.SerialNumber, cert.Principals },
-            HttpContext.Connection.RemoteIpAddress?.ToString());
+        Shared.Entities.SshCertificateEntity cert;
+        try
+        {
+            cert = await sshCaService.SignHostKeyAsync(
+                caKeyId, request.PublicKey, request.Hostnames,
+                validityHours, request.KeyId, Actor());
+        }
+        catch (ModularCA.Shared.Errors.SshCaKeyUnavailableException ex)
+        {
+            return RequireUnlockedSignerAttribute.Unavailable(HttpContext, ex.Message, ex.RetryMayHelp);
+        }
 
         return Ok(new { cert.Id, cert.KeyId, cert.SerialNumber, cert.SignedCertificate, cert.ValidAfter, cert.ValidBefore });
     }
@@ -375,7 +403,10 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     }
 
     /// <summary>
-    /// Generates and downloads a binary KRL (Key Revocation List) for the specified SSH CA key.
+    /// Downloads the binary KRL (Key Revocation List) of the specified SSH CA key, built from its
+    /// public key and its revoked serials. With nothing revoked it is a KRL with no entries; the
+    /// JSON message below is answered only when
+    /// <see cref="ModularCA.Core.Services.SshCaService.ServeKrlWithNoEntries"/> is turned off.
     /// </summary>
     [HttpGet("ca-keys/{id:guid}/krl")]
     [Authorize(Policy = "CaOperator")]
@@ -407,13 +438,8 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         // Constrain the target to the CA key in the route: that is the CA the policy handler
         // authorized against, and without this the {id} was free to name any SSH certificate
         // in the deployment.
-        if (await sshCaService.RevokeCertificateAsync(id, requiredCaKeyId: caKeyId))
-        {
-            await audit.LogAsync(AuditActionType.SshCertRevoked, currentUser.User?.Id, currentUser.User?.Username,
-                "SshCertificate", id.ToString(),
-                sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());
+        if (await sshCaService.RevokeCertificateAsync(id, requiredCaKeyId: caKeyId, actor: Actor()))
             return Ok(new { message = "SSH certificate revoked" });
-        }
         return NotFound();
     }
 
@@ -460,9 +486,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
             }
         }
 
-        await sshCaService.DisableAsync(id);
-        await audit.LogAsync(AuditActionType.SshCaKeyDisabled, currentUser.User.Id, currentUser.User.Username,
-            "SshCaKey", id.ToString(), new { key.Name });
+        await sshCaService.DisableAsync(id, Actor());
         return Ok(new { message = $"SSH CA '{key.Name}' disabled. All active certificates revoked." });
     }
 }

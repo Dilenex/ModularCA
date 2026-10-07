@@ -330,11 +330,11 @@ public class CaNamingTests
     public async Task An_ssh_ca_is_refused_a_taken_or_invalid_label_before_any_key_is_generated(string name, Type refusal)
     {
         using var db = Seeded();
-        var config = new SystemConfig();
-        config.SshCa.SshKeygenPath = "does-not-exist";
-        var service = new SshCaService(db, config, NullLogger<SshCaService>.Instance);
+        var signer = new UnaskedSigner();
+        var service = new SshCaService(db, signer, new SshAuditLog(), NullLogger<SshCaService>.Instance);
         var ex = await Record.ExceptionAsync(() => service.GenerateKeyPairAsync(name, "ed25519", true, false, 24));
         Assert.IsType(refusal, ex);
+        Assert.Equal(0, signer.Calls);
         Assert.Equal(2, db.CertificateAuthorities.IgnoreQueryFilters().Count());
     }
 

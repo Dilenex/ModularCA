@@ -71,7 +71,6 @@ export const CARD_FIELDS: Record<string, readonly string[]> = {
     baseurl: ['https.publicDomain', 'https.publicPort'],
     http: ['http.port', 'http.publicPort', 'http.corsOrigins', 'http.enableCors', 'http.swaggerEnabled'],
     metrics: ['metrics.enabled', 'metrics.path'],
-    sshCa: ['sshCa.sshKeygenPath', 'sshCa.keyStoragePath'],
     backup: ['backup.outputPath', 'backup.retentionCount', 'backup.maxBackupAgeDays', 'backup.verifyOnSchedule', 'backup.verifyCount'],
     loginProtection: ['security.maxPerUsernameLoginFailures', 'security.perUsernameLoginFailureWindowMinutes'],
     tokenBinding: [

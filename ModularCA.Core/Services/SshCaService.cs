@@ -1,83 +1,184 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Authorization;
-using ModularCA.Core.Helpers;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
+using ModularCA.Shared.Enums;
 using ModularCA.Shared.Errors;
 using ModularCA.Shared.Interfaces;
-using ModularCA.Shared.Models.Config;
+using ModularCA.Shared.Signing;
+using ModularCA.Ssh;
+using Org.BouncyCastle.Security;
 using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace ModularCA.Core.Services;
 
 /// <summary>
-/// Manages SSH CA key pairs and issues SSH certificates using ssh-keygen. Command-argument
-/// sanitization (<c>SanitizePrincipal</c>, <c>SanitizeComment</c>, <c>SanitizeExtension</c>,
-/// <c>SanitizeForceCommand</c>, <c>ValidateSshPublicKey</c>) is implemented inline;
-/// the corresponding unit-test coverage is tracked outside this file.
+/// SSH certificate authorities over the signer. The signer generates and holds every SSH CA
+/// key and builds and signs every SSH certificate; this service holds no key, reads no key file
+/// and runs no program. It keeps what the signer does not decide: the CA, group, key and
+/// certificate rows, the serial's uniqueness, the default signing profiles and the audit entry
+/// of each operation, written here once whichever controller or ceremony called.
 /// </summary>
+/// <remarks>
+/// A row whose <see cref="SshCaKeyEntity.KeyStorage"/> is <see cref="SshCaKeyStorage.LegacyFile"/>
+/// is a key made before the signer held SSH keys, still a file on the node. It signs nothing
+/// here until it has been imported into the signer; its row, its file and its
+/// <see cref="SshCaKeyEntity.PrivateKeyPath"/> are left exactly as they are.
+/// </remarks>
 public class SshCaService : ISshCaService
 {
+    /// <summary>The caller identity SSH operations ask the signer under; the signer audits it with every decision.</summary>
+    private const string SignerCaller = nameof(SshCaService);
+
+    /// <summary>
+    /// How far before the node's clock a certificate's <c>valid_after</c> is set, so that a
+    /// server whose clock runs a little behind accepts a certificate the moment it is issued.
+    /// <b>This is an open owner decision</b>, question 1 of
+    /// <c>docs/architecture/ssh-keystore.md</c>: five minutes, or none. The signer's allowance
+    /// for a start in the past (<c>SshValidAfterAllowance</c> in
+    /// <c>InProcessSigningService.SshCertificates.cs</c>, ten minutes) depends on this value: it
+    /// is this plus five minutes of clock difference between node and signer, and has to move
+    /// with it. The validity window is counted from the backdated start, so a certificate asked
+    /// for N hours is valid for N hours less this from the moment it is issued, and the window
+    /// never exceeds what a profile or the key allows.
+    /// </summary>
+    public static readonly TimeSpan ValidAfterBackdate = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Whether a KRL is served for an SSH CA key with no revoked certificate. <b>This is an open
+    /// owner decision</b>, question 2 of <c>docs/architecture/ssh-keystore.md</c>. True, as
+    /// built: <see cref="GenerateKrlAsync"/> always returns a valid KRL, one with no entries
+    /// when nothing is revoked, and both KRL routes answer 200 with it. False restores what was
+    /// there before: <see cref="GenerateKrlAsync"/> returns no bytes when nothing is revoked,
+    /// which the admin route answers with 200 and a JSON message and the public route with 204.
+    /// </summary>
+    public static readonly bool ServeKrlWithNoEntries = true;
+
+    /// <summary>The longest key id stored: the width of <see cref="SshCertificateEntity.KeyId"/>.</summary>
+    private const int MaxKeyIdLength = 255;
+
+    /// <summary>The longest comment written after a public key or a certificate.</summary>
+    private const int MaxCommentLength = 256;
+
+    private static readonly int[] RsaSizes = [2048, 3072, 4096, 7680, 8192];
+    private static readonly int[] EcdsaSizes = [256, 384, 521];
+
     private readonly ModularCADbContext _db;
-    private readonly SystemConfig _config;
+    private readonly ISigningService _signer;
+    private readonly IAuditService _audit;
     private readonly ILogger<SshCaService> _logger;
 
-    public SshCaService(ModularCADbContext db, SystemConfig config, ILogger<SshCaService> logger)
+    /// <summary>Creates the service over the application database, the signer and the audit.</summary>
+    public SshCaService(ModularCADbContext db, ISigningService signer, IAuditService audit, ILogger<SshCaService> logger)
     {
         _db = db;
-        _config = config;
+        _signer = signer;
+        _audit = audit;
         _logger = logger;
     }
 
     /// <summary>
-    /// Generates an SSH CA key pair, creates a corresponding <see cref="CertificateAuthorityEntity"/>
-    /// with <c>IsSshCa = true</c>, auto-generates four CA-scoped authorization groups
-    /// (admin, operator, auditor, user), and creates default signing profiles.
+    /// Creates an SSH CA whose key the signer generates and holds. The SSH CA and its groups are
+    /// instance rows, with no space. Its label, derived from <paramref name="name"/>, must be
+    /// valid and not reserved, and its label and name unused by any CA of the instance,
+    /// soft-deleted ones included; otherwise nothing is generated.
     /// </summary>
-    /// <summary>
-    /// Generates an SSH CA key pair via ssh-keygen. For RSA and ECDSA, <paramref name="keySize"/>
-    /// controls the bit length (<c>-b</c> flag). Ed25519 has a fixed size and ignores keySize.
-    /// The SSH CA and its groups are instance rows, with no space. Its label, derived from
-    /// <paramref name="name"/>, must be valid and not reserved, and its label and name unused by
-    /// any CA of the instance, soft-deleted ones included; otherwise nothing is generated. A label
-    /// or name another request takes before the save is a <see cref="ResourceConflictException"/>,
-    /// and the generated key files are removed.
-    /// </summary>
-    public async Task<SshCaKeyEntity> GenerateKeyPairAsync(string name, string keyType, bool isUserCa, bool isHostCa, int maxValidityHours, int? keySize = null)
+    /// <remarks>
+    /// <para>
+    /// The order is the one X.509 CA creation uses. The signer generates the key under a
+    /// ceremony context that states the instance and names <paramref name="ceremonyId"/> when
+    /// there is one, and holds it pending. One database transaction then writes the CA row, its
+    /// four groups with their roles, the <c>SshCaKeys</c> row (the public key rendered from what
+    /// the signer returned, storage <see cref="SshCaKeyStorage.Signer"/>, no key path) and the
+    /// default signing profiles. Once that has committed, the key is committed to the row, which
+    /// is when the signer writes it to the SSH keystore: the signer reads the row to bind the
+    /// key, so the row has to be there first.
+    /// </para>
+    /// <para>
+    /// A failure before the transaction commits rolls it back and retires the pending key, so no
+    /// row and no key is left. A commit the signer refuses, or that fails, retires the key and
+    /// deletes the rows again. A label or name another request takes during the save is a
+    /// <see cref="ResourceConflictException"/>.
+    /// </para>
+    /// <para>
+    /// A signer that predates the SSH keystore ignores the key's usage and generates an X.509
+    /// key in <see cref="KeyRef.DefaultKeystore"/>. The reference it returns says so; that key is
+    /// retired and the creation fails with <see cref="SshCaKeyUnavailableException"/>.
+    /// </para>
+    /// </remarks>
+    public async Task<SshCaKeyEntity> GenerateKeyPairAsync(string name, string keyType, bool isUserCa, bool isHostCa, int maxValidityHours,
+        int? keySize = null, Guid? ceremonyId = null, SshCaActor? actor = null)
     {
         var caLabel = name.ToLowerInvariant().Replace(" ", "-");
         CaLabelRules.Validate(caLabel, paramName: nameof(name));
         await CaLabelRules.EnsureUniqueAsync(_db, caLabel, name);
+        var algorithm = AlgorithmOf(keyType, keySize);
 
-        var keyDir = Path.Combine(AppContext.BaseDirectory, _config.SshCa.KeyStoragePath);
-        Directory.CreateDirectory(keyDir);
-
-        var keyId = Guid.NewGuid();
-        var keyPath = Path.Combine(keyDir, $"{keyId}");
-
-        var sanitizedType = SanitizeKeyType(keyType);
-        var bitsArg = BuildBitsArg(sanitizedType, keySize);
-
-        // Generate keypair via ssh-keygen
-        var keygenArgs = new List<string> { "-t", sanitizedType };
-        keygenArgs.AddRange(bitsArg.Split(' ', StringSplitOptions.RemoveEmptyEntries));
-        keygenArgs.AddRange(["-f", keyPath, "-N", "", "-C", SanitizeComment(name)]);
-        var (exitCode, _, stderr) = await ProcessRunner.RunAsync(_config.SshCa.SshKeygenPath, keygenArgs);
-
-        if (exitCode != 0)
-            throw new InvalidOperationException($"ssh-keygen failed: {stderr}");
-
-        // Set restrictive file permissions on the generated private key
-        if (!OperatingSystem.IsWindows())
+        try
         {
-            File.SetUnixFileMode(keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            var entity = await CreateAsync(name, caLabel, algorithm, isUserCa, isHostCa, maxValidityHours, ceremonyId);
+
+            await _audit.LogAsync(AuditActionType.SshCaKeyCreated, actor?.UserId, actor?.Username ?? "system",
+                "SshCaKey", entity.Id.ToString(),
+                new
+                {
+                    entity.Name, entity.KeyType, entity.KeySize, Fingerprint = FingerprintOf(entity.PublicKey),
+                    entity.IsUserCa, entity.IsHostCa, entity.MaxValidityHours, entity.KeyStorage, CeremonyId = ceremonyId,
+                },
+                actor?.SourceIp, certificateAuthorityId: entity.CertificateAuthorityId);
+            _logger.LogInformation("SSH CA key created in the signer: {Name} ({KeyType}), ID={Id}", entity.Name, entity.KeyType, entity.Id);
+            return entity;
+        }
+        catch (Exception ex) when (ex is not AuditWriteFailedException)
+        {
+            await AuditFailureAsync(AuditActionType.SshCaKeyCreated, actor, "SshCaKey", null,
+                new { Name = name, KeyType = algorithm.KeyType, algorithm.KeySize, CeremonyId = ceremonyId }, ex);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The steps of <see cref="GenerateKeyPairAsync"/> between the checks on the name and the
+    /// audit entry: generate, write the rows, commit the key.
+    /// </summary>
+    private async Task<SshCaKeyEntity> CreateAsync(string name, string caLabel, SshCaAlgorithm algorithm,
+        bool isUserCa, bool isHostCa, int maxValidityHours, Guid? ceremonyId)
+    {
+        var generation = SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, spaceId: null, ceremonyId: ceremonyId);
+        GeneratedKey generated;
+        try
+        {
+            generated = await _signer.GenerateKeyAsync(new KeySpec(algorithm.Algorithm, algorithm.SizeOrCurve, Usage: KeySpec.SshUsage), generation);
+        }
+        catch (SigningRefusedException ex) when (SshSignerRefusals.ForKeyCreation(ex) is SshCaKeyUnavailableException unavailable)
+        {
+            throw unavailable;
         }
 
-        var publicKey = await File.ReadAllTextAsync($"{keyPath}.pub");
+        if (!string.Equals(generated.Key.Keystore, KeyRef.SshKeystore, StringComparison.OrdinalIgnoreCase))
+        {
+            await RetireQuietlyAsync(generated.Key, generation);
+            throw new SshCaKeyUnavailableException(
+                $"{SshCaKeyUnavailableException.SignerPredatesSshKeystore}: it was asked for an SSH CA key and generated one in "
+                + $"{generated.Key.Keystore}, which holds X.509 keys. That key was discarded and no SSH CA was created.");
+        }
 
-        // Create an instance CertificateAuthorityEntity (no space) for the SSH CA (no X.509 certificate)
+        SshPublicKey publicKey;
+        try
+        {
+            publicKey = SshPublicKey.FromKeyParameter(PublicKeyFactory.CreateKey(generated.PublicKeyDer));
+            if (publicKey.KeyType != algorithm.SshKeyType)
+                throw new InvalidOperationException(
+                    $"The signer was asked for an {algorithm.SshKeyType} SSH CA key and returned a {publicKey.KeyType} key.");
+        }
+        catch
+        {
+            await RetireQuietlyAsync(generated.Key, generation);
+            throw;
+        }
+
         var caEntity = new CertificateAuthorityEntity
         {
             Name = name,
@@ -87,19 +188,74 @@ public class SshCaService : ISshCaService
             Type = "SSH",
             SpaceId = null,
         };
-        _db.CertificateAuthorities.Add(caEntity);
+        var entity = new SshCaKeyEntity
+        {
+            Id = Guid.NewGuid(),
+            Name = name,
+            KeyType = algorithm.KeyType,
+            KeySize = algorithm.KeySize,
+            PublicKey = publicKey.ToAuthorizedKey(CommentOf(name)),
+            PrivateKeyPath = null,
+            KeyStorage = SshCaKeyStorage.Signer,
+            IsUserCa = isUserCa,
+            IsHostCa = isHostCa,
+            MaxValidityHours = maxValidityHours,
+            CertificateAuthorityId = caEntity.Id,
+        };
+
+        await using var tx = await _db.Database.BeginTransactionAsync();
         try
         {
-            await _db.SaveChangesAsync();
+            await WriteRowsAsync(caEntity, entity);
+            await tx.CommitAsync();
         }
-        catch (DbUpdateException ex) when (CaLabelRules.IsNameRace(ex))
+        catch (Exception ex)
         {
-            _db.Entry(caEntity).State = EntityState.Detached;
-            TryDeleteKeyFiles(keyPath);
-            throw CaLabelRules.NameRaceConflict(caLabel, name);
+            try { await tx.RollbackAsync(); } catch { /* the failure being unwound is the one to report */ }
+            ForgetRows(caEntity.Id, entity.Id);
+            await RetireQuietlyAsync(generated.Key, generation);
+            if (ex is DbUpdateException dbEx && CaLabelRules.IsNameRace(dbEx))
+                throw CaLabelRules.NameRaceConflict(caLabel, name);
+            throw;
         }
 
-        // Auto-generate per-CA authorization groups for all capability templates
+        var binding = SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, spaceId: null, caEntity.Id, ceremonyId);
+        try
+        {
+            await _signer.CommitKeyAsync(generated.Key, entity.Id, binding);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "The signer did not commit the key of SSH CA '{Name}'; removing the rows written for it.", name);
+            await RetireQuietlyAsync(generated.Key, binding);
+            try
+            {
+                await RemoveRowsAsync(caEntity.Id, entity.Id);
+            }
+            catch (Exception removal)
+            {
+                _logger.LogError(removal,
+                    "The rows of SSH CA '{Name}' (CA {CaId}, key row {KeyId}) could not be removed after its key was not committed. "
+                    + "The signer holds no key for the row, so it signs nothing; disable the SSH CA.", name, caEntity.Id, entity.Id);
+            }
+            if (ex is SigningRefusedException refusal && SshSignerRefusals.ForKeyCreation(refusal) is SshCaKeyUnavailableException unavailable)
+                throw unavailable;
+            throw;
+        }
+
+        return entity;
+    }
+
+    /// <summary>
+    /// Writes the rows of a new SSH CA inside the caller's transaction: the instance CA row, its
+    /// four authorization groups with their built-in roles, the key row and the default signing
+    /// profiles for the certificate types the key signs.
+    /// </summary>
+    private async Task WriteRowsAsync(CertificateAuthorityEntity caEntity, SshCaKeyEntity entity)
+    {
+        _db.CertificateAuthorities.Add(caEntity);
+        await _db.SaveChangesAsync();
+
         var templates = new[]
         {
             ("admin", "Administrator"),
@@ -111,14 +267,14 @@ public class SshCaService : ISshCaService
         var groupsCreated = 0;
         foreach (var (suffix, templateName) in templates)
         {
-            var groupName = $"{caLabel}-{suffix}";
+            var groupName = $"{caEntity.Label}-{suffix}";
             if (await _db.CaGroups.AnyAsync(g => g.Name == groupName))
                 continue;
 
             _db.CaGroups.Add(new CaGroupEntity
             {
                 Name = groupName,
-                DisplayName = $"{name} {templateName}",
+                DisplayName = $"{caEntity.Name} {templateName}",
                 CertificateAuthorityId = caEntity.Id,
                 TemplateName = templateName,
                 IsSystemGroup = false,
@@ -132,7 +288,6 @@ public class SshCaService : ISshCaService
         if (groupsCreated > 0)
             await _db.SaveChangesAsync();
 
-        // Seed capability grants and role assignments for each auto-generated group
         var autoGroups = await _db.CaGroups
             .Where(g => g.CertificateAuthorityId == caEntity.Id && g.IsAutoGenerated)
             .ToListAsync();
@@ -141,75 +296,115 @@ public class SshCaService : ISshCaService
             RoleAssignmentHelper.AssignBuiltInRoleToGroup(_db, group, group.TemplateName!);
         }
 
-        var entity = new SshCaKeyEntity
-        {
-            Id = keyId,
-            Name = name,
-            KeyType = keyType,
-            KeySize = sanitizedType == "ed25519" ? null : keySize,
-            PublicKey = publicKey.Trim(),
-            PrivateKeyPath = keyPath,
-            KeyStorage = SshCaKeyStorage.LegacyFile,
-            IsUserCa = isUserCa,
-            IsHostCa = isHostCa,
-            MaxValidityHours = maxValidityHours,
-            CertificateAuthorityId = caEntity.Id,
-        };
-
         _db.SshCaKeys.Add(entity);
-        await _db.SaveChangesAsync();
 
-        // Auto-create signing profiles for the new CA key
-        if (isUserCa)
+        if (entity.IsUserCa)
         {
             _db.SshSigningProfiles.Add(new SshSigningProfileEntity
             {
-                Name = $"{name} - User Signing",
-                Description = $"Auto-generated user signing profile for {name}",
+                Name = $"{entity.Name} - User Signing",
+                Description = $"Auto-generated user signing profile for {entity.Name}",
                 SshCaKeyId = entity.Id,
                 AllowUserCerts = true,
                 AllowHostCerts = false,
-                MaxValidityHours = Math.Min(maxValidityHours, 24),
+                MaxValidityHours = Math.Min(entity.MaxValidityHours, 24),
                 DefaultExtensions = "[\"permit-pty\",\"permit-agent-forwarding\",\"permit-port-forwarding\"]",
                 SourceAddressRestrictions = "[]",
             });
         }
-        if (isHostCa)
+        if (entity.IsHostCa)
         {
             _db.SshSigningProfiles.Add(new SshSigningProfileEntity
             {
-                Name = $"{name} - Host Signing",
-                Description = $"Auto-generated host signing profile for {name}",
+                Name = $"{entity.Name} - Host Signing",
+                Description = $"Auto-generated host signing profile for {entity.Name}",
                 SshCaKeyId = entity.Id,
                 AllowUserCerts = false,
                 AllowHostCerts = true,
-                MaxValidityHours = maxValidityHours,
+                MaxValidityHours = entity.MaxValidityHours,
                 DefaultExtensions = "[]",
                 SourceAddressRestrictions = "[]",
             });
         }
         await _db.SaveChangesAsync();
-
-        _logger.LogInformation("SSH CA key generated: {Name} ({KeyType}), ID={Id}", name, keyType, keyId);
-        return entity;
     }
 
     /// <summary>
-    /// Disables an SSH CA key and revokes all active certificates issued by it.
+    /// Stops tracking the rows of an SSH CA whose transaction was rolled back, so that a later
+    /// save on this context does not write them after all.
     /// </summary>
-    public async Task DisableAsync(Guid caKeyId)
+    private void ForgetRows(Guid caId, Guid keyId)
+    {
+        var groupIds = _db.ChangeTracker.Entries<CaGroupEntity>()
+            .Where(e => e.Entity.CertificateAuthorityId == caId).Select(e => e.Entity.Id).ToHashSet();
+        foreach (var entry in _db.ChangeTracker.Entries().ToList())
+        {
+            var ours = entry.Entity switch
+            {
+                CertificateAuthorityEntity ca => ca.Id == caId,
+                CaGroupEntity group => groupIds.Contains(group.Id),
+                RoleAssignmentEntity assignment => assignment.GroupId is Guid g && groupIds.Contains(g),
+                CapabilityGrantEntity grant => groupIds.Contains(grant.GroupId),
+                SshCaKeyEntity key => key.Id == keyId,
+                SshSigningProfileEntity profile => profile.SshCaKeyId == keyId,
+                _ => false,
+            };
+            if (ours)
+                entry.State = EntityState.Detached;
+        }
+    }
+
+    /// <summary>
+    /// Deletes the rows <see cref="WriteRowsAsync"/> wrote, after the signer did not commit the
+    /// key they were written for: the signing profiles, the key row, the groups with their roles
+    /// and grants, and the CA row.
+    /// </summary>
+    private async Task RemoveRowsAsync(Guid caId, Guid keyId)
+    {
+        _db.SshSigningProfiles.RemoveRange(await _db.SshSigningProfiles.Where(p => p.SshCaKeyId == keyId).ToListAsync());
+        _db.SshCaKeys.RemoveRange(await _db.SshCaKeys.Where(k => k.Id == keyId).ToListAsync());
+
+        var groups = await _db.CaGroups.Where(g => g.CertificateAuthorityId == caId).ToListAsync();
+        var groupIds = groups.Select(g => g.Id).ToList();
+        _db.RoleAssignments.RemoveRange(await _db.RoleAssignments.Where(a => a.GroupId != null && groupIds.Contains(a.GroupId.Value)).ToListAsync());
+        _db.CapabilityGrants.RemoveRange(await _db.CapabilityGrants.Where(g => groupIds.Contains(g.GroupId)).ToListAsync());
+        _db.CaGroups.RemoveRange(groups);
+
+        _db.CertificateAuthorities.RemoveRange(await _db.CertificateAuthorities.IgnoreQueryFilters().Where(c => c.Id == caId).ToListAsync());
+        await _db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Retires a pending key after a failure, best effort: the failure being unwound is the one
+    /// to report, and a key that cannot be retired is logged, not thrown.
+    /// </summary>
+    private async Task RetireQuietlyAsync(KeyRef key, SigningContext context)
+    {
+        try
+        {
+            await _signer.RetireKeyAsync(key, context);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Pending key {Key} could not be retired after a failed SSH CA creation.", key);
+        }
+    }
+
+    /// <summary>
+    /// Disables an SSH CA key and its CA, and revokes all active certificates issued by it. No
+    /// key is touched: the signer refuses to sign for a disabled row, and the key stays where it is.
+    /// </summary>
+    public async Task DisableAsync(Guid caKeyId, SshCaActor? actor = null, Guid? ceremonyId = null)
     {
         var key = await _db.SshCaKeys.FindAsync(caKeyId)
             ?? throw new InvalidOperationException("SSH CA key not found.");
 
         key.IsEnabled = false;
 
-        // Also disable the associated CertificateAuthorityEntity
         var caEntity = await _db.CertificateAuthorities.FindAsync(key.CertificateAuthorityId);
         if (caEntity != null)
             caEntity.IsEnabled = false;
 
-        // Revoke all active certificates
         var activeCerts = await _db.SshCertificates
             .Where(c => c.SshCaKeyId == caKeyId && !c.IsRevoked)
             .ToListAsync();
@@ -219,6 +414,9 @@ public class SshCaService : ISshCaService
 
         await _db.SaveChangesAsync();
 
+        await _audit.LogAsync(AuditActionType.SshCaKeyDisabled, actor?.UserId, actor?.Username ?? "system",
+            "SshCaKey", caKeyId.ToString(),
+            new { key.Name, RevokedCertificates = activeCerts.Count, CeremonyId = ceremonyId }, actor?.SourceIp);
         _logger.LogWarning("SSH CA key '{Name}' disabled. {Count} certificate(s) revoked.", key.Name, activeCerts.Count);
     }
 
@@ -241,130 +439,152 @@ public class SshCaService : ISshCaService
     }
 
     /// <summary>
-    /// Signs a user public key under the given SSH CA key. Refuses a disabled or deleted CA.
+    /// Signs a user public key under the given SSH CA key, through the signer. Refuses a
+    /// disabled or deleted CA, a key that does not sign user certificates, and a key that still
+    /// awaits its import into the signer. The certificate carries exactly
+    /// <paramref name="extensions"/> (see <see cref="SshCertificateOptions"/>).
     /// </summary>
-    public async Task<SshCertificateEntity> SignUserKeyAsync(Guid caKeyId, string publicKey, List<string> principals,
-        int? validityHours, string? keyId, List<string>? extensions, Guid? issuedByUserId, string? sourceIp)
-    {
-        ValidateSshPublicKey(publicKey);
-
-        var caKey = await _db.SshCaKeys.FindAsync(caKeyId)
-            ?? throw new InvalidOperationException("SSH CA key not found");
-        await EnsureSshCaUsableAsync(caKey);
-        if (!caKey.IsUserCa)
-            throw new InvalidOperationException("This CA key is not configured for user certificates");
-
-        var hours = Math.Min(validityHours ?? caKey.MaxValidityHours, caKey.MaxValidityHours);
-        int serial;
-        do {
-            serial = RandomNumberGenerator.GetInt32(1, int.MaxValue);
-        } while (await _db.SshCertificates.AnyAsync(c => c.SshCaKeyId == caKey.Id && c.SerialNumber == serial));
-        var certKeyId = keyId ?? $"user-{Guid.NewGuid():N}";
-        var principalStr = string.Join(",", principals.Select(SanitizePrincipal));
-
-        return await SignKeyAsync(caKey, publicKey, certKeyId, principalStr, hours, serial,
-            false, extensions, "user", issuedByUserId, sourceIp, principals);
-    }
+    public Task<SshCertificateEntity> SignUserKeyAsync(Guid caKeyId, string publicKey, List<string> principals,
+        int? validityHours, string? keyId, List<string>? extensions, SshCaActor? actor = null)
+        => SignAsync(caKeyId, publicKey, principals, validityHours, keyId, extensions, SshCertificateType.User, actor);
 
     /// <summary>
-    /// Signs a host public key under the given SSH CA key. Refuses a disabled or deleted CA.
+    /// Signs a host public key under the given SSH CA key, through the signer. Refuses a
+    /// disabled or deleted CA, a key that does not sign host certificates, and a key that still
+    /// awaits its import into the signer. A host certificate carries no options.
     /// </summary>
-    public async Task<SshCertificateEntity> SignHostKeyAsync(Guid caKeyId, string publicKey, List<string> hostnames,
-        int? validityHours, string? keyId, Guid? issuedByUserId, string? sourceIp)
+    public Task<SshCertificateEntity> SignHostKeyAsync(Guid caKeyId, string publicKey, List<string> hostnames,
+        int? validityHours, string? keyId, SshCaActor? actor = null)
+        => SignAsync(caKeyId, publicKey, hostnames, validityHours, keyId, null, SshCertificateType.Host, actor);
+
+    /// <summary>
+    /// What both certificate types share. Who may ask, and for what, was decided by the caller
+    /// from the profiles; this checks the subject key and the CA key's row, picks a serial no
+    /// certificate of the CA key has, and asks the signer for the certificate under an
+    /// <see cref="SigningPurpose.SshCertificate"/> context naming the SSH CA at instance scope.
+    /// </summary>
+    /// <remarks>
+    /// The principals, the key id and the options reach the signer exactly as given: nothing is
+    /// rewritten on the way, so what the profiles approved is what is certified, and what the
+    /// signer's rules refuse is refused with its reason. The row stored is read back from the
+    /// certificate the signer returned (serial, key id, principals, validity, options, subject
+    /// key), never from the request. The certificate is signed before it is stored; should the
+    /// save then fail, the signer's own audit still holds the certificate's hash, serial and key id.
+    /// </remarks>
+    private async Task<SshCertificateEntity> SignAsync(Guid caKeyId, string publicKey, List<string> principals, int? validityHours,
+        string? keyId, List<string>? extensions, SshCertificateType type, SshCaActor? actor)
     {
-        ValidateSshPublicKey(publicKey);
+        var subject = ParseSubjectKey(publicKey);
+        principals ??= [];
+        var typeName = type == SshCertificateType.Host ? SshCertificateRequest.HostType : SshCertificateRequest.UserType;
 
         var caKey = await _db.SshCaKeys.FindAsync(caKeyId)
             ?? throw new InvalidOperationException("SSH CA key not found");
         await EnsureSshCaUsableAsync(caKey);
-        if (!caKey.IsHostCa)
-            throw new InvalidOperationException("This CA key is not configured for host certificates");
+        if (type == SshCertificateType.User && !caKey.IsUserCa)
+            throw new ConfigurationValidationException($"SSH CA key '{caKey.Name}' is not configured for user certificates.");
+        if (type == SshCertificateType.Host && !caKey.IsHostCa)
+            throw new ConfigurationValidationException($"SSH CA key '{caKey.Name}' is not configured for host certificates.");
+
+        var caPublicKey = TryParseCaKey(caKey.PublicKey);
+        if (caPublicKey != null && SshCertificateRules.CheckSubjectKey(subject, caPublicKey) is { } keyProblem)
+            throw new InvalidRequestException(keyProblem);
+
+        var certKeyId = keyId ?? $"{typeName}-{Guid.NewGuid():N}";
+        if (certKeyId.Length > MaxKeyIdLength)
+            throw new InvalidRequestException($"The key id is longer than {MaxKeyIdLength} characters.");
 
         var hours = Math.Min(validityHours ?? caKey.MaxValidityHours, caKey.MaxValidityHours);
         int serial;
-        do {
+        do
+        {
             serial = RandomNumberGenerator.GetInt32(1, int.MaxValue);
         } while (await _db.SshCertificates.AnyAsync(c => c.SshCaKeyId == caKey.Id && c.SerialNumber == serial));
-        var certKeyId = keyId ?? $"host-{Guid.NewGuid():N}";
-        var hostnameStr = string.Join(",", hostnames.Select(SanitizePrincipal));
 
-        return await SignKeyAsync(caKey, publicKey, certKeyId, hostnameStr, hours, serial,
-            true, null, "host", issuedByUserId, sourceIp, hostnames);
-    }
+        var asked = new { CertificateType = typeName, KeyId = certKeyId, SerialNumber = (long)serial, PrincipalCount = principals.Count };
 
-    private async Task<SshCertificateEntity> SignKeyAsync(SshCaKeyEntity caKey, string publicKey, string certKeyId,
-        string principals, int validityHours, int serial, bool isHost, List<string>? extensions,
-        string certType, Guid? issuedByUserId, string? sourceIp, List<string> principalList)
-    {
-        // Write the public key to a temp file
-        var tmpDir = Path.Combine(Path.GetTempPath(), $"ssh-sign-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(tmpDir);
-        var pubKeyPath = Path.Combine(tmpDir, "key.pub");
-        await File.WriteAllTextAsync(pubKeyPath, publicKey);
+        if (caKey.KeyStorage == SshCaKeyStorage.LegacyFile)
+        {
+            var awaiting = new SshCaKeyUnavailableException(
+                $"{SshCaKeyUnavailableException.AwaitingImport}: '{caKey.Name}' is still a key file on the node, and signs nothing until it has been imported.");
+            await AuditFailureAsync(AuditActionType.SshCertIssued, actor, "SshCaKey", caKey.Id.ToString(), asked, awaiting);
+            throw awaiting;
+        }
 
+        var (criticalOptions, certExtensions) = SshCertificateOptions.From(type == SshCertificateType.Host ? null : extensions);
+        var validAfter = DateTimeOffset.UtcNow.Subtract(ValidAfterBackdate).ToUnixTimeSeconds();
+        var request = new SshCertificateRequest(
+            new KeyRef(caKey.Id, KeyRef.SshKeystore), subject.Blob, typeName, (ulong)serial, certKeyId, principals.ToList(),
+            validAfter, validAfter + (long)hours * 3600, criticalOptions, certExtensions);
+        var context = SigningContext.ForCa(SignerCaller, SigningPurpose.SshCertificate, caKey.CertificateAuthorityId, spaceId: null);
+
+        byte[] blob;
         try
         {
-            // Every argument is one token. The previous single-string form re-tokenised on
-            // whitespace, and force-command values are permitted to contain spaces, so a value of
-            // "x -O clear" appended a flag of the caller's choosing. The sanitizers still apply;
-            // they bound the value, the argument list bounds where it goes.
-            var args = new List<string> { "-s", caKey.PrivateKeyPath!, "-I", SanitizeComment(certKeyId) };
-            if (isHost)
-                args.Add("-h");
-            args.AddRange(["-n", principals, "-V", $"+{validityHours}h", "-z", serial.ToString()]);
-
-            if (extensions != null && extensions.Count > 0)
-            {
-                foreach (var e in extensions)
-                {
-                    args.Add("-O");
-                    if (e.StartsWith("force-command=", StringComparison.OrdinalIgnoreCase))
-                        args.Add("force-command=" + SanitizeForceCommand(e["force-command=".Length..]));
-                    else if (e.StartsWith("source-address=", StringComparison.OrdinalIgnoreCase))
-                        args.Add("source-address=" + SanitizeExtension(e["source-address=".Length..]));
-                    else
-                        args.Add(SanitizeExtension(e));
-                }
-            }
-            args.Add(pubKeyPath);
-
-            var (exitCode, _, stderr) = await ProcessRunner.RunAsync(_config.SshCa.SshKeygenPath, args);
-            if (exitCode != 0)
-                throw new InvalidOperationException($"ssh-keygen signing failed: {stderr}");
-
-            var certPath = pubKeyPath.Replace(".pub", "-cert.pub");
-            var signedCert = await File.ReadAllTextAsync(certPath);
-
-            var entity = new SshCertificateEntity
-            {
-                SshCaKeyId = caKey.Id,
-                CertificateType = certType,
-                KeyId = certKeyId,
-                SerialNumber = serial,
-                Principals = JsonSerializer.Serialize(principalList),
-                ValidAfter = DateTime.UtcNow,
-                ValidBefore = DateTime.UtcNow.AddHours(validityHours),
-                PublicKey = publicKey.Trim(),
-                SignedCertificate = signedCert.Trim(),
-                Extensions = extensions != null ? JsonSerializer.Serialize(extensions) : null,
-                IssuedByUserId = issuedByUserId,
-                SourceIp = sourceIp,
-            };
-
-            _db.SshCertificates.Add(entity);
-            await _db.SaveChangesAsync();
-
-            _logger.LogInformation("SSH {Type} cert issued: KeyId={KeyId}, Serial={Serial}, Principals={Principals}",
-                certType, certKeyId, serial, principals);
-
-            return entity;
+            blob = await _signer.SignSshCertificateAsync(request, context);
         }
-        finally
+        catch (SigningRefusedException ex)
         {
-            try { Directory.Delete(tmpDir, true); } catch { }
+            await AuditFailureAsync(AuditActionType.SshCertIssued, actor, "SshCaKey", caKey.Id.ToString(), asked, ex);
+            var translated = SshSignerRefusals.ForSigning(ex, caKey.Name);
+            if (ReferenceEquals(translated, ex))
+                throw;
+            throw translated;
         }
+
+        var certificate = SshCertificate.Parse(blob);
+        var issued = certificate.Fields;
+        if (!issued.SubjectKey.Equals(subject) || issued.Serial != (ulong)serial
+            || (caPublicKey != null && !certificate.SignatureKey.Equals(caPublicKey)))
+        {
+            _logger.LogError(
+                "The signer returned an SSH certificate that is not the one asked of SSH CA key {CaKeyId}: serial {Serial} (asked {Asked}), SHA-256 {Hash}. It was not stored.",
+                caKey.Id, issued.Serial, serial, Convert.ToHexString(SHA256.HashData(blob)));
+            throw new InvalidOperationException("The signer returned an SSH certificate that is not the one asked for; it was not stored.");
+        }
+
+        var comment = CommentOf(subject.Comment ?? issued.KeyId);
+        var options = SshCertificateOptions.Describe(issued.CriticalOptions, issued.Extensions);
+        var entity = new SshCertificateEntity
+        {
+            SshCaKeyId = caKey.Id,
+            CertificateType = issued.Type == SshCertificateType.Host ? SshCertificateRequest.HostType : SshCertificateRequest.UserType,
+            KeyId = issued.KeyId,
+            SerialNumber = (long)issued.Serial,
+            Principals = JsonSerializer.Serialize(issued.Principals),
+            ValidAfter = TimeOf(issued.ValidAfter),
+            ValidBefore = TimeOf(issued.ValidBefore),
+            PublicKey = issued.SubjectKey.ToAuthorizedKey(comment),
+            SignedCertificate = SshCertificate.ToOpenSsh(blob, comment),
+            Extensions = options.Count > 0 ? JsonSerializer.Serialize(options) : null,
+            IssuedByUserId = actor?.UserId,
+            SourceIp = actor?.SourceIp,
+        };
+
+        _db.SshCertificates.Add(entity);
+        try
+        {
+            await _db.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "An SSH {Type} certificate was signed by SSH CA key {CaKeyId} and could not be stored: serial {Serial}, SHA-256 {Hash}. The signer's audit holds it.",
+                entity.CertificateType, caKey.Id, entity.SerialNumber, Convert.ToHexString(SHA256.HashData(blob)));
+            throw;
+        }
+
+        await _audit.LogAsync(AuditActionType.SshCertIssued, actor?.UserId, actor?.Username,
+            "SshCertificate", entity.Id.ToString(),
+            new { entity.CertificateType, entity.KeyId, entity.SerialNumber, entity.Principals },
+            actor?.SourceIp);
+        _logger.LogInformation("SSH {Type} cert issued: KeyId={KeyId}, Serial={Serial}, Principals={Principals}",
+            entity.CertificateType, entity.KeyId, entity.SerialNumber, string.Join(",", issued.Principals));
+
+        return entity;
     }
 
+    /// <summary>Returns the public key of an SSH CA key, as an authorized_keys line.</summary>
     public async Task<string> GetPublicKeyAsync(Guid caKeyId)
     {
         var caKey = await _db.SshCaKeys.FindAsync(caKeyId)
@@ -372,6 +592,7 @@ public class SshCaService : ISshCaService
         return caKey.PublicKey;
     }
 
+    /// <summary>Lists the SSH CA keys, by name.</summary>
     public async Task<List<SshCaKeyEntity>> GetCaKeysAsync()
     {
         return await _db.SshCaKeys.AsNoTracking().OrderBy(k => k.Name).ToListAsync();
@@ -402,12 +623,14 @@ public class SshCaService : ISshCaService
     }
 
     /// <summary>
-    /// Revokes an SSH certificate, optionally constrained to the CA key that issued it.
+    /// Revokes an SSH certificate, optionally constrained to the CA key that issued it, and
+    /// writes the audit entry when it did.
     /// </summary>
     /// <param name="certId">The certificate to revoke.</param>
     /// <param name="requiredCaKeyId">
     /// When set, the certificate must belong to this CA key or the call is refused.
     /// </param>
+    /// <param name="actor">Who asked, for the audit entry.</param>
     /// <remarks>
     /// The admin route is <c>ca-keys/{caKeyId}/certificates/{id}/revoke</c> and the authorization
     /// handler resolves the CA from <c>caKeyId</c> — the caller's OWN key. Nothing then checked
@@ -415,13 +638,16 @@ public class SshCaService : ISshCaService
     /// so cert.revoke on any one SSH CA was enough to revoke every SSH certificate in the
     /// deployment, one id at a time.
     /// </remarks>
-    public async Task<bool> RevokeCertificateAsync(Guid certId, Guid? requiredCaKeyId = null)
+    public async Task<bool> RevokeCertificateAsync(Guid certId, Guid? requiredCaKeyId = null, SshCaActor? actor = null)
     {
         var cert = await _db.SshCertificates.FindAsync(certId);
         if (cert == null) return false;
         if (requiredCaKeyId.HasValue && cert.SshCaKeyId != requiredCaKeyId.Value) return false;
         cert.IsRevoked = true;
         await _db.SaveChangesAsync();
+
+        await _audit.LogAsync(AuditActionType.SshCertRevoked, actor?.UserId, actor?.Username,
+            "SshCertificate", certId.ToString(), sourceIp: actor?.SourceIp);
         return true;
     }
 
@@ -434,177 +660,151 @@ public class SshCaService : ISshCaService
     }
 
     /// <summary>
-    /// Generates a binary KRL (Key Revocation List) for the specified SSH CA key
-    /// containing all revoked certificate serial numbers.
-    /// </summary>
-    public async Task<byte[]> GenerateKrlAsync(Guid caKeyId)
-    {
-        var caKey = await _db.SshCaKeys.FindAsync(caKeyId)
-            ?? throw new InvalidOperationException("SSH CA key not found");
-
-        var revokedCerts = await _db.SshCertificates
-            .Where(c => c.SshCaKeyId == caKeyId && c.IsRevoked)
-            .ToListAsync();
-
-        if (revokedCerts.Count == 0)
-            return Array.Empty<byte>();
-
-        var serialsFile = Path.GetTempFileName();
-        var krlFile = Path.GetTempFileName();
-
-        // Restrict temp file permissions to owner-only on Unix (Windows ACLs are sufficient by default)
-        if (!OperatingSystem.IsWindows())
-        {
-            File.SetUnixFileMode(serialsFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-            File.SetUnixFileMode(krlFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        }
-
-        try
-        {
-            // Write revoked serial numbers in the format ssh-keygen expects
-            await File.WriteAllLinesAsync(serialsFile,
-                revokedCerts.Select(c => $"serial: {c.SerialNumber}"));
-
-            var (exitCode, _, stderr) = await ProcessRunner.RunAsync(
-                _config.SshCa.SshKeygenPath,
-                ["-k", "-f", krlFile, "-s", caKey.PrivateKeyPath!, serialsFile]);
-
-            if (exitCode != 0)
-                throw new InvalidOperationException($"KRL generation failed: {stderr}");
-
-            return await File.ReadAllBytesAsync(krlFile);
-        }
-        finally
-        {
-            try { File.Delete(serialsFile); } catch { }
-            try { File.Delete(krlFile); } catch { }
-        }
-    }
-
-    // Input sanitization to prevent command injection
-    /// <summary>Removes a generated key pair that will not be registered; best effort.</summary>
-    private static void TryDeleteKeyFiles(string keyPath)
-    {
-        try { File.Delete(keyPath); } catch { }
-        try { File.Delete($"{keyPath}.pub"); } catch { }
-    }
-
-    private static string SanitizeKeyType(string keyType) =>
-        keyType.ToLowerInvariant() switch
-        {
-            "ed25519" => "ed25519",
-            "ecdsa" => "ecdsa",
-            "rsa" => "rsa",
-            _ => throw new ArgumentException($"Unsupported key type: {keyType}")
-        };
-
-    /// <summary>
-    /// Builds the <c>-b {bits}</c> argument for ssh-keygen. Returns empty string when the
-    /// algorithm has a fixed size (ed25519) or no size was specified (ssh-keygen default).
-    /// Validates against allowed sizes to prevent injection and weak keys.
-    /// </summary>
-    private static string BuildBitsArg(string sanitizedKeyType, int? keySize)
-    {
-        if (keySize == null || sanitizedKeyType == "ed25519")
-            return string.Empty;
-
-        var allowed = sanitizedKeyType switch
-        {
-            "rsa" => new[] { 2048, 3072, 4096, 7680, 8192 },
-            "ecdsa" => new[] { 256, 384, 521 },
-            _ => Array.Empty<int>()
-        };
-
-        if (!allowed.Contains(keySize.Value))
-            throw new ArgumentException(
-                $"Key size {keySize} is not allowed for {sanitizedKeyType}. " +
-                $"Allowed: {string.Join(", ", allowed)}");
-
-        return $" -b {keySize.Value}";
-    }
-
-    /// <summary>
-    /// Sanitizes an SSH principal name, allowing only safe characters and enforcing a maximum length.
-    /// </summary>
-    private static string SanitizePrincipal(string principal)
-    {
-        var sanitized = new string(principal.Where(c =>
-            char.IsLetterOrDigit(c) || c == '.' || c == '-' || c == '_' || c == '@').ToArray());
-        if (sanitized.Length > 256)
-            throw new ArgumentException("Principal exceeds maximum length of 256 characters");
-        return sanitized;
-    }
-
-    /// <summary>
-    /// Sanitizes a comment string, allowing only safe characters and enforcing a maximum length.
-    /// </summary>
-    private static string SanitizeComment(string comment)
-    {
-        var sanitized = new string(comment.Where(c =>
-            char.IsLetterOrDigit(c) || c == ' ' || c == '-' || c == '_' || c == '.').ToArray());
-        if (sanitized.Length > 256)
-            throw new ArgumentException("Comment exceeds maximum length of 256 characters");
-        return sanitized;
-    }
-
-    /// <summary>
-    /// Sanitizes an SSH extension value, rejecting quotes, semicolons, backticks, and shell metacharacters.
-    /// </summary>
-    private static string SanitizeExtension(string ext)
-    {
-        // Reject dangerous shell metacharacters explicitly
-        char[] forbidden = ['"', '\'', '`', ';', '|', '&', '$', '(', ')', '{', '}', '<', '>', '\\', '!', '\n', '\r'];
-        if (ext.IndexOfAny(forbidden) >= 0)
-            throw new ArgumentException($"Extension contains forbidden characters: {ext}");
-
-        var sanitized = new string(ext.Where(c =>
-            char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '=').ToArray());
-
-        if (string.IsNullOrEmpty(sanitized))
-            throw new ArgumentException("Extension is empty after sanitization");
-
-        return sanitized;
-    }
-
-    /// <summary>
-    /// Sanitizes a ForceCommand value, allowing only safe characters for shell commands.
+    /// Builds the binary KRL (key revocation list) of an SSH CA key: a certificate section for
+    /// the CA public key listing the serials of its revoked certificates. It is built here from
+    /// the public key on the row. A KRL is not signed, so no signer and no private key take
+    /// part, and a host that only validates builds it as any other does.
     /// </summary>
     /// <remarks>
-    /// This bounds the value's content; it does not bound where the value goes on the command
-    /// line, and it must not be relied on for that. Spaces and hyphens are legitimately part of
-    /// a force command, which is exactly what made the single-string argument form injectable.
-    /// The argument list in <c>SignKeyAsync</c> is what keeps the value inside one argv element.
+    /// With nothing revoked the result follows <see cref="ServeKrlWithNoEntries"/>: a KRL with
+    /// no entries, or no bytes at all. Nothing is written to the audit: the list is public,
+    /// the public route is anonymous and asked by every server on a timer, and what changes a
+    /// KRL, a revocation, has its own entry.
     /// </remarks>
-    private static string SanitizeForceCommand(string cmd)
+    public async Task<byte[]> GenerateKrlAsync(Guid caKeyId)
     {
-        // Only allow alphanumeric, hyphens, forward slashes, dots, spaces, equals, and underscores
-        var sanitized = new string(cmd.Where(c =>
-            char.IsLetterOrDigit(c) || c == '-' || c == '/' || c == '.' || c == ' ' || c == '=' || c == '_'
-        ).ToArray()).Trim();
-        if (sanitized.Length == 0)
-            throw new ArgumentException("Invalid force command after sanitization");
-        if (sanitized.Length > 256)
-            throw new ArgumentException("Force command exceeds maximum length");
-        return sanitized;
+        var caKey = await _db.SshCaKeys.AsNoTracking().FirstOrDefaultAsync(k => k.Id == caKeyId)
+            ?? throw new InvalidOperationException("SSH CA key not found");
+
+        var revokedSerials = await _db.SshCertificates.AsNoTracking()
+            .Where(c => c.SshCaKeyId == caKeyId && c.IsRevoked)
+            .Select(c => c.SerialNumber)
+            .ToListAsync();
+
+        if (revokedSerials.Count == 0 && !ServeKrlWithNoEntries)
+            return Array.Empty<byte>();
+
+        var caPublicKey = TryParseCaKey(caKey.PublicKey)
+            ?? throw new InvalidOperationException("The public key of the SSH CA key cannot be read, so no KRL can be built for it.");
+
+        return SshKrl.Encode(caPublicKey, revokedSerials.Select(s => unchecked((ulong)s)), KrlVersionOf(revokedSerials.Count), DateTimeOffset.UtcNow);
     }
 
     /// <summary>
-    /// Validates that a string is a well-formed SSH public key with a recognized algorithm prefix and valid base64 body.
+    /// The <c>krl_version</c> of a KRL listing <paramref name="revokedCertificates"/> serials:
+    /// their number. It is zero for an empty list and goes up by one with each revocation, and
+    /// it never goes down, since a revocation is never undone and a certificate row is never
+    /// deleted. The design gives the time of the newest revocation instead; no row records when
+    /// a certificate was revoked, so that needs a column this stage does not add.
     /// </summary>
-    private static void ValidateSshPublicKey(string publicKey)
+    internal static ulong KrlVersionOf(int revokedCertificates) => (ulong)Math.Max(0, revokedCertificates);
+
+    /// <summary>
+    /// Writes the audit entry of an operation that failed, without letting a failure to write it
+    /// replace the failure being reported. The entry never names a principal.
+    /// </summary>
+    private async Task AuditFailureAsync(string action, SshCaActor? actor, string targetType, string? targetId, object details, Exception failure)
     {
-        var trimmed = publicKey.Trim();
-        if (string.IsNullOrWhiteSpace(trimmed))
-            throw new ArgumentException("Public key is empty");
-        if (trimmed.Length > 16384)
-            throw new ArgumentException("Public key exceeds maximum length");
-        var validPrefixes = new[] { "ssh-rsa ", "ssh-ed25519 ", "ecdsa-sha2-nistp256 ", "ecdsa-sha2-nistp384 ", "ecdsa-sha2-nistp521 ", "ssh-dss " };
-        if (!validPrefixes.Any(p => trimmed.StartsWith(p)))
-            throw new ArgumentException("Invalid SSH public key format");
-        var parts = trimmed.Split(' ');
-        if (parts.Length < 2)
-            throw new ArgumentException("Invalid SSH public key format");
-        try { Convert.FromBase64String(parts[1]); }
-        catch { throw new ArgumentException("Invalid SSH public key encoding"); }
+        try
+        {
+            await _audit.LogAsync(action, actor?.UserId, actor?.Username ?? "system", targetType, targetId, details,
+                actor?.SourceIp, success: false, errorMessage: failure.Message);
+        }
+        catch (Exception auditFailure)
+        {
+            _logger.LogWarning(auditFailure, "The audit entry for a failed {Action} could not be written.", action);
+        }
     }
+
+    /// <summary>
+    /// The algorithm of a new SSH CA key, from the key type and size a request names:
+    /// <c>ed25519</c>; <c>ecdsa</c> on P-256, P-384 or P-521 (256 when no size is given); or
+    /// <c>rsa</c> of 2048, 3072, 4096, 7680 or 8192 bits (3072 when no size is given).
+    /// </summary>
+    /// <exception cref="ArgumentException">The type is none of the three, or the size is not one of its sizes.</exception>
+    private static SshCaAlgorithm AlgorithmOf(string keyType, int? keySize)
+    {
+        switch ((keyType ?? string.Empty).ToLowerInvariant())
+        {
+            case "ed25519":
+                return new SshCaAlgorithm("ed25519", null, "Ed25519", string.Empty, SshKeyTypes.Ed25519);
+            case "ecdsa":
+                var curve = keySize ?? 256;
+                if (!EcdsaSizes.Contains(curve))
+                    throw new ArgumentException($"Key size {keySize} is not allowed for ecdsa. Allowed: {string.Join(", ", EcdsaSizes)}");
+                return new SshCaAlgorithm("ecdsa", curve, "ECDSA", $"P-{curve}", $"ecdsa-sha2-nistp{curve}");
+            case "rsa":
+                var bits = keySize ?? 3072;
+                if (!RsaSizes.Contains(bits))
+                    throw new ArgumentException($"Key size {keySize} is not allowed for rsa. Allowed: {string.Join(", ", RsaSizes)}");
+                return new SshCaAlgorithm("rsa", bits, "RSA", bits.ToString(), SshKeyTypes.Rsa);
+            default:
+                throw new ArgumentException($"Unsupported key type: {keyType}");
+        }
+    }
+
+    /// <summary>
+    /// What a key type and size come to: the type and size the row stores, the algorithm and
+    /// size or curve the signer is asked for, and the OpenSSH key type the result must have.
+    /// </summary>
+    private sealed record SshCaAlgorithm(string KeyType, int? KeySize, string Algorithm, string SizeOrCurve, string SshKeyType);
+
+    /// <summary>
+    /// Reads the public key a certificate is asked for: one authorized_keys line of a type that
+    /// can be certified. Anything else is an <see cref="InvalidRequestException"/>, and so is a
+    /// DSA key, which the parser reads only so that it can be named here.
+    /// </summary>
+    private static SshPublicKey ParseSubjectKey(string publicKey)
+    {
+        SshPublicKey subject;
+        try
+        {
+            subject = SshPublicKey.ParseAuthorizedKey(publicKey ?? string.Empty);
+        }
+        catch (FormatException ex)
+        {
+            throw new InvalidRequestException($"The SSH public key cannot be used: {ex.Message}");
+        }
+        if (subject.KeyType == SshKeyTypes.Dss)
+            throw new InvalidRequestException(
+                "DSA (ssh-dss) public keys are not certified: OpenSSH no longer accepts DSA. Use an Ed25519, ECDSA or RSA key.");
+        return subject;
+    }
+
+    /// <summary>The public key on an <c>SshCaKeys</c> row, or null when the row holds no key that can be read.</summary>
+    private static SshPublicKey? TryParseCaKey(string? authorizedKey)
+    {
+        try
+        {
+            return SshPublicKey.ParseAuthorizedKey(authorizedKey ?? string.Empty);
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The fingerprint of the public key on a row, for the audit entry; null when it cannot be read.</summary>
+    private static string? FingerprintOf(string authorizedKey) => TryParseCaKey(authorizedKey)?.Fingerprint;
+
+    /// <summary>
+    /// The comment written after a stored public key or certificate, which an operator reads
+    /// and pastes into a file of one key to a line: letters, digits, spaces and <c>- _ . @</c>
+    /// only, at most <see cref="MaxCommentLength"/> characters, and null when nothing is left.
+    /// </summary>
+    private static string? CommentOf(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+        var kept = new string(text.Where(c => char.IsLetterOrDigit(c) || c is ' ' or '-' or '_' or '.' or '@').ToArray()).Trim();
+        if (kept.Length > MaxCommentLength)
+            kept = kept[..MaxCommentLength];
+        return kept.Length == 0 ? null : kept;
+    }
+
+    /// <summary>A certificate's time, in Unix seconds, as the row stores it; a time past the calendar is its last moment.</summary>
+    private static DateTime TimeOf(ulong unixSeconds)
+        => unixSeconds >= (ulong)DateTimeOffset.MaxValue.ToUnixTimeSeconds()
+            ? DateTime.SpecifyKind(DateTime.MaxValue, DateTimeKind.Utc)
+            : DateTimeOffset.FromUnixTimeSeconds((long)unixSeconds).UtcDateTime;
 }

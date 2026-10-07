@@ -29,6 +29,7 @@
     <PackageReference Include="YamlDotNet" Version="16.3.0" />
     <ProjectReference Include="..\ModularCA.Database\ModularCA.Database.csproj" />
     <ProjectReference Include="..\ModularCA.Keystore\ModularCA.Keystore.csproj" />
+    <ProjectReference Include="..\ModularCA.Ssh\ModularCA.Ssh.csproj" />
 	<ProjectReference Include="..\ModularCA.Shared\ModularCA.Shared.csproj" />
   </ItemGroup>
 

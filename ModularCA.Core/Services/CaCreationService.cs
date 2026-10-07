@@ -58,12 +58,13 @@ public class CaCreationService(
     /// Whether the signer holds the key of certificate <paramref name="certificateId"/> among
     /// the keys of <paramref name="ca"/>. Asked before a CA is used as a parent or as the issuer
     /// of a new infrastructure certificate, so a missing key is reported as it was when the
-    /// keystore was consulted directly.
+    /// keystore was consulted directly. An SSH CA key the signer lists is never that key
+    /// (<see cref="X509SignerKeys"/>).
     /// </summary>
     private async Task<bool> SignerHoldsKeyAsync(CertificateAuthorityEntity ca, Guid certificateId)
     {
         var keys = await signer.ListKeysAsync(SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, ca.Id, ca.SpaceId));
-        return keys.Any(k => k.Key.CertificateId == certificateId);
+        return X509SignerKeys.Holds(keys, certificateId);
     }
 
     /// <summary>

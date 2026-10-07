@@ -3,8 +3,11 @@
 Status: owner decisions recorded 2026-10-05 (see "Decided by the owner"). Stage 1, the wire
 format, is built as its own assembly, `ModularCA.Ssh`. Stage 2 is built: the signer has the SSH
 keystore, the key lifecycle (generate, commit, the migration import, list, retire) and
-`SignSshCertificate`, in process and over gRPC, with its audit summary. Nothing in the node calls
-it yet: until stage 3 the node still uses `ssh-keygen` and its key files.
+`SignSshCertificate`, in process and over gRPC, with its audit summary. Stage 3 is built
+(2026-10-07): the node creates SSH CA keys and signs SSH certificates through the signer and
+builds KRLs in process; it runs no `ssh-keygen`, and `SshCa.*` and `PUT /config/ssh-ca` are gone.
+A key made before this, still a file on the node, signs nothing until stage 4 imports it: nothing
+imports it yet, and its file and row are left as they are.
 
 Release: 0.4.2 (owner, 2026-10-06). 0.4.1 is the settings release; the signer journal and verified
 approvals in `signer-hardening.md` follow this, from 0.4.3.
@@ -563,13 +566,63 @@ guide.
 |---|---|---|
 | 1 | **Built.** `ModularCA.Ssh` (its own assembly; `ISshSigner` and `SshCertificateIssuer` added 2026-10-06): certificate encoder and parser, public key encode/decode and authorized_keys parsing, signature blobs per algorithm (DER and raw ECDSA), KRL encoder, `openssh-key-v1` private key reader, and the signer's checks as pure functions (`SshCertificateRules`). Golden tests against fixtures made with `ssh-keygen` 10.2 (`tests/ModularCA.Tests/Ssh/Fixtures/generate.sh`). No `ssh-keygen` option-set mapping, since profiles are exact. No behaviour change | M |
 | 2 | Signer: `ssh-ca.keystore` (create, load, append, pin, secondary alias), `KeyKind.SshCa`, the two purposes, `SignSshCertificate` in process and over gRPC, SSH generate, commit and import, `CreateSshCa` ceremony verification, `SignerAudit.Summary` migration. Contract suite on both bindings, with deliberate breaks: raw `Sign` on an SSH key allowed, empty principals allowed, X.509 key in the SSH file, ceremony check removed. **Part 1 built (2026-10-07):** the keystore file and its `Keystores` row, created by the first commit or import and loaded at unlock; `KeySpec.usage` (`ssh`) on the contract and the wire; SSH generate, commit, retire and list; the `SshKeyMigration` import, repeatable; `CreateSshCa` verified at the signer, with an X.509 CA ceremony licensing no SSH key and the reverse; `SigningPurpose.SshCertificate` and `SshKeyMigration`; and the `SshCaKeys.KeyStorage` column with its migration (`SshKeyStorage`), brought forward from stage 3 because the import is judged on it. Contract tests on both bindings, checked against deliberate breaks of the ceremony licence, the row binding, the storage and enabled checks, the pin requirement and the raw-signature refusal. **Part 2 built (2026-10-07):** `ISigningService.SignSshCertificateAsync` over a plain request (`SshCertificateRequest`), in process and over gRPC (`rpc SignSshCertificate`; a signer that predates it answers `Unimplemented`, which the client reports as a refusal saying the signer predates the SSH keystore). The `SshCaKeys` row is read at every use and must still carry the bound key's public key, have storage `Signer` and be enabled, under an enabled, undeleted SSH CA of the instance that the context names; the type and the maximum validity come from the row, and every other rule from `SshCertificateRules` through `SshCertificateIssuer`, which verifies the signature before anything is returned. Software keys only. One `SignSsh` audit row per call, with the certificate's SHA-256 when one was issued and `SignerAudit.Summary` (migration `SignerAuditSummary`). `SshCertificateRules` gained a separate clock-skew allowance for the past and the future (`SshClockSkew`), and its duplicate-principal refusal no longer names the principal. Contract tests on both bindings, checked against deliberate breaks of the purpose, scope, row public key, row enabled, CA enabled, certificate type, maximum validity, clock skew, empty principals and verify-after-sign checks. **Stage 2 is complete**; nothing in the node calls it until stage 3 | L |
-| 3 | Node cut-over: `SshCaService` over the signer; KRL from the public key; `KeyStorage` column; `ssh-keygen`, `ProcessRunner` use, `SshCaConfig` and `PUT /config/ssh-ca` removed; unlocked-signer filter on the SSH sign routes; endpoints, docs site and console | M |
+| 3 | Node cut-over: `SshCaService` over the signer; KRL from the public key; `KeyStorage` column; `ssh-keygen`, `ProcessRunner` use, `SshCaConfig` and `PUT /config/ssh-ca` removed; unlocked-signer filter on the SSH sign routes; endpoints, docs site and console. **Built (2026-10-07) except the console and docs-site pages**; see "Stage 3 as built" | M |
 | 4 | Migration: startup import, file deletion, `--upgrade-check` finding, readiness row, plaintext notice; backup excludes the directory and carries `ssh-ca.keystore`; restore of old archives; reset | M |
 | 5 | Live proof on ca4 with the signer as its own unit: sshd accepts user and host certificates for all three key types; a KRL revokes; backup and restore round trip; migration from a 0.4.0 install with plaintext keys; the container image issues an SSH certificate | S |
 | 6 | Optional: PKCS#11 adoption for SSH keys; `ImportSshCa` ceremony | M |
 
 Stages 1 to 5 are the release, **L** overall. Stage 1 can start at once, since it touches nothing
 shared.
+
+### Stage 3 as built
+
+- **Create.** The label check, then `GenerateKey` with usage `ssh` under a ceremony context at
+  instance scope carrying the ceremony id. One database transaction writes the CA row, its
+  groups, the `SshCaKeys` row (public key rendered from the returned SubjectPublicKeyInfo, storage
+  `Signer`, no path) and the default signing profiles; then `CommitKey` names the new CA. The
+  profiles are written before the commit, not after it as "Key lifecycle" lists them, so that one
+  transaction holds every row, as X.509 CA creation does.
+- **Create, when it fails.** A failure before the transaction commits rolls it back and retires
+  the key. A commit that is refused or fails retires the key and deletes the rows. A node that
+  stops between the transaction and the commit leaves an enabled SSH CA whose key the signer
+  does not hold; signing with it answers 400 `MCA-CFG-005`, and nothing repairs it (X.509 has
+  the same window). Stage 4's readiness check should show such a row.
+- **Sign.** The profile checks stay in the controllers. The node parses the subject key with
+  `ModularCA.Ssh` (DSA is 400), refuses a `LegacyFile` row before asking the signer, turns the
+  option strings into the exact option set (`SshCertificateOptions`), backdates `valid_after` by
+  `SshCaService.ValidAfterBackdate` and calls `SignSshCertificate` under
+  `SigningPurpose.SshCertificate` naming the SSH CA at instance scope. Principals, key id and
+  option values reach the signer as given; nothing is rewritten for a command line any more. The
+  row stored is read from the returned certificate, which is stored only when it is for the
+  subject key and serial asked and signed by the row's key.
+- **Options.** Names are matched without regard to case. A `no-*` name withholds its `permit-*`
+  and adds nothing, `clear` is ignored, and an unknown name goes to the signer to be refused.
+- **Refusals** (`SshSignerRefusals`). `SignerLocked` and `OperationUnsupported` are 503 with the
+  reason, as is a `LegacyFile` row ("SSH CA key awaiting import into the signer"). `UntypedData`
+  is 400 with the signer's reason. `UnknownKey` is 400 `MCA-CFG-005`. Anything else is left as
+  the signer gave it. The three sign routes carry the unlocked-signer filter.
+- **KRL.** Built in process by `SshKrl.Encode` from the row's public key and the revoked serials,
+  for a `LegacyFile` row and on a validation-only host too. `krl_version` is the number of
+  revoked certificates (open question 5).
+- **Audit.** The entries of create (`SshCaKeyCreated`, new), sign, revoke and disable are written
+  by the service, once. The self-service sign route, which wrote none, now has one. A refused
+  create or sign has a failure entry that carries a principal count, never names. A KRL download
+  has none.
+- **Removed.** `ssh-keygen`, `ProcessRunner`, the command-line sanitizers, `SshCaConfig`,
+  `PUT /config/ssh-ca`, the `sshCa` section of `GET /config` and of `config.yaml.example`, and
+  the Settings card. A leftover `SshCa` section in `config.yaml` is ignored, with a warning only
+  for a value an operator chose.
+- **`ListKeys` consumers** look a key up through `X509SignerKeys`, which passes over SSH CA keys.
+- **Backup, until stage 4.** With `SshCaConfig` gone, backup wraps and excludes only the default
+  `config/ssh-ca-keys`. An install whose `SshCa.KeyStoragePath` named another directory inside
+  `config/` would have its key files copied into an archive unwrapped. Stage 4 finds the
+  directories from the `PrivateKeyPath` of `LegacyFile` rows instead, and must land before any
+  build of this branch is installed.
+- **Not built.** The storage column and generation-form text (`SshCertificates.tsx`), the key
+  detail fields and the plaintext notice (`SshCaKeyDetail.tsx`), the backup text
+  (`BackupRestore.tsx`), the readiness row, and the docs-site pages (`admin/ssh.ts`,
+  `admin/ca-and-certs/key-ceremonies.ts`, the public and self-service SSH endpoints, the UI
+  guides).
 
 ### Carried from stage 2 into stages 3 and 4
 
@@ -586,11 +639,15 @@ key through the signer yet.
   verified as the other files are with no pin, and is then refused at unlock. Restore must bring
   the row first, as it does for the other two.
 - **Backup.** `KeyRef.BackupKeystores` names two files; stage 4 adds the third.
-- **Older signer, newer node.** A signer that predates `KeySpec.usage` ignores it and returns a
+- ~~**Older signer, newer node.** A signer that predates `KeySpec.usage` ignores it and returns a
   pending key in `ca-certs.keystore`. The node checks the keystore of the returned reference and
-  retires the key when it is not `ssh-ca.keystore`.
-- **`ListKeys` consumers** (`CaCreationService`, `OcspResponderService`, `TimestampService`)
-  match by id alone. They skip keys of kind `SshCa`.
+  retires the key when it is not `ssh-ca.keystore`.~~ Closed in stage 3
+  (`SshCaService.GenerateKeyPairAsync`): the key is retired, no row is written, and the caller
+  is told the signer predates the SSH keystore and must be upgraded first (503).
+- ~~**`ListKeys` consumers** (`CaCreationService`, `OcspResponderService`, `TimestampService`)
+  match by id alone. They skip keys of kind `SshCa`.~~ Closed in stage 3: those three, and
+  `ScepService` and `CmpService`, which matched the same way, look a key up through
+  `X509SignerKeys`, which passes over a key of kind `SshCa` or in `ssh-ca.keystore`.
 - **The break-glass unlocker** has not been checked against `ssh-ca.keystore`.
 - **One approved `CreateSshCa` ceremony** is not held to a key count, and a pending SSH key does
   not expire. Both are as X.509 is today, and belong to verified approvals in 0.4.3.
@@ -623,15 +680,36 @@ key through the signer yet.
    bounds separately for this (`SshClockSkew`); its own default stays five minutes both ways. If
    the answer is "no backdating", the past bound can come down to the five minutes of clock skew
    alone; if the node backdates by more than five minutes, it has to go up by as much.
+   What the node does meanwhile (stage 3): it backdates by five minutes. That is one constant,
+   `SshCaService.ValidAfterBackdate`, marked as this open decision and naming the signer's
+   allowance that depends on it. The window is counted from the backdated start, so that it never
+   exceeds what a profile or the key allows: a certificate asked for N hours is valid for N hours
+   less five minutes from the moment it is issued. With `ssh-keygen` it ran N hours from that
+   moment. "No backdating" is that constant set to zero.
 2. **Empty KRL**: keep today's 204 / JSON message, or always return a valid KRL with no entries,
    which an `sshd` `RevokedKeys` fetcher can install without special-casing? Stage 1 does not force
    this: `SshKrl.Encode` with no serials writes the header-only KRL, byte for byte what
    `ssh-keygen -k` writes, so either answer is available.
+   What is built meanwhile (stage 3): always a valid KRL and 200, on both routes. The decision
+   is one switch, `SshCaService.ServeKrlWithNoEntries`. Turned off, it gives back what was there
+   before: with nothing revoked the admin route answers 200 with the JSON message "No revoked
+   certificates; KRL is empty." and the public route answers 204 with no body. Both controllers
+   still hold those answers for that case.
 3. **`ssh-dss` subject keys** are accepted today (`SshCaService.cs:600`) and OpenSSH has removed
    DSA. Refuse them now? Stage 1 follows the signer's list in this design, which already leaves DSA
    out: `SshCertificateRules.CheckSubjectKey` refuses it and the encoder cannot make a DSA
    certificate. So DSA is refused from stage 3 whatever the answer. The parser still reads
    `ssh-dss`, so the node can name the key type in its refusal. What stays open is only whether the
    node refuses DSA before stage 3.
+   As built (stage 3): the node refuses a DSA subject key itself, with 400 and a sentence that
+   names DSA, before it asks the signer. Refusing DSA before stage 3 is no longer a question now
+   that stage 3 is built.
 4. **Stage 6**: is importing an external SSH CA key (`ImportSshCa`) wanted, and is PKCS#11 for SSH
    needed before HA?
+5. **`krl_version`** (raised by stage 3). "Key lifecycle" makes it the time of the newest
+   revocation. No row records when an SSH certificate was revoked: `SshCertificates` has
+   `IsRevoked` and no time. Stage 3 added no column, so what is built is the number of revoked
+   certificates of the CA key (`SshCaService.KrlVersionOf`): zero for an empty list, one more
+   with each revocation, and never less, since a revocation is not undone and a certificate row
+   is not deleted. Is the count enough, or is a
+   `SshCertificates.RevokedAt` column wanted, with its migration, to give the time?

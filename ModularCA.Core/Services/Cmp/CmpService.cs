@@ -1980,7 +1980,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                         var signerCert = CertificateUtil.ParseFromPem(signerEntity.Pem);
                         var now = DateTime.UtcNow;
                         var signerKeyHeld = now >= signerCert.NotBefore && now <= signerCert.NotAfter
-                            && held.Any(k => k.Key.CertificateId == signerEntity.CertificateId);
+                            && X509SignerKeys.Holds(held, signerEntity.CertificateId);
                         if (signerKeyHeld)
                             return (signerCert, new CmpSignerKey(new KeyRef(signerEntity.CertificateId), caContext), caCert);
 
@@ -2009,7 +2009,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                             context.Ca.Label);
                 }
 
-                if (held.Any(k => k.Key.CertificateId == certEntity.CertificateId))
+                if (X509SignerKeys.Holds(held, certEntity.CertificateId))
                     return (caCert, new CmpSignerKey(new KeyRef(certEntity.CertificateId), caContext), null);
             }
         }
