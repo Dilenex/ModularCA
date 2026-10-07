@@ -165,7 +165,7 @@ public class BackupCreationJob : SingletonCronJob
             await _audit.LogAsync(
                 AuditActionType.BackupCreated,
                 actorUserId: null,
-                actorUsername: "scheduler",
+                actorUsername: SchedulerService.AuditActor,
                 targetEntityType: "Backup",
                 targetEntityId: fileName,
                 success: false,
@@ -184,7 +184,7 @@ public class BackupCreationJob : SingletonCronJob
             await _audit.LogAsync(
                 AuditActionType.BackupCreated,
                 actorUserId: null,
-                actorUsername: "scheduler",
+                actorUsername: SchedulerService.AuditActor,
                 targetEntityType: "Backup",
                 targetEntityId: fileName,
                 success: false,
@@ -199,7 +199,7 @@ public class BackupCreationJob : SingletonCronJob
         await _audit.LogAsync(
             AuditActionType.BackupCreated,
             actorUserId: null,
-            actorUsername: "scheduler",
+            actorUsername: SchedulerService.AuditActor,
             targetEntityType: "Backup",
             targetEntityId: fileName,
             details: new { outputPath, trigger = "scheduler" });

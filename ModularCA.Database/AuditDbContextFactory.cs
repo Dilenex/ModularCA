@@ -14,10 +14,8 @@ public class AuditDbContextFactory : IDesignTimeDbContextFactory<AuditDbContext>
     public AuditDbContext CreateDbContext(string[] args)
     {
         var optionsBuilder = new DbContextOptionsBuilder<AuditDbContext>();
-        // Design-time connection for migration generation only
-        optionsBuilder.UseMySql(
-            "Server=localhost;Database=modularca-audit;Uid=root;Pwd=placeholder;",
-            ServerVersion.Create(8, 0, 0, Pomelo.EntityFrameworkCore.MySql.Infrastructure.ServerType.MySql));
+        // Design-time connection for migration generation only; never opened.
+        optionsBuilder.UseNpgsql("Host=localhost;Database=modularca-audit;Username=postgres;Password=placeholder");
         return new AuditDbContext(optionsBuilder.Options);
     }
 }

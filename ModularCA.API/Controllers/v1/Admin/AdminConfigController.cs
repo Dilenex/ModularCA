@@ -4,6 +4,7 @@ using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Hosting;
 using ModularCA.API.Controllers.v1.Auth;
 using ModularCA.API.Filters;
+using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Core.Services;
 using ModularCA.Shared.Enums;
@@ -20,10 +21,15 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// Admin endpoints for viewing and modifying runtime configuration.
 /// Changes are applied to the in-memory config and persisted to config.yaml.
 /// Some changes (logging, HTTPS, scheduler) require a restart to take full effect.
+/// Every endpoint needs a system administrator, and every write a step-up token
+/// (<see cref="StepUpOps.UpdateConfig"/>): the sections govern authentication, token binding,
+/// network trust, audit, alerting and integration keys, which a system operator must not be able
+/// to weaken or read. The notification page's operational summary is served by
+/// <c>GET /api/v1/admin/notifications/delivery</c> instead.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/config")]
-[Authorize(Policy = "SystemOperator")]
+[Authorize(Policy = "SystemAdmin")]
 [NodeRole(ProcessRole.Control)]
 public class AdminConfigController(
     SystemConfig config,
@@ -52,7 +58,8 @@ public class AdminConfigController(
     /// Get the full current configuration (secrets redacted). Response includes
     /// both yaml-backed <c>Security</c> (middleware knobs) and DB-backed
     /// <c>SecurityPolicy</c> (session/MFA/OCSP policy) + <c>LdapPublisherPolicy</c>
-    /// so clients see the complete picture in one call.
+    /// so clients see the complete picture in one call. Needs a system administrator, like
+    /// <c>GET /api/v1/admin/security-policy</c>, whose row it carries.
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> GetConfig()
@@ -147,8 +154,10 @@ public class AdminConfigController(
     /// <summary>
     /// Updates the logging configuration. Min level changes take effect immediately via
     /// the Serilog LoggingLevelSwitch. File path, retention, and size changes require a restart.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("logging")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateLogging([FromBody] LoggingUpdateRequest update)
     {
         // ICF-09: bounds validation. Only for values that were actually sent — null means the
@@ -204,9 +213,13 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the HTTP configuration (port, CORS, Swagger, trusted proxies).
-    /// Requires a restart to take full effect.
+    /// Requires a restart to take full effect. CORS origins are checked here with the startup rules
+    /// plus a bare-origin check (<see cref="ConfigInputRules.CorsOriginsError"/>), because an origin
+    /// startup rejects would otherwise be saved and stop the next start.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("http")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateHttp([FromBody] HttpConfig update)
     {
         // ICF-09: bounds validation — port numbers
@@ -214,6 +227,8 @@ public class AdminConfigController(
             return BadRequest(new { error = "Port must be between 1 and 65535." });
         if (update.PublicPort.HasValue && (update.PublicPort.Value < 1 || update.PublicPort.Value > 65535))
             return BadRequest(new { error = "PublicPort must be between 1 and 65535." });
+        if (ConfigInputRules.CorsOriginsError(update.CorsOrigins, requireBareOrigin: true) is { } corsError)
+            return BadRequest(new { error = corsError });
 
         _config.Http.CorsOrigins = update.CorsOrigins ?? _config.Http.CorsOrigins;
         _config.Http.SwaggerEnabled = update.SwaggerEnabled;
@@ -234,8 +249,10 @@ public class AdminConfigController(
     /// <c>PollIntervalSeconds</c> are no longer accepted — the scheduler is always
     /// on and polls every 30 seconds; multi-replica safety is handled by the
     /// leader-election lease.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("scheduler")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateScheduler([FromBody] SchedulerConfig update)
     {
         if (update.LeaseTtlSeconds >= 15) _config.Scheduler.LeaseTtlSeconds = update.LeaseTtlSeconds;
@@ -255,14 +272,17 @@ public class AdminConfigController(
     }
 
     /// <summary>
-    /// Updates the token configuration (refresh token lifetime).
+    /// Updates the token configuration (refresh token lifetime). <c>RefreshTokenDays</c> must be
+    /// between 1 and <see cref="TokenConfig.MaxRefreshTokenDays"/> (400 otherwise).
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("tokens")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateTokens([FromBody] TokenConfig update)
     {
         // ICF-09: bounds validation
-        if (update.RefreshTokenDays < 1)
-            return BadRequest(new { error = "RefreshTokenDays must be >= 1." });
+        if (update.RefreshTokenDays < 1 || update.RefreshTokenDays > TokenConfig.MaxRefreshTokenDays)
+            return BadRequest(new { error = $"RefreshTokenDays must be between 1 and {TokenConfig.MaxRefreshTokenDays}." });
 
         if (update.RefreshTokenDays > 0) _config.Tokens.RefreshTokenDays = update.RefreshTokenDays;
         if (TryPersistOrError() is { } __persistErr) return __persistErr;
@@ -314,6 +334,18 @@ public class AdminConfigController(
         return Ok(new { message = "Security config updated", config = _config.Security });
     }
 
+    /// <summary>
+    /// Updates the LDAP authentication and group-sync configuration. Step-up gated. A sign-in accepts
+    /// a directory bind for any local username, so whoever controls the directory can sign in as any
+    /// account, super included. Changing what decides who authenticates as whom (host, port, TLS,
+    /// bind DN and password, search base and filter, group search base, filter and member attribute,
+    /// group mappings), or turning LDAP sign-in on, is therefore super-only (403 otherwise). Others
+    /// may turn LDAP sign-in off and toggle GroupSyncEnabled and AutoProvisionUsers. Changing the
+    /// Host, Port or UseSsl while a bind password is stored needs the password re-entered (400), so
+    /// the stored secret is never sent to a new server. New or changed group mappings that target a
+    /// system or privilege-controlled group are rejected with 400. A save by a super rewrites
+    /// mapping targets still naming a space group by its pre-0.4.0 <c>org-</c> name.
+    /// </summary>
     [HttpPut("ldap-auth")]
     // Step-up parity with every other security-relevant section. Omitting it here was
     // account takeover, not merely an inconsistency: LdapAuthService re-reads this config per
@@ -321,8 +353,33 @@ public class AdminConfigController(
     // successful LDAP bind as proof of the local password. Pointing Host at an attacker-
     // controlled directory therefore yields any user's JWT.
     [RequireStepUp(StepUpOps.UpdateConfig)]
-    public async Task<IActionResult> UpdateLdapAuth([FromBody] LdapAuthConfig update)
+    public async Task<IActionResult> UpdateLdapAuth([FromBody] LdapAuthConfig update, [FromServices] ILdapGroupSyncService ldapSync,
+        [FromServices] IControlledUserCeremonyService controlledUsers)
     {
+        var cur = _config.LdapAuth;
+        var newBindPassword = update.BindPassword != null && !IsRedactionSentinel(update.BindPassword);
+        var endpointChanged = (!string.IsNullOrEmpty(update.Host) && !string.Equals(update.Host, cur.Host, StringComparison.OrdinalIgnoreCase))
+                              || (update.Port > 0 && update.Port != cur.Port)
+                              || update.UseSsl != cur.UseSsl;
+        var identityChanged = endpointChanged
+                              || (update.Enabled && !cur.Enabled)
+                              || Sets(update.SearchBaseDn, cur.SearchBaseDn)
+                              || Sets(update.SearchFilter, cur.SearchFilter)
+                              || (update.BindDn != null && update.BindDn != cur.BindDn)
+                              || (newBindPassword && update.BindPassword != cur.BindPassword)
+                              || Sets(update.GroupSearchBaseDn, cur.GroupSearchBaseDn)
+                              || Sets(update.GroupSearchFilter, cur.GroupSearchFilter)
+                              || Sets(update.GroupMemberAttribute, cur.GroupMemberAttribute)
+                              || (update.GroupToRoleMappings != null && update.GroupToRoleMappings != cur.GroupToRoleMappings);
+        if (identityChanged && await RequireSuperAsync(controlledUsers, LdapIdentitySuperOnly) is { } denied)
+            return denied;
+        if (endpointChanged && !newBindPassword && !string.IsNullOrEmpty(cur.BindPassword))
+            return BadRequest(new { error = "Re-enter the bind password when changing the server." });
+
+        if (update.GroupToRoleMappings != null
+            && await ldapSync.ValidateMappingsAsync(update.GroupToRoleMappings, cur.GroupToRoleMappings) is { } mappingError)
+            return BadRequest(new { error = mappingError });
+
         _config.LdapAuth.Enabled = update.Enabled;
         if (!string.IsNullOrEmpty(update.Host)) _config.LdapAuth.Host = update.Host;
         if (update.Port > 0) _config.LdapAuth.Port = update.Port;
@@ -338,14 +395,39 @@ public class AdminConfigController(
         if (!string.IsNullOrEmpty(update.GroupSearchFilter)) _config.LdapAuth.GroupSearchFilter = update.GroupSearchFilter;
         if (!string.IsNullOrEmpty(update.GroupMemberAttribute)) _config.LdapAuth.GroupMemberAttribute = update.GroupMemberAttribute;
         if (update.GroupToRoleMappings != null) _config.LdapAuth.GroupToRoleMappings = update.GroupToRoleMappings;
+        if (await RequireSuperAsync(controlledUsers, LdapIdentitySuperOnly) is null)
+            _config.LdapAuth.GroupToRoleMappings = await ldapSync.RewriteRenamedSpaceGroupsAsync(_config.LdapAuth.GroupToRoleMappings);
         if (TryPersistOrError() is { } __persistErr) return __persistErr;
         await AuditConfigChange("LdapAuth", new { update.Enabled, update.Host, update.Port });
         return Ok(new { message = "LDAP auth config updated", enabled = _config.LdapAuth.Enabled });
     }
 
+    /// <summary>
+    /// Updates the outbound email configuration. Changing the SMTP host or port, or turning TLS off,
+    /// while a password is stored, or the OAuth2 token URL while a client secret is stored, needs that
+    /// secret re-entered (400), so a stored secret is never delivered to a server the caller just
+    /// chose or sent in the clear. Admin Recipients must each parse as a mail address (400).
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
+    /// </summary>
     [HttpPut("email")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateEmail([FromBody] EmailConfigUpdateRequest update)
     {
+        var smtpChanged = (!string.IsNullOrEmpty(update.SmtpHost) && !string.Equals(update.SmtpHost, _config.Email.SmtpHost, StringComparison.OrdinalIgnoreCase))
+                          || (update.SmtpPort > 0 && update.SmtpPort != _config.Email.SmtpPort);
+        var passwordMissing = !string.IsNullOrEmpty(_config.Email.Password)
+                              && (update.Password == null || IsRedactionSentinel(update.Password));
+        if (smtpChanged && passwordMissing)
+            return BadRequest(new { error = "Re-enter the password when changing the server." });
+        if (_config.Email.UseTls && !update.UseTls && passwordMissing)
+            return BadRequest(new { error = "Re-enter the password when changing the server's security." });
+        var tokenUrlChanged = update.OAuth2TokenUrl != null && update.OAuth2TokenUrl != _config.Email.OAuth2TokenUrl;
+        if (tokenUrlChanged && !string.IsNullOrEmpty(_config.Email.OAuth2ClientSecret)
+            && (update.OAuth2ClientSecret == null || IsRedactionSentinel(update.OAuth2ClientSecret)))
+            return BadRequest(new { error = "Re-enter the OAuth2 client secret when changing the token URL." });
+        if (ConfigInputRules.EmailListError(update.AdminRecipients, "AdminRecipients") is { } recipientsError)
+            return BadRequest(new { error = recipientsError });
+
         _config.Email.Enabled = update.Enabled;
         if (!string.IsNullOrEmpty(update.SmtpHost)) _config.Email.SmtpHost = update.SmtpHost;
         if (update.SmtpPort > 0) _config.Email.SmtpPort = update.SmtpPort;
@@ -366,7 +448,11 @@ public class AdminConfigController(
         return Ok(new { message = "Email config updated", enabled = _config.Email.Enabled });
     }
 
+    /// <summary>
+    /// Updates the metrics scrape path. Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
+    /// </summary>
     [HttpPut("metrics")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateMetrics([FromBody] MetricsConfig update)
     {
         // Activation is controlled by the Metrics.Enabled feature flag (admin UI
@@ -379,7 +465,12 @@ public class AdminConfigController(
         return Ok(new { message = "Metrics config updated", config = _config.Metrics });
     }
 
+    /// <summary>
+    /// Updates the SSH CA tool and key storage paths. Requires step-up MFA
+    /// (<see cref="StepUpOps.UpdateConfig"/>).
+    /// </summary>
     [HttpPut("ssh-ca")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateSshCa([FromBody] SshCaConfig update)
     {
         if (!string.IsNullOrEmpty(update.SshKeygenPath)) _config.SshCa.SshKeygenPath = update.SshKeygenPath;
@@ -447,7 +538,6 @@ public class AdminConfigController(
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpPost("restart")]
-    [Authorize(Policy = "SystemAdmin")]
     [RequireStepUp(StepUpOps.Restart)]
     public async Task<IActionResult> Restart()
     {
@@ -491,7 +581,9 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the certificate policy configuration (validity limits, key size requirements, SAN enforcement).
-    /// Requires step-up MFA verification.
+    /// An algorithm sunset rule that is not <c>ALG:YYYY-MM-DD</c>
+    /// (<see cref="ConfigInputRules.AlgorithmSunsetRuleError"/>) is refused with 400, rather than
+    /// saved and then skipped at issuance with a log line. Requires step-up MFA verification.
     /// </summary>
     [HttpPut("certificate-policy")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
@@ -500,6 +592,8 @@ public class AdminConfigController(
         // ICF-09: bounds validation
         if (update.MinRsaKeySize < 2048)
             return BadRequest(new { error = "MinRsaKeySize must be >= 2048." });
+        if (ConfigInputRules.AlgorithmSunsetRulesError(update.AlgorithmSunsetRules) is { } sunsetError)
+            return BadRequest(new { error = sunsetError });
 
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null) return Unauthorized();
@@ -529,10 +623,18 @@ public class AdminConfigController(
     /// in <c>CaGroups.MtlsSigningCaId</c>, which is the normal configuration for an instance that
     /// issues its own client certificates. Only paths the operator actually named are checked.
     /// </para>
+    /// <para>
+    /// <c>RequiredPaths</c> and <c>TrustedCaCertPaths</c> left out of the body (or null) keep their
+    /// current value; an empty list clears them. Clearing <c>RequiredPaths</c> means
+    /// <c>MtlsMiddleware</c> demands a client certificate on no path after the next restart: mTLS
+    /// login on the auth subdomain is unaffected, but no API path is gated on a client certificate
+    /// any more. The audit record carries both lists before and after, and a cleared list raises a
+    /// security alert.
+    /// </para>
     /// </summary>
     [HttpPut("mtls")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
-    public async Task<IActionResult> UpdateMtls([FromBody] MtlsConfig update)
+    public async Task<IActionResult> UpdateMtls([FromBody] MtlsUpdateRequest update)
     {
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null) return Unauthorized();
@@ -574,25 +676,41 @@ public class AdminConfigController(
                 });
         }
 
+        var previousRequired = _config.Mtls.RequiredPaths.ToList();
+        var previousTrusted = _config.Mtls.TrustedCaCertPaths.ToList();
         _config.Mtls.Enabled = update.Enabled;
         if (!string.IsNullOrEmpty(update.AuthSubdomain)) _config.Mtls.AuthSubdomain = update.AuthSubdomain;
-        // These != null guards are INERT: MtlsConfig declares both collections as `= new()`, so
-        // an omitted JSON key arrives as an empty non-null list and passes the guard. A partial
-        // PUT therefore replaced the mTLS TRUST ANCHORS with an empty list — and because the
-        // file-existence validation above only runs over the supplied entries, an empty list
-        // validated cleanly and no error surfaced. Treat empty as "not sent": clearing the
-        // anchors deliberately is not something to do by omission.
-        if (update.RequiredPaths is { Count: > 0 }) _config.Mtls.RequiredPaths = update.RequiredPaths;
-        if (update.TrustedCaCertPaths is { Count: > 0 }) _config.Mtls.TrustedCaCertPaths = update.TrustedCaCertPaths;
+        // The body's lists are nullable, so an omitted key (null) is told apart from an explicit
+        // empty list: omission must never clear the trust anchors, but removing the last entry must.
+        if (update.RequiredPaths != null) _config.Mtls.RequiredPaths = update.RequiredPaths;
+        if (update.TrustedCaCertPaths != null) _config.Mtls.TrustedCaCertPaths = update.TrustedCaCertPaths;
+        var requiredCleared = previousRequired.Count > 0 && _config.Mtls.RequiredPaths.Count == 0;
+        var trustedCleared = previousTrusted.Count > 0 && _config.Mtls.TrustedCaCertPaths.Count == 0;
         if (TryPersistOrError() is { } __persistErr) return __persistErr;
-        await AuditConfigChange("Mtls", new { update.Enabled, update.AuthSubdomain });
+        await AuditConfigChange("Mtls", new
+        {
+            update.Enabled,
+            update.AuthSubdomain,
+            RequiredPaths = new { Before = previousRequired, After = _config.Mtls.RequiredPaths },
+            TrustedCaCertPaths = new { Before = previousTrusted, After = _config.Mtls.TrustedCaCertPaths },
+            RequiredPathsCleared = requiredCleared,
+            TrustedCaCertPathsCleared = trustedCleared,
+        });
+        if (requiredCleared || trustedCleared)
+            _ = _alertService.RaiseAlertAsync("MtlsConfigCleared", AlertSeverity.Warning,
+                requiredCleared
+                    ? $"mTLS Required Paths cleared by {_currentUser.User.Username}: after restart no path requires a client certificate."
+                    : $"mTLS Trusted CA Cert Paths cleared by {_currentUser.User.Username}: anchors now come only from enrolled mTLS signing CAs.",
+                new { RequiredPathsCleared = requiredCleared, TrustedCaCertPathsCleared = trustedCleared, PreviousRequiredPaths = previousRequired, PreviousTrustedCaCertPaths = previousTrusted });
         return Ok(new { message = "mTLS config updated", config = _config.Mtls });
     }
 
     /// <summary>
     /// Updates the automatic certificate renewal configuration.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("auto-renewal")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateAutoRenewal([FromBody] AutoRenewalUpdateRequest request)
     {
         _config.AutoRenewal.Enabled = request.Enabled;
@@ -607,8 +725,10 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the certificate compliance scan configuration.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("compliance-scan")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateComplianceScan([FromBody] ComplianceScanUpdateRequest request)
     {
         _config.ComplianceScan.Enabled = request.Enabled;
@@ -623,11 +743,17 @@ public class AdminConfigController(
     }
 
     /// <summary>
-    /// Updates the certificate expiry notification configuration.
+    /// Updates the certificate expiry notification configuration. The marks arrive as
+    /// <c>WarningDays</c> and are stored as <c>WarningDaysBeforeExpiry</c>, the name GET returns;
+    /// each must be from 1 to <see cref="ConfigInputRules.MaxWarningDays"/> (400 otherwise).
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("cert-expiry-notifications")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateCertExpiryNotifications([FromBody] CertExpiryNotificationUpdateRequest request)
     {
+        if (ConfigInputRules.WarningDaysError(request.WarningDays) is { } daysError)
+            return BadRequest(new { error = daysError });
         _config.CertExpiryNotification.Enabled = request.Enabled;
         if (request.WarningDays != null) _config.CertExpiryNotification.WarningDaysBeforeExpiry = request.WarningDays;
         if (!string.IsNullOrEmpty(request.Schedule)) _config.CertExpiryNotification.Schedule = request.Schedule;
@@ -638,8 +764,10 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the ACME protocol policy configuration.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("acme-policies")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateAcmePolicies([FromBody] AcmePoliciesUpdateRequest request)
     {
         // A malformed terms-of-service URL is worse than none: it gets advertised in the ACME
@@ -663,8 +791,10 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the security alert configuration.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("alert")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateAlert([FromBody] AlertUpdateRequest request)
     {
         _config.Alert.Enabled = request.Enabled;
@@ -677,8 +807,10 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the webhook notification configuration.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("webhook")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateWebhook([FromBody] WebhookUpdateRequest request)
     {
         _config.Webhook.Enabled = request.Enabled;
@@ -691,8 +823,10 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the network audit (request logging) configuration.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("network-audit")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateNetworkAudit([FromBody] NetworkAuditUpdateRequest request)
     {
         _config.NetworkAudit.Enabled = request.Enabled;
@@ -705,8 +839,10 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the GitOps-style policy synchronization configuration.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("policy-sync")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdatePolicySync([FromBody] PolicySyncUpdateRequest request)
     {
         _config.PolicySync.Enabled = request.Enabled;
@@ -720,8 +856,10 @@ public class AdminConfigController(
     /// <summary>
     /// Updates the Kubernetes cert-manager integration configuration.
     /// Requires a restart to take full effect.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("cert-manager")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateCertManager([FromBody] CertManagerUpdateRequest request)
     {
         _config.CertManager.Enabled = request.Enabled;
@@ -737,8 +875,10 @@ public class AdminConfigController(
     /// <summary>
     /// Updates the infrastructure integration API configuration.
     /// Requires a restart to take full effect.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("integration-api")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateIntegrationApi([FromBody] IntegrationApiUpdateRequest request)
     {
         _config.IntegrationApi.Enabled = request.Enabled;
@@ -757,7 +897,10 @@ public class AdminConfigController(
     }
 
     /// <summary>
-    /// Persists the in-memory config to config.yaml. Env-sourced secrets are temporarily
+    /// Persists the in-memory config to config.yaml through
+    /// <see cref="ModularCA.Shared.Utils.ConfigYamlWriter"/>, which leaves out the <c>DB</c>
+    /// section (<c>db.yaml</c> owns it) and rewrites the file in place so it keeps its owner,
+    /// group and mode. Env-sourced secrets are temporarily
     /// cleared before serialization (via <see cref="EnvVarConfigOverlay.WithSecretsProtected"/>)
     /// so they are never written to disk. Throws on write failure so callers can surface
     /// the failure as 500 to the operator instead of silently returning 200 — a swallowed
@@ -773,12 +916,8 @@ public class AdminConfigController(
         {
             try
             {
-                var serializer = new SerializerBuilder()
-                    .WithNamingConvention(PascalCaseNamingConvention.Instance)
-                    .Build();
-                var yaml = serializer.Serialize(_config);
                 var configPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
-                System.IO.File.WriteAllText(configPath, yaml);
+                ModularCA.Shared.Utils.ConfigYamlWriter.Write(configPath, _config);
             }
             catch (Exception ex)
             {
@@ -825,6 +964,49 @@ public class AdminConfigController(
     /// </para>
     /// </summary>
     private static bool IsRedactionSentinel(string? value) => value is "***" or "(env)";
+
+    /// <summary>
+    /// True when a partial-update field that is applied only when non-empty would change the stored value.
+    /// </summary>
+    private static bool Sets(string? incoming, string? current) =>
+        !string.IsNullOrEmpty(incoming) && !string.Equals(incoming, current, StringComparison.Ordinal);
+
+    /// <summary>The 403 message for a non-super change to the LDAP settings that decide who authenticates as whom.</summary>
+    internal const string LdapIdentitySuperOnly =
+        "Only a system-super can change the LDAP server, TLS, bind identity, search settings or group mappings, or turn LDAP sign-in on: "
+        + "a directory bind signs in as the local account of the same name, so whoever controls the directory can sign in as any account.";
+
+    /// <summary>
+    /// 403 with <paramref name="error"/> unless the caller is system-super under the badge they wear;
+    /// null when they are.
+    /// </summary>
+    private async Task<IActionResult?> RequireSuperAsync(IControlledUserCeremonyService controlledUsers, string error)
+    {
+        await _currentUser.EnsureLoadedAsync();
+        if (_currentUser.User != null && await controlledUsers.IsSuperAsync(_currentUser.User.Id))
+            return null;
+        return StatusCode(403, new { error });
+    }
+}
+
+/// <summary>
+/// Request body for PUT /config/mtls. <see cref="RequiredPaths"/> and
+/// <see cref="TrustedCaCertPaths"/> left out (null) keep their current value; an empty list
+/// clears them.
+/// </summary>
+public class MtlsUpdateRequest
+{
+    /// <summary>Whether mTLS client-certificate login is offered.</summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>The auth subdomain; null or empty keeps the current one.</summary>
+    public string? AuthSubdomain { get; set; }
+
+    /// <summary>Path prefixes that require a client certificate; null keeps, empty clears.</summary>
+    public List<string>? RequiredPaths { get; set; }
+
+    /// <summary>Trust-anchor certificate file paths; null keeps, empty clears.</summary>
+    public List<string>? TrustedCaCertPaths { get; set; }
 }
 
 /// <summary>Request body for PUT /config/auto-renewal.</summary>

@@ -8,6 +8,8 @@ using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Acme;
 using ModularCA.Shared.Models.Config;
 using ModularCA.Core.Services;
+using ModularCA.Core.Services.Acme;
+using ModularCA.Database;
 using ModularCA.Shared.Errors;
 using ModularCA.API.Startup;
 
@@ -31,8 +33,10 @@ public class AcmeOrderController(
     IAcmeAccountRateLimiter acmeAccountLimiter,
     IAuditService audit,
     ILogger<AcmeOrderController> logger,
-    SystemConfig config) : ControllerBase
+    SystemConfig config,
+    ModularCADbContext db) : ControllerBase
 {
+    private readonly ModularCADbContext _db = db;
     private readonly IAcmeOrderService _orderService = orderService;
     private readonly IAcmeAuthorizationService _authzService = authzService;
     private readonly ICertificateRevocationService _revocationService = revocationService;
@@ -50,18 +54,10 @@ public class AcmeOrderController(
     private string GetBaseUrl() => _config.Https.GetPublicHttpsBaseUrl();
 
     /// <summary>
-    /// Echoes the CA label from the route into ACME
-    /// <c>Location</c> headers so the client's subsequent requests stay on the
-    /// labeled subtree and finalize resolves the right CA context.
-    /// </summary>
-    private string LabelPrefix()
-    {
-        var caLabel = HttpContext.Request.RouteValues["caLabel"] as string;
-        return !string.IsNullOrWhiteSpace(caLabel) ? $"/acme/{caLabel}" : "/api/v1/acme";
-    }
-
-    /// <summary>
-    /// Create a new certificate order (RFC 8555 §7.4).
+    /// Create a new certificate order (RFC 8555 §7.4) at the CA the account is bound to, whose
+    /// label the order records. A CA that does not serve ACME
+    /// (<see cref="AcmeCaPolicy.RefusalAsync"/>) is refused. The order's URLs, the
+    /// <c>Location</c> header included, are under that CA's path.
     /// </summary>
     [AcmeJws]
     [HttpPost("new-order")]
@@ -70,6 +66,11 @@ public class AcmeOrderController(
         var jws = GetJws();
         if (jws.AccountId == null)
             return AcmeError(400, "urn:ietf:params:acme:error:malformed", "Account not identified.");
+
+        if (AddressedCa() is not { } ca)
+            return AcmeError(404, "urn:ietf:params:acme:error:malformed", "No enabled CA serves this ACME directory.");
+        if (await AcmeCaPolicy.RefusalAsync(_db, ca) is { } notServed)
+            return AcmeError(403, "urn:ietf:params:acme:error:unauthorized", notServed);
 
         var request = JsonSerializer.Deserialize<CreateAcmeOrderRequest>(jws.Payload, JsonOpts);
         if (request == null || request.Identifiers.Count == 0)
@@ -89,8 +90,9 @@ public class AcmeOrderController(
                 "Account has exceeded the new-order rate limit. Try again later.");
 
         var baseUrl = GetBaseUrl();
-        var caLabel = HttpContext.Request.RouteValues["caLabel"] as string;
-        var order = await _orderService.CreateAsync(jws.AccountId.Value, request, baseUrl, caLabel);
+        // The filter addressed the account's bound CA, on the label-less routes too, so the order
+        // records that CA's label and is finalized there whatever the default becomes.
+        var order = await _orderService.CreateAsync(jws.AccountId.Value, request, baseUrl, ca);
 
         // Record order creation on the ACME audit tab. Previously only finalize/issue/revoke
         // were logged, so the tab gave no visibility into orders that never completed.
@@ -98,9 +100,9 @@ public class AcmeOrderController(
             subjectDN: null, certSerial: null,
             identifiers: JsonSerializer.Serialize(order.Identifiers), revocationReason: null,
             sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
-            caLabel: caLabel);
+            caLabel: ca.Label, certificateAuthorityId: ca.Id, spaceId: ca.SpaceId);
 
-        Response.Headers["Location"] = $"{baseUrl}{LabelPrefix()}/order/{order.Id}";
+        Response.Headers["Location"] = $"{baseUrl}{AcmeCaPolicy.PathPrefix(ca.Label)}/order/{order.Id}";
         return StatusCode(201, order);
     }
 
@@ -126,9 +128,10 @@ public class AcmeOrderController(
     }
 
     /// <summary>
-    /// Finalize an order by submitting a CSR (RFC 8555 §7.4). Verifies account ownership.
+    /// Finalize an order by submitting a CSR (RFC 8555 §7.4). Verifies account ownership, and
+    /// finalizes at the CA the account is bound to, refusing an order placed at another CA.
     /// Audit findings #28: emits an <see cref="AuditActionType.AcmeOrderFinalized"/> record
-    /// after the certificate is issued and the order status is updated.
+    /// after the certificate is issued and the order status is updated, under that CA.
     /// Audit findings #23: maps <see cref="InvalidOperationException"/> messages from the
     /// service layer (auth-state mismatches, profile errors, internal lookup failures) to a
     /// fixed RFC 7807 detail string instead of leaking internal text to anonymous ACME
@@ -154,17 +157,19 @@ public class AcmeOrderController(
             return AcmeError(429, "urn:ietf:params:acme:error:rateLimited",
                 "Account has exceeded the finalize rate limit. Try again later.");
 
+        if (AddressedCa() is not { } ca)
+            return AcmeError(404, "urn:ietf:params:acme:error:malformed", "No enabled CA serves this ACME directory.");
+
         try
         {
             var baseUrl = GetBaseUrl();
-            var caLabel = HttpContext.Request.RouteValues["caLabel"] as string;
-            var order = await _orderService.FinalizeAsync(id, request.Csr, baseUrl, caLabel);
+            var order = await _orderService.FinalizeAsync(id, request.Csr, baseUrl, ca);
 
             var identifiersJson = System.Text.Json.JsonSerializer.Serialize(order.Identifiers);
             await _protocolAudit.LogAcmeAsync("OrderFinalized", jws.AccountId, id,
                 null, null, identifiersJson, null,
                 HttpContext.Connection.RemoteIpAddress?.ToString(),
-                caLabel: caLabel);
+                caLabel: ca.Label, certificateAuthorityId: ca.Id, spaceId: ca.SpaceId);
 
             // Emit a structured AcmeOrderFinalized audit
             // record with the order id, joined SAN list, and the issued certificate's
@@ -184,16 +189,18 @@ public class AcmeOrderController(
                         OrderId = id,
                         CertificateSerial = serial,
                         IdentifiersCsv = identifiersCsv,
-                        CaLabel = caLabel,
+                        CaLabel = ca.Label,
                     },
-                    sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());
+                    sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    certificateAuthorityId: ca.Id,
+                    spaceId: ca.SpaceId);
             }
             catch (Exception auditEx)
             {
                 _logger.LogWarning(auditEx, "Audit emission for AcmeOrderFinalized failed for order {OrderId}.", id);
             }
 
-            Response.Headers["Location"] = $"{baseUrl}{LabelPrefix()}/order/{order.Id}";
+            Response.Headers["Location"] = $"{baseUrl}{AcmeCaPolicy.PathPrefix(ca.Label)}/order/{order.Id}";
             return Ok(order);
         }
         catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
@@ -233,11 +240,12 @@ public class AcmeOrderController(
     /// originally issued the certificate via ACME before allowing revocation.
     /// Audit findings #23: the catch on <see cref="InvalidOperationException"/> now returns
     /// a fixed RFC 7807 detail string instead of <c>ex.Message</c>; the underlying message
-    /// is logged at warn level so operators retain diagnostic information.
+    /// is logged at warn level so operators retain diagnostic information. The
+    /// <c>CertificateRevoked</c> protocol audit row names the CA by label and id.
     /// </summary>
-    // RFC 8555 §6.2 lists revokeCert alongside newAccount as the two requests that may be
-    // signed with an inline jwk rather than a kid — a holder of the certificate's key may
-    // revoke it without an account. Every other action on this controller requires kid.
+    // RFC 8555 §6.2 lets revokeCert be signed with an inline jwk. Here that jwk must be an
+    // account key: the filter looks the account up by its thumbprint and refuses an unknown key,
+    // so revocation by the certificate's own key (§7.6) is not supported.
     [AcmeJws(AllowJwk = true)]
     [HttpPost("revoke-cert")]
     public async Task<IActionResult> RevokeCert()
@@ -293,9 +301,11 @@ public class AcmeOrderController(
 
             await _revocationService.RevokeCertificateAsync(null, serial, reason);
 
+            var ca = AddressedCa();
             await _protocolAudit.LogAcmeAsync("CertificateRevoked", jws.AccountId, null,
                 cert.SubjectDN.ToString(), serial, null, reason.ToString(),
-                HttpContext.Connection.RemoteIpAddress?.ToString());
+                HttpContext.Connection.RemoteIpAddress?.ToString(),
+                caLabel: ca?.Label, certificateAuthorityId: ca?.Id, spaceId: ca?.SpaceId);
 
             return Ok();
         }
@@ -313,6 +323,13 @@ public class AcmeOrderController(
     private AcmeJwsPayload GetJws() =>
         HttpContext.Items["AcmeJws"] as AcmeJwsPayload
         ?? throw new InvalidOperationException("JWS not parsed.");
+
+    /// <summary>
+    /// The CA this request addresses, which <see cref="AcmeJwsActionFilter"/> resolved and held
+    /// the signing account to.
+    /// </summary>
+    private ModularCA.Shared.Entities.CertificateAuthorityEntity? AddressedCa() =>
+        HttpContext.Items[AcmeJwsActionFilter.AddressedCaItem] as ModularCA.Shared.Entities.CertificateAuthorityEntity;
 
     private ObjectResult AcmeError(int status, string type, string detail)
     {

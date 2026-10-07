@@ -109,10 +109,6 @@ public class CertRequestEntity
     /// </summary>
     public string? AdditionalExtensions { get; set; }
 
-    /// <summary>Optimistic concurrency token (MySQL TIMESTAMP(6)).</summary>
-    [Timestamp]
-    public byte[]? RowVersion { get; set; }
-
     /// <summary>
     /// Validity window requested when the CSR was submitted, or null to let the profile decide.
     /// </summary>

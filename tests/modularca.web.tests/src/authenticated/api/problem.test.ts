@@ -462,11 +462,11 @@ describe('parseProblem — error codes and remediation', () => {
     it('appends the code even when there is no remediation', () => {
         const p = parseProblem(409, JSON.stringify({
             title: 'Conflict',
-            detail: 'Tenant CA quota exceeded.',
+            detail: 'CA quota exceeded.',
             code: 'MCA-RES-002',
         }));
 
-        expect(p.message).toBe('Tenant CA quota exceeded. [MCA-RES-002]');
+        expect(p.message).toBe('CA quota exceeded. [MCA-RES-002]');
     });
 
     it('leaves both undefined for the legacy bodies that carry neither', () => {

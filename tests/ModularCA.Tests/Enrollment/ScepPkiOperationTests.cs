@@ -61,7 +61,7 @@ public class ScepPkiOperationTests
 
         public Task LogScepAsync(string operation, string? subjectDN, string? certSerial, string? keyAlgorithm, string? keySize,
             string? caLabel, string? transactionId, string? sourceIp, bool success = true, string? errorMessage = null,
-            Guid? certificateAuthorityId = null, Guid? tenantId = null, string? callerPrincipal = null)
+            Guid? certificateAuthorityId = null, Guid? spaceId = null, string? callerPrincipal = null)
         {
             Entries.Add((operation, subjectDN, certSerial, success, errorMessage));
             return Task.CompletedTask;
@@ -70,25 +70,25 @@ public class ScepPkiOperationTests
         public Task LogMsaeAsync(string operation, string? subjectDN, string? certSerial,
             string? keyAlgorithm, string? keySize, string? templateName, string? caLabel,
             string? sourceIp, bool success = true, string? errorMessage = null,
-            Guid? certificateAuthorityId = null, Guid? tenantId = null, string? callerPrincipal = null,
+            Guid? certificateAuthorityId = null, Guid? spaceId = null, string? callerPrincipal = null,
             string? realm = null, string? authMethod = null)
             => throw new NotSupportedException();
         public Task LogEstAsync(string operation, string? subjectDN, string? certSerial, string? keyAlgorithm, string? keySize,
             string? caLabel, string? sourceIp, bool success = true, string? errorMessage = null,
-            Guid? certificateAuthorityId = null, Guid? tenantId = null, string? callerPrincipal = null)
+            Guid? certificateAuthorityId = null, Guid? spaceId = null, string? callerPrincipal = null)
             => throw new NotSupportedException();
         public Task LogCmpAsync(string messageType, string? subjectDN, string? certSerial, string? keyAlgorithm, string? keySize,
             string? caLabel, string? transactionId, string? revocationReason, string? sourceIp, bool success = true,
-            string? errorMessage = null, Guid? certificateAuthorityId = null, Guid? tenantId = null, string? callerPrincipal = null)
+            string? errorMessage = null, Guid? certificateAuthorityId = null, Guid? spaceId = null, string? callerPrincipal = null)
             => throw new NotSupportedException();
         public Task LogAcmeAsync(string operation, Guid? accountId, Guid? orderId, string? subjectDN, string? certSerial,
             string? identifiers, string? revocationReason, string? sourceIp, bool success = true, string? errorMessage = null,
-            string? caLabel = null, Guid? certificateAuthorityId = null, Guid? tenantId = null,
+            string? caLabel = null, Guid? certificateAuthorityId = null, Guid? spaceId = null,
             Guid? signingProfileId = null, Guid? certProfileId = null)
             => throw new NotSupportedException();
         public Task LogNetworkRequestAsync(string sourceIp, string requestPath, string httpMethod, int statusCode,
             long? responseTimeMs, string? protocol, string? caLabel, bool blocked, string? reason, string? userAgent,
-            Guid? certificateAuthorityId = null, Guid? tenantId = null)
+            Guid? certificateAuthorityId = null, Guid? spaceId = null)
             => throw new NotSupportedException();
     }
 
@@ -179,7 +179,7 @@ public class ScepPkiOperationTests
 
         var certificateId = Guid.NewGuid();
         var caId = Guid.NewGuid();
-        var tenantId = Guid.NewGuid();
+        var spaceId = Guid.NewGuid();
 
         db.Certificates.Add(new CertificateEntity
         {
@@ -196,10 +196,10 @@ public class ScepPkiOperationTests
         db.CertificateAuthorities.Add(new CertificateAuthorityEntity
         {
             Id = caId, Name = "lab", Label = "lab", IsDefault = true, IsEnabled = true,
-            CertificateId = certificateId, TenantId = tenantId,
+            CertificateId = certificateId, SpaceId = spaceId,
         });
 
-        var signing = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "lab-signing" };
+        var signing = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "lab-signing", IssuerId = certificateId };
         var certProfile = new CertProfileEntity { Id = Guid.NewGuid(), Name = "Device", ValidityPeriodMax = "P30D" };
         var requestProfile = new RequestProfileEntity
         {

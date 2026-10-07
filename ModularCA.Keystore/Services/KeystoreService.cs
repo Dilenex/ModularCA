@@ -249,7 +249,7 @@ public class KeystoreService : IDisposable
         VerifySpkiPinMac(pinnedSpki, pinMac, secondary, keystoreName);
         var keystore = KeystoreFileParser.Parse(keystorePath);
         VerifyFileSignature(keystore, db, pinnedSpki);
-        var mainBytes = LoadMainPassphraseBytes(keystoreName);
+        var mainBytes = LoadMainPassphraseBytes(db, keystoreName, secondary);
         byte[]? key = null;
         try
         {
@@ -304,7 +304,7 @@ public class KeystoreService : IDisposable
         VerifySpkiPinMac(pinnedSpki, pinMac, secondary, keystoreName);
         var keystore = KeystoreFileParser.Parse(keystorePath);
         VerifyFileSignature(keystore, db, pinnedSpki);
-        var mainBytes = LoadMainPassphraseBytes(keystoreName);
+        var mainBytes = LoadMainPassphraseBytes(db, keystoreName, secondary);
         byte[]? key = null;
         try
         {
@@ -467,11 +467,13 @@ public class KeystoreService : IDisposable
     /// <summary>
     /// Returns the main passphrase as its raw UTF-8 bytes so the caller
     /// can <see cref="CryptographicOperations.ZeroMemory"/> it in a finally block.
-    /// Prevents the secret from being pinned in the GC as a managed <c>string</c>.
+    /// Prevents the secret from being pinned in the GC as a managed <c>string</c>. Read through
+    /// the caller's database with the secondary passphrase the caller already loaded, so the
+    /// unlock reads no configuration file of its own.
     /// </summary>
-    private static byte[] LoadMainPassphraseBytes(string keystore)
+    private static byte[] LoadMainPassphraseBytes(ModularCADbContext db, string keystore, string secondary)
     {
-        var bytes = KeystoreDbPassphraseLoader.RetrieveFromDatabase(keystore);
+        var bytes = KeystoreDbPassphraseLoader.RetrieveFromDatabase(db, keystore, secondary);
         if (bytes == null || bytes.Length == 0)
             throw new InvalidOperationException("Main passphrase is not set in the keystore configuration.");
         return bytes;
@@ -660,11 +662,23 @@ public class KeystoreService : IDisposable
     // that survives restarts and keystore-load failures.
     private static readonly object _auditLogLock = new();
     private static readonly string _auditInstanceId = Guid.NewGuid().ToString("N");
+
+    /// <summary>
+    /// The directory the keystore audit <c>bootstrap-audit-{date}.jsonl</c> is written to; null
+    /// for <c>logs/</c> under the application directory. The signer role sets its own log
+    /// directory when it runs from <c>--signer-dir</c>, since on one host <c>logs/</c> is the node's.
+    /// </summary>
+    public static string? AuditLogDirectory { get; set; }
+
+    /// <summary>
+    /// Appends one keystore event to the day's audit <c>.jsonl</c> in <see cref="AuditLogDirectory"/>.
+    /// Never throws: an audit write failure must not fail the keystore operation.
+    /// </summary>
     private static void EmitKeystoreAudit(string action, string keystoreName, bool success, string? detail = null)
     {
         try
         {
-            var logsDir = Path.Combine(AppContext.BaseDirectory, "logs");
+            var logsDir = AuditLogDirectory ?? Path.Combine(AppContext.BaseDirectory, "logs");
             Directory.CreateDirectory(logsDir);
             var filePath = Path.Combine(logsDir, $"bootstrap-audit-{DateTime.UtcNow:yyyyMMdd}.jsonl");
             var line = System.Text.Json.JsonSerializer.Serialize(new
@@ -1165,7 +1179,7 @@ public class KeystoreService : IDisposable
             var keystore = KeystoreFileParser.Parse(keystorePath);
             VerifyFileSignature(keystore, db, pinnedSpki);
 
-            var mainBytes = LoadMainPassphraseBytes(keystoreName);
+            var mainBytes = LoadMainPassphraseBytes(db, keystoreName, secondary);
             byte[]? fileKey = null;
             var existingPayloads = new List<byte[]>(keystore.Entries.Count);
             try

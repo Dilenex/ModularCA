@@ -4,7 +4,7 @@ export const adminQuotas: ApiEndpoint[] = [
     {
         method: 'GET',
         path: '/api/v1/admin/quotas',
-        summary: 'Returns quota usage summaries for all enabled CAs, including issued counts, remaining capacity, and warning/exceeded status. Non-system-admins see only CAs belonging to their accessible tenants.',
+        summary: 'Returns quota usage summaries for all enabled CAs, including issued counts, remaining capacity, and warning/exceeded status. Non-system-admins see only CAs belonging to their accessible spaces.',
         auth: 'Authorize (SystemOperator)',
         category: 'Admin Quotas',
         headers: [

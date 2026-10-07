@@ -1,3 +1,4 @@
+using ModularCA.API.Filters;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -15,6 +16,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// An administrator managing another user's access badges: issuing a badge is how an
 /// administrator hands someone a narrowed way of working without touching their grants.
 /// The same rule applies as for self-management: a badge keeps only sources that user holds.
+/// Creating, replacing or deleting a badge of a system-super needs a caller who is system-super.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/users/{userId:guid}/badges")]
@@ -24,9 +26,26 @@ public class AdminUserBadgesController(
     ModularCADbContext db,
     ICurrentUserService currentUser,
     AccessBadgeService badges,
-    IAuditService audit) : ControllerBase
+    IAuditService audit,
+    IControlledUserCeremonyService controlledUserSvc) : ControllerBase
 {
     private Task<bool> UserExistsAsync(Guid userId) => db.Users.AnyAsync(u => u.Id == userId);
+
+    /// <summary>
+    /// 403 when <paramref name="userId"/> is system-super (by account, whatever badge they wear)
+    /// and the caller is not system-super under the badge they wear; null otherwise. A system
+    /// admin could otherwise set a super's default badge, which decides what the super's next
+    /// session can do.
+    /// </summary>
+    private async Task<IActionResult?> RefuseSuperTargetAsync(Guid userId)
+    {
+        if (!await db.CaGroupMembers.AnyAsync(m => m.UserId == userId && m.Group.IsSystemTierSuper))
+            return null;
+        await currentUser.EnsureLoadedAsync();
+        if (currentUser.User != null && await controlledUserSvc.IsSuperAsync(currentUser.User.Id))
+            return null;
+        return StatusCode(403, new { error = "Only a system super-administrator can change the badges of a system super-administrator." });
+    }
 
     private async Task AuditAsync(string action, Guid userId, Guid badgeId, object? details = null)
     {
@@ -52,11 +71,13 @@ public class AdminUserBadgesController(
         return Ok(await badges.ListSourceOptionsAsync(userId));
     }
 
-    /// <summary>Creates a badge for the user.</summary>
+    /// <summary>Creates a badge for the user; 403 for a system-super's unless the caller is system-super.</summary>
     [HttpPost]
+    [RequireStepUp(StepUpOps.ManageUserBadge, "userId")]
     public async Task<IActionResult> Create(Guid userId, [FromBody] AccessBadgeWriteRequest request)
     {
         if (!await UserExistsAsync(userId)) return NotFound();
+        if (await RefuseSuperTargetAsync(userId) is { } refused) return refused;
         await currentUser.EnsureLoadedAsync();
         try
         {
@@ -70,10 +91,12 @@ public class AdminUserBadgesController(
         }
     }
 
-    /// <summary>Replaces one of the user's badges.</summary>
+    /// <summary>Replaces one of the user's badges; 403 for a system-super's unless the caller is system-super.</summary>
     [HttpPut("{id:guid}")]
+    [RequireStepUp(StepUpOps.ManageUserBadge, "userId")]
     public async Task<IActionResult> Update(Guid userId, Guid id, [FromBody] AccessBadgeWriteRequest request)
     {
+        if (await RefuseSuperTargetAsync(userId) is { } refused) return refused;
         try
         {
             var updated = await badges.UpdateAsync(userId, id, request);
@@ -87,10 +110,12 @@ public class AdminUserBadgesController(
         }
     }
 
-    /// <summary>Deletes one of the user's badges.</summary>
+    /// <summary>Deletes one of the user's badges; 403 for a system-super's unless the caller is system-super.</summary>
     [HttpDelete("{id:guid}")]
+    [RequireStepUp(StepUpOps.ManageUserBadge, "userId")]
     public async Task<IActionResult> Delete(Guid userId, Guid id)
     {
+        if (await RefuseSuperTargetAsync(userId) is { } refused) return refused;
         if (!await badges.DeleteAsync(userId, id)) return NotFound();
         await AuditAsync(AuditActionType.BadgeDeleted, userId, id);
         return NoContent();

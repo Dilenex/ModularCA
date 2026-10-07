@@ -75,7 +75,7 @@ public static class EstClientCertValidator
 
         // Only certificates usable for client authentication. Without this, any certificate the
         // EST CA has issued is a client identity, including TLS server certificates obtained via
-        // ACME: a tenant holding DNS:host.example presents that certificate and enrolls an
+        // ACME: a space holding DNS:host.example presents that certificate and enrolls an
         // EST-profile certificate for the same name. A certificate with no EKU extension still
         // passes, as RFC 5280 section 4.2.1.12 makes absence mean unrestricted.
         chain.ChainPolicy.ApplicationPolicy.Add(new System.Security.Cryptography.Oid(ClientAuthEkuOid));

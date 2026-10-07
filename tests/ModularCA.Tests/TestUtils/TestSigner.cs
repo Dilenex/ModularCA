@@ -48,7 +48,7 @@ internal static class TestSigner
         var databaseName = $"signer-{Guid.NewGuid():N}";
         var certificateId = Guid.NewGuid();
         var caId = Guid.NewGuid();
-        var tenantId = Guid.NewGuid();
+        var spaceId = Guid.NewGuid();
 
         using (var db = InMemoryDbContextFactory.Create(databaseName))
         {
@@ -64,18 +64,21 @@ internal static class TestSigner
                 NotBefore = ca.Certificate.NotBefore,
                 NotAfter = ca.Certificate.NotAfter,
             });
+            // The space waives key ceremonies, as one that creates its CAs directly does, so a test
+            // can have the signer generate a key for a new CA under it.
+            db.Spaces.Add(new SpaceEntity { Id = spaceId, Name = $"test-space-{spaceId:N}", Slug = $"test-space-{spaceId:N}", RequireKeyCeremony = false });
             db.CertificateAuthorities.Add(new CertificateAuthorityEntity
             {
                 Id = caId,
                 Name = "test-ca",
                 Label = "test-ca",
-                TenantId = tenantId,
+                SpaceId = spaceId,
                 CertificateId = certificateId,
             });
             db.SaveChanges();
         }
 
         var signer = Over(new TestKeystore(ca.AsSigner()), databaseName);
-        return (signer, new KeyRef(certificateId), SigningContext.ForCa(caller, SigningPurpose.Certificate, caId, tenantId));
+        return (signer, new KeyRef(certificateId), SigningContext.ForCa(caller, SigningPurpose.Certificate, caId, spaceId));
     }
 }

@@ -183,10 +183,10 @@ public class MtlsController : ControllerBase
         var caCert = caCertParser.ReadCertificate(caCertEntity.RawCertificate);
 
         // The CA key is the signer's. The controller holds a reference and a context; the
-        // signer judges whether this CA's key signs a certificate for this CA and tenant, and
+        // signer judges whether this CA's key signs a certificate for this CA and space, and
         // records the decision, before any bytes are signed.
         var caKey = new KeyRef(caCertEntity.CertificateId);
-        var signingContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, targetCa.Id, targetCa.TenantId);
+        var signingContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, targetCa.Id, targetCa.SpaceId);
 
         // Generate RSA-2048 keypair for the client cert
         var keyGenParams = new Org.BouncyCastle.Crypto.Parameters.RsaKeyGenerationParameters(
@@ -455,7 +455,8 @@ public class MtlsController : ControllerBase
     /// <summary>
     /// Verifies mTLS during the login MFA flow. Reads the client certificate from the TLS connection,
     /// validates it against the user's stored mTLS credentials, and issues a full JWT on success.
-    /// Accepts the temporary MFA token from the login endpoint (no JWT required).
+    /// Accepts the temporary MFA token from the login endpoint (no JWT required), consumed once;
+    /// a token minted by a certificate login is refused, since one certificate is not two factors.
     /// </summary>
     /// <remarks>
     /// <c>[AllowAnonymous]</c> is required, not optional. <c>StartModularCA</c> sets a
@@ -472,11 +473,15 @@ public class MtlsController : ControllerBase
         if (string.IsNullOrWhiteSpace(request.MfaToken))
             return BadRequest(new { error = "MFA token is required" });
 
-        // Atomically consume: read AND remove in one operation to prevent TOCTOU race
-        var cachedUserId = await _cache.GetStringAsync($"mfa:{request.MfaToken}");
-        await _cache.RemoveAsync($"mfa:{request.MfaToken}"); // Remove IMMEDIATELY after read
-        if (string.IsNullOrEmpty(cachedUserId) || !Guid.TryParse(cachedUserId, out var userId))
+        var pending = await PendingMfaToken.ConsumeAsync(_cache, request.MfaToken);
+        if (pending is not { } pendingEntry)
             return Unauthorized(new { error = "MFA token is invalid or expired" });
+        var userId = pendingEntry.UserId;
+        if (pendingEntry.IsCertificateFirst)
+        {
+            await AuditCertificateAsBothFactorsAsync(userId, "mtls-verify");
+            return Unauthorized(new { error = "A client certificate cannot complete a sign-in that began with a client certificate. Use your authenticator app or security key." });
+        }
 
         var user = await _db.Users.FindAsync(userId);
         if (user == null)
@@ -644,6 +649,18 @@ public class MtlsController : ControllerBase
     /// </summary>
     private const string MfaHandoffCookie = "MfaMtlsHandoff";
 
+    /// <summary>Audits a refused attempt to complete a certificate-first sign-in with a client certificate.</summary>
+    private async Task AuditCertificateAsBothFactorsAsync(Guid userId, string flow)
+    {
+        var username = (await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId))?.Username;
+        await _audit.LogAsync(
+            Shared.Enums.AuditActionType.UserLoginFailed,
+            userId, username,
+            sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(), success: false,
+            details: new { reason = "certificate_as_second_factor_after_certificate", Flow = flow },
+            errorMessage: "LoginFailed");
+    }
+
     /// <summary>
     /// Sets a short-lived, HttpOnly, Secure cookie carrying the MFA token, scoped to the
     /// shared parent of the main and mTLS subdomains so the subsequent navigation to the
@@ -651,7 +668,8 @@ public class MtlsController : ControllerBase
     /// the main origin BEFORE navigating to the mTLS subdomain — the response sets the
     /// cookie and returns 200; the UI then does <c>window.location.href = subdomain URL</c>
     /// without any query parameter. Validates the MFA token exists in cache (without
-    /// consuming it — <see cref="VerifyRedirect"/> does the consume).
+    /// consuming it — <see cref="VerifyRedirect"/> does the consume), and refuses one minted by a
+    /// certificate login.
     /// </summary>
     [HttpPost("prepare-redirect")]
     [AllowAnonymous]
@@ -663,9 +681,11 @@ public class MtlsController : ControllerBase
         // Validate (don't consume) — the actual consume happens in VerifyRedirect under the
         // mTLS-authenticated TLS handshake. This pre-check just rejects obviously stale
         // tokens early so the operator gets a clean error before the cert picker pops up.
-        var cachedUserId = await _cache.GetStringAsync($"mfa:{request.MfaToken}");
-        if (string.IsNullOrEmpty(cachedUserId))
+        var pending = await PendingMfaToken.PeekAsync(_cache, request.MfaToken);
+        if (pending == null)
             return Unauthorized(new { error = "MFA token is invalid or expired" });
+        if (pending.Value.IsCertificateFirst)
+            return Unauthorized(new { error = "A client certificate cannot complete a sign-in that began with a client certificate. Use your authenticator app or security key." });
 
         var cookieDomain = ComputeHandoffCookieDomain();
         var cookieMaxAge = TimeSpan.FromSeconds(60); // generous for the user to click through the cert picker
@@ -694,6 +714,7 @@ public class MtlsController : ControllerBase
     /// parameter only when the cookie is absent (test envs, manual deep links). The cookie
     /// path keeps the token out of referer headers, server logs, and browser history.
     /// </para>
+    /// The token is consumed once, and one minted by a certificate login is refused.
     /// </summary>
     /// <remarks>
     /// <c>[AllowAnonymous]</c> for the same reason as <see cref="Verify"/>: the caller is
@@ -739,11 +760,15 @@ public class MtlsController : ControllerBase
         if (string.IsNullOrWhiteSpace(mfaToken))
             return Redirect($"{mainOrigin}/login?error=mfa_token_missing");
 
-        // Atomically consume: read AND remove in one operation to prevent TOCTOU race
-        var cachedUserId = await _cache.GetStringAsync($"mfa:{mfaToken}");
-        await _cache.RemoveAsync($"mfa:{mfaToken}"); // Remove IMMEDIATELY after read
-        if (string.IsNullOrEmpty(cachedUserId) || !Guid.TryParse(cachedUserId, out var userId))
+        var pending = await PendingMfaToken.ConsumeAsync(_cache, mfaToken);
+        if (pending is not { } pendingEntry)
             return Redirect($"{mainOrigin}/login?error=mfa_expired");
+        var userId = pendingEntry.UserId;
+        if (pendingEntry.IsCertificateFirst)
+        {
+            await AuditCertificateAsBothFactorsAsync(userId, "mtls-verify-redirect");
+            return Redirect($"{mainOrigin}/login?error=mfa_method_not_allowed");
+        }
 
         var user = await _db.Users.FindAsync(userId);
         if (user == null)
@@ -869,7 +894,8 @@ public class MtlsController : ControllerBase
     /// <summary>
     /// Primary mTLS login endpoint. Reads the client certificate from the TLS connection,
     /// looks up the thumbprint in MtlsCredentials, finds the user, and either issues a full
-    /// JWT (if no other MFA methods) or redirects to MFA verification.
+    /// JWT (if no other MFA methods) or redirects to MFA verification with a pending-MFA token
+    /// recorded as certificate-first.
     /// </summary>
     [HttpGet("login-redirect")]
     [AllowAnonymous]
@@ -933,11 +959,8 @@ public class MtlsController : ControllerBase
             // TTL driven by SecurityPolicyEntity.MfaSessionTtlSeconds (DB-backed).
             var mfaToken = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
             var mfaSessionTtl = Math.Clamp((await _securityPolicy.GetAsync()).MfaSessionTtlSeconds, 60, 900);
-            await _cache.SetStringAsync($"mfa:{mfaToken}", user.Id.ToString(),
-                new Microsoft.Extensions.Caching.Distributed.DistributedCacheEntryOptions
-                {
-                    AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(mfaSessionTtl)
-                });
+            await PendingMfaToken.StoreAsync(_cache, mfaToken, user.Id,
+                PendingMfaToken.Certificate, TimeSpan.FromSeconds(mfaSessionTtl));
 
             // Handed back through a one-time code, exactly as the full-login branch below hands
             // back its tokens. This used to redirect to /admin/mfa-verify?mfaToken=..., which put

@@ -1,18 +1,35 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { errorNotice } from '@shared-auth/api/notices';
-import { Link } from 'react-router-dom';
+import { InlineNotice } from '@shared/components/InlineNotice';
+import { Drawer } from '@shared/components/Drawer';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { CEREMONIES_PATH, ceremonyPath } from './ceremonyLinks';
+import { USERS_PATH, stuckCeremonyNotice } from './ceremonyRefusal';
 import { apiGet, apiPostWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
+import TemporaryPasswordModal from '../components/TemporaryPasswordModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
-import { StepUpOps } from '@shared/generated';
+import { Capabilities, StepUpOps } from '@shared/generated';
+import { useAuth } from '../context/AuthContext';
+import { can } from '../authz';
 import { FieldHint } from '@shared/components/forms';
+import { NameConstraintsView } from '@shared/components/NameConstraintsEditor';
 
 const APPROVALS_HINT = 'Approvals collected / required. The initiator is never counted.';
+
+/** A CA-creation parameter, read in either case: stored parameters are PascalCase, API echoes may be camelCase. */
+const param = (params: any, camel: string): any => params?.[camel] ?? params?.[camel.charAt(0).toUpperCase() + camel.slice(1)];
+
+/** The subject parts besides the Common Name, which is shown first. */
+const SUBJECT_PARTS: [string, string][] = [
+    ['subjectO', 'Organization (O)'], ['subjectOU', 'Org Unit (OU)'], ['subjectL', 'Locality (L)'],
+    ['subjectST', 'State (ST)'], ['subjectC', 'Country (C)'],
+];
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -33,22 +50,36 @@ function ceremonyBadgeStatus(status: CeremonyStatus): 'expired' | 'active' | 're
     }
 }
 
-type Family = 'CaCreation' | 'TenantPolicyChange' | 'ControlledUserChange';
+type Family = 'CaCreation' | 'PolicyChange' | 'ControlledUserChange';
 
 function ceremonyFamily(c: any): Family {
     const ct = c?.ceremonyType;
-    if (ct === 'TenantPolicyChange' || c?.operationType === 'TenantPolicyChange') return 'TenantPolicyChange';
+    // The instance's policy changes (no space) belong to the same family as a space's.
+    if (ct === 'SpacePolicyChange' || ct === 'InstancePolicyChange'
+        || c?.operationType === 'SpacePolicyChange' || c?.operationType === 'InstancePolicyChange') return 'PolicyChange';
     if (ct === 'ControlledUserChange' || c?.operationType === 'ControlledUserChange') return 'ControlledUserChange';
     return 'CaCreation';
 }
 
 const FAMILY_META: Record<Family, { label: string; cls: string }> = {
-    CaCreation: { label: 'CA', cls: 'bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-700' },
-    TenantPolicyChange: { label: 'Tenant Policy', cls: 'bg-amber-50 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700' },
-    ControlledUserChange: { label: 'Controlled User', cls: 'bg-purple-50 dark:bg-purple-900/50 text-purple-800 dark:text-purple-300 border-purple-300 dark:border-purple-700' },
+    CaCreation: { label: 'CA', cls: 'bg-info-soft text-info border-info/40' },
+    PolicyChange: { label: 'Policy', cls: 'bg-warn-soft text-warn border-warn/40' },
+    ControlledUserChange: { label: 'Controlled User', cls: 'bg-accent-soft text-accent-ink border-accent/40' },
 };
 
-const TIER_LABELS: Record<number, string> = { 1: 'Operator', 2: 'CA Admin', 3: 'System Admin', 4: 'System Super' };
+const TIER_LABELS: Record<number, string> = {
+    2: 'CA Admin', 3: 'System Admin', 4: 'System Super', 5: 'Space Operator', 6: 'Space Admin', 7: 'System Operator',
+};
+
+/* the scope of a controlled-user ceremony's affected tier, as the server names it (CA label,
+   space name or instance); the raw ids only if the server did not name it */
+function tierScope(detail: any, params: any): string {
+    if (detail?.tierScope) return detail.tierScope === 'instance' ? ' (instance)' : ` (${detail.tierScope})`;
+    const caId = params.mintedTierCaId || params.MintedTierCaId;
+    if (caId) return ` (CA ${caId})`;
+    const spaceId = params.mintedTierSpaceId || params.MintedTierSpaceId;
+    return spaceId ? ` (space ${spaceId})` : ' (instance)';
+}
 
 function controlledChangeLabel(changeType: string): string {
     switch (changeType) {
@@ -59,14 +90,55 @@ function controlledChangeLabel(changeType: string): string {
         case 'UnassignRole': return 'Demote — unassign role';
         case 'RemoveGroupMember': return 'Demote — remove from group';
         case 'DeleteUser': return 'Delete user';
+        case 'ResetPassword': return 'Account — reset password';
+        case 'ResetMfa': return 'Account — reset MFA';
+        case 'UpdateIdentity': return 'Account — change identity or state';
         default: return changeType || '-';
     }
 }
 
+/* the fields an UpdateIdentity change sets, for the drawer */
+function identityChanges(identity: any): { label: string; value: string }[] {
+    if (!identity) return [];
+    const get = (k: string) => identity[k] ?? identity[k.charAt(0).toUpperCase() + k.slice(1)];
+    const yesNo = (v: any) => (v ? 'Yes' : 'No');
+    const rows: { label: string; value: string }[] = [];
+    const add = (label: string, k: string, fmt: (v: any) => string = String) => { const v = get(k); if (v !== null && v !== undefined) rows.push({ label, value: fmt(v) }); };
+    add('Username', 'username');
+    add('Email', 'email');
+    add('First name', 'firstName');
+    add('Last name', 'lastName');
+    add('Display name', 'displayName');
+    add('Enabled', 'isActive', yesNo);
+    add('Locked', 'isLocked', yesNo);
+    add('Password never expires', 'passwordNeverExpires', yesNo);
+    add('Change password at next logon', 'passwordChangeOnNextLogon', yesNo);
+    return rows;
+}
+
 const parseJson = (json: string | null): any => { if (!json) return null; try { return JSON.parse(json); } catch { return null; } };
 
-/* ── read-only detail drawer (fetches full ceremony by id) ─────────────────── */
-const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
+const WARNING_PREFIX = 'WARNING: ';
+
+/* the server leads a description with "WARNING: " lines for approvers, such as a recent password
+   or MFA reset of the account a promotion raises; split them from the description itself */
+function splitDescription(c: any): { text: string; warnings: string[] } {
+    const lines = String(c?.description || '').split('\n');
+    const warnings = lines.filter((l) => l.startsWith(WARNING_PREFIX)).map((l) => l.slice(WARNING_PREFIX.length));
+    const text = lines.filter((l) => !l.startsWith(WARNING_PREFIX)).join(' ').trim();
+    return { text: text || c?.operationType || '', warnings };
+}
+
+const CeremonyWarnings: React.FC<{ warnings: string[]; className?: string }> = ({ warnings, className = '' }) => warnings.length === 0 ? null : (
+    <div role="alert" className={`bg-warn-soft border border-warn/40 rounded p-3 text-xs text-warn space-y-1 ${className}`}>
+        {warnings.map((w, i) => <p key={i} className="font-semibold">{w}</p>)}
+    </div>
+);
+
+/* ── detail drawer (fetches full ceremony by id). Read-only, except that the initiator of a
+   ceremony nobody else can approve is offered Cancel here. ───────────────── */
+const CeremonyDrawer: React.FC<{ ceremony: any; isInitiator: boolean; onCancel: () => void }> = ({ ceremony, isInitiator, onCancel }) => {
+    const { capabilities } = useAuth();
     const [detail, setDetail] = useState<any | null>(null);
     const [loading, setLoading] = useState(true);
 
@@ -83,13 +155,47 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
     const family = ceremonyFamily(ceremony);
     const params = parseJson(detail?.parametersJson);
     const approvalLog = (parseJson(detail?.approvalsJson || ceremony.approvalsJson) as any[]) || [];
+    const { text, warnings } = splitDescription(ceremony);
+    const approvalRefusal: string | null = ceremony.status === 'Pending' ? (detail?.approvalRefusal ?? ceremony.approvalRefusal ?? null) : null;
+    // A ceremony opened before the server refused unreachable ones can sit pending with nobody to approve it.
+    const stuck = stuckCeremonyNotice(detail ? { ...detail, status: ceremony.status } : null);
 
     return (
         <div className="text-sm space-y-4">
+            <CeremonyWarnings warnings={warnings} />
+            {stuck && (
+                <div role="alert" className="bg-warn-soft border border-warn/40 rounded p-3 text-xs text-warn space-y-2">
+                    <p className="font-semibold">{stuck}</p>
+                    <p>
+                        {isInitiator
+                            ? 'Cancel it, then add an administrator who can approve or turn the key ceremony requirement off, and start again.'
+                            : 'Its initiator can cancel it. It needs another administrator who can approve before it can go ahead.'}
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                        {isInitiator && (
+                            <button type="button" onClick={onCancel}
+                                className="px-3 py-1.5 text-xs font-medium bg-raised text-ink border border-line-strong rounded hover:bg-hover transition-colors">
+                                Cancel this ceremony
+                            </button>
+                        )}
+                        {can(capabilities, Capabilities.UserManage) && (
+                            <Link to={USERS_PATH}
+                                className="px-3 py-1.5 text-xs font-medium bg-raised text-ink border border-line-strong rounded hover:bg-hover transition-colors">
+                                Add an administrator
+                            </Link>
+                        )}
+                    </div>
+                </div>
+            )}
+            {approvalRefusal && (
+                <div className="bg-raised border border-line rounded p-3 text-xs text-ink">
+                    <span className="font-semibold">You cannot approve this ceremony.</span> {approvalRefusal}
+                </div>
+            )}
             <div>
                 <DetailField label="Type" value={FAMILY_META[family].label} />
                 <DetailField label="Operation" value={ceremony.operationType} />
-                <DetailField label="Description" value={ceremony.description} />
+                <DetailField label="Description" value={text} />
                 <DetailField label="Status" value={ceremony.status} />
                 <DetailField label="Initiator" value={ceremony.initiatedByUsername || '-'} />
                 <DetailField label="Approvals" value={`${ceremony.currentApprovals ?? 0} / ${ceremony.requiredApprovals ?? '-'}`} />
@@ -100,24 +206,28 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
                 <DetailField label="ID" value={ceremony.id} mono />
             </div>
 
-            {loading && <div className="text-xs text-gray-500">Loading details…</div>}
+            {loading && <div className="text-xs text-ink-muted">Loading details…</div>}
 
             {params && family === 'ControlledUserChange' && (
                 <div>
-                    <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Controlled-User Change</span>
+                    <span className="text-xs font-semibold text-ink-muted">Controlled-User Change</span>
                     <DetailField label="Action" value={controlledChangeLabel(params.changeType || params.ChangeType)} />
                     <DetailField label="Target user" value={params.targetUsername || params.TargetUsername || params.targetUserId || params.TargetUserId || '-'} mono />
-                    <DetailField label="Affected tier" value={`${TIER_LABELS[params.mintedTierLevel ?? params.MintedTierLevel] || '-'}` + ((params.mintedTierCaId || params.MintedTierCaId) ? ` (CA ${params.mintedTierCaId || params.MintedTierCaId})` : ' (system)')} />
+                    <DetailField label="Affected tier" value={`${TIER_LABELS[params.mintedTierLevel ?? params.MintedTierLevel] || '-'}` + tierScope(detail, params)} />
                     {(params.capability || params.Capability) && <DetailField label="Capability" value={params.capability || params.Capability} mono />}
                     {(params.roleId || params.RoleId) && <DetailField label="Role" value={params.roleId || params.RoleId} mono />}
                     {(params.groupId || params.GroupId) && <DetailField label="Group" value={params.groupId || params.GroupId} mono />}
+                    {identityChanges(params.identity || params.Identity).map((row) => <DetailField key={row.label} label={row.label} value={row.value} />)}
+                    {(params.changeType || params.ChangeType) === 'ResetPassword' && (
+                        <FieldHint className="mt-1">The temporary password is generated when this is executed and shown once, to whoever executes it.</FieldHint>
+                    )}
                 </div>
             )}
 
-            {params && family === 'TenantPolicyChange' && (
+            {params && family === 'PolicyChange' && (
                 <div>
-                    <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Policy Change</span>
-                    {(params.tenantId || params.TenantId) && <DetailField label="Tenant ID" value={params.tenantId || params.TenantId} mono />}
+                    <span className="text-xs font-semibold text-ink-muted">Policy Change</span>
+                    <DetailField label="Scope" value={params.spaceId || params.SpaceId || 'Instance'} mono={!!(params.spaceId || params.SpaceId)} />
                     {(() => {
                         const pReq = params.proposedRequireKeyCeremony ?? params.ProposedRequireKeyCeremony;
                         const cReq = params.currentRequireKeyCeremony ?? params.CurrentRequireKeyCeremony;
@@ -133,33 +243,49 @@ const CeremonyDrawer: React.FC<{ ceremony: any }> = ({ ceremony }) => {
 
             {params && family === 'CaCreation' && (
                 <div>
-                    <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">CA Parameters</span>
+                    <span className="text-xs font-semibold text-ink-muted">CA Parameters</span>
                     <DetailField label="Common Name" value={params.subjectCN || params.SubjectCN || '-'} />
                     <DetailField label="Algorithm" value={params.keyAlgorithm || params.KeyAlgorithm || '-'} />
                     <DetailField label="Key Size" value={params.keySize || params.KeySize || '-'} />
                     <DetailField label="Validity (Years)" value={params.validityYears || params.ValidityYears || '-'} />
-                    <DetailField label="Tenant ID" value={params.tenantId || params.TenantId || '-'} mono />
+                    <DetailField label="Space ID" value={params.spaceId || params.SpaceId || 'Instance'} mono={!!(params.spaceId || params.SpaceId)} />
                     {(params.parentCaId || params.ParentCaId) && <DetailField label="Parent CA ID" value={params.parentCaId || params.ParentCaId} mono />}
                     {(params.label || params.Label) && <DetailField label="Label" value={params.label || params.Label} />}
+                    {SUBJECT_PARTS.map(([key, label]) => {
+                        const v = param(params, key);
+                        return v ? <DetailField key={key} label={label} value={v} /> : null;
+                    })}
+                    {/* Approvers vote on everything that ends up in the CA certificate, so these are
+                        shown even when empty: an absent value is a decision too. */}
+                    {param(params, 'parentCaId')
+                        ? <DetailField label="CA Cert Profile ID" value={param(params, 'certProfileId') || 'Not set: Main CA Certificate Profile'} mono={!!param(params, 'certProfileId')} />
+                        : param(params, 'certProfileId') && <DetailField label="CA Cert Profile ID" value={`${param(params, 'certProfileId')} (not used: a root CA is built without one)`} mono />}
+                    <DetailField label="Public Base URL" value={param(params, 'publicBaseUrl') || (param(params, 'parentCaId') ? "Not set: the parent CA's, else the instance default" : 'Not set: the instance default')} mono={!!param(params, 'publicBaseUrl')} />
+                    <div className="mt-2">
+                        <span className="text-xs font-semibold text-ink-muted">Name Constraints</span>
+                        <div className="mt-1">
+                            <NameConstraintsView permitted={param(params, 'nameConstraintsPermitted')} excluded={param(params, 'nameConstraintsExcluded')} />
+                        </div>
+                    </div>
                 </div>
             )}
 
             {approvalLog.length > 0 && (
                 <div>
-                    <h4 className="text-xs text-gray-600 dark:text-gray-400 font-semibold mb-2">Approval Log</h4>
+                    <h4 className="text-xs text-ink-muted font-semibold mb-2">Approval Log</h4>
                     <div className="space-y-1">
                         {approvalLog.map((entry: any, idx: number) => (
-                            <div key={idx} className="flex items-center gap-3 py-1 px-2 bg-gray-100 dark:bg-gray-800 rounded text-xs">
+                            <div key={idx} className="flex items-center gap-3 py-1 px-2 bg-raised rounded text-xs">
                                 <StatusBadge status={entry.action === 'Approved' ? 'active' : entry.action === 'Rejected' ? 'revoked' : 'disabled'} label={entry.action || entry.type} />
-                                <span className="text-gray-700 dark:text-gray-300">{entry.Username || entry.userName || entry.user || '-'}</span>
-                                <span className="text-gray-600 ml-auto">{formatDate(entry.timestamp || entry.date)}</span>
+                                <span className="text-ink">{entry.Username || entry.userName || entry.user || '-'}</span>
+                                <span className="text-ink-muted ml-auto">{formatDate(entry.timestamp || entry.date)}</span>
                             </div>
                         ))}
                     </div>
                 </div>
             )}
 
-            <p className="text-[11px] text-gray-500">Select this ceremony in the table to approve, reject, cancel, or execute.</p>
+            <p className="text-[11px] text-ink-muted">Select this ceremony in the table to approve, reject, cancel, or execute.</p>
         </div>
     );
 };
@@ -177,9 +303,19 @@ const Ceremonies: React.FC = () => {
     const [confirmAction, setConfirmAction] = useState<{ action: () => Promise<void>; title: string; message: React.ReactNode; confirmLabel: string; confirmClass?: string } | null>(null);
     const [confirmLoading, setConfirmLoading] = useState(false);
     const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+    const [temporaryPassword, setTemporaryPassword] = useState<string | null>(null);
 
     const [filterStatus, setFilterStatus] = useState<'mine' | 'pending' | 'all'>('mine');
     const [filterType, setFilterType] = useState<'all' | Family>('all');
+
+    // `/ceremonies/:id` opens that ceremony's drawer; closing it returns to `/ceremonies`.
+    const { id: openId } = useParams<{ id?: string }>();
+    const navigate = useNavigate();
+    const location = useLocation();
+    const [linked, setLinked] = useState<any | null>(null);
+    const [linkedError, setLinkedError] = useState<NoticeInput | null>(null);
+    const openRow = (c: any) => navigate({ pathname: ceremonyPath(c.id), search: location.search });
+    const closeDrawer = () => navigate({ pathname: CEREMONIES_PATH, search: location.search });
 
     const fetchCeremonies = useCallback(async () => {
         try {
@@ -206,15 +342,17 @@ const Ceremonies: React.FC = () => {
         return () => clearInterval(interval);
     }, [ceremonies, fetchCeremonies]);
 
-    const primaryConfirmClass = 'px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors';
-    const executeConfirmClass = 'px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700 transition-colors';
+    const primaryConfirmClass = 'px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors';
+    const executeConfirmClass = 'px-4 py-2 text-sm bg-ok text-on-accent rounded hover:bg-ok-hover transition-colors';
 
     const handleApprove = (ceremony: any) => {
+        const { text, warnings } = splitDescription(ceremony);
         setConfirmAction({
             title: 'Approve Ceremony',
             message: (
                 <>
-                    <p>Approve &ldquo;{ceremony.description || ceremony.operationType}&rdquo;?</p>
+                    <CeremonyWarnings warnings={warnings} className="mb-2" />
+                    <p>Approve &ldquo;{text}&rdquo;?</p>
                     <p className="mt-2">You are one of the approvers of record for this ceremony; your approval is audited under your name.</p>
                 </>
             ),
@@ -231,7 +369,7 @@ const Ceremonies: React.FC = () => {
     const handleReject = (ceremony: any) => {
         setConfirmAction({
             title: 'Reject Ceremony',
-            message: `Reject "${ceremony.description || ceremony.operationType}"? This is permanent.`,
+            message: `Reject "${splitDescription(ceremony).text}"? This is permanent.`,
             confirmLabel: 'Reject',
             action: async () => {
                 await apiPostWithMfa(`/api/v1/admin/ceremonies/${ceremony.id}/reject`, {}, requireStepUp, StepUpOps.RejectCeremony, ceremony.id);
@@ -244,7 +382,7 @@ const Ceremonies: React.FC = () => {
     const handleCancel = (ceremony: any) => {
         setConfirmAction({
             title: 'Cancel Ceremony',
-            message: `Cancel "${ceremony.description || ceremony.operationType}"? This cannot be undone.`,
+            message: `Cancel "${splitDescription(ceremony).text}"? This cannot be undone.`,
             confirmLabel: 'Cancel Ceremony',
             action: async () => {
                 await apiDeleteWithMfa(`/api/v1/admin/ceremonies/${ceremony.id}`, requireStepUp, StepUpOps.CancelCeremony, ceremony.id);
@@ -258,22 +396,28 @@ const Ceremonies: React.FC = () => {
         // Only a CA-creation ceremony generates keys; the other two families apply a policy or
         // user change. The irreversibility is the same for all three.
         const isCa = ceremonyFamily(ceremony) === 'CaCreation';
+        const { text, warnings } = splitDescription(ceremony);
         setConfirmAction({
             title: 'Execute Ceremony',
             message: (
                 <>
-                    <p>Execute &ldquo;{ceremony.description || ceremony.operationType}&rdquo;?</p>
+                    <CeremonyWarnings warnings={warnings} className="mb-2" />
+                    <p>Execute &ldquo;{text}&rdquo;?</p>
                     <p className="mt-2">
                         {isCa
                             ? 'This generates the CA’s key pair now. It cannot be re-run; a mistake means a new ceremony.'
                             : 'This applies the approved change now. It cannot be re-run; a mistake means a new ceremony.'}
                     </p>
+                    {ceremonyFamily(ceremony) === 'ControlledUserChange' && (
+                        <p className="mt-2">A password reset shows its temporary password to you once, when it executes. It is not stored and cannot be shown again.</p>
+                    )}
                 </>
             ),
             confirmLabel: 'Execute',
             confirmClass: executeConfirmClass,
             action: async () => {
                 const result = await apiPostWithMfa<any>(`/api/v1/admin/ceremonies/${ceremony.id}/execute`, {}, requireStepUp, StepUpOps.ExecuteCeremony, ceremony.id);
+                if (result?.temporaryPassword) setTemporaryPassword(result.temporaryPassword);
                 showToast('success', result?.message || 'Ceremony executed successfully.');
                 setRefreshTrigger((t) => t + 1);
             },
@@ -297,22 +441,52 @@ const Ceremonies: React.FC = () => {
         return true;
     });
     const mineCount = ceremonies.filter(needsMyAction).length;
+
+    const listed = openId ? ceremonies.find((c) => c.id === openId) ?? null : null;
+    const opened = listed ?? linked;
+
+    // A linked ceremony missing from the list (not loaded yet, or not returned) is fetched by id.
+    useEffect(() => {
+        setLinked(null);
+        setLinkedError(null);
+        if (!openId || loading || listed) return;
+        let cancelled = false;
+        apiGet<any>(`/api/v1/admin/ceremonies/${encodeURIComponent(openId)}`)
+            .then((d) => { if (!cancelled) setLinked(d); })
+            .catch((err) => { if (!cancelled) setLinkedError(errorNotice(err, 'Failed to load the ceremony')); });
+        return () => { cancelled = true; };
+    }, [openId, loading, !!listed]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Widen the filters once when the linked ceremony is listed but filtered out, so it can be selected to act on.
+    useEffect(() => {
+        if (listed && !filtered.some((c) => c.id === listed.id)) { setFilterStatus('all'); setFilterType('all'); }
+    }, [listed?.id]); // eslint-disable-line react-hooks/exhaustive-deps
     const pendingCount = ceremonies.filter((c) => c.status === 'Pending').length;
 
     const segBtn = (active: boolean) =>
         `px-3 py-1.5 text-xs font-medium rounded border transition-colors ${active
-            ? 'bg-blue-600 text-white border-blue-600'
-            : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-700 hover:bg-gray-200 dark:hover:bg-gray-700'}`;
+            ? 'bg-accent text-on-accent border-accent'
+            : 'bg-raised text-ink border-line hover:bg-hover'}`;
 
     const columns: DataTableColumn<any>[] = [
         { key: 'description', header: 'Description', defaultWidth: 300, minWidth: 200, exportValue: (c) => c.description || c.operationType,
-            render: (c) => <span className="font-medium text-gray-900 dark:text-white">{c.description || c.operationType}</span> },
+            render: (c) => {
+                const { text, warnings } = splitDescription(c);
+                return (
+                    <span className="inline-flex items-center gap-2">
+                        {warnings.length > 0 && (
+                            <span title={warnings.join('\n')} className="inline-block px-1.5 py-0.5 text-[10px] font-semibold rounded border bg-warn-soft text-warn border-warn/40">Warning</span>
+                        )}
+                        <span className="font-medium text-ink">{text}</span>
+                    </span>
+                );
+            } },
         { key: 'type', header: 'Type', defaultWidth: 130, truncate: false, exportValue: (c) => FAMILY_META[ceremonyFamily(c)].label,
             render: (c) => <span className={`inline-block px-2 py-0.5 text-[10px] font-semibold rounded border w-fit ${FAMILY_META[ceremonyFamily(c)].cls}`}>{FAMILY_META[ceremonyFamily(c)].label}</span> },
         { key: 'status', header: 'Status', defaultWidth: 120, truncate: false, exportValue: (c) => c.status,
             render: (c) => <StatusBadge status={ceremonyBadgeStatus(c.status)} label={c.status} /> },
         { key: 'approvals', header: 'Approvals', defaultWidth: 100, align: 'right', headerTitle: APPROVALS_HINT, exportValue: (c) => `${c.currentApprovals ?? 0}/${c.requiredApprovals ?? '-'}`,
-            render: (c) => <span className="text-gray-600 dark:text-gray-400" title={APPROVALS_HINT}>{c.currentApprovals ?? 0} / {c.requiredApprovals ?? '-'}</span> },
+            render: (c) => <span className="text-ink-muted" title={APPROVALS_HINT}>{c.currentApprovals ?? 0} / {c.requiredApprovals ?? '-'}</span> },
         { key: 'initiator', header: 'Initiator', defaultWidth: 140, exportValue: (c) => c.initiatedByUsername || '',
             render: (c) => c.initiatedByUsername || '-' },
         { key: 'created', header: 'Created', defaultWidth: 150, exportValue: (c) => c.createdAt, render: (c) => formatDate(c.createdAt) },
@@ -327,13 +501,14 @@ const Ceremonies: React.FC = () => {
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Ceremonies</h1>
+            <h1 className="text-xl font-semibold text-ink">Ceremonies</h1>
 
-            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-800 rounded-lg p-4 text-xs text-blue-800 dark:text-blue-300">
+            <div className="bg-info-soft border border-info/40 rounded-lg p-4 text-xs text-info">
                 Ceremonies are created automatically when a multi-party action is required — you don't start one here.
                 They originate from <Link to="/authorities/manage" className="underline">CA Management</Link> (CA creation/revocation),
-                Tenant settings (security-policy downgrades), and the <Link to="/users" className="underline">User &amp; Access</Link> pages
-                (promoting, demoting, or deleting a controlled user as a non-super). Select one below to approve or reject.
+                Space settings (security-policy downgrades), and the <Link to="/users" className="underline">User &amp; Access</Link> pages
+                (promoting, demoting, or deleting a controlled user, or resetting their password or MFA or changing their account,
+                as a non-super). Select one below to approve or reject.
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
@@ -343,10 +518,10 @@ const Ceremonies: React.FC = () => {
                     <button className={segBtn(filterStatus === 'all')} onClick={() => setFilterStatus('all')}>All</button>
                 </div>
                 <select value={filterType} onChange={(e) => setFilterType(e.target.value as any)}
-                    className="px-3 py-1.5 text-xs bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded text-gray-900 dark:text-white focus:outline-none focus:border-blue-500">
+                    className="px-3 py-1.5 text-xs bg-raised border border-line-strong rounded text-ink focus:outline-none focus:border-accent">
                     <option value="all">All types</option>
                     <option value="CaCreation">CA</option>
-                    <option value="TenantPolicyChange">Tenant Policy</option>
+                    <option value="PolicyChange">Policy (space or instance)</option>
                     <option value="ControlledUserChange">Controlled User</option>
                 </select>
             </div>
@@ -363,16 +538,23 @@ const Ceremonies: React.FC = () => {
                 selectable
                 bulkActions={bulkActions}
                 exportFileName="ceremonies"
-                renderDrawer={(c) => <CeremonyDrawer ceremony={c} />}
-                drawerTitle={(c) => c.description || c.operationType}
+                onRowClick={openRow}
             />
+
+            <Drawer open={!!openId} onClose={closeDrawer} title={opened ? splitDescription(opened).text : 'Ceremony'}>
+                {opened
+                    ? <CeremonyDrawer ceremony={opened} isInitiator={isInitiator(opened)} onCancel={() => handleCancel(opened)} />
+                    : linkedError
+                        ? <InlineNotice notice={linkedError} />
+                        : <div className="text-xs text-ink-muted">Loading…</div>}
+            </Drawer>
 
             <ConfirmModal
                 isOpen={!!confirmAction}
                 title={confirmAction?.title || ''}
                 message={confirmAction?.message || ''}
                 confirmLabel={confirmAction?.confirmLabel || 'Confirm'}
-                confirmClass={confirmAction?.confirmClass || 'px-4 py-2 text-sm bg-red-600 text-white rounded hover:bg-red-700 transition-colors'}
+                confirmClass={confirmAction?.confirmClass || 'px-4 py-2 text-sm bg-crit text-on-accent rounded hover:bg-crit-hover transition-colors'}
                 loading={confirmLoading}
                 onConfirm={async () => {
                     if (!confirmAction) return;
@@ -388,6 +570,7 @@ const Ceremonies: React.FC = () => {
                 }}
                 onCancel={() => setConfirmAction(null)}
             />
+            <TemporaryPasswordModal password={temporaryPassword} onClose={() => setTemporaryPassword(null)} />
         </div>
     );
 };

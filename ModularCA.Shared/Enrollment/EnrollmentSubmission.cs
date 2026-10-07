@@ -101,7 +101,7 @@ public sealed record EnrollmentSubmission
     /// <summary>
     /// The expiry the client asked for. Null means the certificate profile's maximum measured from
     /// the start, which is what every protocol but ACME asks for. The certificate profile, the
-    /// tenant ceiling and the issuing CA can still shorten it at issuance; none of them lengthens
+    /// space ceiling and the issuing CA can still shorten it at issuance; none of them lengthens
     /// it, so this is an upper bound the client asks for and not one it is promised.
     /// </summary>
     public DateTime? RequestedNotAfter { get; init; }

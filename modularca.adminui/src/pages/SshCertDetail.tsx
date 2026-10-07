@@ -3,12 +3,15 @@ import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { apiGet, apiPost, apiBlob } from '../api/client';
+import { apiGet, apiBlob, apiPostWithMfa } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
+import { actionButton, actionButtonDanger } from '@shared/components/actionButtons';
+import { StepUpOps } from '@shared/generated';
+import { useStepUp } from '../components/StepUpMfaContext';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -41,6 +44,7 @@ const SshCertDetail: React.FC = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
     const { showToast } = useToast();
+    const { requireStepUp } = useStepUp();
     const [searchParams] = useSearchParams();
     const caKey = searchParams.get('caKey') || '';
 
@@ -80,28 +84,28 @@ const SshCertDetail: React.FC = () => {
     const doRevoke = async () => {
         setRevoking(true);
         try {
-            await apiPost(`/api/v1/admin/ssh/ca-keys/${caKey}/certificates/${id}/revoke`, {});
+            await apiPostWithMfa(`/api/v1/admin/ssh/ca-keys/${caKey}/certificates/${id}/revoke`, {}, requireStepUp, StepUpOps.RevokeSshCert, id);
             showToast('success', 'Certificate revoked');
             setRefresh((r) => r + 1);
         } catch (err: any) {
-            showToast('error', err.message || 'Revocation failed');
+            if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Revocation failed');
         } finally {
             setRevoking(false);
             setConfirmOpen(false);
         }
     };
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return (
         <div className="p-6 space-y-3">
             <InlineNotice notice={error} variant="line" />
-            <button onClick={() => navigate('/ssh')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to SSH Certificates</button>
+            <button onClick={() => navigate('/ssh')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to SSH Certificates</button>
         </div>
     );
     if (!cert) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">SSH certificate not found.</p>
-            <button onClick={() => navigate('/ssh')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to SSH Certificates</button>
+            <p className="text-sm text-ink-muted">SSH certificate not found.</p>
+            <button onClick={() => navigate('/ssh')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to SSH Certificates</button>
         </div>
     );
 
@@ -115,15 +119,15 @@ const SshCertDetail: React.FC = () => {
         <DetailPage
             breadcrumbs={[{ label: 'SSH Certificates', to: '/ssh' }, { label: title }]}
             title={title}
-            status={isRevoked ? <StatusBadge status="revoked" label="Revoked" /> : <StatusBadge status={isUser ? 'pending' : 'active'} label={isUser ? 'User' : 'Host'} />}
+            status={isRevoked ? <StatusBadge status="revoked" label="Revoked" /> : <Tag label={isUser ? 'User' : 'Host'} />}
             subtitle={<span className="font-mono">#{cert.serialNumber || cert.serial}</span>}
             backTo="/ssh"
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
-                    <button onClick={handleDownload} className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">Download Certificate</button>
+                    <button onClick={handleDownload} className={actionButton}>Download Certificate</button>
                     {!isRevoked && (
                         <button onClick={() => setConfirmOpen(true)} disabled={revoking}
-                            className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 disabled:opacity-50 transition-colors">
+                            className={actionButtonDanger}>
                             {revoking ? 'Revoking…' : 'Revoke'}
                         </button>
                     )}
@@ -153,7 +157,7 @@ const SshCertDetail: React.FC = () => {
                     title="Revoke SSH Certificate"
                     message="Revoke this SSH certificate? This action cannot be undone."
                     confirmLabel="Revoke"
-                    confirmClass="bg-red-600 hover:bg-red-700"
+                    tone="crit"
                     loading={revoking}
                     onConfirm={doRevoke}
                     onCancel={() => setConfirmOpen(false)}

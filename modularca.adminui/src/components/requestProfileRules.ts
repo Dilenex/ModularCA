@@ -136,3 +136,130 @@ export function serializeRules(rules: RequestProfileRules) {
         },
     };
 }
+
+/** The rules as "Copy as JSON" writes them: what the API stores, indented. */
+export function rulesToJsonText(rules: RequestProfileRules): string {
+    return JSON.stringify(serializeRules(rules), null, 2);
+}
+
+export type RulesImportResult =
+    | { ok: true; rules: RequestProfileRules; summary: string[]; warnings: string[]; unchanged: boolean }
+    | { ok: false; error: string };
+
+const DN_RULE_KEYS = ['field', 'requirement', 'fixedValue', 'regex', 'maxLength', 'defaultValue'];
+const SAN_RULES_KEYS = ['allowedTypes', 'required', 'rules'];
+const SAN_TYPE_RULE_KEYS = ['regex', 'maxCount'];
+
+const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
+const isCount = (v: unknown) => typeof v === 'number' && Number.isInteger(v) && v >= 0;
+const isSet = (v: unknown) => v !== undefined && v !== null;
+const extraKeys = (o: Record<string, unknown>, known: string[]) => Object.keys(o).filter((k) => !known.includes(k));
+/** The editor's spelling of a SAN type; the server matches SAN types ignoring case. */
+const canonicalSanType = (t: string) => SAN_TYPE_OPTIONS.find((o) => o.toLowerCase() === t.toLowerCase()) ?? t;
+
+/**
+ * Checks pasted rules JSON against the rules model before "Paste JSON…" may apply it. Shapes
+ * `parseRules` would quietly coerce (a misspelled requirement read as Optional, a field that is not
+ * text read as CN) are errors here. A section left out keeps the current one.
+ */
+export function checkRulesImport(text: string, current: RequestProfileRules): RulesImportResult {
+    if (!text.trim()) return { ok: false, error: 'Paste the rules JSON.' };
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); } catch (err: any) { return { ok: false, error: `Not valid JSON: ${err?.message || 'parse error'}` }; }
+    if (!isObject(parsed)) return { ok: false, error: 'Expected an object with subjectDnRules and sanRules.' };
+    const hasDn = parsed.subjectDnRules !== undefined;
+    const hasSan = parsed.sanRules !== undefined;
+    if (!hasDn && !hasSan) return { ok: false, error: 'Neither subjectDnRules nor sanRules is present.' };
+
+    const warnings: string[] = [];
+    const ignored = extraKeys(parsed, ['subjectDnRules', 'sanRules']);
+    if (ignored.length) warnings.push(`Only the rules are imported; ignored: ${ignored.join(', ')}.`);
+
+    const dnSource: Record<string, unknown>[] = [];
+    if (isSet(parsed.subjectDnRules)) {
+        if (!Array.isArray(parsed.subjectDnRules)) return { ok: false, error: 'subjectDnRules must be an array.' };
+        for (const [i, raw] of parsed.subjectDnRules.entries()) {
+            const at = `subjectDnRules[${i}]`;
+            if (!isObject(raw)) return { ok: false, error: `${at} must be an object.` };
+            if (typeof raw.field !== 'string' || !raw.field.trim()) return { ok: false, error: `${at}.field must be a DN attribute such as CN.` };
+            let requirement: string | undefined;
+            if (isSet(raw.requirement)) {
+                const given = String(raw.requirement).toLowerCase();
+                requirement = typeof raw.requirement === 'string' ? REQUIREMENT_OPTIONS.find((r) => r.toLowerCase() === given) : undefined;
+                if (!requirement) return { ok: false, error: `${at}.requirement must be one of ${REQUIREMENT_OPTIONS.join(', ')}.` };
+            } else {
+                warnings.push(`${at} (${raw.field}) has no requirement, so it is Optional.`);
+            }
+            for (const k of ['fixedValue', 'regex', 'defaultValue']) {
+                if (isSet(raw[k]) && typeof raw[k] !== 'string') return { ok: false, error: `${at}.${k} must be text.` };
+            }
+            if (isSet(raw.maxLength) && !isCount(raw.maxLength)) return { ok: false, error: `${at}.maxLength must be a whole number.` };
+            if (!DN_FIELD_OPTIONS.includes(raw.field)) warnings.push(`${at}: ${raw.field} is not a field this editor lists; it is kept.`);
+            const extra = extraKeys(raw, DN_RULE_KEYS);
+            if (extra.length) warnings.push(`${at}: ignored ${extra.join(', ')}.`);
+            dnSource.push({ ...raw, requirement });
+        }
+    }
+    if (hasDn && dnSource.length === 0) warnings.push('No subject DN rules: the editor starts one Required CN row, as for a new profile.');
+
+    let sanSource: Record<string, unknown> | undefined;
+    if (isSet(parsed.sanRules)) {
+        const san = parsed.sanRules;
+        if (!isObject(san)) return { ok: false, error: 'sanRules must be an object.' };
+        if (isSet(san.allowedTypes)) {
+            if (!Array.isArray(san.allowedTypes) || san.allowedTypes.some((t) => typeof t !== 'string')) {
+                return { ok: false, error: 'sanRules.allowedTypes must be an array of type names.' };
+            }
+            const unknown = (san.allowedTypes as string[]).filter((t) => canonicalSanType(t) === t && !SAN_TYPE_OPTIONS.includes(t));
+            if (unknown.length) warnings.push(`SAN types ${unknown.join(', ')} are not among ${SAN_TYPE_OPTIONS.join(', ')}; they are kept.`);
+        } else {
+            warnings.push('sanRules.allowedTypes is missing, so DNS and IP are allowed.');
+        }
+        if (isSet(san.required) && typeof san.required !== 'boolean') return { ok: false, error: 'sanRules.required must be true or false.' };
+        if (isSet(san.rules)) {
+            if (!isObject(san.rules)) return { ok: false, error: 'sanRules.rules must be an object keyed by SAN type.' };
+            const allowed = (Array.isArray(san.allowedTypes) ? san.allowedTypes as string[] : ['DNS', 'IP']).map(canonicalSanType);
+            for (const [type, rule] of Object.entries(san.rules)) {
+                const at = `sanRules.rules.${type}`;
+                if (!isObject(rule)) return { ok: false, error: `${at} must be an object.` };
+                if (isSet(rule.regex) && typeof rule.regex !== 'string') return { ok: false, error: `${at}.regex must be text.` };
+                if (isSet(rule.maxCount) && !isCount(rule.maxCount)) return { ok: false, error: `${at}.maxCount must be a whole number.` };
+                if (!allowed.includes(canonicalSanType(type))) warnings.push(`${at} is for a type that is not allowed; it is dropped on save.`);
+                const extra = extraKeys(rule, SAN_TYPE_RULE_KEYS);
+                if (extra.length) warnings.push(`${at}: ignored ${extra.join(', ')}.`);
+            }
+        }
+        const extra = extraKeys(san, SAN_RULES_KEYS);
+        if (extra.length) warnings.push(`sanRules: ignored ${extra.join(', ')}.`);
+        sanSource = {
+            ...san,
+            allowedTypes: Array.isArray(san.allowedTypes) ? (san.allowedTypes as string[]).map(canonicalSanType) : san.allowedTypes,
+            rules: isObject(san.rules) ? Object.fromEntries(Object.entries(san.rules).map(([t, r]) => [canonicalSanType(t), r])) : san.rules,
+        };
+    } else if (hasSan) {
+        warnings.push('sanRules is null, so DNS and IP are allowed.');
+    }
+
+    const read = parseRules({ subjectDnRules: dnSource, sanRules: sanSource });
+    const rules: RequestProfileRules = {
+        subjectDnRules: hasDn ? read.subjectDnRules : current.subjectDnRules,
+        sanRules: hasSan ? read.sanRules : current.sanRules,
+    };
+
+    const summary: string[] = [hasDn
+        ? `Subject DN rules: ${rules.subjectDnRules.length} (${rules.subjectDnRules.map((r) => `${r.field} ${r.requirement}`).join(', ')})`
+        : 'Subject DN rules: not in the JSON; the current ones are kept'];
+    if (hasSan) {
+        const s = rules.sanRules;
+        const perType = Object.entries(s.rules).filter(([t]) => s.allowedTypes.includes(t));
+        summary.push(`SAN types allowed: ${s.allowedTypes.length ? s.allowedTypes.join(', ') : 'none'}`);
+        summary.push(`SAN required: ${s.required ? 'Yes' : 'No'}`);
+        summary.push(`Per-type SAN constraints: ${perType.length
+            ? perType.map(([t, r]) => `${t} (${r.regex ? 'regex, ' : ''}max ${r.maxCount})`).join(', ')
+            : 'none'}`);
+    } else {
+        summary.push('SAN rules: not in the JSON; the current ones are kept');
+    }
+
+    return { ok: true, rules, summary, warnings, unchanged: rulesToJsonText(rules) === rulesToJsonText(current) };
+}

@@ -10,13 +10,18 @@ public interface IKeyCeremonyService
 {
     /// <summary>
     /// Initiates a new key ceremony. If the resolved quorum is 1, the ceremony is auto-executed immediately.
+    /// Throws <see cref="ModularCA.Shared.Errors.CeremonyQuorumUnreachableException"/>, creating
+    /// nothing, when too few accounts other than the initiator could approve it.
     /// </summary>
     /// <param name="operationType">The operation type (e.g., CreateRootCA, RevokeCA).</param>
     /// <param name="description">Human-readable description of the operation.</param>
     /// <param name="targetEntityId">The ID of the target entity (e.g., CA ID).</param>
     /// <param name="initiatorUserId">The user ID of the initiator.</param>
     /// <param name="initiatorUsername">The username of the initiator.</param>
-    /// <param name="parametersJson">Serialized JSON of the operation parameters.</param>
+    /// <param name="parametersJson">
+    /// Serialized JSON of the operation parameters. Its top-level <c>SpaceId</c> stamps the
+    /// ceremony's space; a pre-0.4.0 <c>TenantId</c> key throws <see cref="System.Text.Json.JsonException"/>.
+    /// </param>
     /// <param name="quorumOverride">Optional explicit quorum. If null, resolved from the CA admin group.</param>
     /// <returns>The created ceremony entity.</returns>
     Task<KeyCeremonyEntity> InitiateAsync(
@@ -48,9 +53,17 @@ public interface IKeyCeremonyService
     Task<KeyCeremonyEntity> CancelAsync(Guid ceremonyId, Guid requestorId);
 
     /// <summary>
-    /// Marks a ceremony as executed after the operation has been carried out.
+    /// Marks a ceremony as executed after the operation has been carried out. Throws
+    /// <see cref="CeremonyNotExecutableException"/> when it is no longer Approved.
     /// </summary>
     Task MarkExecutedAsync(Guid ceremonyId);
+
+    /// <summary>
+    /// Takes the execution lock for <paramref name="ceremonyId"/> without waiting, so two executes of
+    /// one ceremony cannot run side by side. Returns a handle that releases the lock on dispose, or
+    /// null when another execution holds it. Callers re-read the ceremony's status once they hold it.
+    /// </summary>
+    Task<IAsyncDisposable?> TryAcquireExecutionLockAsync(Guid ceremonyId);
 
     /// <summary>
     /// Retrieves a ceremony by its ID.
@@ -63,12 +76,24 @@ public interface IKeyCeremonyService
     Task<List<KeyCeremonyEntity>> ListAsync(string? statusFilter = null);
 
     /// <summary>
-    /// Lists ceremonies filtered to specific tenant IDs, optionally filtered by status.
+    /// Lists ceremonies filtered to specific space IDs, plus the instance's (no space) when
+    /// <paramref name="includeInstance"/>, optionally filtered by status.
     /// </summary>
-    Task<List<KeyCeremonyEntity>> ListByTenantsAsync(IEnumerable<Guid> tenantIds, string? statusFilter = null);
+    Task<List<KeyCeremonyEntity>> ListBySpacesAsync(IEnumerable<Guid> spaceIds, string? statusFilter = null, bool includeInstance = false);
 
     /// <summary>
     /// Expires all pending ceremonies whose ExpiresAt has passed.
     /// </summary>
     Task<int> ExpireStaleCeremoniesAsync();
+}
+
+/// <summary>
+/// A ceremony that is no longer Approved when an execute reaches it, typically because a concurrent
+/// execute already ran it. Maps to 409 Conflict.
+/// </summary>
+public sealed class CeremonyNotExecutableException(Guid ceremonyId, string status)
+    : InvalidOperationException($"Ceremony {ceremonyId} is '{status}', not 'Approved'; it cannot be executed.")
+{
+    /// <summary>The ceremony's status when the execute reached it.</summary>
+    public string Status { get; } = status;
 }

@@ -6,14 +6,15 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPutWithMfa, apiDeleteWithMfa } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
-import { capabilityCategory, categoryStatus } from './RoleManagement';
+import { capabilityCategory } from './RoleManagement';
 import type { RoleDetail as RoleDetailModel, RoleCapability } from './RoleManagement';
 import { StepUpOps } from '@shared/generated';
 import { FieldHint, inputClass as inputCls, labelClass as labelCls } from '@shared/components/forms';
+import { actionButtonDanger, actionButtonPrimary } from '@shared/components/actionButtons';
 
 const ALL_CAPABILITIES = [
     'cert.request', 'cert.view', 'cert.revoke', 'cert.reissue', 'cert.approve',
@@ -136,12 +137,12 @@ const RoleDetail: React.FC = () => {
         });
     };
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return <InlineNotice notice={error} />;
     if (!role) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">Role not found.</p>
-            <button onClick={() => navigate('/roles')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Roles</button>
+            <p className="text-sm text-ink-muted">Role not found.</p>
+            <button onClick={() => navigate('/roles')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Roles</button>
         </div>
     );
 
@@ -161,14 +162,14 @@ const RoleDetail: React.FC = () => {
         <DetailPage
             breadcrumbs={[{ label: 'Roles', to: '/roles' }, { label: role.name }]}
             title={role.name}
-            status={<StatusBadge status={role.isBuiltIn ? 'pending' : 'active'} label={role.isBuiltIn ? 'Built-in' : 'Custom'} />}
+            status={<Tag label={role.isBuiltIn ? 'Built-in' : 'Custom'} />}
             subtitle={role.description ? role.description : undefined}
             editable={!role.isBuiltIn}
             onSave={handleSave}
             onCancel={handleCancel}
             saveDisabled={!dirty || !form.name}
             actions={!role.isBuiltIn ? (
-                <button onClick={deleteRole} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 transition-colors">Delete</button>
+                <button onClick={deleteRole} className={actionButtonDanger}>Delete</button>
             ) : undefined}
         >
             {(mode) => (<>
@@ -180,7 +181,7 @@ const RoleDetail: React.FC = () => {
                             <DetailField label="Description" value={role.description || '-'} />
                             <DetailField label="Type" value={role.isBuiltIn ? 'Built-in' : 'Custom'} />
                             <DetailField label="Created" value={formatDate(role.createdAt)} />
-                            {role.tenantId && <DetailField label="Tenant" value={role.tenantId} mono />}
+                            {role.spaceId && <DetailField label="Space" value={role.spaceId} mono />}
                         </div>
                     </DetailSection>
                 ) : (
@@ -202,7 +203,7 @@ const RoleDetail: React.FC = () => {
 
                 <DetailSection title={`Capabilities (${mode === 'edit' ? capsEdit.length : viewCaps.length})`}>
                     {mode === 'edit' && (
-                        <div className="bg-gray-50 dark:bg-gray-900/50 border border-gray-300 dark:border-gray-700 rounded p-3 mb-4 space-y-2">
+                        <div className="bg-sunken border border-line rounded p-3 mb-4 space-y-2">
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
                                 <div>
                                     <label className={labelCls}>Capability</label>
@@ -224,33 +225,33 @@ const RoleDetail: React.FC = () => {
                                 Leave both blank to grant this capability everywhere. Fill both to scope it to one resource, for example type <span className="font-mono">ca</span> with a CA's id grants it on that CA only. Setting one without the other has no effect.
                                 {resourceHalfFilled && ' Fill in the other field or clear this one before adding.'}
                             </FieldHint>
-                            <button onClick={addCapability} disabled={!newCapability || resourceHalfFilled} className="px-3 py-1.5 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50">Add Capability</button>
+                            <button onClick={addCapability} disabled={!newCapability || resourceHalfFilled} className={actionButtonPrimary}>Add Capability</button>
                         </div>
                     )}
 
                     {mode === 'edit' ? (
                         capsEdit.length === 0 ? (
-                            <div className="text-xs text-gray-500">No capabilities assigned to this role.</div>
+                            <div className="text-xs text-ink-muted">No capabilities assigned to this role.</div>
                         ) : (
                             Object.entries(groupedEdit).map(([category, caps]) => (
                                 <div key={category} className="mb-3 last:mb-0">
                                     <div className="flex items-center gap-2 mb-1">
-                                        <StatusBadge status={categoryStatus(category)} label={category} />
-                                        <span className="text-[10px] text-gray-500">({caps.length})</span>
+                                        <Tag label={category} />
+                                        <span className="text-[10px] text-ink-muted">({caps.length})</span>
                                     </div>
-                                    <div className="bg-gray-50 dark:bg-gray-900/40 border border-gray-300 dark:border-gray-700 rounded overflow-hidden">
-                                        <div className="px-3 py-1 border-b border-gray-300 dark:border-gray-700 grid grid-cols-[1fr_120px_120px_70px] gap-2 text-[10px] text-gray-500 font-semibold">
+                                    <div className="bg-sunken border border-line rounded overflow-hidden">
+                                        <div className="px-3 py-1 border-b border-line grid grid-cols-[1fr_120px_120px_70px] gap-2 text-[10px] text-ink-muted font-semibold">
                                             <span>Capability</span>
                                             <span>Resource Type</span>
                                             <span>Resource ID</span>
                                             <span></span>
                                         </div>
                                         {caps.map((cap) => (
-                                            <div key={`${cap.capability}|${cap.resourceType || ''}|${cap.resourceId || ''}`} className="px-3 py-1.5 border-b border-gray-200 dark:border-gray-700 last:border-b-0 grid grid-cols-[1fr_120px_120px_70px] gap-2 items-center">
-                                                <span className="text-xs text-gray-900 dark:text-white font-mono truncate">{cap.capability}</span>
-                                                <span className="text-xs text-gray-600 dark:text-gray-400">{cap.resourceType || '-'}</span>
-                                                <span className="text-xs text-gray-600 dark:text-gray-400 font-mono truncate">{cap.resourceId || '-'}</span>
-                                                <button onClick={() => removeCapability(cap)} className="px-2 py-0.5 text-[10px] bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 transition-colors">Remove</button>
+                                            <div key={`${cap.capability}|${cap.resourceType || ''}|${cap.resourceId || ''}`} className="px-3 py-1.5 border-b border-line last:border-b-0 grid grid-cols-[1fr_120px_120px_70px] gap-2 items-center">
+                                                <span className="text-ink data-mono truncate">{cap.capability}</span>
+                                                <span className="text-xs text-ink-muted">{cap.resourceType || '-'}</span>
+                                                <span className="text-ink-muted data-mono truncate">{cap.resourceId || '-'}</span>
+                                                <button onClick={() => removeCapability(cap)} className="px-2 py-0.5 text-[10px] bg-crit-soft text-crit border border-crit/40 rounded hover:bg-crit/15 hover:text-crit-hover transition-colors">Remove</button>
                                             </div>
                                         ))}
                                     </div>
@@ -259,26 +260,26 @@ const RoleDetail: React.FC = () => {
                         )
                     ) : (
                         viewCaps.length === 0 ? (
-                            <div className="text-xs text-gray-500">No capabilities assigned to this role.</div>
+                            <div className="text-xs text-ink-muted">No capabilities assigned to this role.</div>
                         ) : (
                             Object.entries(groupedView).map(([category, caps]) => (
                                 <div key={category} className="mb-3 last:mb-0">
                                     <div className="flex items-center gap-2 mb-1">
-                                        <StatusBadge status={categoryStatus(category)} label={category} />
-                                        <span className="text-[10px] text-gray-500">({caps.length})</span>
+                                        <Tag label={category} />
+                                        <span className="text-[10px] text-ink-muted">({caps.length})</span>
                                     </div>
-                                    <div className="bg-gray-50 dark:bg-gray-900/40 border border-gray-300 dark:border-gray-700 rounded overflow-hidden">
-                                        <div className="px-3 py-1 border-b border-gray-300 dark:border-gray-700 grid grid-cols-[1fr_120px_120px_70px] gap-2 text-[10px] text-gray-500 font-semibold">
+                                    <div className="bg-sunken border border-line rounded overflow-hidden">
+                                        <div className="px-3 py-1 border-b border-line grid grid-cols-[1fr_120px_120px_70px] gap-2 text-[10px] text-ink-muted font-semibold">
                                             <span>Capability</span>
                                             <span>Resource Type</span>
                                             <span>Resource ID</span>
                                             <span></span>
                                         </div>
                                         {caps.map((cap) => (
-                                            <div key={`${cap.capability}|${cap.resourceType || ''}|${cap.resourceId || ''}`} className="px-3 py-1.5 border-b border-gray-200 dark:border-gray-700 last:border-b-0 grid grid-cols-[1fr_120px_120px_70px] gap-2 items-center">
-                                                <span className="text-xs text-gray-900 dark:text-white font-mono truncate">{cap.capability}</span>
-                                                <span className="text-xs text-gray-600 dark:text-gray-400">{cap.resourceType || '-'}</span>
-                                                <span className="text-xs text-gray-600 dark:text-gray-400 font-mono truncate">{cap.resourceId || '-'}</span>
+                                            <div key={`${cap.capability}|${cap.resourceType || ''}|${cap.resourceId || ''}`} className="px-3 py-1.5 border-b border-line last:border-b-0 grid grid-cols-[1fr_120px_120px_70px] gap-2 items-center">
+                                                <span className="text-ink data-mono truncate">{cap.capability}</span>
+                                                <span className="text-xs text-ink-muted">{cap.resourceType || '-'}</span>
+                                                <span className="text-ink-muted data-mono truncate">{cap.resourceId || '-'}</span>
                                                 <span />
                                             </div>
                                         ))}
@@ -287,8 +288,8 @@ const RoleDetail: React.FC = () => {
                             ))
                         )
                     )}
-                    {mode === 'view' && !role.isBuiltIn && <p className="text-[11px] text-gray-500 mt-2">Switch to Edit to add or remove capabilities.</p>}
-                    {role.isBuiltIn && <p className="text-[11px] text-gray-500 mt-2">Built-in roles are read-only.</p>}
+                    {mode === 'view' && !role.isBuiltIn && <p className="text-[11px] text-ink-muted mt-2">Switch to Edit to add or remove capabilities.</p>}
+                    {role.isBuiltIn && <p className="text-[11px] text-ink-muted mt-2">Built-in roles are read-only.</p>}
                 </DetailSection>
 
                 <ConfirmModal

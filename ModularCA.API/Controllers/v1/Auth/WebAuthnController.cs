@@ -249,7 +249,7 @@ public class WebAuthnController : ControllerBase
 
     /// <summary>
     /// Returns assertion options (challenge) for second-factor verification during login.
-    /// Requires a valid MFA token issued after successful password authentication.
+    /// Requires a valid MFA token issued after a password or client-certificate first factor.
     /// </summary>
     [AllowAnonymous]
     [HttpPost("assertion-options")]
@@ -260,9 +260,10 @@ public class WebAuthnController : ControllerBase
         if (string.IsNullOrWhiteSpace(request.MfaToken))
             return BadRequest(new { error = "MFA token is required" });
 
-        var cachedUserId = await _cache.GetStringAsync($"mfa:{request.MfaToken}");
-        if (string.IsNullOrEmpty(cachedUserId) || !Guid.TryParse(cachedUserId, out var userId))
+        var pending = await ModularCA.Auth.Utils.PendingMfaToken.PeekAsync(_cache, request.MfaToken);
+        if (pending == null)
             return Unauthorized(new { error = "MFA token expired or invalid" });
+        var userId = pending.Value.UserId;
 
         var user = await _db.Users.FindAsync(userId);
         if (user == null)
@@ -305,7 +306,8 @@ public class WebAuthnController : ControllerBase
 
     /// <summary>
     /// Verifies the WebAuthn assertion response using a valid MFA token from the login flow.
-    /// On success, issues a JWT token completing the two-factor login flow.
+    /// On success, issues a JWT token completing the two-factor login flow. Accepts tokens from
+    /// either first factor (password or client certificate).
     /// Username-only resolution removed — MFA token is now mandatory to prevent
     /// assertion without prior password authentication.
     /// AUTH-009: Per-user failure counter added to match TOTP brute-force protection.
@@ -341,9 +343,10 @@ public class WebAuthnController : ControllerBase
             return BadRequest(new { error = "MFA token is required" });
 
         // Read MFA token but don't consume yet — consumed on success to allow retry on failure
-        var cachedUserId = await _cache.GetStringAsync($"mfa:{mfaToken}");
-        if (string.IsNullOrEmpty(cachedUserId) || !Guid.TryParse(cachedUserId, out var parsedId))
+        var pending = await ModularCA.Auth.Utils.PendingMfaToken.PeekAsync(_cache, mfaToken);
+        if (pending == null)
             return Unauthorized(new { error = "MFA token is invalid or expired" });
+        var parsedId = pending.Value.UserId;
 
         // AUTH-009: per-user WebAuthn failure counter — mirrors TOTP brute-force
         // protection. Keyed by userId so attackers cannot reset

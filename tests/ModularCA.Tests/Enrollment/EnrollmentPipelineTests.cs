@@ -146,7 +146,7 @@ public class EnrollmentPipelineTests
         var ca = new CertificateAuthorityEntity
         {
             Id = Guid.NewGuid(), Name = "lab", Label = "lab", IsDefault = true, IsEnabled = true,
-            CertificateId = caCertEntity.CertificateId, TenantId = Guid.NewGuid(),
+            CertificateId = caCertEntity.CertificateId, SpaceId = Guid.NewGuid(),
         };
         var signing = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "lab-signing", IssuerId = caCertEntity.CertificateId };
         var certProfile = new CertProfileEntity { Id = Guid.NewGuid(), Name = "Device", ValidityPeriodMax = "P30D" };

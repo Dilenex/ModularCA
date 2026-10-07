@@ -9,8 +9,12 @@ import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import ConfirmModal from '../components/ConfirmModal';
 import { DataTable, DataTableColumn, DataTableBulkAction } from '@shared/components/DataTable';
+import { NewButton } from '@shared/components/NewButton';
 import { StepUpOps } from '@shared/generated';
 import { inputClass, labelClass } from '@shared/components/forms';
+import { ChipListInput } from '@shared/components/ChipListInput';
+import { invalidItems } from '@shared/components/chipList';
+import { validateIpOrCidr } from '@shared/validators';
 
 /// <summary>
 /// Represents a single whitelist rule returned by the admin whitelist API.
@@ -35,12 +39,8 @@ type WhitelistScope = Whitelist['scope'];
 const SCOPES: WhitelistScope[] = ['System', 'Setup', 'Admin', 'Auth', 'Api', 'ShortUrl', 'Ca', 'Protocol'];
 const PROTOCOLS = ['ACME', 'EST', 'SCEP', 'CMP', 'MSAE', 'OCSP', 'TSA', 'CRL', 'CA'];
 
-/// <summary>
-/// Validates a single CIDR string. Accepts IPv4 (optionally with /prefix)
-/// and IPv6 (optionally with /prefix). Deliberately loose — the backend
-/// does the canonical parse.
-/// </summary>
-const CIDR_REGEX = /^(\d{1,3}\.){3}\d{1,3}(\/\d{1,2})?$|^[0-9a-fA-F:]+(\/\d{1,3})?$/;
+/** One whitelist entry: an address or a CIDR range. The whitelist matcher tolerates host bits (10.0.0.1/8). */
+const validateCidr = (value: string) => validateIpOrCidr(value);
 
 function formatDate(d: string | null): string {
     if (!d) return '-';
@@ -55,12 +55,12 @@ interface FormState {
     scope: WhitelistScope;
     certificateAuthorityId: string;
     protocol: string;
-    cidrsText: string;
+    cidrs: string[];
     isEnabled: boolean;
 }
 
 const emptyForm: FormState = {
-    name: '', description: '', scope: 'System', certificateAuthorityId: '', protocol: '', cidrsText: '', isEnabled: true,
+    name: '', description: '', scope: 'System', certificateAuthorityId: '', protocol: '', cidrs: [], isEnabled: true,
 };
 
 /// <summary>
@@ -128,16 +128,13 @@ const Whitelists: React.FC = () => {
 
     const closeModal = () => { setShowModal(false); setEditingId(null); setForm(emptyForm); setFormError(null); };
 
-    const parseCidrs = (text: string): string[] => text.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
-
     const validateForm = (): { ok: boolean; cidrs: string[] } => {
         if (!form.name.trim()) { setFormError('Name is required.'); return { ok: false, cidrs: [] }; }
         if (form.scope === 'Ca' && !form.certificateAuthorityId) { setFormError('Certificate Authority is required for Ca scope.'); return { ok: false, cidrs: [] }; }
         if (form.scope === 'Protocol' && !form.protocol) { setFormError('Protocol is required for Protocol scope.'); return { ok: false, cidrs: [] }; }
-        const cidrs = parseCidrs(form.cidrsText);
-        for (const cidr of cidrs) {
-            if (!CIDR_REGEX.test(cidr)) { setFormError(`Invalid CIDR: "${cidr}"`); return { ok: false, cidrs: [] }; }
-        }
+        const cidrs = form.cidrs;
+        const bad = invalidItems(cidrs, validateCidr);
+        if (bad.length > 0) { setFormError(`Fix the CIDRs marked invalid: ${bad.join(', ')}`); return { ok: false, cidrs: [] }; }
         setFormError(null);
         return { ok: true, cidrs };
     };
@@ -234,25 +231,25 @@ const Whitelists: React.FC = () => {
                 render: (wl) => (
                     <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                            <span className="text-gray-900 dark:text-white font-medium truncate">{wl.name}</span>
+                            <span className="text-ink font-medium truncate">{wl.name}</span>
                             {wl.isSystemDefault && (
-                                <span className="px-1.5 py-0.5 text-[10px] bg-blue-50 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-700 rounded shrink-0">System Default</span>
+                                <span className="px-1.5 py-0.5 text-[10px] bg-info-soft text-info border border-info/40 rounded shrink-0">System Default</span>
                             )}
                         </div>
-                        {wl.description && <div className="text-xs text-gray-600 truncate">{wl.description}</div>}
+                        {wl.description && <div className="text-xs text-ink-muted truncate">{wl.description}</div>}
                     </div>
                 ),
             },
             { key: 'scope', header: 'Scope', defaultWidth: 100, sortable: true, exportValue: (wl) => wl.scope, truncate: false,
-                render: (wl) => <span className="px-2 py-0.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded">{wl.scope}</span> },
+                render: (wl) => <span className="px-2 py-0.5 text-xs bg-sunken text-ink rounded">{wl.scope}</span> },
             { key: 'protocol', header: 'Protocol', defaultWidth: 90, sortable: true, exportValue: (wl) => wl.protocol || '', render: (wl) => wl.protocol || '-' },
             { key: 'ca', header: 'CA', defaultWidth: 150, sortable: true, exportValue: (wl) => caNameById(wl.certificateAuthorityId), render: (wl) => caNameById(wl.certificateAuthorityId) },
             { key: 'cidrs', header: 'CIDRs', defaultWidth: 80, align: 'right', sortable: true, sortValue: (wl) => (wl.cidrs || []).length, exportValue: (wl) => (wl.cidrs || []).join(' '), render: (wl) => (wl.cidrs || []).length },
             { key: 'enabled', header: 'Status', defaultWidth: 90, truncate: false, sortable: true, sortValue: (wl) => wl.isEnabled, exportValue: (wl) => (wl.isEnabled ? 'Enabled' : 'Disabled'),
                 render: (wl) => (
                     <span className={`px-2 py-0.5 text-[11px] rounded border ${wl.isEnabled
-                        ? 'bg-green-50 dark:bg-green-900/40 text-green-800 dark:text-green-300 border-green-300 dark:border-green-700'
-                        : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-600'}`}>{wl.isEnabled ? 'Enabled' : 'Disabled'}</span>
+                        ? 'bg-ok-soft text-ok border-ok/40'
+                        : 'bg-sunken text-ink-muted border-line-strong'}`}>{wl.isEnabled ? 'Enabled' : 'Disabled'}</span>
                 ) },
             { key: 'updated', header: 'Updated', defaultWidth: 150, sortable: true, sortValue: (wl) => wl.updatedAt ? new Date(wl.updatedAt) : null, exportValue: (wl) => wl.updatedAt, render: (wl) => formatDate(wl.updatedAt) },
         ],
@@ -268,10 +265,10 @@ const Whitelists: React.FC = () => {
             ] },
             { title: 'CIDRs', fields: [
                 { label: 'Rules', value: (wl) => (
-                    <div className="max-h-60 overflow-y-auto rounded border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-2 font-mono text-xs space-y-0.5">
+                    <div className="max-h-60 overflow-y-auto rounded border border-line bg-sunken p-2 data-mono space-y-0.5">
                         {(wl.cidrs || []).length === 0
-                            ? <span className="text-gray-500">No CIDRs — blocks all for a matched rule.</span>
-                            : (wl.cidrs || []).map((c, i) => <div key={i} className="text-gray-800 dark:text-gray-200">{c}</div>)}
+                            ? <span className="text-ink-muted">No CIDRs — blocks all for a matched rule.</span>
+                            : (wl.cidrs || []).map((c, i) => <div key={i} className="text-ink">{c}</div>)}
                     </div>
                 ) },
             ] },
@@ -294,19 +291,17 @@ const Whitelists: React.FC = () => {
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <div className="flex items-center justify-between">
                 <div>
-                    <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Whitelists</h1>
-                    <p className="text-xs text-gray-600 mt-1">
+                    <h1 className="text-xl font-semibold text-ink">Whitelists</h1>
+                    <p className="text-xs text-ink-muted mt-1">
                         IP allow-list rules for setup, auth, protocol, and CA-scoped endpoints. System defaults are
                         seeded on first bootstrap and can be edited but not deleted. Select rows to edit, enable/disable, or delete.
                     </p>
                 </div>
-                <button onClick={openCreate} className="px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
-                    New Whitelist
-                </button>
             </div>
 
             <DataTable<Whitelist>
                 tableId="whitelists"
+                toolbarAction={<NewButton what="whitelist rule" onClick={openCreate} />}
                 title="Rules"
                 rows={sorted}
                 loading={loading}
@@ -320,11 +315,11 @@ const Whitelists: React.FC = () => {
 
             {/* Create/Edit Modal */}
             {showModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-                    <div className="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl shadow-2xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
-                        <div className="px-6 py-4 border-b border-gray-300 dark:border-gray-700 flex items-center justify-between">
-                            <h3 className="text-lg font-bold text-gray-900 dark:text-white">{editingId ? 'Edit Whitelist' : 'New Whitelist'}</h3>
-                            <button onClick={closeModal} className="text-gray-600 hover:text-gray-900 dark:hover:text-white transition-colors" title="Close">
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4">
+                    <div className="bg-raised border border-line rounded-xl shadow-2xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
+                        <div className="px-6 py-4 border-b border-line flex items-center justify-between">
+                            <h3 className="text-lg font-bold text-ink">{editingId ? 'Edit Whitelist' : 'New Whitelist'}</h3>
+                            <button onClick={closeModal} className="text-ink-muted hover:text-ink transition-colors" title="Close">
                                 <svg className="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                                 </svg>
@@ -372,25 +367,25 @@ const Whitelists: React.FC = () => {
                                 )}
                             </div>
                             <div>
-                                <label className={labelClass}>CIDRs (one per line)</label>
-                                <textarea value={form.cidrsText} onChange={(e) => setForm({ ...form, cidrsText: e.target.value })} placeholder={'10.0.0.0/8\n192.168.0.0/16\n::1/128'} rows={6}
-                                    autoComplete="off" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other" spellCheck={false} className={`${inputClass} font-mono`} />
-                                <p className="text-[11px] text-gray-600 mt-1">An empty list means "block all" for a matched rule. Use <code>0.0.0.0/0</code> and <code>::/0</code> to allow any IP.</p>
+                                <label htmlFor="wl-cidrs" className={labelClass}>CIDRs</label>
+                                <ChipListInput id="wl-cidrs" value={form.cidrs} onChange={(next) => { setForm({ ...form, cidrs: next }); setFormError(null); }}
+                                    validate={validateCidr} caseInsensitive mono placeholder="e.g. 10.0.0.0/8, then Enter" />
+                                <p className="text-[11px] text-ink-muted mt-1">An empty list means "block all" for a matched rule. Use <code>0.0.0.0/0</code> and <code>::/0</code> to allow any IP.</p>
                             </div>
                             <div className="flex items-center gap-2">
-                                <input id="wl-enabled" type="checkbox" checked={form.isEnabled} onChange={(e) => setForm({ ...form, isEnabled: e.target.checked })} className="h-4 w-4 rounded border-gray-300 dark:border-gray-700 text-blue-600 focus:ring-blue-500" />
-                                <label htmlFor="wl-enabled" className="text-sm text-gray-700 dark:text-gray-300">Enabled</label>
+                                <input id="wl-enabled" type="checkbox" checked={form.isEnabled} onChange={(e) => setForm({ ...form, isEnabled: e.target.checked })} className="h-4 w-4 rounded border-line-strong text-accent-ink focus:ring-accent" />
+                                <label htmlFor="wl-enabled" className="text-sm text-ink">Enabled</label>
                             </div>
                             {formError && (
-                                <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded p-3">
+                                <div className="bg-crit-soft border border-crit/40 rounded p-3">
                                     <InlineNotice notice={formError} variant="line" />
                                 </div>
                             )}
                         </div>
 
-                        <div className="px-6 py-4 border-t border-gray-300 dark:border-gray-700 flex justify-end gap-3">
-                            <button onClick={closeModal} disabled={saving} className="px-4 py-2 text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">Cancel</button>
-                            <button onClick={handleSave} disabled={saving} className="px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                        <div className="px-6 py-4 border-t border-line flex justify-end gap-3">
+                            <button onClick={closeModal} disabled={saving} className="px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover transition-colors">Cancel</button>
+                            <button onClick={handleSave} disabled={saving} className="px-4 py-2 text-sm font-semibold bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors">
                                 {saving ? 'Saving...' : editingId ? 'Save Changes' : 'Create'}
                             </button>
                         </div>
@@ -412,7 +407,7 @@ const Whitelists: React.FC = () => {
 
                 confirmLabel={confirmToggle?.enabled ? 'Enable' : 'Disable'}
 
-                confirmClass="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                confirmClass="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors"
 
                 onConfirm={() => { const t = confirmToggle; setConfirmToggle(null); if (t) bulkSetEnabled(t.rows, t.enabled); }}
 

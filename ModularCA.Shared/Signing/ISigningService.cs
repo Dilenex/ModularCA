@@ -13,8 +13,20 @@ namespace ModularCA.Shared.Signing;
 /// <item>the TSA key signs timestamp tokens for its own CA only;</item>
 /// <item>a CMP protection key signs CMP responses for its own CA only;</item>
 /// <item>export is allowed only for end-entity keys and only to a caller holding the export right;</item>
-/// <item>generation, import, commit and retire are allowed only under a ceremony or bootstrap context;</item>
-/// <item>a generated key not yet committed signs only under the context that generated it.</item>
+/// <item>generation, commit and retire are allowed only under a ceremony or infrastructure context, import only under a ceremony;</item>
+/// <item>a generated key not yet committed signs only under the context that generated it;</item>
+/// <item>
+/// what is signed is typed: <see cref="SignAsync"/> parses the bytes as the one structure the
+/// key and purpose sign and refuses anything else (see <see cref="SignAsync"/>), so a purpose
+/// label constrains what a key signs, not only which key signs;
+/// </item>
+/// <item>an SSH CA key signs nothing through <see cref="SignAsync"/>, for any purpose;</item>
+/// <item>
+/// secrets are wrapped and unwrapped under the purposes listed for their
+/// <see cref="SecretKind"/>: <see cref="SigningPurpose.Cmp"/> both wraps and unwraps a CMP
+/// shared secret, <see cref="SigningPurpose.Certificate"/> wraps a held private key and
+/// <see cref="SigningPurpose.Export"/> unwraps one, and nothing else wraps or unwraps anything.
+/// </item>
 /// </list>
 /// Anything else is refused with a <see cref="SigningRefusedException"/>, and every decision,
 /// allowed or refused, is written to the signer's own audit before the call returns.
@@ -26,7 +38,41 @@ public interface ISigningService
     /// <paramref name="algorithm"/>, and returns the raw signature bytes as the algorithm
     /// defines them (PKCS#1 v1.5 for RSA, DER-encoded r/s for ECDSA).
     /// </summary>
-    /// <exception cref="SigningRefusedException">The key is unknown, or policy refuses the purpose or CA.</exception>
+    /// <remarks>
+    /// <para>
+    /// The signer parses <paramref name="data"/> before it signs. It must be exactly one DER
+    /// object of the structure the key and purpose sign, and that structure must name
+    /// <paramref name="algorithm"/> where it names one:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><see cref="SigningPurpose.Certificate"/>, CA key: a v3 TBSCertificate whose issuer is the CA's subject;</item>
+    /// <item><see cref="SigningPurpose.Crl"/>, CA key: a TBSCertList whose issuer is the CA's subject;</item>
+    /// <item><see cref="SigningPurpose.Ocsp"/>, CA or responder key: a ResponseData whose responder id is the signing key's certificate;</item>
+    /// <item><see cref="SigningPurpose.Scep"/>, CA key: CMS signed attributes with content type id-data and a SCEP messageType;</item>
+    /// <item><see cref="SigningPurpose.Cmp"/>, CA or CMP signer key: a CMP ProtectedPart;</item>
+    /// <item><see cref="SigningPurpose.Tsa"/>, TSA key: CMS signed attributes with content type id-ct-TSTInfo;</item>
+    /// <item>
+    /// a generated key not yet committed, under its ceremony or infrastructure context: a
+    /// PKCS#10 CertificationRequestInfo for its own key; a key generated for a new CA also its
+    /// own self-signed CA certificate, and once certified as a CA the non-CA certificates of the
+    /// delegated keys generated under the same ceremony.
+    /// </item>
+    /// </list>
+    /// <para>
+    /// A certificate asserts keyCertSign, cRLSign, a path length or name constraints only with
+    /// <c>cA=TRUE</c>. A <c>cA=TRUE</c> certificate is signed only for a key the signer itself
+    /// generated under a ceremony context for a new CA, still holds uncommitted and has not yet
+    /// certified as a CA, and within the signing CA's path length. An OCSP-signing certificate
+    /// is signed only for a delegated key the signer generated for the signing CA and still
+    /// holds uncommitted. Neither is signed for a key from outside the signer, whatever ceremony
+    /// the context names: cross-certification and external responders wait for approvals the
+    /// signer can verify. Refusals carry <see cref="SigningRefusalReason.UntypedData"/>,
+    /// <see cref="SigningRefusalReason.AlgorithmMismatch"/>, <see cref="SigningRefusalReason.IssuerMismatch"/>,
+    /// <see cref="SigningRefusalReason.EvidenceRequired"/> or
+    /// <see cref="SigningRefusalReason.PurposeNotPermitted"/>, and are audited like any other.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="SigningRefusedException">The key is unknown, policy refuses the purpose or CA, or the data is not what the purpose signs.</exception>
     Task<byte[]> SignAsync(KeyRef key, SignatureAlgorithm algorithm, byte[] data, SigningContext context, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -38,18 +84,18 @@ public interface ISigningService
 
     /// <summary>
     /// Generates a new key inside the signer and returns its reference and public half. Allowed
-    /// only under a <see cref="SigningPurpose.Ceremony"/> or <see cref="SigningPurpose.Bootstrap"/> context.
+    /// only under a <see cref="SigningPurpose.Ceremony"/> or <see cref="SigningPurpose.Infrastructure"/> context.
     /// The key has no certificate yet: it is held pending, signs only under the context that
     /// generated it, and is written nowhere until <see cref="CommitKeyAsync"/> binds it to the
     /// certificate row that carries its public key. <see cref="RetireKeyAsync"/> discards it.
     /// </summary>
-    /// <exception cref="SigningRefusedException">The context is not a ceremony or bootstrap.</exception>
+    /// <exception cref="SigningRefusedException">The context is not a ceremony or infrastructure context, or its scope's ceremony policy refuses it.</exception>
     Task<GeneratedKey> GenerateKeyAsync(KeySpec spec, SigningContext context, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Imports wrapped key material for a certificate row that already exists: a migration from
     /// an older keystore or an HSM import. The pair is persisted at once. Allowed only under a
-    /// ceremony or bootstrap context. Material in the <see cref="KeyMaterial.KeystoreFile"/>
+    /// ceremony context held to the scope of the CA that owns the certificate. Material in the <see cref="KeyMaterial.KeystoreFile"/>
     /// format is a whole keystore file from a backup: it is verified against the pinned signer
     /// and replaces the file in place, under a <see cref="SigningPurpose.Restore"/> or
     /// <see cref="SigningPurpose.Bootstrap"/> context, locked or not, since restoring the
@@ -63,16 +109,20 @@ public interface ISigningService
     /// the signer checks that certificate row <paramref name="certificateId"/> carries the key's
     /// public half, persists the pair durably, and from then on serves the key under the policy
     /// for its kind, addressed by <c>new KeyRef(certificateId)</c>. The generated reference is
-    /// spent. Allowed only under a ceremony or bootstrap context.
+    /// spent. Allowed only under a ceremony or infrastructure context; a key generated for a CA
+    /// binds only to a certificate of that CA, and an infrastructure key only to a delegated
+    /// signer certificate of the CA the context names.
     /// </summary>
-    /// <exception cref="SigningRefusedException">The context is not a ceremony or bootstrap, no generated key awaits under <paramref name="key"/>, or the certificate is missing or is not the key's.</exception>
+    /// <exception cref="SigningRefusedException">The context is not a ceremony or infrastructure context, no generated key awaits under <paramref name="key"/>, the certificate is missing or is not the key's, or it belongs to another CA or scope.</exception>
     Task CommitKeyAsync(KeyRef key, Guid certificateId, SigningContext context, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Exports a key wrapped as <paramref name="wrap"/> says. Allowed for an end-entity key under
-    /// an <see cref="SigningPurpose.Export"/> context, and for every stored key under a
-    /// <see cref="SigningPurpose.Backup"/> context; the context must name its caller, and a
-    /// PKCS#11 key never leaves its token. A certificate the signer holds no key for is refused
+    /// Exports a key wrapped as <paramref name="wrap"/> says. A single key leaves as PKCS#12 only
+    /// when it is an end-entity key and the context is <see cref="SigningPurpose.Export"/>; a CA,
+    /// responder, TSA, CMP or system key never leaves as PKCS#12, and a PKCS#12 request under
+    /// <see cref="SigningPurpose.Backup"/> is refused as
+    /// <see cref="SigningRefusalReason.PurposeNotPermitted"/>. The context must name its caller,
+    /// and a PKCS#11 key never leaves its token. A certificate the signer holds no key for is refused
     /// as <see cref="SigningRefusalReason.UnknownKey"/>: since re-download ended, a key the CA
     /// generates is delivered once, with the request that carries it, and is not kept. A
     /// reference to a whole keystore (<see cref="KeyRef.ForKeystore"/>) with the
@@ -81,6 +131,40 @@ public interface ISigningService
     /// </summary>
     /// <exception cref="SigningRefusedException">The key is unknown, or policy refuses the export.</exception>
     Task<byte[]> ExportKeyAsync(KeyRef key, ExportWrap wrap, SigningContext context, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Wraps a secret the node has to keep but cannot hold in the clear, so that the key which
+    /// protects it lives in the keystore rather than on the node. This is not
+    /// <see cref="ExportKeyAsync"/>: nothing here is a key the signer holds, and the caller names
+    /// no key at all. It names what the secret <b>is</b>, with <paramref name="kind"/>, and the
+    /// signer decides which key wraps for it and whether this context may ask.
+    /// </summary>
+    /// <param name="kind">What kind of secret this is; the policy is keyed on it and the purpose.</param>
+    /// <param name="secret">The bytes to protect. The signer does not interpret them.</param>
+    /// <param name="context">Who is asking and what for.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <returns>
+    /// An opaque blob, laid out as <see cref="WrappedSecretEnvelope"/> describes: it names its
+    /// own kind and the key that wrapped it, so the key can be rotated and an old blob still
+    /// unwraps under the key it names.
+    /// </returns>
+    /// <exception cref="SigningRefusedException">The purpose may not wrap this kind, the signer is locked, or the wrapping key cannot be derived.</exception>
+    Task<byte[]> WrapSecretAsync(SecretKind kind, byte[] secret, SigningContext context, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Recovers a secret <see cref="WrapSecretAsync"/> wrapped. The blob says which kind of
+    /// secret it holds and which key wrapped it; the caller says nothing about either, so a
+    /// caller permitted to unwrap one kind cannot unwrap another by asking differently.
+    /// </summary>
+    /// <param name="wrapped">The blob as <see cref="WrapSecretAsync"/> returned it.</param>
+    /// <param name="context">Who is asking and what for.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <exception cref="SigningRefusedException">
+    /// The blob is not a well-formed envelope, the purpose may not unwrap its kind, the signer
+    /// holds no key with the id the blob names, the signer is locked, or the blob does not
+    /// authenticate under the key it names.
+    /// </exception>
+    Task<byte[]> UnwrapSecretAsync(byte[] wrapped, SigningContext context, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Lists the keys the signer holds, with their public halves and what kind of key each is.

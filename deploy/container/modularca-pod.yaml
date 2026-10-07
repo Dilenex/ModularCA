@@ -1,0 +1,125 @@
+# ModularCA as a pod: the node and the signer as two containers from one image, sharing only
+# the pod's loopback. This is the container tier of docs/architecture/signer-separation.md, and
+# the container equivalent of the two systemd units — modularca.service and
+# modularca-signer.service — with the same division: the signer holds the keystores and answers
+# over gRPC with mutual TLS on 127.0.0.1:8446; the node holds no key.
+#
+# Runs as written under Podman, which reads Kubernetes pod manifests directly:
+#
+#   podman kube play deploy/container/modularca-pod.yaml
+#   podman kube play --down deploy/container/modularca-pod.yaml
+#
+# and on Kubernetes as a plain Pod (or as the template of a Deployment with one replica; the
+# signer is a sidecar and scales with the node, not independently of it).
+#
+# Before the first start, the config volume holds what a headless bootstrap needs: bootstrap.yaml,
+# which names the node in HttpsApi.PublicDomain, and setup-database.yaml. See README-DEPLOY.md,
+# "The pod". Every later start needs nothing: the init containers are idempotent and find their
+# work already done.
+#
+# What the init containers do, in order, and why they are init containers rather than the
+# operator's hands:
+#
+#   1. bootstrap    A first install completes as a single process, because bootstrap writes the
+#                   keystore locally and there is nothing to split until it exists. On a second
+#                   start config.yaml is present and this is a no-op.
+#   2. signer-init  The signer creates its identity CA and its server certificate. Refuses to
+#                   replace an existing CA, so a second start is a no-op.
+#   3. node-identity The signer issues the node its client certificate and writes both halves of
+#                   the channel into the one Signer: section of the shared config.yaml — the node
+#                   reads its keys from it, the signer reads its own. Idempotent: when the file
+#                   already names a remote signer with both pins set, it exits without touching it.
+#
+# Volumes, and who may write to what — this is the security division, not housekeeping:
+#
+#   config      Shared. The signer mounts it read-only. It holds config.yaml, db.yaml, the signer
+#               identity files and keystore.yaml (the keystore passphrase), and nothing in it is
+#               written after the init containers finish.
+#   keystores   The signer's alone. The node never mounts it: a node that cannot read the
+#               keystore cannot leak it, which is the entire point of the split.
+#   data        The node's alone: its backup archives, mounted at /opt/modularca/backups.
+#
+# The signer listens on the pod's loopback only. Nothing outside the pod can reach it, and the
+# node reaches it as 127.0.0.1 because they share a network namespace.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: modularca
+  labels:
+    app: modularca
+spec:
+  restartPolicy: Always
+
+  initContainers:
+    - name: bootstrap
+      image: ghcr.io/dilenex/modularca:0.4.0
+      # The entrypoint bootstraps when there is no config.yaml and, told --bootstrap-only, stops
+      # there instead of serving. A configured install makes this a no-op.
+      args: ["--bootstrap-only"]
+      volumeMounts:
+        - { name: config, mountPath: /opt/modularca/config }
+        - { name: keystores, mountPath: /opt/modularca/keystores }
+
+    - name: signer-init
+      image: ghcr.io/dilenex/modularca:0.4.0
+      command: ["/opt/modularca/ModularCA.API"]
+      args: ["--role", "signer", "--init-identity"]
+      volumeMounts:
+        - { name: config, mountPath: /opt/modularca/config }
+
+    - name: node-identity
+      image: ghcr.io/dilenex/modularca:0.4.0
+      command: ["/opt/modularca/ModularCA.API"]
+      args: ["--role", "signer", "--issue-node-identity", "--apply", "/opt/modularca/config/config.yaml"]
+      volumeMounts:
+        - { name: config, mountPath: /opt/modularca/config }
+
+  containers:
+    - name: signer
+      image: ghcr.io/dilenex/modularca:0.4.0
+      args: ["--role", "signer"]
+      volumeMounts:
+        - { name: config, mountPath: /opt/modularca/config, readOnly: true }
+        - { name: keystores, mountPath: /opt/modularca/keystores }
+        - { name: signer-logs, mountPath: /opt/modularca/logs }
+        # A read-only root still needs somewhere for the runtime to put its temporary files.
+        - { name: signer-tmp, mountPath: /tmp }
+      # Listens on 127.0.0.1:8446 inside the pod; deliberately not a containerPort, so nothing
+      # publishes it. Core dumps of this process would contain unwrapped key material.
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: { drop: ["ALL"] }
+      resources:
+        limits: { memory: "512Mi" }
+
+    - name: node
+      image: ghcr.io/dilenex/modularca:0.4.0
+      args: ["--role", "node"]
+      ports:
+        - { containerPort: 8443, hostPort: 8443, protocol: TCP }
+        - { containerPort: 8080, hostPort: 8080, protocol: TCP }
+      volumeMounts:
+        - { name: config, mountPath: /opt/modularca/config }
+        - { name: data, mountPath: /opt/modularca/backups }
+        - { name: node-logs, mountPath: /opt/modularca/logs }
+        # No keystores mount. The node holds no key.
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities: { drop: ["ALL"] }
+      resources:
+        limits: { memory: "1Gi" }
+
+  volumes:
+    - name: config
+      persistentVolumeClaim: { claimName: modularca-config }
+    - name: keystores
+      persistentVolumeClaim: { claimName: modularca-keystores }
+    - name: data
+      persistentVolumeClaim: { claimName: modularca-data }
+    - name: signer-logs
+      emptyDir: {}
+    - name: signer-tmp
+      emptyDir: {}
+    - name: node-logs
+      emptyDir: {}

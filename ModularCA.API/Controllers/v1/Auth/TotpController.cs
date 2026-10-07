@@ -324,7 +324,8 @@ public class TotpController : ControllerBase
 
     /// <summary>
     /// Verifies a TOTP code during the login MFA flow. Accepts the temporary MFA token
-    /// issued by the login endpoint (no JWT required). On success, issues a full JWT token.
+    /// issued by the login endpoint (no JWT required), whether the first factor was a password or
+    /// a client certificate. On success, issues a full JWT token.
     /// </summary>
     [AllowAnonymous]
     [HttpPost("verify")]
@@ -340,8 +341,9 @@ public class TotpController : ControllerBase
         // when the failure threshold is reached. This allows the user to retry with a
         // correct code after a typo without being kicked back to login.
         var sourceIp = HttpContext.Connection.RemoteIpAddress?.ToString();
-        var cachedUserId = await _cache.GetStringAsync($"mfa:{request.MfaToken}");
-        if (string.IsNullOrEmpty(cachedUserId) || !Guid.TryParse(cachedUserId, out var userId))
+        var pending = await ModularCA.Auth.Utils.PendingMfaToken.PeekAsync(_cache, request.MfaToken);
+        var userId = pending?.UserId ?? Guid.Empty;
+        if (pending == null)
         {
             await _audit.LogAsync(
                 Shared.Enums.AuditActionType.MfaTokenInvalid,

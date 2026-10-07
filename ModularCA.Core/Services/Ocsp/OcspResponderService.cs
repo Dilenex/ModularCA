@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using ModularCA.Core.Helpers;
 using ModularCA.Database;
 using ModularCA.Shared.Signing;
 using ModularCA.Shared.Entities;
@@ -24,14 +25,10 @@ namespace ModularCA.Core.Services.Ocsp;
 /// </summary>
 public class OcspResponderService : IOcspService
 {
-    // RFC 6960 §4.2.2.2.1 / RFC 2560: id-pkix-ocsp-nocheck
-    private static readonly DerObjectIdentifier IdPkixOcspNoCheck = new("1.3.6.1.5.5.7.48.1.5");
     // RFC 6960 §4.4.8: id-pkix-ocsp-extended-revoke
     private static readonly DerObjectIdentifier IdPkixOcspExtendedRevoke = new("1.3.6.1.5.5.7.48.1.9");
     // RFC 6960 §4.4.7: id-pkix-ocsp-nonce (in case constants library drifts)
     private static readonly DerObjectIdentifier IdPkixOcspNonce = OcspObjectIdentifiers.PkixOcspNonce;
-    // RFC 5280 §4.2.1.12: id-kp-OCSPSigning
-    private static readonly DerObjectIdentifier IdKpOcspSigning = new("1.3.6.1.5.5.7.3.9");
 
     // Hash-algorithm allowlist for CertID.hashAlgorithm.
     // SHA-1 is still RFC-sanctioned for OCSP per §4.3; block MD5 and
@@ -81,7 +78,7 @@ public class OcspResponderService : IOcspService
 
     /// <summary>The context every OCSP signature for <paramref name="caEntity"/> is asked under.</summary>
     private static SigningContext ContextFor(CertificateAuthorityEntity caEntity)
-        => SigningContext.ForCa(SignerCaller, SigningPurpose.Ocsp, caEntity.Id, caEntity.TenantId);
+        => SigningContext.ForCa(SignerCaller, SigningPurpose.Ocsp, caEntity.Id, caEntity.SpaceId);
 
     /// <summary>
     /// Whether the signer holds the key <paramref name="key"/> among the keys of
@@ -100,7 +97,8 @@ public class OcspResponderService : IOcspService
     /// Bails out with <c>malformedRequest</c> / <c>unauthorized</c>
     /// / <c>internalError</c> before ever touching the keystore on all known
     /// abuse paths (oversized nonce, duplicate extensions, unknown hash alg,
-    /// etc.) so DoS amplification cannot force an HSM operation.
+    /// etc.) so DoS amplification cannot force an HSM operation. A serial is looked up among
+    /// certificates issued under any of the CA's certificates sharing the key the request names.
     /// </summary>
     public async Task<byte[]> ProcessOcspRequestAsync(
         byte[] derRequest,
@@ -235,6 +233,9 @@ public class OcspResponderService : IOcspService
 
         var respGen = new BasicOcspRespGenerator(signerCert2.GetPublicKey());
         var signingCaCertId = resolved.CaCertificateId;
+        var issuerScope = signingCaCertId is Guid scopeRoot
+            ? await IssuerChainResolver.SameKeyCaCertificateIdsAsync(_db, scopeRoot, caCert, cancellationToken)
+            : [];
         var anyExtendedRevoke = false;
         var minNextUpdate = now.AddMinutes(goodTtlMinutes);
 
@@ -260,12 +261,15 @@ public class OcspResponderService : IOcspService
             //
             // Issuer scoping below already restricts answers to certificates this CA issued, so
             // dropping the filter does not widen what the responder speaks for.
-            var caIdLocal = signingCaCertId;
+            //
+            // The issuer scope is every certificate of this CA with the key the request's
+            // issuerKeyHash named, so a row the backfill linked to a superseded same-key CA
+            // certificate is still answered for rather than reported as never issued.
             var issuerDn = caCert.SubjectDN.ToString();
             var certEntity = await _db.Certificates
                 .AsNoTracking()
                 .Where(c => c.SerialNumber == serialHex)
-                .Where(c => (caIdLocal != null && c.IssuerCertificateId == caIdLocal)
+                .Where(c => (c.IssuerCertificateId != null && issuerScope.Contains(c.IssuerCertificateId.Value))
                          || (c.IssuerCertificateId == null && c.Issuer == issuerDn))
                 .FirstOrDefaultAsync(cancellationToken);
 
@@ -444,11 +448,57 @@ public class OcspResponderService : IOcspService
     }
 
     /// <summary>
+    /// The CA whose certificate is <paramref name="signerCert"/>, the signer whose key hash the
+    /// request named: the CA row whose current certificate it is, else the CA a superseded
+    /// certificate belonged to (<see cref="IssuerChainResolver.OwnerOf(ModularCADbContext, CertificateEntity)"/>).
+    /// Found by serial number and confirmed byte for byte, never by subject DN, which two CAs can
+    /// share (a rename changes the name, not the CN). Null when no CA, or more than one, owns it.
+    /// </summary>
+    private async Task<CertificateAuthorityEntity?> FindCaForSignerAsync(X509Certificate signerCert, CancellationToken ct)
+    {
+        var serial = CertificateUtil.FormatSerialNumber(signerCert.SerialNumber);
+        var der = signerCert.GetEncoded();
+        var rows = await _db.Certificates.AsNoTracking()
+            .Where(c => c.IsCA && c.SerialNumber == serial)
+            .ToListAsync(ct);
+        var matches = rows.Where(c => SameCertificate(c, der)).ToList();
+        if (matches.Count != 1)
+            return null;
+        var certRow = matches[0];
+
+        var current = await _db.CertificateAuthorities.AsNoTracking()
+            .Include(ca => ca.Certificate)
+            .Where(ca => ca.CertificateId == certRow.CertificateId)
+            .Take(2)
+            .ToListAsync(ct);
+        if (current.Count > 0)
+            return current.Count == 1 ? current[0] : null;
+
+        var owner = IssuerChainResolver.OwnerOf(_db, certRow);
+        return owner == null ? null : await _db.CertificateAuthorities.AsNoTracking()
+            .Include(ca => ca.Certificate)
+            .FirstOrDefaultAsync(ca => ca.Id == owner.CaId, ct);
+    }
+
+    /// <summary>Whether <paramref name="row"/> holds exactly the certificate <paramref name="der"/>.</summary>
+    private static bool SameCertificate(CertificateEntity row, byte[] der)
+    {
+        if (row.RawCertificate is { Length: > 0 } raw)
+            return raw.AsSpan().SequenceEqual(der);
+        if (string.IsNullOrWhiteSpace(row.Pem))
+            return false;
+        try { return CertificateUtil.ParseFromPem(row.Pem).GetEncoded().AsSpan().SequenceEqual(der); }
+        catch { return false; }
+    }
+
+    /// <summary>
     /// Resolves the signing CA for an
     /// OCSP request. Enforces validity, revocation, and enabled-state checks
     /// on the issuing CA + its certificate; honours the per-route
     /// <paramref name="caLabel"/>; falls back to CA-direct signing only when
-    /// <see cref="SecurityPolicyEntity.AllowCaDirectSigning"/> is on.
+    /// <see cref="SecurityPolicyEntity.AllowCaDirectSigning"/> is on. The CA is the one owning the
+    /// signer certificate the request's issuer key and name hashes matched
+    /// (<see cref="FindCaForSignerAsync"/>), not one found by subject DN.
     /// </summary>
     private async Task<ResolveResult> ResolveSigningCaAsync(CertificateID certId, string? caLabel, CancellationToken ct)
     {
@@ -494,10 +544,7 @@ public class OcspResponderService : IOcspService
 
             // Load the CA entity and verify it's enabled + its
             // own cert is not revoked.
-            var caEntity = await _db.CertificateAuthorities
-                .AsNoTracking()
-                .Include(ca => ca.Certificate)
-                .FirstOrDefaultAsync(ca => ca.Certificate != null && ca.Certificate.SubjectDN == caCert.SubjectDN.ToString(), ct);
+            var caEntity = await FindCaForSignerAsync(caCert, ct);
 
             if (caEntity == null)
             {
@@ -638,38 +685,21 @@ public class OcspResponderService : IOcspService
             return new DelegatedResolveResult(DelegatedOutcome.ResponderInvalid);
         }
 
-        // Validate id-kp-OCSPSigning EKU (RFC 6960 §4.2.2.2)
-        var ekuExt = responderCert.GetExtendedKeyUsage();
-        if (ekuExt == null || !ekuExt.Contains(IdKpOcspSigning))
+        // id-kp-OCSPSigning (RFC 6960 §4.2.2.2), id-pkix-ocsp-nocheck when the policy requires it,
+        // and the validity window. OcspResponderReadiness reports the same findings to operators.
+        var now = DateTime.UtcNow;
+        var delegatedPolicy = await _securityPolicy.GetAsync();
+        var problem = OcspResponderRules.Problem(responderCert, delegatedPolicy.RequireNoCheckExtension, now);
+        if (problem != null)
         {
-            _logger.LogWarning("OCSP responder certificate {Subject} lacks id-kp-OCSPSigning EKU", responderCert.SubjectDN);
+            _logger.LogWarning("OCSP: delegated responder '{Subject}' refused. {Problem}", responderCert.SubjectDN, problem);
             return new DelegatedResolveResult(DelegatedOutcome.ResponderInvalid);
         }
-
-        // Id-pkix-ocsp-nocheck enforcement.
-        var hasNoCheck = responderCert.GetCriticalExtensionOids()?.Contains(IdPkixOcspNoCheck.Id) == true
-                      || responderCert.GetNonCriticalExtensionOids()?.Contains(IdPkixOcspNoCheck.Id) == true;
-        if (!hasNoCheck)
+        if (!OcspResponderRules.HasNoCheck(responderCert))
         {
-            var delegatedPolicy = await _securityPolicy.GetAsync();
-            if (delegatedPolicy.RequireNoCheckExtension)
-            {
-                _logger.LogWarning(
-                    "OCSP: delegated responder '{Subject}' lacks id-pkix-ocsp-nocheck — refusing to use (SecurityPolicy.RequireNoCheckExtension=true)",
-                    responderCert.SubjectDN);
-                return new DelegatedResolveResult(DelegatedOutcome.ResponderInvalid);
-            }
             _logger.LogWarning(
                 "OCSP: delegated responder '{Subject}' lacks id-pkix-ocsp-nocheck — RFC 6960 §4.2.2.2.1 SHOULD. Continuing anyway; flip SecurityPolicy.RequireNoCheckExtension=true to refuse.",
                 responderCert.SubjectDN);
-        }
-
-        // Validate responder certificate is within its validity period
-        var now = DateTime.UtcNow;
-        if (now > responderCert.NotAfter.ToUniversalTime() || now < responderCert.NotBefore.ToUniversalTime())
-        {
-            _logger.LogWarning("OCSP responder certificate {Subject} is not within validity period", responderCert.SubjectDN);
-            return new DelegatedResolveResult(DelegatedOutcome.ResponderInvalid);
         }
 
         // Also verify the issuer CA's own cert is within its

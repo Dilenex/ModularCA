@@ -31,6 +31,7 @@ export const adminSshTemplates: ApiEndpoint[] = [
         category: 'Admin SSH Templates',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for manage-ssh-template. Required for this operation.' },
         ],
         responseDescription: 'Created SSH certificate template.',
     },
@@ -42,6 +43,7 @@ export const adminSshTemplates: ApiEndpoint[] = [
         category: 'Admin SSH Templates',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for manage-ssh-template, issued for the template id. Required for this operation.' },
         ],
         responseDescription: 'Updated SSH certificate template.',
     },
@@ -53,6 +55,7 @@ export const adminSshTemplates: ApiEndpoint[] = [
         category: 'Admin SSH Templates',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for manage-ssh-template, issued for the template id. Required for this operation.' },
         ],
         responseDescription: 'Deletion confirmation.',
     },

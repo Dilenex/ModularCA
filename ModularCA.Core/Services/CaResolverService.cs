@@ -12,7 +12,8 @@ public class CaResolverService(ModularCADbContext db) : ICaResolverService
 {
     /// <summary>
     /// Resolves the CA, protocol-specific signing/cert profile, and optional request profile
-    /// from the given label and protocol identifier.
+    /// from the given label and protocol identifier. A configuration whose signing profile issues
+    /// from another CA is refused.
     /// </summary>
     public async Task<ResolvedCaContext> ResolveAsync(string? caLabel, string protocol)
     {
@@ -41,6 +42,10 @@ public class CaResolverService(ModularCADbContext db) : ICaResolverService
                 $"Protocol '{protocol}' is not fully configured for CA '{ca.Name}'. " +
                 $"Assign both a signing profile and certificate profile in the Protocol Configuration page.");
 
+        await EnsureSigningProfileIssuesFromAsync(config.SigningProfileId.Value, ca,
+            $"Protocol '{protocol}' on CA '{ca.Name}'",
+            "Choose one of this CA's signing profiles in the Protocol Configuration page.");
+
         return new ResolvedCaContext
         {
             Ca = ca,
@@ -52,7 +57,8 @@ public class CaResolverService(ModularCADbContext db) : ICaResolverService
 
     /// <summary>
     /// Resolves the CA, signing profile, cert profile, and optional request profile
-    /// from a named certificate template. Throws if the template is not found or disabled.
+    /// from a named certificate template. Throws if the template is not found or disabled, or its
+    /// signing profile does not issue from its CA.
     /// </summary>
     public async Task<ResolvedCaContext> ResolveByTemplateAsync(string templateName)
     {
@@ -71,6 +77,10 @@ public class CaResolverService(ModularCADbContext db) : ICaResolverService
             throw new InvalidOperationException(
                 $"CA for template '{templateName}' is not found or disabled.");
 
+        await EnsureSigningProfileIssuesFromAsync(template.SigningProfileId, template.Ca,
+            $"Certificate template '{templateName}' on CA '{template.Ca.Name}'",
+            "Choose one of this CA's signing profiles on the template.");
+
         return new ResolvedCaContext
         {
             Ca = template.Ca,
@@ -80,8 +90,32 @@ public class CaResolverService(ModularCADbContext db) : ICaResolverService
         };
     }
 
+    /// <summary>
+    /// Refuses a protocol configuration or certificate template whose signing profile does not
+    /// issue from <paramref name="ca"/>'s current certificate, so a stale or tampered row cannot
+    /// make one CA's endpoint issue from another. <paramref name="subject"/> names the row and
+    /// <paramref name="fix"/> says what to change.
+    /// </summary>
+    private async Task EnsureSigningProfileIssuesFromAsync(Guid signingProfileId, CertificateAuthorityEntity ca, string subject, string fix)
+    {
+        var issuerId = await db.SigningProfiles.AsNoTracking()
+            .Where(sp => sp.Id == signingProfileId)
+            .Select(sp => sp.IssuerId)
+            .FirstOrDefaultAsync();
+        if (issuerId == null || issuerId != ca.CertificateId)
+            throw new InvalidOperationException(
+                $"{subject} names a signing profile that does not issue from this CA. {fix}");
+    }
+
     /// <inheritdoc />
-    public async Task<CertificateAuthorityEntity?> ResolveCaEntityAsync(string? caLabel)
+    public Task<CertificateAuthorityEntity?> ResolveCaEntityAsync(string? caLabel) => FindAddressedCaAsync(db, caLabel);
+
+    /// <summary>
+    /// The enabled CA a protocol request addresses: the one with <paramref name="caLabel"/>, or,
+    /// with no label, the first of <see cref="DefaultCandidates"/>. Static so that paths holding
+    /// only a context (the ACME EAB and challenge-type policy) resolve exactly as issuance does.
+    /// </summary>
+    public static async Task<CertificateAuthorityEntity?> FindAddressedCaAsync(ModularCADbContext db, string? caLabel)
     {
         if (!string.IsNullOrWhiteSpace(caLabel))
         {
@@ -90,11 +124,17 @@ public class CaResolverService(ModularCADbContext db) : ICaResolverService
                 .FirstOrDefaultAsync(c => c.Label == caLabel && c.IsEnabled);
         }
 
-        // Try default CA first, then any enabled CA
-        return await db.CertificateAuthorities
-            .AsNoTracking()
-            .Where(c => c.IsEnabled)
-            .OrderByDescending(c => c.IsDefault)
-            .FirstOrDefaultAsync();
+        return await DefaultCandidates(db.CertificateAuthorities.AsNoTracking()).FirstOrDefaultAsync();
     }
+
+    /// <summary>
+    /// The CAs a request that names no CA may resolve to, best first: enabled X.509 CAs without a
+    /// reserved <c>system-</c> label, the default first, then by name and id, so that several
+    /// defaults, or none, resolve to the same CA every time. Every label-less resolver uses this.
+    /// </summary>
+    public static IOrderedQueryable<CertificateAuthorityEntity> DefaultCandidates(IQueryable<CertificateAuthorityEntity> cas)
+        => cas.Where(c => c.IsEnabled && !c.IsSshCa && (c.Label == null || !c.Label.StartsWith("system-")))
+            .OrderByDescending(c => c.IsDefault)
+            .ThenBy(c => c.Name)
+            .ThenBy(c => c.Id);
 }

@@ -17,14 +17,14 @@ public class SetupRequest
 }
 
 /// <summary>
-/// Organization / tenant details for the setup wizard.
+/// Organization / space details for the setup wizard.
 /// </summary>
 public class SetupOrganization
 {
-    /// <summary>Organization/tenant name (e.g., "Acme Corp").</summary>
+    /// <summary>Organization/space name (e.g., "Acme Corp").</summary>
     public string Name { get; set; } = string.Empty;
 
-    /// <summary>Optional description for the tenant.</summary>
+    /// <summary>Optional description for the space.</summary>
     public string? Description { get; set; }
 }
 
@@ -36,7 +36,7 @@ public class SetupRootCa
     /// <summary>Root CA Common Name (e.g., "Acme Corp Root CA").</summary>
     public string CommonName { get; set; } = string.Empty;
 
-    /// <summary>Organization name for the CA subject (usually same as tenant name).</summary>
+    /// <summary>Organization name for the CA subject (usually same as space name).</summary>
     public string Organization { get; set; } = string.Empty;
 
     /// <summary>Organizational unit (optional).</summary>
@@ -81,6 +81,14 @@ public class SetupAdmin
     public string Username { get; set; } = "superadmin";
     public string? Password { get; set; }
     public string? Email { get; set; }
+
+    /// <summary>
+    /// The answer to "Will more than one person administer this CA?", which the wizard requires.
+    /// False (just this administrator) starts key ceremonies off for the instance policy and the
+    /// first space, because nobody else could approve one; true starts them on. Null is refused
+    /// by the setup endpoint.
+    /// </summary>
+    public bool? MultipleAdministrators { get; set; }
 }
 
 /// <summary>
@@ -98,6 +106,14 @@ public class SetupFeatures
     public bool Ocsp { get; set; } = true;
     [System.Text.Json.Serialization.JsonPropertyName("enableAcme")]
     public bool Acme { get; set; } = false;
+    /// <summary>
+    /// The answer to "Will ACME clients be on a private network?", asked when ACME is on. True
+    /// lets the first CA's http-01 validator fetch challenges from private, loopback and
+    /// link-local addresses and resolve names through this host's hosts file; false, the
+    /// default, refuses them. Ignored when <see cref="Acme"/> is false.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonPropertyName("acmeAllowPrivateAddressValidation")]
+    public bool AcmeAllowPrivateAddressValidation { get; set; } = false;
     [System.Text.Json.Serialization.JsonPropertyName("enableEst")]
     public bool Est { get; set; } = false;
     [System.Text.Json.Serialization.JsonPropertyName("enableScep")]
@@ -165,8 +181,8 @@ public class SetupWebTlsCertificate
 public class SetupDatabase
 {
     public string RootHost { get; set; } = "localhost";
-    public int RootPort { get; set; } = 3306;
-    public string RootUsername { get; set; } = "root";
+    public int RootPort { get; set; } = 5432;
+    public string RootUsername { get; set; } = "postgres";
     public string RootPassword { get; set; } = string.Empty;
     public string AppDatabase { get; set; } = "modularca-app";
     public string AppUsername { get; set; } = "modularca_app";
@@ -174,13 +190,13 @@ public class SetupDatabase
     public string AuditUsername { get; set; } = "modularca_audit";
 
     /// <summary>
-    /// TLS mode for the MySQL connection selected by the operator in the setup wizard.
+    /// TLS mode for the PostgreSQL connection selected by the operator in the setup wizard.
     /// Propagates into <c>setup-database.yaml</c> and ultimately <c>db.yaml</c> so runtime
-    /// connections honor the same policy. Valid values: <c>"None"</c>, <c>"Preferred"</c>,
-    /// <c>"Required"</c>, <c>"VerifyCA"</c>, <c>"VerifyFull"</c>. Defaults to
-    /// <c>"Required"</c> to use encrypted transport on fresh installs.
+    /// connections honor the same policy. Valid values: <c>"Disable"</c>, <c>"Prefer"</c>,
+    /// <c>"Require"</c>, <c>"VerifyCA"</c>, <c>"VerifyFull"</c>. Defaults to
+    /// <c>"Require"</c> to use encrypted transport on fresh installs.
     /// </summary>
-    public string SslMode { get; set; } = "Required";
+    public string SslMode { get; set; } = "Require";
 
     /// <summary>
     /// When true, the audit database is dropped and recreated during setup, discarding any

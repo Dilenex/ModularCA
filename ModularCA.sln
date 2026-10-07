@@ -51,6 +51,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ModularCA.KeystoreCli", "Mo
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ModularCA.Signer", "ModularCA.Signer\ModularCA.Signer.csproj", "{89F5CD07-D27A-4122-8A88-2B2CCA32BE0D}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ModularCA.Migrate", "ModularCA.Migrate\ModularCA.Migrate.csproj", "{BF297AEA-715C-4F93-99C6-761EDB83C2D8}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -213,6 +215,18 @@ Global
 		{89F5CD07-D27A-4122-8A88-2B2CCA32BE0D}.Release|x64.Build.0 = Release|Any CPU
 		{89F5CD07-D27A-4122-8A88-2B2CCA32BE0D}.Release|x86.ActiveCfg = Release|Any CPU
 		{89F5CD07-D27A-4122-8A88-2B2CCA32BE0D}.Release|x86.Build.0 = Release|Any CPU
+		{BF297AEA-715C-4F93-99C6-761EDB83C2D8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BF297AEA-715C-4F93-99C6-761EDB83C2D8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BF297AEA-715C-4F93-99C6-761EDB83C2D8}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{BF297AEA-715C-4F93-99C6-761EDB83C2D8}.Debug|x64.Build.0 = Debug|Any CPU
+		{BF297AEA-715C-4F93-99C6-761EDB83C2D8}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{BF297AEA-715C-4F93-99C6-761EDB83C2D8}.Debug|x86.Build.0 = Debug|Any CPU
+		{BF297AEA-715C-4F93-99C6-761EDB83C2D8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BF297AEA-715C-4F93-99C6-761EDB83C2D8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BF297AEA-715C-4F93-99C6-761EDB83C2D8}.Release|x64.ActiveCfg = Release|Any CPU
+		{BF297AEA-715C-4F93-99C6-761EDB83C2D8}.Release|x64.Build.0 = Release|Any CPU
+		{BF297AEA-715C-4F93-99C6-761EDB83C2D8}.Release|x86.ActiveCfg = Release|Any CPU
+		{BF297AEA-715C-4F93-99C6-761EDB83C2D8}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

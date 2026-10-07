@@ -14,7 +14,7 @@ namespace ModularCA.Shared.Models.Management
         public bool IsActive { get; set; } = true;
         /// <summary>True for a permission-only account that can never sign in.</summary>
         public bool IsServiceIdentity { get; set; }
-        public Guid? ServiceScopeTenantId { get; set; }
+        public Guid? ServiceScopeSpaceId { get; set; }
         public Guid? ServiceScopeCaId { get; set; }
         public string? Description { get; set; }
         public bool IsLocked { get; set; } = false;
@@ -24,6 +24,9 @@ namespace ModularCA.Shared.Models.Management
         public DateTime? PasswordExpiration { get; set; }
 
         public DateTime CreatedAt { get; set; }
+
+        /// <summary>When the user last completed a sign-in; null when they never have.</summary>
+        public DateTime? LastLoginAt { get; set; }
 
         /// <summary>CA group memberships for this user.</summary>
         public List<GroupMembershipDto>? Groups { get; set; }

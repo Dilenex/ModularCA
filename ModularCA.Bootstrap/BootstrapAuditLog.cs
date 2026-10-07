@@ -23,6 +23,9 @@ public static class BootstrapAuditLog
     private static readonly string InstanceId = Guid.NewGuid().ToString("N");
     private static readonly object WriteLock = new();
 
+    /// <summary>The directory the file is written to; null for <c>logs/</c> under the application directory.</summary>
+    internal static string? LogDirectory { get; set; }
+
     /// <summary>
     /// Appends a keystore-related audit entry to today's bootstrap-audit JSONL file.
     /// </summary>
@@ -35,24 +38,45 @@ public static class BootstrapAuditLog
         string action,
         string? subjectDn = null,
         string? thumbprint = null)
+        => Append(new
+        {
+            timestamp = DateTime.UtcNow.ToString("o"),
+            action,
+            keystoreName,
+            subjectDn,
+            thumbprint,
+            instanceId = InstanceId,
+        });
+
+    /// <summary>
+    /// Appends a setup decision (something the operator chose during bootstrap) to today's
+    /// bootstrap-audit JSONL file, to be replayed against <paramref name="targetEntityType"/>
+    /// and <paramref name="targetEntityId"/> with <paramref name="details"/>. Property names in
+    /// <paramref name="details"/> that the audit scrubber redacts (any containing "key") lose
+    /// their values on replay.
+    /// </summary>
+    public static void LogSetupDecision(string action, string targetEntityType, string? targetEntityId, object details)
+        => Append(new
+        {
+            timestamp = DateTime.UtcNow.ToString("o"),
+            action,
+            targetEntityType,
+            targetEntityId,
+            details,
+            instanceId = InstanceId,
+        });
+
+    private static void Append(object entry)
     {
         try
         {
-            var logsDir = Path.Combine(AppContext.BaseDirectory, "logs");
+            var logsDir = LogDirectory ?? Path.Combine(AppContext.BaseDirectory, "logs");
             Directory.CreateDirectory(logsDir);
 
             var fileName = $"bootstrap-audit-{DateTime.UtcNow:yyyyMMdd}.jsonl";
             var filePath = Path.Combine(logsDir, fileName);
 
-            var line = JsonSerializer.Serialize(new
-            {
-                timestamp = DateTime.UtcNow.ToString("o"),
-                action,
-                keystoreName,
-                subjectDn,
-                thumbprint,
-                instanceId = InstanceId,
-            });
+            var line = JsonSerializer.Serialize(entry);
 
             lock (WriteLock)
             {

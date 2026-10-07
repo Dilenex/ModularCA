@@ -44,7 +44,7 @@ public sealed class MsaeReadinessStep
     public MsaeReadinessFix? Fix { get; set; }
 }
 
-/// <summary>A forest bound to the tenant, as the readiness page lists it.</summary>
+/// <summary>A forest bound to the space, as the readiness page lists it.</summary>
 public sealed class MsaeReadinessRealm
 {
     public Guid Id { get; set; }
@@ -58,7 +58,7 @@ public sealed class MsaeReadiness
 {
     public Guid CaId { get; set; }
     public string CaLabel { get; set; } = string.Empty;
-    public Guid? TenantId { get; set; }
+    public Guid? SpaceId { get; set; }
 
     /// <summary>True when every step passes or warns.</summary>
     public bool Ready { get; set; }
@@ -71,7 +71,7 @@ public sealed class MsaeReadiness
 
     public List<MsaeReadinessStep> Steps { get; set; } = new();
 
-    /// <summary>The enabled forests bound to the CA's tenant, each of which can have a setup kit.</summary>
+    /// <summary>The enabled forests bound to the CA's space, each of which can have a setup kit.</summary>
     public List<MsaeReadinessRealm> Realms { get; set; } = new();
 
     /// <summary>When the evaluation ran, UTC.</summary>

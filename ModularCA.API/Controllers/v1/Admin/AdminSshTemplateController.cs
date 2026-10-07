@@ -21,25 +21,32 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [Route("api/v1/admin/ssh/templates")]
 [Authorize]
 [NodeRole(ProcessRole.Control)]
-public class AdminSshTemplateController(ModularCADbContext db, IAuditService audit, ICurrentUserService currentUser) : ControllerBase
+public class AdminSshTemplateController(ModularCADbContext db, IAuditService audit, ICurrentUserService currentUser,
+    ICaGroupAuthorizationService authService) : ControllerBase
 {
     private readonly ModularCADbContext _db = db;
     private readonly IAuditService _audit = audit;
     private readonly ICurrentUserService _currentUser = currentUser;
 
     /// <summary>
-    /// Lists all SSH certificate templates with resolved profile and CA key names.
+    /// Lists the SSH certificate templates whose SSH CA is inside the caller's
+    /// <see cref="SpaceFence"/> (SSH CAs are instance CAs), with resolved profile and CA key names.
     /// </summary>
     [HttpGet]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetAll()
     {
+        var fence = SpaceFence.From(HttpContext, Capabilities.CertRevoke);
+        var visibleCaIds = _db.CertificateAuthorities.AsNoTracking()
+            .Where(fence.Predicate<CertificateAuthorityEntity>(ca => ca.SpaceId))
+            .Select(ca => ca.Id);
         var templates = await _db.SshCertificateTemplates
             .AsNoTracking()
             .Include(t => t.SshCaKey)
             .Include(t => t.SshSigningProfile)
             .Include(t => t.SshCertProfile)
             .Include(t => t.SshRequestProfile)
+            .Where(t => visibleCaIds.Contains(t.SshCaKey.CertificateAuthorityId))
             .OrderBy(t => t.Name)
             .Select(t => new
             {
@@ -100,6 +107,7 @@ public class AdminSshTemplateController(ModularCADbContext db, IAuditService aud
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SshCaKey, "request.SshCaKeyId")]
+    [RequireStepUp(StepUpOps.ManageSshTemplate)]
     public async Task<IActionResult> Create([FromBody] CreateSshTemplateRequest request)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -126,15 +134,31 @@ public class AdminSshTemplateController(ModularCADbContext db, IAuditService aud
     }
 
     /// <summary>
-    /// Updates an existing SSH certificate template by its identifier.
+    /// Updates an existing SSH certificate template by its identifier. Moving it to another SSH CA
+    /// key needs cert.revoke on that key's CA, inside the caller's fence and of the template's
+    /// current scope (<see cref="CaBindingAccess"/>).
     /// </summary>
     [HttpPut("{id:guid}")]
     [Authorize(Policy = "CaOperator")]
+    [RequireStepUp(StepUpOps.ManageSshTemplate, "id")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateSshTemplateRequest request)
     {
         await _currentUser.EnsureLoadedAsync();
         var entity = await _db.SshCertificateTemplates.FindAsync(id);
         if (entity == null) return NotFound();
+
+        if (request.SshCaKeyId is Guid newKeyId && newKeyId != entity.SshCaKeyId)
+        {
+            if (_currentUser.User == null) return Unauthorized();
+            var oldSpace = await _db.SshCaKeys.AsNoTracking()
+                .Where(k => k.Id == entity.SshCaKeyId).Select(k => k.CertificateAuthority.SpaceId).FirstOrDefaultAsync();
+            var newCaId = await _db.SshCaKeys.AsNoTracking()
+                .Where(k => k.Id == newKeyId).Select(k => (Guid?)k.CertificateAuthorityId).FirstOrDefaultAsync();
+            if (newCaId == null) return NotFound();
+            if (CaBindingAccess.ToResult(await CaBindingAccess.CheckAsync(authService, _db, SpaceFence.From(HttpContext, Capabilities.CertRevoke),
+                    _currentUser.User.Id, newCaId, oldSpace, Capabilities.CertRevoke)) is { } refused)
+                return refused;
+        }
 
         if (request.Name != null) entity.Name = request.Name;
         if (request.Description != null) entity.Description = request.Description;
@@ -159,6 +183,7 @@ public class AdminSshTemplateController(ModularCADbContext db, IAuditService aud
     /// </summary>
     [HttpDelete("{id:guid}")]
     [Authorize(Policy = "CaOperator")]
+    [RequireStepUp(StepUpOps.ManageSshTemplate, "id")]
     public async Task<IActionResult> Delete(Guid id)
     {
         await _currentUser.EnsureLoadedAsync();

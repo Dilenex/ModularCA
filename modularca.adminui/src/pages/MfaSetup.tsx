@@ -225,44 +225,44 @@ const MfaSetup: React.FC = () => {
     const clearMtlsPassword = () => setMtlsPassword(null);
 
     return (
-        <div className="flex justify-center items-start min-h-screen bg-gray-50 dark:bg-gray-900 py-12 px-4">
+        <div className="flex justify-center items-start min-h-screen bg-ground py-12 px-4">
             <div className="w-full max-w-lg space-y-6">
                 <div className="text-center">
-                    <h2 className="text-2xl font-semibold text-gray-900 dark:text-white">
+                    <h2 className="text-2xl font-semibold text-ink">
                         Multi-Factor Authentication Setup Required
                     </h2>
-                    <p className="text-gray-600 dark:text-gray-400 mt-2">
+                    <p className="text-ink-muted mt-2">
                         Your account requires MFA. Set up at least one method to continue.
                     </p>
                 </div>
 
                 {/* TOTP Setup Card */}
-                <div className="bg-gray-100 dark:bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-300 dark:border-gray-700 space-y-4">
-                    <h3 className="text-lg font-medium text-gray-900 dark:text-white">Authenticator App (TOTP)</h3>
+                <div className="bg-raised p-6 rounded-lg border border-line space-y-4">
+                    <h3 className="text-lg font-medium text-ink">Authenticator App (TOTP)</h3>
 
                     {totpSuccess ? (
                         <div className="space-y-4">
-                            <div className="bg-green-50 dark:bg-green-900/50 border border-green-300 dark:border-green-700 text-green-800 dark:text-green-300 text-sm p-3 rounded">
+                            <div className="bg-ok-soft border border-ok/40 text-ok text-sm p-3 rounded">
                                 {recoveryCodes.length > 0
                                     ? 'Authenticator app configured successfully.'
                                     : 'Authenticator app configured successfully. Redirecting to login...'}
                             </div>
                             {recoveryCodes.length > 0 && (
-                                <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded p-4 space-y-3">
-                                    <p className="text-sm font-semibold text-amber-900 dark:text-amber-300">
+                                <div className="bg-warn-soft border border-warn/40 rounded p-4 space-y-3">
+                                    <p className="text-sm font-semibold text-warn">
                                         Save your recovery codes now — they will not be shown again.
                                     </p>
-                                    <p className="text-xs text-amber-800 dark:text-amber-400">
+                                    <p className="text-xs text-warn">
                                         Each code works once. They are the only way back into your account if you
                                         lose your authenticator.
                                     </p>
-                                    <ul className="grid grid-cols-2 gap-1 font-mono text-sm text-gray-900 dark:text-gray-100">
+                                    <ul className="grid grid-cols-2 gap-1 data-mono text-ink">
                                         {recoveryCodes.map((code) => (<li key={code}>{code}</li>))}
                                     </ul>
                                     <button
                                         type="button"
                                         onClick={() => { window.location.href = LOGIN_PATH; }}
-                                        className="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition-colors"
+                                        className="w-full bg-accent text-on-accent py-2 rounded hover:bg-accent-hover transition-colors"
                                     >
                                         I have saved my recovery codes — continue to login
                                     </button>
@@ -272,11 +272,11 @@ const MfaSetup: React.FC = () => {
                     ) : !totpSecret ? (
                         <div className="space-y-4">
                             <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" htmlFor="totp-device-name">Device Name (optional)</label>
+                                <label className="block text-sm font-medium text-ink mb-1" htmlFor="totp-device-name">Device Name (optional)</label>
                                 <input
                                     id="totp-device-name"
                                     type="text"
-                                    className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-3 py-2 focus:border-blue-500 focus:outline-none"
+                                    className="w-full bg-raised border border-line-strong text-ink rounded px-3 py-2 focus:border-accent focus:outline-none"
                                     value={totpDeviceName}
                                     onChange={(e) => setTotpDeviceName(e.target.value)}
                                     placeholder="e.g., Authy on iPhone"
@@ -285,7 +285,7 @@ const MfaSetup: React.FC = () => {
                             <button
                                 onClick={handleTotpSetup}
                                 disabled={totpLoading}
-                                className="w-full bg-blue-600 text-gray-900 dark:text-white py-2 rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                                className="w-full bg-accent text-on-accent py-2 rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
                             >
                                 {totpLoading ? 'Setting up...' : 'Set up Authenticator App'}
                             </button>
@@ -293,7 +293,7 @@ const MfaSetup: React.FC = () => {
                     ) : (
                         <form onSubmit={handleTotpVerify} className="space-y-4">
                             <div className="space-y-4">
-                                <p className="text-sm text-gray-700 dark:text-gray-300">
+                                <p className="text-sm text-ink">
                                     Scan the QR code with your authenticator app:
                                 </p>
                                 {provisioningUri && (
@@ -302,19 +302,19 @@ const MfaSetup: React.FC = () => {
                                     </div>
                                 )}
                                 <details className="text-sm">
-                                    <summary className="text-gray-600 dark:text-gray-400 cursor-pointer hover:text-gray-700 dark:text-gray-300">
+                                    <summary className="text-ink-muted cursor-pointer hover:text-ink">
                                         Can't scan? Enter manually
                                     </summary>
-                                    <div className="bg-gray-200 dark:bg-gray-700 p-3 rounded mt-2">
-                                        <p className="text-xs text-gray-600 dark:text-gray-400 mb-1">Secret key:</p>
-                                        <code className="text-sm text-yellow-800 dark:text-yellow-300 break-all select-all">
+                                    <div className="bg-sunken p-3 rounded mt-2">
+                                        <p className="text-xs text-ink-muted mb-1">Secret key:</p>
+                                        <code className="text-sm text-warn break-all select-all">
                                             {totpSecret}
                                         </code>
                                     </div>
                                 </details>
                             </div>
                             <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                                <label className="block text-sm font-medium text-ink">
                                     Verification Code
                                 </label>
                                 <input
@@ -323,7 +323,7 @@ const MfaSetup: React.FC = () => {
                                     pattern="[0-9]*"
                                     maxLength={6}
                                     autoComplete="off"
-                                    className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-3 py-2 mt-1 focus:border-blue-500 focus:outline-none text-center text-lg tracking-widest"
+                                    className="w-full bg-raised border border-line-strong text-ink rounded px-3 py-2 mt-1 focus:border-accent focus:outline-none text-center text-lg tracking-widest"
                                     value={totpCode}
                                     onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ''))}
                                     placeholder="000000"
@@ -333,7 +333,7 @@ const MfaSetup: React.FC = () => {
                             <button
                                 type="submit"
                                 disabled={totpLoading || totpCode.length !== 6}
-                                className="w-full bg-blue-600 text-gray-900 dark:text-white py-2 rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                                className="w-full bg-accent text-on-accent py-2 rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
                             >
                                 {totpLoading ? 'Verifying...' : 'Verify'}
                             </button>
@@ -341,7 +341,7 @@ const MfaSetup: React.FC = () => {
                     )}
 
                     {totpError && (
-                        <div className="bg-red-50 dark:bg-red-900/50 border border-red-300 dark:border-red-700 text-red-800 dark:text-red-300 text-sm p-2 rounded">
+                        <div className="bg-crit-soft border border-crit/40 text-crit text-sm p-2 rounded">
                             {totpError}
                         </div>
                     )}
@@ -349,25 +349,25 @@ const MfaSetup: React.FC = () => {
 
                 {/* WebAuthn Setup Card */}
                 {webauthnAvailable && (
-                    <div className="bg-gray-100 dark:bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-300 dark:border-gray-700 space-y-4">
-                        <h3 className="text-lg font-medium text-gray-900 dark:text-white">Security Key (WebAuthn)</h3>
+                    <div className="bg-raised p-6 rounded-lg border border-line space-y-4">
+                        <h3 className="text-lg font-medium text-ink">Security Key (WebAuthn)</h3>
 
                         {webauthnSuccess ? (
-                            <div className="bg-green-50 dark:bg-green-900/50 border border-green-300 dark:border-green-700 text-green-800 dark:text-green-300 text-sm p-3 rounded">
+                            <div className="bg-ok-soft border border-ok/40 text-ok text-sm p-3 rounded">
                                 Security key registered successfully. Redirecting to login...
                             </div>
                         ) : (
                             <button
                                 onClick={handleWebauthnRegister}
                                 disabled={webauthnLoading}
-                                className="w-full bg-blue-600 text-gray-900 dark:text-white py-2 rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                                className="w-full bg-accent text-on-accent py-2 rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
                             >
                                 {webauthnLoading ? 'Waiting for security key...' : 'Register Security Key'}
                             </button>
                         )}
 
                         {webauthnError && (
-                            <div className="bg-red-50 dark:bg-red-900/50 border border-red-300 dark:border-red-700 text-red-800 dark:text-red-300 text-sm p-2 rounded">
+                            <div className="bg-crit-soft border border-crit/40 text-crit text-sm p-2 rounded">
                                 {webauthnError}
                             </div>
                         )}
@@ -376,27 +376,27 @@ const MfaSetup: React.FC = () => {
 
                 {/* mTLS Certificate Setup Card */}
                 {mtlsCas.length > 0 && (
-                    <div className="bg-gray-100 dark:bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-300 dark:border-gray-700 space-y-4">
-                        <h3 className="text-lg font-medium text-gray-900 dark:text-white">Client Certificate (mTLS)</h3>
-                        <p className="text-sm text-gray-600 dark:text-gray-400">
+                    <div className="bg-raised p-6 rounded-lg border border-line space-y-4">
+                        <h3 className="text-lg font-medium text-ink">Client Certificate (mTLS)</h3>
+                        <p className="text-sm text-ink-muted">
                             Enroll a client certificate signed by your organization's CA for certificate-based MFA.
                         </p>
 
                         {mtlsSuccess ? (
                             <div className="space-y-3">
-                                <div className="bg-green-50 dark:bg-green-900/50 border border-green-300 dark:border-green-700 text-green-800 dark:text-green-300 text-sm p-3 rounded">
+                                <div className="bg-ok-soft border border-ok/40 text-ok text-sm p-3 rounded">
                                     Client certificate enrolled successfully.
                                 </div>
                                 {mtlsPassword && (
-                                    <div className="bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-300 dark:border-yellow-700 text-yellow-800 dark:text-yellow-300 text-sm p-3 rounded">
+                                    <div className="bg-warn-soft border border-warn/40 text-warn text-sm p-3 rounded">
                                         <p className="font-semibold mb-1">PKCS#12 Password — save this before continuing!</p>
-                                        <code className="text-lg tracking-wider select-all block mt-2 p-2 bg-gray-50 dark:bg-gray-900 rounded text-center">{mtlsPassword}</code>
-                                        <p className="text-xs text-yellow-800 dark:text-yellow-400 mt-2">This password will not be shown again. You need it to import the certificate.</p>
+                                        <code className="text-lg tracking-wider select-all block mt-2 p-2 bg-sunken rounded text-center">{mtlsPassword}</code>
+                                        <p className="text-xs text-warn mt-2">This password will not be shown again. You need it to import the certificate.</p>
                                     </div>
                                 )}
                                 <button
                                     onClick={() => { clearMtlsPassword(); setMfaSetupRequired(false); apiLogout(); }}
-                                    className="w-full bg-green-600 text-gray-900 dark:text-white py-2 rounded hover:bg-green-700 transition-colors"
+                                    className="w-full bg-ok text-on-accent py-2 rounded hover:bg-ok-hover transition-colors"
                                 >
                                     I've saved the password — Log in with MFA
                                 </button>
@@ -405,11 +405,11 @@ const MfaSetup: React.FC = () => {
                             <div className="space-y-4">
                                 {mtlsCas.length > 1 && (
                                     <div>
-                                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Signing CA</label>
+                                        <label className="block text-sm font-medium text-ink mb-1">Signing CA</label>
                                         <select
                                             value={mtlsSelectedCa}
                                             onChange={(e) => setMtlsSelectedCa(e.target.value)}
-                                            className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-3 py-2 focus:border-blue-500 focus:outline-none"
+                                            className="w-full bg-raised border border-line-strong text-ink rounded px-3 py-2 focus:border-accent focus:outline-none"
                                         >
                                             {mtlsCas.map((ca) => (
                                                 <option key={ca.caId} value={ca.caId}>{ca.caName}</option>
@@ -418,15 +418,15 @@ const MfaSetup: React.FC = () => {
                                     </div>
                                 )}
                                 {mtlsCas.length === 1 && (
-                                    <div className="text-sm text-gray-600 dark:text-gray-400">
-                                        Signed by: <span className="text-gray-900 dark:text-white">{mtlsCas[0].caName}</span>
+                                    <div className="text-sm text-ink-muted">
+                                        Signed by: <span className="text-ink">{mtlsCas[0].caName}</span>
                                     </div>
                                 )}
                                 <div>
-                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Device Name (optional)</label>
+                                    <label className="block text-sm font-medium text-ink mb-1">Device Name (optional)</label>
                                     <input
                                         type="text"
-                                        className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-3 py-2 focus:border-blue-500 focus:outline-none"
+                                        className="w-full bg-raised border border-line-strong text-ink rounded px-3 py-2 focus:border-accent focus:outline-none"
                                         value={mtlsDeviceName}
                                         onChange={(e) => setMtlsDeviceName(e.target.value)}
                                         placeholder="e.g., Work Laptop"
@@ -435,7 +435,7 @@ const MfaSetup: React.FC = () => {
                                 <button
                                     onClick={handleMtlsEnroll}
                                     disabled={mtlsLoading || !mtlsSelectedCa}
-                                    className="w-full bg-blue-600 text-gray-900 dark:text-white py-2 rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                                    className="w-full bg-accent text-on-accent py-2 rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
                                 >
                                     {mtlsLoading ? 'Generating certificate...' : 'Enroll Client Certificate'}
                                 </button>
@@ -443,7 +443,7 @@ const MfaSetup: React.FC = () => {
                         )}
 
                         {mtlsError && (
-                            <div className="bg-red-50 dark:bg-red-900/50 border border-red-300 dark:border-red-700 text-red-800 dark:text-red-300 text-sm p-2 rounded">
+                            <div className="bg-crit-soft border border-crit/40 text-crit text-sm p-2 rounded">
                                 {mtlsError}
                             </div>
                         )}

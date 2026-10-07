@@ -15,45 +15,46 @@ export interface CaCapabilities {
     label: string;
     name: string;
     isSshCa: boolean;
-    /** The tenant the CA belongs to; the console's tenant scope groups CAs by it. */
-    tenantId: string;
-    tenantName: string;
-    /** What a tenant scope in a console URL names. */
-    tenantSlug: string;
+    /** The space the CA belongs to, or null for an instance CA; the console's space scope groups CAs by it. */
+    spaceId: string | null;
+    /** Empty for an instance CA. */
+    spaceName: string;
+    /** What a space scope in a console URL names; empty for an instance CA. */
+    spaceSlug: string;
     capabilities: Capability[];
 }
 
-/** A tenant the user may scope to: one that holds at least one CA they can administer. */
-export interface TenantOption {
+/** A space the user may scope to: one that holds at least one CA they can administer. */
+export interface SpaceOption {
     id: string;
     name: string;
     slug: string;
 }
 
-/** The capabilities held across a whole tenant, as `/api/v1/me` reports them. */
-export interface TenantCapabilities {
+/** The capabilities held across a whole space, as `/api/v1/me` reports them. */
+export interface SpaceCapabilities {
     id: string;
     name: string;
     slug: string;
-    /** Held tenant-wide (plus the system-scoped ones); a grant on one CA never lands here. */
+    /** Held space-wide (plus the system-scoped ones); a grant on one CA never lands here. */
     capabilities: Capability[];
 }
 
-/** System-scoped capabilities plus every CA and tenant the user holds anything on. */
+/** System-scoped capabilities plus every CA and space the user holds anything on. */
 export interface EffectiveCapabilities {
     /** Held at system scope; these apply to every CA. */
     system: Capability[];
     /** Every CA with at least one capability, ordered by label. */
     cas: CaCapabilities[];
     /**
-     * Every tenant with at least one capability held tenant-wide, ordered by name. A tenant
-     * administrator of a tenant with no CA yet appears here and nowhere else.
+     * Every space with at least one capability held space-wide, ordered by name. A space
+     * administrator of a space with no CA yet appears here and nowhere else.
      */
-    tenants?: TenantCapabilities[];
+    spaces?: SpaceCapabilities[];
 }
 
 /** No capabilities anywhere: the shape to use while `/api/v1/me` has not answered. */
-export const NO_CAPABILITIES: EffectiveCapabilities = { system: [], cas: [], tenants: [] };
+export const NO_CAPABILITIES: EffectiveCapabilities = { system: [], cas: [], spaces: [] };
 
 /**
  * Whether `capability` is held on `caId`, or at system scope when no CA is given.
@@ -68,10 +69,20 @@ export function can(caps: EffectiveCapabilities | null | undefined, capability: 
     return !!ca && ca.capabilities.includes(capability);
 }
 
-/** Whether `capability` is held at system scope or on any CA at all. */
+/**
+ * Whether `capability` is held at system scope or on any CA. This is what the server's CA-scoped
+ * list endpoints ask of a route that names no CA, so a space-wide grant over a space with no CA
+ * yet does not count here; see `canSpaceWide` for the pages that work without one.
+ */
 export function canAnywhere(caps: EffectiveCapabilities | null | undefined, capability: Capability): boolean {
     if (!caps) return false;
     return caps.system.includes(capability) || caps.cas.some(c => c.capabilities.includes(capability));
+}
+
+/** Whether `capability` is held space-wide on any space, whether or not the space has a CA yet. */
+export function canSpaceWide(caps: EffectiveCapabilities | null | undefined, capability: Capability): boolean {
+    if (!caps) return false;
+    return (caps.spaces ?? []).some(s => s.capabilities.includes(capability));
 }
 
 /** The capabilities a Requester holds: the self-service pair. */
@@ -85,7 +96,8 @@ const SELF_SERVICE_ONLY: ReadonlySet<Capability> = new Set([Capabilities.CertReq
 export function canUseAdminConsole(caps: EffectiveCapabilities | null | undefined): boolean {
     if (!caps) return false;
     const beyond = (c: Capability) => !SELF_SERVICE_ONLY.has(c);
-    return caps.system.some(beyond) || caps.cas.some(ca => ca.capabilities.some(beyond));
+    return caps.system.some(beyond) || caps.cas.some(ca => ca.capabilities.some(beyond))
+        || (caps.spaces ?? []).some(s => s.capabilities.some(beyond));
 }
 
 /** The CAs the user may pick as a console scope: those with a console capability on them. */
@@ -94,35 +106,50 @@ export function consoleCas(caps: EffectiveCapabilities | null | undefined): CaCa
     return caps.cas.filter(ca => ca.capabilities.some(c => !SELF_SERVICE_ONLY.has(c)));
 }
 
+/** The administrable CAs with no space: the instance's own (the system signing CA, SSH CAs). */
+export function instanceCas(caps: EffectiveCapabilities | null | undefined): CaCapabilities[] {
+    return consoleCas(caps).filter(ca => ca.spaceId == null);
+}
+
 /**
- * The tenants the user may scope to: those holding an administrable CA, in first-seen order,
- * then those administered tenant-wide that have no CA yet.
+ * The spaces the user may scope to: those holding an administrable CA, in first-seen order,
+ * then those administered space-wide that have no CA yet. Instance CAs belong to no space.
  */
-export function tenantsOf(caps: EffectiveCapabilities | null | undefined): TenantOption[] {
-    const seen = new Map<string, TenantOption>();
+export function spacesOf(caps: EffectiveCapabilities | null | undefined): SpaceOption[] {
+    const seen = new Map<string, SpaceOption>();
     for (const ca of consoleCas(caps)) {
-        if (!seen.has(ca.tenantId)) seen.set(ca.tenantId, { id: ca.tenantId, name: ca.tenantName || ca.tenantSlug, slug: ca.tenantSlug });
+        if (ca.spaceId != null && !seen.has(ca.spaceId)) seen.set(ca.spaceId, { id: ca.spaceId, name: ca.spaceName || ca.spaceSlug, slug: ca.spaceSlug });
     }
-    for (const t of caps?.tenants ?? []) {
-        if (!seen.has(t.id) && t.capabilities.some(c => !SELF_SERVICE_ONLY.has(c))) seen.set(t.id, { id: t.id, name: t.name || t.slug, slug: t.slug });
+    for (const s of caps?.spaces ?? []) {
+        if (!seen.has(s.id) && s.capabilities.some(c => !SELF_SERVICE_ONLY.has(c))) seen.set(s.id, { id: s.id, name: s.name || s.slug, slug: s.slug });
     }
     return [...seen.values()];
 }
 
-/** Whether `capability` is held on any CA of the tenant. */
-export function canInTenant(caps: EffectiveCapabilities | null | undefined, capability: Capability, tenantId: string): boolean {
+/** Whether `capability` is held space-wide or on any CA of the space. */
+export function canInSpace(caps: EffectiveCapabilities | null | undefined, capability: Capability, spaceId: string): boolean {
     if (!caps) return false;
-    return caps.cas.some(c => c.tenantId === tenantId && c.capabilities.includes(capability));
+    if (caps.spaces?.some(s => s.id === spaceId && s.capabilities.includes(capability))) return true;
+    return caps.cas.some(c => c.spaceId === spaceId && c.capabilities.includes(capability));
 }
 
 /**
- * Whether `capability` is held for the whole tenant: at system scope or tenant-wide. This is
- * what creating a CA in the tenant takes; holding it on one CA of the tenant is not enough,
- * which is why this is not `canInTenant`.
+ * Whether `capability` is held at system scope or on a CA of the space: what a CA-scoped list
+ * endpoint needs, which a space-wide grant over a space with no CA does not meet.
  */
-export function canAtTenant(caps: EffectiveCapabilities | null | undefined, capability: Capability, tenantId: string): boolean {
+export function canOnCaInSpace(caps: EffectiveCapabilities | null | undefined, capability: Capability, spaceId: string): boolean {
+    if (!caps) return false;
+    return caps.system.includes(capability) || caps.cas.some(c => c.spaceId === spaceId && c.capabilities.includes(capability));
+}
+
+/**
+ * Whether `capability` is held for the whole space: at system scope or space-wide. This is
+ * what creating a CA in the space takes; holding it on one CA of the space is not enough,
+ * which is why this is not `canInSpace`.
+ */
+export function canAtSpace(caps: EffectiveCapabilities | null | undefined, capability: Capability, spaceId: string): boolean {
     if (!caps) return false;
     if (caps.system.includes(capability)) return true;
-    const t = caps.tenants?.find(x => x.id === tenantId);
-    return !!t && t.capabilities.includes(capability);
+    const s = caps.spaces?.find(x => x.id === spaceId);
+    return !!s && s.capabilities.includes(capability);
 }

@@ -141,7 +141,8 @@ public class AdminWebTlsController(
     /// MFA verification via the <c>X-MFA-Token</c> header, scoped to the <c>reissue-cert</c>
     /// operation with target <c>webtls</c>. Emits a
     /// <see cref="AuditActionType.CertificateReissued"/> record on both the success and failure
-    /// branches so SIEM can correlate Web TLS reissue attempts regardless of outcome.
+    /// branches so SIEM can correlate Web TLS reissue attempts regardless of outcome. A SAN that
+    /// is not <c>DNS:</c> or <c>IP:</c> is a 400: the infrastructure CSR builder would drop it.
     /// </summary>
     /// <remarks>
     /// True hot-reload (rebuilding <c>config/api-tls.pfx</c> and calling <c>SetCertificate</c>)
@@ -218,6 +219,15 @@ public class AdminWebTlsController(
             return BadRequest(new { error = $"Signing profile {signingProfileId} not found." });
 
         var sans = request.Sans ?? new List<string>();
+        // The Web TLS certificate carries DNS and IP names only; anything else, or an unprefixed
+        // line, is refused here rather than issued.
+        foreach (var san in sans)
+        {
+            var colon = san?.IndexOf(':') ?? -1;
+            var type = colon > 0 ? san![..colon].Trim() : string.Empty;
+            if (!type.Equals("DNS", StringComparison.OrdinalIgnoreCase) && !type.Equals("IP", StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new { error = $"SAN '{san}' is not supported on the Web TLS certificate; use DNS:name or IP:address." });
+        }
         var validityDays = request.ValidityDays ?? 397;
         var keyAlgorithm = request.KeyAlgorithm ?? "ECDSA";
         var keySize = request.KeySize > 0 ? request.KeySize : 256;
@@ -489,7 +499,9 @@ public class AdminWebTlsController(
     }
 
     /// <summary>
-    /// Persists the in-memory config to config.yaml after PFX password update.
+    /// Persists the in-memory config to config.yaml after PFX password update, through
+    /// <see cref="ModularCA.Shared.Utils.ConfigYamlWriter"/> (no <c>DB</c> section, written in place
+    /// so the file keeps its owner, group and mode).
     /// </summary>
     private void PersistConfig()
     {
@@ -504,12 +516,8 @@ public class AdminWebTlsController(
         {
             envOverlay.WithSecretsProtected(_config, () =>
             {
-                var serializer = new YamlDotNet.Serialization.SerializerBuilder()
-                    .WithNamingConvention(YamlDotNet.Serialization.NamingConventions.PascalCaseNamingConvention.Instance)
-                    .Build();
-                var yaml = serializer.Serialize(_config);
                 var configPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
-                System.IO.File.WriteAllText(configPath, yaml);
+                ModularCA.Shared.Utils.ConfigYamlWriter.Write(configPath, _config);
             });
         }
         catch (Exception ex)

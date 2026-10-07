@@ -32,16 +32,6 @@ namespace ModularCA.Tests.Auth;
 /// </summary>
 public class UserUpdateSelfCollisionTests
 {
-    /// <summary>Tenant filter off; this suite is about uniqueness, not tenancy.</summary>
-    private sealed class NoTenantContext : ITenantContext
-    {
-        public bool HasContext => true;
-        public bool IsSystemAdmin => true;
-        public IReadOnlySet<Guid> AccessibleTenantIds => new HashSet<Guid>();
-        public Guid? UserId => null;
-        public void Set(Guid? userId, IReadOnlySet<Guid> accessibleTenantIds, bool isSystemAdmin) { }
-    }
-
     private static ModularCADbContext BuildContext(string dbName)
     {
         var options = new DbContextOptionsBuilder<ModularCADbContext>()
@@ -49,7 +39,7 @@ public class UserUpdateSelfCollisionTests
             .ConfigureWarnings(w => w.Ignore(
                 Microsoft.EntityFrameworkCore.Diagnostics.InMemoryEventId.TransactionIgnoredWarning))
             .Options;
-        return new ModularCADbContext(options, new NoTenantContext());
+        return new ModularCADbContext(options);
     }
 
     private static UserManagementService BuildService(ModularCADbContext db)

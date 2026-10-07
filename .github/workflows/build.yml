@@ -53,6 +53,49 @@ jobs:
       - name: Test
         run: dotnet test tests/ModularCA.Tests/ModularCA.Tests.csproj -c Debug --no-build --logger "console;verbosity=normal"
 
+      - name: Packaging shell tests
+        run: bash packaging/debian/tests/db-ownership-test.sh
+
+  # The opt-in PostgreSQL tests (Category=PostgreSQL), against the oldest and newest supported
+  # majors. They skip in the job above, which has no MODULARCA_TEST_PG.
+  postgres:
+    name: PostgreSQL ${{ matrix.pg }} harness
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ['14', '16']
+    services:
+      postgres:
+        image: postgres:${{ matrix.pg }}
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build
+        run: dotnet build tests/ModularCA.Tests/ModularCA.Tests.csproj -c Debug
+
+      # The restore drill runs the node itself, which the test project does not reference.
+      - name: Build the node
+        run: dotnet build ModularCA.API/ModularCA.API.csproj -c Debug
+
+      - name: Test
+        env:
+          MODULARCA_TEST_PG: Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=postgres
+        run: dotnet test tests/ModularCA.Tests/ModularCA.Tests.csproj -c Debug --no-build --filter "Category=PostgreSQL" --logger "console;verbosity=normal"
+
   web-tests:
     name: Web unit tests
     runs-on: ubuntu-latest

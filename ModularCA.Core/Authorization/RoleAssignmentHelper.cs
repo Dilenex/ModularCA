@@ -38,7 +38,7 @@ public static class RoleAssignmentHelper
             {
                 RoleId = role.Id,
                 GroupId = group.Id,
-                TenantId = group.TenantId,
+                SpaceId = group.SpaceId,
                 CertificateAuthorityId = group.CertificateAuthorityId,
             });
         }

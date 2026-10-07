@@ -323,20 +323,20 @@ public class MsaeEnrollmentService(
             EnrollmentAuditEvent.Issued => protocolAudit.LogMsaeAsync(
                 renewed ? RenewOperation : EnrollOperation, record.Subject, record.SerialNumber,
                 record.KeyAlgorithm, record.KeySize, audit.TemplateName, record.CaLabel, audit.SourceIp,
-                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                certificateAuthorityId: record.CaId, spaceId: record.SpaceId,
                 callerPrincipal: audit.Caller.AuditPrincipal, realm: audit.Caller.Realm, authMethod: audit.Caller.AuthMethod),
 
             EnrollmentAuditEvent.Pending => protocolAudit.LogMsaeAsync(
                 PendingOperation, record.Subject, null,
                 record.KeyAlgorithm, record.KeySize, audit.TemplateName, record.CaLabel, audit.SourceIp,
-                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                certificateAuthorityId: record.CaId, spaceId: record.SpaceId,
                 callerPrincipal: audit.Caller.AuditPrincipal, realm: audit.Caller.Realm, authMethod: audit.Caller.AuthMethod),
 
             _ => protocolAudit.LogMsaeAsync(
                 RejectOperation, audit.Csr.SubjectName, null,
                 audit.Csr.KeyAlgorithm, audit.Csr.KeySize, audit.TemplateName, record.CaLabel, audit.SourceIp,
                 success: false, errorMessage: record.Message ?? "Enrollment refused.",
-                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                certificateAuthorityId: record.CaId, spaceId: record.SpaceId,
                 callerPrincipal: audit.Caller.AuditPrincipal, realm: audit.Caller.Realm, authMethod: audit.Caller.AuthMethod),
         };
 
@@ -347,10 +347,10 @@ public class MsaeEnrollmentService(
 
         // Everything a stranger could learn is folded into one answer: a request that does not
         // exist, belongs to someone else, or sits at another CA all read as denied.
-        async Task<MsaeStatusResult> DeniedAsync(string reason, Guid? caId = null, Guid? tenantId = null)
+        async Task<MsaeStatusResult> DeniedAsync(string reason, Guid? caId = null, Guid? spaceId = null)
         {
             await protocolAudit.LogMsaeAsync(RejectOperation, null, null, null, null, null, caLabel, sourceIp,
-                success: false, errorMessage: reason, certificateAuthorityId: caId, tenantId: tenantId,
+                success: false, errorMessage: reason, certificateAuthorityId: caId, spaceId: spaceId,
                 callerPrincipal: caller.AuditPrincipal, realm: caller.Realm, authMethod: caller.AuthMethod);
             return new MsaeStatusResult(MsaeRequestState.Denied, Reason: reason);
         }
@@ -368,27 +368,27 @@ public class MsaeEnrollmentService(
         var context = await caResolver.ResolveAsync(caLabel, Protocol);
         var ca = context.Ca;
         if (ca == null || request.SigningProfile == null || request.SigningProfile.IssuerId != ca.CertificateId)
-            return await DeniedAsync($"Request {id} does not belong to CA '{caLabel}'.", ca?.Id, ca?.TenantId);
+            return await DeniedAsync($"Request {id} does not belong to CA '{caLabel}'.", ca?.Id, ca?.SpaceId);
 
         var requestor = await db.Users.AsNoTracking()
             .Where(u => u.Username == caller.ActingAsUsername)
             .Select(u => (Guid?)u.Id)
             .FirstOrDefaultAsync();
         if (request.RequestorUserId == null || requestor == null || request.RequestorUserId != requestor)
-            return await DeniedAsync($"Request {id} was not submitted by this caller.", ca.Id, ca.TenantId);
+            return await DeniedAsync($"Request {id} was not submitted by this caller.", ca.Id, ca.SpaceId);
 
         if (request.IssuedCertificateId != null && request.IssuedCertificate != null)
         {
             await protocolAudit.LogMsaeAsync(CollectOperation, request.Subject, request.IssuedCertificate.SerialNumber,
                 request.KeyAlgorithm, request.KeySize, null, ca.Label, sourceIp,
-                certificateAuthorityId: ca.Id, tenantId: ca.TenantId,
+                certificateAuthorityId: ca.Id, spaceId: ca.SpaceId,
                 callerPrincipal: caller.AuditPrincipal, realm: caller.Realm, authMethod: caller.AuthMethod);
             return new MsaeStatusResult(MsaeRequestState.Issued, await BuildChainPkcs7Async(request.IssuedCertificate.Pem, request.SigningProfile));
         }
 
         return request.Status switch
         {
-            "Rejected" or "Cancelled" => await DeniedAsync($"Request {id} was {request.Status.ToLowerInvariant()} by an operator.", ca.Id, ca.TenantId),
+            "Rejected" or "Cancelled" => await DeniedAsync($"Request {id} was {request.Status.ToLowerInvariant()} by an operator.", ca.Id, ca.SpaceId),
             _ => new MsaeStatusResult(MsaeRequestState.Pending),
         };
     }
@@ -548,7 +548,7 @@ public class MsaeEnrollmentService(
         await protocolAudit.LogMsaeAsync(RejectOperation, audit.Csr.SubjectName, null,
             audit.Csr.KeyAlgorithm, audit.Csr.KeySize, audit.TemplateName, ca?.Label ?? caLabel, audit.SourceIp,
             success: false, errorMessage: reason,
-            certificateAuthorityId: ca?.Id, tenantId: ca?.TenantId,
+            certificateAuthorityId: ca?.Id, spaceId: ca?.SpaceId,
             callerPrincipal: audit.Caller.AuditPrincipal, realm: audit.Caller.Realm, authMethod: audit.Caller.AuthMethod);
         return new MsaeEnrollmentException(reason);
     }

@@ -385,6 +385,12 @@ keystores/
 # Packaging metadata is not operator config and build-deb.sh reads it, so a clean clone must
 # have it — without this negation `scripts/build-deb.sh` fails on a fresh checkout.
 !packaging/nfpm.yaml
+# Deployment manifests are documented and shipped, and hold no secret.
+!deploy/container/*.yaml
+!deploy/compose/*.yaml
+# The ACME client matrix: a throwaway install and the clients' own configuration.
+!tests/acme-clients/*.yaml
+!tests/acme-clients/traefik/*.yaml
 
 # Policy files (track examples, ignore active policies)
 config/policies/*.yaml

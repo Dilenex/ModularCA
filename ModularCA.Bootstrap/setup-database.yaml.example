@@ -1,9 +1,15 @@
-# Root database credentials for initial setup
-# This file is deleted after successful setup (root creds are no longer needed)
+# Superuser database credentials for initial setup.
+# This file is deleted after successful setup (the superuser password is no longer needed).
+#
+# PostgreSQL 14 or later. SqlRoot must be a PostgreSQL SUPERUSER (on a default installation, the
+# "postgres" role); CREATEDB and CREATEROLE are not enough. Bootstrap checks this before it changes
+# anything and refuses otherwise. The node runs as the SqlApp and SqlAudit roles, never as SqlRoot.
+# Bootstrap builds the schema by logging in as those two roles, so pg_hba.conf must allow password
+# logins for both from this host.
 SqlRoot:
   Host: localhost
-  Port: 3306
-  Username: root
+  Port: 5432
+  Username: postgres
   Password: "your-root-password-here"
 
 SqlApp:

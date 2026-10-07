@@ -113,6 +113,45 @@ public class DocumentedApiPathTests
             + string.Join("\n  ", unresolved));
     }
 
+    /// <summary>An endpoint entry in the docs UI's API reference data: its method, then its path.</summary>
+    private static readonly Regex EndpointEntry =
+        new(@"method:\s*'(GET|POST|PUT|DELETE|PATCH)',\s*path:\s*'(/api/[^']*)'", RegexOptions.Compiled);
+
+    /// <summary>The API reference data files (<c>src/data/endpoints</c>), enumerated like the pages.</summary>
+    public static TheoryData<string> EndpointDataFiles()
+    {
+        var data = new TheoryData<string>();
+        var root = Path.Combine(RepoRoot(), "modularca.docsui", "src", "data", "endpoints");
+        foreach (var file in Directory.EnumerateFiles(root, "*.ts", SearchOption.AllDirectories).OrderBy(f => f, StringComparer.Ordinal))
+            data.Add(Path.GetRelativePath(root, file).Replace('\\', '/'));
+        return data;
+    }
+
+    /// <summary>
+    /// Every endpoint the API reference data lists is one the API serves, and none names the
+    /// pre-0.4.0 tenant routes, which have no alias left on the server.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(EndpointDataFiles))]
+    public void Every_endpoint_the_api_reference_lists_is_one_the_api_serves(string relativePath)
+    {
+        var path = Path.Combine(RepoRoot(), "modularca.docsui", "src", "data", "endpoints", relativePath);
+        var text = File.ReadAllText(path);
+        var real = RealRoutes();
+
+        var unresolved = EndpointEntry.Matches(text)
+            .Select(m => (Verb: m.Groups[1].Value, Path: m.Groups[2].Value))
+            .Where(d => !Resolves(d.Verb, d.Path, real))
+            .Select(d => $"{d.Verb} {d.Path}")
+            .Distinct()
+            .OrderBy(x => x, StringComparer.Ordinal)
+            .ToList();
+
+        Assert.True(unresolved.Count == 0,
+            $"{relativePath} lists {unresolved.Count} endpoint(s) the API does not serve:\n  " + string.Join("\n  ", unresolved));
+        Assert.DoesNotContain("/admin/tenants", text, StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>
     /// A documented path resolves if it matches a route exactly, or — when it ends in a slash,
     /// which is how the ASCII sequence diagrams wrap a long path across two cells — if it is a

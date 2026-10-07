@@ -25,7 +25,9 @@ public interface ICaResolverService
 
     /// <summary>
     /// Resolves the CA entity a protocol request addresses: the enabled CA with the given label,
-    /// or — when no label is supplied — the default CA, falling back to any enabled CA.
+    /// or — when no label is supplied — the default CA, falling back to any enabled CA. The
+    /// fallback never picks an SSH CA or a CA with a reserved <c>system-</c> label. Labels are
+    /// unique across the instance, so a label names one CA.
     /// </summary>
     /// <remarks>
     /// Exposed so that authorization decisions are made against the same CA that will issue.

@@ -56,8 +56,13 @@ public class AuditService : IAuditService
 
     /// <summary>
     /// Persists an audit log entry. When <paramref name="certificateAuthorityId"/> is provided,
-    /// the event is scoped to that CA for filtered audit queries. The <paramref name="details"/>
+    /// the event is scoped to that CA for filtered audit queries. <paramref name="spaceId"/> is
+    /// stamped on the record as its space; every new record goes into the instance chain whatever
+    /// its space. The <paramref name="details"/>
     /// object is serialized and scrubbed via <see cref="AuditJsonScrubber"/> before persistence.
+    /// String fields are fitted to their columns, and the write goes through
+    /// <see cref="AuditHashChainService.AppendAsync"/>, which detaches a failed entry so it does
+    /// not poison later writes in this scope.
     /// </summary>
     public async Task LogAsync(
         string actionType,
@@ -70,7 +75,7 @@ public class AuditService : IAuditService
         bool success = true,
         string? errorMessage = null,
         Guid? certificateAuthorityId = null,
-        Guid? tenantId = null)
+        Guid? spaceId = null)
     {
         if (_auditDb == null)
         {
@@ -104,27 +109,33 @@ public class AuditService : IAuditService
                 Success = success,
                 ErrorMessage = errorMessage,
                 CertificateAuthorityId = certificateAuthorityId,
-                TenantId = tenantId,
+                // Every new record joins the single instance chain (0.4.0 S3); the space is
+                // recorded beside it and does not select the chain.
+                TenantId = null,
+                SpaceId = spaceId,
                 // The badge the actor wore. Forgetting which hat you wear is the classic
                 // failure of restricted-rights features; the trail must not share it.
                 AccessBadgeId = _wornBadge?.BadgeId,
                 AccessBadgeName = _wornBadge?.BadgeName,
             };
 
-            // Compute hash chain for tamper-evident audit trail
-            IDisposable? chainLock = null;
-            try
+            if (_hashChain != null)
             {
-                if (_hashChain != null)
-                {
-                    chainLock = await _hashChain.AcquireAndComputeAsync(_auditDb, entry);
-                }
-                _auditDb.AuditLogs.Add(entry);
-                await _auditDb.SaveChangesAsync();
+                await _hashChain.AppendAsync(_auditDb, entry);
             }
-            finally
+            else
             {
-                chainLock?.Dispose();
+                AuditHashChainService.FitToColumns(entry);
+                _auditDb.AuditLogs.Add(entry);
+                try
+                {
+                    await _auditDb.SaveChangesAsync();
+                }
+                catch
+                {
+                    _auditDb.Entry(entry).State = Microsoft.EntityFrameworkCore.EntityState.Detached;
+                    throw;
+                }
             }
         }
         catch (Exception ex)
@@ -216,9 +227,11 @@ public class AuditService : IAuditService
             AuditActionType.KeyCeremonyExecuted or
             AuditActionType.KeyCeremonyCancelled or
             AuditActionType.KeyCeremonyExpired or
+            AuditActionType.ControlledUserChangeRefused or
             // Authentication
             AuditActionType.UserLogin or
             AuditActionType.UserLoginFailed or
+            AuditActionType.SessionRefreshNotice or
             AuditActionType.UserCertLogin or
             AuditActionType.UserLogout or
             // MFA
@@ -245,6 +258,7 @@ public class AuditService : IAuditService
             // Backup / restore
             AuditActionType.BackupCreated or
             AuditActionType.BackupRestored or
+            AuditActionType.CrlNumbersRaisedOnRestore or
             // Privileged access
             AuditActionType.SystemAdminElevatedAccess;
 

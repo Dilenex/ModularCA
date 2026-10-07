@@ -5,8 +5,8 @@ using ModularCA.Shared.Enums;
 namespace ModularCA.Shared.Entities;
 
 /// <summary>
-/// One Active Directory forest bound to one tenant for Windows autoenrollment over Kerberos.
-/// A ticket sealed by this realm is accepted only for CAs of <see cref="TenantId"/>, only when
+/// One Active Directory forest bound to one space for Windows autoenrollment over Kerberos.
+/// A ticket sealed by this realm is accepted only for CAs of <see cref="SpaceId"/>, only when
 /// it names <see cref="ServicePrincipal"/>, and only with one of the realm's live
 /// <see cref="Keys"/>. The forest's principals act with the capabilities of
 /// <see cref="EnrollmentUserId"/>, so every existing enrollment check applies unchanged.
@@ -17,10 +17,10 @@ public class KerberosRealmEntity
     [Key]
     public Guid Id { get; set; } = Guid.NewGuid();
 
-    /// <summary>The tenant this forest belongs to. The isolation boundary.</summary>
-    public Guid TenantId { get; set; }
+    /// <summary>The space this forest belongs to, or null for an instance realm serving instance CAs.</summary>
+    public Guid? SpaceId { get; set; }
 
-    /// <summary>Upper-case Kerberos realm, e.g. <c>CORP.CUSTOMER-A.LOCAL</c>. Unique across tenants.</summary>
+    /// <summary>Upper-case Kerberos realm, e.g. <c>CORP.CUSTOMER-A.LOCAL</c>. Unique across spaces.</summary>
     [MaxLength(255)]
     public string Realm { get; set; } = string.Empty;
 
@@ -52,8 +52,8 @@ public class KerberosRealmEntity
     /// <summary>When a ticket from this realm was last accepted.</summary>
     public DateTime? LastUsedAt { get; set; }
 
-    [ForeignKey(nameof(TenantId))]
-    public virtual TenantEntity? Tenant { get; set; }
+    [ForeignKey(nameof(SpaceId))]
+    public virtual SpaceEntity? Space { get; set; }
 
     [ForeignKey(nameof(EnrollmentUserId))]
     public virtual UserEntity? EnrollmentUser { get; set; }

@@ -45,11 +45,12 @@ namespace ModularCA.Core.Services
 
         /// <summary>
         /// Creates a new certificate profile entity from the given request.
-        /// <paramref name="tenantId"/> stamps the profile with the owning tenant
-        /// so the EF global query filter fences it to callers with access to that tenant.
+        /// <paramref name="spaceId"/> stamps the profile with its space (null for the instance).
+        /// The inheritance parent is checked by <see cref="EnsureParentAllowedAsync"/>.
         /// </summary>
-        public async Task<CertProfileDto> CreateAsync(CreateCertProfileRequest request, Guid? tenantId = null)
+        public async Task<CertProfileDto> CreateAsync(CreateCertProfileRequest request, Guid? spaceId = null, Func<Guid?, Guid?, bool>? parentAllowed = null)
         {
+            await EnsureParentAllowedAsync(request.InheritsFromId, null, spaceId, request.CertificateAuthorityId, parentAllowed);
             var profile = new CertProfileEntity
             {
                 Name = request.Name,
@@ -66,7 +67,7 @@ namespace ModularCA.Core.Services
                 AllowedKeySizes = request.AllowedKeySizes,
                 AllowedSignatureAlgorithms = request.AllowedSignatureAlgorithms,
                 CertificateAuthorityId = request.CertificateAuthorityId,
-                TenantId = tenantId,
+                SpaceId = spaceId,
                 InheritsFromId = request.InheritsFromId,
                 InheritanceEnabled = request.InheritanceEnabled
             };
@@ -78,12 +79,15 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
-        /// Updates an existing certificate profile by ID with the supplied request values.
+        /// Updates an existing certificate profile by ID with the supplied request values. A changed
+        /// inheritance parent, or a changed CA binding, is checked by <see cref="EnsureParentAllowedAsync"/>.
         /// </summary>
-        public async Task UpdateAsync(Guid id, UpdateCertProfileRequest request)
+        public async Task UpdateAsync(Guid id, UpdateCertProfileRequest request, Func<Guid?, Guid?, bool>? parentAllowed = null)
         {
             var profile = await _db.CertProfiles.FindAsync(id);
             if (profile == null) throw new KeyNotFoundException("Profile not found");
+            if (request.InheritsFromId != profile.InheritsFromId || request.CertificateAuthorityId != profile.CertificateAuthorityId)
+                await EnsureParentAllowedAsync(request.InheritsFromId, id, profile.SpaceId, request.CertificateAuthorityId, parentAllowed);
 
             profile.Name = request.Name;
             profile.Description = request.Description;
@@ -104,6 +108,35 @@ namespace ModularCA.Core.Services
             profile.UpdatedAt = DateTime.UtcNow;
 
             await _db.SaveChangesAsync();
+        }
+
+        /// <summary>
+        /// Refuses an inheritance parent the caller may not see: one that does not exist, is the
+        /// child itself, or fails <paramref name="parentAllowed"/> (the caller's fence over the
+        /// parent's space and CA) is not found. A parent the caller sees must also be in the
+        /// child's own scope (<paramref name="childSpaceId"/>, null for the instance) or be
+        /// instance-wide (no space, no CA), and a parent bound to a CA must be bound to the child's
+        /// CA (<paramref name="childCaId"/>), so a caller in two spaces cannot make one space's
+        /// profile inherit from the other's
+        /// (<see cref="ModularCA.Shared.Errors.ConfigurationValidationException"/>).
+        /// </summary>
+        private async Task EnsureParentAllowedAsync(Guid? parentId, Guid? childId, Guid? childSpaceId, Guid? childCaId, Func<Guid?, Guid?, bool>? parentAllowed)
+        {
+            if (parentId is not Guid id)
+                return;
+            var parent = id == childId ? null : await _db.CertProfiles.AsNoTracking()
+                .Where(p => p.Id == id)
+                .Select(p => new { p.SpaceId, p.CertificateAuthorityId })
+                .FirstOrDefaultAsync();
+            if (parent == null || (parentAllowed != null && !parentAllowed(parent.SpaceId, parent.CertificateAuthorityId)))
+                throw new ModularCA.Shared.Errors.ResourceNotFoundException(
+                    "Certificate profile", $"Parent certificate profile '{id}' not found.", id.ToString());
+            if (parent.SpaceId != childSpaceId && !(parent.SpaceId == null && parent.CertificateAuthorityId == null))
+                throw new ModularCA.Shared.Errors.ConfigurationValidationException(
+                    $"Parent certificate profile '{id}' belongs to another scope; a profile inherits only from its own scope's profiles or an instance-wide one.");
+            if (parent.CertificateAuthorityId != null && parent.CertificateAuthorityId != childCaId)
+                throw new ModularCA.Shared.Errors.ConfigurationValidationException(
+                    $"Parent certificate profile '{id}' is bound to another CA; a profile inherits from a CA-bound profile only when bound to the same CA.");
         }
 
         /// <summary>
@@ -217,6 +250,7 @@ namespace ModularCA.Core.Services
             AllowedKeySizes = profile.AllowedKeySizes,
             AllowedSignatureAlgorithms = profile.AllowedSignatureAlgorithms,
             CertificateAuthorityId = profile.CertificateAuthorityId,
+            SpaceId = profile.SpaceId,
             InheritsFromId = profile.InheritsFromId,
             InheritanceEnabled = profile.InheritanceEnabled
         };

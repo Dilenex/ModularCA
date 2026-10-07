@@ -9,7 +9,7 @@ import React from 'react';
  *
  *  - *"all users interacting with it remotely"* — so this has to appear on the unauthenticated
  *    surface too, not only behind a login. publicui is the load-bearing placement; the others
- *    matter because operators and tenant staff are remote users as well.
+ *    matter because operators and space administrators are remote users as well.
  *  - *"the Corresponding Source"* — of the running build, not of whatever `main` happens to be.
  *    So the notice names the version and commit, taken from the build-time constants each SPA
  *    already carries, rather than linking to a moving branch.
@@ -84,7 +84,7 @@ export const SourceNotice: React.FC<SourceNoticeProps> = ({
     const showCommit = !!commit && commit !== 'unknown';
 
     return (
-        <div className={`text-xs text-gray-600 dark:text-gray-400 ${className}`}>
+        <div className={`text-xs text-ink-muted ${className}`}>
             <span>ModularCA </span>
             <span className="font-mono">v{version}</span>
             <span aria-hidden="true"> · </span>
@@ -92,7 +92,7 @@ export const SourceNotice: React.FC<SourceNoticeProps> = ({
                 href={href}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="underline hover:text-gray-900 dark:hover:text-gray-100"
+                className="underline hover:text-ink"
             >
                 Source code
             </a>
@@ -116,7 +116,7 @@ export const SourceNotice: React.FC<SourceNoticeProps> = ({
                 href={noticesUrlForCommit(sourceCodeUrl, commit ?? '')}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="underline hover:text-gray-900 dark:hover:text-gray-100"
+                className="underline hover:text-ink"
             >
                 Third-party notices
             </a>

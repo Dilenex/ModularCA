@@ -16,7 +16,8 @@ export interface AuthGroup {
     isSystemGroup: boolean;
     certificateAuthorityId: string | null;
     caLabel: string | null;
-    tenantId: string;
+    /** The group's space, or null for an instance group. */
+    spaceId: string | null;
 }
 
 export interface AuthMeResponse {
@@ -41,7 +42,8 @@ export interface AuthMeResponse {
         webauthn: boolean;
         mtls: boolean;
     };
-    tenantId: string | null;
+    /** The caller's primary space, from their group memberships; null when they hold only instance groups. */
+    spaceId: string | null;
 }
 
 export interface AuthContextValue {

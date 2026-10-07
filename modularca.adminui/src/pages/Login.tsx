@@ -143,25 +143,25 @@ const Login: React.FC = () => {
     };
 
     return (
-        <div className="flex justify-center items-center min-h-screen bg-gray-50 dark:bg-gray-900">
+        <div className="flex justify-center items-center min-h-screen bg-ground">
             {!showPasswordChange ? (
                 <form
                     onSubmit={handleLogin}
-                    className="bg-gray-100 dark:bg-gray-800 p-8 rounded-lg shadow-lg w-full max-w-md space-y-6 border border-gray-300 dark:border-gray-700"
+                    className="bg-raised p-8 rounded-lg w-full max-w-md space-y-6 border border-line"
                 >
-                    <h2 className="text-2xl font-semibold text-center text-gray-900 dark:text-white">ModularCA</h2>
+                    <h2 className="text-2xl font-semibold text-center text-ink">ModularCA</h2>
 
                     {error && <InlineNotice notice={error} />}
-                    {changeSuccess && <div className="bg-green-50 dark:bg-green-900/50 border border-green-300 dark:border-green-700 text-green-800 dark:text-green-300 text-sm text-center p-2 rounded">{changeSuccess}</div>}
+                    {changeSuccess && <div className="bg-ok-soft border border-ok/40 text-ok text-sm text-center p-2 rounded">{changeSuccess}</div>}
 
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300" htmlFor="login-username">Username</label>
+                        <label className="block text-sm font-medium text-ink" htmlFor="login-username">Username</label>
                         <input
                             id="login-username"
                             name="username"
                             type="text"
                             autoComplete="username"
-                            className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-3 py-2 mt-1 focus:border-blue-500 focus:outline-none"
+                            className="w-full bg-raised border border-line-strong text-ink rounded px-3 py-2 mt-1 focus:border-accent focus:outline-none"
                             value={username}
                             onChange={e => setUsername(e.target.value)}
                             required
@@ -169,12 +169,12 @@ const Login: React.FC = () => {
                     </div>
 
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300" htmlFor="login-password">Password</label>
+                        <label className="block text-sm font-medium text-ink" htmlFor="login-password">Password</label>
                         <input
                             id="login-password"
                             name="password"
                             type="password"
-                            className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-3 py-2 mt-1 focus:border-blue-500 focus:outline-none"
+                            className="w-full bg-raised border border-line-strong text-ink rounded px-3 py-2 mt-1 focus:border-accent focus:outline-none"
                             value={password}
                             onChange={e => setPassword(e.target.value)}
                             required
@@ -185,7 +185,7 @@ const Login: React.FC = () => {
                     <button
                         type="submit"
                         disabled={loading}
-                        className="w-full bg-blue-600 text-gray-900 dark:text-white py-2 rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                        className="w-full bg-accent text-on-accent py-2 rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
                     >
                         {loading ? 'Logging in...' : 'Login'}
                     </button>
@@ -193,14 +193,14 @@ const Login: React.FC = () => {
                     {mtlsInfo?.enabled && (
                         <>
                             <div className="flex items-center gap-3 my-4">
-                                <div className="flex-1 h-px bg-gray-300 dark:bg-gray-700" />
-                                <span className="text-xs text-gray-600">or</span>
-                                <div className="flex-1 h-px bg-gray-300 dark:bg-gray-700" />
+                                <div className="flex-1 h-px bg-line" />
+                                <span className="text-xs text-ink-muted">or</span>
+                                <div className="flex-1 h-px bg-line" />
                             </div>
                             <button
                                 onClick={handleCertLogin}
                                 type="button"
-                                className="w-full px-4 py-2 text-sm font-medium border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors flex items-center justify-center gap-2"
+                                className="w-full px-4 py-2 text-sm font-medium border border-line-strong bg-raised text-ink rounded hover:bg-hover transition-colors flex items-center justify-center gap-2"
                             >
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg>
                                 Sign in with Certificate
@@ -211,20 +211,20 @@ const Login: React.FC = () => {
             ) : (
                 <form
                     onSubmit={handlePasswordChange}
-                    className="bg-gray-100 dark:bg-gray-800 p-8 rounded-lg shadow-lg w-full max-w-md space-y-6 border border-gray-300 dark:border-gray-700"
+                    className="bg-raised p-8 rounded-lg w-full max-w-md space-y-6 border border-line"
                 >
-                    <h2 className="text-2xl font-semibold text-center text-gray-900 dark:text-white">Password Change Required</h2>
-                    <p className="text-sm text-gray-600 dark:text-gray-400 text-center">
+                    <h2 className="text-2xl font-semibold text-center text-ink">Password Change Required</h2>
+                    <p className="text-sm text-ink-muted text-center">
                         You must change your password before continuing.
                     </p>
 
                     {error && <InlineNotice notice={error} />}
 
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Current Password</label>
+                        <label className="block text-sm font-medium text-ink">Current Password</label>
                         <input
                             type="password"
-                            className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-600 dark:text-gray-400 rounded px-3 py-2 mt-1 focus:border-blue-500 focus:outline-none"
+                            className="w-full bg-raised border border-line-strong text-ink-muted rounded px-3 py-2 mt-1 focus:border-accent focus:outline-none"
                             value={password}
                             readOnly
                             autoComplete="current-password"
@@ -232,10 +232,10 @@ const Login: React.FC = () => {
                     </div>
 
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">New Password</label>
+                        <label className="block text-sm font-medium text-ink">New Password</label>
                         <input
                             type="password"
-                            className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-3 py-2 mt-1 focus:border-blue-500 focus:outline-none"
+                            className="w-full bg-raised border border-line-strong text-ink rounded px-3 py-2 mt-1 focus:border-accent focus:outline-none"
                             value={newPassword}
                             onChange={e => setNewPassword(e.target.value)}
                             required
@@ -245,10 +245,10 @@ const Login: React.FC = () => {
                     </div>
 
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Confirm New Password</label>
+                        <label className="block text-sm font-medium text-ink">Confirm New Password</label>
                         <input
                             type="password"
-                            className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-3 py-2 mt-1 focus:border-blue-500 focus:outline-none"
+                            className="w-full bg-raised border border-line-strong text-ink rounded px-3 py-2 mt-1 focus:border-accent focus:outline-none"
                             value={confirmNewPassword}
                             onChange={e => setConfirmNewPassword(e.target.value)}
                             required
@@ -259,7 +259,7 @@ const Login: React.FC = () => {
                     <button
                         type="submit"
                         disabled={loading}
-                        className="w-full bg-blue-600 text-gray-900 dark:text-white py-2 rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                        className="w-full bg-accent text-on-accent py-2 rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
                     >
                         {loading ? 'Changing password...' : 'Change Password'}
                     </button>
@@ -267,7 +267,7 @@ const Login: React.FC = () => {
                     <button
                         type="button"
                         onClick={() => { setShowPasswordChange(false); setError(null); }}
-                        className="w-full text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white text-sm transition-colors"
+                        className="w-full text-ink-muted hover:text-ink text-sm transition-colors"
                     >
                         Back to login
                     </button>

@@ -22,7 +22,7 @@ internal static class StartupKeystoreLoader
         string trustPath = Path.Combine(AppContext.BaseDirectory, "keystores", "ca-trust.keystore");
         var db = new ModularCADbContext(
             new DbContextOptionsBuilder<ModularCADbContext>()
-                .UseMySql(dbConnStr, ServerVersion.AutoDetect(dbConnStr))
+                .UseNpgsql(dbConnStr)
                 .Options
         );
 
@@ -41,7 +41,7 @@ internal static class StartupKeystoreLoader
 
         var db = new ModularCADbContext(
             new DbContextOptionsBuilder<ModularCADbContext>()
-                .UseMySql(dbConnStr, ServerVersion.AutoDetect(dbConnStr))
+                .UseNpgsql(dbConnStr)
                 .Options
         );
 
@@ -70,7 +70,7 @@ internal static class StartupKeystoreLoader
     {
         var db = new ModularCADbContext(
             new DbContextOptionsBuilder<ModularCADbContext>()
-                .UseMySql(dbConnStr, ServerVersion.AutoDetect(dbConnStr))
+                .UseNpgsql(dbConnStr)
                 .Options
         );
 

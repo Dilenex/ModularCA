@@ -34,7 +34,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// detail page is serial-based). Each entry is a user with View or Manage access. The original
         /// requestor (who always has implicit view) is surfaced separately for context. Note: users who
         /// can already see/manage the cert via CA-scoped RBAC capabilities are NOT listed here — this is
-        /// only the supplementary ACL.
+        /// only the supplementary ACL. A certificate whose CA is outside the caller's <see cref="SpaceFence"/>, or of
+        /// no CA for a caller who is not instance-wide, is not found.
         /// </summary>
         [HttpGet("serial/{serial}")]
         [Authorize(Policy = "CaOperator")]
@@ -45,9 +46,14 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
             // The cert→CA navigation is a shadow FK that isn't populated, so resolve the CA via real
             // columns: the cert's own CertificateId (CA certs) then IssuerCertificateId (leaf certs).
-            // Otherwise the scope is null and the hint over-matches every tenant.
+            // Otherwise the scope is null and the hint over-matches every space.
             var ca = await _db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(a => a.CertificateId == cert.CertificateId)
                 ?? (cert.IssuerCertificateId != null ? await _db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(a => a.CertificateId == cert.IssuerCertificateId) : null);
+
+            // A certificate of no CA is shown only to an instance-wide caller.
+            var fence = SpaceFence.From(HttpContext, Capabilities.CertRevoke);
+            if (ca == null ? !fence.InstanceWide : !fence.Allows(ca.SpaceId))
+                return NotFound(new { error = "Certificate not found." });
 
             var entries = await _db.CertificateAccessLists.AsNoTracking()
                 .Where(a => a.CertificateId == cert.CertificateId)
@@ -69,7 +75,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             // Read-only RBAC hint: groups that confer view/manage on this cert via CA-scoped capabilities
             // (the supplementary ACL above is separate). Covers group capability grants + roles assigned
             // to groups; direct per-user grants are not enumerated.
-            var rbac = await BuildRbacHintAsync(ca?.Id, ca?.TenantId, ca?.Label);
+            var rbac = await BuildRbacHintAsync(ca?.Id, ca?.SpaceId, ca?.Label);
 
             return Ok(new { serialNumber = serial, certificateId = cert.CertificateId, requestorUserId, entries, rbac });
         }
@@ -77,10 +83,10 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// <summary>
         /// Builds the read-only RBAC hint for the cert's CA scope: which groups grant View/Manage and
         /// how many members each has. Mirrors the group sources of <c>CertificateAccessEvaluator</c>
-        /// (cert.view → View; cert.revoke / system.manage → Manage), scoped to system / this tenant /
+        /// (cert.view → View; cert.revoke / system.manage → Manage), scoped to system / this space /
         /// this CA. Direct per-user grants/roles aren't included (rare; would need 4-source enumeration).
         /// </summary>
-        private async Task<object> BuildRbacHintAsync(Guid? caId, Guid? tenantId, string? caLabel)
+        private async Task<object> BuildRbacHintAsync(Guid? caId, Guid? spaceId, string? caLabel)
         {
             var relevant = new[] { Capabilities.CertView, Capabilities.CertRevoke, Capabilities.SystemManage };
 
@@ -89,7 +95,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                 .Where(g => g.ResourceType == null && relevant.Contains(g.Capability)
                     && (g.Group.IsSystemGroup
                         || (caId != null && g.Group.CertificateAuthorityId == caId)
-                        || (tenantId != null && g.Group.CertificateAuthorityId == null && !g.Group.IsSystemGroup && g.Group.TenantId == tenantId)))
+                        || (spaceId != null && g.Group.CertificateAuthorityId == null && !g.Group.IsSystemGroup && g.Group.SpaceId == spaceId)))
                 .Select(g => new { g.GroupId, g.Group.Name, g.Group.DisplayName, g.Capability })
                 .ToListAsync();
 
@@ -99,7 +105,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                     && ra.Role.Capabilities.Any(rc => rc.ResourceType == null && relevant.Contains(rc.Capability))
                     && (ra.Group!.IsSystemGroup
                         || (caId != null && ra.Group.CertificateAuthorityId == caId)
-                        || (tenantId != null && ra.Group.CertificateAuthorityId == null && !ra.Group.IsSystemGroup && ra.Group.TenantId == tenantId)))
+                        || (spaceId != null && ra.Group.CertificateAuthorityId == null && !ra.Group.IsSystemGroup && ra.Group.SpaceId == spaceId)))
                 .Select(ra => new
                 {
                     GroupId = ra.GroupId!.Value,
@@ -206,6 +212,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         [HttpPost("allow/view")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
+        [RequireStepUp(StepUpOps.UpdateCertAcl, "request.CertId")]
         public async Task<IActionResult> GrantViewPermission([FromBody] PermissionChangeRequest request)
         {
             await _currentUser.EnsureLoadedAsync();
@@ -245,6 +252,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         [HttpPost("allow/manage")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
+        [RequireStepUp(StepUpOps.UpdateCertAcl, "request.CertId")]
         public async Task<IActionResult> GrantManagePermission([FromBody] PermissionChangeRequest request)
         {
             await _currentUser.EnsureLoadedAsync();
@@ -280,6 +288,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         [HttpPost("downgrade")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
+        [RequireStepUp(StepUpOps.UpdateCertAcl, "request.CertId")]
         public async Task<IActionResult> DowngradePermission([FromBody] PermissionChangeRequest request)
         {
             await _currentUser.EnsureLoadedAsync();
@@ -315,6 +324,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         [HttpPost("revoke")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
+        [RequireStepUp(StepUpOps.UpdateCertAcl, "request.CertId")]
         public async Task<IActionResult> RevokePermission([FromBody] PermissionChangeRequest request)
         {
             await _currentUser.EnsureLoadedAsync();

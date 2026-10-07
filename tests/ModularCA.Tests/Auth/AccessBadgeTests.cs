@@ -17,7 +17,7 @@ namespace ModularCA.Tests.Auth;
 /// </summary>
 public class AccessBadgeTests
 {
-    private static readonly Guid Tenant = Guid.NewGuid();
+    private static readonly Guid Space = Guid.NewGuid();
 
     private sealed class FixedBadge(AccessBadgeFilter? filter) : IAccessBadgeContext
     {
@@ -38,8 +38,8 @@ public class AccessBadgeTests
         public World()
         {
             Db.Users.Add(new UserEntity { Id = UserId, Username = "sam", Email = "sam@example.test" });
-            CaA = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "A", Label = "ca-a", TenantId = Tenant };
-            CaB = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "B", Label = "ca-b", TenantId = Tenant };
+            CaA = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "A", Label = "ca-a", SpaceId = Space };
+            CaB = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "B", Label = "ca-b", SpaceId = Space };
             Db.CertificateAuthorities.AddRange(CaA, CaB);
 
             OperatorOnA = Group("op-a", CaA.Id, Capabilities.CertRevoke, Capabilities.CaManage);
@@ -58,7 +58,7 @@ public class AccessBadgeTests
 
         private CaGroupEntity Group(string name, Guid caId, params string[] caps)
         {
-            var g = new CaGroupEntity { Id = Guid.NewGuid(), Name = name, DisplayName = name, TenantId = Tenant, CertificateAuthorityId = caId };
+            var g = new CaGroupEntity { Id = Guid.NewGuid(), Name = name, DisplayName = name, SpaceId = Space, CertificateAuthorityId = caId };
             Db.CaGroups.Add(g);
             Db.CaGroupMembers.Add(new CaGroupMemberEntity { Id = Guid.NewGuid(), GroupId = g.Id, UserId = UserId });
             foreach (var c in caps)
@@ -135,7 +135,7 @@ public class AccessBadgeTests
     public async Task System_manage_set_aside_by_a_badge_does_not_bypass_ca_checks()
     {
         var w = new World();
-        var system = new CaGroupEntity { Id = Guid.NewGuid(), Name = "sys", DisplayName = "sys", TenantId = Tenant, IsSystemGroup = true };
+        var system = new CaGroupEntity { Id = Guid.NewGuid(), Name = "sys", DisplayName = "sys", SpaceId = Space, IsSystemGroup = true };
         w.Db.CaGroups.Add(system);
         w.Db.CaGroupMembers.Add(new CaGroupMemberEntity { Id = Guid.NewGuid(), GroupId = system.Id, UserId = w.UserId });
         w.Db.CapabilityGrants.Add(new CapabilityGrantEntity { Id = Guid.NewGuid(), GroupId = system.Id, Capability = Capabilities.SystemManage });

@@ -38,8 +38,8 @@ Please include as much of the following as you can:
 
 Because this is PKI software, we are especially interested in reports involving:
 
-- Authentication or authorization bypass (including tenant isolation,
-  CA-scoped group/role enforcement, and step-up MFA).
+- Authentication or authorization bypass (including space and CA scoping
+  of groups and roles, and step-up MFA).
 - Certificate issuance, validation, path-building, or revocation flaws
   (CRL/OCSP, name constraints, EKU/key-usage, profile enforcement).
 - Protocol-handler vulnerabilities (ACME, SCEP, EST, CMP, OCSP, TSA, SSH CA).

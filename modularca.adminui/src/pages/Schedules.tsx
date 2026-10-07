@@ -35,8 +35,8 @@ const LEASE_TTL_HINT = 'How long one instance holds the right to run jobs before
 // Style helpers (match Settings/Vulnerabilities/BackupRestore conventions)
 // ---------------------------------------------------------------------------
 
-const cardClass = 'bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg';
-const primaryButton = 'px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors disabled:opacity-50';
+const cardClass = 'bg-raised border border-line rounded-lg';
+const primaryButton = 'px-4 py-2 text-sm bg-accent hover:bg-accent-hover text-on-accent rounded transition-colors disabled:opacity-50';
 
 // ---------------------------------------------------------------------------
 // Time formatting
@@ -82,7 +82,7 @@ function formatRelative(iso: string | null | undefined, now: number): string {
 }
 
 const TimeCell: React.FC<{ iso: string | null | undefined; now: number }> = ({ iso, now }) => (
-    <span className="text-xs text-gray-700 dark:text-gray-300" title={formatAbsoluteUtc(iso) || 'never'}>
+    <span className="text-xs text-ink" title={formatAbsoluteUtc(iso) || 'never'}>
         {formatRelative(iso, now)}
     </span>
 );
@@ -94,7 +94,7 @@ const TimeCell: React.FC<{ iso: string | null | undefined; now: number }> = ({ i
 const HealthStrip: React.FC<{ health: SchedulerHealth | null; now: number }> = ({ health, now }) => {
     if (!health) {
         return (
-            <div className={`${cardClass} p-4 text-sm text-gray-600 dark:text-gray-400`}>Loading scheduler health...</div>
+            <div className={`${cardClass} p-4 text-sm text-ink-muted`}>Loading scheduler health...</div>
         );
     }
 
@@ -103,9 +103,9 @@ const HealthStrip: React.FC<{ health: SchedulerHealth | null; now: number }> = (
     const instanceShort = lease ? lease.instanceId.slice(0, 12) : '-';
 
     const tile = (label: string, value: React.ReactNode, title?: string) => (
-        <div className="flex flex-col gap-0.5 px-4 py-3 border-r border-gray-300 dark:border-gray-700 last:border-r-0 min-w-[150px]">
-            <span className="text-[10px] uppercase tracking-wide text-gray-600 dark:text-gray-400">{label}</span>
-            <span className="text-sm text-gray-900 dark:text-white" title={title}>{value}</span>
+        <div className="flex flex-col gap-0.5 px-4 py-3 border-r border-line last:border-r-0 min-w-[150px]">
+            <span className="text-[10px] uppercase tracking-wide text-ink-muted">{label}</span>
+            <span className="text-sm text-ink" title={title}>{value}</span>
         </div>
     );
 
@@ -214,7 +214,7 @@ const SystemJobsSection: React.FC<SystemJobsSectionProps> = ({ jobs, health, loa
         title: (j) => j.name,
         status: (j) => ({ label: j.enabled ? 'Enabled' : 'Disabled', tone: j.enabled ? 'ok' : 'neutral' }),
         columns: [
-            { key: 'name', header: 'Name', defaultWidth: 180, minWidth: 140, truncate: false, sortable: true, exportValue: (j) => j.name, render: (j) => <span className="text-gray-900 dark:text-white truncate">{j.name}</span> },
+            { key: 'name', header: 'Name', defaultWidth: 180, minWidth: 140, truncate: false, sortable: true, exportValue: (j) => j.name, render: (j) => <span className="text-ink truncate">{j.name}</span> },
             { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, sortable: true, sortValue: (j) => j.enabled, exportValue: (j) => (j.enabled ? 'enabled' : 'disabled'), render: (j) => <StatusBadge status={j.enabled ? 'enabled' : 'disabled'} /> },
             {
                 key: 'cron', header: 'Cron', defaultWidth: 130, headerTitle: 'Five-field cron, UTC. Edit it on the job page.', exportValue: (j) => j.cronExpression,
@@ -223,7 +223,7 @@ const SystemJobsSection: React.FC<SystemJobsSectionProps> = ({ jobs, health, loa
                 render: (j) => (
                     <Link to={`/schedules/jobs/${encodeURIComponent(j.name)}`} onClick={(e) => e.stopPropagation()}
                         title="Edit this schedule on the job page"
-                        className="font-mono text-xs text-gray-700 dark:text-gray-300 underline decoration-dotted hover:text-gray-900 dark:hover:text-white">
+                        className="data-mono text-ink underline decoration-dotted hover:text-ink">
                         {j.cronExpression}
                     </Link>
                 ),
@@ -235,7 +235,7 @@ const SystemJobsSection: React.FC<SystemJobsSectionProps> = ({ jobs, health, loa
                 render: (j) => (
                     <div className="min-w-0">
                         {jobResultBadge(j.lastResult)}
-                        {j.lastError && <div className="text-[10px] text-red-700 dark:text-red-400 truncate mt-0.5" title={j.lastError}>{j.lastError}</div>}
+                        {j.lastError && <div className="text-[10px] text-crit truncate mt-0.5" title={j.lastError}>{j.lastError}</div>}
                     </div>
                 ),
             },
@@ -245,28 +245,28 @@ const SystemJobsSection: React.FC<SystemJobsSectionProps> = ({ jobs, health, loa
                     const over = j.consecutiveFailureCount >= alertThreshold;
                     return (
                         <span className={`inline-block px-2 py-0.5 text-xs rounded border ${over
-                            ? 'bg-red-50 text-red-800 border-red-300 dark:bg-red-900/50 dark:text-red-300 dark:border-red-700'
-                            : 'bg-gray-100 text-gray-700 border-gray-300 dark:bg-gray-700/50 dark:text-gray-300 dark:border-gray-600'}`}>
+                            ? 'bg-crit-soft text-crit border-crit/40'
+                            : 'bg-sunken text-ink border-line-strong'}`}>
                             {j.consecutiveFailureCount}
                         </span>
                     );
                 },
             },
-            { key: 'timeout', header: 'Timeout', defaultWidth: 90, exportValue: (j) => j.timeoutSeconds, render: (j) => <span className="text-xs text-gray-700 dark:text-gray-300">{j.timeoutSeconds}s</span> },
+            { key: 'timeout', header: 'Timeout', defaultWidth: 90, exportValue: (j) => j.timeoutSeconds, render: (j) => <span className="text-xs text-ink">{j.timeoutSeconds}s</span> },
         ],
         sections: [
             { fields: [
                 { label: 'Name', value: (j) => j.name },
                 { label: 'Cron', value: (j) => j.cronExpression, mono: true },
                 { label: 'Timeout', value: (j) => `${j.timeoutSeconds}s` },
-                { label: 'Edit', value: (j) => <Link to={`/schedules/jobs/${encodeURIComponent(j.name)}`} className="text-xs underline hover:text-gray-900 dark:hover:text-white">Change the cron expression or timeout on the job page</Link> },
+                { label: 'Edit', value: (j) => <Link to={`/schedules/jobs/${encodeURIComponent(j.name)}`} className="text-xs underline hover:text-ink">Change the cron expression or timeout on the job page</Link> },
             ] },
             { title: 'Runs', fields: [
                 { label: 'Last Run', value: (j) => `${formatRelative(j.lastRunUtc, now)} (${j.lastResult ?? 'never run'})` },
                 { label: 'Last Duration', value: (j) => (j.lastDurationMs != null ? `${j.lastDurationMs} ms` : null) },
                 { label: 'Next Run', value: (j) => formatRelative(j.nextRunUtc, now) },
                 { label: 'Consecutive Failures', value: (j) => String(j.consecutiveFailureCount) },
-                { label: 'Last Error', value: (j) => (j.lastError ? <pre className="text-[11px] text-red-700 dark:text-red-400 whitespace-pre-wrap break-words">{j.lastError}</pre> : null) },
+                { label: 'Last Error', value: (j) => (j.lastError ? <pre className="text-[11px] text-crit whitespace-pre-wrap break-words">{j.lastError}</pre> : null) },
             ] },
         ],
         audit: { tab: 'General', target: (j) => ({ type: 'SchedulerJob', id: j.name }) },
@@ -288,7 +288,7 @@ const SystemJobsSection: React.FC<SystemJobsSectionProps> = ({ jobs, health, loa
 
     return (
         <section className="space-y-3">
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">System Jobs</h2>
+            <h2 className="text-lg font-semibold text-ink">System Jobs</h2>
             <DataTable<SchedulerJob>
                 tableId="scheduler-jobs"
                 title="System Jobs"
@@ -306,7 +306,7 @@ const SystemJobsSection: React.FC<SystemJobsSectionProps> = ({ jobs, health, loa
                 title="Run Job Now?"
                 message={confirmRunJob ? `Trigger "${confirmRunJob.name}" out-of-band? It will run on the lease holder at the next poll tick.` : ''}
                 confirmLabel="Run"
-                confirmClass="px-4 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                confirmClass="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors"
                 loading={!!running}
                 onConfirm={() => confirmRunJob && handleRun(confirmRunJob)}
                 onCancel={() => setConfirmRunJob(null)}
@@ -323,7 +323,7 @@ const SystemJobsSection: React.FC<SystemJobsSectionProps> = ({ jobs, health, loa
                     </>
                 ) : ''}
                 confirmLabel="Disable"
-                confirmClass="px-4 py-2 text-sm bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors"
+                confirmClass="px-4 py-2 text-sm bg-warn text-on-accent rounded hover:bg-warn-hover transition-colors"
                 loading={toggling}
                 onConfirm={() => confirmDisableJob && handleToggleFlag(confirmDisableJob)}
                 onCancel={() => setConfirmDisableJob(null)}
@@ -356,7 +356,7 @@ const CrlDrawer: React.FC<{ entry: CrlScheduleEntry; now: number }> = ({ entry, 
         <DetailField label="Last Generated" value={formatRelative(entry.lastGenerated || entry.lastUpdatedUtc, now)} />
         <DetailField label="Next Update" value={formatRelative(entry.nextUpdateUtc, now)} />
         {entry.lastCrlNumber != null && <DetailField label="Last CRL Number" value={String(entry.lastCrlNumber)} />}
-        <p className="text-[11px] text-gray-500 pt-3">Edit CRL schedules on the Distribution page.</p>
+        <p className="text-[11px] text-ink-muted pt-3">Edit CRL schedules on the Distribution page.</p>
     </div>
 );
 
@@ -370,7 +370,7 @@ const LdapDrawer: React.FC<{ entry: LdapPublisherEntry; now: number }> = ({ entr
         <DetailField label="Publishes" value={ldapFlags(entry) || 'None'} />
         <DetailField label="Last Updated" value={formatRelative(entry.lastUpdatedUtc, now)} />
         <DetailField label="Next Update" value={formatRelative(entry.nextUpdateUtc, now)} />
-        <p className="text-[11px] text-gray-500 pt-3">Edit LDAP publishers on the Distribution page.</p>
+        <p className="text-[11px] text-ink-muted pt-3">Edit LDAP publishers on the Distribution page.</p>
     </div>
 );
 
@@ -412,10 +412,10 @@ const SchedulesSection: React.FC<SchedulesSectionProps> = ({ schedules, loading,
     };
 
     const crlColumns: DataTableColumn<CrlScheduleEntry>[] = [
-        { key: 'ca', header: 'CA', defaultWidth: 160, minWidth: 120, truncate: false, exportValue: (c) => c.caLabel, render: (c) => <span className="text-gray-900 dark:text-white truncate">{c.caLabel || 'Unknown CA'}</span> },
-        { key: 'name', header: 'Name', defaultWidth: 200, exportValue: (c) => c.name, render: (c) => <span className="text-gray-900 dark:text-white truncate">{c.name}</span> },
-        { key: 'update', header: 'Update', defaultWidth: 110, exportValue: (c) => c.updateInterval, render: (c) => <span className="font-mono text-xs text-gray-700 dark:text-gray-300">{c.updateInterval}</span> },
-        { key: 'delta', header: 'Delta', defaultWidth: 100, exportValue: (c) => c.deltaInterval || '', render: (c) => <span className="font-mono text-xs text-gray-700 dark:text-gray-300">{c.deltaInterval || '-'}</span> },
+        { key: 'ca', header: 'CA', defaultWidth: 160, minWidth: 120, truncate: false, exportValue: (c) => c.caLabel, render: (c) => <span className="text-ink truncate">{c.caLabel || 'Unknown CA'}</span> },
+        { key: 'name', header: 'Name', defaultWidth: 200, exportValue: (c) => c.name, render: (c) => <span className="text-ink truncate">{c.name}</span> },
+        { key: 'update', header: 'Update', defaultWidth: 110, exportValue: (c) => c.updateInterval, render: (c) => <span className="data-mono text-ink">{c.updateInterval}</span> },
+        { key: 'delta', header: 'Delta', defaultWidth: 100, exportValue: (c) => c.deltaInterval || '', render: (c) => <span className="data-mono text-ink">{c.deltaInterval || '-'}</span> },
         { key: 'last', header: 'Last', defaultWidth: 140, exportValue: (c) => formatAbsoluteUtc(c.lastGenerated || c.lastUpdatedUtc), render: (c) => <TimeCell iso={c.lastGenerated || c.lastUpdatedUtc} now={now} /> },
         { key: 'next', header: 'Next', defaultWidth: 140, exportValue: (c) => formatAbsoluteUtc(c.nextUpdateUtc), render: (c) => <TimeCell iso={c.nextUpdateUtc} now={now} /> },
         { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, exportValue: (c) => (c.enabled ? 'enabled' : 'disabled'), render: (c) => <StatusBadge status={c.enabled ? 'enabled' : 'disabled'} /> },
@@ -427,13 +427,13 @@ const SchedulesSection: React.FC<SchedulesSectionProps> = ({ schedules, loading,
     ];
 
     const ldapColumns: DataTableColumn<LdapPublisherEntry>[] = [
-        { key: 'ca', header: 'CA', defaultWidth: 150, minWidth: 120, truncate: false, exportValue: (l) => l.caLabel, render: (l) => <span className="text-gray-900 dark:text-white truncate">{l.caLabel || 'Unknown CA'}</span> },
-        { key: 'host', header: 'Host', defaultWidth: 170, exportValue: (l) => `${l.host}:${l.port}`, render: (l) => <span className="text-gray-900 dark:text-white truncate">{l.host}:{l.port}</span> },
-        { key: 'baseDn', header: 'Base DN', defaultWidth: 240, exportValue: (l) => l.baseDn, render: (l) => <span className="font-mono text-xs text-gray-700 dark:text-gray-300 truncate">{l.baseDn}</span> },
-        { key: 'update', header: 'Update', defaultWidth: 100, exportValue: (l) => l.updateInterval, render: (l) => <span className="font-mono text-xs text-gray-700 dark:text-gray-300">{l.updateInterval}</span> },
+        { key: 'ca', header: 'CA', defaultWidth: 150, minWidth: 120, truncate: false, exportValue: (l) => l.caLabel, render: (l) => <span className="text-ink truncate">{l.caLabel || 'Unknown CA'}</span> },
+        { key: 'host', header: 'Host', defaultWidth: 170, exportValue: (l) => `${l.host}:${l.port}`, render: (l) => <span className="text-ink truncate">{l.host}:{l.port}</span> },
+        { key: 'baseDn', header: 'Base DN', defaultWidth: 240, exportValue: (l) => l.baseDn, render: (l) => <span className="data-mono text-ink truncate">{l.baseDn}</span> },
+        { key: 'update', header: 'Update', defaultWidth: 100, exportValue: (l) => l.updateInterval, render: (l) => <span className="data-mono text-ink">{l.updateInterval}</span> },
         { key: 'last', header: 'Last', defaultWidth: 130, exportValue: (l) => formatAbsoluteUtc(l.lastUpdatedUtc), render: (l) => <TimeCell iso={l.lastUpdatedUtc} now={now} /> },
         { key: 'next', header: 'Next', defaultWidth: 130, exportValue: (l) => formatAbsoluteUtc(l.nextUpdateUtc), render: (l) => <TimeCell iso={l.nextUpdateUtc} now={now} /> },
-        { key: 'publishes', header: 'Publishes', defaultWidth: 120, exportValue: (l) => ldapFlags(l), render: (l) => <span className="text-xs text-gray-700 dark:text-gray-300">{ldapFlags(l) || '-'}</span> },
+        { key: 'publishes', header: 'Publishes', defaultWidth: 120, exportValue: (l) => ldapFlags(l), render: (l) => <span className="text-xs text-ink">{ldapFlags(l) || '-'}</span> },
         { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, exportValue: (l) => (l.enabled ? 'enabled' : 'disabled'), render: (l) => <StatusBadge status={l.enabled ? 'enabled' : 'disabled'} /> },
     ];
 
@@ -444,7 +444,7 @@ const SchedulesSection: React.FC<SchedulesSectionProps> = ({ schedules, loading,
 
     return (
         <section className="space-y-4">
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Schedules</h2>
+            <h2 className="text-lg font-semibold text-ink">Schedules</h2>
             <DataTable<CrlScheduleEntry>
                 tableId="crl-schedules"
                 title="CRL Schedules"
@@ -531,14 +531,14 @@ const SchedulerConfigSection: React.FC<{ health: SchedulerHealth | null; onChang
 
     return (
         <section className="space-y-3">
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Scheduler Config</h2>
+            <h2 className="text-lg font-semibold text-ink">Scheduler Config</h2>
             <div className={`${cardClass} p-4 space-y-4`}>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                         <label className={labelClass}>Lease TTL (seconds, min 15)</label>
                         <input type="text" inputMode="numeric" value={leaseTtl}
                             onChange={(e) => setLeaseTtl(e.target.value.replace(/\D/g, ''))} className={inputClass} />
-                        {!leaseTtlOk && <p className="text-[10px] text-red-700 dark:text-red-400 mt-1">Must be at least 15 seconds.</p>}
+                        {!leaseTtlOk && <p className="text-[10px] text-crit mt-1">Must be at least 15 seconds.</p>}
                         <FieldHint>{LEASE_TTL_HINT}</FieldHint>
                     </div>
                     <div>
@@ -552,14 +552,14 @@ const SchedulerConfigSection: React.FC<{ health: SchedulerHealth | null; onChang
                         <label className={labelClass}>Default Job Timeout (seconds)</label>
                         <input type="text" inputMode="numeric" value={defaultTimeout}
                             onChange={(e) => setDefaultTimeout(e.target.value.replace(/\D/g, ''))} className={inputClass} />
-                        {!timeoutOk && <p className="text-[10px] text-red-700 dark:text-red-400 mt-1">Must be a positive integer.</p>}
+                        {!timeoutOk && <p className="text-[10px] text-crit mt-1">Must be a positive integer.</p>}
                         <FieldHint>A run longer than this is cancelled and counted as a failure. Applies to jobs without their own timeout; a per-job timeout set on the job page takes precedence.</FieldHint>
                     </div>
                     <div>
                         <label className={labelClass}>Consecutive Failure Alert Threshold</label>
                         <input type="text" inputMode="numeric" value={alertThreshold}
                             onChange={(e) => setAlertThreshold(e.target.value.replace(/\D/g, ''))} className={inputClass} />
-                        {!thresholdOk && <p className="text-[10px] text-red-700 dark:text-red-400 mt-1">Must be at least 1.</p>}
+                        {!thresholdOk && <p className="text-[10px] text-crit mt-1">Must be at least 1.</p>}
                         <FieldHint>Failures in a row by one job before its SchedulerJobFailed alert is raised from Warning to Critical. The Failures column turns red at this count.</FieldHint>
                     </div>
                 </div>
@@ -631,15 +631,15 @@ const Schedules: React.FC = () => {
     return (
         <div className="p-3 sm:p-6 space-y-6">
             <div className="flex items-center justify-between">
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Schedules</h1>
+                <h1 className="text-xl font-semibold text-ink">Schedules</h1>
                 <button onClick={reload} disabled={loading}
-                    className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors disabled:opacity-50">
+                    className="px-3 py-1.5 text-xs bg-sunken text-ink rounded hover:bg-hover transition-colors disabled:opacity-50">
                     {loading ? 'Loading...' : 'Refresh'}
                 </button>
             </div>
 
             {error && (
-                <div className="p-3 bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded text-sm text-red-800 dark:text-red-300">
+                <div className="p-3 bg-crit-soft border border-crit/40 rounded text-sm text-crit">
                     {error}
                 </div>
             )}

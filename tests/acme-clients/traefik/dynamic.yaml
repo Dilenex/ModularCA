@@ -1,0 +1,11 @@
+# One router whose host name makes Traefik ask the resolver for a certificate. It serves
+# nothing; run.sh only checks the certificate presented for the name.
+http:
+  routers:
+    probe:
+      rule: Host(`traefik.acme.test`)
+      entryPoints:
+        - websecure
+      service: noop@internal
+      tls:
+        certResolver: modularca

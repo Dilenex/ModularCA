@@ -22,7 +22,7 @@ const CATEGORY_GROUPS: Record<string, string[]> = {
     'ca management': ['Admin CA', 'Admin CA Service URLs', 'Admin CRL', 'Admin CRL Schedules', 'Admin Trust Anchors', 'Admin Key Ceremonies', 'Admin CT Logs'],
     'ssh ca': ['Admin SSH', 'Admin SSH Profiles', 'Admin SSH Templates', 'User SSH', 'Public SSH'],
     'profiles': ['Admin Cert Profiles', 'Admin Signing Profiles', 'Admin Templates', 'Admin OID Options', 'User Signing Profiles'],
-    'groups permissions': ['Admin Groups', 'Admin Quotas', 'Admin Tenants', 'User Groups'],
+    'groups permissions': ['Admin Groups', 'Admin Quotas', 'Admin Spaces', 'User Groups'],
     'users accounts': ['Admin Users', 'Admin Password Policy', 'Admin Security Policy'],
     'audit compliance': ['Admin Audit', 'Admin Compliance', 'Admin Policy'],
     'protocols': ['ACME', 'EST', 'SCEP', 'CMP', 'Admin ACME EAB', 'Admin Protocol Configs', 'Admin Enrollment Tokens'],
@@ -63,38 +63,38 @@ export default function ApiCategoryPage() {
     return (
         <div className="max-w-4xl mx-auto">
             {/* Breadcrumb */}
-            <nav className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 mb-6">
+            <nav className="flex items-center gap-2 text-sm text-ink-muted mb-6">
                 <Link
-                    to="/docs/api"
-                    className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                    to="/api"
+                    className="hover:text-accent-hover transition-colors"
                 >
                     API Reference
                 </Link>
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
-                <span className="text-gray-900 dark:text-white font-medium">
+                <span className="text-ink font-medium">
                     {decodedCategory || 'Category'}
                 </span>
             </nav>
 
             <div className="mb-8">
-                <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
+                <h1 className="text-2xl font-semibold text-ink mb-2">
                     {decodedCategory || 'Category'}
                 </h1>
-                <p className="text-gray-600 dark:text-gray-400">
+                <p className="text-ink-muted">
                     {filtered.length} endpoint{filtered.length !== 1 ? 's' : ''} in this category.
                 </p>
             </div>
 
             {filtered.length === 0 ? (
                 <div className="text-center py-12">
-                    <p className="text-gray-500 dark:text-gray-400 mb-4">
+                    <p className="text-ink-muted mb-4">
                         No endpoints found for category "{decodedCategory}".
                     </p>
                     <Link
-                        to="/docs/api"
-                        className="text-blue-600 dark:text-blue-400 hover:underline text-sm"
+                        to="/api"
+                        className="text-accent-ink hover:underline text-sm"
                     >
                         Back to API Reference
                     </Link>

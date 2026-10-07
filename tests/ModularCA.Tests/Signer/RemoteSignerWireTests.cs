@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using Google.Protobuf;
 using ModularCA.Keystore.Signing;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Signing;
@@ -15,17 +16,22 @@ namespace ModularCA.Tests.Signer;
 /// What the wire refuses that the contract cannot express: a client the signer has not
 /// pinned, a server the node has not pinned, a signer that cannot record its decision, a
 /// signer that is not there, and the reason of a refusal crossing intact. Each runs against
-/// the real Kestrel listener with mutual TLS on loopback.
+/// the real Kestrel listener with mutual TLS on loopback, in <see cref="RemoteSignerCollection"/>.
 /// </summary>
+[Collection(RemoteSignerCollection.Name)]
 public sealed class RemoteSignerWireTests
 {
     private static readonly byte[] Tbs = Encoding.ASCII.GetBytes("to-be-signed bytes for the wire");
 
     private static SigningContext CertificateContext(SignerTestWorld world)
-        => new("wire-test", SigningPurpose.Certificate, world.TenantA, world.CaRsaId);
+        => new("wire-test", SigningPurpose.Certificate, world.SpaceA, world.CaRsaId);
+
+    /// <summary>A leaf TBSCertificate under the RSA CA, which its key signs under the certificate purpose.</summary>
+    private static byte[] LeafTbs(SignerTestWorld world)
+        => TypedSigningData.Certificate(world["ca-rsa"].Certificate.SubjectDN, world["leaf"].PublicKey, SignatureAlgorithm.FromName("SHA256withRSA"));
 
     private static Task<byte[]> SignCaRsaAsync(ISigningService signer, SignerTestWorld world)
-        => signer.SignAsync(world["ca-rsa"].Ref, SignatureAlgorithm.FromName("SHA256withRSA"), Tbs, CertificateContext(world));
+        => signer.SignAsync(world["ca-rsa"].Ref, SignatureAlgorithm.FromName("SHA256withRSA"), LeafTbs(world), CertificateContext(world));
 
     private static int AuditRows(SignerTestWorld world)
     {
@@ -79,7 +85,7 @@ public sealed class RemoteSignerWireTests
         Assert.Equal(SigningRefusalReason.AuditUnavailable, ex.Reason);
 
         var generate = await Assert.ThrowsAsync<SigningRefusedException>(
-            () => client.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), new SigningContext("wire-test", SigningPurpose.Ceremony, world.TenantA, null)));
+            () => client.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), new SigningContext("wire-test", SigningPurpose.Ceremony, world.SpaceA, null)));
         Assert.Equal(SigningRefusalReason.AuditUnavailable, generate.Reason);
         Assert.Empty(world.Persistence.Appended);
         Assert.Equal(0, AuditRows(world));
@@ -88,16 +94,23 @@ public sealed class RemoteSignerWireTests
         Assert.True((await client.HealthAsync()).Unlocked);
     }
 
+    /// <summary>
+    /// The client stays pointed at one address, a <see cref="LoopbackRelay"/> that holds its port,
+    /// while the signer behind it goes away and a new one, on a port of its own, takes its place.
+    /// </summary>
     [Fact]
     public async Task A_signer_that_is_down_is_unavailable_and_is_found_again_when_it_returns()
     {
         var world = SignerTestWorld.Create();
+        await using var relay = new LoopbackRelay();
         var host = await HostedSigner.StartAsync(world);
-        using var client = host.Connect();
+        relay.Target = host.Endpoint;
+        using var client = HostedSigner.ConnectTo(relay.Endpoint);
         Assert.NotEmpty(await SignCaRsaAsync(client, world));
-        var port = host.Port;
 
+        relay.Target = null;
         await host.DisposeAsync();
+        relay.Drop();
         var down = await Assert.ThrowsAsync<SigningRefusedException>(() => SignCaRsaAsync(client, world));
         Assert.Equal(SigningRefusalReason.SignerUnavailable, down.Reason);
         Assert.Contains("unreachable", down.Message);
@@ -107,7 +120,8 @@ public sealed class RemoteSignerWireTests
 
         // The channel backs off between reconnection attempts, bounded by the client's
         // MaxReconnectBackoff; the signer is found again within that bound.
-        await using var returned = await HostedSigner.StartAsync(world, port: port);
+        await using var returned = await HostedSigner.StartAsync(world);
+        relay.Target = returned.Endpoint;
         var deadline = DateTime.UtcNow.AddSeconds(15);
         while (!(await client.HealthAsync()).Unlocked)
         {
@@ -143,6 +157,37 @@ public sealed class RemoteSignerWireTests
         using var db = world.OpenDb();
         var row = Assert.Single(db.SignerAudit);
         Assert.Equal(SignerAuditEntity.RefusedOutcome, row.Outcome);
+    }
+
+    /// <summary>
+    /// A client that predates the instance marker sends a context without it. An empty space
+    /// id from it reads as no stated scope, never as the instance, so the signer refuses its key
+    /// operation as having no context even where the instance waives ceremonies.
+    /// </summary>
+    [Fact]
+    public async Task An_omitted_instance_marker_is_no_scope_and_is_refused()
+    {
+        var oldClientBytes = new ModularCA.Signer.Wire.SigningContext { Caller = "old-node", Purpose = nameof(SigningPurpose.Ceremony) }.ToByteArray();
+        var parsed = ModularCA.Signer.Wire.WireMapping.FromWire(ModularCA.Signer.Wire.SigningContext.Parser.ParseFrom(oldClientBytes));
+        Assert.Null(parsed.SpaceId);
+        Assert.False(parsed.InstanceScope);
+        Assert.True(ModularCA.Signer.Wire.WireMapping.FromWire(
+            ModularCA.Signer.Wire.WireMapping.ToWire(SigningContext.ForScope("new-node", SigningPurpose.Ceremony, null))).InstanceScope);
+
+        var world = SignerTestWorld.Create();
+        using (var db = world.OpenDb())
+        {
+            db.SecurityPolicies.Add(new SecurityPolicyEntity { RequireKeyCeremony = false });
+            db.SaveChanges();
+        }
+        await using var host = await HostedSigner.StartAsync(world);
+        using var client = host.Connect();
+
+        var ex = await Assert.ThrowsAsync<SigningRefusedException>(
+            () => client.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), new SigningContext("old-node", SigningPurpose.Ceremony, null, null)));
+        Assert.Equal(SigningRefusalReason.ContextRequired, ex.Reason);
+        var generated = await client.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), SigningContext.ForScope("new-node", SigningPurpose.Ceremony, null));
+        await client.RetireKeyAsync(generated.Key, SigningContext.ForScope("new-node", SigningPurpose.Ceremony, null));
     }
 
     [Fact]

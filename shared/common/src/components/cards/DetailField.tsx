@@ -1,8 +1,3 @@
-/**
- * Label-over-value pair used throughout the detail pages. Byte-identical in both SPAs.
- *
- * No default export: shared/README.md rule 3.
- */
 import React from 'react';
 
 interface DetailFieldProps {
@@ -11,15 +6,19 @@ interface DetailFieldProps {
     mono?: boolean;
 }
 
+/**
+ * One label and its value. The label column has a fixed width, so the values of a list of
+ * fields start on one line whatever the labels say. Where the field is given too little room
+ * for two columns, the label sits above its value.
+ */
 export function DetailField({ label, value, mono }: DetailFieldProps) {
     if (value === null || value === undefined || value === '') return null;
-
     return (
-        <div className="flex gap-2 py-1">
-            <span className="text-gray-600 text-xs min-w-[120px] flex-shrink-0">{label}</span>
-            <span className={`text-gray-800 dark:text-gray-200 text-xs break-all ${mono ? 'font-mono' : ''}`}>
-                {value}
-            </span>
+        <div className="@container">
+            <div className="grid grid-cols-1 @[18rem]:grid-cols-[10rem_minmax(0,1fr)] gap-x-3 items-baseline py-1">
+                <span className="label-caps [overflow-wrap:anywhere]">{label}</span>
+                <span className={`text-ink min-w-0 ${mono ? 'data-mono break-all' : 'text-sm [overflow-wrap:anywhere]'}`}>{value}</span>
+            </div>
         </div>
     );
 }

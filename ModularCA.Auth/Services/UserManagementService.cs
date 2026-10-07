@@ -40,7 +40,7 @@ namespace ModularCA.Auth.Services
 
         /// <summary>
         /// Creates a new user and assigns them to the groups specified in <paramref name="request"/>.GroupIds.
-        /// If no groups are specified, the user is added to the "system-auditor" group by default.
+        /// If no groups are specified, the user is created with no group memberships.
         /// </summary>
         public async Task<(bool Success, string? Error)> CreateUser(CreateUserRequest request)
         {
@@ -88,16 +88,8 @@ namespace ModularCA.Auth.Services
                 };
                 _dbContext.Users.Add(newUser);
 
-                // Assign to specified groups, or fall back to system-auditor
+                // Only the requested groups; an account created without groups has none.
                 var groupIds = request.GroupIds;
-                if (groupIds == null || groupIds.Count == 0)
-                {
-                    var defaultGroup = await _dbContext.CaGroups
-                        .FirstOrDefaultAsync(g => g.Name == "system-auditor");
-                    if (defaultGroup != null)
-                        groupIds = new List<Guid> { defaultGroup.Id };
-                }
-
                 if (groupIds != null)
                 {
                     foreach (var groupId in groupIds)
@@ -131,7 +123,12 @@ namespace ModularCA.Auth.Services
         }
 
         /// <summary>
-        /// Updates an existing user's profile fields (username, email, name, active/locked status).
+        /// Updates an existing user's profile fields (username, email, name, active/locked status,
+        /// password-expiry exemption, forced change at next logon). <see cref="UpdateUserRequest.Password"/>
+        /// is never applied; passwords change only through reset or the user's own change. An empty
+        /// or whitespace username or email is left unchanged. A username or email change, enabling,
+        /// disabling, locking or unlocking rotates the security stamp; an unlock (IsLocked false)
+        /// also clears the failed-login count and any temporary lockout.
         /// </summary>
         /// <remarks>
         /// The uniqueness checks exclude the user being updated. Without that exclusion a PUT
@@ -166,8 +163,10 @@ namespace ModularCA.Auth.Services
             }
             var wasActive = user.IsActive;
             var wasLocked = user.IsLocked;
-            user.Username = request.Username ?? user.Username;
-            user.Email = request.Email ?? user.Email;
+            var identityChanged = (!string.IsNullOrWhiteSpace(request.Username) && request.Username != user.Username)
+                                  || (!string.IsNullOrWhiteSpace(request.Email) && request.Email != user.Email);
+            if (!string.IsNullOrWhiteSpace(request.Username)) user.Username = request.Username;
+            if (!string.IsNullOrWhiteSpace(request.Email)) user.Email = request.Email;
             user.FirstName = request.FirstName ?? user.FirstName;
             user.LastName = request.LastName ?? user.LastName;
             // String concatenation never yields null, so `(request.FirstName + " " + request.LastName)`
@@ -183,6 +182,17 @@ namespace ModularCA.Auth.Services
                 ?? user.DisplayName;
             user.IsActive = request.IsActive ?? user.IsActive;
             user.IsLocked = request.IsLocked ?? user.IsLocked;
+            user.PasswordNeverExpires = request.PasswordNeverExpires ?? user.PasswordNeverExpires;
+            user.PasswordChangeOnNextLogon = request.PasswordChangeOnNextLogon ?? user.PasswordChangeOnNextLogon;
+            // An unlock starts the failure count afresh; otherwise one wrong password re-locks.
+            if (request.IsLocked == false)
+            {
+                user.FailedLoginAttempts = 0;
+                user.LockoutEndUtc = null;
+            }
+
+            if (identityChanged)
+                user.SecurityStamp = Guid.NewGuid().ToString();
 
             // Rotate the security stamp whenever an admin toggles
             // IsActive or IsLocked so outstanding JWTs invalidate on the next request
@@ -534,6 +544,35 @@ namespace ModularCA.Auth.Services
         }
 
         /// <summary>
+        /// Removes every MFA method of a user (TOTP secrets and WebAuthn credentials) and clears
+        /// <see cref="UserEntity.MfaEnrolledAt"/>, so they must enrol again at next login. Rotates the
+        /// security stamp and revokes every refresh token, so no session outlives the reset. Returns
+        /// the counts removed, or null when the user does not exist.
+        /// </summary>
+        public async Task<(int TotpSecretsRemoved, int WebAuthnCredentialsRemoved)?> ResetUserMfa(Guid userId)
+        {
+            var user = await _dbContext.Users.FindAsync(userId);
+            if (user == null)
+                return null;
+
+            var totpSecrets = await _dbContext.TotpSecrets.Where(t => t.UserId == userId).ToListAsync();
+            _dbContext.TotpSecrets.RemoveRange(totpSecrets);
+            var webAuthnCreds = await _dbContext.Fido2Credentials.Where(c => c.UserId == userId).ToListAsync();
+            _dbContext.Fido2Credentials.RemoveRange(webAuthnCreds);
+            user.MfaEnrolledAt = null;
+            user.SecurityStamp = Guid.NewGuid().ToString();
+            foreach (var token in await _dbContext.Set<RefreshTokenEntity>().Where(t => t.UserId == userId && !t.IsRevoked).ToListAsync())
+            {
+                token.IsRevoked = true;
+                token.RevokedAt = DateTime.UtcNow;
+            }
+            await _dbContext.SaveChangesAsync();
+
+            _logger.LogInformation("MFA reset for user {UserId}", userId);
+            return (totpSecrets.Count, webAuthnCreds.Count);
+        }
+
+        /// <summary>
         /// Maps a <see cref="UserEntity"/> with loaded GroupMemberships to a <see cref="UserEntityDto"/>.
         /// </summary>
         private static UserEntityDto MapToDto(UserEntity user)
@@ -548,12 +587,13 @@ namespace ModularCA.Auth.Services
                 DisplayName = user.DisplayName,
                 IsActive = user.IsActive,
                 IsServiceIdentity = user.IsServiceIdentity,
-                ServiceScopeTenantId = user.ServiceScopeTenantId,
+                ServiceScopeSpaceId = user.ServiceScopeSpaceId,
                 ServiceScopeCaId = user.ServiceScopeCaId,
                 Description = user.Description,
                 IsLocked = user.IsLocked,
                 PasswordNeverExpires = user.PasswordNeverExpires,
                 CreatedAt = user.CreatedAt,
+                LastLoginAt = user.LastLoginAt,
                 Groups = user.GroupMemberships?.Select(gm => new GroupMembershipDto
                 {
                     GroupId = gm.Group.Id,

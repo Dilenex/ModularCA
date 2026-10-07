@@ -76,7 +76,7 @@ public class ErrorCodeCatalogTests
             // Two subtypes read Code from constructor-captured state, so an uninitialized
             // instance legitimately reads null; construct those for real.
             var code =
-                type == typeof(ResourceNotFoundException) ? new ResourceNotFoundException("Tenant", "gone").Code
+                type == typeof(ResourceNotFoundException) ? new ResourceNotFoundException("Space", "gone").Code
                 : type == typeof(LicensingException) ? new LicensingException("x", ErrorCodes.LicenseRefused).Code
                 : instance.Code;
 
@@ -119,14 +119,16 @@ public class ErrorCodeCatalogTests
         [
             "MCA-CFG-000", "MCA-CFG-001", "MCA-CFG-002", "MCA-CFG-003", "MCA-CFG-004",
             "MCA-CFG-005", "MCA-CFG-006", "MCA-CFG-007", "MCA-CFG-008", "MCA-CFG-009",
-            "MCA-CFG-010", "MCA-CFG-011", "MCA-CFG-012", "MCA-CFG-013",
+            "MCA-CFG-010", "MCA-CFG-011", "MCA-CFG-012", "MCA-CFG-013", "MCA-CFG-014",
+            "MCA-CFG-015", "MCA-CFG-016", "MCA-CFG-017", "MCA-CFG-018", "MCA-CFG-019",
+            "MCA-CFG-020", "MCA-CFG-021",
             "MCA-ISS-000", "MCA-ISS-001", "MCA-ISS-002", "MCA-ISS-003",
             "MCA-LIC-000", "MCA-LIC-001", "MCA-LIC-002", "MCA-LIC-003",
             "MCA-POL-000", "MCA-POL-001",
             "MCA-PRF-000",
             "MCA-REQ-000", "MCA-REQ-001", "MCA-REQ-002", "MCA-REQ-003", "MCA-REQ-004",
             "MCA-RES-000", "MCA-RES-001", "MCA-RES-002", "MCA-RES-003", "MCA-RES-004",
-            "MCA-RES-005",
+            "MCA-RES-005", "MCA-RES-006",
         ];
 
         var missing = pinned.Except(ErrorCodes.All, StringComparer.Ordinal).ToList();
@@ -134,6 +136,24 @@ public class ErrorCodeCatalogTests
         Assert.True(missing.Count == 0,
             "these codes were removed or renumbered, which silently repoints anything keyed on "
             + "them: " + string.Join(", ", missing));
+    }
+
+    [Fact]
+    public void A_retired_code_stays_in_the_catalog_and_is_never_reused()
+    {
+        // MCA-CFG-017 refused a second space in single-organisation mode, which 0.4.0 retired.
+        // It stays declared so its number is never handed to a different failure.
+        Assert.Equal(["MCA-CFG-011", "MCA-CFG-017"], ErrorCodes.Retired);
+        Assert.All(ErrorCodes.Retired, code => Assert.Contains(code, ErrorCodes.All));
+        Assert.Equal("MCA-CFG-017", ErrorCodes.MultipleOrganizationsDisabled);
+    }
+
+    [Fact]
+    public void The_space_codes_kept_their_numbers()
+    {
+        Assert.Equal("MCA-CFG-006", ErrorCodes.SpaceDisabled);
+        Assert.Equal("MCA-ISS-004", ErrorCodes.ValidityClampedToSpace);
+        Assert.Equal("MCA-ISS-005", ErrorCodes.ValidityExceedsSpaceCeiling);
     }
 
     [Fact]

@@ -13,6 +13,7 @@ import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
 import { inputClass as inputCls, labelClass as labelCls } from '@shared/components/forms';
 import { ToggleField } from '@shared/components/forms';
+import { actionButton, actionButtonDanger } from '@shared/components/actionButtons';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -143,17 +144,17 @@ const LdapPublisherDetail: React.FC = () => {
         }
     };
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return (
         <div className="p-6 space-y-3">
             <InlineNotice notice={error} variant="line" />
-            <button onClick={() => navigate('/distribution?tab=ldap')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Distribution</button>
+            <button onClick={() => navigate('/distribution?tab=ldap')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Distribution</button>
         </div>
     );
     if (!pub) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">LDAP publisher not found.</p>
-            <button onClick={() => navigate('/distribution?tab=ldap')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Distribution</button>
+            <p className="text-sm text-ink-muted">LDAP publisher not found.</p>
+            <button onClick={() => navigate('/distribution?tab=ldap')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Distribution</button>
         </div>
     );
 
@@ -172,8 +173,8 @@ const LdapPublisherDetail: React.FC = () => {
             saveDisabled={!dirty || !form.name.trim() || !form.host.trim() || !form.baseDn.trim()}
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
-                    <button onClick={test} disabled={testing} className="px-3 py-1.5 text-xs bg-indigo-50 dark:bg-indigo-900/50 text-indigo-800 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-700 rounded hover:bg-indigo-900 disabled:opacity-50 transition-colors">{testing ? 'Testing…' : 'Test Connection'}</button>
-                    <button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 disabled:opacity-50 transition-colors">Delete</button>
+                    <button onClick={test} disabled={testing} className={actionButton}>{testing ? 'Testing…' : 'Test Connection'}</button>
+                    <button onClick={() => setConfirmDelete(true)} disabled={deleting} className={actionButtonDanger}>Delete</button>
                 </div>
             }
         >
@@ -212,8 +213,8 @@ const LdapPublisherDetail: React.FC = () => {
                                 <ToggleField label="Enabled" checked={form.enabled} onChange={(v) => setForm({ ...form, enabled: v })} />
                             </div>
                             {!form.useSsl && (
-                                <div className="rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/30 p-3 max-w-3xl">
-                                    <p className="text-xs text-amber-900 dark:text-amber-300">
+                                <div className="rounded border border-warn/40 bg-warn-soft p-3 max-w-3xl">
+                                    <p className="text-xs text-warn">
                                         Without SSL the bind password is sent to {form.host || 'the directory'} in cleartext.
                                         Enable it and use the LDAPS port (usually 636). Many directories, Active Directory
                                         included, reject unencrypted simple binds outright.
@@ -223,10 +224,10 @@ const LdapPublisherDetail: React.FC = () => {
                             <div>
                                 <span className={`${labelCls} mb-2`}>Publish Options</span>
                                 <div className="flex flex-wrap gap-4">
-                                    <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer"><input type="checkbox" checked={form.publishCACert} onChange={(e) => setForm({ ...form, publishCACert: e.target.checked })} className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />CA Certificate</label>
-                                    <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer"><input type="checkbox" checked={form.publishCRL} onChange={(e) => setForm({ ...form, publishCRL: e.target.checked })} className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />CRL</label>
-                                    <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer"><input type="checkbox" checked={form.publishDelta} onChange={(e) => setForm({ ...form, publishDelta: e.target.checked })} className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />Delta CRL</label>
-                                    <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-gray-300 cursor-pointer"><input type="checkbox" checked={form.publishUserCerts} onChange={(e) => setForm({ ...form, publishUserCerts: e.target.checked })} className="rounded border-gray-400 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />User Certificates</label>
+                                    <label className="flex items-center gap-1.5 text-sm text-ink cursor-pointer"><input type="checkbox" checked={form.publishCACert} onChange={(e) => setForm({ ...form, publishCACert: e.target.checked })} className="rounded border-line-strong text-accent-ink focus:ring-accent" />CA Certificate</label>
+                                    <label className="flex items-center gap-1.5 text-sm text-ink cursor-pointer"><input type="checkbox" checked={form.publishCRL} onChange={(e) => setForm({ ...form, publishCRL: e.target.checked })} className="rounded border-line-strong text-accent-ink focus:ring-accent" />CRL</label>
+                                    <label className="flex items-center gap-1.5 text-sm text-ink cursor-pointer"><input type="checkbox" checked={form.publishDelta} onChange={(e) => setForm({ ...form, publishDelta: e.target.checked })} className="rounded border-line-strong text-accent-ink focus:ring-accent" />Delta CRL</label>
+                                    <label className="flex items-center gap-1.5 text-sm text-ink cursor-pointer"><input type="checkbox" checked={form.publishUserCerts} onChange={(e) => setForm({ ...form, publishUserCerts: e.target.checked })} className="rounded border-line-strong text-accent-ink focus:ring-accent" />User Certificates</label>
                                 </div>
                             </div>
                         </div>
@@ -238,7 +239,7 @@ const LdapPublisherDetail: React.FC = () => {
                     title="Delete LDAP Publisher"
                     message={`Delete "${pub.name}"? This cannot be undone.`}
                     confirmLabel="Delete"
-                    confirmClass="bg-red-600 hover:bg-red-700"
+                    tone="crit"
                     loading={deleting}
                     onConfirm={doDelete}
                     onCancel={() => setConfirmDelete(false)}

@@ -74,10 +74,27 @@ dotnet publish ModularCA.KeystoreCli/ModularCA.KeystoreCli.csproj \
     -c "$CONFIG" -r "$RID" --self-contained true \
     -o "$STAGE" -v minimal --nologo
 
+# The MariaDB-to-PostgreSQL migration helper, into the same directory for the same reason as
+# the CLI above. It ships with the release it migrates TO, which is the point: an operator on
+# 0.3.0 unpacks 0.3.1, finds the tool beside the binary that refuses to start against MariaDB,
+# and needs nothing they did not already download.
+note "publishing ModularCA.Migrate"
+dotnet publish ModularCA.Migrate/ModularCA.Migrate.csproj \
+    -c "$CONFIG" -r "$RID" --self-contained true \
+    -o "$STAGE" -v minimal --nologo
+
 note "staging config, deploy files and installer"
-mkdir -p "$STAGE/config" "$STAGE/keystores" "$STAGE/logs" "$STAGE/deploy"
+mkdir -p "$STAGE/config" "$STAGE/keystores" "$STAGE/logs" "$STAGE/deploy" "$STAGE/share/sql"
 cp config/*.example "$STAGE/config/" 2>/dev/null || true
-# deploy/ is gitignored (operator-specific), so tolerate its absence on a clean clone.
+# The schema-ownership repair, run as the PostgreSQL superuser. install.sh and the .deb install it
+# root-owned under /usr/share/modularca/sql and never under /opt/modularca, which the service
+# account owns. The byte-for-byte copy of what ModularCA.Database embeds.
+cp ModularCA.Database/Sql/adopt-ownership.sql "$STAGE/share/sql/adopt-ownership.sql"
+cmp -s ModularCA.Database/Sql/adopt-ownership.sql "$STAGE/share/sql/adopt-ownership.sql" \
+    || { echo "REFUSING: the staged adopt-ownership.sql differs from ModularCA.Database/Sql" >&2; exit 1; }
+# The two systemd units are required (the payload check below refuses an archive without them:
+# install.sh installs both). The nginx and nftables templates and the drop-ins are examples, so a
+# missing one is tolerated.
 if [[ -d deploy ]]; then
     cp deploy/modularca.service deploy/modularca-signer.service \
        deploy/nginx-modularca.conf deploy/nftables-modularca.conf \
@@ -111,9 +128,16 @@ chmod 0755 "$STAGE/install.sh" 2>/dev/null || true
 note "verifying payload"
 for required in ModularCA.API ModularCA.Keystore.Unlocker LICENSE THIRD-PARTY-NOTICES.md wwwroot/admin/index.html \
                 wwwroot/public/index.html \
-                wwwroot/setup/index.html wwwroot/docs/index.html; do
+                wwwroot/setup/index.html wwwroot/docs/index.html share/sql/adopt-ownership.sql \
+                deploy/modularca.service deploy/modularca-signer.service; do
     [[ -e "$STAGE/$required" ]] || { echo "MISSING from payload: $required" >&2; exit 1; }
 done
+# The interfaces bundle the vendored Plex fonts; SIL OFL 1.1 requires its text to travel with them.
+grep -q 'SIL OPEN FONT LICENSE' "$STAGE/THIRD-PARTY-NOTICES.md" || {
+    echo "REFUSING: THIRD-PARTY-NOTICES.md lacks the vendored font licence. Regenerate with:" >&2
+    echo "  node scripts/generate-third-party-notices.mjs" >&2
+    exit 1
+}
 if compgen -G "$STAGE/*.exe" > /dev/null; then
     echo "REFUSING: a Windows .exe leaked into a $RID payload" >&2
     exit 1

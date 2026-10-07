@@ -108,8 +108,8 @@ const ADMIN_ROUTE_TITLES: Array<[string, string]> = [
 
     // Administration
     ['/ceremonies', 'Ceremonies'],
-    ['/tenants/:id', 'Tenant Detail'],
-    ['/tenants', 'Tenants & Quotas'],
+    ['/spaces/:id', 'Space Detail'],
+    ['/spaces', 'Spaces & Quotas'],
     ['/quotas', 'Quotas'],
     ['/settings', 'Settings'],
     ['/audit/:type/:id', 'Audit Entry'],

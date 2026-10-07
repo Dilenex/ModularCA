@@ -13,6 +13,7 @@ import { useStepUp } from '../components/StepUpMfaContext';
 import { StepUpOps } from '@shared/generated';
 import { FieldHint, inputClass as inputCls, labelClass as labelCls } from '@shared/components/forms';
 import { OVERLAP_HINT, toTimeSpan } from './Distribution';
+import { actionButton, actionButtonDanger } from '@shared/components/actionButtons';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -127,12 +128,12 @@ const CrlScheduleDetail: React.FC = () => {
         }
     };
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return <InlineNotice notice={error} />;
     if (!schedule) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">CRL schedule not found.</p>
-            <button onClick={() => navigate('/distribution?tab=crl')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Distribution</button>
+            <p className="text-sm text-ink-muted">CRL schedule not found.</p>
+            <button onClick={() => navigate('/distribution?tab=crl')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Distribution</button>
         </div>
     );
 
@@ -151,8 +152,8 @@ const CrlScheduleDetail: React.FC = () => {
             saveDisabled={!dirty || !form.updateInterval.trim()}
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
-                    <button onClick={toggle} className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">{s.enabled ? 'Disable' : 'Enable'}</button>
-                    <button onClick={() => setConfirmDelete(true)} disabled={deleting} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 disabled:opacity-50 transition-colors">Delete</button>
+                    <button onClick={toggle} className={actionButton}>{s.enabled ? 'Disable' : 'Enable'}</button>
+                    <button onClick={() => setConfirmDelete(true)} disabled={deleting} className={actionButtonDanger}>Delete</button>
                 </div>
             }
         >
@@ -203,7 +204,7 @@ const CrlScheduleDetail: React.FC = () => {
                     title="Delete CRL Schedule"
                     message={`Delete "${s.name}"? This cannot be undone.`}
                     confirmLabel="Delete"
-                    confirmClass="bg-red-600 hover:bg-red-700"
+                    tone="crit"
                     loading={deleting}
                     onConfirm={doDelete}
                     onCancel={() => setConfirmDelete(false)}

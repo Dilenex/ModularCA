@@ -198,6 +198,25 @@ public class ComplianceScanJob : SingletonCronJob
     }
 
     /// <summary>
+    /// True when a BouncyCastle signature algorithm name (<c>SHA-1withRSA</c>, <c>MD5withRSA</c>)
+    /// contains any configured deprecated entry, ignoring case and hyphens. BouncyCastle writes
+    /// SHA-1 with a hyphen, so without folding hyphens the default entry <c>SHA1WithRSA</c>, and
+    /// the console's suggestion <c>SHA1</c>, never matched a SHA-1 certificate. Blank entries are
+    /// skipped, since an empty fragment would match every certificate.
+    /// </summary>
+    /// <param name="sigAlgName">The certificate's signature algorithm name.</param>
+    /// <param name="deprecated">The configured deprecated entries.</param>
+    internal static bool MatchesDeprecatedAlgorithm(string? sigAlgName, IEnumerable<string>? deprecated)
+    {
+        if (string.IsNullOrEmpty(sigAlgName) || deprecated == null) return false;
+        static string Fold(string s) => s.Replace("-", string.Empty).ToUpperInvariant();
+        var name = Fold(sigAlgName);
+        return deprecated
+            .Where(d => !string.IsNullOrWhiteSpace(d))
+            .Any(d => name.Contains(Fold(d.Trim()), StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// Analyzes a single certificate for known vulnerability patterns and returns
     /// a list of findings. Parses the raw certificate bytes via BouncyCastle to
     /// inspect key size, signature algorithm, extensions, and validity period.
@@ -244,18 +263,10 @@ public class ComplianceScanJob : SingletonCronJob
         }
 
         // 2. Deprecated signature algorithm check
-        if (bcCert != null)
+        if (bcCert != null && MatchesDeprecatedAlgorithm(bcCert.SigAlgName, scanConfig.DeprecatedAlgorithms))
         {
-            var sigAlgName = bcCert.SigAlgName?.ToUpperInvariant() ?? string.Empty;
-            foreach (var deprecated in scanConfig.DeprecatedAlgorithms)
-            {
-                if (sigAlgName.Contains(deprecated.ToUpperInvariant(), StringComparison.Ordinal))
-                {
-                    findings.Add(CreateFinding(cert.CertificateId, AlertSeverity.Critical, "DeprecatedAlgorithm",
-                        $"Certificate uses deprecated signature algorithm: {bcCert.SigAlgName}"));
-                    break;
-                }
-            }
+            findings.Add(CreateFinding(cert.CertificateId, AlertSeverity.Critical, "DeprecatedAlgorithm",
+                $"Certificate uses deprecated signature algorithm: {bcCert.SigAlgName}"));
         }
 
         // 3. Over-long validity check — warning-only threshold, does not block issuance.

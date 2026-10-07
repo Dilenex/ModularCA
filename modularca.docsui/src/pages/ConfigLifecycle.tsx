@@ -1,10 +1,10 @@
 export default function ConfigLifecycle() {
     return (
         <div className="max-w-4xl mx-auto">
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+            <h1 className="text-2xl font-semibold text-ink mb-4">
                 Configuration Lifecycle
             </h1>
-            <p className="text-lg text-gray-600 dark:text-gray-400 leading-relaxed mb-8">
+            <p className="text-lg text-ink-muted leading-relaxed mb-8">
                 ModularCA uses a series of YAML configuration files that are created and modified at different
                 stages of the deployment lifecycle. Understanding which file holds what and when each is
                 written is essential for operations and troubleshooting.
@@ -12,9 +12,9 @@ export default function ConfigLifecycle() {
 
             {/* Overview Diagram */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">File Progression</h2>
-                <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm overflow-x-auto mb-4">
-                    <pre className="text-gray-700 dark:text-gray-300">{`
+                <h2 className="text-2xl font-bold text-ink mb-3">File Progression</h2>
+                <div className="bg-sunken rounded p-4 data-mono overflow-x-auto mb-4">
+                    <pre className="text-ink">{`
   Deployment                Setup Wizard              Runtime
   (Manual/Automated)        (One-time)                (Ongoing)
 
@@ -33,25 +33,25 @@ export default function ConfigLifecycle() {
 
             {/* setup-database.yaml */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">setup-database.yaml</h2>
+                <h2 className="text-2xl font-bold text-ink mb-3">setup-database.yaml</h2>
                 <div className="flex items-center gap-2 mb-3">
-                    <span className="px-2 py-1 text-xs font-medium bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200 rounded">Pre-setup</span>
-                    <span className="px-2 py-1 text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded">Manual creation</span>
+                    <span className="px-2 py-1 text-xs font-medium bg-warn-soft text-warn rounded">Pre-setup</span>
+                    <span className="px-2 py-1 text-xs font-medium bg-sunken text-ink-muted rounded">Manual creation</span>
                 </div>
-                <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
+                <p className="text-ink leading-relaxed mb-3">
                     This file provides the initial database connection information needed to start the setup
                     wizard. It is the only configuration file that must exist before the application starts
                     for the first time. It can be created manually or by a deployment script.
                 </p>
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Contents</h3>
-                <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm mb-3">
-                    <pre className="text-gray-700 dark:text-gray-300">{`# setup-database.yaml
-# Deleted after successful setup -- the root credentials are not needed again.
+                <h3 className="text-lg font-semibold text-ink mb-2">Contents</h3>
+                <div className="bg-sunken rounded p-4 data-mono mb-3">
+                    <pre className="text-ink">{`# setup-database.yaml
+# Deleted after successful setup -- the superuser credentials are not needed again.
 SqlRoot:
   Host: localhost
-  Port: 3306
-  Username: root
-  Password: "your-root-password-here"
+  Port: 5432
+  Username: postgres
+  Password: "your-superuser-password-here"
 
 SqlApp:
   Database: modularca-app
@@ -61,68 +61,68 @@ SqlAudit:
   Database: modularca-audit
   Username: modularca_audit`}</pre>
                 </div>
-                <div className="border-l-4 border-yellow-500 bg-yellow-50 dark:bg-yellow-900/20 p-4 rounded-r">
-                    <p className="text-gray-700 dark:text-gray-300 text-sm">
-                        <span className="font-semibold">Security note:</span> This file contains the database root
+                <div className="border-l-4 border-warn bg-warn-soft p-4 rounded-r">
+                    <p className="text-ink text-sm">
+                        <span className="font-semibold">Security note:</span> This file contains the PostgreSQL superuser
                         password in plain text. It should have restricted file permissions (600) and ideally be
-                        deleted after setup completes. The root credentials are not persisted to any other file.
+                        deleted after setup completes. The superuser credentials are not persisted to any other file.
                     </p>
                 </div>
             </section>
 
             {/* db.yaml */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">db.yaml</h2>
+                <h2 className="text-2xl font-bold text-ink mb-3">db.yaml</h2>
                 <div className="flex items-center gap-2 mb-3">
-                    <span className="px-2 py-1 text-xs font-medium bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 rounded">Generated by setup</span>
-                    <span className="px-2 py-1 text-xs font-medium bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200 rounded">Deleted by reset</span>
+                    <span className="px-2 py-1 text-xs font-medium bg-ok-soft text-ok rounded">Generated by setup</span>
+                    <span className="px-2 py-1 text-xs font-medium bg-crit-soft text-crit rounded">Deleted by reset</span>
                 </div>
-                <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
+                <p className="text-ink leading-relaxed mb-3">
                     Generated during the setup wizard. Contains the runtime database connection strings using
-                    the application-level credentials (not root). This file is read on every application
+                    the application-level credentials (not the superuser). This file is read on every application
                     startup.
                 </p>
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Contents</h3>
-                <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm mb-3">
-                    <pre className="text-gray-700 dark:text-gray-300">{`# db.yaml (generated)
+                <h3 className="text-lg font-semibold text-ink mb-2">Contents</h3>
+                <div className="bg-sunken rounded p-4 data-mono mb-3">
+                    <pre className="text-ink">{`# db.yaml (generated)
 App:
   Host: localhost
-  Port: 3306
+  Port: 5432
   Database: modularca
   Username: modularca_app
   Password: "..."
-  SslMode: Required          # None | Preferred | Required | VerifyCA | VerifyFull
+  SslMode: Require           # Disable | Allow | Prefer | Require | VerifyCA | VerifyFull
 Audit:
   Host: localhost
-  Port: 3306
+  Port: 5432
   Database: modularca_audit
   Username: modularca_audit
   Password: "..."
-  SslMode: Required`}</pre>
+  SslMode: Require`}</pre>
                 </div>
-                <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300">
-                    <li>Two <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">DbInstance</code> objects (<code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">App</code> and <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">Audit</code>), not raw connection strings</li>
+                <ul className="list-disc list-inside space-y-1 text-ink">
+                    <li>Two <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">DbInstance</code> objects (<code className="text-sm bg-sunken px-1.5 py-0.5 rounded">App</code> and <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">Audit</code>), not raw connection strings</li>
                     <li>Passwords are auto-generated during setup</li>
-                    <li><code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">SslMode</code> defaults to <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">Required</code> to enforce TLS on database connections; downgrading weakens transport security</li>
-                    <li>Deleted by <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">--reset</code> and regenerated by the next setup run &mdash; the database users and grants themselves are left in place</li>
+                    <li><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">SslMode</code> defaults to <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">Require</code> to enforce TLS on database connections; downgrading weakens transport security</li>
+                    <li>Deleted by <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">--reset</code> and regenerated by the next setup run &mdash; the database users and grants themselves are left in place</li>
                     <li>Should not be manually edited unless migrating databases</li>
                 </ul>
             </section>
 
             {/* config.yaml */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">config.yaml</h2>
+                <h2 className="text-2xl font-bold text-ink mb-3">config.yaml</h2>
                 <div className="flex items-center gap-2 mb-3">
-                    <span className="px-2 py-1 text-xs font-medium bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 rounded">Generated by setup</span>
-                    <span className="px-2 py-1 text-xs font-medium bg-purple-100 dark:bg-purple-900 text-purple-800 dark:text-purple-200 rounded">Runtime modifiable</span>
+                    <span className="px-2 py-1 text-xs font-medium bg-ok-soft text-ok rounded">Generated by setup</span>
+                    <span className="px-2 py-1 text-xs font-medium bg-accent-soft text-accent-ink rounded">Runtime modifiable</span>
                 </div>
-                <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
+                <p className="text-ink leading-relaxed mb-3">
                     The main runtime configuration file. Initially generated from setup wizard values, but
                     can be modified at runtime through the Admin UI Settings page or by direct file editing.
                 </p>
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Contents (major sections)</h3>
-                <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm mb-3">
-                    <pre className="text-gray-700 dark:text-gray-300">{`# config.yaml (abbreviated — see AdminConfigController GET for full structure)
+                <h3 className="text-lg font-semibold text-ink mb-2">Contents (major sections)</h3>
+                <div className="bg-sunken rounded p-4 data-mono mb-3">
+                    <pre className="text-ink">{`# config.yaml (abbreviated — see AdminConfigController GET for full structure)
 Http:
   Port: 8080
   PublicPort: null              # Falls back to Port when null
@@ -209,13 +209,13 @@ CertPolicy:
   RsaSignaturePadding: "PSS"
   MinRsaKeySize: 2048
   ExpireCheckSchedule: "0 1 * * *"
-  # No MaxValidityDays. Certificate lifetime is capped per tenant
-  # (Tenants & Quotas -> Max Cert Validity), not installation-wide.
+  # No MaxValidityDays. Certificate lifetime is capped per space
+  # (Spaces & Quotas -> Max Cert Validity), not installation-wide.
 
 # Audit retention, expiry notifications, vulnerability scan, auto-renewal,
 # and backup schedules are flat cron strings — see "Scheduler Jobs" below.`}</pre>
                 </div>
-                <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300">
+                <ul className="list-disc list-inside space-y-1 text-ink">
                     <li>All operational settings live here</li>
                     <li>Changes via the Admin UI Settings page write back to this file</li>
                     <li>Supports hot-reload for most settings (no restart required)</li>
@@ -225,29 +225,29 @@ CertPolicy:
 
             {/* Security Policy (DB-backed) */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Security Policy (DB-backed)</h2>
+                <h2 className="text-2xl font-bold text-ink mb-3">Security Policy (DB-backed)</h2>
                 <div className="flex items-center gap-2 mb-3">
-                    <span className="px-2 py-1 text-xs font-medium bg-purple-100 dark:bg-purple-900 text-purple-800 dark:text-purple-200 rounded">Runtime modifiable</span>
-                    <span className="px-2 py-1 text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded">Not in config.yaml</span>
+                    <span className="px-2 py-1 text-xs font-medium bg-accent-soft text-accent-ink rounded">Runtime modifiable</span>
+                    <span className="px-2 py-1 text-xs font-medium bg-sunken text-ink-muted rounded">Not in config.yaml</span>
                 </div>
-                <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
+                <p className="text-ink leading-relaxed mb-3">
                     Session/lockout, MFA, OCSP responder posture, login banner, and approval policy
-                    used to live under <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">security:</code> in
-                    <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded"> config.yaml</code>. Those fields moved to the single-row
-                    <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded"> SecurityPolicy</code> table so they can be changed without
+                    used to live under <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">security:</code> in
+                    <code className="text-sm bg-sunken px-1.5 py-0.5 rounded"> config.yaml</code>. Those fields moved to the single-row
+                    <code className="text-sm bg-sunken px-1.5 py-0.5 rounded"> SecurityPolicy</code> table so they can be changed without
                     a restart and without writing a file. Manage via
-                    <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded"> GET/PUT /api/v1/admin/security-policy</code>.
+                    <code className="text-sm bg-sunken px-1.5 py-0.5 rounded"> GET/PUT /api/v1/admin/security-policy</code>.
                 </p>
-                <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300">
-                    <li><span className="font-semibold">Session / lockout:</span> <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">MaxFailedLoginAttempts</code>, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">LockoutMinutes</code>, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">SessionIdleTimeoutMinutes</code>, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">MaxConcurrentSessions</code>, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">MaxSessionLifetimeDays</code></li>
-                    <li><span className="font-semibold">Login posture:</span> <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">LoginResponseDelayMs</code>, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">LoginBanner</code>, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">LoginBannerTitle</code></li>
-                    <li><span className="font-semibold">MFA / step-up:</span> <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">MfaSessionTtlSeconds</code>, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">StepUpTokenTtlSeconds</code>, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">StepUpFailureThreshold</code>, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">StepUpFailureWindowSeconds</code>, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">WebAuthnChallengeTtlSeconds</code>, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">RequireWebAuthnUserVerification</code></li>
-                    <li><span className="font-semibold">OCSP responder:</span> <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">AllowCaDirectSigning</code>, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">RequireNoCheckExtension</code>, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">RequireSignedRequests</code>, default <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">nextUpdate</code> TTLs</li>
-                    <li><span className="font-semibold">Approval / mTLS:</span> <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">AllowSystemSuperSelfApproval</code>, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">RequireMtlsOcspCheck</code></li>
-                    <li><span className="font-semibold">Keystore KDF:</span> <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">KeystoreScryptN / R / P</code> — cost is upgraded in-place on next write</li>
+                <ul className="list-disc list-inside space-y-1 text-ink">
+                    <li><span className="font-semibold">Session / lockout:</span> <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">MaxFailedLoginAttempts</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">LockoutMinutes</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">SessionIdleTimeoutMinutes</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">MaxConcurrentSessions</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">MaxSessionLifetimeDays</code></li>
+                    <li><span className="font-semibold">Login posture:</span> <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">LoginResponseDelayMs</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">LoginBanner</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">LoginBannerTitle</code></li>
+                    <li><span className="font-semibold">MFA / step-up:</span> <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">MfaSessionTtlSeconds</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">StepUpTokenTtlSeconds</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">StepUpFailureThreshold</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">StepUpFailureWindowSeconds</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">WebAuthnChallengeTtlSeconds</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">RequireWebAuthnUserVerification</code></li>
+                    <li><span className="font-semibold">OCSP responder:</span> <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">AllowCaDirectSigning</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">RequireNoCheckExtension</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">RequireSignedRequests</code>, default <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">nextUpdate</code> TTLs</li>
+                    <li><span className="font-semibold">Approval / mTLS:</span> <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">AllowSystemSuperSelfApproval</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">RequireMtlsOcspCheck</code></li>
+                    <li><span className="font-semibold">Keystore KDF:</span> <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">KeystoreScryptN / R / P</code> — cost is upgraded in-place on next write</li>
                 </ul>
-                <div className="border-l-4 border-blue-500 bg-blue-50 dark:bg-blue-900/20 p-4 rounded-r mt-3">
-                    <p className="text-gray-700 dark:text-gray-300 text-sm">
+                <div className="border-l-4 border-info bg-info-soft p-4 rounded-r mt-3">
+                    <p className="text-ink text-sm">
                         <span className="font-semibold">Note:</span> The bootstrap seeder writes initial values from the setup wizard's
                         security step. On factory reset the row is regenerated from defaults — it does not carry over with audit rows.
                     </p>
@@ -256,12 +256,12 @@ CertPolicy:
 
             {/* bootstrap.yaml */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">bootstrap.yaml</h2>
+                <h2 className="text-2xl font-bold text-ink mb-3">bootstrap.yaml</h2>
                 <div className="flex items-center gap-2 mb-3">
-                    <span className="px-2 py-1 text-xs font-medium bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 rounded">Generated by setup</span>
-                    <span className="px-2 py-1 text-xs font-medium bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200 rounded">Sealed / read-only</span>
+                    <span className="px-2 py-1 text-xs font-medium bg-ok-soft text-ok rounded">Generated by setup</span>
+                    <span className="px-2 py-1 text-xs font-medium bg-crit-soft text-crit rounded">Sealed / read-only</span>
                 </div>
-                <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
+                <p className="text-ink leading-relaxed mb-3">
                     Supplies the values an unattended <code>--bootstrap</code> run would otherwise collect
                     interactively: the root CA subject and key parameters, the default signing profile, the
                     HTTPS API certificate, and which enrollment protocols start enabled. It is an INPUT file,
@@ -269,9 +269,9 @@ CertPolicy:
                     not gate the setup wizard -- that decision is made from the database. It is also the one
                     config file a factory reset preserves.
                 </p>
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Contents</h3>
-                <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm mb-3">
-                    <pre className="text-gray-700 dark:text-gray-300">{`# bootstrap.yaml
+                <h3 className="text-lg font-semibold text-ink mb-2">Contents</h3>
+                <div className="bg-sunken rounded p-4 data-mono mb-3">
+                    <pre className="text-ink">{`# bootstrap.yaml
 # Only used by --bootstrap CLI mode. The setup wizard collects these interactively.
 CA:
   Subject:
@@ -289,15 +289,68 @@ SigningProfile:
   KeyUsages: [digitalSignature, keyCertSign, crlSign]
 
 HttpsApi:
-  ...
+  CN: "ModularCA API"
+  # The bare hostname or IP address clients reach this instance by.
+  # Omitted, it is the first DNS name under SANs that is not localhost.
+  PublicDomain: "ca.example.com"
+  SANs: ["DNS:localhost", "IP:127.0.0.1"]
+  Port: 8443
+  HttpPort: 8080
 
 Features:
   # ACME/EST/SCEP/CMP default to false so a first run does not expose
-  # enrollment protocols nobody opted into. CRL/OCSP stay on.`}</pre>
+  # enrollment protocols nobody opted into. CRL/OCSP stay on.
+
+Administration:
+  # Will more than one person administer this CA?
+  #   true  - key ceremonies start on.
+  #   false - key ceremonies start off for the instance and the first space.
+  # Omitted, key ceremonies start on.
+  MultipleAdministrators: true
+
+Acme:
+  # Will ACME clients be on a private network? Only read when Features.ACME is true.
+  #   true  - http-01 validation may reach private addresses.
+  #   false - http-01 validation refuses them.
+  # Omitted, it is false.
+  AllowPrivateAddressValidation: false`}</pre>
                 </div>
-                <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300">
+                <p className="text-ink leading-relaxed mb-3">
+                    <code>Administration.MultipleAdministrators</code> is the unattended form of the setup
+                    wizard&apos;s question &ldquo;Will more than one person administer this CA?&rdquo;. A key
+                    ceremony makes a second administrator approve before a CA is created, revoked or deleted,
+                    and the person who starts one can never approve it, so a lone administrator could never
+                    finish one. <code>false</code> therefore starts the requirement off, for the instance
+                    policy and for the first space; <code>true</code>, or leaving the key out, starts it on.
+                    The choice is written to the audit log. Turn the requirement on later in the console,
+                    under Settings for the instance and on the space&apos;s page for a space, once a second
+                    administrator exists.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    <code>HttpsApi.PublicDomain</code> is the bare hostname or IP address clients reach the
+                    instance by, with no scheme, port or path. Bootstrap writes it to{' '}
+                    <code>Https.PublicDomain</code> in <code>config.yaml</code>, which the node will not
+                    start without, and builds the ACME directory URLs, redirects, the passkey origin and
+                    the CRL, OCSP and AIA URLs in issued certificates from it. Left out, it is the first DNS
+                    name under <code>SANs</code> that is not <code>localhost</code>, or{' '}
+                    <code>localhost</code> when there is none, which only works from the host itself. A
+                    name the SANs do not cover is added to the web certificate.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    <code>Acme.AllowPrivateAddressValidation</code> is the unattended form of the
+                    wizard&apos;s question &ldquo;Will ACME clients be on a private network?&rdquo;, and is
+                    read only when <code>Features.ACME</code> is <code>true</code>. <code>true</code> lets
+                    the first CA&apos;s http-01 validation fetch challenges from private, loopback and
+                    link-local addresses and look names up in the host&apos;s hosts file as well as DNS,
+                    which an internal CA needs. <code>false</code>, or leaving the key out, refuses those
+                    addresses: keep that for a CA that validates public names, because with it on whoever
+                    can request a certificate can make the server fetch from addresses inside your
+                    network. <code>true</code> is written to the audit log. Change it later, per CA, in the
+                    console under the CA&apos;s protocol settings.
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink">
                     <li>Written once during setup, never modified</li>
-                    <li>Presence of this file with <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">completed: true</code> disables the setup wizard</li>
+                    <li>Presence of this file with <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">completed: true</code> disables the setup wizard</li>
                     <li>Records the IDs and thumbprints of bootstrap-created CAs</li>
                     <li>Deleting this file does NOT re-enable setup (database state is checked too)</li>
                 </ul>
@@ -305,44 +358,44 @@ Features:
 
             {/* What Survives Reset */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">What Survives a Reset</h2>
-                <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
+                <h2 className="text-2xl font-bold text-ink mb-3">What Survives a Reset</h2>
+                <p className="text-ink leading-relaxed mb-3">
                     If you need to re-bootstrap the system (e.g., to recreate the root CA or admin account),
                     here is what is preserved versus what is regenerated:
                 </p>
                 <table className="w-full border-collapse mb-4">
                     <thead>
-                        <tr className="border-b border-gray-200 dark:border-gray-700">
-                            <th className="text-left py-2 pr-4 text-gray-900 dark:text-white font-semibold">File</th>
-                            <th className="text-left py-2 pr-4 text-gray-900 dark:text-white font-semibold">Survives Reset</th>
-                            <th className="text-left py-2 text-gray-900 dark:text-white font-semibold">Notes</th>
+                        <tr className="border-b border-line">
+                            <th className="text-left py-2 pr-4 text-ink font-semibold">File</th>
+                            <th className="text-left py-2 pr-4 text-ink font-semibold">Survives Reset</th>
+                            <th className="text-left py-2 text-ink font-semibold">Notes</th>
                         </tr>
                     </thead>
-                    <tbody className="text-gray-700 dark:text-gray-300">
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">setup-database.yaml</td>
+                    <tbody className="text-ink">
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">setup-database.yaml</td>
                             <td className="py-2 pr-4">N/A</td>
                             <td className="py-2">Should be deleted after initial setup</td>
                         </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">db.yaml</td>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">db.yaml</td>
                             <td className="py-2 pr-4">No &mdash; deleted</td>
                             <td className="py-2">Regenerated by the next setup run; DB users and grants are left in place</td>
                         </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">config.yaml</td>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">config.yaml</td>
                             <td className="py-2 pr-4">No &mdash; deleted</td>
                             <td className="py-2">Every operational setting returns to its default</td>
                         </tr>
                         <tr>
-                            <td className="py-2 pr-4 font-mono text-sm">bootstrap.yaml</td>
+                            <td className="py-2 pr-4 data-mono">bootstrap.yaml</td>
                             <td className="py-2 pr-4">Yes &mdash; preserved</td>
                             <td className="py-2">Kept as input for the next bootstrap, alongside bootstrap.yaml.example and OIDSeed.yaml</td>
                         </tr>
                     </tbody>
                 </table>
-                <div className="border-l-4 border-red-500 bg-red-50 dark:bg-red-900/20 p-4 rounded-r">
-                    <p className="text-gray-700 dark:text-gray-300 text-sm">
+                <div className="border-l-4 border-crit bg-crit-soft p-4 rounded-r">
+                    <p className="text-ink text-sm">
                         <span className="font-semibold">Warning:</span> <code>--reset</code> deletes
                         <em>every</em> <code>*.yaml</code> in the config directory except
                         <code>bootstrap.yaml</code>, <code>bootstrap.yaml.example</code> and
@@ -355,55 +408,55 @@ Features:
 
             {/* Rate Limiting */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Rate Limiting</h2>
-                <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
-                    Protocol rate limits are DB-backed (one <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">ProtocolRateLimits</code> row per
-                    protocol) and managed via <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">/api/v1/admin/rate-limit-policy</code> — not
-                    via <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">config.yaml</code>. When no row exists for a protocol the
-                    <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded"> ProtocolRateLimitMiddleware</code> falls back to its built-in defaults.
+                <h2 className="text-2xl font-bold text-ink mb-3">Rate Limiting</h2>
+                <p className="text-ink leading-relaxed mb-3">
+                    Protocol rate limits are DB-backed (one <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">ProtocolRateLimits</code> row per
+                    protocol) and managed via <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/api/v1/admin/rate-limit-policy</code> — not
+                    via <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">config.yaml</code>. When no row exists for a protocol the
+                    <code className="text-sm bg-sunken px-1.5 py-0.5 rounded"> ProtocolRateLimitMiddleware</code> falls back to its built-in defaults.
                 </p>
-                <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300">
+                <ul className="list-disc list-inside space-y-1 text-ink">
                     <li>Rows are keyed by protocol name (EST, SCEP, CMP, ACME, OCSP, TSA, CRL, CA, Integration, HEALTH)</li>
-                    <li>Each row carries <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">MaxRequests</code> and <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">WindowMinutes</code>, applied per source IP</li>
-                    <li>Exceeding the limit returns HTTP 429 with a <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">Retry-After</code> header</li>
-                    <li>The separate per-username login-failure floor lives in <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">Security.MaxPerUsernameLoginFailures</code> / <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">PerUsernameLoginFailureWindowMinutes</code> in config.yaml</li>
+                    <li>Each row carries <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">MaxRequests</code> and <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">WindowMinutes</code>, applied per source IP</li>
+                    <li>Exceeding the limit returns HTTP 429 with a <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">Retry-After</code> header</li>
+                    <li>The separate per-username login-failure floor lives in <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">Security.MaxPerUsernameLoginFailures</code> / <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">PerUsernameLoginFailureWindowMinutes</code> in config.yaml</li>
                     <li>Changes via the admin API take effect on the next middleware tick — no restart</li>
                 </ul>
             </section>
 
             {/* Security Headers */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Security Headers</h2>
-                <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
+                <h2 className="text-2xl font-bold text-ink mb-3">Security Headers</h2>
+                <p className="text-ink leading-relaxed mb-3">
                     ModularCA applies strict security headers on all responses. These are not configurable
                     to prevent accidental weakening of the security posture.
                 </p>
                 <table className="w-full border-collapse mb-4">
                     <thead>
-                        <tr className="border-b border-gray-200 dark:border-gray-700">
-                            <th className="text-left py-2 pr-4 text-gray-900 dark:text-white font-semibold">Header</th>
-                            <th className="text-left py-2 text-gray-900 dark:text-white font-semibold">Policy</th>
+                        <tr className="border-b border-line">
+                            <th className="text-left py-2 pr-4 text-ink font-semibold">Header</th>
+                            <th className="text-left py-2 text-ink font-semibold">Policy</th>
                         </tr>
                     </thead>
-                    <tbody className="text-gray-700 dark:text-gray-300">
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">Content-Security-Policy</td>
-                            <td className="py-2 text-sm">No <code className="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">unsafe-inline</code>; scripts and styles served from same origin only; nonce-based inline exceptions for the UI</td>
+                    <tbody className="text-ink">
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">Content-Security-Policy</td>
+                            <td className="py-2 text-sm">No <code className="bg-sunken px-1.5 py-0.5 rounded">unsafe-inline</code>; scripts and styles served from same origin only; nonce-based inline exceptions for the UI</td>
                         </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">CORS</td>
-                            <td className="py-2 text-sm">Off by default. An operator must set <code className="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">Http.EnableCors=true</code> AND populate <code className="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">Http.CorsOrigins</code> with an HTTPS allow-list. <code className="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">AllowCredentials</code> is never attached.</td>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">CORS</td>
+                            <td className="py-2 text-sm">Off by default. An operator must set <code className="bg-sunken px-1.5 py-0.5 rounded">Http.EnableCors=true</code> AND populate <code className="bg-sunken px-1.5 py-0.5 rounded">Http.CorsOrigins</code> with an HTTPS allow-list. <code className="bg-sunken px-1.5 py-0.5 rounded">AllowCredentials</code> is never attached.</td>
                         </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">CSRF Protection</td>
-                            <td className="py-2 text-sm">Double-submit cookie pattern; all state-changing API calls require a matching <code className="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">X-CSRF-TOKEN</code> header</td>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">CSRF Protection</td>
+                            <td className="py-2 text-sm">Double-submit cookie pattern; all state-changing API calls require a matching <code className="bg-sunken px-1.5 py-0.5 rounded">X-CSRF-TOKEN</code> header</td>
                         </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">X-Content-Type-Options</td>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">X-Content-Type-Options</td>
                             <td className="py-2 text-sm">nosniff</td>
                         </tr>
                         <tr>
-                            <td className="py-2 pr-4 font-mono text-sm">Strict-Transport-Security</td>
+                            <td className="py-2 pr-4 data-mono">Strict-Transport-Security</td>
                             <td className="py-2 text-sm">max-age=31536000; includeSubDomains</td>
                         </tr>
                     </tbody>
@@ -412,13 +465,13 @@ Features:
 
             {/* LDAP Authentication */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">LDAP Authentication</h2>
-                <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
+                <h2 className="text-2xl font-bold text-ink mb-3">LDAP Authentication</h2>
+                <p className="text-ink leading-relaxed mb-3">
                     ModularCA can authenticate users against Active Directory or any LDAPv3 directory.
                     Authentication uses sAMAccountName bind by default.
                 </p>
-                <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm mb-3">
-                    <pre className="text-gray-700 dark:text-gray-300">{`# config.yaml — LDAP authentication (LdapAuth section)
+                <div className="bg-sunken rounded p-4 data-mono mb-3">
+                    <pre className="text-ink">{`# config.yaml — LDAP authentication (LdapAuth section)
 LdapAuth:
   Enabled: true
   Host: "ldap.example.com"
@@ -430,24 +483,24 @@ LdapAuth:
   SearchBaseDn: "DC=example,DC=com"
   SearchFilter: "(&(objectClass=user)(sAMAccountName={0}))"`}</pre>
                 </div>
-                <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300">
+                <ul className="list-disc list-inside space-y-1 text-ink">
                     <li>Users authenticate with their AD username and password</li>
                     <li>The service account bind DN is used for search operations only</li>
-                    <li>Bind password should be provided via the <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">MODULARCA__LDAPAUTH__BINDPASSWORD</code> environment variable</li>
-                    <li>Set <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">RequireTls: true</code> to reject binds that don't negotiate TLS</li>
+                    <li>Bind password should be provided via the <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">MODULARCA__LDAPAUTH__BINDPASSWORD</code> environment variable</li>
+                    <li>Set <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">RequireTls: true</code> to reject binds that don't negotiate TLS</li>
                 </ul>
             </section>
 
             {/* LDAP Group Sync */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">LDAP Group Synchronization</h2>
-                <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
+                <h2 className="text-2xl font-bold text-ink mb-3">LDAP Group Synchronization</h2>
+                <p className="text-ink leading-relaxed mb-3">
                     AD groups can be mapped to ModularCA CA-scoped groups via a JSON mapping. When a user
                     authenticates via LDAP, their AD group memberships are resolved and translated into
                     ModularCA group assignments.
                 </p>
-                <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm mb-3">
-                    <pre className="text-gray-700 dark:text-gray-300">{`# config.yaml — LDAP group sync (flat under LdapAuth)
+                <div className="bg-sunken rounded p-4 data-mono mb-3">
+                    <pre className="text-ink">{`# config.yaml — LDAP group sync (flat under LdapAuth)
 LdapAuth:
   GroupSyncEnabled: true
   AutoProvisionUsers: false
@@ -463,43 +516,43 @@ LdapAuth:
       "CN=PKI-UserCert-Operators,OU=Groups,DC=example,DC=com": "acme_usercert-ca_operator"
     }`}</pre>
                 </div>
-                <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300">
-                    <li>Mappings link full AD group DNs to ModularCA <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">CaGroup</code> names</li>
-                    <li>System groups (<code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">system-admin</code>, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">system-auditor</code>) grant global access</li>
-                    <li>CA-scoped groups (e.g., <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">acme_webserver-ca_operator</code>) restrict access to a specific CA</li>
-                    <li>Sync runs on each LDAP login; the scheduled group-refresh job honors the global <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">Scheduler.JobTimeouts.LdapGroupSync</code> timeout</li>
+                <ul className="list-disc list-inside space-y-1 text-ink">
+                    <li>Mappings link full AD group DNs to ModularCA <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">CaGroup</code> names</li>
+                    <li>System groups (<code className="text-sm bg-sunken px-1.5 py-0.5 rounded">system-admin</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">system-auditor</code>) grant global access</li>
+                    <li>CA-scoped groups (e.g., <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">acme_webserver-ca_operator</code>) restrict access to a specific CA</li>
+                    <li>Sync runs on each LDAP login; the scheduled group-refresh job honors the global <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">Scheduler.JobTimeouts.LdapGroupSync</code> timeout</li>
                     <li>Users not matching any mapping receive no group memberships</li>
                 </ul>
             </section>
 
             {/* LDAP Certificate/CRL Publishing */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Certificate / CRL Publishing to LDAP</h2>
-                <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
+                <h2 className="text-2xl font-bold text-ink mb-3">Certificate / CRL Publishing to LDAP</h2>
+                <p className="text-ink leading-relaxed mb-3">
                     LDAP cert/CRL publishing is fully DB-backed — there is no YAML block for it.
                     The master gate and run-wide tunables live in the single-row
-                    <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded"> LdapPublisherPolicy</code> table;
+                    <code className="text-sm bg-sunken px-1.5 py-0.5 rounded"> LdapPublisherPolicy</code> table;
                     per-CA, per-directory connection and target settings live in the
-                    <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded"> LdapConfigurations</code> table. Admins manage both via
-                    the API — removing or editing <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">config.yaml</code> has no effect.
+                    <code className="text-sm bg-sunken px-1.5 py-0.5 rounded"> LdapConfigurations</code> table. Admins manage both via
+                    the API — removing or editing <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">config.yaml</code> has no effect.
                 </p>
-                <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300">
-                    <li><code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">LdapPublisherPolicy</code> — master <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">Enabled</code> flag, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">SinceFallbackHours</code>, and <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">ConnectionTimeoutSeconds</code></li>
-                    <li><code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">LdapConfigurations</code> — one row per (CA, directory) with bind DN, bind password, and target container DNs</li>
-                    <li>When the policy is disabled, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">SchedulerService</code> skips <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">LdapPublisherJob</code> dispatch regardless of how many configuration rows exist</li>
-                    <li>Publishing bind credentials are independent from <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">LdapAuth.BindDn</code> — each <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">LdapConfigurations</code> row carries its own</li>
+                <ul className="list-disc list-inside space-y-1 text-ink">
+                    <li><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">LdapPublisherPolicy</code> — master <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">Enabled</code> flag, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">SinceFallbackHours</code>, and <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">ConnectionTimeoutSeconds</code></li>
+                    <li><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">LdapConfigurations</code> — one row per (CA, directory) with bind DN, bind password, and target container DNs</li>
+                    <li>When the policy is disabled, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">SchedulerService</code> skips <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">LdapPublisherJob</code> dispatch regardless of how many configuration rows exist</li>
+                    <li>Publishing bind credentials are independent from <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">LdapAuth.BindDn</code> — each <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">LdapConfigurations</code> row carries its own</li>
                 </ul>
             </section>
 
             {/* Scheduler Jobs */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Scheduler Jobs</h2>
-                <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
+                <h2 className="text-2xl font-bold text-ink mb-3">Scheduler Jobs</h2>
+                <p className="text-ink leading-relaxed mb-3">
                     ModularCA runs several background scheduler jobs that handle automated maintenance tasks.
                     All jobs are enabled by default and can be individually configured or disabled.
                 </p>
-                <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm mb-3">
-                    <pre className="text-gray-700 dark:text-gray-300">{`# config.yaml — Scheduler (flat: orchestration knobs + per-job timeouts)
+                <div className="bg-sunken rounded p-4 data-mono mb-3">
+                    <pre className="text-ink">{`# config.yaml — Scheduler (flat: orchestration knobs + per-job timeouts)
 Scheduler:
   Enabled: true                 # Master opt-out for API-only replicas in HA
   PollIntervalSeconds: 30
@@ -537,72 +590,72 @@ Backup:
                 </div>
                 <table className="w-full border-collapse mb-4">
                     <thead>
-                        <tr className="border-b border-gray-200 dark:border-gray-700">
-                            <th className="text-left py-2 pr-4 text-gray-900 dark:text-white font-semibold">Job</th>
-                            <th className="text-left py-2 pr-4 text-gray-900 dark:text-white font-semibold">Default Schedule</th>
-                            <th className="text-left py-2 text-gray-900 dark:text-white font-semibold">Description</th>
+                        <tr className="border-b border-line">
+                            <th className="text-left py-2 pr-4 text-ink font-semibold">Job</th>
+                            <th className="text-left py-2 pr-4 text-ink font-semibold">Default Schedule</th>
+                            <th className="text-left py-2 text-ink font-semibold">Description</th>
                         </tr>
                     </thead>
-                    <tbody className="text-gray-700 dark:text-gray-300">
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">AuditRetention</td>
-                            <td className="py-2 pr-4 font-mono text-sm">0 3 * * *</td>
-                            <td className="py-2">Batched delete of past-due audit rows per <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">Audit.Retention</code> policy</td>
+                    <tbody className="text-ink">
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">AuditRetention</td>
+                            <td className="py-2 pr-4 data-mono">0 3 * * *</td>
+                            <td className="py-2">Batched delete of past-due audit rows per <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">Audit.Retention</code> policy</td>
                         </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">CertExpire</td>
-                            <td className="py-2 pr-4 font-mono text-sm">0 1 * * *</td>
-                            <td className="py-2">Sweeps certificates past <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">NotAfter</code> and auto-revokes them for CRL/OCSP</td>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">CertExpire</td>
+                            <td className="py-2 pr-4 data-mono">0 1 * * *</td>
+                            <td className="py-2">Sweeps certificates past <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">NotAfter</code> and auto-revokes them for CRL/OCSP</td>
                         </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">CertExpiryNotification</td>
-                            <td className="py-2 pr-4 font-mono text-sm">0 6 * * *</td>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">CertExpiryNotification</td>
+                            <td className="py-2 pr-4 data-mono">0 6 * * *</td>
                             <td className="py-2">Emails subscribers when a cert is within a warning-day threshold</td>
                         </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">Compliance</td>
-                            <td className="py-2 pr-4 font-mono text-sm">0 3 * * *</td>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">Compliance</td>
+                            <td className="py-2 pr-4 data-mono">0 3 * * *</td>
                             <td className="py-2">Flags weak keys, deprecated sigalgs, missing SANs, over-long validity</td>
                         </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">AutoRenewal</td>
-                            <td className="py-2 pr-4 font-mono text-sm">0 4 * * *</td>
-                            <td className="py-2">Auto-renews certs within <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">RenewDaysBeforeExpiry</code>; rotates keys by default</td>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">AutoRenewal</td>
+                            <td className="py-2 pr-4 data-mono">0 4 * * *</td>
+                            <td className="py-2">Auto-renews certs within <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">RenewDaysBeforeExpiry</code>; rotates keys by default</td>
                         </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">Backup</td>
-                            <td className="py-2 pr-4 font-mono text-sm">0 2 * * *</td>
-                            <td className="py-2">Creates and/or verifies encrypted backup archives per <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">CreateOnSchedule</code> / <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">VerifyOnSchedule</code></td>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">Backup</td>
+                            <td className="py-2 pr-4 data-mono">0 2 * * *</td>
+                            <td className="py-2">Creates and/or verifies encrypted backup archives per <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">CreateOnSchedule</code> / <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">VerifyOnSchedule</code></td>
                         </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">TlsRenewal</td>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">TlsRenewal</td>
                             <td className="py-2 pr-4">poll-driven</td>
-                            <td className="py-2">Renews the server's own Web TLS cert before <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">Https.RenewalWindow</code></td>
+                            <td className="py-2">Renews the server's own Web TLS cert before <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">Https.RenewalWindow</code></td>
                         </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">CrlExport</td>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">CrlExport</td>
                             <td className="py-2 pr-4">per-CA schedule</td>
                             <td className="py-2">Regenerates and exports CRL files; cadence set per CA</td>
                         </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">AcmeCleanup</td>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">AcmeCleanup</td>
                             <td className="py-2 pr-4">poll-driven</td>
                             <td className="py-2">Removes expired ACME orders, authorizations, and stale nonces</td>
                         </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">ProtocolCleanup</td>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">ProtocolCleanup</td>
                             <td className="py-2 pr-4">poll-driven</td>
-                            <td className="py-2">Removes enrollment request rows a failed protocol issuance left behind (EST, MSAE, SCEP, CMP, ACME) after <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">ProtocolCleanup.OrphanRequestGraceMinutes</code>, and sweeps expired SCEP and CMP transactions</td>
+                            <td className="py-2">Removes enrollment request rows a failed protocol issuance left behind (EST, MSAE, SCEP, CMP, ACME) after <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">ProtocolCleanup.OrphanRequestGraceMinutes</code>, and sweeps expired SCEP and CMP transactions</td>
                         </tr>
                         <tr>
-                            <td className="py-2 pr-4 font-mono text-sm">LdapGroupSync / LdapPublisher</td>
+                            <td className="py-2 pr-4 data-mono">LdapGroupSync / LdapPublisher</td>
                             <td className="py-2 pr-4">poll-driven</td>
-                            <td className="py-2">Group refresh (YAML) and cert/CRL publishing (DB-backed via <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">LdapPublisherPolicy</code>)</td>
+                            <td className="py-2">Group refresh (YAML) and cert/CRL publishing (DB-backed via <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">LdapPublisherPolicy</code>)</td>
                         </tr>
                     </tbody>
                 </table>
-                <div className="border-l-4 border-blue-500 bg-blue-50 dark:bg-blue-900/20 p-4 rounded-r">
-                    <p className="text-gray-700 dark:text-gray-300 text-sm">
+                <div className="border-l-4 border-info bg-info-soft p-4 rounded-r">
+                    <p className="text-ink text-sm">
                         <span className="font-semibold">Note:</span> All scheduler jobs log their execution to the audit
                         database. Failed jobs are retried on the next interval with an exponential backoff up to
                         3 consecutive failures, after which an alert is raised.
@@ -612,16 +665,16 @@ Backup:
 
             {/* Environment Variable Overlay */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Environment Variable Overlay</h2>
-                <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
-                    After YAML config is loaded, <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">EnvVarConfigOverlay</code> checks
+                <h2 className="text-2xl font-bold text-ink mb-3">Environment Variable Overlay</h2>
+                <p className="text-ink leading-relaxed mb-3">
+                    After YAML config is loaded, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">EnvVarConfigOverlay</code> checks
                     for known environment variables and applies any that are set. This allows secrets to be injected
                     without writing them to disk. The overlay tracks which config paths were sourced from env vars
-                    so <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">PersistConfig()</code> avoids
+                    so <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">PersistConfig()</code> avoids
                     writing them back to config.yaml.
                 </p>
-                <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm mb-3">
-                    <pre className="text-gray-700 dark:text-gray-300">{`# Supported environment variables
+                <div className="bg-sunken rounded p-4 data-mono mb-3">
+                    <pre className="text-ink">{`# Supported environment variables
 MODULARCA__JWT__SECRET              -> JWT.Secret
 MODULARCA__DB__APP__PASSWORD        -> DB.App.Password
 MODULARCA__DB__AUDIT__PASSWORD      -> DB.Audit.Password
@@ -634,9 +687,9 @@ MODULARCA__INTEGRATIONAPI__APIKEY   -> IntegrationApi.ApiKey
 MODULARCA__CERTMANAGER__APIKEY      -> CertManager.ApiKey
 MODULARCA__HSM__PIN                 -> Hsm.Pin`}</pre>
                 </div>
-                <div className="border-l-4 border-blue-500 bg-blue-50 dark:bg-blue-900/20 p-4 rounded-r mb-4">
-                    <p className="text-gray-700 dark:text-gray-300 text-sm">
-                        <span className="font-semibold">Note:</span> <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">Https.CertificatePassword</code> is
+                <div className="border-l-4 border-info bg-info-soft p-4 rounded-r mb-4">
+                    <p className="text-ink text-sm">
+                        <span className="font-semibold">Note:</span> <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">Https.CertificatePassword</code> is
                         intentionally excluded. The PFX password is regenerated on TLS cert reissue; overriding it
                         via env var would cause failures after auto-renewal.
                     </p>
@@ -645,15 +698,15 @@ MODULARCA__HSM__PIN                 -> Hsm.Pin`}</pre>
 
             {/* Runtime Config API */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Runtime Config API</h2>
-                <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
-                    The <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">AdminConfigController</code> at <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">/api/v1/admin/config</code> (requires
+                <h2 className="text-2xl font-bold text-ink mb-3">Runtime Config API</h2>
+                <p className="text-ink leading-relaxed mb-3">
+                    The <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">AdminConfigController</code> at <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/api/v1/admin/config</code> (requires
                     SystemOperator policy) exposes per-section PUT endpoints that apply changes to the in-memory
                     config and persist them to config.yaml. Secrets are redacted in GET responses; env-var-sourced
                     values are excluded from persistence.
                 </p>
-                <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm mb-3">
-                    <pre className="text-gray-700 dark:text-gray-300">{`GET  /api/v1/admin/config            -- Full config (secrets redacted)
+                <div className="bg-sunken rounded p-4 data-mono mb-3">
+                    <pre className="text-ink">{`GET  /api/v1/admin/config            -- Full config (secrets redacted)
 PUT  /api/v1/admin/config/logging    -- Min level applied immediately via LoggingLevelSwitch
 PUT  /api/v1/admin/config/http       -- Port, CORS, Swagger (restart required)
 PUT  /api/v1/admin/config/security
@@ -664,7 +717,7 @@ PUT  /api/v1/admin/config/https
 PUT  /api/v1/admin/config/ldap-auth
 ...`}</pre>
                 </div>
-                <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300">
+                <ul className="list-disc list-inside space-y-1 text-ink">
                     <li>Log level changes take effect immediately (no restart) via Serilog LoggingLevelSwitch</li>
                     <li>HTTP, HTTPS, and scheduler changes require a restart</li>
                     <li>All config changes are audit-logged with the previous and new values</li>
@@ -674,40 +727,40 @@ PUT  /api/v1/admin/config/ldap-auth
 
             {/* CLI Flags */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">CLI Flags</h2>
-                <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
+                <h2 className="text-2xl font-bold text-ink mb-3">CLI Flags</h2>
+                <p className="text-ink leading-relaxed mb-3">
                     The application binary supports several CLI flags for operational tasks:
                 </p>
                 <table className="w-full border-collapse mb-4">
                     <thead>
-                        <tr className="border-b border-gray-200 dark:border-gray-700">
-                            <th className="text-left py-2 pr-4 text-gray-900 dark:text-white font-semibold">Flag</th>
-                            <th className="text-left py-2 text-gray-900 dark:text-white font-semibold">Description</th>
+                        <tr className="border-b border-line">
+                            <th className="text-left py-2 pr-4 text-ink font-semibold">Flag</th>
+                            <th className="text-left py-2 text-ink font-semibold">Description</th>
                         </tr>
                     </thead>
-                    <tbody className="text-gray-700 dark:text-gray-300">
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">--reset --force --confirm-db-name {'{name}'}</td>
+                    <tbody className="text-ink">
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">--reset --force --confirm-db-name {'{name}'}</td>
                             <td className="py-2">Factory reset: drops all tables, deletes keystores and config. Audit DB is NOT dropped (retention by design). Requires explicit DB name confirmation.</td>
                         </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">--bootstrap</td>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">--bootstrap</td>
                             <td className="py-2">Run the CA bootstrap procedure (headless/CLI mode)</td>
                         </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">--backup [output-path]</td>
-                            <td className="py-2">Create an encrypted backup archive</td>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">--backup [output-path]</td>
+                            <td className="py-2">Create an encrypted backup archive, in Backup.OutputPath (backups/ by default) unless a path inside the install directory is given. The Data Protection key ring and the SSH CA keys go in wrapped by the signer, so run it on the host that holds the keystore and keystore.yaml. The archived config.yaml carries no DB section.</td>
                         </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">--restore {'{archive}'} [--password {'{pwd}'}]</td>
-                            <td className="py-2">Restore from an encrypted backup. Interactive password prompt for StoredPassword archives when key file is missing.</td>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">--restore {'{archive}'} [--password {'{pwd}'}]</td>
+                            <td className="py-2">Restore from an encrypted backup into the databases this host&rsquo;s own db.yaml names, with its credentials; a host without db.yaml is refused. Interactive password prompt for StoredPassword archives when key file is missing. The live config/ and keystores are first saved to backups/pre-restore-&lt;timestamp&gt;.zip. CRL numbers are raised past anything published since the backup, and the wrapped key ring is unwrapped at the next start, once the restored keystore is unlocked.</td>
                         </tr>
-                        <tr className="border-b border-gray-100 dark:border-gray-800">
-                            <td className="py-2 pr-4 font-mono text-sm">--setup-local</td>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">--setup-local</td>
                             <td className="py-2">Allow setup wizard connections from RFC 1918 private networks</td>
                         </tr>
                         <tr>
-                            <td className="py-2 pr-4 font-mono text-sm">--backfill-keystore-pins [--write]</td>
+                            <td className="py-2 pr-4 data-mono">--backfill-keystore-pins [--write]</td>
                             <td className="py-2">Backfill SPKI SHA-256 pins for legacy keystore rows. Dry-run by default.</td>
                         </tr>
                     </tbody>
@@ -716,38 +769,38 @@ PUT  /api/v1/admin/config/ldap-auth
 
             {/* Setup Wizard vs CLI */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">Setup Wizard vs. CLI Bootstrap</h2>
-                <p className="text-gray-700 dark:text-gray-300 leading-relaxed mb-3">
+                <h2 className="text-2xl font-bold text-ink mb-3">Setup Wizard vs. CLI Bootstrap</h2>
+                <p className="text-ink leading-relaxed mb-3">
                     ModularCA supports two bootstrap methods that produce identical results:
                 </p>
 
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Setup Wizard (Interactive)</h3>
-                <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300 mb-4">
+                <h3 className="text-lg font-semibold text-ink mb-2">Setup Wizard (Interactive)</h3>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-4">
                     <li>Web-based wizard at /setup</li>
                     <li>6-step guided process with validation</li>
                     <li>Protected by a one-time setup token printed to the server console (prevents network-adjacent attackers from accessing the wizard)</li>
                     <li>Best for first-time setup and learning</li>
                     <li>Requires a browser</li>
-                    <li>Use <code className="text-sm bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">--setup-local</code> to allow access from private networks</li>
+                    <li>Use <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">--setup-local</code> to allow access from private networks</li>
                 </ul>
 
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">CLI Bootstrap (Automated)</h3>
-                <ul className="list-disc list-inside space-y-1 text-gray-700 dark:text-gray-300 mb-4">
+                <h3 className="text-lg font-semibold text-ink mb-2">CLI Bootstrap (Automated)</h3>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-4">
                     <li>Command-line driven using a pre-written configuration file</li>
                     <li>Suitable for automated deployments (Docker, Kubernetes, CI/CD)</li>
                     <li>All setup values provided in a single YAML file</li>
                     <li>No browser required</li>
                 </ul>
 
-                <div className="bg-gray-100 dark:bg-gray-800 rounded p-4 font-mono text-sm">
-                    <pre className="text-gray-700 dark:text-gray-300">{`# CLI bootstrap command
+                <div className="bg-sunken rounded p-4 data-mono">
+                    <pre className="text-ink">{`# CLI bootstrap command
 modularca bootstrap --config bootstrap-input.yaml
 
 # bootstrap-input.yaml combines all setup wizard fields:
 database:
   host: localhost
-  port: 3306
-  rootUsername: root
+  port: 5432
+  rootUsername: postgres
   rootPassword: "secret"
   appDatabase: modularca
   appUsername: modularca_app

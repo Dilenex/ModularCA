@@ -27,6 +27,7 @@ export const authClient = client;
 export const {
     getToken,
     clearTokens,
+    forceRefresh,
     readCsrfCookie,
     api,
     apiGet,

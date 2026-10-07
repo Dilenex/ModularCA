@@ -16,7 +16,7 @@ export function RecordFields<T>({ sections, row }: { sections: RecordSection<T>[
                 if (rendered.length === 0) return null;
                 return (
                     <section key={section.title ?? i}>
-                        {section.title && <h4 className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">{section.title}</h4>}
+                        {section.title && <h4 className="label-caps mb-1">{section.title}</h4>}
                         <div className="text-sm">
                             {rendered.map(({ f, v }) => (
                                 <DetailField
@@ -42,7 +42,7 @@ const Copyable: React.FC<{ text: string }> = ({ text }) => {
     return (
         <span className="inline-flex items-center gap-1.5 min-w-0">
             <span className="break-all">{text}</span>
-            <button type="button" onClick={copy} title="Copy" aria-label={`Copy ${text}`} className="text-[10px] px-1 rounded border border-gray-300 dark:border-gray-600 text-gray-500 hover:text-gray-900 dark:hover:text-white flex-shrink-0">
+            <button type="button" onClick={copy} title="Copy" aria-label={`Copy ${text}`} className="text-[10px] px-1 rounded border border-line-strong text-ink-muted hover:text-ink flex-shrink-0">
                 {copied ? 'copied' : 'copy'}
             </button>
         </span>

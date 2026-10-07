@@ -7,7 +7,7 @@ namespace ModularCA.Core.Services;
 
 /// <summary>
 /// Resolves the effective validity ceiling for a profile pairing by walking
-/// signing profile → issuing CA → tenant, then handing the three numbers to
+/// signing profile → issuing CA → space (the instance, for an instance CA), then handing the three numbers to
 /// <see cref="CertificateValidityUtil.ResolveCeiling"/>.
 /// </summary>
 /// <remarks>
@@ -27,24 +27,28 @@ namespace ModularCA.Core.Services;
 public class ValidityCeilingService : IValidityCeilingService
 {
     private readonly ModularCADbContext _db;
+    private readonly IEffectivePolicyResolver _policies;
     private readonly IProfileResolutionService _profileResolver;
     private readonly TimeProvider _timeProvider;
 
     /// <summary>
     /// Initializes a new instance of <see cref="ValidityCeilingService"/>.
     /// </summary>
-    /// <param name="db">Database context for the profile → CA → tenant walk.</param>
+    /// <param name="db">Database context for the profile → CA → space walk.</param>
     /// <param name="profileResolver">Resolves the effective (merged/inherited) certificate profile.</param>
     /// <param name="timeProvider">
     /// Clock; optional and defaulted to <see cref="TimeProvider.System"/> the way the scheduler
     /// jobs take theirs, so nothing has to be registered in DI for this to resolve.
     /// </param>
+    /// <param name="policies">Resolves the issuing CA's scope policy; defaults to one over <paramref name="db"/>.</param>
     public ValidityCeilingService(
         ModularCADbContext db,
         IProfileResolutionService profileResolver,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IEffectivePolicyResolver? policies = null)
     {
         _db = db;
+        _policies = policies ?? new EffectivePolicyResolver(db);
         _profileResolver = profileResolver;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
@@ -77,14 +81,14 @@ public class ValidityCeilingService : IValidityCeilingService
         // telling the operator the opposite of what they will get.
         var certProfileMax = Iso8601ParserUtil.ParseIso8601(effectiveCertProfile.ValidityPeriodMax ?? "P1Y");
 
-        // Signing profile → issuer certificate → CA → tenant. Each link is optional in the schema,
+        // Signing profile → issuer certificate → CA → space. Each link is optional in the schema,
         // and a system-wide signing profile genuinely has no CA, so every step degrades to "that
         // layer cannot bind" rather than to an error.
         DateTime? issuingCaNotAfter = null;
         string? issuingCaName = null;
-        string? tenantName = null;
-        var tenantMaxValidityDays = 0;
-        var tenantBehavior = Shared.Enums.ValidityCeilingBehavior.Shorten;
+        string? spaceName = null;
+        var spaceMaxValidityDays = 0;
+        var spaceBehavior = Shared.Enums.ValidityCeilingBehavior.Shorten;
 
         if (signingProfile.IssuerId.HasValue)
         {
@@ -104,14 +108,13 @@ public class ValidityCeilingService : IValidityCeilingService
                 if (ca != null)
                 {
                     issuingCaName = ca.Label ?? ca.Name;
-                    var tenant = await _db.Tenants
-                        .AsNoTracking()
-                        .FirstOrDefaultAsync(t => t.Id == ca.TenantId, cancellationToken);
-                    if (tenant != null)
+                    // An instance CA (no space) is bound by the instance's ceiling.
+                    var policy = await _policies.ResolveAsync(ca.SpaceId, cancellationToken);
+                    if (policy.Found)
                     {
-                        tenantName = tenant.Name;
-                        tenantMaxValidityDays = tenant.MaxValidityDays;
-                        tenantBehavior = tenant.ValidityCeilingBehavior;
+                        spaceName = policy.Scope;
+                        spaceMaxValidityDays = policy.MaxValidityDays;
+                        spaceBehavior = policy.ValidityCeilingBehavior;
                     }
                 }
             }
@@ -120,17 +123,17 @@ public class ValidityCeilingService : IValidityCeilingService
         var now = _timeProvider.GetUtcNow().UtcDateTime;
         var start = CertificateValidityUtil.AsUtc(notBefore) ?? CertificateValidityUtil.DefaultNotBefore();
 
-        // A CA certificate is exempt from the tenant ceiling — shortening a ten-year intermediate
+        // A CA certificate is exempt from the space ceiling — shortening a ten-year intermediate
         // to two years takes everything beneath it down with it — so the pre-flight must not
-        // report a tenant cap that issuance will not apply. Passing 0 is how "unlimited" is spelled
+        // report a space cap that issuance will not apply. Passing 0 is how "unlimited" is spelled
         // everywhere else in this feature.
-        var tenantCeilingApplies = !effectiveCertProfile.IsCaProfile;
+        var spaceCeilingApplies = !effectiveCertProfile.IsCaProfile;
 
         var resolution = CertificateValidityUtil.ResolveCeiling(
             start,
             now,
             certProfileMax,
-            tenantCeilingApplies ? tenantMaxValidityDays : 0,
+            spaceCeilingApplies ? spaceMaxValidityDays : 0,
             issuingCaNotAfter);
 
         return new ValidityCeilingPreflight(
@@ -140,9 +143,9 @@ public class ValidityCeilingService : IValidityCeilingService
             effectiveCertProfile.ValidityPeriodMax,
             issuingCaName,
             issuingCaNotAfter,
-            tenantName,
-            tenantMaxValidityDays,
-            tenantBehavior,
-            tenantCeilingApplies);
+            spaceName,
+            spaceMaxValidityDays,
+            spaceBehavior,
+            spaceCeilingApplies);
     }
 }

@@ -9,6 +9,7 @@ export const adminCertPermissions: ApiEndpoint[] = [
         category: 'Admin Certificate Permissions',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for UpdateCertAcl, issued for the certificate id. Required for this operation.' },
         ],
         responseDescription: 'Confirmation of view permission grant.',
     },
@@ -20,6 +21,7 @@ export const adminCertPermissions: ApiEndpoint[] = [
         category: 'Admin Certificate Permissions',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for UpdateCertAcl, issued for the certificate id. Required for this operation.' },
         ],
         responseDescription: 'Confirmation of manage permission grant.',
     },
@@ -31,6 +33,7 @@ export const adminCertPermissions: ApiEndpoint[] = [
         category: 'Admin Certificate Permissions',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for UpdateCertAcl, issued for the certificate id. Required for this operation.' },
         ],
         responseDescription: 'Confirmation of permission downgrade.',
     },
@@ -42,6 +45,7 @@ export const adminCertPermissions: ApiEndpoint[] = [
         category: 'Admin Certificate Permissions',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for UpdateCertAcl, issued for the certificate id. Required for this operation.' },
         ],
         responseDescription: 'Confirmation of permission revocation.',
     },

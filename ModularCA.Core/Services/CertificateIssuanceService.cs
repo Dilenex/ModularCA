@@ -34,6 +34,7 @@ namespace ModularCA.Core.Services
     public class CertificateIssuanceService : ICertificateIssuanceService
     {
         private readonly ModularCADbContext _db;
+        private readonly IEffectivePolicyResolver _policies;
         private readonly IKeystoreCertificates _keystore;
         private readonly ICertificateStore _certStore;
         private readonly IssuanceValidationService _validation;
@@ -63,6 +64,7 @@ namespace ModularCA.Core.Services
         /// <param name="certificateAccessService">Service for managing certificate-level access control entries.</param>
         /// <param name="revocation">Revocation service used by the reissue flow to mark the previous certificate as Superseded through the proper revocation pipeline (CRL trigger, audit, notifications).</param>
         /// <param name="logger">Logger instance.</param>
+        /// <param name="policies">Resolves the issuing CA's scope policy; defaults to one over <paramref name="db"/>.</param>
         public CertificateIssuanceService(
             ModularCADbContext db,
             IKeystoreCertificates keystore,
@@ -76,9 +78,11 @@ namespace ModularCA.Core.Services
             IAuditService audit,
             ICertificateAccessService certificateAccessService,
             ICertificateRevocationService revocation,
-            ILogger<CertificateIssuanceService> logger)
+            ILogger<CertificateIssuanceService> logger,
+            IEffectivePolicyResolver? policies = null)
         {
             _db = db;
+            _policies = policies ?? new EffectivePolicyResolver(db);
             _keystore = keystore;
             _certStore = certStore;
             _validation = validation;
@@ -116,8 +120,8 @@ namespace ModularCA.Core.Services
             ArgumentNullException.ThrowIfNull(caKey);
             ArgumentNullException.ThrowIfNull(caSigningContext);
             // No enforcement parameter: this overload exists for infrastructure certificates issued
-            // before the CA is registered, and those are exempt from the tenant ceiling
-            // altogether, so there is nothing for a tenant policy to refuse.
+            // before the CA is registered, and those are exempt from the space ceiling
+            // altogether, so there is nothing for a space policy to refuse.
             return IssueCertificateInternalAsync(csrId, notBefore, notAfter, new PreResolvedCa(caCert, caKey, caSigningContext),
                 allowCaProfile: false, ValidityCeilingEnforcement.AlwaysShorten, cancellationToken);
         }
@@ -133,14 +137,22 @@ namespace ModularCA.Core.Services
         /// </summary>
         private sealed record PreResolvedCa(X509Certificate Certificate, KeyRef Key, SigningContext Context);
 
+        /// <summary>
+        /// Issues the CSR's certificate. A leaf profile outside the issuing CA's scope is refused
+        /// (<see cref="ModularCA.Core.Authorization.CertProfileScope"/>), whatever the entry point.
+        /// </summary>
         /// <param name="allowCaProfile">
         /// Whether a cert profile carrying <c>IsCaProfile</c> may be used. False on every public
         /// entry point; only <see cref="IssueCaCertificateAsync"/> passes true. See
         /// <see cref="ICertificateIssuanceService.IssueCaCertificateAsync"/> for why. It doubles as
-        /// one of the three tenant-ceiling exemptions — see <see cref="ApplyTenantValidityCeiling"/>.
+        /// one of the three space-ceiling exemptions — see <see cref="ApplySpaceValidityCeiling"/>.
+        /// </param>
+        /// <param name="preResolvedCa">
+        /// The CA creation seam, or null. The issuing CA is refused by <see cref="IssuingCaGuard"/>
+        /// either way; only this seam may proceed without a committed authority row.
         /// </param>
         /// <param name="ceilingEnforcement">
-        /// Whether the caller is one that may be refused by a tenant configured to refuse
+        /// Whether the caller is one that may be refused by a space configured to refuse
         /// over-reaching validity. Every path through this method passes it explicitly rather than
         /// relying on a default, so that adding an entry point forces the question to be answered.
         /// </param>
@@ -264,16 +276,17 @@ namespace ModularCA.Core.Services
                 (caMatch, refCACert) = await ResolveCaAsync(csrEntity.SigningProfile);
             }
 
-            // Check tenant is enabled — block issuance if the CA's tenant has been disabled
-            var issuingCaEntity = await _db.CertificateAuthorities
-                .FirstOrDefaultAsync(ca => ca.CertificateId == refCACert.CertificateId, cancellationToken);
+            // A revoked, expired, disabled, deleted or unregistered CA does not sign. The CA creation
+            // seam alone may lack an authority row, because the new CA's row is not committed yet.
+            var issuingCaEntity = await IssuingCaGuard.EnsureUsableAsync(
+                _db, refCACert, caMatch, requireAuthority: preResolvedCa == null, DateTime.UtcNow, cancellationToken);
             // Hoisted out of the block below because the validity ceiling further down needs it too.
-            TenantEntity? caTenant = null;
+            // An instance CA (no space) gets the instance's policy, never none.
+            EffectivePolicy? caSpace = null;
             if (issuingCaEntity != null)
             {
-                caTenant = await _db.Tenants.FindAsync([issuingCaEntity.TenantId], cancellationToken);
-                if (caTenant != null && !caTenant.IsEnabled)
-                    throw new ConfigurationValidationException("Certificate issuance is blocked — the tenant is disabled.", ErrorCodes.TenantDisabled);
+                caSpace = await _policies.ResolveAsync(issuingCaEntity.SpaceId, cancellationToken);
+                EnsureScopeIssues(caSpace);
 
                 // The System Signing CA signs keystore entries only — never end-entity
                 // certs or sub-CAs. A signing profile pointing at it would exfiltrate
@@ -282,6 +295,21 @@ namespace ModularCA.Core.Services
                 // the same block regardless of which entry point they came through.
                 if (string.Equals(issuingCaEntity.Label, "system-signing-ca", StringComparison.OrdinalIgnoreCase))
                     throw new ConfigurationValidationException("The system signing CA is reserved for keystore signing only and cannot issue certificates. Reconfigure the signing profile to use a non-system CA.", ErrorCodes.SystemSigningCaReserved);
+            }
+
+            // The profile must be in the issuing CA's scope, on every path that reaches here.
+            var issuingScope = issuingCaEntity != null
+                ? (CaId: (Guid?)issuingCaEntity.Id, SpaceId: issuingCaEntity.SpaceId)
+                : (CaId: preResolvedCa?.Context.CaId, preResolvedCa?.Context.SpaceId);
+            if (!allowCaProfile && issuingScope.CaId is Guid scopeCaId)
+            {
+                var profileScope = await _db.CertProfiles.AsNoTracking()
+                    .Where(p => p.Id == csrEntity.CertProfileId.Value)
+                    .Select(p => new { p.SpaceId, p.CertificateAuthorityId })
+                    .FirstOrDefaultAsync(cancellationToken)
+                    ?? throw new ConfigurationValidationException("The CSR's certificate profile no longer exists.");
+                ModularCA.Core.Authorization.CertProfileScope.Ensure(
+                    profileScope.SpaceId, profileScope.CertificateAuthorityId, scopeCaId, issuingScope.SpaceId);
             }
 
             var now = DateTime.UtcNow;
@@ -295,10 +323,10 @@ namespace ModularCA.Core.Services
             var validFrom = CertificateValidityUtil.AsUtc(notBefore) ?? CertificateValidityUtil.DefaultNotBefore();
             var validTo = CertificateValidityUtil.AsUtc(notAfter) ?? timeMax;
 
-            // The tenant ceiling is applied before the issuing CA's own expiry so that a
+            // The space ceiling is applied before the issuing CA's own expiry so that a
             // certificate limited by both reports both reasons rather than only the tighter one.
-            validTo = ApplyTenantValidityCeiling(
-                validTo, validFrom, caTenant,
+            validTo = ApplySpaceValidityCeiling(
+                validTo, validFrom, caSpace,
                 csrEntity.IsInfrastructureCert,
                 isCaCertificate: allowCaProfile || effectiveCertProfile.IsCaProfile,
                 ceilingEnforcement,
@@ -380,8 +408,9 @@ namespace ModularCA.Core.Services
                 validFrom, validTo, subjectDn.ToString(), ParseSanJson(effectiveSans),
                 effectiveCertProfile.SourceProfileId.ToString(), csrEntity.IsInfrastructureCert);
 
-            // Validate subject DN and SANs against issuing CA name constraints
-            ValidateNameConstraints(caMatch, subjectDn.ToString(), ParseSanJson(effectiveSans));
+            // Validate subject DN and SANs against the name constraints of every CA in the path
+            await ValidateNameConstraintsAsync(caMatch, refCACert, subjectDn, ParseSanJson(effectiveSans),
+                isCaCertificate: allowCaProfile || effectiveCertProfile.IsCaProfile, cancellationToken);
 
             var extendedOids = _validation.SetupAllowedExtendedOids(effectiveCertProfile.ExtendedKeyUsages, csrEntity.SigningProfile.AllowedEKUs, issuanceDiagnostics);
             var standardOids = _validation.SetupAllowedStandardOids(effectiveCertProfile.KeyUsages);
@@ -472,7 +501,7 @@ namespace ModularCA.Core.Services
                         RequestorUserId = csrEntity.RequestorUserId,
                     },
                     certificateAuthorityId: issuingCaEntity?.Id,
-                    tenantId: issuingCaEntity?.TenantId);
+                    spaceId: issuingCaEntity?.SpaceId);
             }
             catch (Exception auditEx)
             {
@@ -484,8 +513,18 @@ namespace ModularCA.Core.Services
 
         /// <summary>
         /// Reissues a certificate identified by certificate ID, serial number, or CSR ID.
-        /// Revokes the previous certificate (if not already revoked), validates constraints,
-        /// builds a new certificate, and persists it.
+        /// Refuses first when the issuing CA is revoked, outside its validity, disabled, deleted or
+        /// unregistered (see <see cref="IssuingCaGuard"/>), or when the CSR's certificate profile is
+        /// no longer in that CA's scope (<see cref="ModularCA.Core.Authorization.CertProfileScope"/>),
+        /// so the predecessor is not auto-revoked
+        /// for a reissue that cannot happen. Every other check that can refuse the reissue (revocation
+        /// reason, CSR, profiles, quota, validity, overrides, certificate policy, name constraints
+        /// across the chain, subject storability) also runs before anything changes. The new
+        /// certificate is then built, stored and linked, and only after that is the previous
+        /// certificate revoked as Superseded (when it is not already revoked or expired), so a
+        /// refused reissue leaves the predecessor in service. Should that final revocation fail,
+        /// the replacement stands, the predecessor is marked reissued, and the error says to revoke
+        /// it by hand.
         /// </summary>
         /// <param name="certId">Optional certificate ID to look up the original CSR.</param>
         /// <param name="certSN">Optional serial number to look up the original CSR.</param>
@@ -498,8 +537,10 @@ namespace ModularCA.Core.Services
         /// re-validated against the resolved certificate profile via the existing override pipeline.</param>
         /// <param name="newSans">Optional new SAN list (entries formatted as "DNS:host" / "IP:1.2.3.4") that
         /// overrides whatever SAN overrides were stored on the original CSR. The list is JSON-serialized into the
-        /// CSR's <c>SanOverrides</c> field and re-validated against the resolved certificate profile.</param>
-        /// <param name="ceilingEnforcement">Whether the tenant's validity-ceiling behaviour may refuse
+        /// CSR's <c>SanOverrides</c> field and re-validated against the resolved certificate profile. Null keeps
+        /// the current SANs; an empty list removes them all, refused with 400 before the predecessor is revoked
+        /// when a certificate without SANs is not valid (<see cref="EnsureSanlessCertificateIsValid"/>).</param>
+        /// <param name="ceilingEnforcement">Whether the space's validity-ceiling behaviour may refuse
         /// this caller rather than shorten it; see <see cref="ValidityCeilingEnforcement"/>. Defaults to
         /// shortening, so an automated reissue path added later cannot start refusing by omission.</param>
         /// <returns>The PEM-encoded reissued certificate with intermediate chain and any warnings.</returns>
@@ -603,30 +644,51 @@ namespace ModularCA.Core.Services
                 }
             }
 
-            // Reissue requires the previous certificate to be revoked with a non-compromise reason
-            // (RFC 5280 §5.3.1). When the operator hasn't already revoked it, do so now via
-            // ICertificateRevocationService — that path triggers CRL regeneration, audit logging,
-            // and notifications, none of which the previous inline mutation did. The check is
-            // idempotent: if the cert is already revoked with an allowed reason we just proceed.
-            //
-            // Treat both null and empty/whitespace RevocationReason as "not yet revoked" because
-            // bootstrap-seeded certs (e.g. the Web TLS cert) ship with an empty string instead of
-            // null, which historically made the inline shortcut skip and dropped the operator
-            // into the "Previous certificate must be revoked to allow reissue" error.
-            // "Expired" is no longer a stored revocation reason — natural
-            // expiry is detected via NotAfter < now instead. Keep "CessationOfOperation" for
-            // operational retirements and allow reissue when the cert is simply expired.
-            var allowedReissueReasons = new[] { "Superseded", "CessationOfOperation" };
-            var isExpired = prevCert.NotAfter < DateTime.UtcNow;
-            if (!isExpired && (!prevCert.Revoked || string.IsNullOrWhiteSpace(prevCert.RevocationReason)))
+            // The issuing CA is judged before the predecessor is auto-revoked below, so a reissue
+            // the CA can never sign does not take the predecessor out of service first.
+            var (caMatch, refCACert) = await ResolveCaAsync(csrEntity.SigningProfile);
+            var reissueCaEntity = (await IssuingCaGuard.EnsureUsableAsync(
+                _db, refCACert, caMatch, requireAuthority: true, DateTime.UtcNow))!;
+            var caSpace = await _policies.ResolveAsync(reissueCaEntity.SpaceId);
+            EnsureScopeIssues(caSpace);
+            if (string.Equals(reissueCaEntity.Label, "system-signing-ca", StringComparison.OrdinalIgnoreCase))
+                throw new ConfigurationValidationException("The system signing CA is reserved for keystore signing only and cannot issue certificates. Reconfigure the signing profile to use a non-system CA.", ErrorCodes.SystemSigningCaReserved);
+
+            // The profile must still be in the issuing CA's scope, checked before the predecessor is revoked.
+            if (csrEntity.CertProfileId is Guid reissueProfileId)
             {
-                await _revocation.RevokeCertificateAsync(prevCert.CertificateId, null, Shared.Enums.RevocationReason.Superseded);
-                // prevCert and the entity returned by ResolveCertificateEntityAsync inside the
-                // revocation service are the same tracked instance (shared scoped DbContext), so
-                // the mutation is already visible on this local reference — no Reload needed.
+                var reissueScope = await _db.CertProfiles.AsNoTracking()
+                    .Where(p => p.Id == reissueProfileId)
+                    .Select(p => new { p.SpaceId, p.CertificateAuthorityId })
+                    .FirstOrDefaultAsync()
+                    ?? throw new ConfigurationValidationException("The CSR's certificate profile no longer exists.");
+                ModularCA.Core.Authorization.CertProfileScope.Ensure(
+                    reissueScope.SpaceId, reissueScope.CertificateAuthorityId, reissueCaEntity.Id, reissueCaEntity.SpaceId);
             }
 
-            if (!isExpired && !allowedReissueReasons.Contains(prevCert.RevocationReason, StringComparer.OrdinalIgnoreCase))
+            // An explicit empty SAN list replaces the SANs with none; refused here, before the
+            // predecessor is revoked, where a certificate without SANs is not valid.
+            if (newSans is { Count: 0 } && csrEntity.CertProfileId is Guid sanlessProfileId)
+            {
+                var sanlessProfile = await _profileResolver.ResolveCertProfileAsync(sanlessProfileId);
+                EnsureSanlessCertificateIsValid(
+                    string.IsNullOrWhiteSpace(newSubjectDn) ? prevCert.SubjectDN : newSubjectDn,
+                    _validation.SetupAllowedExtendedOids(sanlessProfile.ExtendedKeyUsages, csrEntity.SigningProfile.AllowedEKUs));
+            }
+
+            // Reissue requires the previous certificate to be revoked with a non-compromise reason
+            // (RFC 5280 §5.3.1). When the operator hasn't already revoked it, it is revoked as
+            // Superseded through ICertificateRevocationService (CRL regeneration, audit,
+            // notifications), but only once the replacement has been issued and stored: every check
+            // that can refuse the reissue runs first, so a refused reissue never takes the
+            // predecessor out of service. An already-revoked predecessor must carry an allowed
+            // reason. "Expired" is no longer a stored revocation reason: natural expiry is detected
+            // via NotAfter < now, and an expired predecessor is not revoked. Bootstrap-seeded certs
+            // (e.g. the Web TLS cert) carry an empty reason while unrevoked, which reads as "not yet revoked".
+            var allowedReissueReasons = new[] { "Superseded", "CessationOfOperation" };
+            var isExpired = prevCert.NotAfter < DateTime.UtcNow;
+            var revokePredecessor = !isExpired && !prevCert.Revoked;
+            if (!isExpired && !revokePredecessor && !allowedReissueReasons.Contains(prevCert.RevocationReason, StringComparer.OrdinalIgnoreCase))
                 throw new ConfigurationValidationException($"Reissue is only allowed for revoked certificates with reasons:" +
                     $" {string.Join(", ", allowedReissueReasons)} (or naturally expired).\nIn the event of a key compromise, create a new CSR.", ErrorCodes.ReissueReasonNotPermitted);
 
@@ -691,21 +753,6 @@ namespace ModularCA.Core.Services
             if (!csrEntity.IsInfrastructureCert)
                 await EnforceQuotaAsync(csrEntity.SigningProfile);
 
-            // Resolve CA certificate and row; the key stays with the signer
-            var (caMatch, refCACert) = await ResolveCaAsync(csrEntity.SigningProfile);
-
-            // Check tenant is enabled — block reissuance if the CA's tenant has been disabled
-            var reissueCaEntity = await _db.CertificateAuthorities
-                .FirstOrDefaultAsync(ca => ca.CertificateId == refCACert.CertificateId);
-            // Hoisted out of the block below because the validity ceiling further down needs it too.
-            TenantEntity? caTenant = null;
-            if (reissueCaEntity != null)
-            {
-                caTenant = await _db.Tenants.FindAsync(reissueCaEntity.TenantId);
-                if (caTenant != null && !caTenant.IsEnabled)
-                    throw new ConfigurationValidationException("Certificate issuance is blocked — the tenant is disabled.");
-            }
-
             var now = DateTime.UtcNow;
             var timeMax = DateTime.UtcNow + Iso8601ParserUtil.ParseIso8601(effectiveCertProfile.ValidityPeriodMax ?? "P1Y");
 
@@ -717,14 +764,14 @@ namespace ModularCA.Core.Services
             var validFrom = CertificateValidityUtil.AsUtc(notBefore) ?? CertificateValidityUtil.DefaultNotBefore();
             var validTo = CertificateValidityUtil.AsUtc(notAfter) ?? timeMax;
 
-            // The tenant ceiling is applied before the issuing CA's own expiry so that a
+            // The space ceiling is applied before the issuing CA's own expiry so that a
             // certificate limited by both reports both reasons rather than only the tighter one.
             // isCaCertificate is the resolved profile flag alone: reissue has no CA-creation caller
             // and refuses a CA-flagged profile outright further up, so this can only ever be false
             // here — it is passed for the same reason the guard above exists, so that a future
             // change which admits a CA profile to this path does not silently shorten it.
-            validTo = ApplyTenantValidityCeiling(
-                validTo, validFrom, caTenant,
+            validTo = ApplySpaceValidityCeiling(
+                validTo, validFrom, caSpace,
                 csrEntity.IsInfrastructureCert,
                 isCaCertificate: effectiveCertProfile.IsCaProfile,
                 ceilingEnforcement,
@@ -815,7 +862,7 @@ namespace ModularCA.Core.Services
                 effectiveCertProfile.SourceProfileId.ToString(), csrEntity.IsInfrastructureCert);
 
             // Validate subject DN and SANs against issuing CA name constraints
-            ValidateNameConstraints(caMatch, reissueSubjectDn.ToString(), ParseSanJson(reissueEffectiveSans));
+            await ValidateNameConstraintsAsync(caMatch, refCACert, reissueSubjectDn, ParseSanJson(reissueEffectiveSans), isCaCertificate: false);
 
             var extendedOids = _validation.SetupAllowedExtendedOids(effectiveCertProfile.ExtendedKeyUsages, csrEntity.SigningProfile.AllowedEKUs, issuanceDiagnostics);
             var standardOids = _validation.SetupAllowedStandardOids(effectiveCertProfile.KeyUsages);
@@ -860,7 +907,7 @@ namespace ModularCA.Core.Services
             // Always emit CertificateIssued to the general audit log
             // after a successful reissue too, so the cross-channel query surface has a
             // single table with every issuance event. Reissue path already resolved the
-            // CA entity earlier in the method (reissueCaEntity) for the tenant-enabled
+            // CA entity earlier in the method (reissueCaEntity) for the space-enabled
             // check — reuse it here.
             await EmitCertificateIssuedAuditAsync(csrEntity, certModel, reissueCaEntity);
 
@@ -915,6 +962,26 @@ namespace ModularCA.Core.Services
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to copy ACLs from previous certificate to reissued certificate {Serial}", certModel.SerialNumber);
+            }
+
+            // The replacement is issued, stored and linked; only now is the predecessor revoked. A
+            // failure here leaves both certificates valid, never neither: the predecessor is
+            // already marked reissued, so a retry cannot issue a second replacement.
+            if (revokePredecessor)
+            {
+                try
+                {
+                    await _revocation.RevokeCertificateAsync(prevCert.CertificateId, null, Shared.Enums.RevocationReason.Superseded);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex,
+                        "Reissue issued {NewSerial} but could not revoke its predecessor {OldSerial}; revoke it (Superseded) manually.",
+                        certModel.SerialNumber, prevCert.SerialNumber);
+                    throw new InvalidOperationException(
+                        $"The replacement certificate {certModel.SerialNumber} was issued, but revoking its predecessor "
+                        + $"{prevCert.SerialNumber} failed: {ex.Message} Revoke the predecessor (reason Superseded) manually.", ex);
+                }
             }
 
             return new IssuanceResult(certPem, issuanceDiagnostics);
@@ -1091,32 +1158,45 @@ namespace ModularCA.Core.Services
             return new X509Name(oids, values);
         }
 
+        /// <summary>id-kp-serverAuth (RFC 5280 §4.2.1.12).</summary>
+        private const string ServerAuthOid = "1.3.6.1.5.5.7.3.1";
+
         /// <summary>
-        /// Returns the SAN overrides JSON if present and non-empty, otherwise falls back to
-        /// the original SANs from the CSR entity. The returned value is a JSON array string
-        /// suitable for passing to <see cref="CertificateBuilderService.BuildCertificateAsync"/>.
+        /// Throws <see cref="InvalidRequestException"/> (<see cref="ErrorCodes.SanOverrideInvalid"/>, 400)
+        /// when a certificate with <paramref name="subjectDn"/> and the extended key usages
+        /// <paramref name="ekuOids"/> would not be valid without any SAN: an empty subject needs a
+        /// SAN (RFC 5280 §4.2.1.6), and a TLS server certificate (serverAuth) is matched to its host
+        /// by SAN alone (RFC 6125 §6.4.4, CA/B Forum BR §7.1.2.7.12).
+        /// </summary>
+        internal static void EnsureSanlessCertificateIsValid(string? subjectDn, IEnumerable<string> ekuOids)
+        {
+            if (string.IsNullOrWhiteSpace(subjectDn))
+                throw new InvalidRequestException(
+                    "A certificate with an empty subject must carry at least one Subject Alternative Name (RFC 5280 §4.2.1.6).",
+                    ErrorCodes.SanOverrideInvalid);
+            if (ekuOids.Contains(ServerAuthOid, StringComparer.Ordinal))
+                throw new InvalidRequestException(
+                    "A TLS server certificate (serverAuth) needs at least one Subject Alternative Name: clients match the host "
+                    + "name against SANs only. Keep at least one DNS or IP name, or reissue under a profile without serverAuth.",
+                    ErrorCodes.SanOverrideInvalid);
+        }
+
+        /// <summary>
+        /// Returns the SAN overrides as a JSON array of <c>TYPE:value</c> strings when they can be
+        /// read (<see cref="SanOverrideJson.Read"/>: the stored string form, or the
+        /// <c>{Type, Value}</c> objects CSR upload stored before), otherwise the original SANs from
+        /// the CSR entity. An empty array is an override that replaces the SANs with none; only an
+        /// absent (null or blank) or malformed override keeps the originals. The returned value is
+        /// a JSON array string suitable for passing to
+        /// <see cref="CertificateBuilderService.BuildCertificateAsync"/>.
         /// </summary>
         /// <param name="originalSansJson">The original SANs JSON array from the CSR, or null.</param>
         /// <param name="sanOverridesJson">The SAN overrides JSON array, or null.</param>
         /// <returns>The effective SANs JSON string.</returns>
-        private static string? ApplySanOverrides(string? originalSansJson, string? sanOverridesJson)
+        internal static string? ApplySanOverrides(string? originalSansJson, string? sanOverridesJson)
         {
-            if (string.IsNullOrWhiteSpace(sanOverridesJson))
-                return originalSansJson;
-
-            try
-            {
-                // Validate that the overrides are a well-formed JSON array
-                var overrides = JsonSerializer.Deserialize<List<string>>(sanOverridesJson, SafeJsonOptions.Default);
-                if (overrides != null && overrides.Count > 0)
-                    return sanOverridesJson;
-            }
-            catch
-            {
-                // Malformed SAN overrides — fall back to original
-            }
-
-            return originalSansJson;
+            var overrides = SanOverrideJson.Read(sanOverridesJson);
+            return overrides == null ? originalSansJson : JsonSerializer.Serialize(overrides);
         }
 
         /// <summary>
@@ -1238,8 +1318,23 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
-        /// Applies the owning tenant's validity ceiling to a certificate's expiry: shortens it and
-        /// records <c>MCA-ISS-004</c>, or — for an interactive caller against a tenant configured to
+        /// Refuses issuance under a CA whose scope does not issue: a disabled space
+        /// (<c>SpaceDisabled</c>), or a space that no longer exists or is soft-deleted
+        /// (<c>IssuingCaDisabled</c>), which has no policy to issue under and never means "no
+        /// ceiling". An instance CA resolves to the instance, which always issues.
+        /// </summary>
+        private static void EnsureScopeIssues(EffectivePolicy scope)
+        {
+            if (!scope.Found)
+                throw new ConfigurationValidationException(
+                    $"Certificate issuance is blocked — the issuing CA's space {scope.SpaceId} no longer exists.", ErrorCodes.IssuingCaDisabled);
+            if (!scope.IsEnabled)
+                throw new ConfigurationValidationException("Certificate issuance is blocked — the space is disabled.", ErrorCodes.SpaceDisabled);
+        }
+
+        /// <summary>
+        /// Applies the owning space's validity ceiling to a certificate's expiry: shortens it and
+        /// records <c>MCA-ISS-004</c>, or — for an interactive caller against a space configured to
         /// refuse — throws <c>MCA-ISS-005</c> instead of issuing something shorter than was asked
         /// for.
         /// </summary>
@@ -1248,7 +1343,7 @@ namespace ModularCA.Core.Services
         /// Shortening is the default and the only behaviour the ceiling originally had. Every
         /// enrollment protocol — ACME, EST, SCEP, CMP — and both renewal jobs derive their requested
         /// expiry from the certificate profile's <c>ValidityPeriodMax</c> without any knowledge of
-        /// the tenant, so a profile that out-reaches its tenant would refuse every enrollment and
+        /// the space, so a profile that out-reaches its space would refuse every enrollment and
         /// every renewal against it, for a condition the enrolling client can neither see nor fix.
         /// Those callers pass <see cref="ValidityCeilingEnforcement.AlwaysShorten"/>, which is also
         /// the default, so a call site added later cannot start refusing by omission. The
@@ -1260,7 +1355,7 @@ namespace ModularCA.Core.Services
         /// client: they can see the ceiling, they can shorten the request, and a certificate that
         /// comes back quietly shorter than asked for is a defect that surfaces years later as an
         /// unexpected expiry. It fires only when the caller passes
-        /// <see cref="ValidityCeilingEnforcement.HonourTenantPolicy"/> <em>and</em> the tenant is set
+        /// <see cref="ValidityCeilingEnforcement.HonourSpacePolicy"/> <em>and</em> the space is set
         /// to <see cref="ValidityCeilingBehavior.Refuse"/> — both conditions, never either.
         /// </para>
         /// <para>
@@ -1283,66 +1378,70 @@ namespace ModularCA.Core.Services
         /// </remarks>
         /// <param name="validTo">The expiry resolved so far.</param>
         /// <param name="validFrom">The certificate's start, which the ceiling is measured from.</param>
-        /// <param name="tenant">The issuing CA's tenant, or null when it could not be resolved.</param>
+        /// <param name="space">
+        /// The issuing CA's scope policy (the instance's for an instance CA), or null when there is
+        /// no issuing CA row.
+        /// </param>
         /// <param name="isInfrastructureCert">True for a TSA/OCSP/Web TLS certificate; exempt.</param>
         /// <param name="isCaCertificate">True when this issuance produces a CA certificate; exempt.</param>
-        /// <param name="enforcement">Whether this caller may be refused by the tenant's behaviour.</param>
+        /// <param name="enforcement">Whether this caller may be refused by the space's behaviour.</param>
         /// <param name="diagnostics">Collects the advisory when the expiry is shortened.</param>
         /// <returns>The expiry to use, never later than the one passed in.</returns>
         /// <exception cref="ConfigurationValidationException">
-        /// The request exceeds the ceiling, the tenant refuses rather than shortens, and the caller
+        /// The request exceeds the ceiling, the scope refuses rather than shortens, and the caller
         /// is one that can act on a refusal.
         /// </exception>
-        private DateTime ApplyTenantValidityCeiling(
+        private DateTime ApplySpaceValidityCeiling(
             DateTime validTo,
             DateTime validFrom,
-            TenantEntity? tenant,
+            EffectivePolicy? space,
             bool isInfrastructureCert,
             bool isCaCertificate,
             ValidityCeilingEnforcement enforcement,
             List<Diagnostic> diagnostics)
         {
-            // No tenant resolved means no ceiling to apply — a system-wide signing profile with no
+            // No issuing CA row means no ceiling to apply — a system-wide signing profile with no
             // CA behind it, which the decision function has no way to represent.
-            if (tenant is null)
+            if (space is null)
                 return validTo;
 
-            // The decision — exemptions, enforcement mode, tenant behaviour, clamp — is a pure
+            // The decision — exemptions, enforcement mode, space behaviour, clamp — is a pure
             // function so that the tests cover the real rule rather than a restatement of it. What
             // is left here is the reporting.
             var decision = CertificateValidityUtil.DecideValidityCeiling(
-                validTo, validFrom, tenant.MaxValidityDays,
-                tenant.ValidityCeilingBehavior, enforcement,
+                validTo, validFrom, space.MaxValidityDays,
+                space.ValidityCeilingBehavior, enforcement,
                 isInfrastructureCert, isCaCertificate);
 
             if (decision.Outcome == ValidityCeilingOutcome.Unchanged)
                 return validTo;
 
             var requestedDays = (int)Math.Round((validTo - validFrom).TotalDays);
+            var scope = space.SpaceId == null ? "the instance" : $"space '{space.Scope}'";
 
             if (decision.Outcome == ValidityCeilingOutcome.Refused)
             {
                 var refusal =
-                    $"Requested validity of {requestedDays} days exceeds the {tenant.MaxValidityDays}-day ceiling on " +
-                    $"tenant '{tenant.Name}', which is configured to refuse over-long requests rather than shorten them.";
+                    $"Requested validity of {requestedDays} days exceeds the {space.MaxValidityDays}-day ceiling on " +
+                    $"{scope}, which is configured to refuse over-long requests rather than shorten them.";
                 _logger.LogWarning(
-                    "Refused issuance: requested {RequestedDays} days exceeds tenant '{Tenant}' ceiling of {CeilingDays} days.",
-                    requestedDays, tenant.Name, tenant.MaxValidityDays);
+                    "Refused issuance: requested {RequestedDays} days exceeds {Scope} ceiling of {CeilingDays} days.",
+                    requestedDays, scope, space.MaxValidityDays);
                 throw new ConfigurationValidationException(
                     refusal,
-                    ErrorCodes.ValidityExceedsTenantCeiling,
-                    remediation: $"Request at most {tenant.MaxValidityDays} days, raise the ceiling on tenant " +
-                                 $"'{tenant.Name}', or set that tenant to shorten instead of refuse.");
+                    ErrorCodes.ValidityExceedsSpaceCeiling,
+                    remediation: $"Request at most {space.MaxValidityDays} days, raise the ceiling on " +
+                                 $"{scope}, or set it to shorten instead of refuse.");
             }
 
-            var msg = $"Certificate validity shortened from {requestedDays} days to {tenant.MaxValidityDays} days " +
-                      $"because tenant '{tenant.Name}' caps certificate validity at {tenant.MaxValidityDays} days.";
+            var msg = $"Certificate validity shortened from {requestedDays} days to {space.MaxValidityDays} days " +
+                      $"because {scope} caps certificate validity at {space.MaxValidityDays} days.";
             _logger.LogWarning(msg);
             diagnostics.Add(Diagnostic.Warning(
-                ErrorCodes.ValidityClampedToTenant,
+                ErrorCodes.ValidityClampedToSpace,
                 "Validity shortened",
                 msg,
-                remediation: $"Raise the validity ceiling on tenant '{tenant.Name}', or request a shorter validity period.",
+                remediation: $"Raise the validity ceiling on {scope}, or request a shorter validity period.",
                 field: "validTo"));
 
             return decision.NotAfter;
@@ -1401,179 +1500,69 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
-        /// Validates that the certificate's subject DN and SANs comply with the issuing CA's
-        /// name constraints extension (RFC 5280 section 4.2.1.10). DNS name constraints are
-        /// enforced (block issuance on violation). Other constraint types (IP, Email, URI, DN)
-        /// are NOT implemented, and their presence now refuses issuance rather than proceeding
-        /// unconstrained — see the throw below for why a warning was the wrong response.
+        /// Validates the certificate's subject DN (when not empty), its subject emailAddress values
+        /// and every SAN against the NameConstraints extension (RFC 5280 §4.2.1.10) of every CA
+        /// certificate in its path: the issuing CA and each ancestor up to and including the root
+        /// (<see cref="IssuerChainResolver.ResolveIssuerPathAsync"/>), as path validation would.
+        /// All five subtree types are enforced (<see cref="NameConstraintEnforcer"/>); a violation
+        /// refuses issuance with <see cref="CertificatePolicyViolationException"/>
+        /// (<see cref="ErrorCodes.NameConstraintViolation"/>) naming the name, the CA and the
+        /// subtrees. A NameConstraints extension that cannot be parsed, or an ancestor certificate
+        /// that cannot be read, refuses every issuance under it. A self-issued CA certificate (a CA
+        /// certificate whose subject is its issuer's) is exempt, as RFC 5280 §6.1.3 (b) exempts a
+        /// self-issued intermediate; the constraints still bind every certificate issued under it.
         /// </summary>
         /// <param name="issuerCert">The issuing CA's X.509 certificate.</param>
+        /// <param name="issuerRow">The issuing CA certificate's row, from which the ancestors are walked.</param>
         /// <param name="subjectDn">The subject DN of the certificate being issued.</param>
         /// <param name="sans">The list of Subject Alternative Names (prefixed, e.g. "DNS:example.com").</param>
-        private void ValidateNameConstraints(X509Certificate issuerCert, string subjectDn, List<string> sans)
+        /// <param name="isCaCertificate">Whether the certificate being issued is a CA certificate.</param>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        private async Task ValidateNameConstraintsAsync(X509Certificate issuerCert, CertificateEntity issuerRow,
+            X509Name subjectDn, List<string> sans, bool isCaCertificate, CancellationToken cancellationToken = default)
         {
-            var ncExt = issuerCert.GetExtensionValue(X509Extensions.NameConstraints);
-            if (ncExt == null) return; // No name constraints on issuer
+            if (isCaCertificate && subjectDn.Equivalent(issuerCert.SubjectDN, true))
+            {
+                _logger.LogInformation(
+                    "Self-issued CA certificate {Subject}: its names are exempt from the path's name constraints (RFC 5280 6.1.3).",
+                    subjectDn);
+                return;
+            }
 
-            NameConstraints nc;
+            var path = new List<X509Certificate> { issuerCert };
+            foreach (var ancestor in await IssuerChainResolver.ResolveIssuerPathAsync(_db, issuerRow))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (ancestor.CertificateId == issuerRow.CertificateId)
+                    continue;
+                try
+                {
+                    path.Add(CertificateUtil.ParseFromPem(ancestor.Pem));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Ancestor CA certificate {CaSubject} of {Issuer} cannot be read — refusing to issue.",
+                        ancestor.SubjectDN, issuerCert.SubjectDN);
+                    throw new InvalidOperationException(
+                        $"The ancestor CA certificate '{ancestor.SubjectDN}' cannot be read, so its name constraints cannot be "
+                        + "verified. Issuance is refused rather than proceeding unconstrained.", ex);
+                }
+            }
+
+            List<NameConstraintEnforcer.CaConstraints> constraints;
             try
             {
-                nc = NameConstraints.GetInstance(X509ExtensionUtilities.FromExtensionValue(ncExt));
+                constraints = NameConstraintEnforcer.Collect(path);
             }
-            catch (Exception ex)
+            catch (InvalidOperationException ex)
             {
-                // Fail closed. Skipping validation here meant an issuer whose NameConstraints
-                // extension could not be parsed enforced NOTHING — the one case where the CA is
-                // demonstrably in an unknown state was also the case that issued freely. A
-                // constraint we cannot read is a constraint we cannot prove the certificate
-                // satisfies.
-                _logger.LogError(ex,
-                    "Failed to parse NameConstraints from issuing CA {CaSubject} — refusing to issue.",
+                // Fail closed: a constraint that cannot be read is one no certificate can be shown to satisfy.
+                _logger.LogError(ex, "Failed to parse NameConstraints in the path of issuing CA {CaSubject} — refusing to issue.",
                     issuerCert.SubjectDN);
-                throw new InvalidOperationException(
-                    "The issuing CA carries a NameConstraints extension that cannot be parsed, so compliance "
-                    + "cannot be verified. Issuance is refused rather than proceeding unconstrained.", ex);
+                throw;
             }
 
-            var permitted = nc.PermittedSubtrees;
-            var excluded = nc.ExcludedSubtrees;
-
-            // Collect permitted and excluded DNS suffixes
-            var permittedDns = new List<string>();
-            var excludedDns = new List<string>();
-            bool hasNonDnsPermitted = false;
-            bool hasNonDnsExcluded = false;
-
-            if (permitted != null)
-            {
-                foreach (var element in permitted)
-                {
-                    var subtree = GeneralSubtree.GetInstance(element);
-                    var gn = subtree.Base;
-                    if (gn.TagNo == GeneralName.DnsName)
-                    {
-                        permittedDns.Add(gn.Name.ToString()!);
-                    }
-                    else
-                    {
-                        hasNonDnsPermitted = true;
-                    }
-                }
-            }
-
-            if (excluded != null)
-            {
-                foreach (var element in excluded)
-                {
-                    var subtree = GeneralSubtree.GetInstance(element);
-                    var gn = subtree.Base;
-                    if (gn.TagNo == GeneralName.DnsName)
-                    {
-                        excludedDns.Add(gn.Name.ToString()!);
-                    }
-                    else
-                    {
-                        hasNonDnsExcluded = true;
-                    }
-                }
-            }
-
-            // Non-DNS subtrees (IP, Email, URI, DirectoryName) are not implemented. They used to
-            // produce a warning and then let issuance proceed, which means a CA an operator
-            // deliberately constrained to, say, `permitted: email:@example.com` or
-            // `excluded: DN:O=Bank` issued outside those bounds with nothing but a log line — the
-            // constraint existed in the certificate, and relying parties enforce it, but this CA
-            // did not honour its own policy.
-            //
-            // Refuse instead. A name constraint this code cannot evaluate is one it cannot prove
-            // the certificate satisfies, and quietly issuing a non-compliant certificate from a
-            // constrained CA is a trust failure, not a warning.
-            //
-            // This is deliberately a hard stop rather than a configurable one: a switch to
-            // downgrade an unenforceable constraint back to a warning is the same fail-open with
-            // extra steps. Implementing RFC 5280 4.2.1.10 matching for these types is what lets
-            // such a CA issue again.
-            if (hasNonDnsPermitted || hasNonDnsExcluded)
-            {
-                var which = hasNonDnsPermitted && hasNonDnsExcluded ? "permitted and excluded"
-                          : hasNonDnsPermitted ? "permitted" : "excluded";
-                _logger.LogError(
-                    "Issuing CA {CaSubject} has non-DNS {Which} name constraints (IP, Email, URI, DirectoryName) "
-                    + "which are not implemented — refusing to issue rather than proceeding unconstrained.",
-                    issuerCert.SubjectDN, which);
-                throw new ConfigurationValidationException(
-                    $"The issuing CA carries non-DNS {which} name constraints (IP, Email, URI, or DirectoryName). "
-                    + "Enforcement of those types is not implemented, so compliance cannot be verified and "
-                    + "issuance is refused. Use DNS-only name constraints on this CA, or remove them.", ErrorCodes.NameConstraintTypeUnsupported);
-            }
-
-            // Validate DNS SANs against constraints
-            foreach (var san in sans)
-            {
-                if (!san.StartsWith("DNS:", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                var dnsName = san.Substring(4).ToLowerInvariant();
-
-                // Check permitted subtrees: if any DNS permitted subtrees exist, the name must match at least one
-                if (permittedDns.Count > 0)
-                {
-                    bool matchesPermitted = false;
-                    foreach (var p in permittedDns)
-                    {
-                        if (DnsNameMatchesConstraint(dnsName, p.ToLowerInvariant()))
-                        {
-                            matchesPermitted = true;
-                            break;
-                        }
-                    }
-
-                    if (!matchesPermitted)
-                    {
-                        throw new CertificatePolicyViolationException(
-                        [
-                            $"[NameConstraints] DNS name '{dnsName}' is not within the issuing CA's "
-                            + $"permitted name constraints [{string.Join(", ", permittedDns)}]."
-                        ], ErrorCodes.NameConstraintViolation);
-                    }
-                }
-
-                // Check excluded subtrees: the name must not match any exclusion
-                foreach (var e in excludedDns)
-                {
-                    if (DnsNameMatchesConstraint(dnsName, e.ToLowerInvariant()))
-                    {
-                        throw new CertificatePolicyViolationException(
-                        [
-                            $"[NameConstraints] DNS name '{dnsName}' falls within the issuing CA's "
-                            + $"excluded name constraints [{string.Join(", ", excludedDns)}]."
-                        ], ErrorCodes.NameConstraintViolation);
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// Checks whether a DNS name matches a name constraint per RFC 5280 section 4.2.1.10.
-        /// A constraint ".example.com" matches "host.example.com" but not "example.com" itself.
-        /// A constraint "example.com" matches "example.com" exactly and any subdomain (e.g. "host.example.com").
-        /// </summary>
-        /// <param name="dnsName">The DNS name to check (lowercase).</param>
-        /// <param name="constraint">The name constraint (lowercase).</param>
-        /// <returns>True if the DNS name falls within the constraint.</returns>
-        private static bool DnsNameMatchesConstraint(string dnsName, string constraint)
-        {
-            if (constraint.StartsWith("."))
-            {
-                // Constraint ".example.com" matches any subdomain but not the base domain
-                return dnsName.EndsWith(constraint, StringComparison.Ordinal);
-            }
-
-            // Constraint "example.com" matches exact or any subdomain
-            if (string.Equals(dnsName, constraint, StringComparison.Ordinal))
-                return true;
-
-            return dnsName.EndsWith("." + constraint, StringComparison.Ordinal);
+            NameConstraintEnforcer.Enforce(constraints, subjectDn, sans);
         }
 
         /// <summary>
@@ -1597,14 +1586,6 @@ namespace ModularCA.Core.Services
             if (!canIssue)
                 throw new ResourceConflictException(
                     $"Certificate quota exceeded for CA '{ca.Name}'. No further certificates can be issued until the quota is increased or existing certificates expire/are revoked.", ErrorCodes.QuotaExceeded);
-
-            // Check tenant-level quota
-            if (ca.TenantId != Guid.Empty)
-            {
-                var canIssueTenant = await _quotaService.CanIssueCertificateInTenantAsync(ca.TenantId);
-                if (!canIssueTenant)
-                    throw new ResourceConflictException($"Tenant certificate quota exceeded.", ErrorCodes.QuotaExceeded);
-            }
         }
 
         /// <summary>The caller identity issuance signs under; the signer audits it with every decision.</summary>
@@ -1612,7 +1593,7 @@ namespace ModularCA.Core.Services
 
         /// <summary>
         /// Signs the certificate through the builder. The ordinary path hands the builder a
-        /// <see cref="KeyRef"/> to the CA row and a context naming the CA and its tenant, and the
+        /// <see cref="KeyRef"/> to the CA row and a context naming the CA and its space, and the
         /// signer holds the key to that; the CA creation seam hands it the reference and context
         /// the caller supplied, because the CA's row is not committed yet. A signer that has no
         /// key for the CA, or is locked, is reported as the same configuration error the keystore
@@ -1640,7 +1621,7 @@ namespace ModularCA.Core.Services
                         $"No certificate authority record names CA certificate {refCACert.CertificateId}; the signer cannot attribute its key.",
                         ErrorCodes.IssuingCaKeyUnavailable);
                 caKey = new KeyRef(refCACert.CertificateId);
-                context = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, caEntity.Id, caEntity.TenantId);
+                context = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, caEntity.Id, caEntity.SpaceId);
             }
 
             try

@@ -9,7 +9,7 @@ public interface IAuditService
     /// Logs an audit event with actor, action, target, and outcome details.
     /// </summary>
     /// <param name="certificateAuthorityId">Optional CA scope for the audit event. Null for system-wide events.</param>
-    /// <param name="tenantId">Optional tenant scope for the audit event. Null for system-wide events.</param>
+    /// <param name="spaceId">Optional space scope for the audit event. Null for system-wide events.</param>
     Task LogAsync(
         string actionType,
         Guid? actorUserId,
@@ -21,5 +21,5 @@ public interface IAuditService
         bool success = true,
         string? errorMessage = null,
         Guid? certificateAuthorityId = null,
-        Guid? tenantId = null);
+        Guid? spaceId = null);
 }

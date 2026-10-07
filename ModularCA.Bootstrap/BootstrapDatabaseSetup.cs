@@ -1,15 +1,36 @@
-using System.Security.Cryptography;
-using ModularCA.Auth.Utils;
+﻿using Microsoft.EntityFrameworkCore;
+using ModularCA.Database;
+using ModularCA.Shared.Models.Config;
 using ModularCA.Shared.Utils;
-using MySqlConnector;
+using Npgsql;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
 namespace ModularCA.Bootstrap;
 
+/// <summary>The two databases bootstrap provisioned, as the node will connect to them.</summary>
+/// <param name="App">The application database as the app role, with the password provisioning set.</param>
+/// <param name="Audit">The audit database as the audit role, with the password provisioning set.</param>
+public sealed record ProvisionedDatabases(DbInstance App, DbInstance Audit);
+
 /// <summary>
-/// Handles MySQL database user creation, runtime config.yaml generation,
-/// and SQL username validation during the bootstrap process.
+/// PostgreSQL refused a runtime role's login from this host during bootstrap. Carries no secret.
+/// </summary>
+public sealed class BootstrapLoginRefusedException : InvalidOperationException
+{
+    /// <summary>Creates the exception for <paramref name="role"/> connecting to <paramref name="host"/>.</summary>
+    public BootstrapLoginRefusedException(string role, string host, Exception inner)
+        : base($"PostgreSQL refused login for role '{role}' from this host (server {host}); allow it in pg_hba.conf "
+            + "and run bootstrap again. Nothing was written to the configuration.", inner)
+    {
+    }
+}
+
+/// <summary>
+/// The database half of bootstrap: provisions the roles and databases through
+/// <see cref="PostgresRoleLayout"/> as the SqlRoot superuser, applies both schemas as the runtime
+/// roles, proves the ownership rule, and writes the runtime config.yaml. Also validates SQL
+/// identifiers.
 /// </summary>
 public static class BootstrapDatabaseSetup
 {
@@ -26,136 +47,247 @@ public static class BootstrapDatabaseSetup
     }
 
     /// <summary>
-    /// Resolves a MySQL username from config. If the username contains '@' (e.g. "modularca_app@localhost"),
-    /// the host portion is stripped and replaced with the SqlRoot host value.
-    /// Returns (username, mysqlHost) where mysqlHost is used in CREATE USER 'user'@'host'.
+    /// Resolves a PostgreSQL role name from config.
+    /// <para>
+    /// PostgreSQL has no user-at-host concept: a role is a cluster-wide object, and where a
+    /// client may connect from is decided separately by <c>pg_hba.conf</c>, not by the role's
+    /// name. So the host half of a <c>user@host</c> value is meaningless here and is discarded.
+    /// It is still accepted and stripped rather than rejected, because existing
+    /// <c>setup-database.yaml</c> files contain it and an operator reusing one should get a
+    /// working install rather than a validation error about a concept that no longer exists.
+    /// </para>
     /// </summary>
-    public static (string Username, string MysqlHost) ResolveMysqlUser(string rawUsername, string rootHost)
+    /// <param name="rawUsername">The configured username, with or without an <c>@host</c> suffix.</param>
+    /// <returns>The bare role name.</returns>
+    public static string ResolveRoleName(string rawUsername)
     {
         var atIndex = rawUsername.IndexOf('@');
-        var username = atIndex >= 0 ? rawUsername[..atIndex] : rawUsername;
-        var mysqlHost = rootHost == "localhost" || rootHost == "127.0.0.1" ? "localhost" : rootHost;
-        return (username, mysqlHost);
+        return atIndex >= 0 ? rawUsername[..atIndex] : rawUsername;
     }
 
     /// <summary>
-    /// Creates dedicated MySQL users for the application and audit databases.
-    /// The app user receives full DML/DDL permissions; the audit user receives append-only permissions.
-    /// Guards against accidentally dropping/recreating the root admin user.
-    /// Returns the generated passwords for both users.
+    /// SqlRoot's connection string to the maintenance database. Refuses a SqlRoot with no
+    /// username or password: bootstrap never falls back to the application role.
     /// </summary>
-    /// <param name="wipeAuditDatabase">
-    /// When true, the audit database is dropped and recreated. Default false, which preserves it.
-    /// <para>
-    /// This used to be unconditional, and it made three separate operator-facing statements
-    /// false: the comment below saying "audit schema survives --reset --force", the
-    /// <c>--reset</c> usage text, and the reset banner's "Historical audit rows will persist
-    /// into the next install." Technically <c>--reset</c> never dropped it — the next bootstrap
-    /// did, from here, three lines above the comment promising otherwise. Withholding DROP from
-    /// the audit user achieves nothing when this pass runs as root.
-    /// </para>
-    /// <para>
-    /// An audit trail that a reinstall silently erases is not tamper-evidence. Preserving it by
-    /// default is what the rest of the system already claims; wiping is now something an
-    /// operator has to ask for.
-    /// </para>
-    /// </param>
-    public static (string appPassword, string auditPassword) CreateDatabaseUsers(
+    /// <param name="rootConfig">SqlRoot from setup-database.yaml.</param>
+    /// <exception cref="PostgresLayoutRefusedException">SqlRoot has no username or password.</exception>
+    public static string AdminConnectionString(YamlSetupDatabaseLoader.SqlConnectionConfig rootConfig)
+    {
+        ArgumentNullException.ThrowIfNull(rootConfig);
+        if (string.IsNullOrWhiteSpace(rootConfig.Username) || string.IsNullOrWhiteSpace(rootConfig.Password))
+            throw new PostgresLayoutRefusedException(
+            [
+                "SqlRoot in setup-database.yaml has no username or password. Bootstrap connects as a PostgreSQL "
+                + "superuser (for example postgres) and never falls back to the application role.",
+            ]);
+        return PostgresConnection.BuildMaintenance(
+            rootConfig.Host, rootConfig.Port, rootConfig.Username.Trim(), rootConfig.Password, rootConfig.SslMode);
+    }
+
+    /// <summary>The role and database names setup-database.yaml gives, with any <c>@host</c> suffix removed.</summary>
+    /// <param name="rootConfig">SqlRoot.</param>
+    /// <param name="setupDbConfig">The whole setup-database.yaml.</param>
+    public static PostgresLayoutNames LayoutNames(
+        YamlSetupDatabaseLoader.SqlConnectionConfig rootConfig, YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig) =>
+        new(rootConfig.Username.Trim(),
+            ResolveRoleName(setupDbConfig.SqlApp.Username).Trim(),
+            ResolveRoleName(setupDbConfig.SqlAudit.Username).Trim(),
+            setupDbConfig.SqlApp.Database,
+            setupDbConfig.SqlAudit.Database);
+
+    /// <summary>
+    /// Read-only: connects as SqlRoot, reads the cluster, and throws
+    /// <see cref="PostgresLayoutRefusedException"/> with every reason provisioning would refuse
+    /// (a SqlRoot that is not a superuser first among them). Changes nothing, so the CLI can run
+    /// it before asking the operator to confirm anything.
+    /// </summary>
+    /// <param name="rootConfig">SqlRoot.</param>
+    /// <param name="setupDbConfig">The whole setup-database.yaml.</param>
+    /// <param name="wipeAuditDatabase">Whether the audit database will be dropped rather than preserved.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public static async Task<ClusterFacts> CheckProvisioningAsync(
         YamlSetupDatabaseLoader.SqlConnectionConfig rootConfig,
         YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig,
-        bool wipeAuditDatabase = false)
+        bool wipeAuditDatabase,
+        CancellationToken ct = default)
     {
-        var appPassword = PasswordUtil.Generate() + PasswordUtil.Generate();
-        var auditPassword = PasswordUtil.Generate() + PasswordUtil.Generate();
-        var appDbName = setupDbConfig.SqlApp.Database;
-        var auditDbName = setupDbConfig.SqlAudit.Database;
-
-        var (appUser, appHost) = ResolveMysqlUser(setupDbConfig.SqlApp.Username, rootConfig.Host);
-        var (auditUser, auditHost) = ResolveMysqlUser(setupDbConfig.SqlAudit.Username, rootConfig.Host);
-
-        // Validate all identifiers before any SQL execution
-        ValidateIdentifier(appUser, "app username");
-        ValidateIdentifier(appHost, "app host");
-        ValidateIdentifier(appDbName, "app database name");
-        ValidateIdentifier(auditUser, "audit username");
-        ValidateIdentifier(auditHost, "audit host");
-        ValidateIdentifier(auditDbName, "audit database name");
-
-        // Guard: prevent dropping/recreating the root user
-        var rootUser = rootConfig.Username.Trim();
-        if (string.Equals(appUser, rootUser, StringComparison.OrdinalIgnoreCase))
-        {
-            Console.WriteLine($"❌ SqlApp.Username '{appUser}' matches the SqlRoot admin user '{rootUser}'.");
-            Console.WriteLine("   This would drop and recreate your admin account. Change SqlApp.Username in setup-database.yaml.");
-            throw new InvalidOperationException($"SqlApp.Username must differ from SqlRoot.Username (both are '{rootUser}')");
-        }
-        if (string.Equals(auditUser, rootUser, StringComparison.OrdinalIgnoreCase))
-        {
-            Console.WriteLine($"❌ SqlAudit.Username '{auditUser}' matches the SqlRoot admin user '{rootUser}'.");
-            Console.WriteLine("   This would drop and recreate your admin account. Change SqlAudit.Username in setup-database.yaml.");
-            throw new InvalidOperationException($"SqlAudit.Username must differ from SqlRoot.Username (both are '{rootUser}')");
-        }
-
-        // The root-credential DB-setup pass runs over TLS. The
-        // operator-selected mode from the setup wizard is stored on rootConfig.SslMode;
-        // unparseable / missing values clamp back to Required so a typo can't silently
-        // disable TLS.
-        var rootSslMode = Enum.TryParse<MySqlSslMode>(
-            rootConfig.SslMode, ignoreCase: true, out var _rootSsl)
-            ? _rootSsl : MySqlSslMode.Required;
-        var serverConnBuilder = new MySqlConnectionStringBuilder
-        {
-            Server = rootConfig.Host,
-            Port = (uint)rootConfig.Port,
-            UserID = rootConfig.Username,
-            Password = rootConfig.Password,
-            SslMode = rootSslMode
-        };
-        using var conn = new MySqlConnection(serverConnBuilder.ConnectionString);
-        conn.Open();
-
-        // Audit database: preserved unless the operator explicitly asked for a wipe.
-        if (wipeAuditDatabase)
-        {
-            Console.WriteLine($"⚠  Wiping audit database '{auditDbName}' — every historical audit row is being destroyed.");
-            ExecuteSql(conn, $"DROP DATABASE IF EXISTS `{auditDbName}`");
-            ExecuteSql(conn, $"CREATE DATABASE `{auditDbName}`");
-            Console.WriteLine($"✓ Audit database '{auditDbName}' dropped and recreated.");
-        }
-        else
-        {
-            // IF NOT EXISTS so a first install still creates it. An existing audit database is
-            // left untouched; StartModularCA migrates it forward on the next start, so a schema
-            // from an earlier version is brought up to date rather than discarded.
-            ExecuteSql(conn, $"CREATE DATABASE IF NOT EXISTS `{auditDbName}`");
-            Console.WriteLine($"✓ Audit database '{auditDbName}' ready (existing rows preserved — pass --wipe-audit to discard).");
-        }
-
-        // Create app user with full app DB permissions
-        ExecuteSql(conn, $"DROP USER IF EXISTS '{appUser}'@'{appHost}'");
-        ExecuteSql(conn, $"CREATE USER '{appUser}'@'{appHost}' IDENTIFIED BY '{EscapeSql(appPassword)}'");
-        ExecuteSql(conn, $"GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP, REFERENCES ON `{appDbName}`.* TO '{appUser}'@'{appHost}'");
-        Console.WriteLine($"✓ MySQL user '{appUser}'@'{appHost}' created with permissions on '{appDbName}'.");
-
-        // Create audit user with append-mostly permissions. DELETE is granted so the
-        // AuditRetentionJob can prune old rows per the configured retention window.
-        // DROP TABLE is intentionally NOT granted so the running application cannot discard
-        // audit history. That is necessary but was never sufficient: this setup pass runs as
-        // root and used to drop the whole audit database a few lines above, which is why the
-        // "survives --reset --force" guarantee this comment used to assert was false.
-        ExecuteSql(conn, $"DROP USER IF EXISTS '{auditUser}'@'{auditHost}'");
-        ExecuteSql(conn, $"CREATE USER '{auditUser}'@'{auditHost}' IDENTIFIED BY '{EscapeSql(auditPassword)}'");
-        ExecuteSql(conn, $"GRANT SELECT, INSERT, DELETE, CREATE, ALTER, INDEX, LOCK TABLES, SHOW VIEW ON `{auditDbName}`.* TO '{auditUser}'@'{auditHost}'");
-        Console.WriteLine($"✓ MySQL user '{auditUser}'@'{auditHost}' created with audit permissions on '{auditDbName}' (SELECT, INSERT, DELETE — no DROP).");
-
-        ExecuteSql(conn, "FLUSH PRIVILEGES");
-
-        return (appPassword, auditPassword);
+        var admin = AdminConnectionString(rootConfig);
+        var names = LayoutNames(rootConfig, setupDbConfig);
+        var problems = PostgresRoleLayout.ValidateNames(names);
+        if (problems.Count > 0)
+            throw new PostgresLayoutRefusedException(problems);
+        var facts = await PostgresRoleLayout.ProbeAsync(admin, names, ct);
+        var reasons = PostgresRoleLayout.Refusals(facts, names, new ProvisioningMode(ResetApp: true, WipeAudit: wipeAuditDatabase));
+        if (reasons.Count > 0)
+            throw new PostgresLayoutRefusedException(reasons);
+        return facts;
     }
 
     /// <summary>
-    /// Generates the runtime config.yaml containing database credentials, JWT settings,
-    /// security parameters, logging, email, HTTPS, and other application configuration.
+    /// Provisions both databases as SqlRoot through <see cref="PostgresRoleLayout.ProvisionAsync"/>:
+    /// the application database is dropped and recreated owned by the app role, the audit database
+    /// is preserved and handed to the NOLOGIN <c>&lt;audit&gt;_owner</c> role unless
+    /// <paramref name="wipeAuditDatabase"/>, and both runtime roles get fresh passwords. Fail-fast:
+    /// it refuses before any DDL, and any later failure propagates. Creates no table.
+    /// </summary>
+    /// <param name="rootConfig">SqlRoot.</param>
+    /// <param name="setupDbConfig">The whole setup-database.yaml.</param>
+    /// <param name="wipeAuditDatabase">Drop the audit database instead of preserving it.</param>
+    /// <param name="appSslMode">The TLS mode the node will use for the application database.</param>
+    /// <param name="auditSslMode">The TLS mode the node will use for the audit database.</param>
+    /// <param name="say">Progress output; never receives a password.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The two databases as the runtime roles, with their new passwords.</returns>
+    public static async Task<ProvisionedDatabases> ProvisionAsync(
+        YamlSetupDatabaseLoader.SqlConnectionConfig rootConfig,
+        YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig,
+        bool wipeAuditDatabase,
+        string? appSslMode,
+        string? auditSslMode,
+        Action<string>? say,
+        CancellationToken ct = default)
+    {
+        var admin = AdminConnectionString(rootConfig);
+        var names = LayoutNames(rootConfig, setupDbConfig);
+
+        NpgsqlConnection.ClearAllPools();
+        var (appPassword, auditPassword) = await PostgresRoleLayout.ProvisionAsync(
+            admin, names, new ProvisioningMode(ResetApp: true, WipeAudit: wipeAuditDatabase),
+            line => say?.Invoke($"✓ {line}"), ct);
+        NpgsqlConnection.ClearAllPools();
+
+        return new ProvisionedDatabases(
+            new DbInstance
+            {
+                Host = rootConfig.Host, Port = rootConfig.Port, Database = names.AppDatabase,
+                Username = names.AppRole, Password = appPassword,
+                SslMode = PostgresConnection.ParseSslMode(appSslMode).ToString(),
+            },
+            new DbInstance
+            {
+                Host = rootConfig.Host, Port = rootConfig.Port, Database = names.AuditDatabase,
+                Username = names.AuditRole, Password = auditPassword,
+                SslMode = PostgresConnection.ParseSslMode(auditSslMode).ToString(),
+            });
+    }
+
+    /// <summary>
+    /// Applies both schemas as the runtime roles, over unpooled migration connections with the
+    /// default <see cref="SchemaConfig"/> lock and statement timeouts: every migration, the frozen
+    /// baseline first, on the new application database; on the audit database the same when it
+    /// is empty, or the migrations a preserved audit database lacks. The only schema writes
+    /// bootstrap makes; nothing here runs as SqlRoot.
+    /// </summary>
+    /// <param name="databases">The provisioned databases.</param>
+    /// <param name="say">Progress output.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public static async Task ApplySchemasAsync(ProvisionedDatabases databases, Action<string>? say, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(databases);
+        var schema = new SchemaConfig();
+
+        await AsRuntimeRoleAsync(databases.App, async () =>
+        {
+            await using var app = CreateMigrationContext(DatabaseKind.Application, databases.App, schema);
+            ThrowIfFailed(databases.App, "application", await SchemaVersionGate.ApplyAllForBootstrapAsync(app, ct), schema);
+        });
+        say?.Invoke($"✓ Application schema applied as '{databases.App.Username}'.");
+
+        await AsRuntimeRoleAsync(databases.Audit, async () =>
+        {
+            await using var audit = CreateMigrationContext(DatabaseKind.Audit, databases.Audit, schema);
+            var state = await SchemaVersionGate.ReadAsync(audit, ct);
+            var verdict = SchemaVersionGate.Evaluate(state, appliesMigrations: true);
+            if (state.Presence == DatabasePresence.Empty)
+                ThrowIfFailed(databases.Audit, "audit", await SchemaVersionGate.ApplyAllForBootstrapAsync(audit, ct), schema);
+            else if (verdict == SchemaVerdict.ApplyPending)
+                ThrowIfFailed(databases.Audit, "audit", await SchemaVersionGate.ApplyPendingAsync(audit, state, ct), schema);
+            else if (verdict != SchemaVerdict.Current)
+                throw new InvalidOperationException(
+                    $"The audit database is {state.Presence} ({verdict}) after provisioning; bootstrap stopped before seeding. "
+                    + (SchemaVersionGate.RefusalMessage(verdict, state, "audit") ?? ""));
+            say?.Invoke(state.Presence == DatabasePresence.Empty
+                ? $"✓ Audit schema applied as '{databases.Audit.Username}'."
+                : $"✓ Preserved audit schema brought up to date as '{databases.Audit.Username}' ({state.Pending.Count} migration(s)).");
+        });
+    }
+
+    /// <summary>
+    /// Proves the ownership rule the next upgrade depends on, as each runtime role on its own
+    /// connection: it owns every object in its schema and can create tables. Throws when either
+    /// database breaks it, so bootstrap fails before any configuration is written. Prints the
+    /// standing warnings (such as other members of the audit database's owner).
+    /// </summary>
+    /// <param name="databases">The provisioned databases.</param>
+    /// <param name="say">Progress output.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public static async Task VerifyOwnershipAsync(ProvisionedDatabases databases, Action<string>? say, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(databases);
+        foreach (var (kind, instance) in new[] { (DatabaseKind.Application, databases.App), (DatabaseKind.Audit, databases.Audit) })
+        {
+            var report = await AsRuntimeRoleAsync(instance, async () =>
+            {
+                await using var conn = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(PostgresConnection.Build(instance))
+                {
+                    Pooling = false,
+                }.ConnectionString);
+                return await SchemaOwnership.ProbeAsync(conn, kind, ct);
+            });
+            if (!report.IsSound)
+                throw new InvalidOperationException(
+                    $"The {(kind == DatabaseKind.Application ? "application" : "audit")} database '{report.Database}' breaks the "
+                    + $"ownership rule after bootstrap: role '{report.Role}' does not own {report.NotOwned.Count} object(s) "
+                    + $"({string.Join(", ", report.NotOwned.Take(10).Select(o => $"{o.Object} owned by {o.Owner}"))}) "
+                    + $"or cannot create tables (can create: {(report.CanCreateTables ? "yes" : "no")}). "
+                    + "Setup did not complete and no configuration was written.");
+            foreach (var warning in SchemaOwnership.Warnings(report))
+                say?.Invoke($"⚠  {warning}");
+            say?.Invoke($"✓ '{report.Role}' owns the schema of '{report.Database}'.");
+        }
+    }
+
+    /// <summary>
+    /// A context of <paramref name="kind"/> on the migration connection for
+    /// <paramref name="instance"/>: unpooled, with the server-side lock and statement timeouts of
+    /// <paramref name="schema"/> and a client timeout slightly longer. The same shape the control
+    /// role migrates with at startup (<see cref="MigrationConnection"/>).
+    /// </summary>
+    private static DbContext CreateMigrationContext(DatabaseKind kind, DbInstance instance, SchemaConfig schema) =>
+        MigrationConnection.CreateContext(kind, instance, schema);
+
+    /// <summary>Throws the operator-facing migration failure, or the login refusal it hides, when <paramref name="failure"/> is set.</summary>
+    private static void ThrowIfFailed(DbInstance instance, string contextName, MigrationFailure? failure, SchemaConfig schema)
+    {
+        if (failure is null)
+            return;
+        if (SchemaFailure.SqlState(failure.Error) is "28P01" or "28000")
+            throw new BootstrapLoginRefusedException(instance.Username, instance.Host, failure.Error);
+        throw new InvalidOperationException(
+            SchemaVersionGate.MigrationFailedMessage(contextName, failure, schema.MigrationCommandTimeoutSeconds), failure.Error);
+    }
+
+    /// <summary>Runs <paramref name="work"/> as a runtime role, turning a refused login into <see cref="BootstrapLoginRefusedException"/>.</summary>
+    private static async Task AsRuntimeRoleAsync(DbInstance instance, Func<Task> work) =>
+        await AsRuntimeRoleAsync(instance, async () => { await work(); return true; });
+
+    /// <summary>Runs <paramref name="work"/> as a runtime role, turning a refused login into <see cref="BootstrapLoginRefusedException"/>.</summary>
+    private static async Task<T> AsRuntimeRoleAsync<T>(DbInstance instance, Func<Task<T>> work)
+    {
+        try
+        {
+            return await work();
+        }
+        catch (Exception ex) when (ex is not BootstrapLoginRefusedException && SchemaFailure.SqlState(ex) is "28P01" or "28000")
+        {
+            throw new BootstrapLoginRefusedException(instance.Username, instance.Host, ex);
+        }
+    }
+
+    /// <summary>
+    /// Generates the runtime config.yaml containing JWT settings, security parameters, logging,
+    /// email, HTTPS, and other application configuration; the database credentials go to
+    /// db.yaml only. An existing file is rewritten in place, keeping its owner, group and mode.
     /// </summary>
     public static void WriteConfigFile(
         string configDir,
@@ -180,8 +312,8 @@ public static class BootstrapDatabaseSetup
     {
         var jwtSecret = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(64));
 
-        var (appUser, _) = ResolveMysqlUser(setupDbConfig.SqlApp.Username, rootConfig.Host);
-        var (auditUser, _) = ResolveMysqlUser(setupDbConfig.SqlAudit.Username, rootConfig.Host);
+        var appUser = ResolveRoleName(setupDbConfig.SqlApp.Username);
+        var auditUser = ResolveRoleName(setupDbConfig.SqlAudit.Username);
 
         // Validate database name identifiers before writing config
         ValidateIdentifier(setupDbConfig.SqlApp.Database, "app database name");
@@ -314,51 +446,9 @@ public static class BootstrapDatabaseSetup
 
         var yaml = serializer.Serialize(config);
         var yamlPath = Path.Combine(configDir, "config.yaml");
-        File.WriteAllText(yamlPath, yaml);
-        FileSecurityUtil.SetOwnerOnly(yamlPath);
+        ConfigYamlWriter.WriteKeepingAccess(yamlPath, yaml);
 
         Console.WriteLine($"\n📝 Runtime configuration written to: {yamlPath}");
-        Console.WriteLine("   (Contains DB credentials and JWT secret — protect this file)");
-    }
-
-    /// <summary>
-    /// Executes a single SQL statement on the given connection.
-    /// </summary>
-    private static void ExecuteSql(MySqlConnection conn, string sql)
-    {
-        using var cmd = new MySqlCommand(sql, conn);
-        cmd.ExecuteNonQuery();
-    }
-
-    /// <summary>
-    /// MySQL string-literal escape for values interpolated inside
-    /// single-quoted SQL strings (e.g. <c>IDENTIFIED BY '...'</c>). Handles the complete
-    /// set of MySQL-recognized backslash escapes (<c>\0 \' \" \b \n \r \t \Z \\ \% \_</c>)
-    /// so a future widening of the generated-password alphabet to include control characters
-    /// or NUL bytes cannot silently fall through the old two-character escape.
-    /// Order matters: the backslash doubling must run first so that the backslashes we emit
-    /// while escaping the other characters are not themselves re-escaped.
-    /// </summary>
-    internal static string EscapeSql(string value)
-    {
-        if (string.IsNullOrEmpty(value)) return value;
-        var sb = new System.Text.StringBuilder(value.Length + 8);
-        foreach (var c in value)
-        {
-            switch (c)
-            {
-                case '\\': sb.Append("\\\\"); break;
-                case '\'': sb.Append("\\'"); break;
-                case '"':  sb.Append("\\\""); break;
-                case '\0': sb.Append("\\0"); break;
-                case '\b': sb.Append("\\b"); break;
-                case '\n': sb.Append("\\n"); break;
-                case '\r': sb.Append("\\r"); break;
-                case '\t': sb.Append("\\t"); break;
-                case '\x1A': sb.Append("\\Z"); break;
-                default: sb.Append(c); break;
-            }
-        }
-        return sb.ToString();
+        Console.WriteLine("   (Contains the JWT secret — protect this file)");
     }
 }

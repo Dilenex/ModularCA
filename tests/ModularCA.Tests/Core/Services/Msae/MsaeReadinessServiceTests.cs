@@ -58,6 +58,8 @@ public class MsaeReadinessServiceTests
         public Task<byte[]> ExportKeyAsync(KeyRef key, ExportWrap wrap, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<IReadOnlyList<KeyInfo>> ListKeysAsync(SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task RetireKeyAsync(KeyRef key, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<byte[]> WrapSecretAsync(SecretKind kind, byte[] secret, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<byte[]> UnwrapSecretAsync(byte[] wrapped, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
     private sealed class Harness
@@ -67,13 +69,13 @@ public class MsaeReadinessServiceTests
         public Profiles Profiles { get; } = new();
         public Names Names { get; } = new();
         public SystemConfig Config { get; } = new SystemConfig { Https = { PublicDomain = "ca4.example.test", PublicPort = 443 } };
-        public Guid TenantId { get; } = Guid.NewGuid();
+        public Guid SpaceId { get; } = Guid.NewGuid();
         public CertificateAuthorityEntity Ca { get; }
 
         public Harness()
         {
-            Db.Tenants.Add(new TenantEntity { Id = TenantId, Name = "Customer A", Slug = "customer-a" });
-            Ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Staging", Label = "staging", TenantId = TenantId, IsEnabled = true };
+            Db.Spaces.Add(new SpaceEntity { Id = SpaceId, Name = "Customer A", Slug = "customer-a" });
+            Ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Staging", Label = "staging", SpaceId = SpaceId, IsEnabled = true };
             Db.CertificateAuthorities.Add(Ca);
             Db.SaveChanges();
             Names.Canonical["ca4.example.test"] = "ca4.example.test";
@@ -81,26 +83,7 @@ public class MsaeReadinessServiceTests
 
         public StubSigner Signer { get; } = new();
 
-        public MsaeReadinessService Service => new(Db, Config, Principals, Profiles, Names, new PublicNameResolver(Db, Config), Signer);
-
-        public TenantHostnameEntity AddHostname(string host, DateTime? notAfter = null, bool withCert = true, Guid? tenantId = null, bool revoked = false)
-        {
-            CertificateEntity? cert = null;
-            if (withCert)
-            {
-                cert = new CertificateEntity
-                {
-                    CertificateId = Guid.NewGuid(), SerialNumber = "0A", Pem = "x", SubjectDN = $"CN={host}", Issuer = "CN=Staging",
-                    NotBefore = DateTime.UtcNow.AddDays(-1), NotAfter = notAfter ?? DateTime.UtcNow.AddDays(200), Revoked = revoked,
-                };
-                Db.Certificates.Add(cert);
-            }
-            var row = new TenantHostnameEntity { Id = Guid.NewGuid(), TenantId = tenantId ?? TenantId, Hostname = host, IssuingCaId = Ca.Id, CertificateId = cert?.CertificateId };
-            Db.TenantHostnames.Add(row);
-            Db.SaveChanges();
-            Names.Canonical[host] = host;
-            return row;
-        }
+        public MsaeReadinessService Service => new(Db, Config, Principals, Profiles, Names, new PublicNameResolver(Config), Signer);
 
         public CaProtocolConfigEntity EnableMsae(bool kerberos = true, bool profiles = true)
         {
@@ -118,7 +101,7 @@ public class MsaeReadinessServiceTests
         {
             var user = new UserEntity { Id = Guid.NewGuid(), Username = $"svc-{realm.ToLowerInvariant()}", Email = "x@y", PasswordHash = "x", IsActive = active, IsServiceIdentity = true };
             Db.Users.Add(user);
-            var entity = new KerberosRealmEntity { Id = Guid.NewGuid(), TenantId = TenantId, Realm = realm, DnsDomain = realm.ToLowerInvariant(), ServicePrincipal = spn, EnrollmentUserId = user.Id, IsEnabled = true };
+            var entity = new KerberosRealmEntity { Id = Guid.NewGuid(), SpaceId = SpaceId, Realm = realm, DnsDomain = realm.ToLowerInvariant(), ServicePrincipal = spn, EnrollmentUserId = user.Id, IsEnabled = true };
             entity.Keys.Add(new KerberosRealmKeyEntity { Id = Guid.NewGuid(), RealmId = entity.Id, Kvno = 4, EncryptionType = "AES256", ProtectedKey = "x", Source = KerberosKeySource.Password, RetireAfter = liveKey ? null : DateTime.UtcNow.AddHours(-1) });
             Db.KerberosRealms.Add(entity); Db.SaveChanges();
             if (mayEnroll) Principals.MayEnroll.Add(user.Username);
@@ -219,84 +202,31 @@ public class MsaeReadinessServiceTests
     }
 
     [Fact]
-    public async Task A_service_principal_may_name_a_hostname_of_the_tenant_and_the_urls_follow_it()
+    public async Task Only_the_public_domain_satisfies_the_name_check_and_every_url_is_on_it()
     {
         var h = new Harness();
         h.EnableMsae(); h.OfferTemplate("LabDevice", "2.25.1.2.3.4");
-        h.AddHostname("ca.customer-a.example");
+        h.Names.Canonical["ca.customer-a.example"] = "ca.customer-a.example";
         h.BindRealm(spn: "HTTP/ca.customer-a.example");
         var r = (await h.Service.EvaluateAsync(h.Ca.Id))!;
 
-        Assert.True(r.Ready, string.Join(" | ", r.Steps.Where(s => s.State == MsaeReadinessState.Fail).Select(s => $"{s.Key}: {string.Join("; ", s.Items)}")));
-        var host = Step(r, "hostname");
-        Assert.Equal(MsaeReadinessState.Pass, host.State);
-        Assert.Contains(host.Items, i => i.Contains("HTTP/ca.customer-a.example") && i.Contains("valid until"));
-        Assert.Contains(host.Items, i => i.StartsWith("ca.customer-a.example resolves as a canonical name"));
-        Assert.DoesNotContain(host.Items, i => i.Contains("ca4.example.test"));
-        Assert.Equal("https://ca.customer-a.example/msae/staging/cep", r.CepUrl);
-        Assert.Contains(Step(r, "client-policy").Items, i => i == $"Policy server URL: {r.CepUrl}");
-
-        // A second forest on the public name. Bindings are listed by realm, so B.TEST is now the
-        // headline and the tenant-hostname forest's URL, which differs, is listed on its own line.
-        h.BindRealm("B.TEST", spn: "HTTP/ca4.example.test");
-        var two = (await h.Service.EvaluateAsync(h.Ca.Id))!;
-        Assert.Equal(MsaeReadinessState.Pass, Step(two, "hostname").State);
-        Assert.Equal("https://ca4.example.test/msae/staging/cep", two.CepUrl);
-        Assert.Contains(Step(two, "client-policy").Items, i => i == "Policy server URL for LAB.MSAE.TEST: https://ca.customer-a.example/msae/staging/cep");
-    }
-
-    [Fact]
-    public async Task A_tenant_hostname_without_a_live_certificate_fails_and_points_at_the_hostnames_tab()
-    {
-        var h = new Harness();
-        h.EnableMsae(); h.OfferTemplate("LabDevice", "2.25.1.2.3.4");
-        var row = h.AddHostname("ca.customer-a.example", notAfter: DateTime.UtcNow.AddDays(-1));
-        h.BindRealm(spn: "HTTP/ca.customer-a.example");
-
-        var expired = Step((await h.Service.EvaluateAsync(h.Ca.Id))!, "hostname");
-        Assert.Equal(MsaeReadinessState.Fail, expired.State);
-        Assert.Contains(expired.Items, i => i.Contains("expired") && i.Contains("ca.customer-a.example"));
-        Assert.Equal($"/tenants/{h.TenantId}?tab=hostnames", expired.Fix!.Path);
-
-        var tracked = await h.Db.TenantHostnames.SingleAsync();
-        tracked.CertificateId = null;
-        await h.Db.SaveChangesAsync();
-        var missing = Step((await h.Service.EvaluateAsync(h.Ca.Id))!, "hostname");
-        Assert.Equal(MsaeReadinessState.Fail, missing.State);
-        Assert.Contains(missing.Items, i => i.Contains("no endpoint certificate"));
-        Assert.Equal($"/tenants/{h.TenantId}?tab=hostnames", missing.Fix!.Path);
-
-        var fresh = new CertificateEntity { CertificateId = Guid.NewGuid(), SerialNumber = "0B", Pem = "x", SubjectDN = "CN=x", Issuer = "CN=Staging", NotBefore = DateTime.UtcNow, NotAfter = DateTime.UtcNow.AddDays(100), Revoked = true };
-        h.Db.Certificates.Add(fresh);
-        tracked.CertificateId = fresh.CertificateId;
-        await h.Db.SaveChangesAsync();
-        var revoked = Step((await h.Service.EvaluateAsync(h.Ca.Id))!, "hostname");
-        Assert.Equal(MsaeReadinessState.Fail, revoked.State);
-        Assert.Contains(revoked.Items, i => i.Contains("revoked"));
-
-        // The tenant hostname itself can be an alias, with the same NTLM warning as the public name.
-        fresh.Revoked = false;
-        await h.Db.SaveChangesAsync();
-        h.Names.Canonical["ca.customer-a.example"] = "host-07.customer-a.example";
-        var alias = Step((await h.Service.EvaluateAsync(h.Ca.Id))!, "hostname");
-        Assert.Equal(MsaeReadinessState.Fail, alias.State);
-        Assert.Contains(alias.Items, i => i.Contains("HTTP/host-07.customer-a.example") && i.Contains("NTLM"));
-        _ = row;
-    }
-
-    [Fact]
-    public async Task Another_tenants_hostname_in_the_service_principal_is_a_mismatch_not_a_known_name()
-    {
-        var h = new Harness();
-        h.EnableMsae(); h.OfferTemplate("LabDevice", "2.25.1.2.3.4");
-        h.AddHostname("ca.customer-b.example", tenantId: Guid.NewGuid());
-        h.BindRealm(spn: "HTTP/ca.customer-b.example");
-        var r = (await h.Service.EvaluateAsync(h.Ca.Id))!;
         var host = Step(r, "hostname");
         Assert.Equal(MsaeReadinessState.Fail, host.State);
-        Assert.Contains(host.Items, i => i.Contains("ca.customer-b.example") && i.Contains("neither the public hostname ca4.example.test nor a hostname of this tenant"));
-        Assert.Equal("https://ca4.example.test/msae/staging/cep", r.CepUrl);   // the URL never follows an unknown name
+        Assert.Contains(host.Items, i => i.Contains("ca.customer-a.example") && i.Contains("is not the public hostname ca4.example.test"));
+        Assert.Equal($"/spaces/{h.SpaceId}?tab=kerberos", host.Fix!.Path);
+        Assert.Equal("https://ca4.example.test/msae/staging/cep", r.CepUrl);
         Assert.False(r.Ready);
+
+        var realm = await h.Db.KerberosRealms.SingleAsync();
+        realm.ServicePrincipal = "HTTP/CA4.Example.Test@LAB.MSAE.TEST";
+        await h.Db.SaveChangesAsync();
+        h.BindRealm("B.TEST", spn: "HTTP/ca4.example.test:443");
+        var two = (await h.Service.EvaluateAsync(h.Ca.Id))!;
+
+        Assert.True(two.Ready, string.Join(" | ", two.Steps.Where(s => s.State == MsaeReadinessState.Fail).Select(s => $"{s.Key}: {string.Join("; ", s.Items)}")));
+        Assert.Equal(MsaeReadinessState.Pass, Step(two, "hostname").State);
+        Assert.Equal("https://ca4.example.test/msae/staging/cep", two.CepUrl);
+        Assert.DoesNotContain(Step(two, "client-policy").Items, i => i.StartsWith("Policy server URL for "));
     }
 
     [Fact]
@@ -320,6 +250,7 @@ public class MsaeReadinessServiceTests
         Assert.Contains(ids.Items, i => i.StartsWith("C.TEST:") && i.Contains("holds no enrollment right"));
         Assert.Contains(ids.Items, i => i.StartsWith("D.TEST:") && i.Contains("is disabled"));
         Assert.Contains(ids.Items, i => i.StartsWith("A.TEST:") && i.Contains("may enroll"));
+        Assert.Equal("/users?tab=service-identities&space=customer-a", ids.Fix!.Path);
         Assert.False(r.Ready);
     }
 
@@ -338,7 +269,7 @@ public class MsaeReadinessServiceTests
         var failed = Step((await h.Service.EvaluateAsync(h.Ca.Id))!, "templates");
         Assert.Equal(MsaeReadinessState.Fail, failed.State);
         Assert.Contains(failed.Items, i => i.StartsWith("LabDevice2") && i.Contains("unreadable"));
-        Assert.Equal("/templates?tenant=customer-a&ca=staging", failed.Fix!.Path);
+        Assert.Equal("/templates?space=customer-a&ca=staging", failed.Fix!.Path);
     }
 
     [Fact]
@@ -353,7 +284,7 @@ public class MsaeReadinessServiceTests
         Assert.Equal(MsaeReadinessState.Fail, profiles.State);
         Assert.Contains("no signing profile and no certificate profile", profiles.Detail);
         Assert.Equal(MsaeReadinessState.Warn, Step(r, "auth-modes").State);
-        Assert.Equal("/authorities/protocols?tenant=customer-a&ca=staging", profiles.Fix!.Path);
+        Assert.Equal("/authorities/protocols?space=customer-a&ca=staging", profiles.Fix!.Path);
 
         row.IsEnabled = false; row.MsaeAllowUsernameToken = false;
         await h.Db.SaveChangesAsync();

@@ -26,8 +26,8 @@ public class EnvVarConfigOverlay
         ("MODULARCA__DB__AUDIT__PASSWORD", "DB.Audit.Password", (c, v) => c.DB.Audit.Password = v),
         // SslMode can be overridden from the environment so operators
         // can tighten transport security (e.g. VerifyFull) without editing db.yaml in place.
-        // Valid values map to MySqlConnector.MySqlSslMode; unparseable values fall back to
-        // Required at the connection-builder layer.
+        // Valid values are translated to Npgsql.SslMode by PostgresConnection.ParseSslMode;
+        // unparseable values clamp back to Require at the connection-builder layer.
         ("MODULARCA__DB__APP__SSLMODE", "DB.App.SslMode", (c, v) => c.DB.App.SslMode = v),
         ("MODULARCA__DB__AUDIT__SSLMODE", "DB.Audit.SslMode", (c, v) => c.DB.Audit.SslMode = v),
         ("MODULARCA__LDAPAUTH__BINDPASSWORD", "LdapAuth.BindPassword", (c, v) => c.LdapAuth.BindPassword = v),

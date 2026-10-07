@@ -30,7 +30,7 @@ namespace ModularCA.Tests.Core.Services;
 /// <para>
 /// So <c>POST /api/v1/integration/infra/certificates</c> carrying a CA profile's GUID returned a
 /// <c>cA=TRUE</c> certificate signed by the production CA, auto-approved with no approval step.
-/// The GUID is not a secret: the profile list endpoint returns every profile with no tenant
+/// The GUID is not a secret: the profile list endpoint returns every profile with no space
 /// filter.
 /// </para>
 /// <para>
@@ -43,16 +43,6 @@ namespace ModularCA.Tests.Core.Services;
 /// </summary>
 public class CaProfileIssuanceGuardTests
 {
-    /// <summary>Tenant filter off; this suite is about the CA flag, not tenancy.</summary>
-    private sealed class NoTenantContext : ITenantContext
-    {
-        public bool HasContext => true;
-        public bool IsSystemAdmin => true;
-        public IReadOnlySet<Guid> AccessibleTenantIds => new HashSet<Guid>();
-        public Guid? UserId => null;
-        public void Set(Guid? userId, IReadOnlySet<Guid> accessibleTenantIds, bool isSystemAdmin) { }
-    }
-
     private static ModularCADbContext BuildContext(string dbName)
     {
         var options = new DbContextOptionsBuilder<ModularCADbContext>()
@@ -60,7 +50,7 @@ public class CaProfileIssuanceGuardTests
             .ConfigureWarnings(w => w.Ignore(
                 Microsoft.EntityFrameworkCore.Diagnostics.InMemoryEventId.TransactionIgnoredWarning))
             .Options;
-        return new ModularCADbContext(options, new NoTenantContext());
+        return new ModularCADbContext(options);
     }
 
     /// <summary>

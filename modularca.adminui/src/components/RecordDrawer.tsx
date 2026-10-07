@@ -7,6 +7,8 @@ import { RecordFields } from '@shared/components/RecordFields';
 import { statusToneClass, type RecordDescriptor } from '@shared/records';
 import { useToast } from '@shared/context/ToastContext';
 import AuditTable from './AuditTable';
+import { actionButton, actionButtonDanger, actionButtonPrimary } from '@shared/components/actionButtons';
+import { badgeText } from '@shared/badgeText';
 
 /**
  * The one drawer body for every descriptor-driven list: a status chip and actions in the
@@ -38,16 +40,14 @@ export function RecordDrawer<T>({ descriptor, row }: { descriptor: RecordDescrip
     };
 
     const toneBtn = (tone?: string) =>
-        tone === 'danger' ? 'bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border-red-300 dark:border-red-700 hover:bg-red-100 dark:hover:bg-red-900'
-            : tone === 'primary' ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
-                : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-200 dark:hover:bg-gray-600';
+        tone === 'danger' ? actionButtonDanger : tone === 'primary' ? actionButtonPrimary : actionButton;
 
     return (
         <div className="space-y-3">
             {(status || (descriptor.actions && descriptor.actions.length > 0)) && (
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                     {status && (
-                        <span className={`px-2 py-0.5 text-[11px] rounded border ${statusToneClass(status.tone)}`}>{status.label}</span>
+                        <span className={`inline-flex items-center px-1.5 py-px text-xs font-medium rounded-sm border ${statusToneClass(status.tone)}`}>{badgeText(status.label)}</span>
                     )}
                     {descriptor.actions && descriptor.actions.length > 0 && (
                         <span className="flex items-center gap-1.5 flex-wrap">
@@ -55,7 +55,7 @@ export function RecordDrawer<T>({ descriptor, row }: { descriptor: RecordDescrip
                                 const enabled = a.enabled ? a.enabled(row) : true;
                                 return (
                                     <button key={a.label} disabled={!enabled || busy != null} onClick={() => run(a.label, () => a.run(row))}
-                                        className={`px-2.5 py-1 text-xs rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${toneBtn(a.tone)}`}>
+                                        className={toneBtn(a.tone)}>
                                         {busy === a.label ? `${a.label}…` : a.label}
                                     </button>
                                 );
@@ -66,10 +66,10 @@ export function RecordDrawer<T>({ descriptor, row }: { descriptor: RecordDescrip
             )}
 
             {tabs.length > 1 && (
-                <div className="flex gap-1 border-b border-gray-200 dark:border-gray-800">
+                <div className="flex gap-1 border-b border-line">
                     {tabs.map((t) => (
                         <button key={t.key} onClick={() => setTab(t.key)}
-                            className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${tab === t.key ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}>
+                            className={`px-3 py-1.5 text-sm font-medium border-b-2 -mb-px transition-colors ${tab === t.key ? 'border-accent text-accent-ink' : 'border-transparent text-ink-muted hover:text-ink'}`}>
                             {t.label}
                         </button>
                     ))}
@@ -100,8 +100,8 @@ function RelatedList<T>({ related, row }: { related: NonNullable<RecordDescripto
     return (
         <div className="space-y-1">
             <div className="flex items-center justify-between">
-                <h4 className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">{related.title}</h4>
-                {listPath && <Link to={listPath} className="text-[11px] text-blue-700 dark:text-blue-400 hover:underline">Open list</Link>}
+                <h4 className="label-caps">{related.title}</h4>
+                {listPath && <Link to={listPath} className="text-xs text-accent-ink hover:underline">Open list</Link>}
             </div>
             <DataTable<any>
                 tableId={`related-${d.kind}`}

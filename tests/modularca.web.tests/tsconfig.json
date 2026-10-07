@@ -24,7 +24,8 @@
     "paths": {
       "@shared/*": ["../../shared/common/src/*"],
       "@shared-auth/*": ["../../shared/authenticated/src/*"],
-      "@adminui/*": ["../../modularca.adminui/src/*"]
+      "@adminui/*": ["../../modularca.adminui/src/*"],
+      "@docsui/*": ["../../modularca.docsui/src/*"]
     },
     "resolveJsonModule": true,
     "isolatedModules": true,

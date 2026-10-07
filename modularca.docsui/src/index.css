@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "../../shared/common/src/theme/ledger.css";
 
 /* Tailwind v4 builds the stylesheet from the class names it finds by scanning source files, and
    its automatic detection only reaches this package. All five SPAs render components from
@@ -7,7 +8,8 @@
    `w-1.5` and anchored by `right-0`, so with neither rule emitted it became a zero-width element
    that could not be grabbed, and the table simply looked like it had no resize at all. 117 classes
    were missing in adminui, most of them `dark:` variants and focus rings. Keep these in step with
-   the `@shared` / `@shared-auth` aliases in vite.config.ts and tsconfig.json. */
+   the `@shared` / `@shared-auth` aliases in vite.config.ts and tsconfig.json. Only
+   `@shared-auth/api` is imported here and it carries no class names, so that tree is not scanned. */
 @source "../../shared/common/src";
 @custom-variant dark (&:where(.dark, .dark *));
 

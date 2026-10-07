@@ -37,12 +37,12 @@ public class AcmeChallengeController(
     /// <summary>Canonical base URL from SystemConfig, not the request host header.</summary>
     private string GetBaseUrl() => _config.Https.GetPublicHttpsBaseUrl();
 
-    /// <summary>Keeps the Link header path under the labeled subtree when routed there.</summary>
-    private string LabelPrefix()
-    {
-        var caLabel = HttpContext.Request.RouteValues["caLabel"] as string;
-        return !string.IsNullOrWhiteSpace(caLabel) ? $"/acme/{caLabel}" : "/api/v1/acme";
-    }
+    /// <summary>
+    /// The path of the CA the request addresses, the account's bound CA, under which the Link
+    /// header names the authorization, as the order's own URLs do.
+    /// </summary>
+    private string CaPrefix() => ModularCA.Core.Services.Acme.AcmeCaPolicy.PathPrefix(
+        (HttpContext.Items[AcmeJwsActionFilter.AddressedCaItem] as ModularCA.Shared.Entities.CertificateAuthorityEntity)?.Label);
 
     /// <summary>
     /// Get authorization details (RFC 8555 §7.5 POST-as-GET). Verifies account ownership.
@@ -95,7 +95,7 @@ public class AcmeChallengeController(
 
             var authzId = await _challengeService.GetAuthorizationIdForChallengeAsync(id);
             if (authzId.HasValue)
-                Response.Headers["Link"] = $"<{baseUrl}{LabelPrefix()}/authz/{authzId.Value}>;rel=\"up\"";
+                Response.Headers["Link"] = $"<{baseUrl}{CaPrefix()}/authz/{authzId.Value}>;rel=\"up\"";
 
             return Ok(challenge);
         }

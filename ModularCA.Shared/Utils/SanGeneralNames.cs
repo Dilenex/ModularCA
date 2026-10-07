@@ -46,4 +46,35 @@ public static class SanGeneralNames
             _ => throw new InvalidOperationException(
                 $"Unsupported SAN type '{type}'. Supported types: {SupportedTypes}."),
         };
+
+    /// <summary>
+    /// Parses one SAN entry as this codebase stores it, <c>TYPE:value</c>, into the GeneralName
+    /// <see cref="Build"/> encodes, with the canonical type (DNS, IP, EMAIL, URI, UPN; RFC822 reads
+    /// as EMAIL) and the trimmed value. An IP value in BouncyCastle's <c>#hex</c> form is read as
+    /// the address it encodes.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// The entry has no <c>TYPE:</c> prefix, names a type this CA cannot encode, or carries a value
+    /// that cannot be encoded as that type.
+    /// </exception>
+    public static GeneralName Parse(string? entry, out string type, out string value)
+    {
+        var colon = entry?.IndexOf(':') ?? -1;
+        if (entry == null || colon < 1)
+            throw new InvalidOperationException(
+                $"SAN entry '{entry}' has no TYPE: prefix; expected one of {SupportedTypes}, as in DNS:host.example.com.");
+        var rawType = entry[..colon].Trim().ToUpperInvariant();
+        type = rawType == "RFC822" ? "EMAIL" : rawType;
+        value = entry[(colon + 1)..].Trim();
+        try
+        {
+            if (type == "IP" && value.StartsWith('#') && value.Length is 9 or 33)
+                value = new System.Net.IPAddress(Convert.FromHexString(value[1..])).ToString();
+            return Build(type, value);
+        }
+        catch (Exception ex) when (ex is ArgumentException or FormatException)
+        {
+            throw new InvalidOperationException($"SAN entry '{entry}' cannot be encoded as {type}: {ex.Message}", ex);
+        }
+    }
 }

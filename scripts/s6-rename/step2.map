@@ -1,0 +1,93 @@
+# S6 step 2: the rest of the C# vocabulary. Every symbol whose name says Tenant becomes Space,
+# locals and parameters included, the Org tiers become Space tiers, and comments follow.
+#
+# Run from the repository root:
+#   dotnet run --project scripts/s6-rename -- scripts/s6-rename/step2.map
+#   (add --list to print the declared symbols it would rename, writing nothing)
+#
+# Not renamed here, on purpose (design section 5): the existing migrations and the tests of them,
+# the audit entities and the audit DbContext, the persisted strings in AuditHashChainService, the
+# retired AuditActionType values, the licence keys, the SignerAudit 'tenant' token, the signer's
+# wire refusal token, the migrate tool (it reads the 0.3.0 schema), and the step-0 pin tests.
+# API names (routes, query parameters, request and response JSON names) are step 3, so controller
+# action parameters, anonymous members and the request/response members kept below stay.
+# The tests of the historical migrations are refs-only: references to renamed symbols follow,
+# but their own names and comments describe the schema before the rename and stay.
+# String literals (messages, logs) are reworded by hand, in a separate commit.
+
+exclude: ModularCA.Database/Migrations/
+exclude: ModularCA.Database/AuditDbContext.cs
+exclude: ModularCA.Shared/Entities/Audit
+exclude: ModularCA.Core/Services/AuditHashChainService.cs
+exclude: ModularCA.Shared/Enums/AuditActionType.cs
+exclude: ModularCA.Migrate/
+exclude: tests/ModularCA.Tests/Core/AuditHashGoldenVectorTests.cs
+exclude: tests/ModularCA.Tests/Database/FrozenBaselineTests.cs
+refs-only: tests/ModularCA.Tests/Database/FoldSystemTenantMigrationTests.cs
+refs-only: tests/ModularCA.Tests/Database/InstanceUniqueCaNamesMigrationTests.cs
+refs-only: tests/ModularCA.Tests/Database/RenameTenantToSpaceMigrationTests.cs
+refs-only: tests/ModularCA.Tests/Database/RetireTenantHostnamesMigrationTests.cs
+refs-only: tests/ModularCA.Tests/Database/PostgresUpgradeHarnessTests.cs
+refs-only: tests/ModularCA.Tests/Database/PostgresOwnershipHarnessTests.cs
+refs-only: tests/ModularCA.Tests/Database/MigrationLintTests.cs
+refs-only: tests/ModularCA.Tests/Database/SchemaVersionGateTests.cs
+refs-only: tests/ModularCA.Tests/Migrate/
+
+auto: Tenant => Space
+auto: OrgOperator => SpaceOperator
+auto: OrgAdmin => SpaceAdmin
+
+T:ModularCA.API.Middleware.TenantResolutionMiddleware => SpaceFenceMiddleware
+
+# Persisted or pinned by the step-0 tests.
+keep: F:ModularCA.Shared.Licensing.LicenseLimits.MaxTenants
+keep: F:ModularCA.Shared.Entities.SignerAuditEntity.TenantScope
+# Crosses the signer wire as its member name (the refusal trailer) and is recorded by the signer audit.
+keep: F:ModularCA.Shared.Signing.SigningRefusalReason.TenantMismatch
+# A fixture of the legacy stored shape.
+keep: F:ModularCA.Tests.Shared.CeremonyParametersFixtures.Legacy.TenantPolicyChange
+
+# Request and response JSON names: step 3.
+keep: P:ModularCA.API.Controllers.v1.Admin.CreateGroupRequest.TenantId
+keep: P:ModularCA.API.Controllers.v1.Admin.CreateIntermediateCaRequest.TenantId
+keep: P:ModularCA.API.Controllers.v1.Admin.CreateRoleAssignmentRequest.TenantId
+keep: P:ModularCA.API.Controllers.v1.Admin.CreateRoleRequest.TenantId
+keep: P:ModularCA.API.Controllers.v1.Admin.CreateRootCaRequest.TenantId
+keep: P:ModularCA.API.Controllers.v1.Admin.CreateUserGrantRequest.TenantId
+keep: P:ModularCA.API.Controllers.v1.Admin.GenerateSshCaKeyRequest.TenantId
+keep: P:ModularCA.API.Controllers.v1.Admin.ServiceIdentityRequest.TenantId
+keep: P:ModularCA.Core.Services.TenantPolicyChangeAppliedResult.TenantId
+keep: P:ModularCA.Shared.Models.Msae.MsaeReadiness.TenantId
+keep: P:ModularCA.Shared.Models.Management.UserEntityDto.ServiceScopeTenantId
+keep: P:ModularCA.Shared.Models.Issuance.ValidityCeilingPreflight.TenantName
+keep: P:ModularCA.Shared.Models.Issuance.ValidityCeilingPreflight.TenantMaxValidityDays
+keep: P:ModularCA.Shared.Models.Issuance.ValidityCeilingPreflight.TenantBehavior
+keep: P:ModularCA.Shared.Models.Issuance.ValidityCeilingPreflight.TenantCeilingApplies
+keep: P:ModularCA.Shared.Models.Issuance.ValidityCeilingResolution.TenantNotAfter
+keep: F:ModularCA.Shared.Models.Issuance.ValidityCeilingSource.Tenant
+keep: F:ModularCA.Core.Services.Msae.Kerberos.KerberosRefusal.WrongTenant
+
+comments: on
+word: TenantResolutionMiddleware => SpaceFenceMiddleware
+word: tenant/org => space
+word: Org tiers => Space tiers
+word: org tiers => space tiers
+word: org-admin => space-admin
+word: org-operator => space-operator
+word: org admin => space admin
+word: org operator => space operator
+word: org administrator => space administrator
+word: organisation operator => space operator
+word: Org-scoped => Space-scoped
+# Historical names a comment may cite: migrations, retired features, audit and licence strings.
+keep-word: FoldSystemTenant
+keep-word: RenameTenantToSpace
+keep-word: RetireTenantHostnames
+keep-word: TenantHostname
+keep-word: IX_AuditLogs_TenantChain
+keep-word: MaxTenants
+keep-word: maxTenants
+keep-word: TenantScope
+keep-word: TenantMismatch
+keep-word: WrongTenant
+keep-word: AuditActionType.Tenant

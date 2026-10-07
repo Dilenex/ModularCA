@@ -2,6 +2,8 @@ using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using ModularCA.API.Filters;
+using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Core.Services;
 using ModularCA.Shared.Enums;
@@ -49,7 +51,8 @@ public class AdminLdapController(
     }
 
     /// <summary>
-    /// Triggers an LDAP group sync for a single user by ID.
+    /// Triggers an LDAP group sync for a single user by ID. Returns 502 without touching memberships
+    /// when the directory lookup fails or does not find the user.
     /// </summary>
     [HttpPost("sync/{userId:guid}")]
     public async Task<IActionResult> SyncUser(Guid userId, [FromServices] ILdapGroupProvider groupProvider)
@@ -60,6 +63,8 @@ public class AdminLdapController(
         if (user == null) return NotFound(new { error = "User not found" });
 
         var groups = await groupProvider.GetUserGroupsAsync(user.Username);
+        if (groups == null)
+            return StatusCode(502, new { error = $"LDAP group lookup for {user.Username} failed or the user was not found in the directory; no memberships were changed." });
         await syncService.SyncUserGroupsAsync(userId, groups);
 
         await audit.LogAsync(
@@ -88,12 +93,28 @@ public class AdminLdapController(
     }
 
     /// <summary>
-    /// Updates LDAP group-to-role mapping configuration.
+    /// Updates LDAP group-to-role mapping configuration. Requires step-up MFA (the same
+    /// <see cref="StepUpOps.UpdateConfig"/> token as the LDAP config save). Mappings that target a
+    /// system or privilege-controlled group are rejected with 400 unless already stored unchanged.
+    /// Changing the group search base, filter or mappings is super-only (403 otherwise), as on the
+    /// LDAP config save; others may toggle GroupSyncEnabled and AutoProvisionUsers. A save by a super
+    /// rewrites mapping targets still naming a space group by its pre-0.4.0 <c>org-</c> name.
     /// </summary>
     [HttpPut("group-mappings")]
-    public async Task<IActionResult> UpdateGroupMappings([FromBody] UpdateGroupMappingsRequest request)
+    [RequireStepUp(StepUpOps.UpdateConfig)]
+    public async Task<IActionResult> UpdateGroupMappings([FromBody] UpdateGroupMappingsRequest request,
+        [FromServices] IControlledUserCeremonyService controlledUsers)
     {
         await currentUser.EnsureLoadedAsync();
+        var identityChanged =
+            (request.GroupSearchBaseDn != null && request.GroupSearchBaseDn.Trim() != config.LdapAuth.GroupSearchBaseDn)
+            || (request.GroupSearchFilter != null && request.GroupSearchFilter != config.LdapAuth.GroupSearchFilter)
+            || (request.GroupToRoleMappings != null && request.GroupToRoleMappings != config.LdapAuth.GroupToRoleMappings);
+        if (identityChanged && (currentUser.User == null || !await controlledUsers.IsSuperAsync(currentUser.User.Id)))
+            return StatusCode(403, new { error = AdminConfigController.LdapIdentitySuperOnly });
+        if (request.GroupToRoleMappings != null
+            && await syncService.ValidateMappingsAsync(request.GroupToRoleMappings, config.LdapAuth.GroupToRoleMappings) is { } mappingError)
+            return BadRequest(new { error = mappingError });
         if (request.GroupSyncEnabled.HasValue)
             config.LdapAuth.GroupSyncEnabled = request.GroupSyncEnabled.Value;
         if (request.AutoProvisionUsers.HasValue)
@@ -122,6 +143,8 @@ public class AdminLdapController(
             catch (JsonException) { return BadRequest(new { error = "GroupToRoleMappings must be valid JSON (Dictionary<string, string>)." }); }
             config.LdapAuth.GroupToRoleMappings = request.GroupToRoleMappings;
         }
+        if (currentUser.User != null && await controlledUsers.IsSuperAsync(currentUser.User.Id))
+            config.LdapAuth.GroupToRoleMappings = await syncService.RewriteRenamedSpaceGroupsAsync(config.LdapAuth.GroupToRoleMappings);
 
         PersistConfig();
 
@@ -144,8 +167,10 @@ public class AdminLdapController(
     }
 
     /// <summary>
-    /// Serializes the current in-memory configuration to config.yaml on disk.
-    /// Silently ignores write failures (e.g. read-only filesystem in containers).
+    /// Serializes the current in-memory configuration to config.yaml on disk through
+    /// <see cref="ModularCA.Shared.Utils.ConfigYamlWriter"/> (no <c>DB</c> section, written in place
+    /// so the file keeps its owner, group and mode). Silently ignores write failures (e.g.
+    /// read-only filesystem in containers).
     /// </summary>
     private void PersistConfig()
     {
@@ -159,12 +184,8 @@ public class AdminLdapController(
         {
             envOverlay.WithSecretsProtected(config, () =>
             {
-                var serializer = new SerializerBuilder()
-                    .WithNamingConvention(PascalCaseNamingConvention.Instance)
-                    .Build();
-                var yaml = serializer.Serialize(config);
                 var configPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
-                System.IO.File.WriteAllText(configPath, yaml);
+                ModularCA.Shared.Utils.ConfigYamlWriter.Write(configPath, config);
             });
         }
         catch

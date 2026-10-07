@@ -7,7 +7,7 @@ namespace ModularCA.Shared.Entities;
 /// Per-CA service URL configuration. Holds the public base URL only — the certificate builder
 /// auto-generates CDP, OCSP, and AIA endpoints from the base URL plus the standard short-URL
 /// paths (<c>/crl/{label}</c>, <c>/ocsp</c>, <c>/ca/{label}</c>). Per-field URL overrides are
-/// intentionally not supported: a single base URL is enough for multi-tenant deployments where
+/// intentionally not supported: a single base URL is enough for multi-space deployments where
 /// different CAs need different public hostnames, and removing the override path keeps the data
 /// model and admin UI simple.
 /// </summary>

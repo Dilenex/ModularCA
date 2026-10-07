@@ -16,25 +16,25 @@ public interface ICaGroupAuthorizationService
 
     /// <summary>
     /// Checks if the user has the specified capability for a specific CA
-    /// (through system, tenant-wide, or CA-scoped groups).
+    /// (through system, space-wide, or CA-scoped groups).
     /// Users with system.manage implicitly have access to all CAs.
     /// </summary>
     Task<bool> HasCaCapabilityAsync(Guid userId, Guid caId, string capability);
 
     /// <summary>
-    /// Checks if the user has the specified capability for a whole tenant: held at system
-    /// scope, through a tenant-wide group, or through a tenant-scoped role or grant on the
-    /// user. A grant on one CA of the tenant does not count. Users with system.manage
-    /// implicitly have access to every tenant.
+    /// Checks if the user has the specified capability for a whole space: held at system
+    /// scope, through a space-wide group, or through a space-scoped role or grant on the
+    /// user. A grant on one CA of the space does not count. Users with system.manage
+    /// implicitly have access to every space.
     /// </summary>
-    Task<bool> HasTenantCapabilityAsync(Guid userId, Guid tenantId, string capability);
+    Task<bool> HasSpaceCapabilityAsync(Guid userId, Guid spaceId, string capability);
 
     /// <summary>
-    /// The tenants for which the user holds the capability tenant-wide, from the same four
-    /// sources as <see cref="HasTenantCapabilityAsync"/>. System-scoped holders are not
-    /// expanded to every tenant; check <see cref="HasSystemCapabilityAsync"/> for that.
+    /// The spaces for which the user holds the capability space-wide, from the same four
+    /// sources as <see cref="HasSpaceCapabilityAsync"/>. System-scoped holders are not
+    /// expanded to every space; check <see cref="HasSystemCapabilityAsync"/> for that.
     /// </summary>
-    Task<List<Guid>> GetTenantIdsWithCapabilityAsync(Guid userId, string capability);
+    Task<List<Guid>> GetSpaceIdsWithCapabilityAsync(Guid userId, string capability);
 
     /// <summary>
     /// Canonical "is the caller a system super-admin?" check. Returns true when the user
@@ -48,7 +48,7 @@ public interface ICaGroupAuthorizationService
     /// <list type="bullet">
     /// <item>In a controller action (sync lookup, no DB hit): use
     /// <c>HttpContext.Items["IsSystemAdmin"] is true</c>. The key is populated once per
-    /// request by <c>TenantResolutionMiddleware</c> using the identical four-source check.</item>
+    /// request by <c>SpaceFenceMiddleware</c> using the identical four-source check.</item>
     /// <item>Outside an HTTP request or when the Items collection is not available: call
     /// this method.</item>
     /// <item>For scoped auth ("does the user hold capability X on resource Y?") use
@@ -65,7 +65,7 @@ public interface ICaGroupAuthorizationService
     /// <para>
     /// <b>Tier-check caveat:</b> both the <c>system-super</c> and <c>system-admin</c>
     /// bootstrap groups hold <c>SystemManage</c>, so this method returns true for members
-    /// of either. Code that needs to distinguish the two tiers (e.g. "system-tenant groups
+    /// of either. Code that needs to distinguish the two tiers (e.g. "system groups
     /// are writable only by the super tier") reads <c>CaGroupEntity.IsSystemTierSuper</c>
     /// for the super-tier predicate and <c>IsSystemGroup &amp;&amp; !IsSystemTierSuper</c>
     /// for the admin-tier predicate. Do NOT introduce new <c>g.Name == "system-..."</c>
@@ -74,6 +74,18 @@ public interface ICaGroupAuthorizationService
     /// </para>
     /// </summary>
     Task<bool> IsSystemAdminAsync(Guid userId);
+
+    /// <summary>
+    /// The user's space fence, from all four grant sources and respecting a worn badge: system
+    /// admin; the capabilities held at system scope, each of which makes the fence instance-wide
+    /// for that capability (<see cref="SpaceFence.For"/>); the spaces of the user's groups, of
+    /// space-scoped grants and roles on the user, and of the CAs the user holds CA-scoped grants
+    /// or roles on; and instance scope from an instance CA's group, or a CA-scoped grant or role
+    /// on an instance CA. That raw fence is the union over every capability; it also records,
+    /// per capability, the spaces and whether the instance in which a group, grant or role confers
+    /// it, and <see cref="SpaceFence.For"/> selects from those.
+    /// </summary>
+    Task<SpaceFence> GetFenceAsync(Guid userId);
 
     /// <summary>
     /// Gets all groups the user belongs to.
@@ -96,9 +108,9 @@ public interface ICaGroupAuthorizationService
 
     /// <summary>
     /// Gets all CA IDs the user has the specified capability for,
-    /// filtered to a specific tenant.
+    /// filtered to a specific space.
     /// </summary>
-    Task<List<Guid>> GetAccessibleCaIdsAsync(Guid userId, string capability, Guid? tenantId);
+    Task<List<Guid>> GetAccessibleCaIdsAsync(Guid userId, string capability, Guid? spaceId);
 
     /// <summary>
     /// Checks if the user has a resource-scoped capability grant (e.g. profile.use on a specific CertProfile).

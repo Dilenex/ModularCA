@@ -26,7 +26,9 @@ public sealed class RequestValidationMiddleware(
 {
     /// <summary>
     /// Invokes the pipeline and converts a propagated <see cref="RequestValidationException"/>
-    /// into an RFC 7807 problem-details response carrying the exception's own status.
+    /// into an RFC 7807 problem-details response carrying the exception's own status. A
+    /// <see cref="CeremonyQuorumUnreachableException"/> gets the body
+    /// <see cref="ModularCA.API.Services.CeremonyRefusalResponse"/> builds.
     /// </summary>
     public async Task InvokeAsync(HttpContext context)
     {
@@ -61,7 +63,9 @@ public sealed class RequestValidationMiddleware(
 
             var type = TypeUriFor(status);
 
-            object payload = ex switch
+            object payload = ex is CeremonyQuorumUnreachableException unreachable
+                ? await ModularCA.API.Services.CeremonyRefusalResponse.BuildAsync(context, unreachable, correlationId)
+                : ex switch
             {
                 ProfileValidationException profile => new
                 {

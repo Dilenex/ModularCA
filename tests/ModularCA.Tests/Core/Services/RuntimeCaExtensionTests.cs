@@ -65,7 +65,7 @@ public class RuntimeCaExtensionTests
     private static readonly TestCaMaterial Issuer = TestCaMaterial.CreateCa("CN=Runtime Test CA, O=ModularCA");
     private static readonly (ISigningService Signer, KeyRef Key, SigningContext Context) Signer = TestSigner.ForCa(Issuer);
 
-    private static Task<X509Certificate> BuildAsync(
+    private static async Task<X509Certificate> BuildAsync(
         List<string> standardOids,
         List<string> extendedOids,
         bool isCa,
@@ -76,13 +76,20 @@ public class RuntimeCaExtensionTests
             Signer.Signer,
             NullLogger<CertificateBuilderService>.Instance);
 
-        return builder.BuildCertificateAsync(
+        // The signer signs a CA certificate only for a key it generated under a ceremony for a new
+        // CA, so a CA build certifies one; a leaf build certifies any key.
+        var subjectPublicKey = isCa
+            ? Org.BouncyCastle.Security.PublicKeyFactory.CreateKey((await Signer.Signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"),
+                SigningContext.ForScope("runtime-ca-test", SigningPurpose.Ceremony, Signer.Context.SpaceId))).PublicKeyDer)
+            : Issuer.KeyPair.Public;
+
+        return await builder.BuildCertificateAsync(
             serialNumber: BigInteger.ValueOf(42),
             issuerCert: Issuer.Certificate,
             caKey: Signer.Key,
             signingContext: Signer.Context,
             subjectDn: new X509Name("CN=Subject, O=ModularCA"),
-            subjectPublicKey: Issuer.KeyPair.Public,
+            subjectPublicKey: subjectPublicKey,
             validFrom: new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc),
             validTo: new DateTime(2027, 2, 1, 0, 0, 0, DateTimeKind.Utc),
             standardOids: standardOids,

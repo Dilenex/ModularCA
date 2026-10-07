@@ -1,5 +1,6 @@
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
+using YamlDotNet.Core;
 
 namespace ModularCA.Shared.Utils;
 
@@ -40,17 +41,29 @@ public static class YamlDbConfigLoader
     public class DbInstanceConfig
     {
         public string Host { get; set; } = "localhost";
-        public int Port { get; set; } = 3306;
+
+        /// <summary>Server port. Defaults to PostgreSQL's 5432.</summary>
+        public int Port { get; set; } = 5432;
         public string Database { get; set; } = string.Empty;
         public string Username { get; set; } = string.Empty;
+        /// <summary>
+        /// The account password. Always written double-quoted: a generated password is
+        /// arbitrary text, and an unquoted YAML scalar that happens to start with a character
+        /// the parser treats specially, or that reads as a number or a boolean, becomes
+        /// something other than the string it was — which surfaces later as a connection
+        /// refused with no indication that the file is the reason.
+        /// </summary>
+        [YamlMember(ScalarStyle = ScalarStyle.DoubleQuoted)]
         public string Password { get; set; } = string.Empty;
 
         /// <summary>
-        /// TLS mode for the MySQL connection. Round-trips to/from db.yaml. Valid values:
-        /// <c>"None"</c>, <c>"Preferred"</c>, <c>"Required"</c>, <c>"VerifyCA"</c>,
-        /// <c>"VerifyFull"</c>. Defaults to <c>"Required"</c> so fresh installs get
-        /// encrypted transport by default.
+        /// TLS mode for the PostgreSQL connection. Round-trips to/from db.yaml. Accepts both
+        /// the Npgsql spellings (<c>"Disable"</c>, <c>"Allow"</c>, <c>"Prefer"</c>,
+        /// <c>"Require"</c>) and the MySQL ones this file used to carry (<c>"None"</c>,
+        /// <c>"Preferred"</c>, <c>"Required"</c>), plus <c>"VerifyCA"</c> and
+        /// <c>"VerifyFull"</c>. Defaults to <c>"Require"</c> so fresh installs get encrypted
+        /// transport by default.
         /// </summary>
-        public string SslMode { get; set; } = "Required";
+        public string SslMode { get; set; } = "Require";
     }
 }

@@ -7,8 +7,20 @@
  */
 const TEXT: Record<string, string> = {
     'switch-badge': 'Switch the badge this session wears',
+    'restart-audit-chain': "Start a new epoch of the audit hash chain",
+    'manage-trust-anchor': "Import, enable, disable or delete a trust anchor",
+    'revoke-ssh-cert': "Revoke an SSH certificate",
+    'create-enrollment-secret': "Create an enrollment token or shared secret",
+    'create-eab-key': "Create an ACME external account binding key",
+    'manage-user-badge': "Change another user's access badges",
+    'create-space': "Create a space",
+    'create-cert-profile': "Create a certificate profile",
+    'create-request-profile': "Create a request profile",
+    'create-signing-profile': "Create a signing profile",
+    'manage-ssh-template': "Create, change or delete an SSH certificate template",
+    'approve-request': "Approve a certificate request",
+    'reject-request': "Reject a certificate request",
     'manage-kerberos-realm': 'Change a Kerberos realm binding or its keys',
-    'manage-tenant-hostname': 'Add, remove or reissue a hostname a tenant is reached by',
     'revoke-cert': 'Revoke a certificate',
     'hold-cert': 'Place a certificate on hold',
     'unhold-cert': 'Lift the hold on a certificate',
@@ -102,9 +114,9 @@ const TEXT: Record<string, string> = {
     'webauthn-delete': 'Remove a security key',
     'mtls-enroll': 'Enroll a client certificate for sign-in',
     'mtls-delete': 'Remove a client certificate used for sign-in',
-    'enable-tenant': 'Enable a tenant',
-    'disable-tenant': 'Disable a tenant',
-    'update-tenant-settings': "Change a tenant's settings",
+    'enable-space': 'Enable a space',
+    'disable-space': 'Disable a space',
+    'update-space-settings': "Change a space's settings",
 };
 
 /** The sentence for an operation id, or the id itself when none is known. */

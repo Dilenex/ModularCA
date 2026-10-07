@@ -820,7 +820,7 @@ public class ScepService : IScepService, IEnrollmentProtocol
             EnrollmentAuditEvent.Issued => _protocolAudit.LogScepAsync(
                 PkcsReqOperation, record.Subject, record.SerialNumber,
                 record.KeyAlgorithm, record.KeySize, record.CaLabel, record.Correlation, sourceIp,
-                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                certificateAuthorityId: record.CaId, spaceId: record.SpaceId,
                 callerPrincipal: callerPrincipal),
 
             // Not a failure: the client is answered PENDING and may come back for it. Recorded
@@ -829,14 +829,14 @@ public class ScepService : IScepService, IEnrollmentProtocol
             EnrollmentAuditEvent.Pending => _protocolAudit.LogScepAsync(
                 PkcsReqPendingOperation, record.Subject, null,
                 record.KeyAlgorithm, record.KeySize, record.CaLabel, record.Correlation, sourceIp,
-                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                certificateAuthorityId: record.CaId, spaceId: record.SpaceId,
                 callerPrincipal: callerPrincipal),
 
             _ => _protocolAudit.LogScepAsync(
                 PkcsReqOperation, record.Subject, null,
                 record.KeyAlgorithm, record.KeySize, record.CaLabel, record.Correlation, sourceIp,
                 success: false, errorMessage: record.Message ?? "Enrollment refused.",
-                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                certificateAuthorityId: record.CaId, spaceId: record.SpaceId,
                 callerPrincipal: callerPrincipal),
         };
 
@@ -891,7 +891,7 @@ public class ScepService : IScepService, IEnrollmentProtocol
     /// Handles GetCertInitial (RFC 8894 §4.5) by looking up the
     /// stored SCEP transaction row, verifying the polling client's CMS signer public key
     /// hash matches the original requester's hash, and returning the associated cert.
-    /// No match → <c>FailInfoBadCertId</c> (no more "most recent cert" leak across tenants).
+    /// No match → <c>FailInfoBadCertId</c> (no more "most recent cert" leak across spaces).
     /// </summary>
     /// <remarks>
     /// <para>
@@ -1129,7 +1129,7 @@ public class ScepService : IScepService, IEnrollmentProtocol
                 var caCert = CertificateUtil.ParseFromPem(certEntity.Pem);
                 var key = new ScepSignerKey(
                     new KeyRef(certEntity.CertificateId),
-                    SigningContext.ForCa(SignerCaller, SigningPurpose.Scep, context.Ca.Id, context.Ca.TenantId));
+                    SigningContext.ForCa(SignerCaller, SigningPurpose.Scep, context.Ca.Id, context.Ca.SpaceId));
                 var held = await _signer.ListKeysAsync(key.Context);
                 if (held.Any(k => k.Key.CertificateId == key.Key.CertificateId))
                     return (caCert, key);
@@ -1143,7 +1143,7 @@ public class ScepService : IScepService, IEnrollmentProtocol
             var spki = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(signer.PublicCertificate.GetPublicKey()).GetDerEncoded();
             var info = caKeys.FirstOrDefault(k => k.Kind == KeyKind.Ca && k.CaId != null && k.PublicKeyDer.AsSpan().SequenceEqual(spki));
             if (info != null)
-                return (signer.PublicCertificate, new ScepSignerKey(info.Key, new SigningContext(SignerCaller, SigningPurpose.Scep, info.TenantId, info.CaId)));
+                return (signer.PublicCertificate, new ScepSignerKey(info.Key, SigningContext.ForCa(SignerCaller, SigningPurpose.Scep, info.CaId!.Value, info.SpaceId)));
         }
         return null;
     }

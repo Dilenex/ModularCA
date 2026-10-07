@@ -20,29 +20,29 @@ namespace ModularCA.Auth.Authorization;
 /// </remarks>
 /// <param name="System">Capabilities held at system scope. These apply to every CA.</param>
 /// <param name="Cas">Every CA on which the user holds at least one capability, ordered by label.</param>
-/// <param name="Tenants">
-/// Every tenant on which the user holds at least one capability tenant-wide, ordered by name.
-/// A tenant-wide holder of <c>ca.manage</c> may create CAs in the tenant, which is why a
-/// tenant with no CAs yet still appears here; per-CA grants never produce an entry.
+/// <param name="Spaces">
+/// Every space on which the user holds at least one capability space-wide, ordered by name.
+/// A space-wide holder of <c>ca.manage</c> may create CAs in the space, which is why a
+/// space with no CAs yet still appears here; per-CA grants never produce an entry.
 /// </param>
 public sealed record EffectiveCapabilities(
     IReadOnlyList<string> System,
     IReadOnlyList<CaCapabilities> Cas,
-    IReadOnlyList<TenantCapabilities> Tenants)
+    IReadOnlyList<SpaceCapabilities> Spaces)
 {
     /// <summary>An empty result: no capabilities anywhere.</summary>
     public static readonly EffectiveCapabilities None = new([], [], []);
 }
 
 /// <summary>
-/// The capabilities a user holds across a whole tenant: the system-scoped ones plus the ones
-/// granted tenant-wide. Nothing granted on a single CA is included.
+/// The capabilities a user holds across a whole space: the system-scoped ones plus the ones
+/// granted space-wide. Nothing granted on a single CA is included.
 /// </summary>
-/// <param name="Id">The tenant's id.</param>
-/// <param name="Name">The tenant's display name.</param>
-/// <param name="Slug">The tenant's slug, which is what a tenant scope in a console URL names.</param>
-/// <param name="Capabilities">The capabilities that apply tenant-wide, sorted.</param>
-public sealed record TenantCapabilities(
+/// <param name="Id">The space's id.</param>
+/// <param name="Name">The space's display name.</param>
+/// <param name="Slug">The space's slug, which is what a space scope in a console URL names.</param>
+/// <param name="Capabilities">The capabilities that apply space-wide, sorted.</param>
+public sealed record SpaceCapabilities(
     Guid Id,
     string Name,
     string Slug,
@@ -50,22 +50,25 @@ public sealed record TenantCapabilities(
 
 /// <summary>
 /// The capabilities a user holds on one certificate authority: the system-scoped ones, the
-/// ones granted tenant-wide for the CA's tenant, and the ones granted on the CA itself.
+/// ones granted space-wide for the CA's space, and the ones granted on the CA itself.
 /// </summary>
 /// <param name="Id">The CA's id.</param>
 /// <param name="Label">The CA's label, which is what a scope in a console URL names.</param>
 /// <param name="Name">The CA's display name.</param>
 /// <param name="IsSshCa">Whether this is an SSH CA rather than an X.509 one.</param>
-/// <param name="TenantId">The tenant the CA belongs to; the console's tenant scope groups CAs by it.</param>
-/// <param name="TenantName">The tenant's display name.</param>
-/// <param name="TenantSlug">The tenant's slug, which is what a tenant scope in a console URL names.</param>
+/// <param name="SpaceId">
+/// The space the CA belongs to, or null for an instance CA; the console's space scope groups
+/// CAs by it.
+/// </param>
+/// <param name="SpaceName">The space's display name; empty for an instance CA.</param>
+/// <param name="SpaceSlug">The space's slug, which is what a space scope in a console URL names; empty for an instance CA.</param>
 /// <param name="Capabilities">The capabilities that apply on this CA, sorted.</param>
 public sealed record CaCapabilities(
     Guid Id,
     string Label,
     string Name,
     bool IsSshCa,
-    Guid TenantId,
-    string TenantName,
-    string TenantSlug,
+    Guid? SpaceId,
+    string SpaceName,
+    string SpaceSlug,
     IReadOnlyList<string> Capabilities);

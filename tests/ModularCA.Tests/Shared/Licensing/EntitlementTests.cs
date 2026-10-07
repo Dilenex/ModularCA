@@ -153,6 +153,104 @@ public class LicenseVerifierTests
             "A real licence signing key is now pinned. Update this assertion — and confirm the "
             + "private half is stored somewhere the build cannot reach.");
     }
+
+    /// <summary>
+    /// A signature over the claims that a cofactorless verifier accepts for a small-order
+    /// public key whenever the challenge is a multiple of the key's order: R is the identity
+    /// point and S is zero, so the check reduces to [k]A being the identity.
+    /// </summary>
+    private static string SmallOrderForgery(string licenseId)
+    {
+        var claims = LicenseMint.Claims(new DateOnly(2099, 1, 1));
+        var json = JsonSerializer.SerializeToUtf8Bytes(new LicenseClaims
+        {
+            Licensee = claims.Licensee,
+            LicenseId = licenseId,
+            IssuedOn = claims.IssuedOn,
+            MaintenanceThrough = claims.MaintenanceThrough,
+            Entitlements = claims.Entitlements,
+            Limits = claims.Limits,
+        });
+        var signature = new byte[64];
+        signature[0] = 0x01;
+        return LicenseVerifier.Encode(json, signature);
+    }
+
+    [Fact]
+    public void While_the_vendor_key_is_the_placeholder_every_licence_is_refused_as_unconfigured()
+    {
+        var (_, priv) = LicenseMint.NewSigner();
+        var documents = new[] { LicenseMint.Sign(LicenseMint.Claims(new DateOnly(2027, 1, 1)), priv) }
+            .Concat(Enumerable.Range(0, 16).Select(i => SmallOrderForgery($"LIC-FORGED-{i}")));
+
+        foreach (var doc in documents)
+        {
+            var result = LicenseVerifier.Verify(doc);
+            Assert.Equal(LicenseStatus.SignatureInvalid, result.Status);
+            Assert.Null(result.Claims);
+            Assert.Contains("no licence signing key configured", result.Diagnostic);
+        }
+    }
+
+    [Fact]
+    public void An_all_zero_override_key_is_refused_as_unconfigured()
+    {
+        var result = LicenseVerifier.Verify(SmallOrderForgery("LIC-FORGED"), new byte[32]);
+
+        Assert.Equal(LicenseStatus.SignatureInvalid, result.Status);
+        Assert.Contains("no licence signing key configured", result.Diagnostic);
+    }
+
+    [Fact]
+    public void The_free_edition_is_unchanged_while_the_key_is_the_placeholder()
+    {
+        var result = LicenseVerifier.Verify(null);
+
+        Assert.Equal(LicenseStatus.Absent, result.Status);
+        Assert.Equal(LicenseStatus.Absent, new EntitlementService(null).License.Status);
+    }
+
+    /// <summary>The eight small-order points of edwards25519 in their canonical and common non-canonical encodings.</summary>
+    public static IEnumerable<object[]> SmallOrderKeys() => new[]
+    {
+        "0100000000000000000000000000000000000000000000000000000000000000",
+        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "0000000000000000000000000000000000000000000000000000000000000080",
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+    }.Select(hex => new object[] { hex });
+
+    [Theory]
+    [MemberData(nameof(SmallOrderKeys))]
+    public void BouncyCastle_rejects_a_forgery_under_a_small_order_public_key(string keyHex)
+    {
+        // Pins the library behaviour the placeholder check no longer depends on: if a future
+        // BouncyCastle accepted these, an unconfigured build would still refuse every licence.
+        var key = Convert.FromHexString(keyHex);
+        var signature = new byte[64];
+        signature[0] = 0x01;
+
+        for (var i = 0; i < 32; i++)
+        {
+            var message = Encoding.ASCII.GetBytes($"licence-{i}");
+            bool verified;
+            try
+            {
+                var verifier = new Ed25519Signer();
+                verifier.Init(false, new Ed25519PublicKeyParameters(key, 0));
+                verifier.BlockUpdate(message, 0, message.Length);
+                verified = verifier.VerifySignature(signature);
+            }
+            catch (Exception)
+            {
+                verified = false;
+            }
+            Assert.False(verified, $"BouncyCastle accepted a forged signature under small-order key {keyHex}.");
+        }
+    }
 }
 
 /// <summary>
@@ -240,7 +338,7 @@ public class FeatureCatalogTests
 }
 
 /// <summary>
-/// Covers entitlement resolution and the tenant-creation gate.
+/// Covers entitlement resolution and the space-creation gate.
 /// </summary>
 public class EntitlementServiceTests
 {
@@ -340,33 +438,22 @@ public class EntitlementServiceTests
         Assert.Equal(10, capped.GetLimit(LicenseLimits.MaxTenants));
     }
 
-    // ---- TenantCreationGate ------------------------------------------------------------------
+    // ---- SpaceCreationGate ------------------------------------------------------------------
 
     [Fact]
-    public void The_free_edition_refuses_once_its_ceiling_is_reached()
+    public void The_free_edition_is_recommended_a_licence_from_the_fifth_space()
     {
-        var refusal = TenantCreationGate.Evaluate(Free(), TenantCreationGate.FreeEditionTenantCeiling);
-
-        Assert.NotNull(refusal);
-        Assert.Equal(ErrorCodes.FeatureNotEntitled, refusal!.Code);
-        Assert.Equal(403, refusal.Status);
-        Assert.IsAssignableFrom<RequestValidationException>(refusal);
-        // The refusal must not imply anything was lost.
-        Assert.Contains("unaffected", refusal.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(SpaceCreationGate.LicenceRecommendation,
+            SpaceCreationGate.Recommendation(Free(), SpaceCreationGate.SpacesWithoutLicence));
     }
 
     [Theory]
     [InlineData(0)]
     [InlineData(2)]
-    [InlineData(4)]
-    public void The_free_edition_may_create_tenants_below_its_ceiling(int existing)
+    [InlineData(3)]
+    public void Up_to_four_spaces_nothing_is_said(int existing)
     {
-        // The behaviour the ceiling constant describes. It used to be decoration: the gate consulted
-        // the entitlement first and refused an unlicensed installation its third tenant regardless,
-        // while the message quoted a number the decision never read. A self-hoster separating home,
-        // lab and a side project is the person the free edition exists for, and sending them to a
-        // pricing page was the wrong answer to the wrong question.
-        Assert.Null(TenantCreationGate.Evaluate(Free(), existing));
+        Assert.Null(SpaceCreationGate.Recommendation(Free(), existing));
     }
 
     [Fact]
@@ -374,7 +461,7 @@ public class EntitlementServiceTests
     {
         // The name tells the reader whether this concerns them; the key is what they quote in a
         // ticket. An identifier alone makes them decode it first to find out if it is relevant.
-        var refusal = TenantCreationGate.Evaluate(Free(), TenantCreationGate.FreeEditionTenantCeiling);
+        var refusal = FeatureGate.Require(Free(), FeatureKeys.MultiTenancy, "Creating additional spaces", "Existing spaces are unaffected.");
 
         Assert.NotNull(refusal);
         var nameAt = refusal!.Message.IndexOf("multi-tenancy", StringComparison.Ordinal);
@@ -386,52 +473,25 @@ public class EntitlementServiceTests
     }
 
     [Fact]
-    public void A_lapsed_licence_refuses_with_the_renewal_code_not_the_purchase_code()
+    public void A_lapsed_licence_is_still_recommended_one()
     {
-        // MCA-LIC-003 vs MCA-LIC-001 is the difference between "renew" and "buy", and sending a
-        // paying customer down the purchase path is the failure this separation exists to avoid.
         var lapsed = Licensed(FeatureCatalog.IntroducedOn(FeatureKeys.MultiTenancy)!.Value.AddDays(-1));
 
-        // At the ceiling, so the entitlement is actually consulted. This was a literal 2, which
-        // silently meant "the ceiling" until the ceiling moved and the test started dereferencing
-        // a null refusal instead of reading a code.
-        var refusal = TenantCreationGate.Evaluate(lapsed, TenantCreationGate.FreeEditionTenantCeiling);
-
-        Assert.NotNull(refusal);
-        Assert.Equal(ErrorCodes.MaintenanceLapsed, refusal!.Code);
+        Assert.NotNull(SpaceCreationGate.Recommendation(lapsed, SpaceCreationGate.SpacesWithoutLicence));
     }
 
     [Fact]
-    public void An_entitled_installation_with_no_ceiling_may_create_tenants()
+    public void An_entitled_installation_is_never_recommended_a_licence()
     {
-        Assert.Null(TenantCreationGate.Evaluate(Licensed(new DateOnly(2099, 1, 1)), 500));
+        Assert.Null(SpaceCreationGate.Recommendation(Licensed(new DateOnly(2099, 1, 1)), 500));
     }
 
     [Fact]
-    public void A_licence_ceiling_refuses_at_the_limit_and_permits_below_it()
+    public void A_licence_ceiling_no_longer_refuses_creation()
     {
-        var capped = Licensed(new DateOnly(2099, 1, 1), null,
-            new Dictionary<string, int>(StringComparer.Ordinal) { [LicenseLimits.MaxTenants] = 3 });
-
-        Assert.Null(TenantCreationGate.Evaluate(capped, 2));
-
-        var refusal = TenantCreationGate.Evaluate(capped, 3);
-        Assert.Equal(ErrorCodes.LicenseLimitReached, refusal!.Code);
-        Assert.Contains("unaffected", refusal.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void Being_over_a_reduced_ceiling_refuses_creation_and_nothing_else()
-    {
-        // A downgrade can leave more tenants than the new licence permits. The rule is the same
-        // as everywhere else in this system: never take away what exists. Creation is refused;
-        // the existing tenants are not the gate's business.
         var capped = Licensed(new DateOnly(2099, 1, 1), null,
             new Dictionary<string, int>(StringComparer.Ordinal) { [LicenseLimits.MaxTenants] = 2 });
 
-        var refusal = TenantCreationGate.Evaluate(capped, 7);
-
-        Assert.Equal(ErrorCodes.LicenseLimitReached, refusal!.Code);
-        Assert.Contains("7", refusal.Message, StringComparison.Ordinal);
+        Assert.Null(SpaceCreationGate.Recommendation(capped, 7));
     }
 }

@@ -1,0 +1,11 @@
+{
+  "_comment": "Which groups an LDAP mapping may target. LdapGroupSyncService.IsRefusedMappingTarget (server) and ldapMappings.ts isRefusedMappingTarget (console) must agree. Read by tests/modularca.web.tests/src/adminui/ldapMappings.test.ts and tests/ModularCA.Tests/Core/Services/LdapMappingTargetTests.cs.",
+  "targets": [
+    { "isSystemGroup": false, "isSystemTierSuper": false, "isControlled": false, "refused": false },
+    { "isSystemGroup": true, "isSystemTierSuper": false, "isControlled": false, "refused": true },
+    { "isSystemGroup": false, "isSystemTierSuper": true, "isControlled": false, "refused": true },
+    { "isSystemGroup": false, "isSystemTierSuper": false, "isControlled": true, "refused": true },
+    { "isSystemGroup": true, "isSystemTierSuper": true, "isControlled": true, "refused": true },
+    { "isSystemGroup": true, "isSystemTierSuper": false, "isControlled": true, "refused": true }
+  ]
+}

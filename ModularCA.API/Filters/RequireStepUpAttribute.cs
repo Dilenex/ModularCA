@@ -51,7 +51,8 @@ public sealed class RequireStepUpAttribute : ActionFilterAttribute
     /// route template <c>users/{id}</c>).
     /// </summary>
     /// <param name="operation">A <c>StepUpOps</c> constant identifying the protected operation.</param>
-    /// <param name="targetRouteParam">The route-parameter name whose value is the target entity id.</param>
+    /// <param name="targetRouteParam">The route-parameter name whose value is the target entity id, or
+    /// <c>argument.Property</c> when the id arrives in the request body.</param>
     public RequireStepUpAttribute(string operation, string targetRouteParam)
     {
         _operation = operation;
@@ -68,12 +69,7 @@ public sealed class RequireStepUpAttribute : ActionFilterAttribute
             ? headerValue.ToString()
             : null;
 
-        string? target = null;
-        if (!string.IsNullOrEmpty(_targetRouteParam)
-            && context.RouteData.Values.TryGetValue(_targetRouteParam, out var routeValue))
-        {
-            target = routeValue?.ToString();
-        }
+        var target = ResolveTarget(_targetRouteParam, context.RouteData.Values, context.ActionArguments);
 
         var ok = await MfaStepUpController.ValidateStepUpTokenAsync(
             cache,
@@ -97,5 +93,25 @@ public sealed class RequireStepUpAttribute : ActionFilterAttribute
         }
 
         await next();
+    }
+
+    /// <summary>
+    /// The id the step-up token must have been issued for. A plain name is a route value
+    /// (<c>"id"</c>); a dotted name is a property of a bound argument (<c>"request.CertId"</c>),
+    /// for an action whose target arrives in the body. Null when the name resolves to nothing,
+    /// which no token issued for a target matches.
+    /// </summary>
+    internal static string? ResolveTarget(string? name, IDictionary<string, object?> routeValues, IDictionary<string, object?> arguments)
+    {
+        if (string.IsNullOrEmpty(name))
+            return null;
+
+        var dot = name.IndexOf('.');
+        if (dot < 0)
+            return routeValues.TryGetValue(name, out var routeValue) ? routeValue?.ToString() : null;
+
+        if (!arguments.TryGetValue(name[..dot], out var argument) || argument == null)
+            return null;
+        return argument.GetType().GetProperty(name[(dot + 1)..])?.GetValue(argument)?.ToString();
     }
 }

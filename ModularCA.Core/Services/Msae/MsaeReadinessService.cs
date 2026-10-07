@@ -66,7 +66,7 @@ public sealed class DnsHostNameProbe : IHostNameProbe
 /// </summary>
 /// <remarks>
 /// The preconditions live on four console pages with no visible order between them: the CA's
-/// protocol card, the tenant's realm bindings and keys, the enrollment identity under Users, and
+/// protocol card, the space's realm bindings and keys, the enrollment identity under Users, and
 /// the templates. Each refuses a step out of order with its own message, so an operator learns
 /// the order by hitting every refusal. This service answers all of them at once, from the same
 /// data the runtime uses, so a checklist built on it is true rather than decorative. Nothing here
@@ -84,21 +84,21 @@ public sealed class MsaeReadinessService(
     /// <summary>Evaluates the CA identified by <paramref name="caId"/>, or returns null when there is no such CA.</summary>
     public async Task<MsaeReadiness?> EvaluateAsync(Guid caId, CancellationToken cancellation = default)
     {
-        var ca = await db.CertificateAuthorities.AsNoTracking().Include(c => c.Tenant).FirstOrDefaultAsync(c => c.Id == caId, cancellation);
+        var ca = await db.CertificateAuthorities.AsNoTracking().Include(c => c.Space).FirstOrDefaultAsync(c => c.Id == caId, cancellation);
         if (ca == null) return null;
 
-        var hasTenant = ca.TenantId != Guid.Empty;
-        // The console's scope parser resolves ?tenant= by slug and ?ca= by label; an id there is
+        var hasSpace = ca.SpaceId != null;
+        // The console's scope parser resolves ?space= by slug and ?ca= by label; an id there is
         // silently dropped and the linked page opens unscoped.
-        var scope = hasTenant && !string.IsNullOrWhiteSpace(ca.Tenant?.Slug)
-            ? $"?tenant={Uri.EscapeDataString(ca.Tenant!.Slug)}&ca={Uri.EscapeDataString(ca.Label)}"
+        var scope = hasSpace && !string.IsNullOrWhiteSpace(ca.Space?.Slug)
+            ? $"?space={Uri.EscapeDataString(ca.Space!.Slug)}&ca={Uri.EscapeDataString(ca.Label)}"
             : $"?ca={Uri.EscapeDataString(ca.Label)}";
         var baseUrl = config.Https.GetPublicHttpsBaseUrl();
         var result = new MsaeReadiness
         {
             CaId = ca.Id,
             CaLabel = ca.Label,
-            TenantId = hasTenant ? ca.TenantId : null,
+            SpaceId = hasSpace ? ca.SpaceId : null,
             CepUrl = $"{baseUrl}/msae/{ca.Label}/cep",
             PolicyId = $"{{{ca.Id.ToString().ToUpperInvariant()}}}",
             EvaluatedAt = DateTime.UtcNow,
@@ -168,34 +168,31 @@ public sealed class MsaeReadinessService(
             Fix = kerberos ? null : protocolFix,
         });
 
-        // 4. Realm bindings on the tenant.
-        var realms = hasTenant
-            ? await db.KerberosRealms.AsNoTracking().Include(r => r.Keys).Include(r => r.EnrollmentUser)
-                .Where(r => r.TenantId == ca.TenantId).OrderBy(r => r.Realm).ToListAsync(cancellation)
-            : new List<Shared.Entities.KerberosRealmEntity>();
+        // 4. Realm bindings on the space, or on the instance for an instance CA.
+        var realms = await db.KerberosRealms.AsNoTracking().Include(r => r.Keys).Include(r => r.EnrollmentUser)
+            .Where(r => r.SpaceId == ca.SpaceId).OrderBy(r => r.Realm).ToListAsync(cancellation);
         var enabledRealms = realms.Where(r => r.IsEnabled).ToList();
         result.Realms = enabledRealms.Select(r => new MsaeReadinessRealm { Id = r.Id, Realm = r.Realm, DnsDomain = r.DnsDomain, ServicePrincipal = r.ServicePrincipal }).ToList();
 
         // The URL a forest's clients are pointed at is built from the name in its binding's service
-        // principal when that is a name this service is known by for the tenant, else the public
-        // domain. The first enabled binding's URL is the headline; others are listed when they differ.
+        // principal when that is a name this service is known by, else the public domain. The
+        // first enabled binding's URL is the headline; others are listed when they differ.
         var advertised = new Dictionary<Guid, string>();
         foreach (var realm in enabledRealms)
-            advertised[realm.Id] = $"{await names.BaseUrlForServicePrincipalAsync(realm.ServicePrincipal, ca.TenantId, cancellation)}/msae/{ca.Label}/cep";
+            advertised[realm.Id] = $"{names.BaseUrlForServicePrincipal(realm.ServicePrincipal)}/msae/{ca.Label}/cep";
         if (enabledRealms.Count > 0)
             result.CepUrl = advertised[enabledRealms[0].Id];
-        var realmFix = hasTenant
-            ? new MsaeReadinessFix { Label = "Open the tenant's Kerberos realms", Path = $"/tenants/{ca.TenantId}?tab=kerberos" }
-            : new MsaeReadinessFix { Label = "Open Tenants", Path = "/tenants" };
+        var realmFix = hasSpace
+            ? new MsaeReadinessFix { Label = "Open the space's Kerberos realms", Path = $"/spaces/{ca.SpaceId}?tab=kerberos" }
+            : new MsaeReadinessFix { Label = "Open the instance's Kerberos realms", Path = "/spaces?tab=kerberos" };
+        var owner = hasSpace ? "space" : "instance";
         steps.Add(new MsaeReadinessStep
         {
-            Key = "realms", Title = "An Active Directory forest is bound to the tenant",
-            State = !hasTenant ? MsaeReadinessState.Fail : enabledRealms.Count > 0 ? MsaeReadinessState.Pass : MsaeReadinessState.Fail,
-            Detail = !hasTenant
-                ? "This CA belongs to no tenant, and realm bindings are owned by tenants."
-                : enabledRealms.Count > 0
-                    ? $"{enabledRealms.Count} enabled binding{(enabledRealms.Count == 1 ? "" : "s")}."
-                    : realms.Count > 0 ? "Every binding on the tenant is disabled." : "No forest is bound to this CA's tenant; tickets from any forest are refused.",
+            Key = "realms", Title = $"An Active Directory forest is bound to the {owner}",
+            State = enabledRealms.Count > 0 ? MsaeReadinessState.Pass : MsaeReadinessState.Fail,
+            Detail = enabledRealms.Count > 0
+                ? $"{enabledRealms.Count} enabled binding{(enabledRealms.Count == 1 ? "" : "s")}."
+                : realms.Count > 0 ? $"Every binding on the {owner} is disabled." : $"No forest is bound to this CA's {owner}; tickets from any forest are refused.",
             Items = realms.Select(r => $"{r.Realm}: {(r.IsEnabled ? "enabled" : "disabled")}, service principal {r.ServicePrincipal}").ToList(),
             Fix = enabledRealms.Count > 0 ? null : realmFix,
         });
@@ -269,7 +266,7 @@ public sealed class MsaeReadinessService(
                 _ => "Accepted tickets act as an identity that may request certificates here.",
             },
             Items = idItems,
-            Fix = idState == MsaeReadinessState.Fail ? new MsaeReadinessFix { Label = "Open Users", Path = $"/users?tab=service-identities{(hasTenant ? $"&tenant={ca.TenantId}" : "")}" } : null,
+            Fix = idState == MsaeReadinessState.Fail ? new MsaeReadinessFix { Label = "Open Users", Path = $"/users?tab=service-identities{(hasSpace && !string.IsNullOrWhiteSpace(ca.Space?.Slug) ? $"&space={Uri.EscapeDataString(ca.Space!.Slug)}" : "")}" } : null,
         });
 
         // 7. Templates offered to Windows.
@@ -311,14 +308,9 @@ public sealed class MsaeReadinessService(
         });
 
         // 8. The name clients reach the CA by, and the name the forest issues tickets for. The
-        //    service principal may name the public hostname or any hostname of this tenant; a
-        //    tenant hostname must also carry a live endpoint certificate, or clients cannot
-        //    connect to it at all. Whichever name it is must resolve canonically.
+        //    service principal must name the public hostname, and it must resolve canonically.
         var publicHost = PublicNameResolver.Normalize(config.Https.PublicDomain);
         var hostItems = new List<string>();
-        var hostnamesFix = hasTenant
-            ? new MsaeReadinessFix { Label = "Open the tenant's Hostnames", Path = $"/tenants/{ca.TenantId}?tab=hostnames" }
-            : realmFix;
         MsaeReadinessState hostState;
         MsaeReadinessFix? hostFix = null;
         if (publicHost == null)
@@ -335,45 +327,15 @@ public sealed class MsaeReadinessService(
             foreach (var realm in enabledRealms)
             {
                 var spnHost = PublicNameResolver.HostFromServicePrincipal(realm.ServicePrincipal) ?? realm.ServicePrincipal;
-                var known = await names.ResolveAsync(spnHost, ca.TenantId, cancellation);
+                var known = names.Resolve(spnHost);
                 if (known == null)
                 {
                     hostState = MsaeReadinessState.Fail;
-                    hostItems.Add($"{realm.Realm}: the service principal names {spnHost}, which is neither the public hostname {publicHost} nor a hostname of this tenant; the forest issues tickets for a name this service is not called by.");
+                    hostItems.Add($"{realm.Realm}: the service principal names {spnHost}, which is not the public hostname {publicHost}; the forest issues tickets for a name this service is not called by.");
                     hostFix ??= realmFix;
                     continue;
                 }
-                if (known.TenantHostname != null)
-                {
-                    var cert = known.TenantHostname.CertificateId == null ? null
-                        : await db.Certificates.AsNoTracking()
-                            .Where(c => c.CertificateId == known.TenantHostname.CertificateId)
-                            .Select(c => new { c.NotAfter, c.Revoked })
-                            .FirstOrDefaultAsync(cancellation);
-                    if (cert == null)
-                    {
-                        hostState = MsaeReadinessState.Fail;
-                        hostItems.Add($"{realm.Realm}: {spnHost} is a hostname of this tenant but has no endpoint certificate, so no client can connect to it over TLS. Reissue it.");
-                        hostFix = hostnamesFix;
-                    }
-                    else if (cert.NotAfter.ToUniversalTime() <= now)
-                    {
-                        hostState = MsaeReadinessState.Fail;
-                        hostItems.Add($"{realm.Realm}: the endpoint certificate for {spnHost} expired on {cert.NotAfter:yyyy-MM-dd}; every connection to it fails. Reissue it.");
-                        hostFix = hostnamesFix;
-                    }
-                    else if (cert.Revoked)
-                    {
-                        hostState = MsaeReadinessState.Fail;
-                        hostItems.Add($"{realm.Realm}: the endpoint certificate for {spnHost} is revoked. Reissue it.");
-                        hostFix = hostnamesFix;
-                    }
-                    else
-                    {
-                        hostItems.Add($"{realm.Realm}: tickets are requested for HTTP/{spnHost}, a hostname of this tenant whose endpoint certificate is valid until {cert.NotAfter:yyyy-MM-dd}.");
-                    }
-                }
-                if (!toProbe.Contains(known.Host)) toProbe.Add(known.Host);
+                if (!toProbe.Contains(known)) toProbe.Add(known);
             }
             foreach (var name in toProbe)
             {
@@ -401,7 +363,7 @@ public sealed class MsaeReadinessService(
             State = hostState,
             Detail = hostState == MsaeReadinessState.Pass
                 ? "The service principal names a hostname this service is called by, and the name is canonical."
-                : "Kerberos tickets are issued for a name; when the name clients use differs from the one registered, or the name has no working certificate, authentication silently falls back to NTLM and is refused.",
+                : "Kerberos tickets are issued for a name; when the name clients use differs from the one registered, authentication silently falls back to NTLM and is refused.",
             Items = hostItems,
             Fix = hostState == MsaeReadinessState.Pass ? null : (hostFix ?? realmFix),
         });
@@ -411,7 +373,7 @@ public sealed class MsaeReadinessService(
         {
             Key = "client-policy", Title = "Clients point at this policy service",
             State = MsaeReadinessState.Pass,
-            Detail = "Register the policy server on each domain member, or push it by Group Policy; the tenant root must be trusted on the client.",
+            Detail = "Register the policy server on each domain member, or push it by Group Policy; the space's root CA must be trusted on the client.",
             Items =
             [
                 $"Policy server URL: {result.CepUrl}",

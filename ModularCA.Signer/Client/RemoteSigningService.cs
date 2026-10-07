@@ -243,6 +243,44 @@ public sealed class RemoteSigningService : ISigningService, IDisposable
     }
 
     /// <inheritdoc />
+    public Task<byte[]> WrapSecretAsync(SecretKind kind, byte[] secret, SigningContext context, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(secret);
+        ArgumentNullException.ThrowIfNull(context);
+        return CallAsync(async options =>
+        {
+            var response = await _client.WrapSecretAsync(new Wire.WrapSecretRequest
+            {
+                Kind = Wire.WireMapping.ToWire(kind),
+                Secret = ByteString.CopyFrom(secret),
+                Context = Wire.WireMapping.ToWire(context),
+            }, options);
+            return response.Wrapped.ToByteArray();
+        }, _options.CallTimeout, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The secret comes back in the clear inside the channel, and the node then holds it in
+    /// memory, because the node is what has to use it. The channel's mutual TLS is what keeps it
+    /// off the wire; nothing keeps it out of the node.
+    /// </remarks>
+    public Task<byte[]> UnwrapSecretAsync(byte[] wrapped, SigningContext context, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(wrapped);
+        ArgumentNullException.ThrowIfNull(context);
+        return CallAsync(async options =>
+        {
+            var response = await _client.UnwrapSecretAsync(new Wire.UnwrapSecretRequest
+            {
+                Wrapped = ByteString.CopyFrom(wrapped),
+                Context = Wire.WireMapping.ToWire(context),
+            }, options);
+            return response.Secret.ToByteArray();
+        }, _options.CallTimeout, cancellationToken);
+    }
+
+    /// <inheritdoc />
     /// <remarks>
     /// A signer that does not answer is reported as <see cref="SignerHealth.Unreachable"/>
     /// rather than thrown: the callers of this are the readiness checks and the enrollment

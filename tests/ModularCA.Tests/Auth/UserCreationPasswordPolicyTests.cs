@@ -21,15 +21,6 @@ namespace ModularCA.Tests.Auth;
 /// </remarks>
 public class UserCreationPasswordPolicyTests
 {
-    private sealed class NoTenantContext : ITenantContext
-    {
-        public bool IsSystemAdmin => true;
-        public bool HasContext => false;
-        public IReadOnlySet<Guid> AccessibleTenantIds => new HashSet<Guid>();
-        public Guid? UserId => null;
-        public void Set(Guid? userId, IReadOnlySet<Guid> accessibleTenantIds, bool isSystemAdmin) { }
-    }
-
     /// <summary>Rejects every password containing the letter x; accepts the rest.</summary>
     private sealed class StubPolicy : IPasswordPolicyService
     {
@@ -57,7 +48,7 @@ public class UserCreationPasswordPolicyTests
             .ConfigureWarnings(w => w.Ignore(
                 Microsoft.EntityFrameworkCore.Diagnostics.InMemoryEventId.TransactionIgnoredWarning))
             .Options;
-        return new ModularCADbContext(options, new NoTenantContext());
+        return new ModularCADbContext(options);
     }
 
     private static (UserManagementService Service, StubPolicy Policy) BuildService(ModularCADbContext db)

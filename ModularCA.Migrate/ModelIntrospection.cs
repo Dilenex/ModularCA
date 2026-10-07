@@ -1,0 +1,261 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
+using ModularCA.Database;
+using ModularCA.Database.Conventions;
+
+namespace ModularCA.Migrate;
+
+/// <summary>
+/// Reads the destination schema out of the Entity Framework model rather than out of a hand-kept
+/// list.
+/// <para>
+/// There are sixty-nine application tables and eight audit ones. A list of them written into this
+/// helper would be wrong within a release, and wrong in the way that is hardest to notice: a table
+/// added later simply would not be copied, and nothing would say so. Asking the model means the
+/// helper cannot drift from the schema it is migrating into.
+/// </para>
+/// <para>
+/// The copy writes into the frozen baselines (<see cref="BaselineModel"/>,
+/// <see cref="BaselineAuditModel"/>), the 0.3.0 schema, and never into the current model: the
+/// later migrations then transform the copied data exactly as they would on an upgrade, and a
+/// rename in the current model cannot redirect or drop a column of the copy.
+/// </para>
+/// </summary>
+public static class ModelIntrospection
+{
+    /// <summary>
+    /// A column of a destination table, as the copier needs to see it.
+    /// </summary>
+    /// <param name="Name">The column name in the database.</param>
+    /// <param name="ClrType">
+    /// The type a value must be converted to before it is written — the <em>provider</em> type,
+    /// which is what the column actually stores, not the type the entity exposes.
+    /// </param>
+    /// <param name="IsNullable">Whether the column accepts null.</param>
+    public sealed record ColumnInfo(string Name, Type ClrType, bool IsNullable);
+
+    /// <summary>
+    /// The CLR type a column's value is written as.
+    /// <para>
+    /// Entity Framework hides a layer here: a property is not always stored as the type it is
+    /// declared as. An enum is an <c>integer</c> column, and a property with a value converter is
+    /// whatever the converter produces. Copying through raw ADO bypasses all of that, so a value
+    /// bound as the model type reaches Npgsql as something it has no mapping for — which is the
+    /// error <c>AccessBadgeSources.Kind</c> produced against a live database: an enum, offered to
+    /// a driver that only knows integers.
+    /// </para>
+    /// <para>
+    /// The source column holds the same provider representation, because Entity Framework wrote it
+    /// there, so reading it raw and binding it raw is correct as well as simpler: the converter is
+    /// never applied in either direction.
+    /// </para>
+    /// </summary>
+    /// <param name="property">A mapped property.</param>
+    /// <returns>The non-nullable CLR type the provider expects.</returns>
+    private static Type ProviderType(IProperty property)
+    {
+        var converted = property.GetValueConverter()?.ProviderClrType
+            ?? property.FindTypeMapping()?.Converter?.ProviderClrType
+            ?? property.ClrType;
+
+        var bare = Nullable.GetUnderlyingType(converted) ?? converted;
+
+        // An enum with no converter is still stored as its underlying integer; EF supplies that
+        // conversion from its own type mapping rather than from a value converter, so it does not
+        // show up above.
+        return bare.IsEnum ? Enum.GetUnderlyingType(bare) : bare;
+    }
+
+    /// <summary>
+    /// A destination table and the columns to write into it.
+    /// </summary>
+    /// <param name="Name">The table name.</param>
+    /// <param name="Columns">Every writable column.</param>
+    public sealed record TableInfo(string Name, IReadOnlyList<ColumnInfo> Columns);
+
+    /// <summary>
+    /// Builds the application model offline, with no connection opened.
+    /// </summary>
+    /// <returns>The design-time model, which is the one the migrations were generated from.</returns>
+    public static IModel DestinationModel()
+    {
+        var options = new DbContextOptionsBuilder<ModularCADbContext>()
+            .UseNpgsql("Host=model-only;Database=modularca")
+            .Options;
+        using var db = new ModularCADbContext(options);
+        return db.GetService<IDesignTimeModel>().Model;
+    }
+
+    /// <summary>
+    /// Builds the audit model offline, with no connection opened.
+    /// </summary>
+    /// <returns>The design-time audit model.</returns>
+    public static IModel AuditModel()
+    {
+        var options = new DbContextOptionsBuilder<AuditDbContext>()
+            .UseNpgsql("Host=model-only;Database=modularca_audit")
+            .Options;
+        using var db = new AuditDbContext(options);
+        return db.GetService<IDesignTimeModel>().Model;
+    }
+
+    /// <summary>
+    /// The application schema at <see cref="PostgresRoleLayout.AppBaselineMigration"/>: that
+    /// migration's own target model, built offline, which no later change to the entities alters.
+    /// </summary>
+    public static IModel BaselineModel()
+    {
+        using var db = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>()
+            .UseNpgsql("Host=model-only;Database=modularca")
+            .Options);
+        return TargetModel(db, PostgresRoleLayout.AppBaselineMigration);
+    }
+
+    /// <summary>The audit schema at <see cref="PostgresRoleLayout.AuditBaselineMigration"/>, as <see cref="BaselineModel"/>.</summary>
+    public static IModel BaselineAuditModel()
+    {
+        using var db = new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+            .UseNpgsql("Host=model-only;Database=modularca_audit")
+            .Options);
+        return TargetModel(db, PostgresRoleLayout.AuditBaselineMigration);
+    }
+
+    /// <summary>The application tables the copy writes: the baseline's.</summary>
+    public static IReadOnlyList<TableInfo> AppCopyTables() => Tables(BaselineModel());
+
+    /// <summary>The audit tables the copy writes: the baseline's.</summary>
+    public static IReadOnlyList<TableInfo> AuditCopyTables() => Tables(BaselineAuditModel());
+
+    /// <summary>The target model of migration <paramref name="migrationId"/> of <paramref name="db"/>'s context.</summary>
+    private static IModel TargetModel(DbContext db, string migrationId)
+    {
+        var assembly = db.GetService<IMigrationsAssembly>();
+        if (!assembly.Migrations.TryGetValue(migrationId, out var type))
+            throw new InvalidOperationException($"{db.GetType().Name} carries no migration '{migrationId}'.");
+        return assembly.CreateMigration(type, db.Database.ProviderName!).TargetModel
+            ?? throw new InvalidOperationException($"Migration '{migrationId}' has no target model.");
+    }
+
+    /// <summary>
+    /// Every table in a model with its writable columns.
+    /// <para>
+    /// Two kinds of column are excluded. The <c>xmin</c> concurrency token is a PostgreSQL system
+    /// column the server maintains, so writing to it is an error rather than a choice. Anything
+    /// else marked <see cref="ValueGenerated.OnAddOrUpdate"/> is computed by the database for the
+    /// same reason. Identity columns are <em>not</em> excluded: they are declared
+    /// <c>GENERATED BY DEFAULT</c>, which permits an explicit value, and preserving the identifiers
+    /// a row already had is the whole point of a migration.
+    /// </para>
+    /// </summary>
+    /// <param name="model">A built model.</param>
+    /// <returns>One entry per table, with columns de-duplicated across entity types sharing it.</returns>
+    public static IReadOnlyList<TableInfo> Tables(IModel model)
+    {
+        var byTable = new Dictionary<string, Dictionary<string, ColumnInfo>>(StringComparer.Ordinal);
+
+        foreach (var entityType in model.GetEntityTypes())
+        {
+            var table = entityType.GetTableName();
+            if (table is null)
+                continue;
+
+            if (!byTable.TryGetValue(table, out var columns))
+                byTable[table] = columns = new Dictionary<string, ColumnInfo>(StringComparer.Ordinal);
+
+            foreach (var property in entityType.GetProperties())
+            {
+                if (property.ValueGenerated == ValueGenerated.OnAddOrUpdate)
+                    continue;
+
+                var name = property.GetColumnName();
+                if (string.IsNullOrEmpty(name) || string.Equals(name, "xmin", StringComparison.Ordinal))
+                    continue;
+
+                columns[name] = new ColumnInfo(name, ProviderType(property), property.IsNullable);
+            }
+        }
+
+        return byTable
+            .Select(kv => new TableInfo(kv.Key, kv.Value.Values.OrderBy(c => c.Name, StringComparer.Ordinal).ToList()))
+            .OrderBy(t => t.Name, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    /// <summary>
+    /// The (table, column) pairs that compare without regard to case on the destination, resolved
+    /// from <see cref="TextCaseSensitivity.CaseInsensitive"/> through the model so the names are
+    /// the database's rather than the entity's.
+    /// </summary>
+    /// <param name="model">A built model.</param>
+    /// <returns>Table and column names, for reporting how wide the case rules reach.</returns>
+    public static IEnumerable<(string Table, string Column)> CaseInsensitiveColumns(IModel model)
+    {
+        foreach (var column in TextCaseSensitivity.CaseInsensitive)
+        {
+            var entityType = model.FindEntityType(column.Entity);
+            var property = entityType?.FindProperty(column.Property);
+            var table = entityType?.GetTableName();
+            if (property is null || table is null)
+                continue;
+
+            yield return (table, property.GetColumnName());
+        }
+    }
+
+    /// <summary>One uniqueness constraint, and which of its columns fold case.</summary>
+    /// <param name="Table">The table the constraint is on.</param>
+    /// <param name="Columns">Every column of the key, in order.</param>
+    /// <param name="FoldsCase">The subset of <paramref name="Columns"/> that compare case-insensitively.</param>
+    public sealed record UniquenessCheck(
+        string Table, IReadOnlyList<string> Columns, IReadOnlySet<string> FoldsCase);
+
+    /// <summary>
+    /// Every uniqueness constraint that could gain a collision from case folding, described by its
+    /// whole key rather than by one column.
+    /// <para>
+    /// Checking a single column in isolation is wrong whenever the constraint is composite, and
+    /// most of them are. <c>Certificates.Issuer</c> is unique only paired with
+    /// <c>SerialNumber</c>: a CA that has issued four certificates has four rows sharing an
+    /// issuer, and that is the schema working, not a collision. Sweeping the column alone reports
+    /// every such CA as a problem and tells the operator to go and fix their data.
+    /// </para>
+    /// <para>
+    /// A column folds case when the model declares it <c>citext</c>
+    /// (<see cref="TextCaseSensitivity.CaseInsensitiveColumnType"/>), which a baseline model
+    /// records as it was then, with no entity types to look up in the registry.
+    /// </para>
+    /// </summary>
+    /// <param name="model">A built model.</param>
+    /// <returns>The constraints worth sweeping, skipping any whose columns all compare exactly.</returns>
+    public static IEnumerable<UniquenessCheck> UniquenessChecks(IModel model)
+    {
+        foreach (var entityType in model.GetEntityTypes())
+        {
+            var table = entityType.GetTableName();
+            if (table is null)
+                continue;
+
+            var keys = entityType.GetIndexes().Where(i => i.IsUnique).Select(i => i.Properties)
+                .Concat(entityType.GetKeys().Select(k => k.Properties));
+
+            foreach (var properties in keys)
+            {
+                var folds = properties
+                    .Where(p => string.Equals(p.FindAnnotation(RelationalAnnotationNames.ColumnType)?.Value as string,
+                        TextCaseSensitivity.CaseInsensitiveColumnType, StringComparison.OrdinalIgnoreCase))
+                    .Select(p => p.GetColumnName())
+                    .ToHashSet(StringComparer.Ordinal);
+
+                // Nothing in this key folds, so no amount of case can change whether two rows
+                // collide. Skipping these is what keeps the sweep proportional.
+                if (folds.Count == 0)
+                    continue;
+
+                yield return new UniquenessCheck(
+                    table, properties.Select(p => p.GetColumnName()).ToList(), folds);
+            }
+        }
+    }
+}

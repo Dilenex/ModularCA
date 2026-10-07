@@ -33,9 +33,9 @@ namespace ModularCA.Auth.Services
         /// <para>
         /// This method used to FIND the predecessor itself, by <c>SubjectDN</c> string equality
         /// across the whole Certificates table, ordered by NotBefore. CertificateEntity carries
-        /// no tenant query filter, so that search spanned every CA in every tenant: any
+        /// no space query filter, so that search spanned every CA in every space: any
         /// certificate anywhere sharing the subject — and holding a newer NotBefore — donated its
-        /// ACL rows to this one. Two tenants both issuing CN=vpn.example.com cross-pollinated
+        /// ACL rows to this one. Two spaces both issuing CN=vpn.example.com cross-pollinated
         /// permissions on every renewal with no attacker involved, and a user who could get a
         /// certificate issued with a chosen subject on any CA could plant a Manage grant that
         /// landed on someone else's production certificate at its next reissue — from there,

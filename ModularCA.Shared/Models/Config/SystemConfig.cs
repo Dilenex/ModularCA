@@ -1,5 +1,7 @@
 ﻿using System.Collections.Concurrent;
 using System.Text.Json.Serialization;
+using YamlDotNet.Core;
+using YamlDotNet.Serialization;
 
 namespace ModularCA.Shared.Models.Config
 {
@@ -78,6 +80,39 @@ namespace ModularCA.Shared.Models.Config
         /// other control knobs.
         /// </summary>
         public AuditConfig Audit { get; set; } = new();
+
+        /// <summary>
+        /// How long the startup schema check waits and how long the control role's migrations may
+        /// run. Read before the host starts.
+        /// </summary>
+        public SchemaConfig Schema { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Time budgets for the startup schema check and the control role's migrations.
+    /// </summary>
+    public class SchemaConfig
+    {
+        /// <summary>
+        /// How long a process waits, in seconds, for a database that cannot be reached, for a
+        /// migration another process is applying, or (a non-control role) for the control role to
+        /// apply this build's migrations, before it exits with status 75 so its supervisor retries.
+        /// </summary>
+        public int WaitSeconds { get; set; } = 900;
+
+        /// <summary>
+        /// The longest one migration statement may run, in seconds. 0 means no limit. A statement
+        /// that exceeds it stops the start with status 3.
+        /// </summary>
+        public int MigrationCommandTimeoutSeconds { get; set; } = 3600;
+
+        /// <summary>
+        /// How long a migration statement waits for a table lock, in seconds, before it gives up.
+        /// The migration is then retried in process until <see cref="WaitSeconds"/> runs out, and
+        /// only then does the process exit with status 75. 0 means wait indefinitely, which
+        /// blocks every reader of that table while it waits.
+        /// </summary>
+        public int MigrationLockTimeoutSeconds { get; set; } = 30;
     }
 
     /// <summary>
@@ -523,6 +558,13 @@ namespace ModularCA.Shared.Models.Config
 
     public class TokenConfig
     {
+        /// <summary>
+        /// The longest refresh-token lifetime the admin API accepts, in days. A refresh token is a
+        /// bearer credential for the console; the security policy's session caps bound a session
+        /// further.
+        /// </summary>
+        public const int MaxRefreshTokenDays = 30;
+
         public int RefreshTokenDays { get; set; } = 7;
     }
 
@@ -560,6 +602,7 @@ namespace ModularCA.Shared.Models.Config
         /// <summary>
         /// JSON dict mapping LDAP group DNs to CaGroup names.
         /// Example: {"CN=CA-Admins,DC=example,DC=com": "my-ca-admin", "CN=Auditors,DC=example,DC=com": "system-auditor"}
+        /// A pre-0.4.0 <c>org-&lt;slug&gt;-*</c> target resolves, with a warning, to its renamed <c>space-&lt;slug&gt;-*</c> group.
         /// </summary>
         public string? GroupToRoleMappings { get; set; }
 
@@ -712,8 +755,8 @@ namespace ModularCA.Shared.Models.Config
 
         /// <summary>
         /// Builds the HTTPS base URL (no trailing slash) for <paramref name="host"/>, a name this
-        /// process serves on the same listener as <see cref="PublicDomain"/>: a tenant hostname,
-        /// for instance. The port rule is the public one, since every name shares the listener.
+        /// process serves on the same listener as <see cref="PublicDomain"/>. The port rule is
+        /// the public one, since every name shares the listener.
         /// </summary>
         public string GetHttpsBaseUrlFor(string host)
         {
@@ -770,7 +813,7 @@ namespace ModularCA.Shared.Models.Config
         public string OAuth2ClientSecret { get; set; } = string.Empty;
 
         /// <summary>
-        /// OAuth2 token endpoint URL. For Microsoft 365: https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token
+        /// OAuth2 token endpoint URL. For Microsoft 365: https://login.microsoftonline.com/{space}/oauth2/v2.0/token
         /// For Google: https://oauth2.googleapis.com/token
         /// </summary>
         public string OAuth2TokenUrl { get; set; } = string.Empty;
@@ -796,22 +839,44 @@ namespace ModularCA.Shared.Models.Config
     public class DbInstance
     {
         public string Host { get; set; } = "localhost";
-        public int Port { get; set; } = 3306;
+
+        /// <summary>
+        /// Server port. Defaults to PostgreSQL's 5432. A configuration still naming 3306 is
+        /// taken as evidence that it was written for MariaDB and is refused at startup by
+        /// <see cref="ModularCA.Shared.Utils.LegacyDatabaseGuard"/>.
+        /// </summary>
+        public int Port { get; set; } = 5432;
         public string Username { get; set; } = string.Empty;
+        /// <summary>
+        /// The account password. Always written double-quoted: a generated password is
+        /// arbitrary text, and an unquoted YAML scalar that happens to start with a character
+        /// the parser treats specially, or that reads as a number or a boolean, becomes
+        /// something other than the string it was — which surfaces later as a connection
+        /// refused with no indication that the file is the reason.
+        /// </summary>
+        [YamlMember(ScalarStyle = ScalarStyle.DoubleQuoted)]
         public string Password { get; set; } = string.Empty;
         public string Database { get; set; } = string.Empty;
 
         /// <summary>
-        /// TLS mode for the MySQL connection. Maps to <c>MySqlConnector.MySqlSslMode</c>.
-        /// Valid values: <c>"None"</c>, <c>"Preferred"</c>, <c>"Required"</c>, <c>"VerifyCA"</c>,
-        /// <c>"VerifyFull"</c>. Default is <c>"Required"</c> to protect the
-        /// confidentiality and integrity of data in transit between ModularCA and
-        /// the backing MySQL server. Downgrading to <c>"Preferred"</c> or <c>"None"</c> allows
-        /// silent fallback to unencrypted transport; use <c>"VerifyCA"</c> or <c>"VerifyFull"</c> to additionally validate the
-        /// server certificate chain. On parse failure the runtime clamps back to
-        /// <c>MySqlSslMode.Required</c>.
+        /// TLS mode for the PostgreSQL connection. Translated to <c>Npgsql.SslMode</c> by
+        /// <see cref="ModularCA.Shared.Utils.PostgresConnection.ParseSslMode"/>.
+        /// <para>
+        /// Both vocabularies are accepted so existing configuration keeps working: the MySQL
+        /// spellings <c>"None"</c>, <c>"Preferred"</c>, <c>"Required"</c> and the Npgsql
+        /// spellings <c>"Disable"</c>, <c>"Allow"</c>, <c>"Prefer"</c>, <c>"Require"</c>, plus
+        /// <c>"VerifyCA"</c> and <c>"VerifyFull"</c>, which mean the same thing in both.
+        /// </para>
+        /// <para>
+        /// Default is <c>"Require"</c> to protect the confidentiality and integrity of data in
+        /// transit between ModularCA and the backing server. Downgrading to <c>"Prefer"</c> or
+        /// <c>"Disable"</c> allows silent fallback to unencrypted transport; use
+        /// <c>"VerifyCA"</c> or <c>"VerifyFull"</c> to additionally validate the server
+        /// certificate chain. On parse failure the runtime clamps back to
+        /// <c>SslMode.Require</c> rather than to anything weaker.
+        /// </para>
         /// </summary>
-        public string SslMode { get; set; } = "Required";
+        public string SslMode { get; set; } = "Require";
     }
 
     public class JwtConfig
@@ -1188,6 +1253,12 @@ namespace ModularCA.Shared.Models.Config
         /// 3 days; set to 0 to disable the floor.
         /// </summary>
         public int MinimumRetentionDays { get; set; } = 3;
+
+        /// <summary>
+        /// How long one <c>pg_dump</c> or <c>pg_restore</c> run may take before a backup or a
+        /// restore gives up on it, in minutes. Default 60; values below 1 are read as 1.
+        /// </summary>
+        public int DatabaseTimeoutMinutes { get; set; } = 60;
     }
 
     /// <summary>
@@ -1277,9 +1348,9 @@ namespace ModularCA.Shared.Models.Config
         /// over-long certificates in its report. This is a <b>warning threshold only</b> —
         /// the scanner emits a finding when a certificate's total validity exceeds this
         /// value, but the certificate remains valid and in use. The enforced ceiling lives on
-        /// <see cref="ModularCA.Shared.Entities.TenantEntity.MaxValidityDays"/>; this knob
+        /// <see cref="ModularCA.Shared.Entities.SpaceEntity.MaxValidityDays"/>; this knob
         /// intentionally does not block anything, and the two are independent on purpose — a
-        /// tenant may legitimately issue past a compliance baseline it is not claiming to meet.
+        /// space may legitimately issue past a compliance baseline it is not claiming to meet.
         /// Default tracks the CA/Browser Forum baseline at 825 days.
         /// </summary>
         public int WarnOverValidityDays { get; set; } = 825;
@@ -1305,7 +1376,7 @@ namespace ModularCA.Shared.Models.Config
         public int MinRsaKeySize { get; set; } = 2048;
 
         // MaxValidityDays used to live here, defaulting to 825 and blocking every leaf in the
-        // installation that exceeded it. It moved to TenantEntity.MaxValidityDays, where the
+        // installation that exceeded it. It moved to SpaceEntity.MaxValidityDays, where the
         // remarks explain why; see also ComplianceConfig.WarnOverValidityDays for the reporting
         // half, which never blocked and did not move. Removing the property outright is safe for
         // existing config files because YamlAppConfigLoader is built with
@@ -1393,12 +1464,15 @@ namespace ModularCA.Shared.Models.Config
         public string ApiKey { get; set; } = string.Empty;
 
         /// <summary>
-        /// AUTH-06: optional tenant scope for the API key. When set, the integration API
-        /// restricts operations to CAs belonging to this tenant. Requests targeting CAs
-        /// in a different tenant are rejected with 403. When null (default), the API key
-        /// grants access to all CAs (backward compatible).
+        /// AUTH-06: optional space scope for the API key: a space id restricts the integration
+        /// API to that space's CAs, <c>instance</c> to the instance's CAs (those in no space), and
+        /// unset (the default) grants every CA. Requests targeting a CA outside the scope are
+        /// rejected with 403. Any other value matches no CA. Read through <see cref="SpaceScope"/>.
         /// </summary>
-        public Guid? TenantId { get; set; }
+        public string? SpaceId { get; set; }
+
+        /// <summary>The parsed <see cref="SpaceId"/>.</summary>
+        public Utils.IntegrationSpaceScope SpaceScope() => Utils.IntegrationSpaceScope.Parse(SpaceId);
     }
 
     /// <summary>
@@ -1444,13 +1518,16 @@ namespace ModularCA.Shared.Models.Config
         public Guid? DefaultSigningProfileId { get; set; }
 
         /// <summary>
-        /// AUTH-06: optional tenant scope for the cert-manager API key. When set, the
-        /// cert-manager integration restricts signing to CAs belonging to this tenant.
-        /// Requests whose signing profile resolves to a CA in a different tenant are
-        /// rejected with 403. When null (default), the API key grants access to all
-        /// CAs (backward compatible).
+        /// AUTH-06: optional space scope for the cert-manager API key: a space id restricts
+        /// signing to that space's CAs, <c>instance</c> to the instance's CAs (those in no space),
+        /// and unset (the default) allows every CA. Requests whose signing profile resolves to a
+        /// CA outside the scope, or to no CA, are rejected with 403. Any other value matches no
+        /// CA. Read through <see cref="SpaceScope"/>.
         /// </summary>
-        public Guid? TenantId { get; set; }
+        public string? SpaceId { get; set; }
+
+        /// <summary>The parsed <see cref="SpaceId"/>.</summary>
+        public Utils.IntegrationSpaceScope SpaceScope() => Utils.IntegrationSpaceScope.Parse(SpaceId);
     }
 
     /// <summary>

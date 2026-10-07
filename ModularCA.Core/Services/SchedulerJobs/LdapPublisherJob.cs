@@ -170,7 +170,8 @@ public class LdapPublisherJob : PerRowScheduledJob<LdapConfigurationEntity>
     /// delta CRL, and recently-issued user certificates according to the supplied options.
     /// Hydrates connection/credential/publish-flag fields from the <c>LdapConfigurations</c>
     /// row identified by <see cref="LdapScheduleOptions.TaskId"/> when the caller passed a
-    /// sparse options object.
+    /// sparse options object. The CRLs published are the CA certificate's own, by configuration;
+    /// they are never matched by issuer name.
     /// </summary>
     private async Task PublishAsync(LdapScheduleOptions options, CancellationToken cancellationToken)
     {
@@ -266,9 +267,7 @@ public class LdapPublisherJob : PerRowScheduledJob<LdapConfigurationEntity>
         if (options.PublishCRL)
         {
             var crl = await _dbContext.Crls
-                .Where(c => !c.IsDelta
-                    && ((c.Task != null && c.Task.CaCertificateId == caCertificateId)
-                        || c.IssuerName == caEntity.Name))
+                .Where(c => !c.IsDelta && c.Task != null && c.Task.CaCertificateId == caCertificateId)
                 .OrderByDescending(c => c.CrlNumber)
                 .Select(c => c.RawData)
                 .FirstOrDefaultAsync(cancellationToken);
@@ -284,9 +283,7 @@ public class LdapPublisherJob : PerRowScheduledJob<LdapConfigurationEntity>
         if (options.PublishDelta)
         {
             var delta = await _dbContext.Crls
-                .Where(c => c.IsDelta
-                    && ((c.Task != null && c.Task.CaCertificateId == caCertificateId)
-                        || c.IssuerName == caEntity.Name))
+                .Where(c => c.IsDelta && c.Task != null && c.Task.CaCertificateId == caCertificateId)
                 .OrderByDescending(c => c.CrlNumber)
                 .Select(c => c.RawData)
                 .FirstOrDefaultAsync(cancellationToken);

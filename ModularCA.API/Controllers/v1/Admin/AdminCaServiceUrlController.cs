@@ -2,8 +2,10 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.API.Filters;
+using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Database;
+using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.API.Startup;
@@ -14,7 +16,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// Admin endpoints for managing the per-CA public base URL. CDP, OCSP, and AIA endpoints are
 /// always auto-generated from the base URL at cert-build time; no per-field overrides are stored.
 /// CreateOrUpdate/Delete/GetByCa resolve the owning CA through the
-/// cert → CertificateAuthority map, enforce <c>AccessibleTenantIds</c>, and audit-log the
+/// cert → CertificateAuthority map, enforce the caller's <see cref="SpaceFence"/>, and audit-log the
 /// before/after <c>PublicBaseUrl</c> on every change.
 /// </summary>
 [ApiController]
@@ -30,43 +32,33 @@ public class AdminCaServiceUrlController(
 {
     /// <summary>
     /// Resolves the CA owning a given CA-certificate id and verifies that
-    /// the caller's <c>AccessibleTenantIds</c> contains the CA's tenant. Returns the CA
-    /// entity (for audit-log enrichment) when access is granted, or null on deny.
-    /// System admins bypass the tenant check.
+    /// the caller's <see cref="SpaceFence"/> admits the CA's scope. Returns the CA
+    /// entity (for audit-log enrichment) when access is granted, or null on deny or for a
+    /// deleted CA.
     /// </summary>
     private async Task<Shared.Entities.CertificateAuthorityEntity?> ResolveOwningCaAsync(Guid caCertificateId)
     {
         var ca = await db.CertificateAuthorities
             .AsNoTracking()
-            .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(c => c.CertificateId == caCertificateId && !c.IsDeleted);
-        if (ca == null)
-            return null;
-
-        if (HttpContext.Items["IsSystemAdmin"] is true)
-            return ca;
-
-        var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-        if (tenantIds != null && tenantIds.Contains(ca.TenantId))
-            return ca;
-
-        return null;
+            .FirstOrDefaultAsync(c => c.CertificateId == caCertificateId);
+        return ca != null && SpaceFence.From(HttpContext, Capabilities.CertRevoke).Allows(ca.SpaceId) ? ca : null;
     }
 
     /// <summary>
-    /// Returns all CA service URL configurations, filtered by the caller's accessible tenants.
-    /// System administrators see all service URLs.
+    /// Returns the CA service URL configurations of the CAs inside the caller's
+    /// <see cref="SpaceFence"/>; an instance-wide caller sees all.
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> GetAll()
     {
         var all = await caServiceUrlService.GetAllAsync();
 
-        var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-        if (tenantIds != null && HttpContext.Items["IsSystemAdmin"] is not true)
+        var fence = SpaceFence.From(HttpContext, Capabilities.CertRevoke);
+        if (!fence.InstanceWide)
         {
             var accessibleCaCertIds = await db.CertificateAuthorities
-                .Where(ca => tenantIds.Contains(ca.TenantId) && ca.CertificateId != null)
+                .Where(fence.Predicate<Shared.Entities.CertificateAuthorityEntity>(ca => ca.SpaceId))
+                .Where(ca => ca.CertificateId != null)
                 .Select(ca => ca.CertificateId!.Value)
                 .ToListAsync();
             var accessibleCaCertIdSet = new HashSet<Guid>(accessibleCaCertIds);
@@ -88,7 +80,7 @@ public class AdminCaServiceUrlController(
     [HttpGet("{caCertificateId:guid}")]
     public async Task<IActionResult> GetByCa(Guid caCertificateId)
     {
-        // Tenant fence — 404 on mismatch to avoid existence oracles.
+        // Space fence — 404 on mismatch to avoid existence oracles.
         var owningCa = await ResolveOwningCaAsync(caCertificateId);
         if (owningCa == null)
             return NotFound();
@@ -112,9 +104,9 @@ public class AdminCaServiceUrlController(
         if (cert == null || !cert.IsCA)
             return NotFound("CA certificate not found.");
 
-        // Resolve the owning CA and enforce tenant access before
+        // Resolve the owning CA and enforce space access before
         // the write lands. A compromised or over-delegated SystemOperator can no
-        // longer redirect another tenant's AIA/CDP/OCSP URLs.
+        // longer redirect another space's AIA/CDP/OCSP URLs.
         var owningCa = await ResolveOwningCaAsync(caCertificateId);
         if (owningCa == null)
             return NotFound();
@@ -132,7 +124,7 @@ public class AdminCaServiceUrlController(
             "CaServiceUrl", caCertificateId.ToString(),
             new { Before = previousBaseUrl, After = request.PublicBaseUrl, Field = "PublicBaseUrl" },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
-            certificateAuthorityId: owningCa.Id, tenantId: owningCa.TenantId);
+            certificateAuthorityId: owningCa.Id, spaceId: owningCa.SpaceId);
 
         return Ok(entity);
     }
@@ -146,7 +138,7 @@ public class AdminCaServiceUrlController(
     [RequireStepUp(StepUpOps.DeleteCaServiceUrl, "caCertificateId")]
     public async Task<IActionResult> Delete(Guid caCertificateId)
     {
-        // Tenant fence.
+        // Space fence.
         var owningCa = await ResolveOwningCaAsync(caCertificateId);
         if (owningCa == null)
             return NotFound();
@@ -164,7 +156,7 @@ public class AdminCaServiceUrlController(
             "CaServiceUrl", caCertificateId.ToString(),
             new { Before = previousBaseUrl, After = (string?)null, Field = "PublicBaseUrl", Action = "Deleted" },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
-            certificateAuthorityId: owningCa.Id, tenantId: owningCa.TenantId);
+            certificateAuthorityId: owningCa.Id, spaceId: owningCa.SpaceId);
 
         return NoContent();
     }

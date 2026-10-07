@@ -34,7 +34,7 @@ export interface CeilingNotice {
      */
     maxInputValue: string;
     /**
-     * 'warn' when exceeding this ceiling costs the operator the request outright — a tenant set to
+     * 'warn' when exceeding this ceiling costs the operator the request outright — a space set to
      * refuse. 'info' when it would merely be shortened. Rendering both the same way is wrong in one
      * of the two cases.
      */
@@ -82,19 +82,19 @@ function formatDate(iso: string): string {
  * Builds the notice shown beside the validity inputs from a pre-flight response.
  *
  * The parenthetical aside always names what the *other* layers would have allowed, because that is
- * the part that tells an operator whether raising the ceiling is even possible: a tenant cap of 730
- * days against a profile that allows three years is a tenant conversation, whereas the same 730
+ * the part that tells an operator whether raising the ceiling is even possible: a space cap of 730
+ * days against a profile that allows three years is a space conversation, whereas the same 730
  * days against a profile that allows exactly 730 is not.
  */
 export function describeCeiling(p: ValidityCeilingPreflight): CeilingNotice {
     const days = p.resolution.effectiveMaxDays;
     const profileAllows = formatIso8601Duration(p.certProfileValidityPeriodMax) ?? '1y';
-    const refuses = p.tenantCeilingApplies && p.tenantBehavior === 'Refuse';
+    const refuses = p.spaceCeilingApplies && p.spaceBehavior === 'Refuse';
 
     let text: string;
     switch (p.resolution.boundBy) {
-        case 'Tenant':
-            text = `Max ${days} days — capped by tenant '${p.tenantName ?? 'unknown'}'`
+        case 'Space':
+            text = `Max ${days} days — capped by space '${p.spaceName ?? 'unknown'}'`
                 + ` (profile allows ${profileAllows})`;
             break;
         case 'IssuingCa':
@@ -108,12 +108,12 @@ export function describeCeiling(p: ValidityCeilingPreflight): CeilingNotice {
             break;
     }
 
-    // Stated whenever the tenant refuses, not only when the tenant is the binding layer: the CA may
+    // Stated whenever the space refuses, not only when the space is the binding layer: the CA may
     // be the narrower limit today and stop being it after the CA is renewed, and an operator who
     // was never told about the refusal will meet it then.
-    if (refuses && p.tenantMaxValidityDays > 0) {
-        text += ` · Tenant '${p.tenantName ?? 'unknown'}' refuses requests beyond`
-            + ` ${p.tenantMaxValidityDays} days rather than shortening them`;
+    if (refuses && p.spaceMaxValidityDays > 0) {
+        text += ` · Space '${p.spaceName ?? 'unknown'}' refuses requests beyond`
+            + ` ${p.spaceMaxValidityDays} days rather than shortening them`;
     }
 
     return {

@@ -18,7 +18,7 @@ public enum SigningRefusalReason
     /// <summary>The key belongs to a different CA than the operation is for.</summary>
     CaMismatch,
 
-    /// <summary>The key belongs to a different tenant than the operation is for.</summary>
+    /// <summary>The key belongs to a different space than the operation is for.</summary>
     TenantMismatch,
 
     /// <summary>The context is missing something the policy needs, such as the CA an operation is for.</summary>
@@ -44,7 +44,9 @@ public enum SigningRefusalReason
 
     /// <summary>
     /// The material offered did not verify: a keystore file whose signature is not the pinned
-    /// signer's, or whose pin the signer could not authenticate. Nothing was written.
+    /// signer's, or whose pin the signer could not authenticate, or a wrapped secret that does
+    /// not authenticate under the key its header names. Nothing was written and nothing was
+    /// returned.
     /// </summary>
     IntegrityFailure,
 
@@ -64,17 +66,46 @@ public enum SigningRefusalReason
 
     /// <summary>
     /// The context named a ceremony the signer could not verify: no such ceremony, one that is
-    /// not approved, or one that names a different tenant or CA than the operation.
+    /// not approved, or one that names a different space or CA than the operation.
     /// </summary>
     CeremonyNotApproved,
 
     /// <summary>
-    /// The context named no ceremony, and the tenant the operation is for requires one: the
-    /// tenant's <c>RequireKeyCeremony</c> is set, or the tenant is not known to the signer at
+    /// The context named no ceremony, and the space the operation is for requires one: the
+    /// space's <c>RequireKeyCeremony</c> is set, or the space is not known to the signer at
     /// all, so no waiver of the requirement can be verified. Key generation, commit and import
-    /// for such a tenant happen only under an approved ceremony the signer can verify.
+    /// for such a space happen only under an approved ceremony the signer can verify.
     /// </summary>
     CeremonyRequired,
+
+    /// <summary>
+    /// The bytes offered for signature are not the structure the purpose signs: a certificate
+    /// purpose signs a DER v3 TBSCertificate, a CRL purpose a TBSCertList, an OCSP purpose a
+    /// ResponseData, and so on. Bytes that do not parse, parse as something else, are not DER,
+    /// or carry trailing data are refused before any key is used.
+    /// </summary>
+    UntypedData,
+
+    /// <summary>
+    /// The structure names a signature algorithm other than the one the request asks the key to
+    /// sign with, so the signature would not verify as the structure claims.
+    /// </summary>
+    AlgorithmMismatch,
+
+    /// <summary>
+    /// The structure names an issuer or responder other than the certificate of the key that
+    /// would sign it: a TBSCertificate or TBSCertList whose issuer is not the CA's subject, or an
+    /// OCSP ResponseData whose responder id is not the signing certificate's.
+    /// </summary>
+    IssuerMismatch,
+
+    /// <summary>
+    /// The structure grants authority the signer has no evidence for: a certificate asserting
+    /// <c>cA=TRUE</c> for a key the signer did not generate under a ceremony for a new CA (or
+    /// has already certified as one), or an OCSP-signing certificate for a key the signer did
+    /// not generate for the signing CA. A ceremony id on the context is not such evidence.
+    /// </summary>
+    EvidenceRequired,
 }
 
 /// <summary>

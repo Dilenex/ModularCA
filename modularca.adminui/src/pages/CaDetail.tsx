@@ -7,9 +7,10 @@ import { apiGet, apiPostWithMfa } from '../api/client';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { StepUpOps } from '@shared/generated';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DetailPage, DetailSection } from '../components/DetailPage';
+import { ocspStatus } from './ocspReadiness';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -100,16 +101,17 @@ const CaDetail: React.FC = () => {
         return () => { cancelled = true; };
     }, [id]);
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return <InlineNotice notice={error} />;
     if (!ca) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">Certificate authority not found.</p>
-            <button onClick={() => navigate('/authorities/manage')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to CA Management</button>
+            <p className="text-sm text-ink-muted">Certificate authority not found.</p>
+            <button onClick={() => navigate('/authorities/manage')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to CA Management</button>
         </div>
     );
 
     const typeBadge = caTypeBadge(ca);
+    const ocsp = ocspStatus(ca.ocspResponder);
     // Wire name is `isEnabled`; `ca.enabled` was always undefined, so a disabled CA
     // presented as enabled here and in CaManagement.
     const enabled = !!ca.isEnabled;
@@ -126,7 +128,7 @@ const CaDetail: React.FC = () => {
         <DetailPage
             breadcrumbs={[{ label: 'CA Management', to: '/authorities/manage' }, { label: ca.name || ca.subjectDN }]}
             title={ca.name || ca.subjectDN}
-            status={<span className="flex items-center gap-2"><StatusBadge status={typeBadge.status} label={typeBadge.label} /><StatusBadge status={enabled ? 'enabled' : 'disabled'} label={enabled ? 'Enabled' : 'Disabled'} /></span>}
+            status={<span className="flex items-center gap-2"><Tag label={typeBadge.label} /><StatusBadge status={enabled ? 'enabled' : 'disabled'} label={enabled ? 'Enabled' : 'Disabled'} /></span>}
             subtitle={ca.label ? <span className="font-mono">{ca.label}</span> : undefined}
             backTo="/authorities/manage"
         >
@@ -134,7 +136,7 @@ const CaDetail: React.FC = () => {
                 <DetailSection title="CA Information">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
                         <DetailField label="Label" value={ca.label} mono />
-                        {ca.tenantName && <DetailField label="Tenant" value={ca.tenantName} />}
+                        {ca.spaceName && <DetailField label="Space" value={ca.spaceName} />}
                         <DetailField label="Default" value={ca.isDefault ? 'Yes' : 'No'} />
                         {ca.parentCaId && <DetailField label="Parent CA" value={ca.parentCaId} mono />}
                     </div>
@@ -142,7 +144,7 @@ const CaDetail: React.FC = () => {
 
                 <DetailSection title="Certificate Details">
                     {!cert ? (
-                        <div className="text-xs text-gray-600 dark:text-gray-400">No certificate data available</div>
+                        <div className="text-xs text-ink-muted">No certificate data available</div>
                     ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
                             <DetailField label="Subject" value={cert.subjectDN} />
@@ -161,8 +163,8 @@ const CaDetail: React.FC = () => {
 
                 {ca.protocolConfigs && ca.protocolConfigs.length > 0 && (
                     <DetailSection title="Protocol Configurations">
-                        <p className="mb-2 text-xs text-gray-600 dark:text-gray-400">
-                            Setting this CA up for Windows clients? <Link to={`/authorities/windows/${ca.id}`} className="text-blue-600 dark:text-blue-400 hover:underline">Windows Autoenrollment</Link> checks every prerequisite in order and links to each.
+                        <p className="mb-2 text-xs text-ink-muted">
+                            Setting this CA up for Windows clients? <Link to={`/authorities/windows/${ca.id}`} className="text-accent-ink hover:underline">Windows Autoenrollment</Link> checks every prerequisite in order and links to each.
                         </p>
                         <div className="overflow-x-auto">
                             <DataTable<any>
@@ -172,9 +174,9 @@ const CaDetail: React.FC = () => {
                                 empty="No protocol configuration"
                                 disableExport
                                 columns={[
-                                    { key: 'protocol', header: 'Protocol', defaultWidth: 120, sortable: true, exportValue: (pc: any) => pc.protocol || pc.name, render: (pc: any) => <span className="text-gray-700 dark:text-gray-300">{pc.protocol || pc.name}</span> },
-                                    { key: 'enabled', header: 'Enabled', defaultWidth: 100, truncate: false, sortable: true, sortValue: (pc: any) => !!pc.enabled, exportValue: (pc: any) => (pc.enabled ? 'Yes' : 'No'), render: (pc: any) => <StatusBadge status={pc.enabled ? 'enabled' : 'disabled'} label={pc.enabled ? 'Yes' : 'No'} /> },
-                                    { key: 'profile', header: 'Profile', flex: true, exportValue: (pc: any) => pc.signingProfileName || pc.signingProfile || pc.certProfile || '', render: (pc: any) => <span className="text-gray-600 dark:text-gray-400 truncate">{pc.signingProfileName || pc.signingProfile || pc.certProfile || '-'}</span> },
+                                    { key: 'protocol', header: 'Protocol', defaultWidth: 120, sortable: true, exportValue: (pc: any) => pc.protocol || pc.name, render: (pc: any) => <span className="text-ink">{pc.protocol || pc.name}</span> },
+                                    { key: 'enabled', header: 'Enabled', defaultWidth: 100, truncate: false, sortable: true, sortValue: (pc: any) => !!pc.enabled, exportValue: (pc: any) => (pc.enabled ? 'Yes' : 'No'), render: (pc: any) => <StatusBadge status={pc.enabled ? 'enabled' : 'disabled'} /> },
+                                    { key: 'profile', header: 'Profile', flex: true, exportValue: (pc: any) => pc.signingProfileName || pc.signingProfile || pc.certProfile || '', render: (pc: any) => <span className="text-ink-muted truncate">{pc.signingProfileName || pc.signingProfile || pc.certProfile || '-'}</span> },
                                 ] as DataTableColumn<any>[]}
                             />
                         </div>
@@ -184,7 +186,7 @@ const CaDetail: React.FC = () => {
                 {ca.serviceUrls && (
                     <DetailSection title="Service URLs">
                         <div className="flex items-center justify-end -mt-1 mb-2">
-                            <Link to="/distribution?tab=serviceurls" className="text-xs text-blue-500 hover:text-blue-400 underline">Edit on Distribution</Link>
+                            <Link to="/distribution?tab=serviceurls" className="text-xs text-accent-ink hover:underline underline">Edit on Distribution</Link>
                         </div>
                         <DetailField label="Public Base URL" value={ca.serviceUrls.publicBaseUrl || '(not set)'} mono />
                         {ca.serviceUrls.publicBaseUrl && (
@@ -197,11 +199,23 @@ const CaDetail: React.FC = () => {
                     </DetailSection>
                 )}
 
-                {ca.ocspResponder && (
+                {ocsp && (
                     <DetailSection title="OCSP Responder">
-                        <DetailField label="URL" value={ca.ocspResponder.url} mono />
-                        <DetailField label="Status" value={ca.ocspResponder.enabled ? 'Enabled' : 'Disabled'} />
-                        <DetailField label="Signing Cert" value={ca.ocspResponder.signingCertSubject} />
+                        <DetailField label="Status" value={<StatusBadge status={ocsp.status} label={ocsp.label} />} />
+                        {ca.ocspResponder.problem && <DetailField label="Reason" value={ca.ocspResponder.problem} />}
+                        {ca.ocspResponder.mode === 'off' && (
+                            <DetailField label="Reason" value="OCSP is switched off for this CA or for the instance, or the CA certificate is revoked or expired." />
+                        )}
+                        {ca.ocspResponder.mode === 'direct' && (
+                            <DetailField label="Signed by" value="The CA's own key. No responder certificate is set, and the security policy allows it." />
+                        )}
+                        <DetailField label="Signed by" value={ca.ocspResponder.responderSubject} />
+                        {ca.ocspResponder.responderSerial && (
+                            <DetailField label="Responder serial" mono value={
+                                <Link to={`/certificates/${ca.ocspResponder.responderSerial}`} className="text-accent-ink hover:underline">{ca.ocspResponder.responderSerial}</Link>
+                            } />
+                        )}
+                        {ca.ocspResponder.responderNotAfter && <DetailField label="Responder expires" value={formatDate(ca.ocspResponder.responderNotAfter)} />}
                     </DetailSection>
                 )}
 
@@ -210,17 +224,27 @@ const CaDetail: React.FC = () => {
                     looks when OCSP is answering "unauthorized" — which is the state this repairs. */}
                 <DetailSection title="Infrastructure Certificates">
                     <div className="space-y-3">
-                        <p className="text-xs text-gray-600 dark:text-gray-400 max-w-3xl">
+                        <p className="text-xs text-ink-muted max-w-3xl">
                             Issues or reissues this CA's delegated OCSP responder, TSA certificate and CMP
                             signing certificate, repoints the CA at the new certificate, and registers it
                             with the running service. The new certificate is live immediately — no restart.
                         </p>
 
+                        {ca.ocspResponder?.problem && (
+                            <div className="rounded border border-crit/40 bg-crit-soft p-3 max-w-3xl">
+                                <p className="text-xs text-crit">
+                                    <strong>OCSP is refusing requests for this CA.</strong> {ca.ocspResponder.problem} Every
+                                    OCSP request for a certificate this CA issued is answered <code>unauthorized</code>.
+                                    Tick <em>OCSP responder</em> below and reissue.
+                                </p>
+                            </div>
+                        )}
+
                         {/* The CMP signer is the one of the three that is not issued at CA creation, so
                             its absence is a state the operator has to be told about here. */}
-                        {!ca.cmpSigningCertificateId && (
-                            <div className="rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/30 p-3 max-w-3xl">
-                                <p className="text-xs text-amber-900 dark:text-amber-300">
+                        {!ca.cmpSigningCertificateId && cert?.carriesDigitalSignature !== true && (
+                            <div className="rounded border border-warn/40 bg-warn-soft p-3 max-w-3xl">
+                                <p className="text-xs text-warn">
                                     <strong>No CMP signing certificate.</strong> If CMP is enabled on this CA, its
                                     signature-protected responses are signed with the CA certificate, which carries no
                                     <code> digitalSignature</code> key usage and is rejected by OpenSSL-based clients.
@@ -229,8 +253,16 @@ const CaDetail: React.FC = () => {
                                 </p>
                             </div>
                         )}
-                        <div className="rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/30 p-3 max-w-3xl">
-                            <p className="text-xs text-amber-900 dark:text-amber-300">
+                        {!ca.cmpSigningCertificateId && cert?.carriesDigitalSignature === true && (
+                            <p className="text-xs text-ink-muted max-w-3xl">
+                                <strong className="text-ink">No CMP signing certificate.</strong> If CMP is enabled on
+                                this CA, its signature-protected responses are signed with the CA's own key. Tick
+                                <em> CMP signer</em> below and reissue to give CMP a certificate of its own, which can
+                                be replaced without touching the CA.
+                            </p>
+                        )}
+                        <div className="rounded border border-warn/40 bg-warn-soft p-3 max-w-3xl">
+                            <p className="text-xs text-warn">
                                 <strong>Use this rather than the generic certificate Reissue action.</strong> That
                                 action revokes the old certificate and issues a replacement, but it does not
                                 update which certificate this CA points at — leaving the CA referencing a revoked
@@ -240,21 +272,21 @@ const CaDetail: React.FC = () => {
                         </div>
 
                         <div className="flex flex-wrap items-center gap-4">
-                            <label className="flex items-center gap-2 text-sm text-gray-900 dark:text-white cursor-pointer">
+                            <label className="flex items-center gap-2 text-sm text-ink cursor-pointer">
                                 <input type="checkbox" checked={reissueOcsp} onChange={(e) => setReissueOcsp(e.target.checked)} />
                                 OCSP responder
                             </label>
-                            <label className="flex items-center gap-2 text-sm text-gray-900 dark:text-white cursor-pointer">
+                            <label className="flex items-center gap-2 text-sm text-ink cursor-pointer">
                                 <input type="checkbox" checked={reissueTsa} onChange={(e) => setReissueTsa(e.target.checked)} />
                                 TSA signer
                             </label>
-                            <label className="flex items-center gap-2 text-sm text-gray-900 dark:text-white cursor-pointer">
+                            <label className="flex items-center gap-2 text-sm text-ink cursor-pointer">
                                 <input type="checkbox" checked={reissueCmp} onChange={(e) => setReissueCmp(e.target.checked)} />
                                 <span title="Dedicated certificate that signs CMP responses (RFC 4210). Needed for signature-protected CMP; PBMAC clients do not use it.">
                                     CMP signer{ca.cmpSigningCertificateId ? '' : ' (not yet issued)'}
                                 </span>
                             </label>
-                            <label className="flex items-center gap-2 text-sm text-gray-900 dark:text-white cursor-pointer">
+                            <label className="flex items-center gap-2 text-sm text-ink cursor-pointer">
                                 <input type="checkbox" checked={revokeSuperseded} onChange={(e) => setRevokeSuperseded(e.target.checked)} />
                                 <span title="Leave on unless you have a reason to keep two valid responders for this CA. A predecessor that is already revoked is untouched either way.">
                                     Revoke the replaced certificate
@@ -265,30 +297,30 @@ const CaDetail: React.FC = () => {
                         <button
                             onClick={handleReissueInfrastructure}
                             disabled={reissuing || (!reissueOcsp && !reissueTsa && !reissueCmp)}
-                            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                            className="px-3 py-1.5 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
                             {reissuing ? 'Reissuing…' : 'Reissue Infrastructure Certificates'}
                         </button>
 
                         {reissueResult && (
-                            <div className="rounded border border-green-300 dark:border-green-800 bg-green-50 dark:bg-green-900/30 p-3 max-w-3xl space-y-1">
-                                <p className="text-xs text-green-900 dark:text-green-300">{reissueResult.message}</p>
+                            <div className="rounded border border-ok/40 bg-ok-soft p-3 max-w-3xl space-y-1">
+                                <p className="text-xs text-ok">{reissueResult.message}</p>
                                 {reissueResult.newOcspResponderSerial && (
-                                    <p className="text-xs text-green-900 dark:text-green-300 font-mono">
+                                    <p className="text-ok data-mono">
                                         New OCSP responder: {reissueResult.newOcspResponderSerial}
                                     </p>
                                 )}
                                 {reissueResult.newTsaSerial && (
-                                    <p className="text-xs text-green-900 dark:text-green-300 font-mono">
+                                    <p className="text-ok data-mono">
                                         New TSA: {reissueResult.newTsaSerial}
                                     </p>
                                 )}
                                 {reissueResult.newCmpSignerSerial && (
-                                    <p className="text-xs text-green-900 dark:text-green-300 font-mono">
+                                    <p className="text-ok data-mono">
                                         New CMP signer: {reissueResult.newCmpSignerSerial}
                                     </p>
                                 )}
                                 {reissueResult.supersededRevoked?.length > 0 && (
-                                    <p className="text-xs text-green-900 dark:text-green-300 font-mono">
+                                    <p className="text-ok data-mono">
                                         Revoked as superseded: {reissueResult.supersededRevoked.join(', ')}
                                     </p>
                                 )}
@@ -296,7 +328,7 @@ const CaDetail: React.FC = () => {
                         )}
 
                         {reissueError && (
-                            <div className="rounded border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/30 p-3 max-w-3xl">
+                            <div className="rounded border border-crit/40 bg-crit-soft p-3 max-w-3xl">
                                 <InlineNotice notice={reissueError} variant="line" />
                             </div>
                         )}
@@ -306,7 +338,7 @@ const CaDetail: React.FC = () => {
 
                 <DetailSection title="Quick Links">
                     <Link to={`/distribution?tab=ldap&caId=${caKey(ca)}`}
-                        className="px-3 py-1 text-xs bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-900 transition-colors inline-block">
+                        className="px-3 py-1 text-xs bg-accent-soft text-accent-ink border border-accent/40 rounded hover:bg-accent/15 transition-colors inline-block">
                         LDAP Publishers
                     </Link>
                 </DetailSection>

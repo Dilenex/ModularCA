@@ -10,7 +10,7 @@ export interface DatabaseData {
     appUsername: string;
     auditDatabase: string;
     auditUsername: string;
-    /** MySQL TLS mode. Round-trips to setup-database.yaml then to db.yaml. */
+    /** PostgreSQL TLS mode. Round-trips to setup-database.yaml then to db.yaml. */
     sslMode: string;
     /**
      * Discard any existing audit history instead of preserving it. Defaults to false: audit
@@ -31,8 +31,8 @@ interface DatabaseConfigProps {
     onNext: () => void;
 }
 
-const inputClass = "w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-blue-500";
-const labelClass = "block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1";
+const inputClass = "w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent";
+const labelClass = "block text-sm font-medium text-ink mb-1";
 
 /// <summary>
 /// Database configuration step. Auto-skips (calls onNext) when setup-database.yaml
@@ -178,7 +178,7 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
     if (!needsDbConfig && !staleDb) {
         return (
             <div className="flex items-center justify-center py-12">
-                <svg className="animate-spin h-6 w-6 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <svg className="animate-spin h-6 w-6 text-accent-ink" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
@@ -193,21 +193,21 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
     return (
         <div className="space-y-6">
             <div>
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Database Configuration</h2>
-                <p className="text-gray-600 dark:text-gray-400 mt-1">
+                <h2 className="text-2xl font-bold text-ink">Database Configuration</h2>
+                <p className="text-ink-muted mt-1">
                     {staleDb
                         ? 'An existing database was detected from a previous installation.'
-                        : 'No database configuration was found. Enter your MySQL/MariaDB root credentials.'}
+                        : 'No database configuration was found. Enter your PostgreSQL superuser credentials.'}
                 </p>
             </div>
 
             {/* Stale DB recovery */}
             {staleDb && (
-                <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-lg p-4 space-y-3">
+                <div className="bg-warn-soft border border-warn/40 rounded-lg p-4 space-y-3">
                     <div>
-                        <h3 className="text-sm font-semibold text-amber-800 dark:text-amber-200">Existing database detected</h3>
-                        <p className="text-sm text-amber-700 dark:text-amber-300 mt-1">
-                            The application database identified in <code className="bg-amber-100 dark:bg-amber-900/40 px-1 rounded">setup-database.yaml</code> already
+                        <h3 className="text-sm font-semibold text-warn">Existing database detected</h3>
+                        <p className="text-sm text-warn mt-1">
+                            The application database identified in <code className="bg-warn-soft px-1 rounded">setup-database.yaml</code> already
                             contains certificate authorities from a previous installation. Drop the existing databases to start fresh,
                             or stop the wizard and back up the data first.
                         </p>
@@ -217,12 +217,12 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                             <button
                                 onClick={() => { setDropResult(null); setShowDropConfirm(true); }}
                                 disabled={droppingDb}
-                                className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-400 dark:disabled:bg-gray-600 text-white text-sm font-medium rounded transition-colors disabled:cursor-not-allowed"
+                                className="px-4 py-2 bg-crit hover:bg-crit-hover disabled:bg-ink-faint text-on-accent text-sm font-medium rounded transition-colors disabled:cursor-not-allowed"
                             >
                                 {droppingDb ? 'Dropping...' : 'Drop existing databases'}
                             </button>
                             {dropResult && (
-                                <span className={`text-sm ${dropResult.ok ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                                <span className={`text-sm ${dropResult.ok ? 'text-ok' : 'text-crit'}`}>
                                     {dropResult.ok ? '\u2713 ' : '\u2717 '}{dropResult.message}
                                 </span>
                             )}
@@ -233,16 +233,16 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                         destructive DROP is gated by an explicit, dark-mode-friendly,
                         keyboard-accessible click rather than a native browser dialog. */}
                     {showDropConfirm && (
-                        <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-lg p-4 space-y-3">
+                        <div className="bg-crit-soft border border-crit/40 rounded-lg p-4 space-y-3">
                             <div>
-                                <h4 className="text-sm font-semibold text-red-800 dark:text-red-200">
+                                <h4 className="text-sm font-semibold text-crit">
                                     Permanently drop existing databases?
                                 </h4>
-                                <p className="text-sm text-red-700 dark:text-red-300 mt-1">
+                                <p className="text-sm text-crit mt-1">
                                     This will <strong>permanently DROP</strong> the application database
-                                    (<code className="bg-red-100 dark:bg-red-900/40 px-1 rounded">{data.appDatabase}</code>)
+                                    (<code className="bg-crit-soft px-1 rounded">{data.appDatabase}</code>)
                                     and the audit database
-                                    (<code className="bg-red-100 dark:bg-red-900/40 px-1 rounded">{data.auditDatabase}</code>),
+                                    (<code className="bg-crit-soft px-1 rounded">{data.auditDatabase}</code>),
                                     including all certificate authorities, audit logs, and settings from the previous installation.
                                     This action cannot be undone.
                                 </p>
@@ -251,14 +251,14 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                                 <button
                                     onClick={handleDropDatabases}
                                     disabled={droppingDb}
-                                    className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-400 dark:disabled:bg-gray-600 text-white text-sm font-medium rounded transition-colors disabled:cursor-not-allowed"
+                                    className="px-4 py-2 bg-crit hover:bg-crit-hover disabled:bg-ink-faint text-on-accent text-sm font-medium rounded transition-colors disabled:cursor-not-allowed"
                                 >
                                     {droppingDb ? 'Dropping...' : 'Yes, drop databases permanently'}
                                 </button>
                                 <button
                                     onClick={() => setShowDropConfirm(false)}
                                     disabled={droppingDb}
-                                    className="px-4 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 text-sm font-medium rounded hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors disabled:cursor-not-allowed"
+                                    className="px-4 py-2 bg-raised border border-line-strong text-ink text-sm font-medium rounded hover:bg-hover transition-colors disabled:cursor-not-allowed"
                                 >
                                     Cancel
                                 </button>
@@ -269,7 +269,7 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                         <div className="text-center pt-2">
                             <button
                                 onClick={onNext}
-                                className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors"
+                                className="px-6 py-2 bg-accent hover:bg-accent-hover text-on-accent font-medium rounded-lg transition-colors"
                             >
                                 Continue
                             </button>
@@ -292,20 +292,20 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                             <label className={labelClass}>Port</label>
                             <input type="text" inputMode="numeric" value={data.rootPort}
                                 onChange={e => { const v = e.target.value.replace(/\D/g, ''); onChange({ ...data, rootPort: v === '' ? ('' as any) : parseInt(v) }); }}
-                                onBlur={() => { if (!data.rootPort) onChange({ ...data, rootPort: 3306 }); }}
+                                onBlur={() => { if (!data.rootPort) onChange({ ...data, rootPort: 5432 }); }}
                                 className={inputClass} />
                         </div>
                         <div>
-                            <label className={labelClass}>Root Username</label>
+                            <label className={labelClass}>Superuser Username</label>
                             <input type="text" value={data.rootUsername}
                                 onChange={e => onChange({ ...data, rootUsername: e.target.value })}
-                                placeholder="root" className={inputClass} />
+                                placeholder="postgres" className={inputClass} />
                         </div>
                         <div>
-                            <label className={labelClass}>Root Password</label>
+                            <label className={labelClass}>Superuser Password</label>
                             <input type="password" value={data.rootPassword}
                                 onChange={e => onChange({ ...data, rootPassword: e.target.value })}
-                                placeholder="Enter root password" className={inputClass} />
+                                placeholder="Enter superuser password" className={inputClass} />
                         </div>
                     </div>
 
@@ -318,21 +318,21 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                             onChange={e => onChange({ ...data, sslMode: e.target.value })}
                             className={inputClass}
                         >
-                            <option value="Required">Required (recommended)</option>
-                            <option value="Preferred">Preferred (TLS if available, plaintext fallback)</option>
+                            <option value="Require">Require (recommended)</option>
+                            <option value="Prefer">Prefer (TLS if available, plaintext fallback)</option>
                             <option value="VerifyCA">VerifyCA (TLS + CA chain validation)</option>
                             <option value="VerifyFull">VerifyFull (TLS + chain + hostname)</option>
-                            <option value="None">None (unencrypted — not recommended)</option>
+                            <option value="Disable">Disable (unencrypted — not recommended)</option>
                         </select>
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                            FISMA SC-8(1) / SC-28 require <code>Required</code> or stronger. Choose
-                            <code> None</code> only on a trusted loopback where MySQL is not configured for TLS.
+                        <p className="text-xs text-ink-muted mt-1">
+                            FISMA SC-8(1) / SC-28 require <code>Require</code> or stronger. Choose
+                            <code> Disable</code> only on a trusted loopback where PostgreSQL is not configured for TLS.
                         </p>
                     </div>
 
                     {/* Advanced: database names */}
                     <details className="text-sm">
-                        <summary className="text-gray-600 cursor-pointer hover:text-gray-700 dark:hover:text-gray-300">
+                        <summary className="text-ink-muted cursor-pointer hover:text-ink">
                             Advanced: Database names &amp; app users
                         </summary>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3">
@@ -366,8 +366,8 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                                         onChange={e => onChange({ ...data, wipeAuditDatabase: e.target.checked })}
                                         className="mt-1" />
                                     <span>
-                                        <span className="text-sm text-gray-900 dark:text-white">Erase existing audit history</span>
-                                        <span className="block text-xs text-gray-600 dark:text-gray-400">
+                                        <span className="text-sm text-ink">Erase existing audit history</span>
+                                        <span className="block text-xs text-ink-muted">
                                             Leave unchecked to keep audit records from a previous install on this host.
                                             Preserved history is what makes the audit trail tamper-evident across a
                                             reinstall; checking this destroys it permanently.
@@ -383,17 +383,17 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                         <button
                             onClick={handleTestDb}
                             disabled={testingDb || !data.rootPassword}
-                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 dark:disabled:bg-gray-600 text-white text-sm font-medium rounded transition-colors disabled:cursor-not-allowed"
+                            className="px-4 py-2 bg-accent hover:bg-accent-hover disabled:bg-ink-faint text-on-accent text-sm font-medium rounded transition-colors disabled:cursor-not-allowed"
                         >
                             {testingDb ? 'Testing...' : 'Test Connection'}
                         </button>
                         {dbTestResult && (
                             dbTestResult.connected ? (
-                                <span className="text-sm text-green-600 dark:text-green-400">
+                                <span className="text-sm text-ok">
                                     &#10003; Connected{dbTestResult.databaseExists ? ' (database exists)' : ' (database will be created)'}
                                 </span>
                             ) : (
-                                <span className="text-sm text-red-600 dark:text-red-400">
+                                <span className="text-sm text-crit">
                                     &#10007; {dbTestResult.error || 'Connection failed'}
                                 </span>
                             )
@@ -406,7 +406,7 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                             <button
                                 onClick={handleSaveAndRestart}
                                 disabled={restarting}
-                                className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 dark:disabled:bg-blue-800 text-white font-medium rounded-lg transition-colors disabled:cursor-not-allowed"
+                                className="px-6 py-2 bg-accent hover:bg-accent-hover disabled:bg-ink-faint text-on-accent font-medium rounded-lg transition-colors disabled:cursor-not-allowed"
                             >
                                 {restarting ? 'Saving & restarting...' : 'Save & Continue'}
                             </button>
@@ -415,13 +415,13 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
 
                     {/* Restart status */}
                     {restarting && (
-                        <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 text-center">
+                        <div className="bg-info-soft border border-info/40 rounded-lg p-4 text-center">
                             <div className="flex items-center justify-center gap-3">
-                                <svg className="animate-spin h-5 w-5 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <svg className="animate-spin h-5 w-5 text-accent-ink" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                                 </svg>
-                                <span className="text-blue-700 dark:text-blue-300 font-medium">
+                                <span className="text-accent-ink font-medium">
                                     Database credentials saved. Server is restarting...
                                 </span>
                             </div>
@@ -429,19 +429,19 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                     )}
 
                     {saveRejected && (
-                        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
-                            <p className="text-red-800 dark:text-red-300 font-medium">Database configuration was not saved.</p>
-                            <p className="text-red-700 dark:text-red-400 text-sm mt-1">{saveRejected}</p>
-                            <p className="text-red-700 dark:text-red-400 text-sm mt-1">
+                        <div className="bg-crit-soft border border-crit/40 rounded-lg p-4">
+                            <p className="text-crit font-medium">Database configuration was not saved.</p>
+                            <p className="text-crit text-sm mt-1">{saveRejected}</p>
+                            <p className="text-crit text-sm mt-1">
                                 Nothing has changed on the server. Correct the settings above and try again.
                             </p>
                         </div>
                     )}
 
                     {restartFailed && (
-                        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-4">
-                            <p className="text-amber-800 dark:text-amber-300 font-medium">Database credentials saved. Server will restart with new TLS certificate. Please refresh your browser to access the setup page again.</p>
-                            <p className="text-amber-700 dark:text-amber-400 text-sm mt-1">
+                        <div className="bg-warn-soft border border-warn/40 rounded-lg p-4">
+                            <p className="text-warn font-medium">Database credentials saved. Server will restart with new TLS certificate. Please refresh your browser to access the setup page again.</p>
+                            <p className="text-warn text-sm mt-1">
                                 If the page is still unavailable, verify the server restarted correctly.
                             </p>
                         </div>

@@ -5,7 +5,7 @@ namespace ModularCA.Shared.Entities;
 
 /// <summary>
 /// Represents a CA-scoped or system-wide authorization group.
-/// Groups carry scope (which CA/tenant) and are linked to capabilities via the CapabilityGrants table.
+/// Groups carry scope (which CA/space) and are linked to capabilities via the CapabilityGrants table.
 /// Auto-generated groups are created per CA during bootstrap.
 /// </summary>
 public class CaGroupEntity
@@ -76,12 +76,10 @@ public class CaGroupEntity
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     /// <summary>
-    /// The tenant this group belongs to. Required for all groups.
-    /// Inherited from the associated CA when auto-generated, or set explicitly for custom groups.
-    /// System groups use the System tenant.
+    /// The space this group belongs to, or null for an instance group: the system groups and
+    /// the groups of instance CAs. Inherited from the associated CA when auto-generated.
     /// </summary>
-    [Required]
-    public Guid TenantId { get; set; }
+    public Guid? SpaceId { get; set; }
 
     /// <summary>
     /// The CA that signs mTLS client certificates for members of this group.
@@ -106,8 +104,4 @@ public class CaGroupEntity
 
     /// <summary>Roles assigned to this group.</summary>
     public virtual ICollection<RoleAssignmentEntity> RoleAssignments { get; set; } = new List<RoleAssignmentEntity>();
-
-    /// <summary>Optimistic concurrency token (MySQL TIMESTAMP(6)).</summary>
-    [Timestamp]
-    public byte[]? RowVersion { get; set; }
 }

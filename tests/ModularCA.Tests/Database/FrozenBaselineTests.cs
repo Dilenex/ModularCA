@@ -1,0 +1,80 @@
+using System.Security.Cryptography;
+using Xunit;
+
+namespace ModularCA.Tests.Database;
+
+/// <summary>
+/// The two frozen baselines stay byte-for-byte what production and staging applied on
+/// 2026-09-19, and the 0.4.0 migrations after them stay as written. Editing or regenerating one
+/// passes every other test, because nothing else compares a migration's text with what a live
+/// database recorded as applied. The hash ignores a leading UTF-8 byte order mark and every
+/// carriage return, so a checkout's line endings do not matter.
+/// </summary>
+public class FrozenBaselineTests
+{
+    public static TheoryData<string, string> Baselines() => new()
+    {
+        { "ModularCA.Database/Migrations/20260919181506_InitialCreate.cs", "b1ad4f155fd738e7e733d37080c0aceeb623b300717815c4a44d714afc8de24b" },
+        { "ModularCA.Database/Migrations/20260919181506_InitialCreate.Designer.cs", "5d933fa9e10177d29cd28853a8483cf48dceaac395167de1d2522c78e1ab4a3b" },
+        { "ModularCA.Database/Migrations/Audit/20260919181510_InitialAuditSchema.cs", "60c09e23660bd4a7c0438e8ccd800ff6caf7fb685b9cc956e0614bb63f209f89" },
+        { "ModularCA.Database/Migrations/Audit/20260919181510_InitialAuditSchema.Designer.cs", "65f03a5cd541e9cdadf1fd9ac49c9787a7e492955f2a969badd6985539defd5c" },
+        { "ModularCA.Database/Migrations/20260928221118_RetireTenantHostnames.cs", "e2bbdaf780a0dadea929fc14e4af18bfe42d8958d5f0f3c39034816ca84cda72" },
+        { "ModularCA.Database/Migrations/20260928221118_RetireTenantHostnames.Designer.cs", "ac3faaa65310b11f75e65c4609fb88b959424a8e506faa769959a49d855ffecb" },
+        { "ModularCA.Database/Migrations/20260929051025_FoldSystemTenant.cs", "75df215642b49f5138a02bb89911f4685caf1ba4f3da6b0689ea59838e0578d3" },
+        { "ModularCA.Database/Migrations/20260929051025_FoldSystemTenant.Designer.cs", "d551ca553511bb480ed49d6e7f65eb374a32b56557d947e53ad83b5c1d88f446" },
+        { "ModularCA.Database/Migrations/20261002063527_InstanceUniqueCaNames.cs", "9dede60cd637444e3e270f4fc8baeec28b689800cb075c06b3de35bcb5abba5b" },
+        { "ModularCA.Database/Migrations/20261002063527_InstanceUniqueCaNames.Designer.cs", "2a9c245bd5c2c95195915be692f7936f7cc3e6e0aa0d70cc3d209967712863cd" },
+        { "ModularCA.Database/Migrations/20261003072435_RenameTenantToSpace.cs", "96646ab0c761dd7c70fb85ccd0e8458bbb7e9a43a27c4c741542196cc20c1ac3" },
+        { "ModularCA.Database/Migrations/20261003072435_RenameTenantToSpace.Designer.cs", "e13a00d2c2b0281a35c418b211e77d531ebff14c2a582b0d8fd909cdbafb6766" },
+        { "ModularCA.Database/Migrations/20261004051130_BindAcmeAccountsToCa.cs", "d4d058fbd42c8ceec9af88219859cfce86d8a91a14688623da58a3aa68084896" },
+        { "ModularCA.Database/Migrations/20261004051130_BindAcmeAccountsToCa.Designer.cs", "eb11701db759c4e51b0cb646ec067242fbad70633842ca7805109d3dffb8ec10" },
+        { "ModularCA.Database/Migrations/20261005085121_CertificateLifecycleIndexes.cs", "467bff55ba64fe37aeb90c5be6f575b728ba88797563aab7396ca96f4b4e152d" },
+        { "ModularCA.Database/Migrations/20261005085121_CertificateLifecycleIndexes.Designer.cs", "0cf216aa31c03709b7749f3bafea526ca9b0da918f534a557a88f65018f0c79e" },
+        { "ModularCA.Database/Migrations/Audit/20261004050410_AuditRecordSpace.cs", "71b9b0fa57ff06305d305a289f43502b1200e5b5a22df9cc65a6e097efef788b" },
+        { "ModularCA.Database/Migrations/Audit/20261004050410_AuditRecordSpace.Designer.cs", "a4f6ab5b3538801587c7929451f774fc7fa74556879a93c7994f293bb11741a0" },
+        { "ModularCA.Database/Migrations/Audit/20261004064208_AuditCaLabelLowerIndexes.cs", "b5e3d1c720aa43d7a838e8b79e65156536bb81a869d9fb6c5c7d11641d55ab87" },
+        { "ModularCA.Database/Migrations/Audit/20261004064208_AuditCaLabelLowerIndexes.Designer.cs", "3ea458fea37e3afd1d44e1f6e32563bc0707c3a21dc4e2f268033dae6ad6f8a0" },
+    };
+
+    [Theory]
+    [MemberData(nameof(Baselines))]
+    public void A_frozen_baseline_is_unchanged(string relativePath, string pinnedSha256)
+    {
+        var path = Path.Combine(RepoRoot(), relativePath.Replace('/', Path.DirectorySeparatorChar));
+        Assert.True(File.Exists(path), $"{relativePath} is missing. It is a frozen migration; restore it.");
+
+        var actual = NormalisedSha256(File.ReadAllBytes(path));
+
+        Assert.True(actual == pinnedSha256,
+            $"{relativePath} has changed (normalised SHA-256 {actual}, pinned {pinnedSha256}). It is a frozen migration, and "
+            + "a database that already applied it never applies it again. Restore the file and add a migration instead "
+            + "(dotnet ef migrations add).");
+    }
+
+    [Fact]
+    public void Normalisation_ignores_the_byte_order_mark_and_carriage_returns_only()
+    {
+        byte[] lf = "a\nb\n"u8.ToArray();
+        byte[] crlfWithBom = [0xEF, 0xBB, 0xBF, .. "a\r\nb\r\n"u8.ToArray()];
+        Assert.Equal(NormalisedSha256(lf), NormalisedSha256(crlfWithBom));
+        Assert.NotEqual(NormalisedSha256(lf), NormalisedSha256("a\nb \n"u8.ToArray()));
+    }
+
+    /// <summary>SHA-256 of <paramref name="content"/> without a leading UTF-8 BOM and without any 0x0D byte, in lower-case hex.</summary>
+    private static string NormalisedSha256(byte[] content)
+    {
+        var start = content.Length >= 3 && content[0] == 0xEF && content[1] == 0xBB && content[2] == 0xBF ? 3 : 0;
+        var normalised = content.Skip(start).Where(b => b != 0x0D).ToArray();
+        return Convert.ToHexStringLower(SHA256.HashData(normalised));
+    }
+
+    /// <summary>The directory holding ModularCA.sln.</summary>
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null && !dir.EnumerateFiles("*.sln").Any())
+            dir = dir.Parent;
+        Assert.NotNull(dir);
+        return dir!.FullName;
+    }
+}

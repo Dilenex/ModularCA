@@ -41,7 +41,7 @@ public sealed class CsrServiceSignerCsrTests
         await db.SaveChangesAsync();
         var service = new CsrService(db, new HeldKeyService(db, new EphemeralDataProtectionProvider(), new RecordingAuditService()));
 
-        var ceremony = new SigningContext("csr-test", SigningPurpose.Ceremony, world.TenantA, world.CaRsaId);
+        var ceremony = new SigningContext("csr-test", SigningPurpose.Ceremony, world.SpaceA, world.CaRsaId);
         var generated = await signer.GenerateKeyAsync(new KeySpec("ECDSA", "P-256"), ceremony);
         var publicKey = PublicKeyFactory.CreateKey(generated.PublicKeyDer);
         var csrSigner = new SigningServiceSignatureFactory(signer, generated.Key,

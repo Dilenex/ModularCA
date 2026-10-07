@@ -70,13 +70,18 @@ public class WhitelistEntity
 
     /// <summary>
     /// JSON-encoded <c>List&lt;string&gt;</c> of CIDR ranges
-    /// (e.g. <c>["10.0.0.0/8","::1/128"]</c>). Stored as longtext so any
-    /// reasonable number of entries fits; callers should use
-    /// <see cref="CidrList"/> instead of touching this raw column. An empty
-    /// JSON array (<c>"[]"</c>) means "block everything" by design.
+    /// (e.g. <c>["10.0.0.0/8","::1/128"]</c>). Unbounded so any reasonable number of entries
+    /// fits; callers should use <see cref="CidrList"/> instead of touching this raw column. An
+    /// empty JSON array (<c>"[]"</c>) means "block everything" by design.
+    /// <para>
+    /// This carried <c>[Column(TypeName = "longtext")]</c> under MySQL, where an unannotated
+    /// string became a <c>varchar</c> that had to be given a length. PostgreSQL's <c>text</c>
+    /// is the default mapping for an unbounded string and has no length limit and no storage
+    /// penalty relative to <c>varchar</c>, so the annotation is simply gone rather than
+    /// translated.
+    /// </para>
     /// </summary>
     [Required]
-    [Column(TypeName = "longtext")]
     public string Cidrs { get; set; } = "[]";
 
     /// <summary>

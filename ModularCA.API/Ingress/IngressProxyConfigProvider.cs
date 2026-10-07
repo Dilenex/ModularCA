@@ -7,11 +7,11 @@ using Yarp.ReverseProxy.Health;
 namespace ModularCA.API.Ingress;
 
 /// <summary>
-/// Hands the route table to YARP: one route and one cluster per host that has an upstream,
-/// rebuilt whenever <see cref="IngressRouteTableService"/> reports a change. A host with no
-/// upstream has no route here, so a request for it is never proxied and falls through to the
-/// local roles. The translation is a pure function (<see cref="Build"/>) so the shape can be
-/// asserted without a host.
+/// Hands the route table to YARP: one route and one cluster per host that has an upstream.
+/// The table is fixed for the life of the process, so the configuration never changes. A host
+/// with no upstream has no route here, so a request for it is never proxied and falls through
+/// to the local roles. The translation is a pure function (<see cref="Build"/>) so the shape
+/// can be asserted without a host.
 /// </summary>
 public sealed class IngressProxyConfigProvider : IProxyConfigProvider, IDisposable
 {
@@ -30,23 +30,16 @@ public sealed class IngressProxyConfigProvider : IProxyConfigProvider, IDisposab
     /// <summary>Cluster metadata: <c>true</c> when every <c>https://</c> destination of the cluster is loopback.</summary>
     public const string LoopbackMetadata = "modularca.httpsLoopback";
 
-    /// <summary>Cluster metadata: where the route came from, <c>Configuration</c> or <c>Database</c>.</summary>
-    public const string SourceMetadata = "modularca.source";
-
     private const string IdPrefix = "ingress:";
 
-    private readonly IngressRouteTableService _table;
-    private readonly IngressConfig _config;
-    private readonly object _gate = new();
-    private volatile Snapshot _current;
+    private readonly Snapshot _current;
 
-    /// <summary>Creates the provider over the route table and subscribes to its changes.</summary>
+    /// <summary>Creates the provider over the route table.</summary>
     public IngressProxyConfigProvider(IngressRouteTableService table, IngressConfig config)
     {
-        _table = table ?? throw new ArgumentNullException(nameof(table));
-        _config = config ?? throw new ArgumentNullException(nameof(config));
+        ArgumentNullException.ThrowIfNull(table);
+        ArgumentNullException.ThrowIfNull(config);
         _current = Snapshot.From(Build(table.Routes, config));
-        _table.Changed += OnChanged;
     }
 
     /// <inheritdoc />
@@ -93,7 +86,6 @@ public sealed class IngressProxyConfigProvider : IProxyConfigProvider, IDisposab
             {
                 [HostMetadata] = route.Host,
                 [LoopbackMetadata] = httpsLoopback ? "true" : "false",
-                [SourceMetadata] = route.Source.ToString(),
             };
             if (route.PinnedSpki != null)
                 metadata[PinMetadata] = route.PinnedSpki;
@@ -129,24 +121,11 @@ public sealed class IngressProxyConfigProvider : IProxyConfigProvider, IDisposab
         return (routeConfigs, clusterConfigs);
     }
 
-    private void OnChanged()
-    {
-        lock (_gate)
-        {
-            var previous = _current;
-            _current = Snapshot.From(Build(_table.Routes, _config));
-            previous.SignalChange();
-        }
-    }
-
     /// <inheritdoc />
-    public void Dispose()
-    {
-        _table.Changed -= OnChanged;
-    }
+    public void Dispose() => _current.Dispose();
 
-    /// <summary>One immutable configuration with the token YARP watches for the next one.</summary>
-    private sealed class Snapshot : IProxyConfig
+    /// <summary>The one immutable configuration, with a change token that never fires.</summary>
+    private sealed class Snapshot : IProxyConfig, IDisposable
     {
         private readonly CancellationTokenSource _cts = new();
 
@@ -164,10 +143,6 @@ public sealed class IngressProxyConfigProvider : IProxyConfigProvider, IDisposab
         public IReadOnlyList<ClusterConfig> Clusters { get; }
         public IChangeToken ChangeToken { get; }
 
-        public void SignalChange()
-        {
-            _cts.Cancel();
-            _cts.Dispose();
-        }
+        public void Dispose() => _cts.Dispose();
     }
 }

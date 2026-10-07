@@ -23,9 +23,10 @@ import React from 'react';
  * in `MyCertificates`, which composes with `inputClassNarrow`.
  */
 export const inputClass =
-    'w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 ' +
-    'rounded text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 ' +
-    'focus:outline-none focus:border-blue-500 disabled:opacity-50';
+    'w-full px-3 py-2 bg-raised border border-line-strong ' +
+    'rounded text-sm text-ink placeholder-ink-faint ' +
+    'focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent ' +
+    'disabled:bg-sunken disabled:text-ink-faint disabled:cursor-not-allowed';
 
 /** Same, without `w-full`, for a field sized by its container. */
 export const inputClassNarrow = inputClass.replace('w-full ', '');
@@ -36,7 +37,7 @@ export const inputClassNarrow = inputClass.replace('w-full ', '');
  * `font-semibold` was present in ten of the eighteen label declarations and absent from eight;
  * the majority wins so the label weight stops changing from page to page.
  */
-export const labelClass = 'block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1';
+export const labelClass = 'block label-caps mb-1';
 
 /**
  * Helper text under a field: what a value means or what saving it does, visible without hovering.
@@ -48,7 +49,7 @@ export const labelClass = 'block text-xs font-semibold text-gray-600 dark:text-g
  * `aria-describedby` so assistive technology reads it too.
  */
 export const FieldHint: React.FC<{ id?: string; tone?: 'muted' | 'warn'; className?: string; children: React.ReactNode }> = ({ id, tone = 'muted', className = '', children }) => (
-    <p id={id} className={`mt-1 text-[11px] leading-snug ${tone === 'warn' ? 'text-amber-800 dark:text-amber-300' : 'text-gray-500 dark:text-gray-400'} ${className}`}>
+    <p id={id} className={`mt-1 text-xs ${tone === 'warn' ? 'text-warn' : 'text-ink-muted'} ${className}`}>
         {children}
     </p>
 );
@@ -69,14 +70,14 @@ export const InfoTip: React.FC<{ text: React.ReactNode; label?: string; classNam
                 type="button"
                 aria-label={label}
                 aria-describedby={id}
-                className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-gray-400 dark:border-gray-500 text-[10px] leading-none font-semibold text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 cursor-help select-none"
+                className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-line-strong text-[10px] leading-none font-semibold text-ink-muted hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent cursor-help select-none"
             >
                 i
             </button>
             <span
                 role="tooltip"
                 id={id}
-                className={`pointer-events-none absolute top-full mt-1.5 z-50 w-72 max-w-[80vw] rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-[11px] leading-snug text-left font-normal text-gray-700 dark:text-gray-200 shadow-lg opacity-0 invisible transition-opacity duration-100 group-hover:opacity-100 group-hover:visible group-focus-within:opacity-100 group-focus-within:visible ${align === 'right' ? 'right-0' : 'left-0'}`}
+                className={`pointer-events-none absolute top-full mt-1.5 z-50 w-72 max-w-[80vw] rounded-md border border-line bg-raised px-3 py-2 text-xs text-left font-normal normal-case tracking-normal text-ink shadow-lg opacity-0 invisible transition-opacity duration-100 group-hover:opacity-100 group-hover:visible group-focus-within:opacity-100 group-focus-within:visible ${align === 'right' ? 'right-0' : 'left-0'}`}
             >
                 {text}
             </span>
@@ -125,17 +126,17 @@ export const ToggleField: React.FC<{
             aria-describedby={descId}
             disabled={disabled}
             onClick={flip}
-            className={`relative shrink-0 ${track} rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'} ${checked ? 'bg-blue-600' : 'bg-gray-400 dark:bg-gray-600'}`}
+            className={`relative shrink-0 ${track} rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-raised ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'} ${checked ? 'bg-accent' : 'bg-ink-faint'}`}
         >
-            <span className={`absolute top-0.5 left-0.5 ${knob} rounded-full bg-white shadow transition-transform ${checked ? shift : ''}`} />
+            <span className={`absolute top-0.5 left-0.5 ${knob} rounded-full bg-white transition-transform ${checked ? shift : ''}`} />
         </button>
     );
 
     const text = (
-        <span id={`${id}-label`} onClick={flip} className={`${disabled ? '' : 'cursor-pointer'} ${labelSide === 'left' ? 'text-xs text-gray-700 dark:text-gray-300' : 'text-gray-700 dark:text-gray-300'}`}>{label}</span>
+        <span id={`${id}-label`} onClick={flip} className={`${disabled ? '' : 'cursor-pointer'} ${labelSide === 'left' ? 'text-xs text-ink' : 'text-ink'}`}>{label}</span>
     );
     const desc = description
-        ? <p id={descId} className={`${labelSide === 'left' ? 'text-[10px]' : 'text-[11px]'} text-gray-600 dark:text-gray-400`}>{description}</p>
+        ? <p id={descId} className="text-xs text-ink-muted">{description}</p>
         : null;
 
     if (labelSide === 'left') {

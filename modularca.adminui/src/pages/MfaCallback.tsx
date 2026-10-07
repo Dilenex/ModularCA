@@ -62,21 +62,21 @@ const MfaCallback: React.FC = () => {
 
     if (showDisclaimer) {
         return (
-            <div className="flex justify-center items-center min-h-screen bg-gray-50 dark:bg-gray-900 px-4">
-                <div className="bg-gray-100 dark:bg-gray-800 p-8 rounded-lg shadow-lg w-full max-w-md border border-gray-300 dark:border-gray-700 space-y-5">
+            <div className="flex justify-center items-center min-h-screen bg-ground px-4">
+                <div className="bg-raised p-8 rounded-lg shadow-lg w-full max-w-md border border-line space-y-5">
                     <div className="text-center">
-                        <div className="text-green-800 dark:text-green-400 text-lg font-semibold">Authenticated with Client Certificate</div>
+                        <div className="text-ok text-lg font-semibold">Authenticated with Client Certificate</div>
                     </div>
 
-                    <div className="bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-300 dark:border-yellow-700 rounded-lg p-4 space-y-2">
-                        <p className="text-yellow-800 dark:text-yellow-300 text-sm font-semibold">Recommendation: Set up TOTP or a Security Key</p>
-                        <p className="text-yellow-800 dark:text-yellow-200/80 text-xs leading-relaxed">
+                    <div className="bg-warn-soft border border-warn/40 rounded-lg p-4 space-y-2">
+                        <p className="text-warn text-sm font-semibold">Recommendation: Set up TOTP or a Security Key</p>
+                        <p className="text-warn text-xs leading-relaxed">
                             Your account currently uses only a client certificate for MFA.
                             Destructive operations (revoking certificates or CAs, changing security settings)
                             require active step-up verification via TOTP or a security key —
                             client certificates alone cannot be used for step-up.
                         </p>
-                        <p className="text-yellow-800 dark:text-yellow-200/80 text-xs leading-relaxed">
+                        <p className="text-warn text-xs leading-relaxed">
                             Without TOTP or WebAuthn configured, you will be unable to perform
                             sensitive operations.
                         </p>
@@ -85,7 +85,7 @@ const MfaCallback: React.FC = () => {
                     <div className="flex gap-3">
                         <button
                             onClick={() => navigate('/mfa-setup', { replace: true })}
-                            className="flex-1 bg-blue-600 text-gray-900 dark:text-white py-2 rounded hover:bg-blue-700 transition-colors text-sm"
+                            className="flex-1 bg-accent text-on-accent py-2 rounded hover:bg-accent-hover transition-colors text-sm"
                         >
                             Set Up Now
                         </button>
@@ -94,7 +94,7 @@ const MfaCallback: React.FC = () => {
                                 const me = await apiGet<PortalUser>('/api/v1/me').catch(() => null);
                                 window.location.replace(consumeReturnUrl() ?? homeFor(me));
                             }}
-                            className="flex-1 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 py-2 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors text-sm"
+                            className="flex-1 bg-sunken text-ink py-2 rounded hover:bg-hover transition-colors text-sm"
                         >
                             Skip for Now
                         </button>
@@ -105,10 +105,10 @@ const MfaCallback: React.FC = () => {
     }
 
     return (
-        <div className="flex justify-center items-center min-h-screen bg-gray-50 dark:bg-gray-900">
+        <div className="flex justify-center items-center min-h-screen bg-ground">
             <div className="text-center space-y-3">
-                <div className="text-gray-900 dark:text-white text-lg">Completing authentication...</div>
-                <div className="text-gray-600 dark:text-gray-400 text-sm">You will be redirected shortly.</div>
+                <div className="text-ink text-lg">Completing authentication...</div>
+                <div className="text-ink-muted text-sm">You will be redirected shortly.</div>
             </div>
         </div>
     );

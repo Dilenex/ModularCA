@@ -7,13 +7,14 @@ import { apiGet, apiPostWithMfa, apiPutWithMfa, apiDeleteWithMfa } from '../api/
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { useAuth } from '../context/AuthContext';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
+import TemporaryPasswordModal from '../components/TemporaryPasswordModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
-import { groupChipClass } from './Users';
 import { StepUpOps } from '@shared/generated';
 import { AccessBadgesPanel } from '@shared-auth/components/AccessBadgesPanel';
+import { actionButton, actionButtonDanger, actionButtonPrimary } from '@shared/components/actionButtons';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -22,8 +23,10 @@ function formatDate(d: string | null) {
 
 /// <summary>
 /// Detail page for a single user: identity, group membership management (add/remove, ceremony-aware),
-/// and guarded account actions (reset password, disable/enable, delete) in the action bar. The page is
-/// View/Edit — Edit mode exposes the add/remove-group controls.
+/// and guarded account actions (reset password, reset MFA, disable/enable, delete) in the action bar,
+/// each of which opens an approval ceremony instead when the server answers 202. A direct password
+/// reset shows the temporary password once. The page is View/Edit — Edit mode exposes the
+/// add/remove-group controls.
 /// </summary>
 const UserDetail: React.FC = () => {
     const { id } = useParams<{ id: string }>();
@@ -46,6 +49,7 @@ const UserDetail: React.FC = () => {
     const [groupBusy, setGroupBusy] = useState(false);
     const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel?: string; action: () => Promise<void> } | null>(null);
     const [confirmLoading, setConfirmLoading] = useState(false);
+    const [temporaryPassword, setTemporaryPassword] = useState<string | null>(null);
 
     useEffect(() => {
         let cancelled = false;
@@ -94,17 +98,39 @@ const UserDetail: React.FC = () => {
         }
     };
 
+    // A change to an account holding a controlled tier, by anyone but a system-super, comes back
+    // 202 with a ceremony instead of being applied.
+    const ceremonyStarted = (res: any): boolean => {
+        if (!res?.requiresCeremony) return false;
+        showToast('info', res.message || 'A controlled-user ceremony was started — approve it on the Ceremonies page.');
+        setRefresh((r) => r + 1);
+        return true;
+    };
+
     const resetPassword = () => setConfirm({
-        title: 'Reset Password', message: `Are you sure you want to reset the password for "${user.username}"?`, confirmLabel: 'Reset Password',
-        action: async () => { await apiPostWithMfa(`/api/v1/admin/users/${id}/reset-password`, {}, requireStepUp, StepUpOps.ResetPassword, id!); showToast('success', 'Password reset initiated'); },
+        title: 'Reset Password', message: `Are you sure you want to reset the password for "${user.username}"? If they hold an admin / operator / CA-admin tier, this opens an approval ceremony and the temporary password is shown to whoever executes it.`, confirmLabel: 'Reset Password',
+        action: async () => {
+            const res: any = await apiPostWithMfa(`/api/v1/admin/users/${id}/reset-password`, {}, requireStepUp, StepUpOps.ResetPassword, id!);
+            if (ceremonyStarted(res)) return;
+            if (res?.newPassword) setTemporaryPassword(res.newPassword);
+            else showToast('success', 'Password reset');
+        },
     });
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    const resetMfa = () => setConfirm({
+        title: 'Reset MFA', message: `Remove every MFA method of "${user.username}"? They must enrol again at next sign-in. If they hold an admin / operator / CA-admin tier, this opens an approval ceremony.`, confirmLabel: 'Reset MFA',
+        action: async () => {
+            const res: any = await apiPostWithMfa(`/api/v1/admin/users/${id}/reset-mfa`, {}, requireStepUp, StepUpOps.ResetMfa, id!);
+            if (!ceremonyStarted(res)) showToast('success', 'MFA reset');
+        },
+    });
+
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return <InlineNotice notice={error} />;
     if (!user) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">User not found.</p>
-            <button onClick={() => navigate('/users')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Users</button>
+            <p className="text-sm text-ink-muted">User not found.</p>
+            <button onClick={() => navigate('/users')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Users</button>
         </div>
     );
 
@@ -122,12 +148,18 @@ const UserDetail: React.FC = () => {
         const superWarning = isSuperGroup ? ' WARNING: This is a super admin account. Once disabled, it can ONLY be re-enabled via direct database access.' : '';
         setConfirm({
             title: 'Disable Account', message: `Disable user "${user.username}"? They will not be able to log in.${superWarning}`, confirmLabel: 'Disable',
-            action: async () => { await apiPutWithMfa(`/api/v1/admin/users/${id}`, { isActive: false }, requireStepUp, StepUpOps.UpdateUser, id!); setRefresh((r) => r + 1); },
+            action: async () => {
+                const res: any = await apiPutWithMfa(`/api/v1/admin/users/${id}`, { isActive: false }, requireStepUp, StepUpOps.UpdateUser, id!);
+                if (!ceremonyStarted(res)) setRefresh((r) => r + 1);
+            },
         });
     };
     const enableAccount = () => setConfirm({
-        title: 'Enable Account', message: `Re-enable user "${user.username}"? They will be able to log in again.`, confirmLabel: 'Enable',
-        action: async () => { await apiPutWithMfa(`/api/v1/admin/users/${id}`, { isActive: true }, requireStepUp, StepUpOps.UpdateUser, id!); setRefresh((r) => r + 1); },
+        title: 'Enable Account', message: `Re-enable user "${user.username}"? They will be able to log in again. If they hold an admin / operator / CA-admin tier, this opens an approval ceremony.`, confirmLabel: 'Enable',
+        action: async () => {
+            const res: any = await apiPutWithMfa(`/api/v1/admin/users/${id}`, { isActive: true }, requireStepUp, StepUpOps.UpdateUser, id!);
+            if (!ceremonyStarted(res)) setRefresh((r) => r + 1);
+        },
     });
     const deleteUser = () => {
         if (isSelf) { showToast('warning', 'You cannot delete your own account.'); return; }
@@ -135,8 +167,7 @@ const UserDetail: React.FC = () => {
             title: 'Delete User', message: `Permanently delete user "${user.username}"? If they hold an admin / operator / CA-admin tier, this requires a controlled-user ceremony approved by the required quorum.`, confirmLabel: 'Delete User',
             action: async () => {
                 const res: any = await apiDeleteWithMfa(`/api/v1/admin/users/${id}`, requireStepUp, StepUpOps.DeleteUser, id!);
-                if (res?.requiresCeremony) { showToast('info', res.message || 'A controlled-user ceremony was started — approve it on the Ceremonies page.'); setRefresh((r) => r + 1); }
-                else { showToast('success', `User "${user.username}" deleted`); navigate('/users'); }
+                if (!ceremonyStarted(res)) { showToast('success', `User "${user.username}" deleted`); navigate('/users'); }
             },
         });
     };
@@ -144,11 +175,9 @@ const UserDetail: React.FC = () => {
     const renderGroups = () => (
         <div className="flex gap-2 flex-wrap">
             {userGroups.map((g: any) => (
-                <span key={g.groupId} className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded border ${groupChipClass(g)}`}>
-                    {g.displayName || g.groupName}
-                </span>
+                <Tag key={g.groupId} label={g.displayName || g.groupName} />
             ))}
-            {userGroups.length === 0 && <span className="text-xs text-gray-600">No groups assigned</span>}
+            {userGroups.length === 0 && <span className="text-xs text-ink-muted">No groups assigned</span>}
         </div>
     );
 
@@ -162,11 +191,12 @@ const UserDetail: React.FC = () => {
             editable
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
-                    <button onClick={resetPassword} className="px-3 py-1.5 text-xs bg-yellow-50 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-300 border border-yellow-300 dark:border-yellow-700 rounded hover:bg-yellow-900 transition-colors">Reset Password</button>
+                    <button onClick={resetPassword} className={actionButton}>Reset Password</button>
+                    <button onClick={resetMfa} className={actionButton}>Reset MFA</button>
                     {user.isActive !== false
-                        ? <button onClick={disableAccount} disabled={!canDisable} title={isSelf ? 'You cannot disable your own account' : !canDisable ? 'Cannot disable — no other system admins exist' : 'Disable this account'} className="px-3 py-1.5 text-xs bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-700 rounded hover:bg-red-900 transition-colors disabled:opacity-30 disabled:cursor-not-allowed">Disable Account</button>
-                        : <button onClick={enableAccount} className="px-3 py-1.5 text-xs bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border border-green-300 dark:border-green-700 rounded hover:bg-green-900 transition-colors">Enable Account</button>}
-                    <button onClick={deleteUser} disabled={isSelf} title={isSelf ? 'You cannot delete your own account' : 'Delete this user'} className="px-3 py-1.5 text-xs bg-red-600 text-white rounded hover:bg-red-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed">Delete User</button>
+                        ? <button onClick={disableAccount} disabled={!canDisable} title={isSelf ? 'You cannot disable your own account' : !canDisable ? 'Cannot disable — no other system admins exist' : 'Disable this account'} className={actionButton}>Disable Account</button>
+                        : <button onClick={enableAccount} className={actionButton}>Enable Account</button>}
+                    <button onClick={deleteUser} disabled={isSelf} title={isSelf ? 'You cannot delete your own account' : 'Delete this user'} className={actionButtonDanger}>Delete User</button>
                 </div>
             }
         >
@@ -184,29 +214,29 @@ const UserDetail: React.FC = () => {
                 </DetailSection>
 
                 <DetailSection title="Badges">
-                    <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
+                    <p className="text-xs text-ink-muted mb-3">
                         Badges this user can wear. Each keeps a subset of the grant sources they already hold; issuing one hands
                         them a narrowed way of working without changing their grants.
                     </p>
-                    <AccessBadgesPanel basePath={`/api/v1/admin/users/${id}/badges`} embedded />
+                    <AccessBadgesPanel basePath={`/api/v1/admin/users/${id}/badges`} embedded stepUp={{ operation: StepUpOps.ManageUserBadge, targetId: id! }} />
                 </DetailSection>
 
                 <DetailSection title={`Groups (${userGroups.length})`}>
                     {mode === 'view' ? (<>
                         {renderGroups()}
-                        <p className="text-[11px] text-gray-500 mt-2">Switch to Edit to add or remove groups.</p>
+                        <p className="text-[11px] text-ink-muted mt-2">Switch to Edit to add or remove groups.</p>
                     </>) : (
                         <div className="space-y-3">
                             <div>
-                                <div className="text-[11px] font-semibold text-gray-600 dark:text-gray-400 mb-1">Current groups — click to mark for removal</div>
+                                <div className="text-[11px] font-semibold text-ink-muted mb-1">Current groups — click to mark for removal</div>
                                 <div className="flex gap-2 flex-wrap">
-                                    {userGroups.length === 0 && <span className="text-xs text-gray-600">No groups assigned</span>}
+                                    {userGroups.length === 0 && <span className="text-xs text-ink-muted">No groups assigned</span>}
                                     {userGroups.map((g: any) => {
                                         const staged = pendingRemove.includes(g.groupId);
                                         return (
                                             <button key={g.groupId} type="button" onClick={() => toggleRemove(g.groupId)}
                                                 title={staged ? 'Marked for removal — click to keep' : 'Click to remove'}
-                                                className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded border transition-colors ${staged ? 'line-through opacity-70 bg-red-50 dark:bg-red-900/40 text-red-700 dark:text-red-300 border-red-300 dark:border-red-700' : groupChipClass(g)}`}>
+                                                className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded border transition-colors ${staged ? 'line-through opacity-70 bg-crit-soft text-crit border-crit/40' : 'bg-sunken text-ink border-line-strong hover:bg-hover'}`}>
                                                 {g.displayName || g.groupName}
                                                 <span className="opacity-70">{staged ? '↺' : '×'}</span>
                                             </button>
@@ -216,13 +246,13 @@ const UserDetail: React.FC = () => {
                             </div>
                             {availableGroups.length > 0 && (
                                 <div>
-                                    <div className="text-[11px] font-semibold text-gray-600 dark:text-gray-400 mb-1">Add to groups</div>
+                                    <div className="text-[11px] font-semibold text-ink-muted mb-1">Add to groups</div>
                                     <div className="flex gap-2 flex-wrap">
                                         {availableGroups.map((g: any) => {
                                             const staged = pendingAdd.includes(g.id);
                                             return (
                                                 <button key={g.id} type="button" onClick={() => toggleAdd(g.id)}
-                                                    className={`px-2 py-1 text-xs rounded border transition-colors ${staged ? 'bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-300 border-green-300 dark:border-green-700' : 'bg-gray-200/50 dark:bg-gray-700/50 text-gray-600 dark:text-gray-400 border-gray-400 dark:border-gray-600 hover:bg-gray-200 dark:hover:bg-gray-700'}`}>
+                                                    className={`px-2 py-1 text-xs rounded border transition-colors ${staged ? 'bg-ok-soft text-ok border-ok/40' : 'bg-sunken text-ink-muted border-line-strong hover:bg-hover'}`}>
                                                     {staged ? '✓ ' : '+ '}{g.displayName || g.name}
                                                 </button>
                                             );
@@ -232,13 +262,13 @@ const UserDetail: React.FC = () => {
                             )}
                             <div className="flex items-center gap-2 pt-1 flex-wrap">
                                 <button onClick={applyGroupChanges} disabled={groupBusy || (pendingAdd.length === 0 && pendingRemove.length === 0)}
-                                    className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                                    className={actionButtonPrimary}>
                                     {groupBusy ? 'Applying…' : `Apply changes (+${pendingAdd.length} / −${pendingRemove.length})`}
                                 </button>
                                 {(pendingAdd.length > 0 || pendingRemove.length > 0) && (
-                                    <button onClick={resetStaging} disabled={groupBusy} className="px-3 py-1.5 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">Reset</button>
+                                    <button onClick={resetStaging} disabled={groupBusy} className={actionButton}>Reset</button>
                                 )}
-                                <span className="text-[10px] text-gray-500">One MFA prompt; each privileged group change starts its own ceremony.</span>
+                                <span className="text-[10px] text-ink-muted">One MFA prompt; each privileged group change starts its own ceremony.</span>
                             </div>
                         </div>
                     )}
@@ -259,6 +289,7 @@ const UserDetail: React.FC = () => {
                     }}
                     onCancel={() => setConfirm(null)}
                 />
+                <TemporaryPasswordModal password={temporaryPassword} username={user.username} onClose={() => setTemporaryPassword(null)} />
             </>)}
         </DetailPage>
     );

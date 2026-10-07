@@ -25,27 +25,27 @@ public class ValidityCeilingResolutionTests
     private static readonly DateTime NotBefore = Now - CertificateValidityUtil.SkewAllowance;
 
     private static ValidityCeilingResolution Resolve(
-        TimeSpan certProfileMax, int tenantMaxDays, DateTime? caNotAfter)
-        => CertificateValidityUtil.ResolveCeiling(NotBefore, Now, certProfileMax, tenantMaxDays, caNotAfter);
+        TimeSpan certProfileMax, int spaceMaxDays, DateTime? caNotAfter)
+        => CertificateValidityUtil.ResolveCeiling(NotBefore, Now, certProfileMax, spaceMaxDays, caNotAfter);
 
     [Fact]
-    public void With_no_tenant_ceiling_and_a_long_lived_ca_the_cert_profile_binds()
+    public void With_no_space_ceiling_and_a_long_lived_ca_the_cert_profile_binds()
     {
-        var result = Resolve(TimeSpan.FromDays(365), tenantMaxDays: 0, caNotAfter: Now.AddYears(10));
+        var result = Resolve(TimeSpan.FromDays(365), spaceMaxDays: 0, caNotAfter: Now.AddYears(10));
 
         Assert.Equal(ValidityCeilingSource.CertProfile, result.BoundBy);
         Assert.Equal(Now.AddDays(365), result.EffectiveNotAfter);
     }
 
     [Fact]
-    public void A_tenant_ceiling_narrower_than_the_profile_binds_and_is_named()
+    public void A_space_ceiling_narrower_than_the_profile_binds_and_is_named()
     {
-        // The case the notice exists for: a profile allowing three years against a tenant capping
+        // The case the notice exists for: a profile allowing three years against a space capping
         // two. Reporting "certificate profile" here would send the operator to edit a profile that
         // is not the constraint.
-        var result = Resolve(TimeSpan.FromDays(1095), tenantMaxDays: 730, caNotAfter: Now.AddYears(10));
+        var result = Resolve(TimeSpan.FromDays(1095), spaceMaxDays: 730, caNotAfter: Now.AddYears(10));
 
-        Assert.Equal(ValidityCeilingSource.Tenant, result.BoundBy);
+        Assert.Equal(ValidityCeilingSource.Space, result.BoundBy);
         Assert.Equal(NotBefore.AddDays(730), result.EffectiveNotAfter);
     }
 
@@ -56,7 +56,7 @@ public class ValidityCeilingResolutionTests
         // The remedy is renewing the CA, which has nothing in common with the other two.
         var caNotAfter = Now.AddDays(100);
 
-        var result = Resolve(TimeSpan.FromDays(1095), tenantMaxDays: 730, caNotAfter: caNotAfter);
+        var result = Resolve(TimeSpan.FromDays(1095), spaceMaxDays: 730, caNotAfter: caNotAfter);
 
         Assert.Equal(ValidityCeilingSource.IssuingCa, result.BoundBy);
         Assert.Equal(caNotAfter - CertificateValidityUtil.SkewAllowance, result.EffectiveNotAfter);
@@ -70,21 +70,21 @@ public class ValidityCeilingResolutionTests
         // on precisely the request that took it at its word.
         var caNotAfter = Now.AddDays(10);
 
-        var result = Resolve(TimeSpan.FromDays(3650), tenantMaxDays: 0, caNotAfter: caNotAfter);
+        var result = Resolve(TimeSpan.FromDays(3650), spaceMaxDays: 0, caNotAfter: caNotAfter);
 
         Assert.Equal(caNotAfter - TimeSpan.FromMinutes(5), result.EffectiveNotAfter);
     }
 
     [Fact]
-    public void A_zero_tenant_ceiling_is_unlimited_and_cannot_bind()
+    public void A_zero_space_ceiling_is_unlimited_and_cannot_bind()
     {
         // 0 means unlimited, matching the quota fields beside it, and it is what every existing
-        // tenant carries after the migration. Reading it as a ceiling of zero would report every
+        // space carries after the migration. Reading it as a ceiling of zero would report every
         // installation as capped at its notBefore.
-        var result = Resolve(TimeSpan.FromDays(365), tenantMaxDays: 0, caNotAfter: Now.AddYears(10));
+        var result = Resolve(TimeSpan.FromDays(365), spaceMaxDays: 0, caNotAfter: Now.AddYears(10));
 
         Assert.Equal(ValidityCeilingSource.CertProfile, result.BoundBy);
-        Assert.Null(result.TenantNotAfter);
+        Assert.Null(result.SpaceNotAfter);
     }
 
     [Fact]
@@ -92,7 +92,7 @@ public class ValidityCeilingResolutionTests
     {
         // A system-wide signing profile genuinely has no CA behind it. That layer must drop out
         // rather than be treated as an expiry of "now".
-        var result = Resolve(TimeSpan.FromDays(365), tenantMaxDays: 0, caNotAfter: null);
+        var result = Resolve(TimeSpan.FromDays(365), spaceMaxDays: 0, caNotAfter: null);
 
         Assert.Equal(ValidityCeilingSource.CertProfile, result.BoundBy);
         Assert.Null(result.IssuingCaNotAfter);
@@ -109,7 +109,7 @@ public class ValidityCeilingResolutionTests
 
         var result = CertificateValidityUtil.ResolveCeiling(
             NotBefore, NotBefore, TimeSpan.FromDays(730),
-            tenantMaxValidityDays: 730,
+            spaceMaxValidityDays: 730,
             issuingCaNotAfter: shared + CertificateValidityUtil.SkewAllowance);
 
         Assert.Equal(ValidityCeilingSource.CertProfile, result.BoundBy);
@@ -119,14 +119,14 @@ public class ValidityCeilingResolutionTests
     [Fact]
     public void Every_layers_own_answer_is_reported_alongside_the_winner()
     {
-        // The notice says "capped by tenant 'X' (profile allows 3y)", and that aside is what tells
+        // The notice says "capped by space 'X' (profile allows 3y)", and that aside is what tells
         // an operator whether raising the cap is even possible.
         var caNotAfter = Now.AddYears(10);
 
-        var result = Resolve(TimeSpan.FromDays(1095), tenantMaxDays: 730, caNotAfter: caNotAfter);
+        var result = Resolve(TimeSpan.FromDays(1095), spaceMaxDays: 730, caNotAfter: caNotAfter);
 
         Assert.Equal(Now.AddDays(1095), result.CertProfileNotAfter);
-        Assert.Equal(NotBefore.AddDays(730), result.TenantNotAfter);
+        Assert.Equal(NotBefore.AddDays(730), result.SpaceNotAfter);
         Assert.Equal(caNotAfter - CertificateValidityUtil.SkewAllowance, result.IssuingCaNotAfter);
     }
 
@@ -137,7 +137,7 @@ public class ValidityCeilingResolutionTests
         // validity field. Rounding up would land them past the ceiling the figure described.
         var result = CertificateValidityUtil.ResolveCeiling(
             NotBefore, Now, TimeSpan.FromDays(365).Add(TimeSpan.FromHours(23)),
-            tenantMaxValidityDays: 0, issuingCaNotAfter: null);
+            spaceMaxValidityDays: 0, issuingCaNotAfter: null);
 
         Assert.Equal(365, result.EffectiveMaxDays);
     }
@@ -147,14 +147,14 @@ public class ValidityCeilingResolutionTests
     {
         // The CA cannot issue at all, which is a real state. "-40 days" in a form field reads as a
         // bug in the page rather than as a fact about the CA.
-        var result = Resolve(TimeSpan.FromDays(365), tenantMaxDays: 0, caNotAfter: Now.AddDays(-40));
+        var result = Resolve(TimeSpan.FromDays(365), spaceMaxDays: 0, caNotAfter: Now.AddDays(-40));
 
         Assert.Equal(ValidityCeilingSource.IssuingCa, result.BoundBy);
         Assert.Equal(0, result.EffectiveMaxDays);
     }
 
     [Fact]
-    public void The_tenant_ceiling_is_measured_from_notBefore_and_the_profile_from_now()
+    public void The_space_ceiling_is_measured_from_notBefore_and_the_profile_from_now()
     {
         // They genuinely differ in the code this mirrors: ClampToValidityCeiling measures from
         // notBefore, while NotBeyondMaximumDate and the timeMax default both measure from now.
@@ -162,9 +162,9 @@ public class ValidityCeilingResolutionTests
         var backdated = Now.AddDays(-30);
 
         var result = CertificateValidityUtil.ResolveCeiling(
-            backdated, Now, TimeSpan.FromDays(365), tenantMaxValidityDays: 365, issuingCaNotAfter: null);
+            backdated, Now, TimeSpan.FromDays(365), spaceMaxValidityDays: 365, issuingCaNotAfter: null);
 
-        Assert.Equal(ValidityCeilingSource.Tenant, result.BoundBy);
+        Assert.Equal(ValidityCeilingSource.Space, result.BoundBy);
         Assert.Equal(backdated.AddDays(365), result.EffectiveNotAfter);
     }
 }

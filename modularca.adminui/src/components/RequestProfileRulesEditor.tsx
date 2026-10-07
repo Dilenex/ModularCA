@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { labelClass } from '@shared/components/forms';
+import { copyText } from '@shared/clipboard';
 
 /**
  * The subject-DN and SAN rule editor for a request profile, shared by the create form on
@@ -18,15 +19,15 @@ import { labelClass } from '@shared/components/forms';
  * per-type rules are editable here, so the structured form is now a complete expression of the
  * model rather than a convenient subset of it.
  *
- * The JSON escape hatch stays anyway, collapsed. Not for the per-type rules any more, but because
- * a request profile is a policy object an operator may need to paste between environments, diff
- * against a colleague's, or populate with a field this UI has not learned about yet. Removing the
- * only way to do any of that would trade one kind of stuck for another.
+ * JSON stays available as Import/Export rather than a live textarea: a request profile is a policy
+ * object an operator may copy between environments or diff against a colleague's. "Paste JSON…"
+ * checks the shape and previews it before anything replaces the rules, so the form itself never
+ * holds unparseable text.
  */
 
 import {
     DN_FIELD_OPTIONS, REQUIREMENT_OPTIONS, SAN_TYPE_OPTIONS, DEFAULT_SAN_MAX_COUNT,
-    emptyDnRule, emptySanRules, emptyRules, parseRules, serializeRules,
+    checkRulesImport, emptyDnRule, emptySanRules, emptyRules, parseRules, rulesToJsonText, serializeRules,
     type RequestProfileRules, type SanRulesModel, type SanTypeRule, type SubjectDnFieldRule,
 } from './requestProfileRules';
 
@@ -35,53 +36,125 @@ export {
     type RequestProfileRules, type SanRulesModel, type SanTypeRule, type SubjectDnFieldRule,
 };
 
-const cellInput = 'bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded px-1 py-1 text-gray-900 dark:text-white text-xs';
+const cellInput = 'bg-raised border border-line rounded px-1 py-1 text-ink text-xs';
 
 interface Props {
     value: RequestProfileRules;
     onChange: (next: RequestProfileRules) => void;
-    /**
-     * Reports whether the JSON escape hatch currently holds something unparseable, so the page can
-     * disable its save button. Without this the page would save the last *valid* value while the
-     * operator looks at the invalid text they typed, which is the worst of both.
-     */
-    onErrorChange?: (error: string | null) => void;
 }
 
-/** Subject DN and SAN rule editor for a request profile. */
-export const RequestProfileRulesEditor: React.FC<Props> = ({ value, onChange, onErrorChange }) => {
-    const [jsonOpen, setJsonOpen] = useState(false);
-    const [jsonDraft, setJsonDraft] = useState('');
-    const [jsonError, setJsonError] = useState<string | null>(null);
+const actionButton = 'px-2 py-1 text-xs bg-sunken text-ink rounded hover:bg-hover transition-colors';
 
-    const serialized = useMemo(() => JSON.stringify(serializeRules(value), null, 2), [value]);
+/** "Copy as JSON" and "Paste JSON…": the rules as text, in and out. */
+const RulesJsonActions: React.FC<Props> = ({ value, onChange }) => {
+    const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+    const [pasteOpen, setPasteOpen] = useState(false);
+    const text = useMemo(() => rulesToJsonText(value), [value]);
 
-    // Opening the hatch seeds it from the structured state; while it is closed the draft is never
-    // authoritative, so a stale one cannot resurrect an old value when it reopens.
     useEffect(() => {
-        if (jsonOpen) { setJsonDraft(serialized); setJsonError(null); onErrorChange?.(null); }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [jsonOpen]);
+        if (copyState !== 'copied') return;
+        const t = setTimeout(() => setCopyState('idle'), 2000);
+        return () => clearTimeout(t);
+    }, [copyState]);
 
-    useEffect(() => () => onErrorChange?.(null), []); // eslint-disable-line react-hooks/exhaustive-deps
+    const copy = async () => setCopyState((await copyText(text)) ? 'copied' : 'failed');
 
-    const applyJson = (text: string) => {
-        setJsonDraft(text);
-        try {
-            const parsed = JSON.parse(text);
-            if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-                throw new Error('Expected an object with subjectDnRules and sanRules.');
-            }
-            onChange(parseRules(parsed));
-            setJsonError(null);
-            onErrorChange?.(null);
-        } catch (err: any) {
-            const message = err?.message || 'Invalid JSON';
-            setJsonError(message);
-            onErrorChange?.(message);
-        }
-    };
+    return (
+        <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-ink-muted">Rules as JSON:</span>
+                <button type="button" onClick={copy} className={actionButton}>Copy as JSON</button>
+                <button type="button" onClick={() => setPasteOpen(true)} className={actionButton}>Paste JSON…</button>
+                <span role="status" className="text-xs text-ok">{copyState === 'copied' ? 'Copied' : ''}</span>
+            </div>
+            {copyState === 'failed' && (
+                <div className="space-y-1">
+                    <p className="text-xs text-ink-muted">The clipboard is not available here; select the text and copy it.</p>
+                    <textarea readOnly rows={10} value={text} spellCheck={false} aria-label="Request profile rules as JSON"
+                        onFocus={(e) => e.currentTarget.select()}
+                        className="w-full data-mono px-3 py-2 rounded bg-raised border border-line-strong text-ink focus:outline-none focus:border-accent" />
+                    <button type="button" onClick={() => setCopyState('idle')} className="text-xs text-ink-muted hover:text-ink">Hide</button>
+                </div>
+            )}
+            {pasteOpen && (
+                <PasteRulesDialog current={value} onApply={(rules) => { onChange(rules); setPasteOpen(false); }} onCancel={() => setPasteOpen(false)} />
+            )}
+        </div>
+    );
+};
 
+/** Paste, check and preview rules JSON; Apply replaces the rules, Cancel leaves them. */
+const PasteRulesDialog: React.FC<{
+    current: RequestProfileRules;
+    onApply: (rules: RequestProfileRules) => void;
+    onCancel: () => void;
+}> = ({ current, onApply, onCancel }) => {
+    const [draft, setDraft] = useState('');
+    const areaRef = useRef<HTMLTextAreaElement | null>(null);
+    const titleId = React.useId();
+    const resultId = React.useId();
+    const result = useMemo(() => checkRulesImport(draft, current), [draft, current]);
+    const blank = !draft.trim();
+    const cancelRef = useRef(onCancel);
+    cancelRef.current = onCancel;
+
+    useEffect(() => {
+        const opener = document.activeElement;
+        areaRef.current?.focus();
+        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); cancelRef.current(); } };
+        document.addEventListener('keydown', onKey);
+        return () => {
+            document.removeEventListener('keydown', onKey);
+            if (opener instanceof HTMLElement && document.contains(opener)) opener.focus();
+        };
+    }, []);
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
+            <div role="dialog" aria-modal="true" aria-labelledby={titleId}
+                className="bg-raised border border-line rounded-lg shadow-2xl p-5 w-full max-w-2xl mx-4 space-y-3 max-h-[90vh] overflow-y-auto">
+                <h3 id={titleId} className="text-base font-semibold text-ink">Paste request profile rules</h3>
+                <p className="text-xs text-ink-muted">
+                    An object with <code className="data-mono">subjectDnRules</code> and <code className="data-mono">sanRules</code>, as
+                    "Copy as JSON" writes it. Apply replaces the rules in the form; nothing is saved until you Save.
+                </p>
+                <textarea ref={areaRef} rows={12} value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false}
+                    aria-label="Rules JSON to import" aria-describedby={resultId} aria-invalid={!blank && !result.ok}
+                    className={`w-full data-mono px-3 py-2 rounded bg-raised border text-ink focus:outline-none ${!blank && !result.ok
+                        ? 'border-crit focus:border-crit'
+                        : 'border-line-strong focus:border-accent'}`} />
+                <div id={resultId} aria-live="polite" className="text-xs space-y-2">
+                    {blank ? null : !result.ok ? (
+                        <p className="text-crit">{result.error}</p>
+                    ) : (<>
+                        <ul className="space-y-0.5 text-ink">
+                            {result.summary.map((line) => <li key={line}>{line}</li>)}
+                        </ul>
+                        {result.unchanged && <p className="text-ink-muted">Identical to the rules in the form.</p>}
+                        {result.warnings.length > 0 && (
+                            <ul className="list-disc pl-4 space-y-0.5 text-warn">
+                                {result.warnings.map((w) => <li key={w}>{w}</li>)}
+                            </ul>
+                        )}
+                    </>)}
+                </div>
+                <div className="flex justify-end gap-3">
+                    <button type="button" onClick={onCancel}
+                        className="px-4 py-2 text-sm font-medium bg-raised border border-line-strong text-ink rounded hover:bg-hover transition-colors">
+                        Cancel
+                    </button>
+                    <button type="button" disabled={!result.ok} onClick={() => { if (result.ok) onApply(result.rules); }}
+                        className="px-4 py-2 text-sm font-medium bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors">
+                        Apply
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+/** Subject DN and SAN rule editor for a request profile. */
+export const RequestProfileRulesEditor: React.FC<Props> = ({ value, onChange }) => {
     /* ── subject DN rules ─────────────────────────────────────────────────── */
     const updateDnRule = (index: number, updates: Partial<SubjectDnFieldRule>) => {
         const next = [...value.subjectDnRules];
@@ -117,14 +190,14 @@ export const RequestProfileRulesEditor: React.FC<Props> = ({ value, onChange, on
                 <div className="flex items-center justify-between mb-2">
                     <label className={labelClass}>Subject DN Rules</label>
                     <button type="button" onClick={addDnRule}
-                        className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">
+                        className="px-2 py-1 text-xs bg-sunken text-ink rounded hover:bg-hover transition-colors">
                         + Add Rule
                     </button>
                 </div>
-                <div className="bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded overflow-x-auto">
+                <div className="bg-ground border border-line rounded overflow-x-auto">
                     <table className="w-full min-w-[600px] text-xs">
                         <thead>
-                            <tr className="border-b border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400">
+                            <tr className="border-b border-line text-ink-muted">
                                 <th className="px-2 py-2 text-left">Field</th>
                                 <th className="px-2 py-2 text-left">Requirement</th>
                                 <th className="px-2 py-2 text-left">Fixed Value</th>
@@ -136,7 +209,7 @@ export const RequestProfileRulesEditor: React.FC<Props> = ({ value, onChange, on
                         </thead>
                         <tbody>
                             {value.subjectDnRules.map((rule, idx) => (
-                                <tr key={idx} className="border-b border-gray-200 dark:border-gray-800">
+                                <tr key={idx} className="border-b border-line">
                                     <td className="px-2 py-1">
                                         <select value={rule.field} onChange={(e) => updateDnRule(idx, { field: e.target.value })} className={`${cellInput} w-16`}>
                                             {DN_FIELD_OPTIONS.map((f) => <option key={f} value={f}>{f}</option>)}
@@ -171,7 +244,7 @@ export const RequestProfileRulesEditor: React.FC<Props> = ({ value, onChange, on
                                     </td>
                                     <td className="px-2 py-1">
                                         <button type="button" onClick={() => removeDnRule(idx)} aria-label={`Remove ${rule.field} rule`}
-                                            className="text-red-800 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 text-xs px-1">
+                                            className="text-crit hover:text-crit text-xs px-1">
                                             X
                                         </button>
                                     </td>
@@ -185,17 +258,17 @@ export const RequestProfileRulesEditor: React.FC<Props> = ({ value, onChange, on
             {/* SAN rules */}
             <div>
                 <label className={labelClass}>SAN Rules</label>
-                <div className="bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded p-3 space-y-3">
+                <div className="bg-ground border border-line rounded p-3 space-y-3">
                     <div>
-                        <span className="text-xs text-gray-600 dark:text-gray-400">Allowed Types</span>
+                        <span className="text-xs text-ink-muted">Allowed Types</span>
                         <div className="flex flex-wrap gap-2 mt-1">
                             {SAN_TYPE_OPTIONS.map((type) => {
                                 const active = value.sanRules.allowedTypes.includes(type);
                                 return (
                                     <button key={type} type="button" onClick={() => toggleSanType(type)} aria-pressed={active}
                                         className={`px-2 py-1 text-xs rounded border transition-colors ${active
-                                            ? 'bg-blue-50 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-700'
-                                            : 'bg-gray-50 dark:bg-gray-900 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-700 hover:border-gray-500'}`}>
+                                            ? 'bg-accent-soft text-accent-ink border-accent/40'
+                                            : 'bg-ground text-ink-muted border-line hover:border-ink-faint'}`}>
                                         {type}
                                     </button>
                                 );
@@ -203,7 +276,7 @@ export const RequestProfileRulesEditor: React.FC<Props> = ({ value, onChange, on
                         </div>
                     </div>
 
-                    <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                    <label className="flex items-center gap-2 text-xs text-ink">
                         <input type="checkbox" checked={value.sanRules.required}
                             onChange={(e) => onChange({ ...value, sanRules: { ...value.sanRules, required: e.target.checked } })}
                             className="w-4 h-4 rounded" />
@@ -214,11 +287,11 @@ export const RequestProfileRulesEditor: React.FC<Props> = ({ value, onChange, on
                         profile forbids is never consulted, and showing it invites the belief that it is. */}
                     {value.sanRules.allowedTypes.length > 0 && (
                         <div>
-                            <span className="text-xs text-gray-600 dark:text-gray-400">Per-Type Constraints</span>
+                            <span className="text-xs text-ink-muted">Per-Type Constraints</span>
                             <div className="overflow-x-auto mt-1">
                                 <table className="w-full min-w-[420px] text-xs">
                                     <thead>
-                                        <tr className="border-b border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400">
+                                        <tr className="border-b border-line text-ink-muted">
                                             <th className="px-2 py-1.5 text-left">Type</th>
                                             <th className="px-2 py-1.5 text-left">Regex</th>
                                             <th className="px-2 py-1.5 text-left">Max Count</th>
@@ -228,8 +301,8 @@ export const RequestProfileRulesEditor: React.FC<Props> = ({ value, onChange, on
                                         {value.sanRules.allowedTypes.map((type) => {
                                             const rule = value.sanRules.rules[type];
                                             return (
-                                                <tr key={type} className="border-b border-gray-200 dark:border-gray-800">
-                                                    <td className="px-2 py-1 text-gray-800 dark:text-gray-200">{type}</td>
+                                                <tr key={type} className="border-b border-line">
+                                                    <td className="px-2 py-1 text-ink">{type}</td>
                                                     <td className="px-2 py-1">
                                                         <input type="text" value={rule?.regex || ''} onChange={(e) => updateSanRule(type, { regex: e.target.value })}
                                                             className={`${cellInput} w-48`} placeholder="Any value"
@@ -255,25 +328,7 @@ export const RequestProfileRulesEditor: React.FC<Props> = ({ value, onChange, on
                 </div>
             </div>
 
-            {/* JSON escape hatch */}
-            <div>
-                <button type="button" onClick={() => setJsonOpen(!jsonOpen)} aria-expanded={jsonOpen}
-                    className="text-xs text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 transition-colors">
-                    {jsonOpen ? '▾' : '▸'} Advanced (JSON)
-                </button>
-                {jsonOpen && (
-                    <div className="mt-2 space-y-1">
-                        <textarea rows={12} value={jsonDraft} onChange={(e) => applyJson(e.target.value)} spellCheck={false}
-                            aria-label="Request profile rules as JSON"
-                            className={`w-full font-mono text-xs px-3 py-2 rounded bg-gray-50 dark:bg-gray-900 border text-gray-900 dark:text-white focus:outline-none ${jsonError
-                                ? 'border-red-400 dark:border-red-700 focus:border-red-500'
-                                : 'border-gray-300 dark:border-gray-700 focus:border-blue-500'}`} />
-                        {jsonError
-                            ? <p className="text-xs text-red-700 dark:text-red-400">{jsonError}</p>
-                            : <p className="text-xs text-gray-500 dark:text-gray-500">Edits here update the fields above as you type.</p>}
-                    </div>
-                )}
-            </div>
+            <RulesJsonActions value={value} onChange={onChange} />
         </div>
     );
 };

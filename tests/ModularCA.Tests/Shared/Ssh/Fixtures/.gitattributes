@@ -1,0 +1,4 @@
+*.krl binary
+*.sh text eol=lf
+*.pub text eol=lf
+*.testkey text eol=lf

@@ -23,7 +23,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// Admin endpoints for managing key ceremony workflows. Key ceremonies enforce multi-party
 /// approval (quorum) for catastrophic CA operations such as root CA creation and CA revocation.
 /// Self-approval is forbidden and the ceremony audit trail is permanent.
-/// Scoped to tenant: CA admins see ceremonies for their tenant(s); system admins see all.
+/// Scoped to space: CA admins see ceremonies for their space(s); system admins see all.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/ceremonies")]
@@ -41,7 +41,7 @@ public class AdminKeyCeremonyController : ControllerBase
     private readonly ICaGroupAuthorizationService _groupAuth;
     private readonly ISshCaService _sshCaService;
     private readonly ICertificateRevocationService _revocationSvc;
-    private readonly ITenantPolicyChangeService _tenantPolicyChangeSvc;
+    private readonly ISpacePolicyChangeService _spacePolicyChangeSvc;
     private readonly ModularCA.Auth.Authorization.IControlledUserCeremonyService _controlledUserSvc;
 
     /// <summary>
@@ -58,7 +58,7 @@ public class AdminKeyCeremonyController : ControllerBase
         ICaGroupAuthorizationService groupAuth,
         ISshCaService sshCaService,
         ICertificateRevocationService revocationSvc,
-        ITenantPolicyChangeService tenantPolicyChangeSvc,
+        ISpacePolicyChangeService spacePolicyChangeSvc,
         ModularCA.Auth.Authorization.IControlledUserCeremonyService controlledUserSvc)
     {
         _ceremonySvc = ceremonySvc;
@@ -71,14 +71,21 @@ public class AdminKeyCeremonyController : ControllerBase
         _groupAuth = groupAuth;
         _sshCaService = sshCaService;
         _revocationSvc = revocationSvc;
-        _tenantPolicyChangeSvc = tenantPolicyChangeSvc;
+        _spacePolicyChangeSvc = spacePolicyChangeSvc;
         _controlledUserSvc = controlledUserSvc;
     }
 
     /// <summary>
-    /// Initiates a new key ceremony for a catastrophic CA operation.
-    /// Requires step-up MFA verification. If the resolved quorum is 1, the ceremony
-    /// is auto-approved and can be executed immediately.
+    /// Initiates a new key ceremony for CA creation (<c>CreateRootCA</c> or <c>CreateIntermediateCA</c>).
+    /// Requires step-up MFA verification. Operation types with their own initiation path
+    /// (controlled-user changes, space policy changes, CA revocation, SSH CAs) are refused with 400:
+    /// those paths classify, validate and scope the ceremony, which this generic body cannot.
+    /// The parameters name the CA's scope explicitly: a space id, or scope "instance" (400 otherwise).
+    /// The label, name and CA certificate profile are checked now (<see cref="RefuseCaCreationParametersAsync"/>),
+    /// so a ceremony that could never execute is not put to the approvers. A control character in
+    /// the description, target id or a parameter text field is refused with 400. A ceremony too
+    /// few other accounts could approve is refused with 409 and nothing is opened
+    /// (<see cref="ModularCA.API.Services.CeremonyRefusalResponse"/>).
     /// </summary>
     [HttpPost]
     [Authorize]
@@ -99,16 +106,28 @@ public class AdminKeyCeremonyController : ControllerBase
 
         if (string.IsNullOrWhiteSpace(request.OperationType))
             return BadRequest(new { error = "OperationType is required." });
+        if (!GenericOperationTypes.Contains(request.OperationType))
+            return BadRequest(new { error = $"Operation type '{request.OperationType}' cannot be initiated here; use its dedicated endpoint." });
+        if (request.Parameters == null)
+            return BadRequest(new { error = "Parameters are required for a CA-creation ceremony." });
+        if (KeyCeremonyParameters.ScopeError(request.Parameters.SpaceId, request.Parameters.Scope) is string scopeError)
+            return BadRequest(new { error = scopeError });
+        if (ModularCA.Shared.Utils.DnComponentSanitizer.HasControlCharacter(request.Description)
+            || ModularCA.Shared.Utils.DnComponentSanitizer.HasControlCharacter(request.TargetEntityId))
+            return BadRequest(new { error = "Description and TargetEntityId must not contain control characters." });
 
-        // The tenant and parent are in the body, so the route policy cannot scope this action;
+        // The space and parent are in the body, so the route policy cannot scope this action;
         // the same rules as direct CA creation apply (see CaCreationAccess). Other operation
-        // types need ca.manage tenant-wide for the ceremony's tenant.
+        // types need ca.manage space-wide for the ceremony's space.
         if (!await MayInitiateAsync(request.OperationType, request.Parameters, _currentUser.User.Id))
         {
-            Log.Warning("Authorization denied for user {UserId} ({Username}) initiating ceremony {OperationType} in tenant {TenantId}",
-                _currentUser.User.Id, _currentUser.User.Username, request.OperationType, request.Parameters?.TenantId);
-            return StatusCode(403, new { error = "You need ca.manage for the ceremony's tenant, and for the parent CA when it belongs to another tenant." });
+            Log.Warning("Authorization denied for user {UserId} ({Username}) initiating ceremony {OperationType} in space {SpaceId}",
+                _currentUser.User.Id, _currentUser.User.Username, request.OperationType, request.Parameters?.SpaceId);
+            return StatusCode(403, new { error = "You need ca.manage for the ceremony's space, and for the parent CA when it belongs to another space." });
         }
+
+        if (await RefuseCaCreationParametersAsync(_caCreation, request.Parameters) is { } refused)
+            return refused;
 
         try
         {
@@ -146,6 +165,10 @@ public class AdminKeyCeremonyController : ControllerBase
                     : $"Ceremony created. {ceremony.RequiredApprovals} approval(s) required."
             });
         }
+        catch (ModularCA.Shared.Errors.CeremonyQuorumUnreachableException ex)
+        {
+            return Conflict(await ModularCA.API.Services.CeremonyRefusalResponse.BuildAsync(HttpContext, ex));
+        }
         catch (Exception ex)
         {
             Log.Error(ex, "Failed to create key ceremony");
@@ -154,12 +177,53 @@ public class AdminKeyCeremonyController : ControllerBase
     }
 
     /// <summary>
-    /// Lists key ceremonies scoped by tenant. System admins see all ceremonies;
-    /// tenant-level CA admins see only ceremonies for their tenant(s).
-    /// CA-scoped admins (without tenant-wide CaManage) cannot see ceremonies.
+    /// Null when CA-creation parameters would pass the checks execution applies, else the response
+    /// to send now, before anyone approves: 400 for a control character in a text field, an
+    /// invalid or reserved label, or a name constraint <see cref="ModularCA.Shared.Utils.NameConstraintRules"/> refuses,
+    /// 409 for a label or name another CA has, 404 for a CA certificate profile outside the new
+    /// CA's scope.
+    /// </summary>
+    internal static async Task<IActionResult?> RefuseCaCreationParametersAsync(CaCreationService caCreation, KeyCeremonyParameters parameters)
+    {
+        if (parameters.ControlCharacterError() is string controlError)
+            return new BadRequestObjectResult(new { error = controlError });
+        if ((ModularCA.Shared.Utils.NameConstraintRules.ListError(parameters.NameConstraintsPermitted, nameof(parameters.NameConstraintsPermitted))
+            ?? ModularCA.Shared.Utils.NameConstraintRules.ListError(parameters.NameConstraintsExcluded, nameof(parameters.NameConstraintsExcluded))) is string ncError)
+            return new BadRequestObjectResult(new { error = ncError });
+        try
+        {
+            await caCreation.EnsureNamingAsync(parameters.SubjectCN, parameters.Label);
+            if (parameters.ParentCaId is Guid parentCaId)
+                await caCreation.EnsureCaCertProfileAdmittedAsync(parameters.CertProfileId, parentCaId, parameters.SpaceId);
+            return null;
+        }
+        catch (ArgumentException ex)
+        {
+            return new BadRequestObjectResult(new { error = ex.Message });
+        }
+        catch (ModularCA.Shared.Errors.ResourceConflictException ex)
+        {
+            return new ConflictObjectResult(new { error = ex.Message, code = ex.Code });
+        }
+        catch (ModularCA.Shared.Errors.ResourceNotFoundException ex)
+        {
+            return new NotFoundObjectResult(new { error = ex.Message, code = ex.Code });
+        }
+    }
+
+    /// <summary>The operation types the generic <see cref="Initiate"/> accepts.</summary>
+    private static readonly HashSet<string> GenericOperationTypes = new(StringComparer.Ordinal) { "CreateRootCA", "CreateIntermediateCA" };
+
+    /// <summary>
+    /// Lists key ceremonies scoped by space. System admins see all ceremonies; system-wide
+    /// <c>ca.manage</c> holders see every other ceremony, and space-level CA admins those of their
+    /// space(s). Controlled-user ceremonies are shown only to a system admin, their initiator, and
+    /// whoever holds a tier that could approve them (see <c>CanAccessCeremonyAsync</c>), all under
+    /// the worn badge. Each row carries <c>canApprove</c> for the caller and, for a controlled-user
+    /// ceremony they may not approve, the reason (<c>approvalRefusal</c>). Authorization is per ceremony, so the route carries plain <c>[Authorize]</c>: a CA-scoped
+    /// policy cannot resolve a CA here.
     /// </summary>
     [HttpGet]
-    [Authorize(Policy = "CaAdmin")]
     public async Task<IActionResult> List([FromQuery] string? status = null)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -170,27 +234,44 @@ public class AdminKeyCeremonyController : ControllerBase
 
         List<KeyCeremonyEntity> ceremonies;
 
-        if (await _groupAuth.IsSystemAdminAsync(_currentUser.User.Id)
-            || await _groupAuth.HasSystemCapabilityAsync(_currentUser.User.Id, Capabilities.CaManage))
+        if (await _groupAuth.IsSystemAdminAsync(_currentUser.User.Id))
         {
-            ceremonies = await _ceremonySvc.ListAsync(status);
+            ceremonies = new List<KeyCeremonyEntity>();
+            foreach (var c in await _ceremonySvc.ListAsync(status))
+                if (!IsControlledUserChange(c) || await CanAccessCeremonyAsync(c))
+                    ceremonies.Add(c);
+        }
+        else if (await _groupAuth.HasSystemCapabilityAsync(_currentUser.User.Id, Capabilities.CaManage))
+        {
+            ceremonies = new List<KeyCeremonyEntity>();
+            foreach (var c in await _ceremonySvc.ListAsync(status))
+                if (!IsControlledUserChange(c) || await CanAccessCeremonyAsync(c))
+                    ceremonies.Add(c);
         }
         else
         {
-            var tenantIds = await GetUserCeremonyTenantIdsAsync(_currentUser.User.Id);
-            if (tenantIds.Count == 0)
+            var spaceIds = await GetUserCeremonySpaceIdsAsync(_currentUser.User.Id);
+            var tiers = await _controlledUserSvc.GetActorTiersAsync(_currentUser.User.Id);
+            var tierSpaceIds = tiers.Where(t => t.SpaceId != null).Select(t => t.SpaceId!.Value);
+            var candidateSpaces = spaceIds.Union(tierSpaceIds).ToList();
+            // Instance ceremonies (no space) are candidates for a caller with instance scope or a
+            // tier on an instance CA; CanAccessCeremonyAsync decides each one.
+            var includeInstance = (ModularCA.Auth.Authorization.SpaceFence.From(HttpContext)?.Allows(null) ?? false) || tiers.Any(t => t.SpaceId == null);
+            if (candidateSpaces.Count == 0 && !includeInstance)
                 return Ok(Array.Empty<object>());
-            ceremonies = await _ceremonySvc.ListByTenantsAsync(tenantIds, status);
+
+            var fullSpaces = spaceIds.ToHashSet();
+            ceremonies = new List<KeyCeremonyEntity>();
+            foreach (var c in await _ceremonySvc.ListBySpacesAsync(candidateSpaces, status, includeInstance))
+                if ((!IsControlledUserChange(c) && c.SpaceId is Guid ct && fullSpaces.Contains(ct)) || await CanAccessCeremonyAsync(c))
+                    ceremonies.Add(c);
         }
 
-        // Per-row "can the current user approve this?" — single-sources the eligibility rule
-        // (pending, not the initiator, has ceremony access, and for ControlledUserChange holds a
-        // dominating tier) so the UI doesn't re-implement it. Only computed for pending rows.
         var viewerId = _currentUser.User.Id;
-        var canApproveMap = new Dictionary<Guid, bool>();
+        var approvalMap = new Dictionary<Guid, (bool CanApprove, string? Refusal)>();
         foreach (var c in ceremonies)
         {
-            canApproveMap[c.Id] = await ComputeCanApproveAsync(c, viewerId);
+            approvalMap[c.Id] = await ComputeCanApproveAsync(c, viewerId);
         }
 
         var result = ceremonies.Select(c => new
@@ -209,18 +290,23 @@ public class AdminKeyCeremonyController : ControllerBase
             c.ExpiresAt,
             c.ExecutedAt,
             c.ApprovalsJson,
-            CanApprove = canApproveMap[c.Id]
+            CanApprove = approvalMap[c.Id].CanApprove,
+            ApprovalRefusal = approvalMap[c.Id].Refusal,
         });
 
         return Ok(result);
     }
 
     /// <summary>
-    /// Retrieves full detail for a single key ceremony, including the approval records.
-    /// Enforces tenant-level access: only system admins or tenant-level CA admins can view.
+    /// Retrieves full detail for a single key ceremony, including the approval records, and for a
+    /// controlled-user ceremony the named scope of its affected tier (<c>tierScope</c>) and why the
+    /// caller may not approve it (<c>approvalRefusal</c>), if so. A pending ceremony also reports
+    /// whether it can still reach its quorum (<c>quorumReachable</c>), from the approvals it still
+    /// needs (<c>approvalsStillNeeded</c>) and the accounts that could still give one
+    /// (<c>eligibleApprovers</c>, see <see cref="CeremonyQuorumGuard"/>); all three are null otherwise.
+    /// Enforces space-level access: only system admins or space-level CA admins can view.
     /// </summary>
     [HttpGet("{id:guid}")]
-    [Authorize(Policy = "CaAdmin")]
     public async Task<IActionResult> GetById(Guid id)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -233,6 +319,8 @@ public class AdminKeyCeremonyController : ControllerBase
         if (!await CanAccessCeremonyAsync(ceremony))
             return StatusCode(403, new { error = "You do not have access to this ceremony." });
 
+        var approval = await ComputeCanApproveAsync(ceremony, _currentUser.User.Id);
+        var reach = ceremony.Status == "Pending" ? await new CeremonyQuorumGuard(_db).AssessPendingAsync(ceremony) : null;
         return Ok(new
         {
             ceremony.Id,
@@ -250,32 +338,104 @@ public class AdminKeyCeremonyController : ControllerBase
             ceremony.ExecutedAt,
             ceremony.ParametersJson,
             ceremony.ApprovalsJson,
-            CanApprove = await ComputeCanApproveAsync(ceremony, _currentUser.User.Id)
+            CanApprove = approval.CanApprove,
+            ApprovalRefusal = approval.Refusal,
+            QuorumReachable = reach?.Reachable,
+            ApprovalsStillNeeded = reach?.RequiredApprovals,
+            EligibleApprovers = reach?.EligibleApprovers,
+            TierScope = IsControlledUserChange(ceremony) && _controlledUserSvc.DescribeCeremony(ceremony).Minted is { } minted
+                ? await _controlledUserSvc.DescribeScopeAsync(minted)
+                : null,
+        });
+    }
+
+    /// <summary>
+    /// Reports whether a key ceremony the caller opened in a scope could be approved: the scope's
+    /// requirement and quorum, and how many accounts other than the caller could approve
+    /// (<c>eligibleApprovers</c>, see <see cref="CeremonyQuorumGuard"/>). The scope is the space
+    /// in the route, or the instance without one. The console reads it to warn before the
+    /// requirement is turned on where nobody else could approve. Needs <c>ca.manage</c> across
+    /// the scope (403 otherwise); an unknown space is 404.
+    /// </summary>
+    [HttpGet("approvers")]
+    [HttpGet("approvers/{spaceId:guid}")]
+    public async Task<IActionResult> Approvers([FromRoute] Guid? spaceId = null)
+    {
+        await _currentUser.EnsureLoadedAsync();
+        if (_currentUser.User == null) return Unauthorized();
+        var userId = _currentUser.User.Id;
+        if (!await _groupAuth.IsSystemAdminAsync(userId)
+            && !await _groupAuth.HasScopeCapabilityAsync(userId, spaceId, Capabilities.CaManage))
+            return StatusCode(403, new { error = "You need ca.manage for this scope." });
+
+        var policy = await new ModularCA.Database.EffectivePolicyResolver(_db).ResolveAsync(spaceId);
+        if (!policy.Found)
+            return NotFound(new { error = $"Space '{spaceId}' not found." });
+
+        // Any CA operation: they share one approval rule.
+        var eligible = await new CeremonyQuorumGuard(_db).EligibleApproversAsync("CreateIntermediateCA", spaceId, null, userId);
+        var required = Math.Max(1, policy.CeremonyRequiredApprovals);
+        return Ok(new
+        {
+            scope = spaceId == null ? "instance" : "space",
+            spaceId,
+            requireKeyCeremony = policy.RequireKeyCeremony,
+            requiredApprovals = required,
+            eligibleApprovers = eligible.Count,
+            reachable = eligible.Count >= required,
         });
     }
 
     /// <summary>
     /// Whether <paramref name="viewerId"/> may approve <paramref name="ceremony"/> right now:
-    /// pending, not the initiator, has ceremony access, and — for ControlledUserChange — holds a
-    /// tier that dominates the affected privilege. Single source of approver eligibility for the UI.
+    /// pending, not the initiator, has ceremony access, and no refusal reason, which is returned
+    /// as <c>Refusal</c>: for ControlledUserChange, <see cref="IControlledUserCeremonyService.ApprovalRefusalAsync"/>
+    /// (an approving tier, and not a resetter of a promoted account's credentials); for a policy
+    /// change, <see cref="PolicyApprovalRefusalAsync"/> (admin rank at its scope).
+    /// Single source of approver eligibility for the UI.
     /// </summary>
-    private async Task<bool> ComputeCanApproveAsync(ModularCA.Shared.Entities.KeyCeremonyEntity ceremony, Guid viewerId)
+    private async Task<(bool CanApprove, string? Refusal)> ComputeCanApproveAsync(ModularCA.Shared.Entities.KeyCeremonyEntity ceremony, Guid viewerId)
     {
-        if (ceremony.Status != "Pending") return false;
-        if (ceremony.InitiatedByUserId == viewerId) return false;
-        if (!await CanAccessCeremonyAsync(ceremony)) return false;
-        if (ceremony.OperationType == "ControlledUserChange")
-            return await _controlledUserSvc.CanApproveAsync(viewerId, ceremony);
-        return true;
+        if (ceremony.Status != "Pending") return (false, null);
+        if (ceremony.InitiatedByUserId == viewerId) return (false, null);
+        if (!await CanAccessCeremonyAsync(ceremony)) return (false, null);
+        if (ceremony.OperationType == "ControlledUserChange"
+            && await _controlledUserSvc.ApprovalRefusalAsync(viewerId, ceremony) is { } refusal)
+            return (false, refusal);
+        if (await PolicyApprovalRefusalAsync(ceremony, viewerId) is { } policyRefusal)
+            return (false, policyRefusal);
+        return (true, null);
+    }
+
+    /// <summary>
+    /// Why <paramref name="userId"/> may not approve a policy-change ceremony, or null when they
+    /// may or the ceremony is of another type. A SpacePolicyChange needs a space administrator
+    /// (<c>system.manage</c> space-wide in its space) and an InstancePolicyChange a system
+    /// administrator: the change sets the ceremony requirement and quorums every operator is held
+    /// to, so an operator of that scope may see it but not approve or reject it. The initiator never
+    /// counts, which <see cref="IKeyCeremonyService.ApproveAsync"/> enforces for every ceremony.
+    /// <paramref name="verb"/> names the decision in the refusal ("approve" or "reject").
+    /// </summary>
+    private async Task<string?> PolicyApprovalRefusalAsync(KeyCeremonyEntity ceremony, Guid userId, string verb = "approve")
+    {
+        if (ceremony.OperationType is not (nameof(CeremonyType.SpacePolicyChange) or nameof(CeremonyType.InstancePolicyChange)))
+            return null;
+        if (await _groupAuth.HasScopeCapabilityAsync(userId, ceremony.SpaceId, Capabilities.SystemManage))
+            return null;
+        return ceremony.SpaceId == null
+            ? $"Only a system administrator can {verb} a change to the instance's policy."
+            : $"Only an administrator of this space can {verb} a change to its policy.";
     }
 
     /// <summary>
     /// Approves a pending key ceremony. Requires step-up MFA verification.
-    /// Self-approval is forbidden: the initiator cannot approve their own ceremony.
+    /// Self-approval is forbidden: the initiator cannot approve their own ceremony. A controlled-user
+    /// ceremony the caller may not approve is 403 with the reason: no approving tier, or, for a
+    /// promotion, a recent reset by the caller of the credentials of an account it promotes. A
+    /// policy-change ceremony needs admin rank at its scope (403 for an operator of that scope).
     /// When approvals reach the quorum threshold, the ceremony transitions to Approved status.
     /// </summary>
     [HttpPost("{id:guid}/approve")]
-    [Authorize(Policy = "CaAdmin")]
     public async Task<IActionResult> Approve(
         Guid id,
         [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -288,12 +448,12 @@ public class AdminKeyCeremonyController : ControllerBase
         if (!await CanAccessCeremonyAsync(approveCeremony))
             return StatusCode(403, new { error = "You do not have access to this ceremony." });
 
-        // Controlled-user ceremonies require tier-dominance: the approver must hold a tier that
-        // dominates the affected privilege (and may not be the change's target user). Initiator
-        // self-approval is blocked separately by the ceremony service.
+        // Initiator self-approval is blocked separately by the ceremony service.
         if (approveCeremony.OperationType == "ControlledUserChange"
-            && !await _controlledUserSvc.CanApproveAsync(_currentUser.User.Id, approveCeremony))
-            return StatusCode(403, new { error = "You are not eligible to approve this controlled-user change — your role doesn't cover the affected privilege tier." });
+            && await _controlledUserSvc.ApprovalRefusalAsync(_currentUser.User.Id, approveCeremony) is { } refusal)
+            return StatusCode(403, new { error = refusal });
+        if (await PolicyApprovalRefusalAsync(approveCeremony, _currentUser.User.Id) is { } policyRefusal)
+            return StatusCode(403, new { error = policyRefusal });
 
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(
                 _cache, User, mfaToken, StepUpOps.ApproveCeremony, id.ToString()))
@@ -335,10 +495,13 @@ public class AdminKeyCeremonyController : ControllerBase
     /// Rejects a pending key ceremony, immediately setting its status to Rejected.
     /// Now step-up gated so an attacker with a hijacked admin
     /// session cannot silently reject legitimate ceremonies as a DOS against the
-    /// key-rotation workflow.
+    /// key-rotation workflow. A controlled-user ceremony can be rejected only by a system admin or
+    /// by someone holding a tier that could approve it, including one barred from approving it as
+    /// a resetter, and never by the user it changes. A policy-change ceremony is rejected under the
+    /// approval rule, <see cref="PolicyApprovalRefusalAsync"/> (403 for an operator of its scope),
+    /// except by its initiator, who may withdraw it.
     /// </summary>
     [HttpPost("{id:guid}/reject")]
-    [Authorize(Policy = "CaAdmin")]
     public async Task<IActionResult> Reject(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -348,6 +511,17 @@ public class AdminKeyCeremonyController : ControllerBase
         if (rejectCeremony == null) return NotFound(new { error = "Ceremony not found." });
         if (!await CanAccessCeremonyAsync(rejectCeremony))
             return StatusCode(403, new { error = "You do not have access to this ceremony." });
+        if (rejectCeremony.InitiatedByUserId != _currentUser.User.Id
+            && await PolicyApprovalRefusalAsync(rejectCeremony, _currentUser.User.Id, "reject") is { } policyRefusal)
+            return StatusCode(403, new { error = policyRefusal });
+        if (IsControlledUserChange(rejectCeremony))
+        {
+            var userId = _currentUser.User.Id;
+            if (_controlledUserSvc.DescribeCeremony(rejectCeremony).TargetUserId == userId)
+                return StatusCode(403, new { error = "You cannot reject a change to your own privileges." });
+            if (!await _groupAuth.IsSystemAdminAsync(userId) && !await _controlledUserSvc.HoldsApprovingTierAsync(userId, rejectCeremony))
+                return StatusCode(403, new { error = "You are not eligible to reject this controlled-user change: your role doesn't cover the affected privilege tier." });
+        }
 
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(
                 _cache, User, mfaToken, StepUpOps.RejectCeremony, id.ToString()))
@@ -383,7 +557,6 @@ public class AdminKeyCeremonyController : ControllerBase
     /// in-progress ceremonies.
     /// </summary>
     [HttpDelete("{id:guid}")]
-    [Authorize(Policy = "CaAdmin")]
     public async Task<IActionResult> Cancel(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -426,10 +599,13 @@ public class AdminKeyCeremonyController : ControllerBase
     /// <summary>
     /// Executes an approved key ceremony, triggering the actual CA creation.
     /// Only the initiator or an approver may execute. Parameters are locked from initiation.
+    /// A label or name another CA took meanwhile is 409, an invalid or reserved label 400, and a
+    /// CA certificate profile outside the new CA's scope 404. A controlled-user password reset
+    /// returns the temporary password it generates (<c>temporaryPassword</c>) in this response only,
+    /// to the caller who executes it; it is not stored, audited or shown again.
     /// Requires step-up MFA verification.
     /// </summary>
     [HttpPost("{id:guid}/execute")]
-    [Authorize(Policy = "CaAdmin")]
     public async Task<IActionResult> Execute(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
         await _currentUser.EnsureLoadedAsync();
@@ -440,13 +616,26 @@ public class AdminKeyCeremonyController : ControllerBase
             return NotFound(new { error = "Ceremony not found." });
         if (!await CanAccessCeremonyAsync(ceremony))
             return StatusCode(403, new { error = "You do not have access to this ceremony." });
+        if (IsControlledUserChange(ceremony) && !await MayExecuteControlledUserChangeAsync(ceremony))
+            return StatusCode(403, new { error = "You no longer hold a role that covers the affected privilege tier." });
 
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(
                 _cache, User, mfaToken, StepUpOps.ExecuteCeremony, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required.", requiresStepUp = true });
 
         if (ceremony.Status != "Approved")
-            return BadRequest(new { error = $"Ceremony is '{ceremony.Status}', not 'Approved'. Only approved ceremonies can be executed." });
+            return Conflict(new { error = $"Ceremony is '{ceremony.Status}', not 'Approved'. Only approved ceremonies can be executed." });
+
+        // One execution at a time per ceremony, then re-read the status under the lock: a second
+        // execute that raced the first finds it Executed and gets 409 instead of running it twice.
+        await using var executionLock = await _ceremonySvc.TryAcquireExecutionLockAsync(id);
+        if (executionLock == null)
+            return Conflict(new { error = "This ceremony is being executed by another request." });
+        ceremony = await _ceremonySvc.GetByIdAsync(id);
+        if (ceremony == null)
+            return NotFound(new { error = "Ceremony not found." });
+        if (ceremony.Status != "Approved")
+            return Conflict(new { error = $"Ceremony is '{ceremony.Status}', not 'Approved'. Only approved ceremonies can be executed." });
 
         // Verify the caller is the initiator or an approver
         var userId = _currentUser.User.Id;
@@ -488,7 +677,7 @@ public class AdminKeyCeremonyController : ControllerBase
 
         // Deserialize locked parameters. ONLY the X.509 CA-creation operations
         // (CreateRootCA / CreateIntermediateCA) use the generic KeyCeremonyParameters shape and
-        // fall through to the common "CA created" tail below. SSH, revoke, tenant-policy, and
+        // fall through to the common "CA created" tail below. SSH, revoke, space-policy, and
         // controlled-user ceremonies carry their own parameter shapes and deserialize them inside
         // their own branch. We must NOT force the generic deserialize for those: e.g. an ed25519
         // SSH CA serializes KeySize as null, which cannot bind to KeyCeremonyParameters.KeySize
@@ -503,8 +692,7 @@ public class AdminKeyCeremonyController : ControllerBase
                 return BadRequest(new { error = "Ceremony has no parameters to execute." });
             try
             {
-                parameters = JsonSerializer.Deserialize<ModularCA.Shared.Models.KeyCeremonyParameters>(
-                    ceremony.ParametersJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                parameters = CeremonyParametersJson.Read<ModularCA.Shared.Models.KeyCeremonyParameters>(ceremony.ParametersJson);
             }
             catch
             {
@@ -526,7 +714,7 @@ public class AdminKeyCeremonyController : ControllerBase
                     parameters.SubjectCN, parameters.SubjectO, parameters.SubjectOU,
                     parameters.SubjectL, parameters.SubjectST, parameters.SubjectC,
                     parameters.KeyAlgorithm, parameters.KeySize, parameters.ValidityYears,
-                    parameters.Label, parameters.TenantId,
+                    parameters.Label, parameters.SpaceId,
                     publicBaseUrl: parameters.PublicBaseUrl,
                     nameConstraintsPermittedJson: parameters.NameConstraintsPermitted is { Count: > 0 }
                         ? JsonSerializer.Serialize(parameters.NameConstraintsPermitted) : null,
@@ -552,7 +740,7 @@ public class AdminKeyCeremonyController : ControllerBase
                     parameters.SubjectCN, parameters.SubjectO, parameters.SubjectOU,
                     parameters.SubjectL, parameters.SubjectST, parameters.SubjectC,
                     parameters.KeyAlgorithm, parameters.KeySize, parameters.ValidityYears,
-                    parameters.Label, parameters.TenantId,
+                    parameters.Label, parameters.SpaceId,
                     publicBaseUrl: parameters.PublicBaseUrl,
                     certProfileId: parameters.CertProfileId,
                     nameConstraintsPermittedJson: parameters.NameConstraintsPermitted is { Count: > 0 }
@@ -563,8 +751,7 @@ public class AdminKeyCeremonyController : ControllerBase
             }
             else if (ceremony.OperationType == "CreateSshCa")
             {
-                var sshParams = JsonSerializer.Deserialize<SshKeyCeremonyParameters>(
-                    ceremony.ParametersJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                var sshParams = CeremonyParametersJson.Read<SshKeyCeremonyParameters>(ceremony.ParametersJson);
                 if (sshParams == null)
                     return BadRequest(new { error = "Failed to deserialize SSH CA ceremony parameters." });
 
@@ -587,8 +774,7 @@ public class AdminKeyCeremonyController : ControllerBase
             }
             else if (ceremony.OperationType == "DeleteSshCa")
             {
-                var sshParams = JsonSerializer.Deserialize<SshKeyCeremonyParameters>(
-                    ceremony.ParametersJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                var sshParams = CeremonyParametersJson.Read<SshKeyCeremonyParameters>(ceremony.ParametersJson);
                 if (sshParams?.SshCaKeyId == null)
                     return BadRequest(new { error = "SSH CA key ID missing from ceremony parameters." });
 
@@ -608,8 +794,7 @@ public class AdminKeyCeremonyController : ControllerBase
             else if (ceremony.OperationType == "RevokeCa")
             {
                 // KC-06: execute the ceremony-gated CA certificate revocation.
-                var revokeParams = JsonSerializer.Deserialize<RevokeCaCeremonyParameters>(
-                    ceremony.ParametersJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                var revokeParams = CeremonyParametersJson.Read<RevokeCaCeremonyParameters>(ceremony.ParametersJson);
                 if (revokeParams == null || revokeParams.CertificateId == Guid.Empty)
                     return BadRequest(new { error = "Certificate ID missing from RevokeCa ceremony parameters." });
 
@@ -639,25 +824,29 @@ public class AdminKeyCeremonyController : ControllerBase
                     crlNumber = revokeResult.CrlNumber,
                 });
             }
-            else if (ceremony.OperationType == "TenantPolicyChange")
+            else if (ceremony.OperationType is nameof(CeremonyType.SpacePolicyChange) or nameof(CeremonyType.InstancePolicyChange))
             {
-                // Apply the ceremony-gated tenant policy downgrade via the dedicated service,
-                // then mark executed + emit a distinct audit entry carrying the before/after diff
-                // so operators can easily filter policy changes out of the broader ceremony stream.
-                var result = await _tenantPolicyChangeSvc.ApplyApprovedChangeAsync(ceremony.Id);
+                // Apply the ceremony-gated scope policy change via the dedicated service (the
+                // instance's goes to the security policy row), then mark executed + emit a distinct
+                // audit entry carrying the before/after diff so operators can easily filter policy
+                // changes out of the broader ceremony stream.
+                var result = await _spacePolicyChangeSvc.ApplyApprovedChangeAsync(ceremony.Id);
 
                 await _ceremonySvc.MarkExecutedAsync(id);
+                var isInstance = result.SpaceId == null;
+                if (isInstance)
+                    HttpContext.RequestServices.GetService<ISecurityPolicyService>()?.InvalidateCache();
 
                 await _audit.LogAsync(
-                    AuditActionType.TenantPolicyChangeApplied,
+                    isInstance ? AuditActionType.InstancePolicyChangeApplied : AuditActionType.SpacePolicyChangeApplied,
                     _currentUser.User.Id,
                     _currentUser.User.Username,
-                    "Tenant",
-                    result.TenantId.ToString(),
+                    isInstance ? "SecurityPolicy" : "Space",
+                    result.SpaceId?.ToString() ?? "instance",
                     new
                     {
                         CeremonyId = ceremony.Id,
-                        TenantId = result.TenantId,
+                        SpaceId = result.SpaceId,
                         Before = new
                         {
                             RequireKeyCeremony = result.BeforeRequireKeyCeremony,
@@ -674,17 +863,20 @@ public class AdminKeyCeremonyController : ControllerBase
                 {
                     ceremony.Id,
                     Status = "Executed",
-                    message = "Tenant policy change applied.",
+                    message = isInstance ? "Instance policy change applied." : "Space policy change applied.",
                     result,
                 });
             }
             else if (ceremony.OperationType == "ControlledUserChange")
             {
-                // Apply the ceremony-gated controlled-user privilege change (promote/demote/delete)
-                // via the dedicated service, then mark executed + emit a distinct audit entry.
+                // The service marks the ceremony Executed in the same transaction as the change.
                 var result = await _controlledUserSvc.ApplyApprovedAsync(ceremony.Id);
 
-                await _ceremonySvc.MarkExecutedAsync(id);
+                await _audit.LogAsync(
+                    AuditActionType.KeyCeremonyExecuted,
+                    _currentUser.User.Id, _currentUser.User.Username,
+                    "KeyCeremony", id.ToString(),
+                    new { CeremonyId = id, ceremony.OperationType, result.TargetUserId });
 
                 await _audit.LogAsync(
                     AuditActionType.ControlledUserChangeApplied,
@@ -698,16 +890,24 @@ public class AdminKeyCeremonyController : ControllerBase
                         result.ChangeType,
                         result.TargetUserId,
                         result.Capability,
-                        result.TenantId,
+                        result.SpaceId,
                         result.CertificateAuthorityId,
                     });
 
+                await ModularCA.API.Middleware.TokenRevocationMiddleware.InvalidateUserStampCacheAsync(_cache, result.TargetUserId);
+                await AuditAccountChangeAsync(result, ceremony.Id);
+
+                if (result.TemporaryPassword != null)
+                    Response.Headers.CacheControl = "no-store";
                 return Ok(new
                 {
                     ceremony.Id,
                     Status = "Executed",
-                    message = "Controlled-user change applied.",
+                    message = result.TemporaryPassword != null
+                        ? "Password reset. The temporary password is shown only in this response."
+                        : "Controlled-user change applied.",
                     result,
+                    temporaryPassword = result.TemporaryPassword,
                 });
             }
             else
@@ -734,6 +934,32 @@ public class AdminKeyCeremonyController : ControllerBase
                 message = $"{ceremony.OperationType} executed successfully. CA '{newCa.Name}' created."
             });
         }
+        catch (CeremonyNotExecutableException ex)
+        {
+            return Conflict(new { error = ex.Message, status = ex.Status });
+        }
+        catch (ControlledUserChangeRefusedException ex)
+        {
+            // A last-dominator refusal leaves the ceremony Approved, so it is not a rejection.
+            await _audit.LogAsync(
+                ex.CeremonyExpired ? AuditActionType.KeyCeremonyExpired : AuditActionType.ControlledUserChangeRefused,
+                _currentUser.User.Id, _currentUser.User.Username,
+                "KeyCeremony", id.ToString(),
+                new { CeremonyId = id, ceremony.OperationType, Reason = ex.Message, RefusedAtExecute = true });
+            return Conflict(new { error = ex.Message, ceremonyExpired = ex.CeremonyExpired });
+        }
+        catch (ModularCA.Shared.Errors.ResourceConflictException ex)
+        {
+            return Conflict(new { error = ex.Message, code = ex.Code });
+        }
+        catch (ModularCA.Shared.Errors.ResourceNotFoundException ex)
+        {
+            return NotFound(new { error = ex.Message, code = ex.Code });
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
         catch (Exception ex)
         {
             Log.Error(ex, "Failed to execute key ceremony");
@@ -742,45 +968,109 @@ public class AdminKeyCeremonyController : ControllerBase
     }
 
     /// <summary>
-    /// The tenants whose ceremonies the caller may see: those where they hold <c>ca.manage</c>
-    /// tenant-wide, from any grant source. A system-scoped holder is handled by the caller.
+    /// The spaces whose ceremonies the caller may see: those where they hold <c>ca.manage</c>
+    /// space-wide, from any grant source. A system-scoped holder is handled by the caller.
     /// </summary>
-    private Task<List<Guid>> GetUserCeremonyTenantIdsAsync(Guid userId)
-        => _groupAuth.GetTenantIdsWithCapabilityAsync(userId, Capabilities.CaManage);
+    private Task<List<Guid>> GetUserCeremonySpaceIdsAsync(Guid userId)
+        => _groupAuth.GetSpaceIdsWithCapabilityAsync(userId, Capabilities.CaManage);
 
     /// <summary>
-    /// Checks if the current user can access the given ceremony (system admin or tenant-level admin).
+    /// Checks if the current user can access the given ceremony, all under the worn badge. A
+    /// controlled-user ceremony is open to a system admin, its initiator, and anyone whose tier could
+    /// approve it (which excludes its target), barred from approving or not, so a CA admin reaches the changes on their CA and a
+    /// space-wide <c>ca.manage</c> holder does not see changes above their rank. Its target gets no
+    /// access as such: a pending demotion or deletion must not tip off the account it removes. Any
+    /// other ceremony is open to a system admin or a holder of <c>ca.manage</c> space-wide in its
+    /// space, or at system scope for an instance ceremony (no space).
     /// </summary>
     private async Task<bool> CanAccessCeremonyAsync(KeyCeremonyEntity ceremony)
     {
-        if (await _groupAuth.IsSystemAdminAsync(_currentUser.User!.Id))
-            return true;
-
-        if (ceremony.TenantId == null)
+        var userId = _currentUser.User!.Id;
+        if (IsControlledUserChange(ceremony)
+            && _controlledUserSvc.DescribeCeremony(ceremony).TargetUserId == userId)
             return false;
 
-        return await _groupAuth.HasTenantCapabilityAsync(_currentUser.User.Id, ceremony.TenantId.Value, Capabilities.CaManage);
+        if (await _groupAuth.IsSystemAdminAsync(userId))
+            return true;
+
+        if (IsControlledUserChange(ceremony))
+            return ceremony.InitiatedByUserId == userId || await _controlledUserSvc.HoldsApprovingTierAsync(userId, ceremony);
+
+        // An instance ceremony (no space) is open to ca.manage at system scope, as the System
+        // space's were.
+        return await _groupAuth.HasScopeCapabilityAsync(userId, ceremony.SpaceId, Capabilities.CaManage);
+    }
+
+    /// <summary>
+    /// Writes the audit rows and raises the alerts the direct account endpoints do, for an account
+    /// change (password reset, MFA reset, identity update) applied by a controlled-user ceremony.
+    /// Nothing written carries the temporary password.
+    /// </summary>
+    private async Task AuditAccountChangeAsync(ControlledUserChangeResult result, Guid ceremonyId)
+    {
+        var user = _currentUser.User!;
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+        var target = result.TargetUserId;
+        switch (result.ChangeType)
+        {
+            case "ResetPassword":
+                await _audit.LogAsync(AuditActionType.UserPasswordReset, user.Id, user.Username, "User", target.ToString(),
+                    new { CeremonyId = ceremonyId }, ip);
+                _ = _alertService.RaiseAlertAsync("AdminPasswordReset", AlertSeverity.Warning,
+                    $"Password reset for user {target} by {user.Username} (ceremony {ceremonyId})", new { TargetUserId = target, CeremonyId = ceremonyId });
+                break;
+            case "ResetMfa":
+                await _audit.LogAsync(AuditActionType.UserUpdated, user.Id, user.Username, "User", target.ToString(),
+                    new { Action = "MfaReset", CeremonyId = ceremonyId }, ip);
+                _ = _alertService.RaiseAlertAsync("UserMfaReset", AlertSeverity.Critical,
+                    $"MFA reset for user {target} by {user.Username} (ceremony {ceremonyId})", new { TargetUserId = target, CeremonyId = ceremonyId });
+                break;
+            case "UpdateIdentity":
+                await _audit.LogAsync(AuditActionType.UserUpdated, user.Id, user.Username, "User", target.ToString(),
+                    new { Action = "UpdateIdentity", CeremonyId = ceremonyId }, ip);
+                break;
+        }
+    }
+
+    /// <summary>True for a ceremony that gates a controlled user's privileges.</summary>
+    private static bool IsControlledUserChange(KeyCeremonyEntity ceremony)
+        => ceremony.OperationType == "ControlledUserChange";
+
+    /// <summary>
+    /// Whether the current user may execute a controlled-user ceremony with the rights they wear now:
+    /// a system admin, someone eligible to approve it, or its initiator while still holding a tier
+    /// that dominates the change. Being the initiator alone is not enough under a narrowing badge.
+    /// </summary>
+    private async Task<bool> MayExecuteControlledUserChangeAsync(KeyCeremonyEntity ceremony)
+    {
+        var userId = _currentUser.User!.Id;
+        if (await _groupAuth.IsSystemAdminAsync(userId) || await _controlledUserSvc.CanApproveAsync(userId, ceremony))
+            return true;
+        return ceremony.InitiatedByUserId == userId
+            && _controlledUserSvc.DescribeCeremony(ceremony).Minted is { } minted
+            && await _controlledUserSvc.CanInitiateAsync(userId, minted);
     }
 
     /// <summary>
     /// Whether the caller may start a ceremony of this type with these parameters. CA creation
-    /// follows <see cref="CaCreationAccess"/>; anything else needs <c>ca.manage</c> tenant-wide
-    /// for the tenant named in the parameters, or <c>system.manage</c> when there is none.
+    /// follows <see cref="CaCreationAccess"/>; anything else needs <c>ca.manage</c> across the
+    /// scope named in the parameters: space-wide for a space, at system scope for the instance
+    /// (no space).
     /// </summary>
     private async Task<bool> MayInitiateAsync(string operationType, KeyCeremonyParameters? parameters, Guid userId)
     {
         if (await _groupAuth.IsSystemAdminAsync(userId))
             return true;
-        if (parameters == null || parameters.TenantId == Guid.Empty)
+        if (parameters == null)
             return false;
 
         if (string.Equals(operationType, "CreateRootCA", StringComparison.OrdinalIgnoreCase))
-            return await CaCreationAccess.MayCreateRootAsync(_groupAuth, userId, parameters.TenantId);
+            return await CaCreationAccess.MayCreateRootAsync(_groupAuth, userId, parameters.SpaceId);
         if (string.Equals(operationType, "CreateIntermediateCA", StringComparison.OrdinalIgnoreCase))
             return parameters.ParentCaId is Guid parent
-                && await CaCreationAccess.MayCreateIntermediateAsync(_groupAuth, _db, userId, parameters.TenantId, parent);
+                && await CaCreationAccess.MayCreateIntermediateAsync(_groupAuth, _db, userId, parameters.SpaceId, parent);
 
-        return await _groupAuth.HasTenantCapabilityAsync(userId, parameters.TenantId, Capabilities.CaManage);
+        return await _groupAuth.HasScopeCapabilityAsync(userId, parameters.SpaceId, Capabilities.CaManage);
     }
 }
 

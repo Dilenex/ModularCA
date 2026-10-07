@@ -174,7 +174,7 @@ public class CrlRegenerationCadenceTests
         public Task LogAsync(string actionType, Guid? actorUserId, string? actorUsername,
             string? targetEntityType = null, string? targetEntityId = null, object? details = null,
             string? sourceIp = null, bool success = true, string? errorMessage = null,
-            Guid? certificateAuthorityId = null, Guid? tenantId = null)
+            Guid? certificateAuthorityId = null, Guid? spaceId = null)
             => Task.CompletedTask;
     }
 

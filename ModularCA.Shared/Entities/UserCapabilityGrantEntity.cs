@@ -5,8 +5,8 @@ namespace ModularCA.Shared.Entities;
 
 /// <summary>
 /// A direct capability grant on a user (no role or group required).
-/// Scope is determined by TenantId and CertificateAuthorityId:
-/// both null = global, TenantId only = tenant-wide, both set = CA-scoped.
+/// Scope is determined by SpaceId and CertificateAuthorityId:
+/// both null = global, SpaceId only = space-wide, both set = CA-scoped.
 /// </summary>
 public class UserCapabilityGrantEntity
 {
@@ -22,8 +22,8 @@ public class UserCapabilityGrantEntity
     [MaxLength(100)]
     public string Capability { get; set; } = string.Empty;
 
-    /// <summary>Tenant scope. Null = global.</summary>
-    public Guid? TenantId { get; set; }
+    /// <summary>Space scope. Null = the instance.</summary>
+    public Guid? SpaceId { get; set; }
 
     /// <summary>CA scope. Null = all CAs in scope.</summary>
     public Guid? CertificateAuthorityId { get; set; }
@@ -48,8 +48,8 @@ public class UserCapabilityGrantEntity
     [ForeignKey("UserId")]
     public virtual UserEntity User { get; set; } = null!;
 
-    [ForeignKey("TenantId")]
-    public virtual TenantEntity? Tenant { get; set; }
+    [ForeignKey(nameof(SpaceId))]
+    public virtual SpaceEntity? Space { get; set; }
 
     [ForeignKey("CertificateAuthorityId")]
     public virtual CertificateAuthorityEntity? CertificateAuthority { get; set; }

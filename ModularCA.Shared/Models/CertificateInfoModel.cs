@@ -66,5 +66,18 @@ namespace ModularCA.Shared.Models
         /// </summary>
         public Guid? IssuerCertificateId { get; set; }
 
+        /// <summary>
+        /// Whether a newer certificate replaces this one: a reissue or renewal link, or a valid
+        /// certificate from the same CA with the same subject and SAN set. Filled by the
+        /// certificate list and detail reads only.
+        /// </summary>
+        public bool Replaced { get; set; }
+
+        /// <summary>Serial of the replacing certificate, when known and visible to the caller.</summary>
+        public string? ReplacedBySerial { get; set; }
+
+        /// <summary>How the certificate was issued (ACME, EST, SCEP, CMP, MSAE, Manual), when recorded. Detail reads only.</summary>
+        public string? IssuanceChannel { get; set; }
+
     }
 }

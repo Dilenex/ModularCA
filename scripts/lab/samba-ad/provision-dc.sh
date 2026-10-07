@@ -14,7 +14,7 @@
 #   - a domain controller dc1.<realm> serving DNS (forwarding everything else upstream, so the
 #     Windows client still resolves the public ca4 name), Kerberos and LDAP;
 #   - service account svc-modularca-enroll, AES-only, holding the enrollment SPN. Its password is
-#     NOT set here: ModularCA generates one on the tenant page and bind-modularca.sh applies it;
+#     NOT set here: ModularCA generates one on the space page and bind-modularca.sh applies it;
 #   - test user alice / Alice-P@ss-1.
 # Machines are created by joining, see client-enroll.ps1.
 set -euo pipefail

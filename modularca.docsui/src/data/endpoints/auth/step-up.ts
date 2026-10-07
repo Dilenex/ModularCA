@@ -11,11 +11,12 @@ export const stepUp: ApiEndpoint[] = [
             { name: 'code', type: 'string', required: true, description: 'The 6-digit TOTP code' },
             { name: 'operation', type: 'string', required: true, description: 'The operation being authorized (e.g., delete-user, revoke-ca)' },
             { name: 'targetId', type: 'string', required: false, description: 'Target entity ID for the operation' },
+            { name: 'targetIds', type: 'string[]', required: false, description: 'Several targets authorised by this one verification, at most 100, in place of targetId. The token is then good once for each' },
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Operation-scoped step-up token valid for 5 minutes.',
+        responseDescription: 'A single-use step-up token for that operation and target, valid for the configured time (90 seconds by default).',
     },
     {
         method: 'POST',
@@ -38,11 +39,12 @@ export const stepUp: ApiEndpoint[] = [
             { name: 'assertionResponse', type: 'AuthenticatorAssertionRawResponse', required: true, description: 'Raw authenticator assertion response' },
             { name: 'operation', type: 'string', required: true, description: 'The operation being authorized' },
             { name: 'targetId', type: 'string', required: false, description: 'Target entity ID for the operation' },
+            { name: 'targetIds', type: 'string[]', required: false, description: 'Several targets authorised by this one verification, at most 100, in place of targetId. The token is then good once for each' },
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Operation-scoped step-up token valid for 5 minutes.',
+        responseDescription: 'A single-use step-up token for that operation and target, valid for the configured time (90 seconds by default).',
     },
     {
         method: 'POST',
@@ -57,7 +59,7 @@ export const stepUp: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Operation-scoped step-up token valid for 5 minutes.',
+        responseDescription: 'A single-use step-up token for that operation and target, valid for the configured time (90 seconds by default).',
         notes: 'Only allowed for MFA enrollment operations. Cannot be used for destructive operations.',
     },
 ];

@@ -125,6 +125,9 @@ public class MfaStepUpController : ControllerBase
         if (!StepUpOps.All.Contains(request.Operation))
             return BadRequest(new { error = "invalid_step_up_operation", operation = request.Operation });
 
+        if (TargetListError(request.TargetId, request.TargetIds) is { } targetListError)
+            return BadRequest(new { error = targetListError });
+
         // Per-user step-up failure counter. Before any verification
         // attempt, check the sliding-window bucket — if the user is locked out, refuse
         // fast and emit an audit event so SIEM can alert.
@@ -160,16 +163,16 @@ public class MfaStepUpController : ControllerBase
         await _cache.RemoveAsync(StepUpFailKey(userId.Value));
 
         var jti = ExtractJti(User);
-        var stepUpToken = await IssueStepUpTokenAsync(userId.Value, jti, request.Operation, request.TargetId);
+        var stepUpToken = await IssueStepUpTokenAsync(userId.Value, jti, request.Operation, request.TargetId, request.TargetIds);
         var ttl = await GetEffectiveStepUpTtlSecondsAsync();
 
         await _audit.LogAsync(
             AuditActionType.MfaStepUpVerified,
             userId.Value,
             _currentUser.User?.Username,
-            details: new { Method = "TOTP", request.Operation, request.TargetId });
+            details: new { Method = "TOTP", request.Operation, request.TargetId, request.TargetIds });
 
-        return Ok(new { mfaToken = stepUpToken, expiresInSeconds = ttl, operation = request.Operation, targetId = request.TargetId });
+        return Ok(new { mfaToken = stepUpToken, expiresInSeconds = ttl, operation = request.Operation, targetId = request.TargetId, targetCount = request.TargetIds?.Count });
     }
 
     /// <summary>
@@ -251,6 +254,9 @@ public class MfaStepUpController : ControllerBase
         if (!StepUpOps.All.Contains(request.Operation))
             return BadRequest(new { error = "invalid_step_up_operation", operation = request.Operation });
 
+        if (TargetListError(request.TargetId, request.TargetIds) is { } targetListError)
+            return BadRequest(new { error = targetListError });
+
         // Per-user failure counter applies to WebAuthn step-up too.
         if (await IsStepUpLockedOutAsync(userId.Value))
         {
@@ -327,16 +333,16 @@ public class MfaStepUpController : ControllerBase
         await _cache.RemoveAsync(StepUpFailKey(userId.Value));
 
         var jti = ExtractJti(User);
-        var stepUpToken = await IssueStepUpTokenAsync(userId.Value, jti, request.Operation, request.TargetId);
+        var stepUpToken = await IssueStepUpTokenAsync(userId.Value, jti, request.Operation, request.TargetId, request.TargetIds);
         var ttl = await GetEffectiveStepUpTtlSecondsAsync();
 
         await _audit.LogAsync(
             AuditActionType.MfaStepUpVerified,
             userId.Value,
             _currentUser.User?.Username,
-            details: new { Method = "WebAuthn", request.Operation, request.TargetId });
+            details: new { Method = "WebAuthn", request.Operation, request.TargetId, request.TargetIds });
 
-        return Ok(new { mfaToken = stepUpToken, expiresInSeconds = ttl, operation = request.Operation, targetId = request.TargetId });
+        return Ok(new { mfaToken = stepUpToken, expiresInSeconds = ttl, operation = request.Operation, targetId = request.TargetId, targetCount = request.TargetIds?.Count });
     }
 
     [HttpPost("verify-stepup/mtls")]
@@ -427,14 +433,54 @@ public class MfaStepUpController : ControllerBase
     /// operation, and the target so the token can only be used from the same
     /// session for the specific action it was authorized for.
     /// </summary>
-    private async Task<string> IssueStepUpTokenAsync(Guid userId, string? jti, string operation, string? targetId)
+    /// <remarks>
+    /// With <paramref name="targetIds"/> the one token is stored once per named target. Each entry
+    /// is still bound to this operation and that target and is spent by its first use, so one
+    /// verification covers a listed batch and nothing outside it.
+    /// </remarks>
+    private async Task<string> IssueStepUpTokenAsync(Guid userId, string? jti, string operation, string? targetId, IReadOnlyCollection<string>? targetIds = null)
     {
         var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
-        var key = BuildStepUpCacheKey(userId, jti, operation, targetId);
-        var ttlSeconds = await GetEffectiveStepUpTtlSecondsAsync();
-        await _cache.SetStringAsync(key, token,
-            new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(ttlSeconds) });
+        await StoreStepUpTokenAsync(_cache, userId, jti, operation, targetId, targetIds, token, await GetEffectiveStepUpTtlSecondsAsync());
         return token;
+    }
+
+    /// <summary>Writes a verified token to the cache: once, or once per listed target.</summary>
+    internal static async Task StoreStepUpTokenAsync(IDistributedCache cache, Guid userId, string? jti, string operation,
+        string? targetId, IReadOnlyCollection<string>? targetIds, string token, int ttlSeconds)
+    {
+        var expiry = new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(ttlSeconds) };
+        if (targetIds == null)
+        {
+            await cache.SetStringAsync(BuildStepUpCacheKey(userId, jti, operation, targetId), token, expiry);
+            return;
+        }
+
+        foreach (var target in targetIds.Distinct(StringComparer.Ordinal))
+            await cache.SetStringAsync(BuildStepUpCacheKey(userId, jti, operation, target), token, expiry);
+    }
+
+    /// <summary>The most targets one verification may cover.</summary>
+    internal const int MaxStepUpTargets = 100;
+
+    /// <summary>
+    /// Why a request's target list cannot be honoured, or null when it can. A list replaces the
+    /// single target; it never widens a token to "any target", so an empty list and a blank
+    /// entry are refused.
+    /// </summary>
+    internal static string? TargetListError(string? targetId, IReadOnlyCollection<string>? targetIds)
+    {
+        if (targetIds == null)
+            return null;
+        if (!string.IsNullOrWhiteSpace(targetId))
+            return "Send targetId or targetIds, not both.";
+        if (targetIds.Count == 0)
+            return "targetIds must name at least one target.";
+        if (targetIds.Count > MaxStepUpTargets)
+            return $"targetIds may name at most {MaxStepUpTargets} targets.";
+        if (targetIds.Any(string.IsNullOrWhiteSpace))
+            return "targetIds must not contain an empty target.";
+        return null;
     }
 
     /// <summary>
@@ -598,6 +644,9 @@ public class StepUpTotpRequest
 
     /// <summary>The target entity ID for the operation (e.g., user ID, CA ID). Null for operations without a specific target.</summary>
     public string? TargetId { get; set; }
+
+    /// <summary>Several targets authorised by this one verification, each used once. Replaces <see cref="TargetId"/>.</summary>
+    public List<string>? TargetIds { get; set; }
 }
 
 /// <summary>
@@ -613,6 +662,9 @@ public class StepUpWebAuthnRequest
 
     /// <summary>The target entity ID for the operation. Null for operations without a specific target.</summary>
     public string? TargetId { get; set; }
+
+    /// <summary>Several targets authorised by this one verification, each used once. Replaces <see cref="TargetId"/>.</summary>
+    public List<string>? TargetIds { get; set; }
 }
 
 /// <summary>

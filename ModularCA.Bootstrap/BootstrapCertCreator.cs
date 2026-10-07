@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Core.Implementations;
 using ModularCA.Keystore.Crypto;
@@ -220,13 +221,31 @@ public static class BootstrapCertCreator
 
     /// <summary>
     /// Creates a certificate authority entity in the database, linked to the given certificate.
-    /// Supports root, intermediate, and issuing CA types. Sets TenantId for multi-tenancy.
+    /// Supports root, intermediate, and issuing CA types. A null <paramref name="spaceId"/>
+    /// creates an instance CA, such as the system signing CA. A label (ignoring case) or name that
+    /// another CA of the instance already has throws
+    /// <see cref="ModularCA.Shared.Errors.ConfigurationValidationException"/> naming both, rather
+    /// than failing on the unique index, as does a label derived from the CA's name that
+    /// <see cref="EnsureRootLabelUsable"/> refuses. An explicit <paramref name="label"/> may be reserved.
+    /// A CA created as the default clears the default on every other CA.
     /// </summary>
     public static void CreateCertificateAuthority(ModularCADbContext db, CertificateEntity caCertificateEntity,
-        string type = "Root", bool isDefault = false, string? label = null, Guid? parentCaId = null, Guid? tenantId = null)
+        string type = "Root", bool isDefault = false, string? label = null, Guid? parentCaId = null, Guid? spaceId = null)
     {
         var caName = CertificateUtil.ParseCnFromPem(caCertificateEntity.Pem);
         var caType = type;
+        if (label == null)
+            EnsureRootLabelUsable(caName);
+        var caLabel = label ?? LabelFor(caName);
+        var lowered = caLabel.ToLowerInvariant();
+        var clash = db.CertificateAuthorities.IgnoreQueryFilters()
+            .Where(c => (c.Label != null && c.Label.ToLower() == lowered) || c.Name == caName)
+            .Select(c => new { c.Name, c.Label })
+            .FirstOrDefault();
+        if (clash != null)
+            throw new ModularCA.Shared.Errors.ConfigurationValidationException(
+                $"Bootstrap cannot create CA '{caName}' (label '{caLabel}'): CA '{clash.Name}' (label '{clash.Label}') already has that "
+                + "name or label, and both are unique across the instance. Choose another root CA common name.");
 
         var caEntity = new CertificateAuthorityEntity
         {
@@ -236,19 +255,84 @@ public static class BootstrapCertCreator
             Type = caType,
             IsEnabled = true,
             IsDefault = isDefault,
-            Label = label ?? ToLabel(caName),
+            Label = caLabel,
             ParentCaId = parentCaId,
-            TenantId = tenantId ?? db.Tenants.Select(t => t.Id).First(),
+            SpaceId = spaceId,
         };
+        if (isDefault)
+            foreach (var other in db.CertificateAuthorities.Where(c => c.IsDefault).ToList())
+                other.IsDefault = false;
         db.CertificateAuthorities.Add(caEntity);
         db.SaveChanges();
         Console.WriteLine($"✓ Certificate Authority '{caEntity.Name}' added (Type={caType}, Label={caEntity.Label}, IsDefault={caEntity.IsDefault}).");
     }
 
     /// <summary>
-    /// Converts a CA name into a URL-safe label (lowercase, hyphens, no special chars).
+    /// The system signing CA's common name, which is also its CA name.
     /// </summary>
-    private static string ToLabel(string name) =>
+    public const string SystemSigningCaName = "ModularCA System Signing CA";
+
+    /// <summary>The system signing CA's label.</summary>
+    public const string SystemSigningCaLabel = "system-signing-ca";
+
+    /// <summary>
+    /// Throws <see cref="ModularCA.Shared.Errors.ConfigurationValidationException"/> when the root CA
+    /// common name <paramref name="commonName"/> would give an invalid label, or one with a reserved
+    /// prefix (system- / space- / org-), under <see cref="ModularCA.Core.Services.CaLabelRules"/>. Called
+    /// before any setup work so the operator can pick another name while nothing is built yet.
+    /// </summary>
+    public static void EnsureRootLabelUsable(string commonName)
+    {
+        var label = LabelFor(commonName.Trim());
+        try
+        {
+            ModularCA.Core.Services.CaLabelRules.Validate(label, allowReserved: false);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new ModularCA.Shared.Errors.ConfigurationValidationException(
+                $"The root CA common name '{commonName}' gives the CA label '{label}', which cannot be used: {ex.Message} "
+                + "The label is the path of the CA's CRL, OCSP and AIA URLs; choose another common name.");
+        }
+    }
+
+    /// <summary>
+    /// Throws <see cref="ModularCA.Shared.Errors.InvalidRequestException"/> when an entry of the
+    /// setup Web TLS certificate's <paramref name="sans"/> is not <c>DNS:name</c> or
+    /// <c>IP:address</c>. The certificate is issued on first start from these entries, by a CSR
+    /// builder that encodes only those two types and skipped any other, so an Email, URI or
+    /// untyped entry used to vanish from the certificate. Blank entries carry no name and are
+    /// ignored. Called before any setup work, on the wizard and the CLI path.
+    /// </summary>
+    public static void EnsureWebTlsSansSupported(IEnumerable<string>? sans)
+    {
+        foreach (var raw in sans ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                continue;
+            var entry = raw.Trim();
+            var colon = entry.IndexOf(':');
+            var type = colon > 0 ? entry[..colon].Trim().ToUpperInvariant() : null;
+            var value = colon > 0 ? entry[(colon + 1)..].Trim() : string.Empty;
+            string? problem = type switch
+            {
+                null => "has no type; write it as DNS:name or IP:address",
+                "DNS" or "IP" when value.Length == 0 => "has no value",
+                "IP" when !System.Net.IPAddress.TryParse(value, out _) => $"'{value}' is not an IP address",
+                "DNS" or "IP" => null,
+                _ => $"has type '{type}', which the Web TLS certificate cannot carry; only DNS and IP names are supported",
+            };
+            if (problem != null)
+                throw new ModularCA.Shared.Errors.InvalidRequestException(
+                    $"Web TLS certificate SAN '{entry}' {problem}.", ModularCA.Shared.Errors.ErrorCodes.RequestInvalid);
+        }
+    }
+
+    /// <summary>
+    /// Converts a CA name into a URL-safe label (lowercase, hyphens, no special chars), as
+    /// bootstrap labels the root CA.
+    /// </summary>
+    public static string LabelFor(string name) =>
         new string(name.ToLowerInvariant()
             .Replace(' ', '-')
             .Where(c => char.IsLetterOrDigit(c) || c == '-')

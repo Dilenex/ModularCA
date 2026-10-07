@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
-import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
-import { apiGet, apiPost, apiPostWithMfa, apiDelete, apiDeleteWithMfa } from '../api/client';
+import { apiGet, apiPostWithMfa, apiDeleteWithMfa } from '../api/client';
 import { recordTableProps } from '../components/RecordDrawer';
 import type { RecordDescriptor } from '@shared/records';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
+import { NewButton } from '@shared/components/NewButton';
 import { useScope } from '../context/ScopeContext';
 import { scopeLabel } from '../scope';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -113,12 +113,12 @@ const X509TemplatesTab: React.FC = () => {
     const extractList = (data: any): any[] =>
         Array.isArray(data) ? data : (data.items || data.templates || data.profiles || data.authorities || []);
 
-    const { caId: scopeCaId, scope } = useScope();
+    const { caId: scopeCaId, spaceId: scopeSpaceId, caQuery, scope } = useScope();
 
     const load = () => {
         setLoading(true);
         setError(null);
-        apiGet<any>(`/api/v1/admin/templates${scopeCaId ? `?caId=${encodeURIComponent(scopeCaId)}` : ''}`)
+        apiGet<any>(`/api/v1/admin/templates${caQuery()}`)
             .then((data) => setTemplates(extractList(data)))
             .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
@@ -128,7 +128,7 @@ const X509TemplatesTab: React.FC = () => {
     useEffect(() => {
         load();
         if (scopeCaId) setForm((f) => ({ ...f, caId: f.caId || scopeCaId }));
-    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [scopeCaId, scopeSpaceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         apiGet<any>('/api/v1/admin/authorities')
@@ -197,14 +197,14 @@ const X509TemplatesTab: React.FC = () => {
         columns: [
             { key: 'name', header: 'Name', defaultWidth: 240, sortable: true, exportValue: (t) => t.name, render: (t) => (
                 <span className="min-w-0">
-                    <span className="text-gray-900 dark:text-white font-medium truncate block">{t.name}</span>
-                    {t.description && <span className="block text-xs text-gray-600 truncate">{t.description}</span>}
+                    <span className="text-ink font-medium truncate block">{t.name}</span>
+                    {t.description && <span className="block text-xs text-ink-muted truncate">{t.description}</span>}
                 </span>
             ) },
-            { key: 'ca', header: 'CA Name', defaultWidth: 160, sortable: true, exportValue: (t) => t.caName || t.caId, render: (t) => <span className="text-gray-700 dark:text-gray-300 text-xs truncate">{t.caName || t.caId}</span> },
-            { key: 'certProfile', header: 'Cert Profile', defaultWidth: 160, sortable: true, exportValue: (t) => t.certProfileName || t.certProfileId, render: (t) => <span className="text-gray-700 dark:text-gray-300 text-xs truncate">{t.certProfileName || t.certProfileId}</span> },
-            { key: 'signingProfile', header: 'Signing Profile', defaultWidth: 160, sortable: true, exportValue: (t) => t.signingProfileName || t.signingProfileId, render: (t) => <span className="text-gray-700 dark:text-gray-300 text-xs truncate">{t.signingProfileName || t.signingProfileId}</span> },
-            { key: 'templateOid', header: 'Template OID', defaultWidth: 200, sortable: true, exportValue: (t) => (t.offeredToWindows ? t.msaeTemplateOid || '' : ''), render: (t) => (t.offeredToWindows && t.msaeTemplateOid ? <span className="font-mono text-xs text-gray-700 dark:text-gray-300 truncate">{t.msaeTemplateOid}</span> : <span className="text-gray-500">-</span>) },
+            { key: 'ca', header: 'CA Name', defaultWidth: 160, sortable: true, exportValue: (t) => t.caName || t.caId, render: (t) => <span className="text-ink text-xs truncate">{t.caName || t.caId}</span> },
+            { key: 'certProfile', header: 'Cert Profile', defaultWidth: 160, sortable: true, exportValue: (t) => t.certProfileName || t.certProfileId, render: (t) => <span className="text-ink text-xs truncate">{t.certProfileName || t.certProfileId}</span> },
+            { key: 'signingProfile', header: 'Signing Profile', defaultWidth: 160, sortable: true, exportValue: (t) => t.signingProfileName || t.signingProfileId, render: (t) => <span className="text-ink text-xs truncate">{t.signingProfileName || t.signingProfileId}</span> },
+            { key: 'templateOid', header: 'Template OID', defaultWidth: 200, sortable: true, exportValue: (t) => (t.offeredToWindows ? t.msaeTemplateOid || '' : ''), render: (t) => (t.offeredToWindows && t.msaeTemplateOid ? <span className="data-mono text-ink truncate">{t.msaeTemplateOid}</span> : <span className="text-ink-muted">-</span>) },
             // What a Windows client will see: whether the template survives its OID parser, the
             // version it is advertised at, the kind of principal it is for, and whether issuance waits.
             { key: 'windows', header: 'Windows', headerTitle: 'What a Windows client sees: Listed when the OID is readable, Invisible when an arc is too large for its parser, then the advertised version and kind.', defaultWidth: 250, truncate: false, sortable: true,
@@ -216,17 +216,17 @@ const X509TemplatesTab: React.FC = () => {
                     return parts.join(' ');
                 },
                 render: (t) => {
-                    if (!t.offeredToWindows) return <span className="text-gray-500">-</span>;
+                    if (!t.offeredToWindows) return <span className="text-ink-muted">-</span>;
                     const listed = oidReadableByWindows(t.msaeTemplateOid);
                     return (
                         <span className="inline-flex items-center gap-1.5 flex-wrap">
                             <span title={listed ? 'The OID parses on Windows; the template appears in the policy list.' : INVISIBLE_TITLE}>
                                 <StatusBadge status={listed ? 'active' : 'revoked'} label={listed ? 'Listed' : 'Invisible'} />
                             </span>
-                            <span className="font-mono text-xs text-gray-600 dark:text-gray-400">v{t.msaeMajorVersion ?? 100}.{t.msaeMinorVersion ?? 0}</span>
-                            <span className="text-xs text-gray-600 dark:text-gray-400">{t.msaeMachineType ? 'Computer' : 'User'}</span>
+                            <span className="data-mono text-ink-muted">v{t.msaeMajorVersion ?? 100}.{t.msaeMinorVersion ?? 0}</span>
+                            <span className="text-xs text-ink-muted">{t.msaeMachineType ? 'Computer' : 'User'}</span>
                             {requiresApproval(t) && (
-                                <span title={APPROVAL_TITLE} className="inline-block px-2 py-0.5 text-xs rounded border bg-amber-50 text-amber-800 border-amber-300 dark:bg-amber-900/50 dark:text-amber-300 dark:border-amber-700">Approval</span>
+                                <span title={APPROVAL_TITLE} className="inline-block px-2 py-0.5 text-xs rounded border bg-warn-soft text-warn border-warn/40">Approval</span>
                             )}
                         </span>
                     );
@@ -257,17 +257,9 @@ const X509TemplatesTab: React.FC = () => {
 
     return (
         <div className="space-y-4">
-            <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">X.509 Templates</h3>
-                <button onClick={() => setShowCreate(!showCreate)}
-                    className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 transition-colors">
-                    {showCreate ? 'Cancel' : 'Create Template'}
-                </button>
-            </div>
-
             {showCreate && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-4">
-                    <h4 className="text-sm font-semibold text-gray-900 dark:text-white">New Certificate Template</h4>
+                <div className="bg-raised border border-line rounded-lg p-4 space-y-4">
+                    <h4 className="text-sm font-semibold text-ink">New Certificate Template</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <div>
                             <label className={labelClass}>Name</label>
@@ -311,18 +303,18 @@ const X509TemplatesTab: React.FC = () => {
                         </div>
                     </div>
                     <div className="flex flex-wrap gap-4">
-                        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                        <label className="flex items-center gap-2 text-xs text-ink">
                             <input type="checkbox" checked={form.isEnabled}
                                 onChange={(e) => setForm({ ...form, isEnabled: e.target.checked })}
-                                className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                                className="w-4 h-4 bg-raised border-line-strong rounded" />
                             Enabled
                         </label>
                         <div>
-                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                            <label className="flex items-center gap-2 text-xs text-ink">
                                 <input type="checkbox" checked={form.offerToWindows}
                                     onChange={(e) => setForm({ ...form, offerToWindows: e.target.checked })}
                                     aria-describedby="template-msae-hint"
-                                    className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                                    className="w-4 h-4 bg-raised border-line-strong rounded" />
                                 Offer to Windows clients (MSAE)
                             </label>
                             <FieldHint id="template-msae-hint">
@@ -330,10 +322,10 @@ const X509TemplatesTab: React.FC = () => {
                             </FieldHint>
                         </div>
                         {form.offerToWindows && (
-                            <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                            <label className="flex items-center gap-2 text-xs text-ink">
                                 <input type="checkbox" checked={form.msaeMachineType}
                                     onChange={(e) => setForm({ ...form, msaeMachineType: e.target.checked })}
-                                    className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                                    className="w-4 h-4 bg-raised border-line-strong rounded" />
                                 Computer template (uncheck for a user template)
                             </label>
                         )}
@@ -345,37 +337,29 @@ const X509TemplatesTab: React.FC = () => {
                                 <input type="text" value={form.msaeTemplateOid}
                                     onChange={(e) => setForm({ ...form, msaeTemplateOid: e.target.value })}
                                     className={inputClass} placeholder="Generated if blank; set to keep an AD CS template's OID" />
-                                <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">Dotted decimal, no arc above 9223372036854775807: Windows silently drops templates it cannot parse.</p>
+                                <p className="mt-1 text-[11px] text-ink-muted">Dotted decimal, no arc above 9223372036854775807: Windows silently drops templates it cannot parse.</p>
                             </div>
                         </div>
                     )}
                     <button onClick={handleCreate}
                         disabled={creating || !form.name || !form.caId || !form.certProfileId || !form.signingProfileId}
-                        className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                        className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors">
                         {creating ? 'Creating...' : 'Create Template'}
                     </button>
                 </div>
             )}
 
-            <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-x-auto">
-                {loading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading...</div>}
-                {error && <InlineNotice notice={error} />}
-                {!loading && !error && templates.length === 0 && (
-                    <div className="p-4 text-sm text-gray-600 text-center">
-                        {scopeCaId ? `No certificate templates in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate templates found'}
-                    </div>
-                )}
-                {!loading && !error && templates.length > 0 && (
-                    <DataTable<CertificateTemplate>
-                        tableId="templates-x509"
-                        title="Templates"
-                        rows={templates}
-                        empty={scopeCaId ? `No certificate templates in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No templates'}
-                        sort={{ key: 'name', dir: 'asc' }}
-                        {...recordTableProps(record)}
-                    />
-                )}
-            </div>
+            <DataTable<CertificateTemplate>
+                tableId="templates-x509"
+                title="X.509 Templates"
+                rows={templates}
+                loading={loading}
+                error={error}
+                empty={scopeCaId || scopeSpaceId ? `No certificate templates in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate templates found'}
+                sort={{ key: 'name', dir: 'asc' }}
+                toolbarAction={<NewButton what="template" open={showCreate} onClick={() => setShowCreate(!showCreate)} />}
+                {...recordTableProps(record)}
+            />
 
 
             <ConfirmModal
@@ -405,6 +389,7 @@ const X509TemplatesTab: React.FC = () => {
 /* ─── SSH CA Templates Tab ─── */
 const SshTemplatesTab: React.FC = () => {
     const { showToast } = useToast();
+    const { requireStepUp } = useStepUp();
     const [templates, setTemplates] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
@@ -474,12 +459,12 @@ const SshTemplatesTab: React.FC = () => {
                 sshCertProfileId: form.sshCertProfileId, isEnabled: form.isEnabled,
             };
             if (form.sshRequestProfileId) body.sshRequestProfileId = form.sshRequestProfileId;
-            await apiPost('/api/v1/admin/ssh/templates', body);
+            await apiPostWithMfa('/api/v1/admin/ssh/templates', body, requireStepUp, StepUpOps.ManageSshTemplate);
             setShowCreate(false);
             resetForm();
             load();
         } catch (err: any) {
-            showToast('error', err.message || 'Failed to create SSH template');
+            if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to create SSH template');
         } finally {
             setCreating(false);
         }
@@ -493,7 +478,7 @@ const SshTemplatesTab: React.FC = () => {
             title: 'Delete SSH Template',
             message: `Are you sure you want to delete "${template.name}"? This action cannot be undone.`,
             action: async () => {
-                await apiDelete(`/api/v1/admin/ssh/templates/${template.id}`);
+                await apiDeleteWithMfa(`/api/v1/admin/ssh/templates/${template.id}`, requireStepUp, StepUpOps.ManageSshTemplate, template.id);
                 load();
             },
         });
@@ -507,13 +492,13 @@ const SshTemplatesTab: React.FC = () => {
         columns: [
             { key: 'name', header: 'Name', defaultWidth: 240, sortable: true, exportValue: (t: any) => t.name, render: (t: any) => (
                 <span className="min-w-0">
-                    <span className="text-gray-900 dark:text-white font-medium truncate block">{t.name}</span>
-                    {t.description && <span className="block text-xs text-gray-600 truncate">{t.description}</span>}
+                    <span className="text-ink font-medium truncate block">{t.name}</span>
+                    {t.description && <span className="block text-xs text-ink-muted truncate">{t.description}</span>}
                 </span>
             ) },
-            { key: 'caKey', header: 'CA Key', defaultWidth: 160, sortable: true, exportValue: (t: any) => t.sshCaKeyName || t.sshCaKeyId, render: (t: any) => <span className="text-gray-700 dark:text-gray-300 text-xs truncate">{t.sshCaKeyName || t.sshCaKeyId}</span> },
-            { key: 'signingProfile', header: 'Signing Profile', defaultWidth: 160, sortable: true, exportValue: (t: any) => t.sshSigningProfileName || t.sshSigningProfileId, render: (t: any) => <span className="text-gray-700 dark:text-gray-300 text-xs truncate">{t.sshSigningProfileName || t.sshSigningProfileId}</span> },
-            { key: 'certProfile', header: 'Cert Profile', defaultWidth: 160, sortable: true, exportValue: (t: any) => t.sshCertProfileName || t.sshCertProfileId, render: (t: any) => <span className="text-gray-700 dark:text-gray-300 text-xs truncate">{t.sshCertProfileName || t.sshCertProfileId}</span> },
+            { key: 'caKey', header: 'CA Key', defaultWidth: 160, sortable: true, exportValue: (t: any) => t.sshCaKeyName || t.sshCaKeyId, render: (t: any) => <span className="text-ink text-xs truncate">{t.sshCaKeyName || t.sshCaKeyId}</span> },
+            { key: 'signingProfile', header: 'Signing Profile', defaultWidth: 160, sortable: true, exportValue: (t: any) => t.sshSigningProfileName || t.sshSigningProfileId, render: (t: any) => <span className="text-ink text-xs truncate">{t.sshSigningProfileName || t.sshSigningProfileId}</span> },
+            { key: 'certProfile', header: 'Cert Profile', defaultWidth: 160, sortable: true, exportValue: (t: any) => t.sshCertProfileName || t.sshCertProfileId, render: (t: any) => <span className="text-ink text-xs truncate">{t.sshCertProfileName || t.sshCertProfileId}</span> },
             { key: 'enabled', header: 'Enabled', defaultWidth: 110, truncate: false, sortable: true, sortValue: (t: any) => !!t.isEnabled, exportValue: (t: any) => (t.isEnabled ? 'Enabled' : 'Disabled'), render: (t: any) => <StatusBadge status={t.isEnabled ? 'enabled' : 'disabled'} label={t.isEnabled ? 'Enabled' : 'Disabled'} /> },
         ],
         sections: [
@@ -535,17 +520,9 @@ const SshTemplatesTab: React.FC = () => {
 
     return (
         <div className="space-y-4">
-            <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">SSH Templates</h3>
-                <button onClick={() => setShowCreate(!showCreate)}
-                    className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 transition-colors">
-                    {showCreate ? 'Cancel' : 'Create Template'}
-                </button>
-            </div>
-
             {showCreate && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4 space-y-4">
-                    <h4 className="text-sm font-semibold text-gray-900 dark:text-white">New SSH Certificate Template</h4>
+                <div className="bg-raised border border-line rounded-lg p-4 space-y-4">
+                    <h4 className="text-sm font-semibold text-ink">New SSH Certificate Template</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <div>
                             <label className={labelClass}>Name</label>
@@ -589,38 +566,32 @@ const SshTemplatesTab: React.FC = () => {
                         </div>
                     </div>
                     <div className="flex flex-wrap gap-4">
-                        <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                        <label className="flex items-center gap-2 text-xs text-ink">
                             <input type="checkbox" checked={form.isEnabled}
                                 onChange={(e) => setForm({ ...form, isEnabled: e.target.checked })}
-                                className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded" />
+                                className="w-4 h-4 bg-raised border-line-strong rounded" />
                             Enabled
                         </label>
                     </div>
                     <button onClick={handleCreate}
                         disabled={creating || !form.name || !form.sshCaKeyId || !form.sshSigningProfileId || !form.sshCertProfileId}
-                        className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                        className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors">
                         {creating ? 'Creating...' : 'Create Template'}
                     </button>
                 </div>
             )}
 
-            <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-x-auto">
-                {loading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading...</div>}
-                {error && <InlineNotice notice={error} />}
-                {!loading && !error && templates.length === 0 && (
-                    <div className="p-4 text-sm text-gray-600 text-center">No SSH certificate templates found</div>
-                )}
-                {!loading && !error && templates.length > 0 && (
-                    <DataTable<any>
-                        tableId="templates-ssh"
-                        title="SSH Templates"
-                        rows={templates}
-                        empty="No SSH templates"
-                        sort={{ key: 'name', dir: 'asc' }}
-                        {...recordTableProps(record)}
-                    />
-                )}
-            </div>
+            <DataTable<any>
+                tableId="templates-ssh"
+                title="SSH Templates"
+                rows={templates}
+                loading={loading}
+                error={error}
+                empty="No SSH certificate templates found"
+                sort={{ key: 'name', dir: 'asc' }}
+                toolbarAction={<NewButton what="template" open={showCreate} onClick={() => setShowCreate(!showCreate)} />}
+                {...recordTableProps(record)}
+            />
 
 
             <ConfirmModal
@@ -659,24 +630,24 @@ const CertificateTemplates: React.FC = () => {
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Certificate Templates</h1>
-            <p className="text-sm text-gray-600 dark:text-gray-400">
+            <h1 className="text-xl font-semibold text-ink">Certificate Templates</h1>
+            <p className="text-sm text-ink-muted">
                 Manage certificate templates that combine a CA, profiles, and settings into a reusable configuration.
             </p>
 
-            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-700/60 rounded-lg p-4 text-sm text-blue-800 dark:text-blue-300">
+            <div className="bg-info-soft border border-info/40 rounded-lg p-4 text-sm text-info">
                 <span className="font-semibold">Used by Windows autoenrollment.</span> A template offered to
                 Windows clients is advertised by the MSAE policy service and issued from when a client names it in
                 its request. ACME, EST, SCEP and CMP issue from each CA&apos;s protocol configuration and do not read
                 templates.
             </div>
 
-            <div className="flex gap-1 border-b border-gray-300 dark:border-gray-700">
+            <div className="flex gap-1 border-b border-line">
                 {TEMPLATE_TABS.map((tab) => (
                     <button key={tab} onClick={() => setActiveTab(tab)}
                         className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${activeTab === tab
-                            ? 'text-blue-800 dark:text-blue-400 border-blue-400'
-                            : 'text-gray-600 dark:text-gray-400 border-transparent hover:text-gray-700 dark:text-gray-300'}`}>
+                            ? 'text-accent-ink border-accent'
+                            : 'text-ink-muted border-transparent hover:text-ink'}`}>
                         {tab}
                     </button>
                 ))}

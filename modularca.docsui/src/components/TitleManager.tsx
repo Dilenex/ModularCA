@@ -22,7 +22,7 @@ const ROUTE_TITLES: Array<[string, string]> = [
     ['/architecture/auth-flow', 'Auth Flow'],
     ['/architecture/certificate-issuance', 'Certificate Issuance'],
     ['/architecture/ca-hierarchy', 'CA Hierarchy'],
-    ['/architecture/tenant-model', 'Tenant Model'],
+    ['/architecture/space-model', 'Space Model'],
     ['/architecture/config-lifecycle', 'Config Lifecycle'],
 ];
 

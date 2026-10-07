@@ -13,11 +13,11 @@ ModularCA supports creating ACME endpoints for each CA endpoint.
 Each CA generated has a URL endpoint from which to retrieve the CA itself and its CRLs. An HTTP frontend webpage serves details on the hosted CAs and their CRLs.
 
 #### Functionality-Focused
-Designed around the functionality the average administrator will appreciate — from quotas to tenancy, ModularCA focuses on providing the core feature set.
+Designed around the functionality the average administrator will appreciate — from quotas to delegated administration in spaces, ModularCA focuses on providing the core feature set.
 
 ## Current Features
 - Simple certificate request and signing via the development API.
-- Bootstrap a MySQL/MariaDB database with tables and necessary entries.
+- Bootstrap a PostgreSQL database with tables and necessary entries.
 - Generate a system CA cert for internal functions and file signing.
 - Generate a default CA cert for all certificate signing functions.
 - Generate a custom keystore that signs all entries with the system and default CA cert for integrity.
@@ -39,13 +39,30 @@ Planned for exploration:
 - Keystore loading only when in use, with unloading after use.
 - Database connection creation on use and destruction after use.
 
+## Quick start
+
+With Docker or Podman, one host runs ModularCA and its PostgreSQL from [`deploy/compose`](deploy/compose):
+
+```
+cd deploy/compose
+cp .env.example .env          # set POSTGRES_PASSWORD in it
+docker compose up -d
+docker compose logs modularca | grep -i "setup token"
+```
+
+Open `https://<host>:8443`, accept the temporary certificate, and finish the setup wizard with
+that token. On the database step enter host `db`, superuser `postgres` and the password from
+`.env`. `packaging/README-DEPLOY.md`, "Compose: one host, one process", has the details,
+including backups. For a host install without containers, see the same file.
+
 ## Build
 
 #### Requirements
 - **.NET 10** for the API backend — https://learn.microsoft.com/en-us/dotnet/core/install/
 - **dotnet ef migrations** tool (after .NET 10 is installed): `dotnet tool install --global dotnet-ef`
 - **npm + Node.js** for the web frontend — https://nodejs.org/en/download
-- **MySQL/MariaDB** for the database backend — https://mariadb.org/download/
+- **PostgreSQL 14+** for the database backend — https://www.postgresql.org/download/
+  (`pg_dump` and `pg_restore` from the same distribution are required for backup and restore)
 
 1. Clone the repository
 ```
@@ -68,7 +85,7 @@ dotnet run --project ModularCA.API -c Development   # or Staging / Production
 
 | Flag | Arguments | Description |
 |------|-----------|-------------|
-| `--bootstrap` | — | Provisions a fresh install: database, tenants, groups, roles, profiles/OIDs, the system + default CA certs, and the double-signed keystore. The CLI equivalent of the web setup wizard. |
+| `--bootstrap` | — | Provisions a fresh install: database, the first space, groups, roles, profiles/OIDs, the system + default CA certs, and the double-signed keystore. The CLI equivalent of the web setup wizard. |
 | `--reset --force` | — | **Destructive.** Factory reset — drops databases, keystores, and config so the install can be bootstrapped again. `--force` is mandatory. The audit database is *not* dropped (retained by design), and `config/backup.key` is renamed to `backup.key.pre-reset-<ts>`. |
 | `--confirm-db-name <name>` | DB name | Required with `--reset --force` — the operator must type the target database name to prove they know what is being destroyed. |
 | `--expected-db <name>` | DB name | Backwards-compatible alias for `--confirm-db-name`. |

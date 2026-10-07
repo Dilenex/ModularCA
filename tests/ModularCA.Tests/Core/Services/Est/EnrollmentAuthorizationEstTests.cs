@@ -19,7 +19,7 @@ namespace ModularCA.Tests.Core.Services.Est;
 /// judged by a disabled lab CA's "Basic is enough" policy while the default production CA, which
 /// required a client certificate, did the issuing. And the HTTP-auth branch checked only
 /// <c>isAuthenticated</c>, which the bearer scheme sets for every valid session token: any user in
-/// any tenant could enroll at any EST-enabled CA.
+/// any space could enroll at any EST-enabled CA.
 /// </para>
 /// </remarks>
 public class EnrollmentAuthorizationEstTests

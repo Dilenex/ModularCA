@@ -343,12 +343,12 @@ public class AutoRenewalJob : SingletonCronJob
     {
         try
         {
-            // Named argument: the tenant validity-ceiling enforcement mode now sits ahead of the
+            // Named argument: the space validity-ceiling enforcement mode now sits ahead of the
             // token. The default — always shorten — is mandatory on this path. A renewal derives
-            // its window from the certificate profile with no knowledge of the tenant, so honouring
-            // a Refuse setting here would fail every renewal whose profile out-reaches its tenant,
+            // its window from the certificate profile with no knowledge of the space, so honouring
+            // a Refuse setting here would fail every renewal whose profile out-reaches its space,
             // silently, at 3am, for certificates that were issued perfectly happily before someone
-            // changed a tenant setting.
+            // changed a space setting.
             var issuanceResult = await _issuance.IssueCertificateAsync(renewalRequest.Id, null, null, cancellationToken: cancellationToken);
             var pem = issuanceResult.Pem;
 
@@ -453,22 +453,14 @@ public class AutoRenewalJob : SingletonCronJob
 
     /// <summary>
     /// CLM-001: parses the JSON-encoded SAN list from a certificate entity into
-    /// the "TYPE:value" format expected by <see cref="ICsrService.GenerateInfrastructureCsrAsync"/>.
+    /// the "TYPE:value" format expected by <see cref="ICsrService.GenerateInfrastructureCsrAsync"/>,
+    /// repairing legacy otherName renderings into <c>UPN:</c> entries
+    /// (<see cref="UpnSanEncoding.DeserializeStoredSans"/>) so a UPN is carried to the renewal.
     /// Returns null when the JSON is empty or unparseable.
     /// </summary>
-    private static List<string>? ParseSansFromJson(string? sanJson)
+    internal static List<string>? ParseSansFromJson(string? sanJson)
     {
-        if (string.IsNullOrWhiteSpace(sanJson))
-            return null;
-
-        try
-        {
-            var sans = JsonSerializer.Deserialize<List<string>>(sanJson);
-            return sans is { Count: > 0 } ? sans : null;
-        }
-        catch
-        {
-            return null;
-        }
+        var sans = UpnSanEncoding.DeserializeStoredSans(sanJson);
+        return sans.Count > 0 ? sans : null;
     }
 }

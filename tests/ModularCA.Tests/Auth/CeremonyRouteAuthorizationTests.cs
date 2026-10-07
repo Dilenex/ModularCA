@@ -13,32 +13,32 @@ namespace ModularCA.Tests.Auth;
 
 /// <summary>
 /// A key ceremony's routes carry the ceremony id, not a CA: the CA does not exist yet. The
-/// policy handler resolves the ceremony's tenant instead, so a tenant administrator can
-/// approve and execute ceremonies for their tenant while one from another tenant, or a
-/// single-CA administrator, is refused. A ceremony with no tenant stays a system matter.
+/// policy handler resolves the ceremony's space instead, so a space administrator can
+/// approve and execute ceremonies for their space while one from another space, or a
+/// single-CA administrator, is refused. A ceremony with no space stays a system matter.
 /// </summary>
 public class CeremonyRouteAuthorizationTests
 {
-    private static readonly Guid TenantA = Guid.NewGuid();
-    private static readonly Guid TenantB = Guid.NewGuid();
+    private static readonly Guid SpaceA = Guid.NewGuid();
+    private static readonly Guid SpaceB = Guid.NewGuid();
 
     private sealed class World
     {
         public ModularCADbContext Db { get; } = InMemoryDbContextFactory.Create();
         public Guid UserId { get; } = Guid.NewGuid();
 
-        public CaGroupEntity Group(Guid tenantId, Guid? caId = null)
+        public CaGroupEntity Group(Guid spaceId, Guid? caId = null)
         {
-            var g = new CaGroupEntity { Id = Guid.NewGuid(), Name = $"g-{Guid.NewGuid():N}", DisplayName = "g", TenantId = tenantId, CertificateAuthorityId = caId };
+            var g = new CaGroupEntity { Id = Guid.NewGuid(), Name = $"g-{Guid.NewGuid():N}", DisplayName = "g", SpaceId = spaceId, CertificateAuthorityId = caId };
             Db.CaGroups.Add(g);
             Db.CaGroupMembers.Add(new CaGroupMemberEntity { Id = Guid.NewGuid(), GroupId = g.Id, UserId = UserId });
             Db.CapabilityGrants.Add(new CapabilityGrantEntity { Id = Guid.NewGuid(), GroupId = g.Id, Capability = Capabilities.CaManage });
             return g;
         }
 
-        public KeyCeremonyEntity Ceremony(Guid? tenantId)
+        public KeyCeremonyEntity Ceremony(Guid? spaceId)
         {
-            var c = new KeyCeremonyEntity { Id = Guid.NewGuid(), OperationType = "CreateIntermediateCA", InitiatedByUserId = Guid.NewGuid(), TenantId = tenantId, ExpiresAt = DateTime.UtcNow.AddDays(1) };
+            var c = new KeyCeremonyEntity { Id = Guid.NewGuid(), OperationType = "CreateIntermediateCA", InitiatedByUserId = Guid.NewGuid(), SpaceId = spaceId, ExpiresAt = DateTime.UtcNow.AddDays(1) };
             Db.KeyCeremonies.Add(c);
             return c;
         }
@@ -63,12 +63,12 @@ public class CeremonyRouteAuthorizationTests
     }
 
     [Fact]
-    public async Task A_tenant_admin_passes_on_their_own_tenants_ceremony_and_not_on_anothers()
+    public async Task A_space_admin_passes_on_their_own_spaces_ceremony_and_not_on_anothers()
     {
         var w = new World();
-        w.Group(TenantA);
-        var own = w.Ceremony(TenantA);
-        var other = w.Ceremony(TenantB);
+        w.Group(SpaceA);
+        var own = w.Ceremony(SpaceA);
+        var other = w.Ceremony(SpaceB);
         await w.Db.SaveChangesAsync();
 
         Assert.True(await w.Allowed(own.Id));
@@ -76,23 +76,23 @@ public class CeremonyRouteAuthorizationTests
     }
 
     [Fact]
-    public async Task A_single_ca_admin_in_the_tenant_does_not_pass()
+    public async Task A_single_ca_admin_in_the_space_does_not_pass()
     {
         var w = new World();
-        var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "A", Label = "ca-a", TenantId = TenantA };
+        var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "A", Label = "ca-a", SpaceId = SpaceA };
         w.Db.CertificateAuthorities.Add(ca);
-        w.Group(TenantA, caId: ca.Id);
-        var own = w.Ceremony(TenantA);
+        w.Group(SpaceA, caId: ca.Id);
+        var own = w.Ceremony(SpaceA);
         await w.Db.SaveChangesAsync();
 
         Assert.False(await w.Allowed(own.Id));
     }
 
     [Fact]
-    public async Task A_ceremony_without_a_tenant_and_an_unknown_ceremony_stay_closed_to_tenant_admins()
+    public async Task A_ceremony_without_a_space_and_an_unknown_ceremony_stay_closed_to_space_admins()
     {
         var w = new World();
-        w.Group(TenantA);
+        w.Group(SpaceA);
         var system = w.Ceremony(null);
         await w.Db.SaveChangesAsync();
 

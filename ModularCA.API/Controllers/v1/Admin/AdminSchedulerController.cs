@@ -602,7 +602,9 @@ public class AdminSchedulerController(
     }
 
     /// <summary>
-    /// Persists the in-memory <see cref="SystemConfig"/> to <c>config.yaml</c>, mirroring
+    /// Persists the in-memory <see cref="SystemConfig"/> to <c>config.yaml</c> through
+    /// <see cref="ModularCA.Shared.Utils.ConfigYamlWriter"/> (no <c>DB</c> section, written in place
+    /// so the file keeps its owner, group and mode), mirroring
     /// the env-secret protection pattern used by <c>AdminConfigController.PersistConfig</c>.
     /// Throws on write failure so callers can surface the failure as 500 to the operator
     /// instead of silently returning 200 — a swallowed warning produced misleading "saved"
@@ -616,12 +618,8 @@ public class AdminSchedulerController(
         {
             try
             {
-                var serializer = new SerializerBuilder()
-                    .WithNamingConvention(PascalCaseNamingConvention.Instance)
-                    .Build();
-                var yaml = serializer.Serialize(_config);
                 var configPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
-                System.IO.File.WriteAllText(configPath, yaml);
+                ModularCA.Shared.Utils.ConfigYamlWriter.Write(configPath, _config);
             }
             catch (Exception ex)
             {

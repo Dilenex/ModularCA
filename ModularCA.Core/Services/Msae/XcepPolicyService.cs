@@ -22,7 +22,7 @@ public interface IXcepPolicyService
     /// Builds the policy set for <paramref name="caLabel"/> (or the default CA) as seen by
     /// <paramref name="caller"/>, whose enrollment permission is reported in the result. The
     /// enrollment URL names <paramref name="requestHost"/> when that is a name this service is
-    /// known by for the CA's tenant, else the public domain.
+    /// known by for the CA's space, else the public domain.
     /// </summary>
     /// <exception cref="MsaeEnrollmentException">MSAE is not enabled on the CA.</exception>
     Task<XcepMessages.PolicySet> GetPoliciesAsync(string? caLabel, MsaeCaller caller, string? requestHost = null);
@@ -106,8 +106,8 @@ public class XcepPolicyService(
 
         var mayEnroll = await principalAuthorizer.MayEnrollAsync(caller.ActingAsUsername, ca.Id);
         // The client enrolls at the name it reached the policy service by, provided that name is
-        // one of ours for this tenant; any other Host header falls back to the public domain.
-        var cesUri = $"{await names.BaseUrlForRequestAsync(requestHost, ca.TenantId)}/msae/{ca.Label}/ces";
+        // one of ours; any other Host header falls back to the public domain.
+        var cesUri = $"{names.BaseUrlForRequest(requestHost)}/msae/{ca.Label}/ces";
         const int caReference = 0;
         // The engine authenticates to CES the way the policy tells it to. A caller that arrived
         // with a ticket keeps using it; a username caller is told to send its UsernameToken.

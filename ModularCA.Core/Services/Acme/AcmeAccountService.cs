@@ -16,11 +16,11 @@ public class AcmeAccountService(ModularCADbContext db) : IAcmeAccountService
     private readonly ModularCADbContext _db = db;
 
     /// <summary>
-    /// Creates a new ACME account. <paramref name="caLabel"/>
-    /// is persisted so later requests to <c>/api/v1/acme/account/{id}</c>
-    /// can still resolve the CA context the account was originally bound to.
+    /// Creates a new ACME account bound to <paramref name="certificateAuthorityId"/>, the CA its
+    /// new-account request addressed. <paramref name="caLabel"/> is the route label it came in
+    /// under, kept for display and audit.
     /// </summary>
-    public async Task<AcmeAccountDto> CreateAsync(string jwkJson, string thumbprint, List<string>? contacts, bool termsAgreed, string? caLabel = null)
+    public async Task<AcmeAccountDto> CreateAsync(string jwkJson, string thumbprint, List<string>? contacts, bool termsAgreed, Guid certificateAuthorityId, string? caLabel = null)
     {
         var entity = new AcmeAccountEntity
         {
@@ -30,7 +30,8 @@ public class AcmeAccountService(ModularCADbContext db) : IAcmeAccountService
             TermsOfServiceAgreed = termsAgreed,
             Status = nameof(AcmeAccountStatus.Valid),
             CreatedAt = DateTime.UtcNow,
-            CaLabel = string.IsNullOrWhiteSpace(caLabel) ? null : caLabel
+            CaLabel = string.IsNullOrWhiteSpace(caLabel) ? null : caLabel,
+            CertificateAuthorityId = certificateAuthorityId,
         };
 
         _db.AcmeAccounts.Add(entity);
@@ -51,13 +52,36 @@ public class AcmeAccountService(ModularCADbContext db) : IAcmeAccountService
             .FirstOrDefaultAsync();
     }
 
-    /// <summary>Look up the CA label stored on the account record.</summary>
-    public async Task<string?> GetCaLabelByIdAsync(Guid id)
+    /// <inheritdoc />
+    public async Task<Guid?> GetBoundCaIdAsync(Guid id)
     {
         return await _db.AcmeAccounts
             .Where(a => a.Id == id)
-            .Select(a => a.CaLabel)
+            .Select(a => a.CertificateAuthorityId)
             .FirstOrDefaultAsync();
+    }
+
+    /// <inheritdoc />
+    public async Task<CertificateAuthorityEntity?> GetBoundCaAsync(Guid id)
+    {
+        var caId = await GetBoundCaIdAsync(id);
+        if (caId == null)
+            return null;
+        return await _db.CertificateAuthorities.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.Id == caId && c.IsEnabled);
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> BindAsync(Guid id, Guid certificateAuthorityId, string? caLabel)
+    {
+        var entity = await _db.AcmeAccounts.FindAsync(id);
+        if (entity == null || entity.CertificateAuthorityId != null)
+            return false;
+
+        entity.CertificateAuthorityId = certificateAuthorityId;
+        entity.CaLabel = string.IsNullOrWhiteSpace(caLabel) ? null : caLabel;
+        await _db.SaveChangesAsync();
+        return true;
     }
 
     public async Task<AcmeAccountDto?> GetByIdAsync(Guid id)

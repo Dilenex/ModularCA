@@ -5,31 +5,30 @@ using ModularCA.Keystore.Utils;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Utils;
-using MySqlConnector;
+using Npgsql;
 using Org.BouncyCastle.Crypto.Generators;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Pkcs;
 using Org.BouncyCastle.Security;
-using System.Data;
 using System.Text.Json;
 using static ModularCA.Keystore.Services.KeystoreService;
 
 namespace ModularCA.Bootstrap;
 
 /// <summary>
-/// Orchestrates initial CA setup: database creation, root CA generation, keystore creation, and configuration seeding.
-/// Delegates to <see cref="BootstrapProfileSeeder"/>, <see cref="BootstrapCertCreator"/>,
+/// Orchestrates initial CA setup: database provisioning (as the SqlRoot superuser, through
+/// <see cref="BootstrapDatabaseSetup"/>), schema and seeding as the runtime roles, root CA
+/// generation, keystore creation, and configuration. Delegates to
+/// <see cref="BootstrapProfileSeeder"/>, <see cref="BootstrapCertCreator"/>,
 /// <see cref="BootstrapKeystoreWriter"/>, and <see cref="BootstrapDatabaseSetup"/> for focused work.
 /// </summary>
 public class BootstrapModularCA
 {
 
     /// <summary>
-    /// Runs the full CA bootstrap procedure.
-    /// Returns 0 on success, 1 on failure or user abort.
-    /// </summary>
-    /// <summary>
     /// Factory reset: drops all tables and recreates the schema, deletes keystores and policy files.
+    /// The tables are dropped first, in one transaction and only after a catalog check that the
+    /// app role owns them; a refusal or a failed drop returns 1 with every keystore still in place.
     /// Deletes config.yaml, db.yaml, and keystore.yaml (regenerated during setup). Preserves bootstrap.yaml as reference.
     /// Called via <c>dotnet run --reset --force</c>. After reset, a normal <c>dotnet run</c> will
     /// trigger the web setup wizard since no CAs exist.
@@ -47,6 +46,7 @@ public class BootstrapModularCA
             string connStr;
             string? appDatabase = null;
             string? auditDatabase = null;
+            var appPort = 5432;
 
             // The reset intent is logged before any DROP so operators have a
             // record of which deployment was targeted. Going to a file is cheap and doesn't
@@ -67,39 +67,26 @@ public class BootstrapModularCA
             {
                 var dbCfg = YamlDbConfigLoader.Load(dbYamlPath);
                 if (dbCfg == null) { Console.WriteLine("❌ Failed to load db.yaml."); return 1; }
-                // Honor SslMode stamped in db.yaml; clamp typos to Required.
-                var dbCfgSslMode = Enum.TryParse<MySqlSslMode>(dbCfg.App.SslMode, ignoreCase: true, out var _dbCfgSsl)
-                    ? _dbCfgSsl : MySqlSslMode.Required;
-                var dbCfgConnBuilder = new MySqlConnectionStringBuilder
-                {
-                    Server = dbCfg.App.Host,
-                    Port = (uint)dbCfg.App.Port,
-                    UserID = dbCfg.App.Username,
-                    Password = dbCfg.App.Password,
-                    SslMode = dbCfgSslMode
-                };
-                connStr = dbCfgConnBuilder.ConnectionString;
+                // Honor SslMode stamped in db.yaml; clamp typos to Require. Connects to the
+                // maintenance database: PostgreSQL has no "connect to the server without naming
+                // a database", and the work below drops tables in the app database, which
+                // cannot be done from a session attached to it.
+                connStr = PostgresConnection.BuildMaintenance(
+                    dbCfg.App.Host, dbCfg.App.Port, dbCfg.App.Username, dbCfg.App.Password, dbCfg.App.SslMode);
                 appDatabase = dbCfg.App.Database;
                 auditDatabase = dbCfg.Audit.Database;
+                appPort = dbCfg.App.Port;
                 Console.WriteLine($"Using db.yaml for DB connection ({dbCfg.App.Host}:{dbCfg.App.Port})");
             }
             else if (File.Exists(runtimeConfigPath))
             {
                 var cfg = YamlConfigLoader.Load(runtimeConfigPath);
-                // Honor SslMode from runtime config; clamp typos to Required.
-                var cfgSslMode = Enum.TryParse<MySqlSslMode>(cfg.DB.App.SslMode, ignoreCase: true, out var _cfgSsl)
-                    ? _cfgSsl : MySqlSslMode.Required;
-                var cfgConnBuilder = new MySqlConnectionStringBuilder
-                {
-                    Server = cfg.DB.App.Host,
-                    Port = (uint)cfg.DB.App.Port,
-                    UserID = cfg.DB.App.Username,
-                    Password = cfg.DB.App.Password,
-                    SslMode = cfgSslMode
-                };
-                connStr = cfgConnBuilder.ConnectionString;
+                // Honor SslMode from runtime config; clamp typos to Require.
+                connStr = PostgresConnection.BuildMaintenance(
+                    cfg.DB.App.Host, cfg.DB.App.Port, cfg.DB.App.Username, cfg.DB.App.Password, cfg.DB.App.SslMode);
                 appDatabase = cfg.DB.App.Database;
                 auditDatabase = cfg.DB.Audit.Database;
+                appPort = cfg.DB.App.Port;
                 Console.WriteLine($"Using runtime config for DB connection ({cfg.DB.App.Host}:{cfg.DB.App.Port})");
             }
             else
@@ -147,7 +134,7 @@ public class BootstrapModularCA
             // tables can be recreated; a deleted signing key cannot.
             // Connect without a specific database first to check existence.
             Console.WriteLine("\nVerifying database connectivity before deleting anything...");
-            using var conn = new MySqlConnection(connStr);
+            using var conn = new NpgsqlConnection(connStr);
             try
             {
                 conn.Open();
@@ -160,11 +147,86 @@ public class BootstrapModularCA
             }
             Console.WriteLine("✓ Database reachable.");
 
-            // Delete keystore files
+            // The tables go before the keystores, in one transaction, after a catalog-only check
+            // that the app role owns them: on an install whose tables an administrator owns the
+            // drops would fail with 42501, and must do so while the keys still exist.
+            Console.WriteLine("\nDropping all tables...");
+
+            // Check if app database exists before attempting to drop tables
+            if (!string.IsNullOrWhiteSpace(appDatabase))
+            {
+                bool appDbExists;
+                using (var checkCmd = new NpgsqlCommand("SELECT 1 FROM pg_database WHERE datname = @name", conn))
+                {
+                    checkCmd.Parameters.AddWithValue("name", appDatabase);
+                    appDbExists = checkCmd.ExecuteScalar() != null;
+                }
+
+                if (appDbExists)
+                {
+                    // Npgsql has no ChangeDatabase: a PostgreSQL session is bound to one database
+                    // for its lifetime. A second connection to the app database is therefore
+                    // opened here, while `conn` stays on the maintenance database.
+                    var appConnStr = new NpgsqlConnectionStringBuilder(connStr) { Database = appDatabase }.ConnectionString;
+                    using var appConn = new NpgsqlConnection(appConnStr);
+                    appConn.Open();
+
+                    var ownership = SchemaOwnership.ProbeAsync(appConn, DatabaseKind.Application).GetAwaiter().GetResult();
+                    var foreignTables = ownership.NotOwned.Where(o => o.Kind is "r" or "p").ToList();
+                    if (foreignTables.Count > 0)
+                    {
+                        Console.WriteLine($"❌ Role '{ownership.Role}' does not own {foreignTables.Count} table(s) in '{appDatabase}' "
+                            + $"(e.g. {string.Join(", ", foreignTables.Take(3).Select(o => $"{o.Object} owned by {o.Owner}"))}), "
+                            + "so it cannot drop them.");
+                        Console.WriteLine("   Nothing has been deleted. Repair ownership once on the database host, with every ModularCA unit stopped:");
+                        Console.WriteLine("   " + SchemaOwnership.RepairCommand(DatabaseKind.Application, appDatabase, ownership.Role, appPort));
+                        Console.WriteLine("   then re-run the reset.");
+                        return 1;
+                    }
+
+                    var tables = new List<string>();
+                    using (var listCmd = new NpgsqlCommand(
+                        "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename", appConn))
+                    using (var reader = listCmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                            tables.Add(reader.GetString(0));
+                    }
+
+                    // CASCADE rather than a foreign-key-checks toggle: PostgreSQL has no session
+                    // switch that suspends referential integrity, and CASCADE removes the
+                    // dependent constraints along with the table, which is the same end state
+                    // the MySQL version reached by turning the checks off around the loop.
+                    using (var tx = appConn.BeginTransaction())
+                    {
+                        try
+                        {
+                            foreach (var table in tables)
+                            {
+                                using var dropCmd = new NpgsqlCommand(
+                                    $"DROP TABLE IF EXISTS public.{PostgresConnection.QuoteIdentifier(table)} CASCADE", appConn, tx);
+                                dropCmd.ExecuteNonQuery();
+                            }
+                            tx.Commit();
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"❌ Could not drop the tables of '{appDatabase}': {SchemaFailure.Describe(ex)}");
+                            Console.WriteLine("   Nothing has been deleted: the drops were rolled back and the keystores are untouched.");
+                            return 1;
+                        }
+                    }
+                    Console.WriteLine($"✓ Dropped {tables.Count} table(s) from {appDatabase}");
+                }
+                else
+                {
+                    Console.WriteLine($"(i) App database '{appDatabase}' does not exist — skipping table drop.");
+                }
+            }
+
             Console.WriteLine("\nDeleting keystore files...");
             DeleteArtifacts(certPath, trustPath);
 
-            // Delete SSH CA key files
             if (Directory.Exists(keystoreDir))
             {
                 foreach (var sshKey in Directory.GetFiles(keystoreDir, "ssh-ca-*"))
@@ -174,56 +236,13 @@ public class BootstrapModularCA
                 }
             }
 
-            // Drop all tables (not the database itself) to preserve DB users/grants
-            Console.WriteLine("\nDropping all tables...");
-
-            // Check if app database exists before attempting to drop tables
-            if (!string.IsNullOrWhiteSpace(appDatabase))
-            {
-                using var checkCmd = new MySqlCommand("SELECT COUNT(*) FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = @schema", conn);
-                checkCmd.Parameters.AddWithValue("@schema", appDatabase);
-                var appDbExists = Convert.ToInt64(checkCmd.ExecuteScalar()) > 0;
-
-                if (appDbExists)
-                {
-                    conn.ChangeDatabase(appDatabase);
-
-                    using (var fkOff = new MySqlCommand("SET FOREIGN_KEY_CHECKS = 0;", conn))
-                        fkOff.ExecuteNonQuery();
-
-                    var tables = new List<string>();
-                    using (var listCmd = new MySqlCommand("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = @schema AND TABLE_TYPE = 'BASE TABLE';", conn))
-                    {
-                        listCmd.Parameters.AddWithValue("@schema", appDatabase);
-                        using var reader = listCmd.ExecuteReader();
-                        while (reader.Read())
-                            tables.Add(reader.GetString(0));
-                    }
-
-                    foreach (var table in tables)
-                    {
-                        using var dropCmd = new MySqlCommand($"DROP TABLE IF EXISTS `{appDatabase}`.`{table}`;", conn);
-                        dropCmd.ExecuteNonQuery();
-                    }
-                    Console.WriteLine($"✓ Dropped {tables.Count} table(s) from {appDatabase}");
-
-                    using (var fkOn = new MySqlCommand("SET FOREIGN_KEY_CHECKS = 1;", conn))
-                        fkOn.ExecuteNonQuery();
-                }
-                else
-                {
-                    Console.WriteLine($"(i) App database '{appDatabase}' does not exist — skipping table drop.");
-                }
-            }
-
-            // Audit database cleanup is deferred to the next setup run, which reconnects with root
-            // credentials from setup-database.yaml and unconditionally drops/recreates the audit DB.
-            // The runtime app and audit users are both scoped to their own databases and have no
-            // privileges to drop audit tables here. Historical audit entries persist across resets
-            // by design until the next root-credentialed bootstrap replaces the schema.
+            // The audit database is left alone by design, not for lack of rights: on installs
+            // built by 0.4.0 bootstrap or ModularCA.Migrate the audit role owns its tables and could
+            // drop them. Only the database itself is beyond it. History persists into the next
+            // install unless that bootstrap is told to wipe it.
             if (!string.IsNullOrWhiteSpace(auditDatabase))
             {
-                Console.WriteLine($"(i) Audit database '{auditDatabase}' cleanup deferred to next setup (requires root credentials).");
+                Console.WriteLine($"(i) Audit database '{auditDatabase}' preserved; the next bootstrap keeps it unless told to wipe it (--wipe-audit).");
             }
 
             conn.Close();
@@ -282,12 +301,57 @@ public class BootstrapModularCA
         }
     }
 
+    /// <summary>
+    /// Runs the full CA bootstrap procedure from bootstrap.yaml and setup-database.yaml. Deciding
+    /// comes before acting: the cluster is probed read-only as SqlRoot and every refusal is
+    /// reported before anything changes, and the confirmation prompt has no side effects. Then
+    /// the roles and databases are provisioned fail-fast, the keystores are deleted, both schemas
+    /// are applied and the data seeded as the runtime roles, the ownership rule is proved, and
+    /// only then is the configuration written. No migration ever runs as SqlRoot.
+    /// <c>Administration.MultipleAdministrators</c> in bootstrap.yaml decides whether key
+    /// ceremonies start on (<see cref="ApplyAdministratorChoice"/>); absent, they do.
+    /// <c>Acme.AllowPrivateAddressValidation</c> lets the first CA's http-01 validator reach
+    /// private addresses when ACME is on; absent, it does not.
+    /// Returns 0 on success, 1 on a refusal, a failure or an abort. A refusal (a SqlRoot that is
+    /// not a superuser, or whose login PostgreSQL rejects, among them), a runtime role's refused
+    /// login and any other database error are printed as a message, never as a stack trace.
+    /// </summary>
     /// <param name="wipeAuditDatabase">
-    /// Passed through to <see cref="BootstrapDatabaseSetup.CreateDatabaseUsers"/>. False by
-    /// default, so historical audit rows survive a reinstall — which is what the reset banner
-    /// has always told operators, and what this code did not previously do.
+    /// Drop the audit database instead of preserving it. False by default, so historical audit
+    /// rows survive a reinstall, which is what the reset banner tells operators.
     /// </param>
     public static int Run(bool wipeAuditDatabase = false)
+    {
+        try
+        {
+            return RunCore(wipeAuditDatabase);
+        }
+        catch (PostgresLayoutRefusedException ex)
+        {
+            Console.WriteLine("❌ Bootstrap refused before any change was made:");
+            foreach (var reason in ex.Reasons)
+                Console.WriteLine($"   - {reason}");
+            return 1;
+        }
+        catch (BootstrapLoginRefusedException ex)
+        {
+            Console.WriteLine($"❌ {ex.Message}");
+            return 1;
+        }
+        catch (NpgsqlException ex)
+        {
+            Console.WriteLine($"❌ Bootstrap stopped on a database error: {SchemaFailure.Describe(ex)}");
+            return 1;
+        }
+        catch (Exception ex) when (ex is SchemaConnectException or InvalidOperationException)
+        {
+            Console.WriteLine($"❌ Bootstrap stopped: {SchemaFailure.Describe(ex)}");
+            return 1;
+        }
+    }
+
+    /// <summary>The bootstrap procedure <see cref="Run"/> performs, with refusals propagating as exceptions.</summary>
+    private static int RunCore(bool wipeAuditDatabase)
     {
         var configDir = Path.Combine(AppContext.BaseDirectory, "config");
         var keystoreDir = Path.Combine(AppContext.BaseDirectory, "keystores");
@@ -302,100 +366,62 @@ public class BootstrapModularCA
             Console.WriteLine("❌ Failed to load bootstrap configuration. Aborting.");
             return 1;
         }
+        try
+        {
+            BootstrapCertCreator.EnsureRootLabelUsable(bootstrapConfig.CA.Subject.CN ?? "ModularCA");
+            BootstrapCertCreator.EnsureWebTlsSansSupported(bootstrapConfig.HttpsApi?.SANs);
+            BootstrapServiceUrlBuilder.EnsurePublicDomainUsable(bootstrapConfig.HttpsApi?.PublicDomain);
+        }
+        catch (ModularCA.Shared.Errors.RequestValidationException ex)
+        {
+            Console.WriteLine($"❌ Bootstrap refused before any change was made: {ex.Message}");
+            return 1;
+        }
 
         var setupDbPath = Path.Combine(configDir, "setup-database.yaml");
         var setupDbConfig = YamlSetupDatabaseLoader.Load(setupDbPath);
         if (setupDbConfig == null) { Console.WriteLine("❌ setup-database.yaml not found"); return 1; }
 
-        // Use SqlRoot for admin operations; fall back to SqlApp if SqlRoot not configured
-        var rootConfig = !string.IsNullOrWhiteSpace(setupDbConfig.SqlRoot.Password)
-            ? setupDbConfig.SqlRoot
-            : setupDbConfig.SqlApp;
+        // SqlRoot only, never a fallback to SqlApp: provisioning needs a superuser, and the
+        // runtime roles never hold one.
+        var rootConfig = setupDbConfig.SqlRoot;
 
-        // Root-credential bootstrap connection honors the operator-selected
-        // TLS mode now that setup-database.yaml round-trips SqlRoot.SslMode from the setup wizard.
-        // Unparseable / missing values clamp back to Required so a typo can't silently disable TLS.
-        var rootSslMode = Enum.TryParse<MySqlSslMode>(
-            rootConfig.SslMode, ignoreCase: true, out var _rootSsl)
-            ? _rootSsl : MySqlSslMode.Required;
-        var rootConnBuilder = new MySqlConnectionStringBuilder
-        {
-            Server = rootConfig.Host,
-            Port = (uint)rootConfig.Port,
-            Database = setupDbConfig.SqlApp.Database,
-            UserID = rootConfig.Username,
-            Password = rootConfig.Password,
-            SslMode = rootSslMode
-        };
-        var rootConnStr = rootConnBuilder.ConnectionString;
-
+        // 1. Decide, read-only. Every refusal is reported before the prompt and before any DDL.
+        BootstrapDatabaseSetup.CheckProvisioningAsync(rootConfig, setupDbConfig, wipeAuditDatabase).GetAwaiter().GetResult();
         bool dbExists = DatabaseExists(setupDbConfig, rootConfig);
         if (dbExists)
             Console.WriteLine($"(i) Database '{setupDbConfig.SqlApp.Database}' already exists on {rootConfig.Host}:{rootConfig.Port}.");
+        bool dbHasCa = dbExists && CheckDatabase(rootConfig, setupDbConfig.SqlApp.Database);
+        bool hasArtifacts = File.Exists(certPath) || File.Exists(trustPath) || dbExists;
 
-        var (dbContext, dbConnection) = CreateDatabaseConnection(rootConnStr);
-
-        bool dbHasCa = CheckDatabase(dbConnection, setupDbConfig);
-        bool hasArtifacts = File.Exists(certPath) || File.Exists(trustPath) || dbExists || dbHasCa;
-
+        // 2. Confirm. Prompts only.
         if (hasArtifacts)
         {
-            if (!ConfirmDelete(true, certPath, trustPath, dbContext, dbConnection, setupDbConfig, wipeAuditDatabase))
+            if (!ConfirmDestruction(certPath, trustPath, setupDbConfig, dbExists, dbHasCa, wipeAuditDatabase))
                 return 1;
         }
         else
         {
-            // No existing artifacts — still ensure clean state (drop DBs/users if partially created)
-            Console.WriteLine("(i) No existing artifacts found. Ensuring clean state...");
-            DeleteArtifacts(certPath, trustPath);
-            ReconstructDatabase(dbContext, dbConnection, setupDbConfig, wipeAuditDatabase);
+            Console.WriteLine("(i) No existing artifacts found.");
         }
 
-        // === Tenants (must precede CA and group creation) ===
-        var systemTenant = dbContext.Tenants.FirstOrDefault(t => t.IsSystemTenant);
-        if (systemTenant == null)
-        {
-            systemTenant = new TenantEntity
-            {
-                Name = "System",
-                Slug = "system",
-                Description = "Internal system tenant for infrastructure CAs and system groups",
-                IsSystemTenant = true,
-                CanBeDeleted = false,
-                IsEnabled = true,
-            };
-            dbContext.Tenants.Add(systemTenant);
-            dbContext.SaveChanges();
-            Console.WriteLine("✓ System tenant created.");
-        }
+        // 3. Provision, fail-fast. 4. Only then delete the keystores. 5. Schema as the runtime roles.
+        var databases = BootstrapDatabaseSetup.ProvisionAsync(
+            rootConfig, setupDbConfig, wipeAuditDatabase,
+            setupDbConfig.SqlApp.SslMode, setupDbConfig.SqlAudit.SslMode, Console.WriteLine).GetAwaiter().GetResult();
+        DeleteArtifacts(certPath, trustPath);
+        BootstrapDatabaseSetup.ApplySchemasAsync(databases, Console.WriteLine).GetAwaiter().GetResult();
 
-        // === Tenant-level permission groups for system tenant ===
-        CreateTenantGroups(dbContext, systemTenant);
+        using var dbContext = CreateDbContext(PostgresConnection.Build(databases.App));
 
-        var orgName = bootstrapConfig.CA.Subject.O ?? "Default";
-        var orgSlug = orgName.ToLowerInvariant().Replace(" ", "-").Replace(".", "-");
-        var orgTenant = dbContext.Tenants.FirstOrDefault(t => t.Slug == orgSlug);
-        if (orgTenant == null)
-        {
-            orgTenant = new TenantEntity
-            {
-                Name = orgName,
-                Slug = orgSlug,
-                Description = $"Primary tenant for {orgName} certificate authorities",
-                CanBeDeleted = false,
-                IsEnabled = true,
-            };
-            dbContext.Tenants.Add(orgTenant);
-            dbContext.SaveChanges();
-            Console.WriteLine($"✓ Organization tenant '{orgName}' created.");
-        }
-
-        // === Tenant-level permission groups for org tenant ===
-        CreateTenantGroups(dbContext, orgTenant);
+        // === Spaces (must precede CA and group creation) ===
+        var orgSpace = EnsureBootstrapSpaces(
+            dbContext, bootstrapConfig.CA.Subject.O ?? "Default", null);
+        Console.WriteLine($"✓ Space '{orgSpace.Name}' ready.");
 
         // === Built-in Roles & System Groups (must precede user creation) ===
         BootstrapProfileSeeder.SeedBuiltInRoles(dbContext);
-        BootstrapProfileSeeder.CreateSystemGroups(dbContext, systemTenant.Id);
+        BootstrapProfileSeeder.CreateSystemGroups(dbContext);
 
         // === OID Loading ===
         BootstrapProfileSeeder.LoadOidsToDb(dbContext, OIDConfig);
@@ -467,15 +493,17 @@ public class BootstrapModularCA
         var theOUs = bootstrapConfig.CA.Subject.OU != null ? string.Join(",", bootstrapConfig.CA.Subject.OU) : string.Empty;
 
         // === Self-Signed CA Certificate ===
-        var caCertRequest = BootstrapCertCreator.CreateCertificateRequest(bootstrapConfig.CA.Subject.CN ?? throw new Exception("The CA Subject CN was not found"), bootstrapConfig.CA.Subject.O ?? throw new Exception("The CA Subject O was not found"), theOUs,
-            bootstrapConfig.CA.Subject.L ?? throw new Exception("The CA Subject L was not found"), bootstrapConfig.CA.Subject.ST ?? throw new Exception("The CA Subject ST was not found"), bootstrapConfig.CA.Subject.C ?? throw new Exception("The CA Subject C was not found"), bootstrapConfig.CA.Algorithm, bootstrapConfig.CA.KeySize,
+        // Only the CN is needed; the rest of the subject is optional, as in the setup wizard.
+        var subject = bootstrapConfig.CA.Subject;
+        var caCertRequest = BootstrapCertCreator.CreateCertificateRequest(caCn, subject.O ?? string.Empty, theOUs,
+            subject.L ?? string.Empty, subject.ST ?? string.Empty, subject.C ?? string.Empty, bootstrapConfig.CA.Algorithm, bootstrapConfig.CA.KeySize,
             DateTime.UtcNow, DateTime.UtcNow.AddYears(bootstrapConfig.CA.ValidityYears), signingProfile.Id, rootCaCertificateStandardOids, rootCaCertificateExtendedOids, dbContext);
 
         var (signedCaCert, caPrivKey, caPrivateKeyDer) = BootstrapCertCreator.CreateSelfSignedCertificate(caCertRequest);
 
         // === ModularCA System Signing CA ===
         var sysCertRequest = BootstrapCertCreator.CreateCertificateRequest("ModularCA System Signing CA", "ModularCA", string.Empty,
-            bootstrapConfig.CA.Subject.L, bootstrapConfig.CA.Subject.ST, bootstrapConfig.CA.Subject.C,
+            subject.L ?? string.Empty, subject.ST ?? string.Empty, subject.C ?? string.Empty,
             bootstrapConfig.CA.Algorithm, bootstrapConfig.CA.KeySize,
             DateTime.UtcNow, DateTime.UtcNow.AddYears(100), signingProfile.Id, rootCaCertificateStandardOids, rootCaCertificateExtendedOids, dbContext);
         var (signedSysCert, sysPrivKey, sysPrivateKeyDer) = BootstrapCertCreator.CreateSelfSignedCertificate(sysCertRequest);
@@ -631,74 +659,47 @@ public class BootstrapModularCA
             Console.WriteLine("✓ Backup encryption key generated");
         }
 
-        BootstrapCertCreator.CreateCertificateAuthority(dbContext, caCertEntity, type: "Root", isDefault: true, tenantId: orgTenant.Id);
-        BootstrapCertCreator.CreateCertificateAuthority(dbContext, sysCertEntity, type: "Root", isDefault: false, label: "system-signing-ca", tenantId: systemTenant.Id);
+        BootstrapCertCreator.CreateCertificateAuthority(dbContext, caCertEntity, type: "Root", isDefault: true, spaceId: orgSpace.Id);
+        // The system signing CA is an instance CA: no space.
+        BootstrapCertCreator.CreateCertificateAuthority(dbContext, sysCertEntity, type: "Root", isDefault: false, label: "system-signing-ca", spaceId: null);
 
         var caCertCaEntity = BootstrapCertCreator.GetCertificateAuthorityFromDb(dbContext, caCertEntity.CertificateId);
         var sysCertCaEntity = BootstrapCertCreator.GetCertificateAuthorityFromDb(dbContext, sysCertEntity.CertificateId);
 
         // === CA-Scoped Groups (must follow CA creation, precede admin user creation) ===
-        BootstrapProfileSeeder.CreateCaGroups(dbContext, caCertCaEntity, orgTenant.Id);
-        BootstrapProfileSeeder.CreateCaGroups(dbContext, sysCertCaEntity, systemTenant.Id);
+        BootstrapProfileSeeder.CreateCaGroups(dbContext, caCertCaEntity, orgSpace.Id);
+        BootstrapProfileSeeder.CreateCaGroups(dbContext, sysCertCaEntity, null);
 
-        // === Backfill tenant IDs for any CAs/groups created without one ===
-        var unassignedCas = dbContext.CertificateAuthorities
-            .Where(ca => ca.TenantId == Guid.Empty)
-            .ToList();
-        foreach (var ca in unassignedCas)
-        {
-            ca.TenantId = ca.Label == "system-signing-ca" ? systemTenant.Id : orgTenant.Id;
-        }
-        if (unassignedCas.Count > 0)
-        {
-            dbContext.SaveChanges();
-            Console.WriteLine($"✓ Backfilled TenantId on {unassignedCas.Count} CA(s).");
-        }
-
-        var unassignedGroups = dbContext.CaGroups
-            .Where(g => g.TenantId == Guid.Empty)
-            .ToList();
-        foreach (var group in unassignedGroups)
-        {
-            if (group.IsSystemGroup)
-            {
-                group.TenantId = systemTenant.Id;
-            }
-            else if (group.CertificateAuthorityId != null)
-            {
-                var ownerCa = dbContext.CertificateAuthorities.FirstOrDefault(ca => ca.Id == group.CertificateAuthorityId);
-                group.TenantId = ownerCa?.TenantId ?? orgTenant.Id;
-            }
-            else
-            {
-                group.TenantId = orgTenant.Id;
-            }
-        }
-        if (unassignedGroups.Count > 0)
-        {
-            dbContext.SaveChanges();
-            Console.WriteLine($"✓ Backfilled TenantId on {unassignedGroups.Count} group(s).");
-        }
-
-        // mTLS signing is a configured item — system-tenant groups never use mTLS, and
+        // mTLS signing is a configured item — instance (system) groups never use mTLS, and
         // mTLS signing CAs must be non-Root issuing/intermediate CAs (Root CAs don't
         // sign end-entity certs directly). Clear legacy mTLS assignments on system groups;
-        // admins attach an mTLS signing CA to an org group after they've created one.
+        // admins attach an mTLS signing CA to a space group after they've created one.
         foreach (var systemGroup in dbContext.CaGroups.Where(g => g.IsSystemGroup && g.MtlsSigningCaId != null))
             systemGroup.MtlsSigningCaId = null;
         dbContext.SaveChanges();
 
         // === Seed request profiles and per-CA protocol configs ===
         var requestProfiles = BootstrapProfileSeeder.SeedDefaultRequestProfiles(dbContext);
-        BootstrapProfileSeeder.SeedProtocolConfigs(dbContext, caCertCaEntity, signingProfile, nonCaCertProfile, requestProfiles);
+        BootstrapProfileSeeder.SeedProtocolConfigs(dbContext, caCertCaEntity, signingProfile, nonCaCertProfile, requestProfiles,
+            features.ACME && (bootstrapConfig.Acme?.AllowPrivateAddressValidation ?? false));
         // System CA: every protocol hardcoded disabled. Belt-and-suspenders alongside
         // ReservedCaLabelGuardMiddleware; even if the guard is lifted, the DB row says "off".
         BootstrapProfileSeeder.SeedSystemCaProtocolConfigs(dbContext, sysCertCaEntity);
 
         // Auto-generate service URLs (AIA/CDP) for the public CA. Shares its derivation with the
         // setup wizard — see BootstrapServiceUrlBuilder for what each path used to get wrong.
+        var publicDomain = BootstrapServiceUrlBuilder.ResolvePublicDomain(
+            bootstrapConfig.HttpsApi.PublicDomain, bootstrapConfig.HttpsApi.SANs);
+        if (publicDomain == "localhost")
+        {
+            Console.WriteLine("[WARNING] No public name: bootstrap.yaml sets no HttpsApi.PublicDomain and HttpsApi.SANs has no");
+            Console.WriteLine("          DNS name other than localhost. The instance will answer as localhost, and the URLs in");
+            Console.WriteLine("          issued certificates will point there. Set HttpsApi.PublicDomain to the name clients use.");
+        }
+        else
+            Console.WriteLine($"✓ Public name: {publicDomain}");
         var publicBaseUrl = BootstrapServiceUrlBuilder.Build(
-            publicDomain: null,
+            publicDomain: publicDomain,
             dnsSans: bootstrapConfig.HttpsApi.SANs,
             httpPort: bootstrapConfig.HttpsApi.HttpPort);
 
@@ -716,6 +717,7 @@ public class BootstrapModularCA
 
         BootstrapProfileSeeder.SeedPasswordPolicy(dbContext);
         BootstrapProfileSeeder.SeedSecurityPolicy(dbContext);
+        ApplyAdministratorChoice(dbContext, orgSpace, bootstrapConfig.Administration?.MultipleAdministrators);
 
         // === IP Whitelist defaults ===
         // This call was missing from the CLI path while the setup wizard has always made it,
@@ -744,11 +746,6 @@ public class BootstrapModularCA
         sysCertEntity.CertificateAuthority = sysCertCaEntity;
         dbContext.SaveChanges();
 
-        if (dbConnection.State == ConnectionState.Open)
-        {
-            dbConnection.Close();
-        }
-
         // === Store TSA signer certificate in DB ===
         BootstrapCertCreator.StoreTsaCertificate(signedTsaCert, tsaKeyPair, dbContext, signingProfile, nonCaCertProfile, caCertCaEntity);
 
@@ -763,17 +760,20 @@ public class BootstrapModularCA
         var pendingSubjectDn = !string.IsNullOrWhiteSpace(httpsApi.SubjectDn)
             ? httpsApi.SubjectDn
             : $"CN={httpsApi.CN}";
-        var pendingSans = httpsApi.SANs;
+        var pendingSans = BootstrapServiceUrlBuilder.SansCovering(publicDomain, httpsApi.SANs);
         var pendingValidityDays = httpsApi.ValidityDays;
 
-        // === Create dedicated MySQL users and generate config.yaml ===
-        var (appUserPassword, auditUserPassword) = BootstrapDatabaseSetup.CreateDatabaseUsers(rootConfig, setupDbConfig, wipeAuditDatabase);
+        // === Prove the ownership rule, then write config.yaml and db.yaml ===
+        BootstrapDatabaseSetup.VerifyOwnershipAsync(databases, Console.WriteLine).GetAwaiter().GetResult();
+        var (appUserPassword, auditUserPassword) = (databases.App.Password, databases.Audit.Password);
         BootstrapDatabaseSetup.WriteConfigFile(configDir, rootConfig, setupDbConfig, bootstrapConfig, appUserPassword, auditUserPassword,
             pfxPassword: "", // No PFX yet — Stage 2 generates it
             httpsPort: bootstrapConfig.HttpsApi.Port,
             // Was hardcoded 8080 while the AIA/CDP builder above pointed at the TLS port. Both now
             // read the same field, so the listener and the URLs in issued certificates agree.
             httpPort: bootstrapConfig.HttpsApi.HttpPort,
+            // The node refuses to start with no Https.PublicDomain, which this path left empty.
+            publicDomain: publicDomain,
             security: null,
             network: null,
             pendingSubjectDn: pendingSubjectDn,
@@ -781,35 +781,28 @@ public class BootstrapModularCA
             pendingValidityDays: pendingValidityDays);
 
         // === Write db.yaml with generated app credentials ===
+        // The same instances bootstrap just connected with, TLS mode normalised by ProvisionAsync,
+        // so db.yaml names exactly what was proved to work.
         var dbYamlPath = Path.Combine(configDir, "db.yaml");
-        var (appUser, _) = BootstrapDatabaseSetup.ResolveMysqlUser(setupDbConfig.SqlApp.Username, rootConfig.Host);
-        var (auditUser, _) = BootstrapDatabaseSetup.ResolveMysqlUser(setupDbConfig.SqlAudit.Username, rootConfig.Host);
-        // Carry the operator-selected TLS mode (round-tripped through
-        // setup-database.yaml) into db.yaml. Normalize via MySqlSslMode so unparseable values
-        // land on Required instead of writing a typo that a later loader would clamp anyway.
-        var appSslModeString = (Enum.TryParse<MySqlSslMode>(setupDbConfig.SqlApp.SslMode, ignoreCase: true, out var _appSsl)
-            ? _appSsl : MySqlSslMode.Required).ToString();
-        var auditSslModeString = (Enum.TryParse<MySqlSslMode>(setupDbConfig.SqlAudit.SslMode, ignoreCase: true, out var _auditSsl)
-            ? _auditSsl : MySqlSslMode.Required).ToString();
         YamlDbConfigLoader.Write(dbYamlPath, new YamlDbConfigLoader.DbYamlConfig
         {
             App = new YamlDbConfigLoader.DbInstanceConfig
             {
-                Host = rootConfig.Host,
-                Port = rootConfig.Port,
-                Database = setupDbConfig.SqlApp.Database,
-                Username = appUser,
+                Host = databases.App.Host,
+                Port = databases.App.Port,
+                Database = databases.App.Database,
+                Username = databases.App.Username,
                 Password = appUserPassword,
-                SslMode = appSslModeString
+                SslMode = databases.App.SslMode
             },
             Audit = new YamlDbConfigLoader.DbInstanceConfig
             {
-                Host = rootConfig.Host,
-                Port = rootConfig.Port,
-                Database = setupDbConfig.SqlAudit.Database,
-                Username = auditUser,
+                Host = databases.Audit.Host,
+                Port = databases.Audit.Port,
+                Database = databases.Audit.Database,
+                Username = databases.Audit.Username,
                 Password = auditUserPassword,
-                SslMode = auditSslModeString
+                SslMode = databases.Audit.SslMode
             }
         });
         Console.WriteLine($"✓ db.yaml written to {dbYamlPath}");
@@ -913,13 +906,102 @@ public class BootstrapModularCA
     }
 
     /// <summary>
-    /// Auto-generates the four tenant-level permission groups (admin, operator, auditor, user)
-    /// for the given tenant. These groups have <c>CertificateAuthorityId = null</c> (not CA-scoped)
-    /// and grant access to ALL CAs within the tenant.
+    /// Applies the setup answer to "Will more than one person administer this CA?", for both
+    /// bootstrap paths, after the security policy is seeded. False turns the key ceremony
+    /// requirement off for the instance policy and for <paramref name="firstSpace"/>, where a lone
+    /// administrator could never get a ceremony approved; true sets both on. Null (the wizard
+    /// field or the <c>Administration.MultipleAdministrators</c> key was absent) changes nothing,
+    /// so both keep the entity default, on. An explicit answer is written to the bootstrap audit
+    /// log (<see cref="BootstrapAuditLog.LogSetupDecision"/>).
     /// </summary>
-    public static void CreateTenantGroups(ModularCADbContext dbContext, TenantEntity tenant)
+    /// <returns>Whether key ceremonies are required after the call.</returns>
+    public static bool ApplyAdministratorChoice(ModularCADbContext dbContext, SpaceEntity firstSpace, bool? multipleAdministrators)
     {
-        var tenantRoles = new[]
+        var policy = dbContext.SecurityPolicies.FirstOrDefault()
+            ?? throw new InvalidOperationException("The security policy must be seeded before the administrator choice is applied.");
+        if (multipleAdministrators is not bool several)
+            return policy.RequireKeyCeremony;
+
+        var space = dbContext.Spaces.First(s => s.Id == firstSpace.Id);
+        policy.RequireKeyCeremony = several;
+        space.RequireKeyCeremony = several;
+        dbContext.SaveChanges();
+
+        // No property name here may contain "key": the audit scrubber would blank its value.
+        BootstrapAuditLog.LogSetupDecision(
+            ModularCA.Shared.Enums.AuditActionType.SecurityPolicyUpdated, "SecurityPolicy", "instance",
+            new
+            {
+                SetupChoice = "MultipleAdministrators",
+                MultipleAdministrators = several,
+                CeremoniesRequired = several,
+                CeremonyRequirementDisabled = !several,
+                AppliedTo = new[] { "instance", $"space:{space.Slug}" },
+                SpaceId = space.Id,
+            });
+        Console.WriteLine(several
+            ? "✓ Several administrators: key ceremonies are required for the instance and the first space."
+            : "✓ Single administrator: key ceremonies are off for the instance and the first space. Turn them on in Settings once a second administrator exists.");
+        return several;
+    }
+
+    /// <summary>
+    /// Ensures the first space, named after the organisation, exists with its space-level groups,
+    /// for both bootstrap paths, and returns it. There is no system space: instance CAs and the
+    /// system groups have no space. Idempotent: a second run finds it and creates nothing.
+    /// It never creates a second space. Bootstrap seeds a database it has just reset, so a
+    /// different space (enabled or disabled, not soft-deleted) means the reset did not happen: it
+    /// throws <see cref="ModularCA.Shared.Errors.ConfigurationValidationException"/> with MCA-CFG-018.
+    /// </summary>
+    /// <param name="dbContext">The bootstrap context.</param>
+    /// <param name="orgName">The organisation's name; its slug is derived from it.</param>
+    /// <param name="orgDescription">A description, or null for the default.</param>
+    public static SpaceEntity EnsureBootstrapSpaces(
+        ModularCADbContext dbContext, string orgName, string? orgDescription)
+    {
+        var orgSlug = orgName.ToLowerInvariant().Replace(" ", "-").Replace(".", "-");
+        var orgSpace = dbContext.Spaces.FirstOrDefault(t => t.Slug == orgSlug);
+        if (orgSpace == null)
+        {
+            var existing = dbContext.Spaces
+                .Where(t => !t.IsDeleted)
+                .OrderBy(t => t.Name)
+                .FirstOrDefault();
+            if (existing is not null)
+                throw new ModularCA.Shared.Errors.ConfigurationValidationException(
+                    $"Bootstrap found space '{existing.Name}'{(existing.IsEnabled ? "" : " (disabled)")} "
+                    + $"already in the database while creating '{orgName}'. Bootstrap only seeds a database it has "
+                    + "just reset, so the reset did not happen.",
+                    ModularCA.Shared.Errors.ErrorCodes.BootstrapDatabaseNotEmpty,
+                    "The database was not reset. Fix the reset failure reported above and run bootstrap again.");
+
+            orgSpace = new SpaceEntity
+            {
+                Name = orgName,
+                Slug = orgSlug,
+                Description = !string.IsNullOrWhiteSpace(orgDescription)
+                    ? orgDescription
+                    : $"Primary space for {orgName} certificate authorities",
+                CanBeDeleted = false,
+                IsEnabled = true,
+            };
+            dbContext.Spaces.Add(orgSpace);
+            dbContext.SaveChanges();
+        }
+        CreateSpaceGroups(dbContext, orgSpace);
+
+        return orgSpace;
+    }
+
+    /// <summary>
+    /// Auto-generates the four space-level permission groups, <c>space-&lt;slug&gt;-admin</c>,
+    /// <c>-operator</c>, <c>-auditor</c> and <c>-user</c> (display names <c>Space &lt;name&gt; Admin</c>
+    /// and so on), for the given space. These groups have <c>CertificateAuthorityId = null</c> (not CA-scoped)
+    /// and grant access to ALL CAs within the space.
+    /// </summary>
+    public static void CreateSpaceGroups(ModularCADbContext dbContext, SpaceEntity space)
+    {
+        var spaceRoles = new[]
         {
             ("Administrator", "admin", "Admin"),
             ("Operator", "operator", "Operator"),
@@ -927,20 +1009,20 @@ public class BootstrapModularCA
             ("Requester", "user", "User")
         };
 
-        foreach (var (templateName, suffix, displaySuffix) in tenantRoles)
+        foreach (var (templateName, suffix, displaySuffix) in spaceRoles)
         {
-            var groupName = $"org-{tenant.Slug}-{suffix}";
+            var groupName = $"space-{space.Slug}-{suffix}";
             if (!dbContext.CaGroups.Any(g => g.Name == groupName))
             {
                 var group = new CaGroupEntity
                 {
                     Name = groupName,
-                    DisplayName = $"Org {tenant.Name} {displaySuffix}",
-                    CertificateAuthorityId = null, // Tenant-wide, not CA-specific
+                    DisplayName = $"Space {space.Name} {displaySuffix}",
+                    CertificateAuthorityId = null, // Space-wide, not CA-specific
                     TemplateName = templateName,
                     IsSystemGroup = false,
                     IsAutoGenerated = true,
-                    TenantId = tenant.Id,
+                    SpaceId = space.Id,
                     RequiredQuorum = 1,
                 };
                 dbContext.CaGroups.Add(group);
@@ -960,185 +1042,85 @@ public class BootstrapModularCA
                 dbContext.SaveChanges();
             }
         }
-        Console.WriteLine($"✓ Tenant-level groups created for '{tenant.Name}'.");
+        Console.WriteLine($"✓ Space-level groups created for '{space.Name}'.");
     }
 
     /// <summary>
     /// Creates a <see cref="ModularCADbContext"/> from a raw connection string
-    /// using <see cref="DbContextOptionsBuilder{T}"/> and MySql auto-detection.
+    /// using <see cref="DbContextOptionsBuilder{T}"/>.
     /// </summary>
+    /// <param name="connectionString">A PostgreSQL connection string.</param>
+    /// <returns>An unopened context bound to that connection string.</returns>
     public static ModularCADbContext CreateDbContext(string connectionString)
     {
         var optionsBuilder = new DbContextOptionsBuilder<ModularCADbContext>();
-        optionsBuilder.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString));
+        optionsBuilder.UseNpgsql(connectionString);
         return new ModularCADbContext(optionsBuilder.Options);
     }
 
     /// <summary>
-    /// Creates a new database context and connection from the given connection string.
-    /// Ensures the database schema is created.
+    /// Whether the application database exists in the cluster, read as SqlRoot from the
+    /// maintenance database. Throws when the probe fails: an unanswered question must never
+    /// read as "nothing there to destroy".
     /// </summary>
-    public static (ModularCADbContext, MySqlConnection dbConnect) CreateDatabaseConnection(string appConnStr)
-    {
-        var dbContext = CreateDbContext(appConnStr);
-        var conn = new MySqlConnection(appConnStr);
-        CreateDatabase(dbContext);
-        conn.Open();
-        return (dbContext, conn);
-    }
-
-    /// <summary>
-    /// Ensures the database schema exists by applying EF Core migrations.
-    /// <para>
-    /// A failure is never "recovered" by dropping the database. This previously caught any
-    /// exception and responded with <c>EnsureDeleted()</c> followed by a retry, on the theory
-    /// that the failure meant a dirty schema left by a legacy <c>EnsureCreated</c> run. The catch
-    /// was unqualified, so a lock-wait timeout or a connection drop mid-migration took the same
-    /// branch — and <c>CreateDatabase</c> is reachable on every connection setup, including
-    /// re-runs against a fully populated install.
-    /// </para>
-    /// <para>
-    /// A destructive path already exists for the legacy case and is explicitly opted into by the
-    /// operator: <c>--reset --force</c>. Pointing at it is strictly better than guessing.
-    /// </para>
-    /// </summary>
-    public static void CreateDatabase(ModularCADbContext dbConnection)
-    {
-        try
-        {
-            dbConnection.Database.Migrate();
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"(!) Migration failed: {ex.Message}");
-            Console.WriteLine("    The database has NOT been modified.");
-            Console.WriteLine("    If this is transient (lock timeout, connection drop), retry.");
-            Console.WriteLine("    If the schema predates migrations and you intend to discard it,");
-            Console.WriteLine("    run the reset explicitly:  --reset --force --confirm-db-name <database>");
-            throw;
-        }
-    }
-
-    /// <summary>
-    /// Applies EF Core migrations to the audit database using root credentials.
-    /// Called during setup to ensure the audit schema is created alongside the app schema.
-    /// </summary>
-    public static void CreateAuditDatabase(YamlSetupDatabaseLoader.SqlConnectionConfig rootConfig, string auditDbName)
-    {
-        // Honor the operator-selected TLS mode; clamp typos to Required.
-        var rootSslMode = Enum.TryParse<MySqlSslMode>(
-            rootConfig.SslMode, ignoreCase: true, out var _rootSsl)
-            ? _rootSsl : MySqlSslMode.Required;
-        var connBuilder = new MySqlConnectionStringBuilder
-        {
-            Server = rootConfig.Host,
-            Port = (uint)rootConfig.Port,
-            UserID = rootConfig.Username,
-            Password = rootConfig.Password,
-            Database = auditDbName,
-            SslMode = rootSslMode
-        };
-        CreateAuditDatabase(connBuilder.ConnectionString, auditDbName);
-    }
-
-    /// <summary>
-    /// Applies EF Core migrations to the audit database using the provided connection string.
-    /// </summary>
-    public static void CreateAuditDatabase(string connectionString, string auditDbName)
-    {
-        var optionsBuilder = new DbContextOptionsBuilder<AuditDbContext>();
-        optionsBuilder.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString));
-        using var auditDb = new AuditDbContext(optionsBuilder.Options);
-        try
-        {
-            auditDb.Database.Migrate();
-            Console.WriteLine($"✓ Audit database '{auditDbName}' schema applied via migrations.");
-        }
-        catch (Exception ex)
-        {
-            // Same reasoning as CreateDatabase: never drop on a failure we have not diagnosed.
-            // The audit schema is evidence, so silently rebuilding it is the worst possible
-            // response to a transient fault.
-            Console.WriteLine($"(!) Audit migration failed: {ex.Message}");
-            Console.WriteLine($"    Audit database '{auditDbName}' has NOT been modified.");
-            Console.WriteLine("    Retry if transient; discard deliberately via --reset --force if not.");
-            throw;
-        }
-    }
-
-    /// <summary>
-    /// Checks whether the target database already exists on the MySQL server.
-    /// </summary>
+    /// <param name="setupDbConfig">Names the application database to look for.</param>
+    /// <param name="rootConfig">Superuser credentials used for the probe.</param>
+    /// <returns>True when the database exists.</returns>
     public static bool DatabaseExists(YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig, YamlSetupDatabaseLoader.SqlConnectionConfig rootConfig)
     {
-        // Honor the operator-selected TLS mode for the existence probe;
-        // clamp typos to Required so a misconfigured value can't silently disable TLS.
-        var rootSslMode = Enum.TryParse<MySqlSslMode>(
-            rootConfig.SslMode, ignoreCase: true, out var _rootSsl)
-            ? _rootSsl : MySqlSslMode.Required;
-        var serverConnBuilder = new MySqlConnectionStringBuilder
-        {
-            Server = rootConfig.Host,
-            Port = (uint)rootConfig.Port,
-            UserID = rootConfig.Username,
-            Password = rootConfig.Password,
-            SslMode = rootSslMode
-        };
-        var serverConnStr = serverConnBuilder.ConnectionString;
-        try
-        {
-            using var conn = new MySqlConnection(serverConnStr);
-            conn.Open();
-            using var cmd = new MySqlCommand(
-                "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = @db", conn);
-            cmd.Parameters.AddWithValue("@db", setupDbConfig.SqlApp.Database);
-            return Convert.ToInt32(cmd.ExecuteScalar()) > 0;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"(i) Could not check database existence — reason: {ex.Message}");
-            return false;
-        }
+        using var conn = new NpgsqlConnection(BootstrapDatabaseSetup.AdminConnectionString(rootConfig));
+        conn.Open();
+        using var cmd = new NpgsqlCommand("SELECT 1 FROM pg_database WHERE datname = @db", conn);
+        cmd.Parameters.AddWithValue("db", setupDbConfig.SqlApp.Database);
+        return cmd.ExecuteScalar() != null;
     }
 
     /// <summary>
-    /// Checks whether the database already contains CA certificate records.
+    /// Whether the application database already holds CA certificate records, read as SqlRoot on
+    /// a plain connection: no EF, no DDL, no migration. Errors propagate.
     /// </summary>
-    public static bool CheckDatabase(MySqlConnection conn, YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig)
+    /// <param name="rootConfig">Superuser credentials.</param>
+    /// <param name="appDatabase">The application database, which must exist.</param>
+    /// <returns>True when a row in Certificates is marked as a CA.</returns>
+    public static bool CheckDatabase(YamlSetupDatabaseLoader.SqlConnectionConfig rootConfig, string appDatabase)
     {
-        bool dbhasCa = false;
-
-        try
+        var connectionString = new NpgsqlConnectionStringBuilder(BootstrapDatabaseSetup.AdminConnectionString(rootConfig))
         {
-
-            using var cmd = new MySqlCommand(
-                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = @db AND table_name = 'Certificates'", conn);
-            cmd.Parameters.AddWithValue("@db", setupDbConfig.SqlApp.Database);
-
-            var exists = Convert.ToInt32(cmd.ExecuteScalar()) > 0;
-            if (exists)
-            {
-                using var checkCmd = new MySqlCommand("SELECT COUNT(*) FROM Certificates WHERE IsCa = 1", conn);
-                dbhasCa = Convert.ToInt32(checkCmd.ExecuteScalar()) > 0;
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"(i) Skipping CA check — reason: {ex.Message}");
-        }
-        return dbhasCa;
+            Database = appDatabase,
+            Pooling = false,
+        }.ConnectionString;
+        using var conn = new NpgsqlConnection(connectionString);
+        conn.Open();
+        using var cmd = new NpgsqlCommand(
+            "SELECT CASE WHEN to_regclass('public.\"Certificates\"') IS NULL THEN 0 "
+            + "ELSE (SELECT COUNT(*) FROM public.\"Certificates\" WHERE \"IsCa\" = TRUE) END", conn);
+        return Convert.ToInt64(cmd.ExecuteScalar()) > 0;
     }
 
     /// <summary>
-    /// Returns true if bootstrap should proceed, false if the user aborted.
-    /// Prompts the user three times to confirm destruction of existing artifacts.
+    /// Asks the operator three times to confirm what bootstrap is about to destroy, and nothing
+    /// else: no file is deleted and no database is touched here. Returns true to proceed, false
+    /// when the operator aborted.
     /// </summary>
-    public static bool ConfirmDelete(bool needsConfirm, string certPath, string trustPath, ModularCADbContext db, MySqlConnection conn, YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig, bool wipeAuditDatabase = false)
+    /// <param name="certPath">The CA keystore file.</param>
+    /// <param name="trustPath">The trust keystore file.</param>
+    /// <param name="setupDbConfig">Names the databases.</param>
+    /// <param name="appDatabaseExists">Whether the application database exists and will be dropped.</param>
+    /// <param name="appDatabaseHasCa">Whether it holds CA certificates.</param>
+    /// <param name="wipeAuditDatabase">Whether the audit database will be dropped rather than preserved.</param>
+    public static bool ConfirmDestruction(
+        string certPath, string trustPath, YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig,
+        bool appDatabaseExists, bool appDatabaseHasCa, bool wipeAuditDatabase)
     {
-        if (!needsConfirm)
-            return true;
-
-        Console.WriteLine("⚠️  Existing CA artifacts detected.");
+        Console.WriteLine("⚠️  Existing CA artifacts detected. Bootstrap will destroy:");
+        if (File.Exists(certPath) || File.Exists(trustPath))
+            Console.WriteLine("   - the keystore files, holding the CA private keys");
+        if (appDatabaseExists)
+            Console.WriteLine($"   - the application database '{setupDbConfig.SqlApp.Database}'"
+                + (appDatabaseHasCa ? ", which holds CA certificates" : ""));
+        Console.WriteLine(wipeAuditDatabase
+            ? $"   - the audit database '{setupDbConfig.SqlAudit.Database}' (--wipe-audit)"
+            : $"   (the audit database '{setupDbConfig.SqlAudit.Database}' is preserved)");
         for (int i = 1; i <= 3; i++)
         {
             string prompt = i switch
@@ -1156,8 +1138,6 @@ public class BootstrapModularCA
             }
         }
         Console.WriteLine("✅ Destruction confirmed. Proceeding...\n");
-        DeleteArtifacts(certPath, trustPath);
-        ReconstructDatabase(db, conn, setupDbConfig, wipeAuditDatabase);
         return true;
     }
 
@@ -1178,150 +1158,6 @@ public class BootstrapModularCA
         else
         {
             Console.WriteLine($"(i) {trustPath} not found. Skipping deletion.");
-        }
-    }
-
-    /// <summary>
-    /// Drops and recreates both app and audit databases, and drops existing DB users
-    /// so they can be cleanly recreated during bootstrap.
-    /// </summary>
-    /// <param name="wipeAuditDatabase">
-    /// When true the audit database is dropped along with the app database. Default false.
-    /// <para>
-    /// This drop used to be unconditional, and it is the one that actually destroyed audit
-    /// history on the CLI path — <c>Run</c> calls this before it ever reaches
-    /// <c>CreateDatabaseUsers</c>, so making only that method conditional would have preserved
-    /// nothing here. The point of a tamper-evident audit trail is that it outlives someone
-    /// destroying the install, which is precisely what this method does.
-    /// </para>
-    /// </param>
-    public static void ReconstructDatabase(ModularCADbContext db, MySqlConnection conn, YamlSetupDatabaseLoader.SetupDatabaseConfig setupDbConfig, bool wipeAuditDatabase = false)
-    {
-        // Validate all identifiers before any DROP/CREATE SQL
-        BootstrapDatabaseSetup.ValidateIdentifier(setupDbConfig.SqlApp.Database, "app database name");
-        if (!string.IsNullOrWhiteSpace(setupDbConfig.SqlAudit.Database))
-            BootstrapDatabaseSetup.ValidateIdentifier(setupDbConfig.SqlAudit.Database, "audit database name");
-        if (!string.IsNullOrWhiteSpace(setupDbConfig.SqlApp.Username))
-            BootstrapDatabaseSetup.ValidateIdentifier(setupDbConfig.SqlApp.Username, "app username");
-        if (!string.IsNullOrWhiteSpace(setupDbConfig.SqlAudit.Username))
-            BootstrapDatabaseSetup.ValidateIdentifier(setupDbConfig.SqlAudit.Username, "audit username");
-
-        // Drop app database
-        try
-        {
-            using var dropAppCmd = new MySqlCommand($"DROP DATABASE IF EXISTS `{setupDbConfig.SqlApp.Database}`", conn);
-            dropAppCmd.ExecuteNonQuery();
-            Console.WriteLine($"✓ Dropped app database '{setupDbConfig.SqlApp.Database}'");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"(!) Failed to drop app database: {ex.Message}");
-        }
-
-        // Drop audit database — only when the operator explicitly asked to.
-        try
-        {
-            var auditDbName = setupDbConfig.SqlAudit.Database;
-            if (!wipeAuditDatabase)
-            {
-                Console.WriteLine($"(i) Audit database '{auditDbName}' preserved (pass --wipe-audit to discard).");
-            }
-            else if (!string.IsNullOrWhiteSpace(auditDbName))
-            {
-                using var dropAuditCmd = new MySqlCommand($"DROP DATABASE IF EXISTS `{auditDbName}`", conn);
-                dropAuditCmd.ExecuteNonQuery();
-                Console.WriteLine($"✓ Dropped audit database '{auditDbName}'");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"(!) Failed to drop audit database: {ex.Message}");
-        }
-
-        // Drop existing DB users (they'll be recreated by CreateDatabaseUsers)
-        try
-        {
-            var appUser = setupDbConfig.SqlApp.Username;
-            var auditUser = setupDbConfig.SqlAudit.Username;
-            var rootUser = setupDbConfig.SqlRoot.Username?.Trim() ?? string.Empty;
-
-            // Refuse BEFORE dropping anything if either service account names the admin user.
-            // BootstrapDatabaseSetup.CreateDatabaseUsers has this exact guard, with the comment
-            // "This would drop and recreate your admin account" — but Run() reaches
-            // ReconstructDatabase first, so the DROP USER below executed and only then did the
-            // guard fire. `SqlApp.Username: root` therefore destroyed the MySQL administrative
-            // account and aborted with no config written: unrecoverable without
-            // --skip-grant-tables. The guard is only worth having if it runs first.
-            if (!string.IsNullOrWhiteSpace(rootUser))
-            {
-                if (string.Equals(appUser?.Trim(), rootUser, StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException(
-                        $"SqlApp.Username must differ from SqlRoot.Username (both are '{rootUser}'). "
-                        + "Dropping it would destroy the database administrative account.");
-                if (string.Equals(auditUser?.Trim(), rootUser, StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException(
-                        $"SqlAudit.Username must differ from SqlRoot.Username (both are '{rootUser}'). "
-                        + "Dropping it would destroy the database administrative account.");
-            }
-
-            if (!string.IsNullOrWhiteSpace(appUser))
-            {
-                using var dropAppUser = new MySqlCommand($"DROP USER IF EXISTS '{appUser}'@'%'", conn);
-                dropAppUser.ExecuteNonQuery();
-                // Also try localhost variant
-                using var dropAppUserLocal = new MySqlCommand($"DROP USER IF EXISTS '{appUser}'@'localhost'", conn);
-                dropAppUserLocal.ExecuteNonQuery();
-                Console.WriteLine($"✓ Dropped app DB user '{appUser}'");
-            }
-            if (!string.IsNullOrWhiteSpace(auditUser))
-            {
-                using var dropAuditUser = new MySqlCommand($"DROP USER IF EXISTS '{auditUser}'@'%'", conn);
-                dropAuditUser.ExecuteNonQuery();
-                using var dropAuditUserLocal = new MySqlCommand($"DROP USER IF EXISTS '{auditUser}'@'localhost'", conn);
-                dropAuditUserLocal.ExecuteNonQuery();
-                Console.WriteLine($"✓ Dropped audit DB user '{auditUser}'");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"(!) Failed to drop DB users: {ex.Message}");
-        }
-
-        // Recreate app database and apply schema via migrations (EnsureCreated fails with FK ordering)
-        try
-        {
-            using var createCmd = new MySqlCommand($"CREATE DATABASE IF NOT EXISTS `{setupDbConfig.SqlApp.Database}`", conn);
-            createCmd.ExecuteNonQuery();
-            db.Database.Migrate();
-            Console.WriteLine($"✓ App database '{setupDbConfig.SqlApp.Database}' recreated with schema via migrations");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"(!!) Failed to recreate app database: {ex.Message}");
-        }
-
-        // Recreate audit database if it doesn't exist (audit tables survive resets by design)
-        try
-        {
-            var auditDbName = setupDbConfig.SqlAudit.Database;
-            if (!string.IsNullOrWhiteSpace(auditDbName))
-            {
-                using var createAuditCmd = new MySqlCommand($"CREATE DATABASE IF NOT EXISTS `{auditDbName}`", conn);
-                createAuditCmd.ExecuteNonQuery();
-
-                // Apply any pending audit migrations (preserves existing audit data).
-                // SslMode is inherited from the source conn.ConnectionString
-                // (built upstream with TLS-Required), so no explicit SslMode assignment is needed here.
-                var auditConnBuilder = new MySqlConnectionStringBuilder(conn.ConnectionString)
-                {
-                    Database = auditDbName
-                };
-                CreateAuditDatabase(auditConnBuilder.ConnectionString, auditDbName);
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"(!) Failed to recreate audit database: {ex.Message}");
         }
     }
 }

@@ -13,6 +13,8 @@ public static class AuditActionType
     // Authentication
     public const string UserLogin = "UserLogin";
     public const string UserLoginFailed = "UserLoginFailed";
+    /// <summary>A session was refreshed from a changed address or client, or without proof of its key, and was allowed.</summary>
+    public const string SessionRefreshNotice = "SessionRefreshNotice";
     public const string UserCertLogin = "UserCertLogin";
     public const string UserLogout = "UserLogout";
 
@@ -160,6 +162,8 @@ public static class AuditActionType
     public const string BackupCreated = "BackupCreated";
     public const string BackupRestored = "BackupRestored";
     public const string BackupListed = "BackupListed";
+    /// <summary>A restore raised the CRL number counters so no number already published is reused (RFC 5280 §5.2.3).</summary>
+    public const string CrlNumbersRaisedOnRestore = "CrlNumbersRaisedOnRestore";
 
     // ACME EAB keys
     public const string AcmeEabKeyCreated = "AcmeEabKeyCreated";
@@ -184,11 +188,7 @@ public static class AuditActionType
     public const string KeyCeremonyCancelled = "KeyCeremonyCancelled";
     public const string KeyCeremonyExpired = "KeyCeremonyExpired";
 
-    /// <summary>
-    /// Emitted when a <c>TenantPolicyChange</c> ceremony executes successfully and actually
-    /// mutates the tenant row — distinct from <c>KeyCeremonyExecuted</c> so the tenant-policy
-    /// before/after diff has its own action name for easier audit filtering.
-    /// </summary>
+    /// <summary>Retired in 0.4.0: recorded rows keep it. New events use <see cref="SpacePolicyChangeApplied"/>.</summary>
     public const string TenantPolicyChangeApplied = "TenantPolicyChangeApplied";
 
     /// <summary>
@@ -202,7 +202,7 @@ public static class AuditActionType
     public const string PolicySyncExecuted = "PolicySyncExecuted";
     public const string PolicySyncImported = "PolicySyncImported";
 
-    // Tenant management
+    // Retired in 0.4.0: recorded rows keep them. New events use SpaceCreated, SpaceUpdated and SpaceDisabled.
     public const string TenantCreated = "TenantCreated";
     public const string TenantUpdated = "TenantUpdated";
     public const string TenantDisabled = "TenantDisabled";
@@ -232,7 +232,7 @@ public static class AuditActionType
     public const string QuotaUpdated = "QuotaUpdated";
 
     // Privileged access / system-admin bypass events. Emitted from the
-    // authorization service when a system admin accesses a CA or tenant's rows without a
+    // authorization service when a system admin accesses a CA or space's rows without a
     // direct CA-scoped group membership.
     public const string SystemAdminElevatedAccess = "SystemAdminElevatedAccess";
 
@@ -284,7 +284,7 @@ public static class AuditActionType
     public const string BadgeDeleted = "BadgeDeleted";
 
     // Kerberos realm bindings (Windows autoenrollment)
-    /// <summary>A forest was bound to a tenant. Details name the realm, SPN and enrollment user; never a key.</summary>
+    /// <summary>A forest was bound to a space. Details name the realm, SPN and enrollment user; never a key.</summary>
     public const string KerberosRealmCreated = "KerberosRealmCreated";
     public const string KerberosRealmUpdated = "KerberosRealmUpdated";
     public const string KerberosRealmDisabled = "KerberosRealmDisabled";
@@ -293,7 +293,7 @@ public static class AuditActionType
     public const string KerberosRealmKeyAdded = "KerberosRealmKeyAdded";
     public const string KerberosRealmKeyRetired = "KerberosRealmKeyRetired";
 
-    // Tenant hostnames (names a tenant's enrollment endpoints are reached by, each under its own certificate)
+    // Tenant hostnames, retired in 0.4.0; kept because recorded audit rows name them
     /// <summary>A hostname was added to a tenant. Details name the host and the issuing CA.</summary>
     public const string TenantHostnameCreated = "TenantHostnameCreated";
     public const string TenantHostnameDeleted = "TenantHostnameDeleted";
@@ -307,4 +307,77 @@ public static class AuditActionType
     public const string ServiceIdentityUpdated = "ServiceIdentityUpdated";
     public const string ServiceIdentityGroupsChanged = "ServiceIdentityGroupsChanged";
     public const string ServiceIdentityDeleted = "ServiceIdentityDeleted";
+
+    /// <summary>
+    /// An approved <c>ControlledUserChange</c> ceremony was refused at execute because it would remove
+    /// the last dominating user of its scope. The ceremony stays Approved and may be executed later.
+    /// </summary>
+    public const string ControlledUserChangeRefused = "ControlledUserChangeRefused";
+
+    /// <summary>An <c>InstancePolicyChange</c> ceremony executed. Details carry the before/after values.</summary>
+    public const string InstancePolicyChangeApplied = "InstancePolicyChangeApplied";
+
+    /// <summary>
+    /// Appended as the last record of a retired per-tenant audit chain (0.4.0 S3). Details name the
+    /// reason, the migration, and the chain's final record id and hash before the seal.
+    /// </summary>
+    public const string AuditChainSealed = "AuditChainSealed";
+
+    /// <summary>
+    /// Appended to the instance chain when a retired chain is sealed. Details name the sealed
+    /// chain and its final hash, anchoring the retired chain's tail in the live chain.
+    /// </summary>
+    public const string AuditChainSuccession = "AuditChainSuccession";
+
+    /// <summary>
+    /// An account was unlocked on the host with <c>--unlock-user</c>, outside the API. The actor is
+    /// <c>host:break-glass</c>; details name the host and the operating-system user.
+    /// </summary>
+    public const string UserUnlockedOnHost = "UserUnlockedOnHost";
+
+    /// <summary>A space was created. Details name it and whether a licence was recommended.</summary>
+    public const string SpaceCreated = "SpaceCreated";
+
+    /// <summary>A space's name, description, validity ceiling, ceremony policy or quorum changed.</summary>
+    public const string SpaceUpdated = "SpaceUpdated";
+
+    /// <summary>A space was disabled.</summary>
+    public const string SpaceDisabled = "SpaceDisabled";
+
+    /// <summary>
+    /// A <c>SpacePolicyChange</c> ceremony executed and changed the space's ceremony policy.
+    /// Details carry the before/after values.
+    /// </summary>
+    public const string SpacePolicyChangeApplied = "SpacePolicyChangeApplied";
+
+    private static readonly Dictionary<string, string> RetiredNames = new(StringComparer.Ordinal)
+    {
+        [SpaceCreated] = TenantCreated,
+        [SpaceUpdated] = TenantUpdated,
+        [SpaceDisabled] = TenantDisabled,
+        [SpacePolicyChangeApplied] = TenantPolicyChangeApplied,
+    };
+
+    /// <summary>
+    /// The action types an audit search for <paramref name="actionType"/> matches: the type itself,
+    /// plus its retired tenant name for a space event, or its space name for a retired tenant event.
+    /// </summary>
+    /// <summary>Every action name declared here, sorted.</summary>
+    public static IReadOnlyList<string> All { get; } = typeof(AuditActionType)
+        .GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+        .Where(f => f.IsLiteral && f.FieldType == typeof(string))
+        .Select(f => (string)f.GetRawConstantValue()!)
+        .Distinct(StringComparer.Ordinal)
+        .OrderBy(n => n, StringComparer.Ordinal)
+        .ToList();
+
+    public static IReadOnlyList<string> Synonyms(string actionType)
+    {
+        if (RetiredNames.TryGetValue(actionType, out var retired))
+            return [actionType, retired];
+        foreach (var (current, old) in RetiredNames)
+            if (old == actionType)
+                return [actionType, current];
+        return [actionType];
+    }
 }

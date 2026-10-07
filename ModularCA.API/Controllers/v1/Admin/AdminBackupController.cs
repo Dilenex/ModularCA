@@ -13,8 +13,6 @@ using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
 using System.IO.Compression;
 using System.Text.Json;
-using YamlDotNet.Serialization;
-using YamlDotNet.Serialization.NamingConventions;
 using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
@@ -34,8 +32,11 @@ public class AdminBackupController(
     ICurrentUserService currentUser,
     IDistributedCache cache,
     ISecurityAlertService alertService,
-    ModularCA.Shared.Signing.ISigningService signer) : ControllerBase
+    ModularCA.Shared.Signing.ISigningService signer,
+    ModularCA.Shared.Utils.EnvVarConfigOverlay envOverlay) : ControllerBase
 {
+    /// <summary>Keeps environment-sourced secrets out of <c>config.yaml</c> when the configuration is persisted.</summary>
+    private readonly ModularCA.Shared.Utils.EnvVarConfigOverlay _envOverlay = envOverlay;
     private readonly SystemConfig _config = config;
     /// <summary>The node's signer, which exports and imports the keystore files a backup carries.</summary>
     private readonly ModularCA.Shared.Signing.ISigningService _signer = signer;
@@ -539,16 +540,14 @@ public class AdminBackupController(
     }
 
     /// <summary>
-    /// Persists the current <see cref="SystemConfig"/> to <c>config/config.yaml</c>, matching the
-    /// serialization pattern used by <c>AdminConfigController.PersistConfig</c>. Failures are swallowed —
-    /// the in-memory change still applies for the running process even if the YAML file is read-only
-    /// (e.g. container deployments).
+    /// Persists the current <see cref="SystemConfig"/> to <c>config/config.yaml</c> through
+    /// <see cref="ModularCA.Shared.Utils.ConfigYamlWriter"/>, as every other settings page does:
+    /// without the <c>DB</c> section, which <c>db.yaml</c> owns, with environment-sourced secrets
+    /// held back, and in place, so the file keeps its owner, group and mode (on a split install
+    /// the signer reads it through its group). Failures are swallowed: the in-memory change still
+    /// applies for the running process even if the YAML file is read-only (e.g. container
+    /// deployments).
     /// </summary>
-    /// <remarks>
-    /// The rewrite uses a tempfile + atomic rename and re-applies
-    /// <see cref="ModularCA.Shared.Utils.FileSecurityUtil.SetOwnerOnly"/> after the rename so the
-    /// tightened ACL on the original file is not lost when this method runs.
-    /// </remarks>
     private void TryPersistConfig()
     {
         try
@@ -556,18 +555,8 @@ public class AdminBackupController(
             var configYamlPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
             if (!System.IO.File.Exists(configYamlPath))
                 return;
-            var serializer = new SerializerBuilder()
-                .WithNamingConvention(PascalCaseNamingConvention.Instance)
-                .Build();
-            var yaml = serializer.Serialize(_config);
-
-            // Atomic write: stage to sibling tempfile, then File.Move with overwrite.
-            var tempPath = configYamlPath + ".tmp-" + Guid.NewGuid().ToString("N");
-            System.IO.File.WriteAllText(tempPath, yaml);
-            ModularCA.Shared.Utils.FileSecurityUtil.SetOwnerOnly(tempPath);
-            System.IO.File.Move(tempPath, configYamlPath, overwrite: true);
-            // Re-apply owner-only ACL after the rename — the destination inode was replaced.
-            ModularCA.Shared.Utils.FileSecurityUtil.SetOwnerOnly(configYamlPath);
+            _envOverlay.WithSecretsProtected(_config,
+                () => ModularCA.Shared.Utils.ConfigYamlWriter.Write(configYamlPath, _config));
         }
         catch (Exception ex)
         {
@@ -578,16 +567,12 @@ public class AdminBackupController(
 
     /// <summary>
     /// Resolves the backup output directory to an absolute path, using the application base directory
-    /// as the root for relative paths.
+    /// as the root for relative paths; the same directory the command-line <c>--backup</c> and the
+    /// pre-restore snapshot use (<see cref="BackupRestore.ResolveBackupDirectory"/>).
     /// </summary>
     /// <returns>The absolute path to the backup directory.</returns>
-    private string ResolveBackupDirectory()
-    {
-        var outputPath = _config.Backup.OutputPath;
-        if (Path.IsPathRooted(outputPath))
-            return outputPath;
-        return Path.Combine(AppContext.BaseDirectory, outputPath);
-    }
+    private string ResolveBackupDirectory() =>
+        BackupRestore.ResolveBackupDirectory(AppContext.BaseDirectory, _config.Backup?.OutputPath);
 
     /// <summary>
     /// Deletes the oldest backup archives when the total count exceeds the configured retention limit.

@@ -20,10 +20,14 @@ export interface MfaFactors {
     webauthn: boolean;
 }
 
+/** The request field for what a prompt authorises: one target, or a list. */
+const stepUpTarget = (target?: string | string[]) => (Array.isArray(target) ? { targetIds: target } : { targetId: target });
+
 export interface StepUpMfaModalProps {
     isOpen: boolean;
     operation: string;
-    targetId?: string;
+    /** One target, or the list one prompt authorises. */
+    targetId?: string | string[];
     onSuccess: (mfaToken: string) => void;
     onCancel: () => void;
     /** The host app's authenticated POST. */
@@ -117,7 +121,7 @@ export const StepUpMfaModal: React.FC<StepUpMfaModalProps> = ({
                             clientExtensionResults: credential.getClientExtensionResults(),
                         },
                         operation,
-                        targetId,
+                        ...stepUpTarget(targetId),
                     },
                 );
 
@@ -153,7 +157,7 @@ export const StepUpMfaModal: React.FC<StepUpMfaModalProps> = ({
         try {
             const data = await apiPost<{ mfaToken?: string; token?: string }>(
                 '/auth/mfa/verify-stepup/totp',
-                { code, operation, targetId },
+                { code, operation, ...stepUpTarget(targetId) },
             );
             settledRef.current = true;
             abortRef.current?.abort();
@@ -174,19 +178,20 @@ export const StepUpMfaModal: React.FC<StepUpMfaModalProps> = ({
         onCancel();
     };
 
+    // Above every dialog (they stop at z-[60]): step-up is asked for from inside them. Toasts stay on top.
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div className="fixed inset-0 z-[90] flex items-center justify-center">
             <div
-                className="absolute inset-0 bg-black/25 dark:bg-black/60 backdrop-blur-sm"
+                className="absolute inset-0 bg-scrim backdrop-blur-sm"
                 onClick={handleCancel}
             />
 
-            <div className="relative bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg shadow-xl w-full max-w-md mx-4 p-6 space-y-5">
+            <div className="relative bg-raised border border-line rounded-lg shadow-xl w-full max-w-md mx-4 p-6 space-y-5">
                 <div className="text-center">
-                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                    <h3 className="text-lg font-semibold text-ink">
                         Step-Up Verification Required
                     </h3>
-                    <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                    <p className="text-sm text-ink-muted mt-1">
                         This operation requires additional authentication.
                         {hasTotp && hasWebauthn
                             ? ' Enter a TOTP code or tap your security key.'
@@ -197,26 +202,26 @@ export const StepUpMfaModal: React.FC<StepUpMfaModalProps> = ({
                 </div>
 
                 {error && (
-                    <div className="bg-red-50 dark:bg-red-900/50 border border-red-300 dark:border-red-700 text-red-800 dark:text-red-300 text-sm text-center p-2 rounded">
+                    <div className="bg-crit-soft border border-crit/40 text-crit text-sm text-center p-2 rounded">
                         {error}
                     </div>
                 )}
 
                 {/* WebAuthn — auto-triggered, shows status */}
                 {hasWebauthn && (
-                    <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 text-center">
+                    <div className="bg-info-soft border border-info/40 rounded-lg p-4 text-center">
                         <div className="flex items-center justify-center gap-2">
                             {webauthnLoading ? (
                                 <>
-                                    <svg className="animate-pulse w-5 h-5 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <svg className="animate-pulse w-5 h-5 text-accent-ink" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
                                     </svg>
-                                    <span className="text-sm font-medium text-blue-700 dark:text-blue-300">
+                                    <span className="text-sm font-medium text-accent-ink">
                                         Waiting for security key...
                                     </span>
                                 </>
                             ) : (
-                                <span className="text-sm text-blue-600 dark:text-blue-400">
+                                <span className="text-sm text-accent-ink">
                                     Security key ready
                                 </span>
                             )}
@@ -229,9 +234,9 @@ export const StepUpMfaModal: React.FC<StepUpMfaModalProps> = ({
                     <form onSubmit={handleTotpSubmit} className="space-y-4">
                         {hasWebauthn && (
                             <div className="flex items-center gap-3">
-                                <div className="flex-1 border-t border-gray-300 dark:border-gray-600" />
-                                <span className="text-xs text-gray-600 uppercase">or enter code</span>
-                                <div className="flex-1 border-t border-gray-300 dark:border-gray-600" />
+                                <div className="flex-1 border-t border-line-strong" />
+                                <span className="text-xs text-ink-muted uppercase">or enter code</span>
+                                <div className="flex-1 border-t border-line-strong" />
                             </div>
                         )}
                         <div>
@@ -240,7 +245,7 @@ export const StepUpMfaModal: React.FC<StepUpMfaModalProps> = ({
                                 inputMode="numeric"
                                 pattern="[0-9]*"
                                 maxLength={6}
-                                className="w-full bg-gray-200 dark:bg-gray-700 border border-gray-400 dark:border-gray-600 text-gray-900 dark:text-white rounded px-3 py-3 focus:border-blue-500 focus:outline-none text-center text-2xl tracking-widest"
+                                className="w-full bg-raised border border-line-strong text-ink rounded px-3 py-3 focus:border-accent focus:outline-none text-center text-2xl tracking-widest"
                                 value={code}
                                 onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
                                 placeholder="000000"
@@ -251,7 +256,7 @@ export const StepUpMfaModal: React.FC<StepUpMfaModalProps> = ({
                         <button
                             type="submit"
                             disabled={loading || code.length !== 6}
-                            className="w-full py-2 text-sm font-medium bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                            className="w-full py-2 text-sm font-medium bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
                         >
                             {loading ? 'Verifying...' : 'Verify Code'}
                         </button>
@@ -262,17 +267,19 @@ export const StepUpMfaModal: React.FC<StepUpMfaModalProps> = ({
                     <button
                         type="button"
                         onClick={handleCancel}
-                        className="py-2 px-6 text-sm font-medium bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                        className="py-2 px-6 text-sm font-medium bg-sunken text-ink rounded hover:bg-hover transition-colors"
                     >
                         Cancel
                     </button>
                 </div>
 
-                <p className="text-xs text-gray-600 text-center">
-                    {describeStepUpOperation(operation)} <span className="font-mono text-[10px] text-gray-500 dark:text-gray-500">({operation})</span>
-                    {targetId && (
+                <p className="text-xs text-ink-muted text-center">
+                    {describeStepUpOperation(operation)} <span className="font-mono text-[10px] text-ink-muted">({operation})</span>
+                    {Array.isArray(targetId) ? (
+                        <>{' '} | {targetId.length} item{targetId.length === 1 ? '' : 's'}</>
+                    ) : targetId && (
                         <>
-                            {' '} | Target: <span className="font-mono text-gray-600 dark:text-gray-400">{targetId}</span>
+                            {' '} | Target: <span className="font-mono text-ink-muted">{targetId}</span>
                         </>
                     )}
                 </p>

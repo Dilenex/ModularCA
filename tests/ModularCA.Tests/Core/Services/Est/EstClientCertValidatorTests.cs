@@ -87,7 +87,7 @@ public class EstClientCertValidatorTests
     public void A_certificate_whose_EKU_permits_only_server_auth_is_refused()
     {
         // A TLS server certificate obtained via ACME from the same CA is not a client identity.
-        // Without the EKU policy, a tenant holding DNS:host.example presented it and enrolled an
+        // Without the EKU policy, a space holding DNS:host.example presented it and enrolled an
         // EST-profile certificate for the same name.
         using var estCa = TestCertificates.CreateCa("CN=EST CA");
         using var serverCert = TestCertificates.IssueLeaf(estCa, "CN=host.example.test",

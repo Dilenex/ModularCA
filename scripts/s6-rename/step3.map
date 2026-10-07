@@ -1,0 +1,37 @@
+# S6 step 3: the API names. The request and response members step 2 kept, renamed with every
+# reference. Routes, query parameters, anonymous members and messages are hand edits.
+#
+# Run from the repository root:
+#   dotnet run --project scripts/s6-rename -- scripts/s6-rename/step3.map
+#
+# An anonymous member that inferred its name from one of these (new { x.TenantId }) is first
+# named explicitly, so it keeps its old JSON name; those are then renamed by hand.
+
+exclude: ModularCA.Database/Migrations/
+exclude: ModularCA.Database/AuditDbContext.cs
+exclude: ModularCA.Shared/Entities/Audit
+exclude: ModularCA.Shared/Enums/AuditActionType.cs
+exclude: ModularCA.Migrate/
+exclude: tests/ModularCA.Tests/Core/AuditHashGoldenVectorTests.cs
+exclude: tests/ModularCA.Tests/Database/FrozenBaselineTests.cs
+
+P:ModularCA.API.Controllers.v1.Admin.CreateGroupRequest.TenantId => SpaceId
+P:ModularCA.API.Controllers.v1.Admin.CreateIntermediateCaRequest.TenantId => SpaceId
+P:ModularCA.API.Controllers.v1.Admin.CreateRoleAssignmentRequest.TenantId => SpaceId
+P:ModularCA.API.Controllers.v1.Admin.CreateRoleRequest.TenantId => SpaceId
+P:ModularCA.API.Controllers.v1.Admin.CreateRootCaRequest.TenantId => SpaceId
+P:ModularCA.API.Controllers.v1.Admin.CreateUserGrantRequest.TenantId => SpaceId
+P:ModularCA.API.Controllers.v1.Admin.GenerateSshCaKeyRequest.TenantId => SpaceId
+P:ModularCA.API.Controllers.v1.Admin.ServiceIdentityRequest.TenantId => SpaceId
+P:ModularCA.Core.Services.SpacePolicyChangeAppliedResult.TenantId => SpaceId
+P:ModularCA.Shared.Models.Msae.MsaeReadiness.TenantId => SpaceId
+P:ModularCA.Shared.Models.Management.UserEntityDto.ServiceScopeTenantId => ServiceScopeSpaceId
+P:ModularCA.Shared.Models.Issuance.ValidityCeilingPreflight.TenantName => SpaceName
+P:ModularCA.Shared.Models.Issuance.ValidityCeilingPreflight.TenantMaxValidityDays => SpaceMaxValidityDays
+P:ModularCA.Shared.Models.Issuance.ValidityCeilingPreflight.TenantBehavior => SpaceBehavior
+P:ModularCA.Shared.Models.Issuance.ValidityCeilingPreflight.TenantCeilingApplies => SpaceCeilingApplies
+P:ModularCA.Shared.Models.Issuance.ValidityCeilingResolution.TenantNotAfter => SpaceNotAfter
+F:ModularCA.Shared.Models.Issuance.ValidityCeilingSource.Tenant => Space
+F:ModularCA.Core.Services.Msae.Kerberos.KerberosRefusal.WrongTenant => WrongSpace
+# The retired audit chains are keyed by the id their space had; a retired chain is not a space.
+P:ModularCA.Core.Services.HashChainVerificationResult.TenantId => ChainId

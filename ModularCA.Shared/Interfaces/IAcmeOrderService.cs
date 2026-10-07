@@ -4,12 +4,15 @@ namespace ModularCA.Shared.Interfaces;
 
 public interface IAcmeOrderService
 {
-    /// <summary><paramref name="caLabel"/> plumbs the per-CA route segment so <c>ICaResolverService</c> picks the right CA context at order time.</summary>
-    Task<AcmeOrderDto> CreateAsync(Guid accountId, CreateAcmeOrderRequest request, string baseUrl, string? caLabel = null);
+    /// <summary>Creates an order at <paramref name="ca"/>, the CA the account is bound to, recording its label on the order.</summary>
+    Task<AcmeOrderDto> CreateAsync(Guid accountId, CreateAcmeOrderRequest request, string baseUrl, ModularCA.Shared.Entities.CertificateAuthorityEntity ca);
     Task<AcmeOrderDto?> GetByIdAsync(Guid orderId, string baseUrl);
     Task<List<AcmeOrderDto>> GetByAccountAsync(Guid accountId, string baseUrl);
-    /// <summary><paramref name="caLabel"/> override for finalize. Defaults to the order's stored CaLabel when null.</summary>
-    Task<AcmeOrderDto> FinalizeAsync(Guid orderId, string csrBase64Url, string baseUrl, string? caLabel = null);
+    /// <summary>
+    /// Finalizes an order at <paramref name="addressedCa"/>, the CA the account is bound to;
+    /// an order placed at any other CA is refused.
+    /// </summary>
+    Task<AcmeOrderDto> FinalizeAsync(Guid orderId, string csrBase64Url, string baseUrl, ModularCA.Shared.Entities.CertificateAuthorityEntity addressedCa);
     Task<string?> DownloadCertificateAsync(Guid orderId);
 
     /// <summary>

@@ -47,7 +47,7 @@ public class MsaeEnrollmentServiceTests
         public Task LogMsaeAsync(string operation, string? subjectDN, string? certSerial,
             string? keyAlgorithm, string? keySize, string? templateName, string? caLabel,
             string? sourceIp, bool success = true, string? errorMessage = null,
-            Guid? certificateAuthorityId = null, Guid? tenantId = null, string? callerPrincipal = null,
+            Guid? certificateAuthorityId = null, Guid? spaceId = null, string? callerPrincipal = null,
             string? realm = null, string? authMethod = null)
         {
             Entries.Add((operation, callerPrincipal, success, errorMessage, certificateAuthorityId, templateName, certSerial));
@@ -56,24 +56,24 @@ public class MsaeEnrollmentServiceTests
 
         public Task LogEstAsync(string operation, string? subjectDN, string? certSerial, string? keyAlgorithm, string? keySize,
             string? caLabel, string? sourceIp, bool success = true, string? errorMessage = null,
-            Guid? certificateAuthorityId = null, Guid? tenantId = null, string? callerPrincipal = null)
+            Guid? certificateAuthorityId = null, Guid? spaceId = null, string? callerPrincipal = null)
             => throw new NotSupportedException();
         public Task LogScepAsync(string operation, string? subjectDN, string? certSerial, string? keyAlgorithm, string? keySize,
             string? caLabel, string? transactionId, string? sourceIp, bool success = true, string? errorMessage = null,
-            Guid? certificateAuthorityId = null, Guid? tenantId = null, string? callerPrincipal = null)
+            Guid? certificateAuthorityId = null, Guid? spaceId = null, string? callerPrincipal = null)
             => throw new NotSupportedException();
         public Task LogCmpAsync(string messageType, string? subjectDN, string? certSerial, string? keyAlgorithm, string? keySize,
             string? caLabel, string? transactionId, string? revocationReason, string? sourceIp, bool success = true,
-            string? errorMessage = null, Guid? certificateAuthorityId = null, Guid? tenantId = null, string? callerPrincipal = null)
+            string? errorMessage = null, Guid? certificateAuthorityId = null, Guid? spaceId = null, string? callerPrincipal = null)
             => throw new NotSupportedException();
         public Task LogAcmeAsync(string operation, Guid? accountId, Guid? orderId, string? subjectDN, string? certSerial,
             string? identifiers, string? revocationReason, string? sourceIp, bool success = true, string? errorMessage = null,
-            string? caLabel = null, Guid? certificateAuthorityId = null, Guid? tenantId = null,
+            string? caLabel = null, Guid? certificateAuthorityId = null, Guid? spaceId = null,
             Guid? signingProfileId = null, Guid? certProfileId = null)
             => throw new NotSupportedException();
         public Task LogNetworkRequestAsync(string sourceIp, string requestPath, string httpMethod, int statusCode,
             long? responseTimeMs, string? protocol, string? caLabel, bool blocked, string? reason, string? userAgent,
-            Guid? certificateAuthorityId = null, Guid? tenantId = null)
+            Guid? certificateAuthorityId = null, Guid? spaceId = null)
             => throw new NotSupportedException();
     }
 
@@ -157,7 +157,7 @@ public class MsaeEnrollmentServiceTests
         var ca = new CertificateAuthorityEntity
         {
             Id = Guid.NewGuid(), Name = "lab", Label = "lab", IsDefault = true, IsEnabled = true,
-            CertificateId = caCertEntity.CertificateId, TenantId = Guid.NewGuid(),
+            CertificateId = caCertEntity.CertificateId, SpaceId = Guid.NewGuid(),
         };
         var signing = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "lab-signing", IssuerId = caCertEntity.CertificateId };
         var certProfile = new CertProfileEntity { Id = Guid.NewGuid(), Name = "Device", ValidityPeriodMax = "P30D" };
@@ -494,7 +494,31 @@ public class MsaeEnrollmentServiceTests
     public async Task A_template_belonging_to_another_ca_is_refused_when_the_route_names_this_one()
     {
         var h = Build();
-        var otherCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "other", Label = "other", IsEnabled = true, TenantId = h.Ca.TenantId };
+        var otherCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "other", Label = "other", IsEnabled = true, SpaceId = h.Ca.SpaceId, CertificateId = Guid.NewGuid() };
+        var otherSigning = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "other-signing", IssuerId = otherCa.CertificateId };
+        h.Db.CertificateAuthorities.Add(otherCa);
+        h.Db.SigningProfiles.Add(otherSigning);
+        h.Db.CertificateTemplates.Add(new CertificateTemplateEntity
+        {
+            Id = Guid.NewGuid(), Name = "OtherDevice", CaId = otherCa.Id,
+            CertProfileId = h.CertProfile.Id, SigningProfileId = otherSigning.Id, IsEnabled = true,
+        });
+        await h.Db.SaveChangesAsync();
+
+        await AssertRefusedCleanly(h,
+            () => h.Service.EnrollAsync(Csr(templateName: "OtherDevice"), "svc-enroll", null, caLabel: "lab"),
+            "does not belong to CA 'lab'");
+    }
+
+    /// <summary>
+    /// A template whose signing profile issues from another CA than the template's own is refused
+    /// as unavailable, so an enrolment against one CA's template cannot be signed by another CA.
+    /// </summary>
+    [Fact]
+    public async Task A_template_whose_signing_profile_issues_from_another_ca_is_refused()
+    {
+        var h = Build();
+        var otherCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "other", Label = "other", IsEnabled = true, SpaceId = h.Ca.SpaceId, CertificateId = Guid.NewGuid() };
         h.Db.CertificateAuthorities.Add(otherCa);
         h.Db.CertificateTemplates.Add(new CertificateTemplateEntity
         {
@@ -504,8 +528,8 @@ public class MsaeEnrollmentServiceTests
         await h.Db.SaveChangesAsync();
 
         await AssertRefusedCleanly(h,
-            () => h.Service.EnrollAsync(Csr(templateName: "OtherDevice"), "svc-enroll", null, caLabel: "lab"),
-            "does not belong to CA 'lab'");
+            () => h.Service.EnrollAsync(Csr(templateName: "OtherDevice"), "svc-enroll", null, null),
+            "Certificate template 'OtherDevice' is not available");
     }
 
     [Fact]
@@ -645,7 +669,7 @@ public class MsaeEnrollmentServiceTests
         Assert.Empty(h.Audit.Entries);
     }
 
-    /// <summary>A caller from an accepted ticket of a forest bound to the lab tenant, with no keys (none are needed past acceptance).</summary>
+    /// <summary>A caller from an accepted ticket of a forest bound to the lab space, with no keys (none are needed past acceptance).</summary>
     private static KerberosCaller KerberosCallerFor(string principal) => new(
         principal, "CORP.LAB.TEST", principal.EndsWith('$'),
         new KerberosRealmKeys("CORP.LAB.TEST", Guid.NewGuid(), "HTTP/ca.lab.test", "corp.lab.test", Guid.NewGuid(), "svc-enroll", true, true, []),

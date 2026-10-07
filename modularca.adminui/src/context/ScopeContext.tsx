@@ -1,10 +1,9 @@
-import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import type { Capability } from '@shared/generated';
 import { useAuth } from './AuthContext';
-import { can, canAnywhere, canInTenant, consoleCas, tenantsOf, type CaCapabilities, type TenantOption } from '../authz';
+import { consoleCas, spacesOf, type CaCapabilities, type SpaceOption } from '../authz';
 import {
-    ALL_SCOPE, MINE_SCOPE, canScopeToAll, defaultScope, parseScope, sameScope, scopeCaId, withScope, type Scope,
+    ALL_SCOPE, MINE_SCOPE, canScopeToAll, defaultScope, gateAllows, parseScope, readStoredScope, rewriteLegacyScope, sameScope, scopeCaId, withScope, type Scope,
 } from '../scope';
 import type { Gate } from '../gates';
 import { PORTAL } from '../portal';
@@ -12,26 +11,27 @@ import { PORTAL } from '../portal';
 /**
  * The console's selected CA scope and the checks that depend on it.
  *
- * The scope is read from the URL (`?ca=<label>` / `?scope=…`), then from the browser's
- * remembered choice, then from a default derived from the caller's capabilities. Changing it
- * writes the URL and the remembered choice. Under the `/user` portal the scope is always
- * `mine`; the switcher there offers the way over to the console.
+ * The scope is read from the URL (`?ca=<label>` / `?space=<slug>` / `?scope=…`), then from the
+ * browser's remembered choice, then from a default derived from the caller's capabilities.
+ * Changing it writes the URL and the remembered choice. Under the `/user` portal the scope is
+ * always `mine`; the switcher there offers the way over to the console. A pre-0.4.0
+ * `?tenant=<slug>`, in the URL or remembered, is rewritten to `?space=<slug>`.
  */
 export interface ScopeContextValue {
     scope: Scope;
     setScope: (scope: Scope) => void;
     /** The `caId` to send with scoped list queries, or `null` for no single-CA filter. */
     caId: string | null;
-    /** The `tenantId` a tenant or CA scope is confined to, or `null`. */
-    tenantId: string | null;
-    /** Whether a row belonging to `rowCaId` is inside the scope: the CA, any CA of the tenant, or everything under "all". */
+    /** The `spaceId` a space scope is confined to, or `null`. */
+    spaceId: string | null;
+    /** Whether a row belonging to `rowCaId` is inside the scope: the CA, any CA of the space, or everything under "all". */
     inScope: (rowCaId: string | null | undefined) => boolean;
-    /** `?caId=…` / `?tenantId=…` (with `&` when `hasQuery`) for the scope, or an empty string. */
+    /** `?caId=…` / `?spaceId=…` (with `&` when `hasQuery`) for the scope, or an empty string. */
     caQuery: (hasQuery?: boolean) => string;
     /** The CAs the caller may scope to. */
     cas: CaCapabilities[];
-    /** The tenants the caller may scope to. */
-    tenants: TenantOption[];
+    /** The spaces the caller may scope to. */
+    spaces: SpaceOption[];
     /** Whether "all CAs" is an offered scope. */
     canScopeToAll: boolean;
     /**
@@ -52,11 +52,11 @@ const ScopeContext = createContext<ScopeContextValue>({
     scope: ALL_SCOPE,
     setScope: () => { },
     caId: null,
-    tenantId: null,
+    spaceId: null,
     inScope: () => true,
     caQuery: () => '',
     cas: [],
-    tenants: [],
+    spaces: [],
     canScopeToAll: false,
     allows: () => false,
     linkScope: null,
@@ -67,7 +67,7 @@ export const useScope = () => useContext(ScopeContext);
 const storageKey = (username: string) => `modca:scope:${username}`;
 
 function readStored(username: string): string | null {
-    try { return localStorage.getItem(storageKey(username)); } catch { return null; }
+    try { return readStoredScope(localStorage, storageKey(username)); } catch { return null; }
 }
 
 function writeStored(username: string, params: URLSearchParams): void {
@@ -76,8 +76,16 @@ function writeStored(username: string, params: URLSearchParams): void {
 
 export const ScopeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const { user, capabilities, loading } = useAuth();
-    const [searchParams, setSearchParams] = useSearchParams();
+    const [rawSearchParams, setSearchParams] = useSearchParams();
     const username = user?.username ?? '';
+
+    // A bookmark from before 0.4.0 says ?tenant=<slug>. Read it as ?space= now and rewrite the
+    // URL in place, so history keeps one entry. Remove in 0.5.
+    const legacy = useMemo(() => rewriteLegacyScope(rawSearchParams), [rawSearchParams]);
+    const searchParams = legacy ?? rawSearchParams;
+    useEffect(() => {
+        if (legacy) setSearchParams(legacy, { replace: true });
+    }, [legacy, setSearchParams]);
 
     // The scope the user usually works in: their last explicit choice, else a default from
     // their capabilities. A scope named in the URL applies to this visit only; it is never
@@ -118,47 +126,37 @@ export const ScopeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         };
     }, [loading, fromUrl, usual, username, searchParams, setSearchParams]);
 
-    const allows = useCallback((gate: Gate | undefined): boolean => {
-        if (!gate) return true;
-        const capability: Capability = gate.requires;
-        if (!gate.scoped) return can(capabilities, capability);
-        switch (scope.kind) {
-            case 'ca': return can(capabilities, capability, scope.caId);
-            case 'tenant': return canInTenant(capabilities, capability, scope.tenantId);
-            case 'all': return canAnywhere(capabilities, capability);
-            case 'mine': return false;
-        }
-    }, [capabilities, scope]);
+    const allows = useCallback((gate: Gate | undefined): boolean => gateAllows(capabilities, gate, scope), [capabilities, scope]);
 
     const caId = scopeCaId(scope);
-    const tenantId = scope.kind === 'tenant' ? scope.tenantId : null;
-    // The CAs a tenant scope covers: the ones the caller can administer in that tenant.
-    const tenantCaIds = useMemo(() => new Set(scope.kind === 'tenant' ? consoleCas(capabilities).filter(c => c.tenantId === scope.tenantId).map(c => c.id) : []), [scope, capabilities]);
+    const spaceId = scope.kind === 'space' ? scope.spaceId : null;
+    // The CAs a space scope covers: the ones the caller can administer in that space.
+    const spaceCaIds = useMemo(() => new Set(scope.kind === 'space' ? consoleCas(capabilities).filter(c => c.spaceId === scope.spaceId).map(c => c.id) : []), [scope, capabilities]);
     const inScope = useCallback((rowCaId: string | null | undefined) => {
         if (caId) return rowCaId === caId;
-        if (tenantId) return !!rowCaId && tenantCaIds.has(rowCaId);
+        if (spaceId) return !!rowCaId && spaceCaIds.has(rowCaId);
         return true;
-    }, [caId, tenantId, tenantCaIds]);
+    }, [caId, spaceId, spaceCaIds]);
     const caQuery = useCallback((hasQuery = false) => {
         const sep = hasQuery ? '&' : '?';
         if (caId) return `${sep}caId=${encodeURIComponent(caId)}`;
-        if (tenantId) return `${sep}tenantId=${encodeURIComponent(tenantId)}`;
+        if (spaceId) return `${sep}spaceId=${encodeURIComponent(spaceId)}`;
         return '';
-    }, [caId, tenantId]);
+    }, [caId, spaceId]);
 
     const value = useMemo<ScopeContextValue>(() => ({
         scope,
         setScope,
         caId,
-        tenantId,
+        spaceId,
         inScope,
         caQuery,
         cas: consoleCas(capabilities),
-        tenants: tenantsOf(capabilities),
+        spaces: spacesOf(capabilities),
         canScopeToAll: canScopeToAll(capabilities),
         allows,
         linkScope,
-    }), [scope, setScope, caId, tenantId, inScope, caQuery, capabilities, allows, linkScope]);
+    }), [scope, setScope, caId, spaceId, inScope, caQuery, capabilities, allows, linkScope]);
 
     return <ScopeContext.Provider value={value}>{children}</ScopeContext.Provider>;
 };

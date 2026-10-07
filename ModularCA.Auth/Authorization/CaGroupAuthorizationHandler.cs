@@ -110,21 +110,25 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
             return;
         }
 
-        // Some routes name a tenant rather than a CA: a key ceremony belongs to the tenant it
-        // will create a CA in, and there is no CA yet. A tenant-wide holder of the capability
-        // passes; a per-CA holder inside the tenant does not.
-        var tenantId = await ResolveTenantIdFromRouteAsync();
-        if (tenantId != null)
+        // Some routes name a space rather than a CA: a key ceremony belongs to the space it
+        // will create a CA in, and there is no CA yet. A space-wide holder of the capability
+        // passes; a per-CA holder inside the space does not.
+        // An instance ceremony (no space) belongs to the instance: a system-scoped holder passes,
+        // as one passed on the former system tenant's ceremonies; anyone else falls through to the
+        // system-only rules below, as a ceremony without a space always did.
+        var (ceremonyFound, spaceId) = await ResolveSpaceIdFromRouteAsync();
+        if (ceremonyFound)
         {
-            if (await _authService.HasTenantCapabilityAsync(userId.Value, tenantId.Value, requirement.RequiredCapability))
+            if (await _authService.HasScopeCapabilityAsync(userId.Value, spaceId, requirement.RequiredCapability))
             {
                 context.Succeed(requirement);
+                return;
             }
-            else
+            if (spaceId != null)
             {
                 LogAuthorizationDenied(userId.Value, username, requirement.RequiredCapability, context);
+                return;
             }
-            return;
         }
 
         // A route identifier that matched several certificates is not a listing endpoint — it is a
@@ -144,7 +148,7 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
 
         // No CA id in the route. For a READ this is a listing/cross-CA endpoint
         // (/admin/certificates, /admin/authorities) whose handler filters results by the caller's
-        // own tenant/CA access, so checking "holds this capability on any CA" is adequate.
+        // own space/CA access, so checking "holds this capability on any CA" is adequate.
         //
         // For a MUTATION it is not. A state-changing CA-scoped request whose target cannot be
         // pinned to a CA is precisely the escalation this handler exists to prevent: the operator
@@ -152,7 +156,7 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
         // the target is then taken from the request body. POST /admin/users/{id}/reset-password is
         // the concrete case — it is CaAdmin, its only route value is {id}, and it returns the new
         // plaintext password in the response. A single-CA operator could reset a system
-        // administrator's password in a different tenant.
+        // administrator's password in a different space.
         //
         // Note the method split is a containment measure, not the real fix. An endpoint that is
         // genuinely global should carry Policy = "SystemOperator"/"SystemAdmin"
@@ -224,12 +228,12 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
     /// <list type="number">
     ///   <item><c>caId</c> (explicit CA primary key)</item>
     ///   <item><c>caKeyId</c> (SSH CA key → parent CA)</item>
-    ///   <item><c>label</c> (per-tenant URL slug)</item>
+    ///   <item><c>label</c> (per-space URL slug)</item>
     ///   <item><c>caCertificateId</c> (CA certificate → CA record)</item>
     ///   <item><c>certId</c> (issued cert → signing profile → CA)</item>
     ///   <item><c>serial</c> (issued cert serial → signing profile → CA)</item>
     ///   <item><c>csrId</c> (CSR → signing profile → CA)</item>
-    ///   <item><c>tokenId</c> (enrollment token → stored tenant/CA)</item>
+    ///   <item><c>tokenId</c> (enrollment token → stored space/CA)</item>
     ///   <item><c>id</c> + path hint (profiles, requests, enrollment tokens, whitelists, CRL schedules, SSH CA keys, SSH profiles and templates)</item>
     /// </list>
     /// The result is cached on
@@ -329,7 +333,6 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
             {
                 var cp = await _db.CertProfiles
                     .AsNoTracking()
-                    .IgnoreQueryFilters()
                     .FirstOrDefaultAsync(p => p.Id == idGuid);
                 if (cp?.CertificateAuthorityId != null) return cp.CertificateAuthorityId;
             }
@@ -410,29 +413,30 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
     }
 
     /// <summary>
-    /// Attempts to resolve a tenant, rather than a CA, from the route: currently the
+    /// Attempts to resolve a space, rather than a CA, from the route: currently the
     /// <c>{id}</c> of a key ceremony (<c>/admin/ceremonies/{id}/...</c>), which carries the
-    /// tenant it was initiated for. Only consulted when no CA could be resolved. A ceremony
-    /// with no tenant (a system-level operation) resolves to nothing, so the caller falls
-    /// through to the system-only rules.
+    /// space it was initiated for. Only consulted when no CA could be resolved. Found is false
+    /// when the route names no ceremony; a found ceremony with no space is an instance
+    /// ceremony, held to system scope.
     /// </summary>
-    private async Task<Guid?> ResolveTenantIdFromRouteAsync()
+    private async Task<(bool Found, Guid? SpaceId)> ResolveSpaceIdFromRouteAsync()
     {
         var httpContext = _httpContextAccessor.HttpContext;
         if (httpContext == null)
-            return null;
+            return (false, null);
 
         var path = httpContext.Request.Path.Value ?? "";
         if (!path.Contains("/ceremonies/", StringComparison.OrdinalIgnoreCase))
-            return null;
+            return (false, null);
         if (!TryGetGuid(httpContext.Request.RouteValues, "id", out var ceremonyId))
-            return null;
+            return (false, null);
 
-        return await _db.KeyCeremonies
+        var ceremony = await _db.KeyCeremonies
             .AsNoTracking()
             .Where(c => c.Id == ceremonyId)
-            .Select(c => c.TenantId)
+            .Select(c => new { c.SpaceId })
             .FirstOrDefaultAsync();
+        return ceremony == null ? (false, null) : (true, ceremony.SpaceId);
     }
 
     private async Task<Guid?> ResolveCaFromCertIdAsync(Guid certId)

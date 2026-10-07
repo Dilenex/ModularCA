@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { apiGet, apiGetAllPages } from '../../api/client';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { Link } from 'react-router-dom';
+import { capitalize, expiryPhrase, lifecycleTone, toneTextClass } from '../certLifecycle';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -78,6 +79,7 @@ const Dashboard: React.FC = () => {
         return days <= 30;
     });
     const revokedCerts = certificates.filter(c => c.revoked);
+    const expiringNotReplaced = expiringSoon.filter(c => !c.replaced);
 
     const recentRequests = requests.slice(0, 5);
 
@@ -87,10 +89,10 @@ const Dashboard: React.FC = () => {
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             {/* Welcome */}
             <div>
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+                <h1 className="text-xl font-semibold text-ink">
                     {greetingName ? `Welcome, ${greetingName}` : 'Welcome'}
                 </h1>
-                <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                <p className="text-sm text-ink-muted mt-1">
                     Your certificate management dashboard.
                 </p>
             </div>
@@ -99,36 +101,39 @@ const Dashboard: React.FC = () => {
             <div className="flex flex-wrap gap-3">
                 <Link
                     to="/request"
-                    className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                    className="px-4 py-2 text-sm font-medium bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors"
                 >
                     Request Certificate
                 </Link>
                 <Link
                     to="/certificates"
-                    className="px-4 py-2 text-sm font-medium bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                    className="px-4 py-2 text-sm font-medium bg-sunken text-ink rounded hover:bg-hover transition-colors"
                 >
                     View My Certificates
                 </Link>
             </div>
 
             {/* Statistics Cards */}
-            {loading && <p className="text-sm text-gray-600 dark:text-gray-400">Loading...</p>}
+            {loading && <p className="text-sm text-ink-muted">Loading...</p>}
 
             {!loadingCerts && !errorCerts && (
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4">
-                        <p className="text-xs text-gray-600 uppercase tracking-wider">Active Certificates</p>
-                        <p className="text-2xl font-bold text-green-500 mt-1">{activeCerts.length}</p>
+                    <div className="bg-raised border border-line rounded-lg p-4">
+                        <p className="text-xs text-ink-muted uppercase tracking-wider">Active Certificates</p>
+                        <p className="text-2xl font-bold text-ok mt-1">{activeCerts.length}</p>
                     </div>
-                    <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4">
-                        <p className="text-xs text-gray-600 uppercase tracking-wider">Expiring Within 30 Days</p>
-                        <p className={`text-2xl font-bold mt-1 ${expiringSoon.length > 0 ? 'text-yellow-500' : 'text-gray-600'}`}>
+                    <div className="bg-raised border border-line rounded-lg p-4">
+                        <p className="text-xs text-ink-muted uppercase tracking-wider">Expiring Within 30 Days</p>
+                        <p className={`text-2xl font-bold mt-1 ${expiringNotReplaced.length > 0 ? 'text-warn' : 'text-ink-muted'}`}>
                             {expiringSoon.length}
                         </p>
+                        {expiringSoon.length > expiringNotReplaced.length && (
+                            <p className="text-xs text-ink-muted mt-0.5">{expiringSoon.length - expiringNotReplaced.length} already replaced</p>
+                        )}
                     </div>
-                    <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-4">
-                        <p className="text-xs text-gray-600 uppercase tracking-wider">Revoked</p>
-                        <p className={`text-2xl font-bold mt-1 ${revokedCerts.length > 0 ? 'text-red-500' : 'text-gray-600'}`}>
+                    <div className="bg-raised border border-line rounded-lg p-4">
+                        <p className="text-xs text-ink-muted uppercase tracking-wider">Revoked</p>
+                        <p className={`text-2xl font-bold mt-1 ${revokedCerts.length > 0 ? 'text-crit' : 'text-ink-muted'}`}>
                             {revokedCerts.length}
                         </p>
                     </div>
@@ -136,26 +141,27 @@ const Dashboard: React.FC = () => {
             )}
 
             {errorCerts && (
-                <p className="text-sm text-red-800 dark:text-red-400">Failed to load certificates: {errorCerts}</p>
+                <p className="text-sm text-crit">Failed to load certificates: {errorCerts}</p>
             )}
 
             {/* Expiring Soon List */}
             {!loadingCerts && !errorCerts && expiringSoon.length > 0 && (
                 <div>
-                    <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-3">Expiring Soon</h2>
-                    <div className="bg-gray-100 dark:bg-gray-800 border border-yellow-300 dark:border-yellow-600/50 rounded-lg overflow-hidden">
+                    <h2 className="text-lg font-semibold text-ink mb-3">Expiring Soon</h2>
+                    <div className={`bg-raised border rounded-lg overflow-hidden ${expiringNotReplaced.length > 0 ? 'border-warn/40' : 'border-line'}`}>
                         {expiringSoon.map((cert) => {
-                            const days = Math.ceil((new Date(cert.notAfter).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+                            const tone = lifecycleTone(cert.notAfter, !!cert.replaced);
                             return (
                                 <div
                                     key={cert.serialNumber}
-                                    className="px-4 py-3 flex items-center gap-3 border-b border-gray-300 dark:border-gray-700 last:border-b-0"
+                                    className="px-4 py-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line last:border-b-0"
                                 >
-                                    <StatusBadge status="expired" label={`${days}d left`} />
-                                    <span className="text-sm text-gray-900 dark:text-white truncate flex-1">
+                                    <span className={`text-xs font-medium whitespace-nowrap ${toneTextClass(tone)}`}>{capitalize(expiryPhrase(cert.notAfter))}</span>
+                                    <span className="text-xs text-ink-muted whitespace-nowrap">{cert.replaced ? 'Replaced' : 'Not replaced'}</span>
+                                    <span className="text-sm text-ink truncate flex-1">
                                         {cert.subjectDN || cert.serialNumber}
                                     </span>
-                                    <span className="text-xs text-gray-600 flex-shrink-0">
+                                    <span className="text-xs text-ink-muted flex-shrink-0">
                                         Expires: {formatDate(cert.notAfter)}
                                     </span>
                                 </div>
@@ -168,34 +174,34 @@ const Dashboard: React.FC = () => {
             {/* Recent Requests */}
             <div>
                 <div className="flex items-center justify-between mb-3">
-                    <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Recent Requests</h2>
-                    <Link to="/requests" className="text-xs text-blue-800 dark:text-blue-400 hover:underline">View all</Link>
+                    <h2 className="text-lg font-semibold text-ink">Recent Requests</h2>
+                    <Link to="/requests" className="text-xs text-accent-ink hover:underline">View all</Link>
                 </div>
 
-                {loadingRequests && <p className="text-sm text-gray-600 dark:text-gray-400">Loading...</p>}
-                {errorRequests && <p className="text-sm text-red-800 dark:text-red-400">Failed to load requests: {errorRequests}</p>}
+                {loadingRequests && <p className="text-sm text-ink-muted">Loading...</p>}
+                {errorRequests && <p className="text-sm text-crit">Failed to load requests: {errorRequests}</p>}
 
                 {!loadingRequests && !errorRequests && recentRequests.length === 0 && (
-                    <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-8 text-center">
-                        <p className="text-gray-600">No certificate requests yet.</p>
-                        <Link to="/request" className="text-blue-800 dark:text-blue-400 text-sm hover:underline mt-2 inline-block">
+                    <div className="bg-raised border border-line rounded-lg p-8 text-center">
+                        <p className="text-ink-muted">No certificate requests yet.</p>
+                        <Link to="/request" className="text-accent-ink text-sm hover:underline mt-2 inline-block">
                             Submit your first request
                         </Link>
                     </div>
                 )}
 
                 {!loadingRequests && !errorRequests && recentRequests.length > 0 && (
-                    <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
+                    <div className="bg-raised border border-line rounded-lg overflow-hidden">
                         {recentRequests.map((req) => (
                             <div
                                 key={req.id}
-                                className="px-4 py-3 flex items-center gap-3 border-b border-gray-300 dark:border-gray-700 last:border-b-0"
+                                className="px-4 py-3 flex items-center gap-3 border-b border-line last:border-b-0"
                             >
                                 <StatusBadge status={requestStatusType(req.status)} label={req.status} />
-                                <span className="text-sm text-gray-900 dark:text-white truncate flex-1">
+                                <span className="text-sm text-ink truncate flex-1">
                                     {req.subjectDN || '(no subject)'}
                                 </span>
-                                <span className="text-xs text-gray-600 flex-shrink-0">
+                                <span className="text-xs text-ink-muted flex-shrink-0">
                                     {formatDate(req.submittedAt)}
                                 </span>
                             </div>

@@ -28,7 +28,7 @@ public class SchemaConstraintTests
 
     private static IEnumerable<string[]> UniqueIndexes<T>() =>
         Entity<T>().GetIndexes()
-            .Where(i => i.IsUnique)
+            .Where(i => i.IsUnique && i.GetFilter() == null)
             .Select(i => i.Properties.Select(p => p.Name).ToArray());
 
     private static bool HasUniqueIndexOver<T>(params string[] columns) =>
@@ -75,32 +75,50 @@ public class SchemaConstraintTests
         Assert.Equal(DeleteBehavior.Restrict, crlToConfig.DeleteBehavior);
     }
 
-    // ── Tenant scoping ─────────────────────────────────────────────────────────
+    // ── Naming and space foreign keys ────────────────────────────────────────
 
-    [Fact]
-    public void Ca_names_and_labels_are_both_scoped_to_the_tenant()
+    /// <summary>
+    /// From 0.4.0 S4 a CA's label and name are unique across the instance over all rows, deleted
+    /// ones included (no filter): the label is the path of the CA's CRL, OCSP, AIA and enrolment URLs.
+    /// The per-space and instance-only indexes are gone.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(CertificateAuthorityEntity.Label))]
+    [InlineData(nameof(CertificateAuthorityEntity.Name))]
+    public void Ca_names_and_labels_are_unique_across_the_instance(string column)
     {
-        // Label was already composite; Name beside it was left global, so two tenants could each
-        // have an "issuing-ca" label but not both name a CA "Issuing CA". A global unique name is
-        // also a cross-tenant oracle: you learn a name is taken by failing to take it.
-        Assert.True(HasUniqueIndexOver<CertificateAuthorityEntity>(nameof(CertificateAuthorityEntity.TenantId), nameof(CertificateAuthorityEntity.Name)));
-        Assert.True(HasUniqueIndexOver<CertificateAuthorityEntity>(nameof(CertificateAuthorityEntity.TenantId), nameof(CertificateAuthorityEntity.Label)));
+        var indexes = Entity<CertificateAuthorityEntity>().GetIndexes().Where(i => i.Properties.Any(p => p.Name == column)).ToList();
+        var index = Assert.Single(indexes);
+        Assert.True(index.IsUnique);
+        Assert.Equal([column], index.Properties.Select(p => p.Name));
+        Assert.Null(index.GetFilter());
+    }
 
-        Assert.False(HasUniqueIndexOver<CertificateAuthorityEntity>(nameof(CertificateAuthorityEntity.Name)),
-            "a globally unique CA Name index must not exist");
+    [Theory]
+    [InlineData(typeof(KerberosRealmEntity))]
+    [InlineData(typeof(RoleEntity))]
+    [InlineData(typeof(RoleAssignmentEntity))]
+    [InlineData(typeof(UserCapabilityGrantEntity))]
+    [InlineData(typeof(CertificateAuthorityEntity))]
+    public void Deleting_a_space_is_restricted_never_cascaded_or_nulled(Type entity)
+    {
+        // A null space means instance scope: SET NULL on a deleted space would promote its grants
+        // to the instance, and CASCADE would take a realm or a CA with it.
+        var fk = Assert.Single(Model().FindEntityType(entity)!.GetForeignKeys(), f => f.PrincipalEntityType.ClrType == typeof(SpaceEntity));
+        Assert.Equal(DeleteBehavior.Restrict, fk.DeleteBehavior);
     }
 
     [Fact]
     public void Profiles_groups_and_roles_are_still_globally_unique_on_purpose()
     {
-        // These three carry a TenantId and "should" be per-tenant, but the CODE resolves them by
+        // These three carry a SpaceId and "should" be per-space, but the CODE resolves them by
         // bare name — CaCreationService looks up "Main CA Certificate Profile", bootstrap looks
         // up "system-super", RoleAssignmentHelper looks up a role template. The unique index is
         // what makes those lookups deterministic.
         //
         // This test exists so relaxing the index is a deliberate act with a failing test attached,
-        // not a tidy-up. Doing it without first making those lookups tenant-aware would trade an
-        // inconvenience for a cross-tenant resolution bug. If you are here because this test
+        // not a tidy-up. Doing it without first making those lookups space-aware would trade an
+        // inconvenience for a cross-space resolution bug. If you are here because this test
         // failed: fix the lookups, then change this.
         Assert.True(HasUniqueIndexOver<CertProfileEntity>(nameof(CertProfileEntity.Name)));
         Assert.True(HasUniqueIndexOver<CaGroupEntity>(nameof(CaGroupEntity.Name)));

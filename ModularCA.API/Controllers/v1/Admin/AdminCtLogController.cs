@@ -14,8 +14,8 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
 /// Admin endpoints for managing Certificate Transparency log configurations.
 /// CT log URL + public key are system-wide artifacts — corrupting them silently breaks
-/// SCT embedding for every tenant — so mutations require <c>SystemOperator</c>, not the
-/// tenant-scoped <c>CaOperator</c>.
+/// SCT embedding for every space — so mutations require <c>SystemOperator</c>, not the
+/// space-scoped <c>CaOperator</c>.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/ct-logs")]
@@ -104,6 +104,36 @@ public class AdminCtLogController(
         return NoContent();
     }
 }
+
+/// <summary>
+/// The CT log catalog as profile editors need it to pick a cert profile's logs: id, name, URL
+/// and whether the log is enabled, nothing else (no public key). A separate controller because
+/// <see cref="AdminCtLogController"/>'s class-level SystemOperator policy would stack on this one.
+/// </summary>
+[ApiController]
+[Route("api/v1/admin/ct-logs")]
+[NodeRole(ProcessRole.Control)]
+public class AdminCtLogOptionsController(ModularCADbContext db) : ControllerBase
+{
+    /// <summary>
+    /// Lists every CT log as <c>{ id, name, url, enabled }</c>, ordered by name. Open to anyone
+    /// who may edit a cert profile (CaOperator: cert.revoke on some CA, the capability profile
+    /// create and update demand), so the cert profile form can offer the logs by name.
+    /// </summary>
+    [HttpGet("options")]
+    [Authorize(Policy = "CaOperator")]
+    public async Task<IActionResult> GetOptions()
+    {
+        var logs = await db.CtLogs.AsNoTracking()
+            .OrderBy(l => l.Name)
+            .Select(l => new CtLogOption(l.Id, l.Name, l.Url, l.IsEnabled))
+            .ToListAsync();
+        return Ok(logs);
+    }
+}
+
+/// <summary>One CT log as <see cref="AdminCtLogOptionsController.GetOptions"/> returns it.</summary>
+public record CtLogOption(Guid Id, string Name, string Url, bool Enabled);
 
 public class CreateCtLogRequest
 {

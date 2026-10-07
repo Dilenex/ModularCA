@@ -7,13 +7,33 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.20" />
-    <PackageReference Include="Pomelo.EntityFrameworkCore.MySql" Version="9.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.12" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+    <!-- Explicit Relational pin matching the EF Core version the rest of the solution uses.
+         Npgsql.EntityFrameworkCore.PostgreSQL 10.0.3 declares a minimum of EF Core 10.0.4, so a
+         project that names only the provider resolves Relational 10.0.4 and MSBuild reports an
+         unresolvable MSB3277 conflict against the 10.0.12 the API pulls in. Same reason the
+         previous provider needed this pin, different numbers. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.12" />
     <PackageReference Include="NCrontab.Signed" Version="3.4.0" />
+    <!-- Design-time only, and never shipped (PrivateAssets="all"). `dotnet ef migrations add`
+         requires the Design package in the STARTUP project, and CONTRIBUTING.md documents
+         running it with this project as both target and startup:
+             dotnet ef migrations add (Name), with this project named by the project option.
+         Without this reference that documented command fails with "your startup project
+         doesn't reference Microsoft.EntityFrameworkCore.Design". -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\ModularCA.Shared\ModularCA.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Sql\adopt-ownership.sql" LogicalName="ModularCA.Database.Sql.adopt-ownership.sql" />
   </ItemGroup>
 
 </Project>

@@ -54,12 +54,17 @@ public static class WireMapping
     {
         Caller = context.Caller ?? string.Empty,
         Purpose = context.Purpose.ToString(),
-        TenantId = ToWire(context.TenantId),
+        SpaceId = ToWire(context.SpaceId),
         CaId = ToWire(context.CaId),
         CeremonyId = ToWire(context.CeremonyId),
+        InstanceScope = context.InstanceScope,
     };
 
-    /// <summary>Reads a context from the wire; an unknown purpose or a missing message is an argument error.</summary>
+    /// <summary>
+    /// Reads a context from the wire; an unknown purpose or a missing message is an argument
+    /// error. The instance marker crosses only as sent: an omitted one is false, so an empty
+    /// space id from an older client is an unstated scope, not the instance.
+    /// </summary>
     public static Shared.Signing.SigningContext FromWire(SigningContext? context)
     {
         if (context == null) throw new ArgumentException("The signing context is missing.", "context");
@@ -68,9 +73,12 @@ public static class WireMapping
         return new Shared.Signing.SigningContext(
             context.Caller,
             purpose,
-            ToNullableGuid(context.TenantId, "context.tenant_id"),
+            ToNullableGuid(context.SpaceId, "context.space_id"),
             ToNullableGuid(context.CaId, "context.ca_id"),
-            ToNullableGuid(context.CeremonyId, "context.ceremony_id"));
+            ToNullableGuid(context.CeremonyId, "context.ceremony_id"))
+        {
+            InstanceScope = context.InstanceScope,
+        };
     }
 
     /// <summary>Maps a key spec to the wire.</summary>
@@ -134,7 +142,7 @@ public static class WireMapping
         PublicKeyDer = ByteString.CopyFrom(info.PublicKeyDer),
         Kind = info.Kind.ToString(),
         CaId = ToWire(info.CaId),
-        TenantId = ToWire(info.TenantId),
+        SpaceId = ToWire(info.SpaceId),
         Backend = info.Backend,
     };
 
@@ -148,9 +156,18 @@ public static class WireMapping
             info.PublicKeyDer.ToByteArray(),
             kind,
             ToNullableGuid(info.CaId, "keys.ca_id"),
-            ToNullableGuid(info.TenantId, "keys.tenant_id"),
+            ToNullableGuid(info.SpaceId, "keys.space_id"),
             info.Backend);
     }
+
+    /// <summary>Renders a secret kind for the wire: the enum member's name, as purposes cross.</summary>
+    public static string ToWire(SecretKind kind) => kind.ToString();
+
+    /// <summary>Reads a secret kind from the wire; an unknown kind is an argument error rather than a guess.</summary>
+    public static SecretKind ToSecretKind(string value)
+        => Enum.TryParse<SecretKind>(value, ignoreCase: false, out var kind) && Enum.IsDefined(kind)
+            ? kind
+            : throw new ArgumentException($"'{value}' is not a secret kind.", "kind");
 
     /// <summary>Maps a health report to the wire.</summary>
     public static HealthResponse ToWire(SignerHealth health) => new()

@@ -15,9 +15,12 @@ import { InlineNotice } from './InlineNotice';
 import type { NoticeInput } from '../notifications/notice';
 import { useNavigate } from 'react-router-dom';
 import { useTablePrefs } from '../context/TablePrefsContext';
+import { renameColumnKeys } from '../tablePrefsKeys';
 import { Chevron } from './Chevron';
 import { Drawer } from './Drawer';
 import { sortRows } from '../tableSort';
+import { findRows } from '../tableFind';
+import { columnTrack } from '../tableTracks';
 import type { SortSpec } from '../tableQuery';
 
 /* ── public API ───────────────────────────────────────────────────────────── */
@@ -65,6 +68,8 @@ export interface DataTableBulkAction<Row> {
 export interface DataTableProps<Row> {
     /** Stable id used for persistence, e.g. "whitelists". */
     tableId: string;
+    /** Column keys renamed since a layout was stored, old to new, so stored widths and hidden flags carry over. */
+    renamedColumns?: Record<string, string>;
     columns: DataTableColumn<Row>[];
     rows: Row[];
     rowKey: (row: Row) => string;
@@ -73,6 +78,11 @@ export interface DataTableProps<Row> {
     error?: NoticeInput | null;
     empty?: React.ReactNode;
     title?: string;
+    /** Offer a find box that narrows the rows already loaded, by the text of every column.
+     *  Not for a table whose parent pages or filters on the server. */
+    findable?: boolean;
+    /** The table's own "+ New" button. Sits at the right end of the header's second line. */
+    toolbarAction?: React.ReactNode;
     /** Show selection checkboxes + bulk-action toolbar. */
     selectable?: boolean;
     bulkActions?: DataTableBulkAction<Row>[];
@@ -140,7 +150,7 @@ const EMPTY_SET: Set<string> = new Set();
 
 /* ── component ────────────────────────────────────────────────────────────── */
 export function DataTable<Row>({
-    tableId, columns, rows, rowKey, loading, error, empty, title, onRowClick: onRowOpen,
+    tableId, renamedColumns, columns, rows: loadedRows, rowKey, loading, error, empty, title, findable, toolbarAction, onRowClick: onRowOpen,
     selectable, bulkActions, exportFileName, disableExport, renderExpanded,
     renderDrawer, drawerTitle, detailPath,
     selectedKeys, onSelectedKeysChange, totalCount, allMatchingSelected,
@@ -148,6 +158,10 @@ export function DataTable<Row>({
     sort: sortProp, onSortChange, page, pageSize, totalPages: totalPagesProp, onPageChange, pageSizeOptions, onPageSizeChange,
 }: DataTableProps<Row>) {
     const navigate = useNavigate();
+
+    const [typed, setTyped] = useState('');
+    const rows = useMemo(() => (findable ? findRows(loadedRows, columns, typed) : loadedRows), [findable, loadedRows, columns, typed]);
+    const narrowed = rows.length !== loadedRows.length;
 
     /* sorting — the parent's when it re-queries (server mode); otherwise the table's own */
     const [internalSort, setInternalSort] = useState<SortSpec | null>(sortProp ?? null);
@@ -165,7 +179,8 @@ export function DataTable<Row>({
     // A leading "open" column appears when a row can be expanded, peeked (drawer), or navigated.
     const hasRowOpen = expandable || !!renderDrawer || !!detailPath || !!onRowOpen;
     const [drawerRow, setDrawerRow] = useState<Row | null>(null);
-    const [prefs, setPrefs] = useTablePrefs<Prefs>(`table:${tableId}`, { widths: {}, hidden: [] });
+    const [storedPrefs, setPrefs] = useTablePrefs<Prefs>(`table:${tableId}`, { widths: {}, hidden: [] });
+    const prefs = useMemo(() => renameColumnKeys(storedPrefs, renamedColumns), [storedPrefs, renamedColumns]);
     const prefsRef = useRef(prefs); prefsRef.current = prefs;
 
     const visibleCols = useMemo(() => columns.filter((c) => !prefs.hidden.includes(c.key)), [columns, prefs.hidden]);
@@ -263,11 +278,12 @@ export function DataTable<Row>({
         return prefs.widths[col.key];
     };
 
-    // A column track: filler → minmax(min, 1fr) so it expands to fill; others → a fixed px width
-    // (resized value, else default). Resizing changes only the dragged column; the filler absorbs
-    // the slack and horizontal scroll kicks in past `tableMinWidth`.
+    // A column track: filler → minmax(min, 1fr) so it expands to fill; a resized column → its px
+    // width; an unsized one → its default, growing a little while there is room (columnTrack).
+    // Resizing changes only the dragged column; the filler absorbs the slack and horizontal
+    // scroll kicks in past `tableMinWidth`.
     const trackFor = (c: DataTableColumn<Row>): string =>
-        flexKeys.has(c.key) ? `minmax(${c.minWidth ?? 80}px, 1fr)` : `${widthFor(c) ?? c.defaultWidth ?? 120}px`;
+        flexKeys.has(c.key) ? `minmax(${c.minWidth ?? 80}px, 1fr)` : columnTrack(c.defaultWidth, widthFor(c));
 
     const gridTemplate = useMemo(() => {
         const parts: string[] = [];
@@ -329,70 +345,50 @@ export function DataTable<Row>({
 
     const alignCls = (a?: string) => (a === 'right' ? 'text-right justify-end' : a === 'center' ? 'text-center justify-center' : 'text-left');
     const bulkBtnCls = (v?: string) =>
-        v === 'danger' ? 'bg-red-50 dark:bg-red-900/50 text-red-800 dark:text-red-300 border-red-300 dark:border-red-700 hover:bg-red-900'
-            : v === 'primary' ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
-                : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-200 dark:hover:bg-gray-600';
+        v === 'danger' ? 'bg-crit-soft text-crit border-crit/40 hover:bg-crit/15'
+            : v === 'primary' ? 'bg-accent text-on-accent border-accent hover:bg-accent-hover'
+                : 'bg-raised text-ink border-line-strong hover:bg-hover';
 
     return (
-        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
-            {/* toolbar */}
-            <div className="px-3 py-2 border-b border-gray-300 dark:border-gray-700 flex items-center justify-between gap-2 flex-wrap">
-                <div className="flex items-center gap-2 min-h-[28px]">
-                    {selectable && selected.size > 0 ? (
-                        <>
-                            <span className="text-xs font-semibold text-gray-900 dark:text-white">{selectionCount} selected</span>
-                            {detailPath && (
-                                <button disabled={selected.size !== 1}
-                                    onClick={() => { const row = selectedRows[0]; if (row) navigate(detailPath(row)); }}
-                                    className={`px-2.5 py-1 text-xs rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${bulkBtnCls('primary')}`}>
-                                    Details
-                                </button>
-                            )}
-                            {bulkActions?.map((a) => {
-                                const disabled = (a.single && selected.size !== 1) || (a.enabledFor ? !selectedRows.every(a.enabledFor) : false);
-                                return (
-                                    <button key={a.label} disabled={disabled} onClick={() => a.onClick(selectedRows)}
-                                        className={`px-2.5 py-1 text-xs rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${bulkBtnCls(a.variant)}`}>
-                                        {a.label}
-                                    </button>
-                                );
-                            })}
-                            <button onClick={clearSelection} className="text-xs text-gray-600 dark:text-gray-400 hover:underline">Deselect</button>
-                        </>
-                    ) : (
-                        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{title}{title ? ' ' : ''}<span className="text-gray-500 font-normal">({totalCount ?? rows.length})</span></h3>
-                    )}
-                </div>
+        <div className="bg-raised border border-line rounded-lg overflow-hidden">
+            {/* header, first line: what the table is, and the tools for looking at it */}
+            <div className="px-3 py-2 border-b border-line flex items-center justify-between gap-2 flex-wrap">
+                <h3 className="text-sm font-semibold text-ink min-h-[28px] flex items-center gap-1">{title}<span className="text-ink-muted font-normal">({narrowed ? `${rows.length} of ${loadedRows.length}` : (totalCount ?? rows.length)})</span></h3>
                 <div className="flex items-center gap-2">
+                    {findable && (
+                        <input type="search" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Find in this table"
+                            aria-label={title ? `Find in ${title}` : 'Find in this table'}
+                            className="w-48 px-2.5 py-1 text-xs bg-raised border border-line-strong rounded text-ink placeholder-ink-faint focus:outline-none focus:border-accent" />
+                    )}
                     <div className="relative">
                         <button onClick={() => setMenuOpen((o) => !o)}
-                            className="px-2.5 py-1 text-xs rounded border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors inline-flex items-center gap-1">
+                            className="px-2.5 py-1 text-xs rounded border border-line-strong bg-raised text-ink hover:bg-hover transition-colors inline-flex items-center gap-1">
                             Columns <Chevron direction={menuOpen ? 'up' : 'down'} className="w-2.5 h-2.5" />
                         </button>
                         {menuOpen && (
                             <>
                                 <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
-                                <div className="absolute right-0 mt-1 z-20 w-52 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded shadow-lg p-2 space-y-1">
+                                <div className="absolute right-0 mt-1 z-20 w-52 bg-raised border border-line rounded shadow-lg p-2 space-y-1">
                                     {columns.map((c) => {
                                         const hidden = prefs.hidden.includes(c.key);
                                         const locked = c.hideable === false;
                                         return (
-                                            <label key={c.key} className={`flex items-center gap-2 text-xs px-1 py-0.5 rounded ${locked ? 'opacity-50' : 'cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800'}`}>
+                                            <label key={c.key} className={`flex items-center gap-2 text-xs px-1 py-0.5 rounded ${locked ? 'opacity-50' : 'cursor-pointer hover:bg-hover'}`}>
                                                 <input type="checkbox" checked={!hidden} disabled={locked} onChange={() => toggleColumn(c.key)}
-                                                    className="h-3.5 w-3.5 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />
-                                                <span className="text-gray-700 dark:text-gray-300">{c.header}</span>
+                                                    className="h-3.5 w-3.5 rounded border-line-strong accent-accent" />
+                                                <span className="text-ink">{c.header}</span>
                                             </label>
                                         );
                                     })}
                                     <button onClick={() => { resetLayout(); setMenuOpen(false); }}
-                                        className="w-full mt-1 px-1 py-1 text-[11px] text-blue-700 dark:text-blue-400 hover:underline text-left">Reset columns</button>
+                                        className="w-full mt-1 px-1 py-1 text-[11px] text-accent-ink hover:underline text-left">Reset columns</button>
                                 </div>
                             </>
                         )}
                     </div>
                     {!disableExport && (
                         <button onClick={onExport ?? exportCsv} disabled={exporting}
-                            className="px-2.5 py-1 text-xs rounded border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors disabled:opacity-50"
+                            className="px-2.5 py-1 text-xs rounded border border-line-strong bg-raised text-ink hover:bg-hover transition-colors disabled:opacity-50"
                             title={onExport ? 'Export matching rows (CSV)' : (selected.size > 0 ? `Export ${selected.size} selected row(s)` : 'Export all rows')}>
                             {exporting ? 'Exporting…' : 'Export CSV'}
                         </button>
@@ -400,9 +396,40 @@ export function DataTable<Row>({
                 </div>
             </div>
 
+            {/* header, second line: what can be done with the ticked rows, and "+ New" at the right */}
+            {(selectable || toolbarAction) && (
+                <div className="px-3 py-1.5 border-b border-line flex items-center gap-2 flex-wrap min-h-[36px]">
+                    {selectable && (<>
+                    <span className={`text-xs w-24 shrink-0 ${selected.size > 0 ? 'font-semibold text-ink' : 'text-ink-muted'}`}>
+                        {selected.size > 0 ? `${selectionCount} selected` : 'None selected'}
+                    </span>
+                    {detailPath && (
+                        <button disabled={selected.size !== 1}
+                            onClick={() => { const row = selectedRows[0]; if (row) navigate(detailPath(row)); }}
+                            className={`px-2.5 py-1 text-xs rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${bulkBtnCls()}`}>
+                            Details
+                        </button>
+                    )}
+                    {bulkActions?.map((a) => {
+                        const disabled = selected.size === 0 || (a.single && selected.size !== 1) || (a.enabledFor ? !selectedRows.every(a.enabledFor) : false);
+                        return (
+                            <button key={a.label} disabled={disabled} onClick={() => a.onClick(selectedRows)}
+                                className={`px-2.5 py-1 text-xs rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${bulkBtnCls(a.variant)}`}>
+                                {a.label}
+                            </button>
+                        );
+                    })}
+                    {selected.size > 0
+                        ? <button onClick={clearSelection} className="text-xs text-ink-muted hover:underline">Deselect</button>
+                        : <span className="text-xs text-ink-faint">{detailPath || bulkActions?.length ? 'Tick rows to act on them.' : 'Tick rows to export only those.'}</span>}
+                    </>)}
+                    {toolbarAction && <div className="ml-auto flex items-center gap-2">{toolbarAction}</div>}
+                </div>
+            )}
+
             {/* select-all-matching banner (controlled / server-paginated tables) */}
             {selectable && controlled && totalCount != null && totalCount > allKeys.length && (allSelected || allMatchingSelected) && (
-                <div className="px-3 py-2 border-b border-blue-300 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/30 text-xs text-blue-800 dark:text-blue-300 flex items-center gap-2 justify-center">
+                <div className="px-3 py-2 border-b border-line bg-accent-soft text-xs text-accent-ink flex items-center gap-2 justify-center">
                     {allMatchingSelected ? (
                         <>
                             <span>All <strong>{totalCount}</strong> rows matching this filter are selected.</span>
@@ -420,22 +447,24 @@ export function DataTable<Row>({
             )}
 
             {/* states */}
-            {loading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading…</div>}
+            {loading && <div className="p-4 text-sm text-ink-muted text-center">Loading…</div>}
             {error && <div className="p-3"><InlineNotice notice={error} /></div>}
             {!loading && !error && rows.length === 0 && (
-                <div className="p-6 text-sm text-gray-600 text-center">{empty || 'No rows'}</div>
+                <div className="p-6 text-sm text-ink-muted text-center">
+                    {loadedRows.length > 0 ? <>Nothing here matches "{typed}". <button onClick={() => setTyped('')} className="text-accent-ink hover:underline">Clear</button></> : (empty || 'No rows')}
+                </div>
             )}
 
             {/* grid */}
             {!loading && !error && rows.length > 0 && (
                 <div className="overflow-x-auto">
                     {/* header */}
-                    <div className="grid items-center border-b border-gray-300 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40" style={{ gridTemplateColumns: gridTemplate, minWidth: tableMinWidth }}>
+                    <div className="grid items-center border-b border-line bg-sunken" style={{ gridTemplateColumns: gridTemplate, minWidth: tableMinWidth }}>
                         {hasRowOpen && <div className="py-2" />}
                         {selectable && (
                             <div className="flex items-center justify-center py-2">
                                 <input ref={selectAllRef} type="checkbox" checked={allSelected} onChange={toggleAll}
-                                    className="h-3.5 w-3.5 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />
+                                    className="h-3.5 w-3.5 rounded border-line-strong accent-accent" />
                             </div>
                         )}
                         {visibleCols.map((c) => (
@@ -443,16 +472,16 @@ export function DataTable<Row>({
                                 onClick={c.sortable ? () => toggleSort(c.key) : undefined}
                                 role={c.sortable ? 'button' : undefined}
                                 aria-sort={c.sortable && sort?.key === c.key ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}
-                                className={`relative flex items-center gap-1 px-3 py-2 text-xs font-semibold text-gray-600 dark:text-gray-400 select-none overflow-hidden ${alignCls(c.align)} ${c.sortable ? 'cursor-pointer hover:text-gray-900 dark:hover:text-white' : ''}`}>
+                                className={`relative flex items-center gap-1 px-3 py-2 label-caps select-none overflow-hidden ${alignCls(c.align)} ${c.sortable ? 'cursor-pointer hover:text-ink' : ''}`}>
                                 <span className="truncate">{c.header}</span>
                                 {c.sortable && (
-                                    <span aria-hidden="true" className={`text-[10px] flex-shrink-0 ${sort?.key === c.key ? 'text-blue-700 dark:text-blue-300' : 'text-gray-400 dark:text-gray-600'}`}>
+                                    <span aria-hidden="true" className={`text-[10px] flex-shrink-0 ${sort?.key === c.key ? 'text-accent-ink' : 'text-ink-faint'}`}>
                                         {sort?.key === c.key ? (sort.dir === 'asc' ? '\u25B2' : '\u25BC') : '\u21C5'}
                                     </span>
                                 )}
                                 {c.resizable !== false && !flexKeys.has(c.key) && (
                                     <div onMouseDown={(e) => onResizeStart(e, c)}
-                                        className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-blue-400/60 active:bg-blue-500" />
+                                        className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-accent-hover active:bg-accent-hover" />
                                 )}
                             </div>
                         ))}
@@ -476,27 +505,27 @@ export function DataTable<Row>({
                         return (
                             <React.Fragment key={k}>
                                 <div style={{ gridTemplateColumns: gridTemplate, minWidth: tableMinWidth }} onClick={onRowClick}
-                                    className={`grid items-center border-b border-gray-200 dark:border-gray-700/60 transition-colors ${hasRowOpen ? 'cursor-pointer' : ''} ${isSel ? 'bg-blue-50/60 dark:bg-blue-900/20' : isExp ? 'bg-gray-200/40 dark:bg-gray-700/30' : 'hover:bg-gray-200/40 dark:hover:bg-gray-700/40'}`}>
+                                    className={`grid items-center border-b border-line tabular-nums transition-colors ${hasRowOpen ? 'cursor-pointer' : ''} ${isSel ? 'bg-accent-soft' : isExp ? 'bg-sunken' : 'hover:bg-hover'}`}>
                                     {hasRowOpen && (
-                                        <div className="flex items-center justify-center py-2 text-gray-400 dark:text-gray-500 select-none">
+                                        <div className="flex items-center justify-center py-2 text-ink-faint select-none">
                                             <Chevron {...(expandable ? { open: isExp } : { direction: 'right' as const })} className="w-2.5 h-2.5" />
                                         </div>
                                     )}
                                     {selectable && (
                                         <div className="flex items-center justify-center py-2">
                                             <input type="checkbox" checked={isSel} onChange={() => toggleRow(k)}
-                                                className="h-3.5 w-3.5 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500" />
+                                                className="h-3.5 w-3.5 rounded border-line-strong accent-accent" />
                                         </div>
                                     )}
                                     {visibleCols.map((c) => (
-                                        <div key={c.key} className={`px-3 py-2 text-sm text-gray-900 dark:text-white min-w-0 overflow-hidden flex items-center ${alignCls(c.align)}`}>
+                                        <div key={c.key} className={`px-3 py-2 text-sm text-ink min-w-0 overflow-hidden flex items-center ${alignCls(c.align)}`}>
                                             <div className={c.truncate === false ? 'min-w-0' : 'truncate w-full'}>{c.render(r)}</div>
                                         </div>
                                     ))}
                                     {useSpacer && <div aria-hidden />}
                                 </div>
                                 {isExp && renderExpanded && (
-                                    <div className="border-b border-gray-200 dark:border-gray-700/60 bg-gray-50/70 dark:bg-gray-900/40 px-4 py-3" style={{ minWidth: tableMinWidth }}>
+                                    <div className="border-b border-line bg-sunken px-4 py-3" style={{ minWidth: tableMinWidth }}>
                                         {renderExpanded(r)}
                                     </div>
                                 )}
@@ -508,7 +537,7 @@ export function DataTable<Row>({
 
             {/* pager (server mode) */}
             {paged && (
-                <div className="px-3 py-2 border-t border-gray-300 dark:border-gray-700 flex items-center justify-between gap-3 flex-wrap text-xs text-gray-600 dark:text-gray-400">
+                <div className="px-3 py-2 border-t border-line flex items-center justify-between gap-3 flex-wrap text-xs text-ink-muted">
                     <span>
                         {totalCount != null ? `${totalCount} row${totalCount === 1 ? '' : 's'}` : ''}
                         {totalPages != null ? ` · page ${page} of ${totalPages}` : ` · page ${page}`}
@@ -518,20 +547,20 @@ export function DataTable<Row>({
                             <label className="flex items-center gap-1">
                                 <span>Rows</span>
                                 <select value={pageSize} onChange={(e) => onPageSizeChange(Number(e.target.value))}
-                                    className="px-1.5 py-0.5 rounded border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300">
+                                    className="px-1.5 py-0.5 rounded border border-line-strong bg-raised text-ink">
                                     {pageSizeOptions.map((n) => <option key={n} value={n}>{n}</option>)}
                                 </select>
                             </label>
                         )}
                         <button onClick={() => onPageChange!(1)} disabled={page! <= 1}
-                            className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed">First</button>
+                            className="px-2 py-1 rounded border border-line-strong bg-raised text-ink hover:bg-hover disabled:opacity-40 disabled:cursor-not-allowed">First</button>
                         <button onClick={() => onPageChange!(page! - 1)} disabled={page! <= 1}
-                            className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed">Previous</button>
+                            className="px-2 py-1 rounded border border-line-strong bg-raised text-ink hover:bg-hover disabled:opacity-40 disabled:cursor-not-allowed">Previous</button>
                         <button onClick={() => onPageChange!(page! + 1)} disabled={totalPages != null ? page! >= totalPages : rows.length < (pageSize ?? 0)}
-                            className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed">Next</button>
+                            className="px-2 py-1 rounded border border-line-strong bg-raised text-ink hover:bg-hover disabled:opacity-40 disabled:cursor-not-allowed">Next</button>
                         {totalPages != null && (
                             <button onClick={() => onPageChange!(totalPages)} disabled={page! >= totalPages}
-                                className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed">Last</button>
+                                className="px-2 py-1 rounded border border-line-strong bg-raised text-ink hover:bg-hover disabled:opacity-40 disabled:cursor-not-allowed">Last</button>
                         )}
                     </span>
                 </div>
@@ -545,7 +574,7 @@ export function DataTable<Row>({
                     title={drawerRow ? (drawerTitle ? drawerTitle(drawerRow) : 'Details') : ''}
                     footer={drawerRow && detailPath ? (
                         <button onClick={() => navigate(detailPath(drawerRow))}
-                            className="w-full px-3 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors">
+                            className="w-full px-3 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
                             Open full page →
                         </button>
                     ) : undefined}>

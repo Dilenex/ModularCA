@@ -29,6 +29,32 @@ namespace ModularCA.Shared.Utils
             public SigningProfileConfig SigningProfile { get; set; } = new();
             public HttpsApiConfig HttpsApi { get; set; } = new();
             public FeaturesConfig Features { get; set; } = new();
+            public AdministrationConfig Administration { get; set; } = new();
+            public AcmeBootstrapConfig Acme { get; set; } = new();
+        }
+
+        /// <summary>ACME settings applied to the first CA at bootstrap.</summary>
+        public class AcmeBootstrapConfig
+        {
+            /// <summary>
+            /// Whether the first CA's http-01 validator may fetch challenges from private, loopback
+            /// and link-local addresses, and resolve names through this host's hosts file. An
+            /// internal CA needs it; false (the default, and the key being absent) refuses them.
+            /// It changes nothing unless <see cref="FeaturesConfig.ACME"/> is on.
+            /// </summary>
+            public bool AllowPrivateAddressValidation { get; set; }
+        }
+
+        /// <summary>Who will administer the instance, which decides whether key ceremonies start on.</summary>
+        public class AdministrationConfig
+        {
+            /// <summary>
+            /// Whether more than one person will administer this CA. False starts key ceremonies
+            /// off for the instance policy and the first space, because a lone administrator could
+            /// never get one approved; true starts them on. Null (the key is absent) keeps the
+            /// default: on.
+            /// </summary>
+            public bool? MultipleAdministrators { get; set; }
         }
 
         /// <summary>
@@ -84,6 +110,16 @@ namespace ModularCA.Shared.Utils
 
             /// <summary>Subject Alternative Names. Each entry is typed as "DNS:host" or "IP:addr".</summary>
             public List<string> SANs { get; set; } = new() { "DNS:localhost", "IP:127.0.0.1" };
+
+            /// <summary>
+            /// The bare hostname or IP address clients reach this instance by, written to
+            /// <c>Https.PublicDomain</c> in config.yaml. ACME directory URLs, redirects, the
+            /// WebAuthn origin and the CRL, OCSP and AIA URLs in issued certificates are built
+            /// from it. Null (the key is absent) takes the first <c>DNS:</c> entry of
+            /// <see cref="SANs"/> that is not <c>localhost</c>, or <c>localhost</c> when there is
+            /// none. A value no SAN covers is added to the certificate's SANs.
+            /// </summary>
+            public string? PublicDomain { get; set; }
 
             /// <summary>HTTPS port the management UI listens on.</summary>
             public int Port { get; set; } = 8443;

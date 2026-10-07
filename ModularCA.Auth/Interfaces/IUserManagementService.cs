@@ -8,7 +8,7 @@ namespace ModularCA.Auth.Interfaces
     public interface IUserManagementService
     {
         /// <summary>
-        /// Creates a new user and assigns them to the specified groups (or system-auditor by default).
+        /// Creates a new user and assigns them to the specified groups (none when no groups are given).
         /// </summary>
         Task<(bool Success, string? Error)> CreateUser(CreateUserRequest request);
 
@@ -66,5 +66,11 @@ namespace ModularCA.Auth.Interfaces
         /// Resets a user's password to a random value and returns the new password.
         /// </summary>
         Task<string> ResetUserPassword(Guid userId);
+
+        /// <summary>
+        /// Removes every TOTP secret and WebAuthn credential of a user and clears their MFA
+        /// enrollment, forcing re-enrollment. Returns the counts removed, or null when the user does not exist.
+        /// </summary>
+        Task<(int TotpSecretsRemoved, int WebAuthnCredentialsRemoved)?> ResetUserMfa(Guid userId);
     }
 }

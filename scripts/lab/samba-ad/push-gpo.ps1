@@ -17,7 +17,7 @@
     .\push-gpo.ps1 -CepUrl https://ca4.maroongang.net/msae/staging-ca-r1/cep `
                    -PolicyId '{C862CB48-E273-4B4F-8F85-9150C1D719E0}' -FriendlyName 'Staging CA R1 (ModularCA)'
 
-  Then on any member: gpupdate /force; certutil -pulse. The tenant root still has to be trusted;
+  Then on any member: gpupdate /force; certutil -pulse. The space's root still has to be trusted;
   the GPMC's Public Key Policies editor can publish it, or client-enroll.ps1 -TrustRoot per machine.
 
   Untested against Samba as of 2026-09-15; the manual registration path proved the same client

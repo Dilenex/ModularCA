@@ -15,8 +15,8 @@ export const adminSsh: ApiEndpoint[] = [
     {
         method: 'POST',
         path: '/api/v1/admin/ssh/ca-keys',
-        summary: 'Generate a new SSH CA key pair. If the target tenant requires key ceremonies, initiates a ceremony instead.',
-        auth: 'Authorize (CaOperator)',
+        summary: 'Generate a new SSH CA key pair. SSH CAs are instance CAs: if the instance requires key ceremonies, initiates a ceremony instead.',
+        auth: 'Authorize (SystemOperator)',
         category: 'Admin SSH',
         requestBody: [
             { name: 'name', type: 'string', required: true, description: 'Name for the SSH CA key' },
@@ -25,13 +25,14 @@ export const adminSsh: ApiEndpoint[] = [
             { name: 'isUserCa', type: 'bool', required: false, description: 'Allow user certificate signing (default: true)' },
             { name: 'isHostCa', type: 'bool', required: false, description: 'Allow host certificate signing (default: false)' },
             { name: 'maxValidityHours', type: 'int', required: false, description: 'Maximum certificate validity in hours (default: 24)' },
-            { name: 'tenantId', type: 'guid', required: false, description: 'Tenant ID. If the tenant requires key ceremonies, a ceremony is initiated instead of immediate creation' },
+            { name: 'spaceId', type: 'guid', required: false, description: 'Must be null or omitted. SSH CAs are instance CAs; a space ID is refused with 400' },
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup' },
         ],
         responseDescription: 'Created SSH CA key with ID, name, key type, key size, public key, and createdAt. If ceremony required: { requiresCeremony, ceremonyId, status, requiredApprovals, message }.',
+        notes: 'When the ceremony could never reach its quorum, because too few accounts other than the caller can approve it, nothing is opened and the answer is 409 (code MCA-CFG-020 when nobody else can approve, MCA-CFG-021 when some can but too few); the key ceremony endpoints describe the body.',
     },
     {
         method: 'GET',
@@ -130,13 +131,14 @@ export const adminSsh: ApiEndpoint[] = [
         category: 'Admin SSH',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for revoke-ssh-cert, issued for the certificate id. Required for this operation.' },
         ],
         responseDescription: 'Revocation confirmation message.',
     },
     {
         method: 'DELETE',
         path: '/api/v1/admin/ssh/ca-keys/{id}',
-        summary: 'Disable an SSH CA key and revoke all active certificates issued by it. Requires step-up MFA. If the CA\'s tenant requires key ceremonies, initiates a ceremony instead.',
+        summary: 'Disable an SSH CA key and revoke all active certificates issued by it. Requires step-up MFA. If the CA\'s space requires key ceremonies, initiates a ceremony instead.',
         auth: 'Authorize (CaOperator)',
         category: 'Admin SSH',
         headers: [
@@ -144,5 +146,6 @@ export const adminSsh: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup' },
         ],
         responseDescription: 'Confirmation that the SSH CA key was disabled and all certificates revoked. If ceremony required: { requiresCeremony, ceremonyId, message }.',
+        notes: 'When the ceremony could never reach its quorum, because too few accounts other than the caller can approve it, nothing is opened and the answer is 409 (code MCA-CFG-020 when nobody else can approve, MCA-CFG-021 when some can but too few); the key ceremony endpoints describe the body.',
     },
 ];

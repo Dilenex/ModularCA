@@ -7,7 +7,8 @@ import { StepUpMfaModal, type MfaFactors } from './StepUpMfaModal';
 /// a Promise resolving to the MFA token on successful verification.
 /// </summary>
 interface StepUpContext {
-    requireStepUp: (operation: string, targetId?: string) => Promise<string>;
+    /** A list of targets is authorised by one prompt; the token is then good once for each. */
+    requireStepUp: (operation: string, targetId?: string | string[]) => Promise<string>;
 }
 
 const StepUpCtx = createContext<StepUpContext>({
@@ -35,7 +36,7 @@ export const StepUpMfaProvider: React.FC<StepUpMfaProviderProps> = ({
     const [isOpen, setIsOpen] = useState(false);
     const [resolvedFactors, setResolvedFactors] = useState<MfaFactors | undefined>(providedFactors);
     const [operation, setOperation] = useState('');
-    const [targetId, setTargetId] = useState<string | undefined>();
+    const [targetId, setTargetId] = useState<string | string[] | undefined>();
     const resolveRef = useRef<((token: string) => void) | null>(null);
     const rejectRef = useRef<((err: Error) => void) | null>(null);
 
@@ -58,7 +59,7 @@ export const StepUpMfaProvider: React.FC<StepUpMfaProviderProps> = ({
         return () => { cancelled = true; };
     }, [isOpen, providedFactors, resolvedFactors, apiGet]);
 
-    const requireStepUp = useCallback((op: string, tid?: string): Promise<string> => {
+    const requireStepUp = useCallback((op: string, tid?: string | string[]): Promise<string> => {
         setOperation(op);
         setTargetId(tid);
         setIsOpen(true);

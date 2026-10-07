@@ -131,4 +131,26 @@ public static class ProfileRegex
     /// <param name="pattern">The pattern loaded from the profile.</param>
     public static bool IsMatch(string? input, string? pattern)
         => Evaluate(input, pattern) == ProfileRegexOutcome.Match;
+
+    /// <summary>
+    /// Checks at save time that an operator-supplied pattern compiles, constructing it exactly as
+    /// <see cref="Evaluate"/> does (same options, same <see cref="MatchTimeout"/>). Returns null when
+    /// it compiles, otherwise a message naming the pattern and the parser's reason. Saving a pattern
+    /// that does not compile would otherwise only surface as every request being refused.
+    /// </summary>
+    /// <param name="pattern">The pattern to check. Null or empty is reported as missing.</param>
+    public static string? CompileError(string? pattern)
+    {
+        if (string.IsNullOrEmpty(pattern))
+            return "A pattern must not be empty.";
+        try
+        {
+            _ = new Regex(pattern, RegexOptions.None, MatchTimeout);
+            return null;
+        }
+        catch (ArgumentException ex)
+        {
+            return $"\"{pattern}\" is not a valid .NET regular expression: {ex.Message}";
+        }
+    }
 }

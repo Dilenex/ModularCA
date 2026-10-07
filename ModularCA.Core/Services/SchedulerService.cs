@@ -38,6 +38,9 @@ namespace ModularCA.Core.Services
         /// <summary>The lease name every install has used; a process passes another when its job set is not the control plane's.</summary>
         public const string DefaultLeaseName = "scheduler";
 
+        /// <summary>The actor every scheduled job writes its audit records under.</summary>
+        public const string AuditActor = "scheduler";
+
         private readonly string _leaseName;
 
         private readonly IServiceProvider _serviceProvider;
@@ -151,7 +154,15 @@ namespace ModularCA.Core.Services
                     await conn.OpenAsync(stoppingToken);
                 using (var cmd = conn.CreateCommand())
                 {
-                    cmd.CommandText = "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'CertificateAuthorities'";
+                    // to_regclass resolves a name the way the server itself does, through the
+                    // current search_path, and returns null rather than raising when there is
+                    // nothing there. The previous form asked MySQL's information_schema: it
+                    // filtered on TABLE_SCHEMA = DATABASE(), where DATABASE() is a MySQL function
+                    // PostgreSQL does not have and TABLE_SCHEMA means a schema rather than a
+                    // database. It threw on every poll — once every thirty seconds, forever —
+                    // which stopped the scheduler main loop before any job ran.
+                    cmd.CommandText = "SELECT COUNT(*) FROM pg_class c "
+                        + "WHERE c.oid = to_regclass('\"CertificateAuthorities\"')";
                     var result = await cmd.ExecuteScalarAsync(stoppingToken);
                     if (Convert.ToInt64(result) > 0)
                         hasCas = await db.CertificateAuthorities.AnyAsync(stoppingToken);

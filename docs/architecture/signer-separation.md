@@ -32,7 +32,7 @@ install is unchanged.
 | **signer** | the keystore, the keystore passwords, the PKCS#11 session | nothing outbound; answers the node |
 | **enrollment** | protocol handlers (ACME, EST, SCEP, CMP, MSAE), the issuance pipeline | database, signer |
 | **validation** | CRL and OCSP serving; the delegated OCSP responder keys only | database (read), signer for responder keys |
-| **control plane** | console, admin API, tenants, principals, ceremonies, audit, the fleet module | database, signer for ceremonies |
+| **control plane** | console, admin API, spaces, principals, ceremonies, audit, the fleet module | database, signer for ceremonies |
 | **ingress** | TLS termination for every hostname, routing by name (YARP) | the other roles over loopback |
 
 Only the signer is separated in stages 1 and 2. Enrollment and control plane stay one process
@@ -62,7 +62,7 @@ list for stage 1; when it is done, nothing outside `ModularCA.Keystore` holds an
 | `StartModularCA` | all | unlock the keystore at startup with the main and secondary passwords |
 
 Not in scope, because they are not signing keys: the console's own TLS key and the tenant
-hostname keys (PKCS#12 files owned by the ingress/TLS layer), the Kerberos realm keys (symmetric,
+hostname keys (PKCS#12 files owned by the ingress/TLS layer, retired in 0.4.0), the Kerberos realm keys (symmetric,
 protected by data protection, used by the acceptor), and DPoP or session secrets.
 
 ## The contract
@@ -75,7 +75,7 @@ SignAsync(KeyRef key, SignatureAlgorithm algorithm, byte[] data, SigningContext 
 DecryptAsync(KeyRef key, byte[] enveloped, SigningContext ctx) -> byte[]        // SCEP only
 GenerateKeyAsync(KeySpec spec, SigningContext ctx) -> KeyRef + public key
 ImportKeyAsync(KeyMaterial wrapped, SigningContext ctx) -> KeyRef                // migration, HSM import
-ExportKeyAsync(KeyRef key, ExportWrap wrap, SigningContext ctx) -> byte[]      // PKCS#12 under a caller password, policy-gated
+ExportKeyAsync(KeyRef key, ExportWrap wrap, SigningContext ctx) -> byte[]      // PKCS#12: end-entity keys under Export only; Backup: whole keystore files only
 ListKeysAsync(SigningContext ctx) -> KeyRef[] with public keys and attributes
 RetireKeyAsync(KeyRef key, SigningContext ctx)
 HealthAsync() -> unlocked, key count, backend (software | pkcs11)
@@ -83,13 +83,16 @@ HealthAsync() -> unlocked, key count, backend (software | pkcs11)
 
 `KeyRef` is the certificate id the key belongs to plus the keystore name, which is how the
 keystore already addresses entries. `SigningContext` names the caller's identity, the purpose
-(certificate, CRL, OCSP, SCEP, CMP, TSA, ceremony, backup, export) and the tenant and CA the
+(certificate, CRL, OCSP, SCEP, CMP, TSA, ceremony, backup, export) and the space and CA the
 operation is for. The signer decides from that whether the operation is allowed: a CA key signs
 certificates, CRLs and protocol responses for its own CA; a responder key signs OCSP responses
 only; export is allowed only for end-entity keys and only for a caller holding the export right;
 key generation and import are allowed only under a ceremony or bootstrap context. Every decision
 is audited at the signer with the context, so the signer's audit is the record of what was
 signed even if the node's audit is lost.
+
+Since 2026-10-05 the signer also parses what it signs: `SignAsync` takes bytes, but only bytes
+that are the one structure the key and purpose sign. See "Typed signing as built".
 
 End-entity keys generated for server-side key generation are not CA keys and do not need custody;
 they are handed to the customer. They are generated in the node, used once to build the PKCS#12,
@@ -167,9 +170,22 @@ twice.
   what it can ask for, rate limits bound how much, the signer's audit records all of it.
 - The signer's own memory holds keys when the backend is software. Extraction resistance is the
   HSM's job, and the signer is where PKCS#11 lives so that an HSM is a configuration change.
-- The database is shared. A node with database access can alter what the signer reads for
-  ceremony verification; the signer verifies approvals against signed audit rows, not against
-  mutable state, which is the reason the audit chain matters for this design.
+- The database is shared, and the signer's ceremony check reads rows the node writes. What the
+  signer verifies today is that the `KeyCeremonies` row a context names exists, is `Approved`,
+  is unexpired, is of an operation type that licenses the operation, and names the same scope
+  and CA; with no ceremony named, that the scope's policy row waives ceremonies. It does not
+  verify who approved: the approvals are JSON in that row, the policy is a row, and a node with
+  database access can write all of them. There are no signed audit rows; the audit chain is an
+  unkeyed hash chain in the same database. An earlier version of this section claimed otherwise.
+  So a ceremony today stops a node that is merely asked to skip one, and does not stop a
+  compromised node that forges one. Approvals the signer can verify (WebAuthn assertions over a
+  statement the signer mints, checked against a registry the signer holds), a journal on the
+  signer's own disk, and policy held by the signer are stages B and C of
+  `signer-hardening.md`.
+- Since typed signing (see "Typed signing as built"), what a compromised node cannot do even
+  with a forged row is obtain a CA certificate, or a delegated OCSP certificate, for a key
+  that is outside the signer. A forged row still gets it a CA key generated and held inside
+  the signer, and a CA certificate for that key.
 
 ## Order of work
 
@@ -203,7 +219,7 @@ member returning key parameters. Where the code differs from the design above, t
 and this section records why.
 
 - **`CommitKeyAsync` joined the contract.** A generated key is held pending in the signer's memory
-  under a signer-minted reference and signs only under the purpose, tenant and CA it was generated
+  under a signer-minted reference and signs only under the purpose, space and CA it was generated
   for. It is written to the keystore and bound to its certificate row by an explicit, audited
   commit after the CA's database transaction succeeds; any failure before that retires it, so a
   failed creation leaves nothing usable on disk. The keystore format has no entry removal, which
@@ -221,12 +237,14 @@ and this section records why.
 - **Backups carry whole keystore files.** The signer exports and imports keystore files as units
   (`SigningPurpose.Backup` and `Restore`), verified on import against the pinned signer. Per-key
   restore was rejected because the key that signs the keystore file is one of the keys being
-  restored. These two operations are permitted while the signer is locked, since they hand out no
+  restored. Backup never exports a single key as PKCS#12: that wrap is refused under Backup for
+  every key, so no CA, responder, TSA, CMP or system key can leave under a password the caller
+  chooses. These two operations are permitted while the signer is locked, since they hand out no
   usable key and restoring into an empty node is how a signer comes to hold keys.
 - **Locked means unavailable, visibly.** Enrollment protocol controllers and admin issuance answer
   503 with a retry hint until the signer reports unlocked; the health endpoint and the MSAE
   readiness page both show the signer's state.
-- **Stricter than the table.** Every key is held to its owning CA and, when named, its tenant; a
+- **Stricter than the table.** Every key is held to its owning CA and, when named, its space; a
   CA certificate without a CA row cannot sign; an audit-write failure does not withhold a
   signature in process, which stage 2 must change to fail closed at the signer.
 
@@ -258,9 +276,9 @@ removed, the refusal reason dropped from the wire) each caught by a test.
   before any result leaves; key generation records before the pending key becomes reachable. In
   process the stage 1 behaviour stays.
 - **Ceremony at the signer.** When a context names a ceremony, the signer verifies the row
-  exists, is approved and names the same CA and tenant before generating, committing or
-  importing a key. Contexts without a ceremony id are still allowed, because tenants that do not
-  require ceremonies create CAs directly; the follow-up is for the signer to read the tenant's
+  exists, is approved and names the same CA and space before generating, committing or
+  importing a key. Contexts without a ceremony id are still allowed, because spaces that do not
+  require ceremonies create CAs directly; the follow-up is for the signer to read the space's
   requirement and refuse id-less key management where a ceremony is required. Ceremony expiry
   is not checked, matching the controller.
 - **Operations.** The gRPC channel's reconnect backoff is bounded to five seconds, found by the
@@ -327,20 +345,108 @@ with the contract suite at 440 tests over both bindings and four deliberate brea
 requirement check removed, the expiry check removed, the ceremony id not recorded, the peer
 not recorded) each caught.
 
-- **The tenant's ceremony requirement is enforced at the signer.** A ceremony context that
-  names no ceremony is held to the tenant's own row: the tenant it names, or the tenant of the
-  CA it names. `RequireKeyCeremony` set, or a tenant the signer cannot find, refuses generate,
-  commit and import as `CeremonyRequired`; a context naming neither tenant nor CA is
-  `ContextRequired`. Bootstrap and retire are exempt as before, and a tenant that waives
+- **The space's ceremony requirement is enforced at the signer.** A ceremony context that
+  names no ceremony is held to the space's own row: the space it names, or the space of the
+  CA it names. `RequireKeyCeremony` set, or a space the signer cannot find, refuses generate,
+  commit and import as `CeremonyRequired`; a context naming neither space nor CA is
+  `ContextRequired`. Bootstrap and retire are exempt as before, and a space that waives
   ceremonies is unchanged. A ceremony that is named is also held to its `ExpiresAt`. One
   consequence to weigh: infrastructure reissue (`ReissueInfrastructureCertsAsync`) sends a
-  ceremony context with no ceremony id, so for a tenant that requires ceremonies the signer now
+  ceremony context with no ceremony id, so for a space that requires ceremonies the signer now
   refuses it until the node either gates reissue behind a ceremony or carries one.
 - **The audit row names the ceremony and the peer.** `SignerAudit.CeremonyId` is the ceremony
   the context named, on every decision including refusals of ceremonies the signer could not
   verify. `SignerAudit.PeerIdentity` is the SPKI pin of the client certificate on the
   connection, computed by the gRPC host from the certificate Kestrel admitted and stamped on
   the context as a server-set property that the wire has no field for; null in process.
+
+## Typed signing as built (2026-10-05)
+
+Stage A of Item 1 in `signer-hardening.md`. Before it, the signer checked the key's kind, the
+purpose label and the owning CA, and signed whatever bytes came with them: a CA key signed a
+`cA=TRUE` certificate for any key under `Certificate`, and a certificate's TBS under `Ocsp`. Now
+`SignAsync` parses the bytes (`SignedDataTypes`, `InProcessSigningService.JudgeData`) and refuses
+anything that is not the structure the key and purpose sign. No wire change: `SignRequest`
+already carries the key, the algorithm, the data and the context, which is all the signer needs.
+
+The bytes must be exactly one DER object with nothing after it (they are re-encoded and
+compared), so what the signer judges is what a verifier reads.
+
+| Key | Purpose | The data must be | And |
+|---|---|---|---|
+| CA | `Certificate` | a v3 `TBSCertificate` | issuer is the CA's subject; `signature` names the requested algorithm; the certificate rules below |
+| CA | `Crl` | a `TBSCertList`, full or delta | issuer is the CA's subject; `signature` names the requested algorithm |
+| CA, OCSP responder | `Ocsp` | an OCSP `ResponseData` | the responder id is the signing key's own certificate, by name or by key hash |
+| CA | `Scep` | CMS signed attributes (a DER `SET OF Attribute`) | content type `id-data`, a message digest, a SCEP `messageType` |
+| CA, CMP signer | `Cmp` | a CMP `ProtectedPart` (header and body) | the header's `protectionAlg` is the requested algorithm |
+| TSA | `Tsa` | CMS signed attributes | content type `id-ct-TSTInfo`, a message digest |
+| pending (generated, uncommitted) | `Ceremony`, `Infrastructure` | a PKCS#10 `CertificationRequestInfo` | for the key's own public key |
+| pending, generated for a new CA | `Ceremony` | its own self-signed `cA=TRUE` `TBSCertificate`, once | issuer equals subject; subject key is the key itself |
+| pending, certified as a CA | `Ceremony` | a non-CA `TBSCertificate` | issuer is the subject it was certified under; the subject key is a delegated key generated under the same ceremony and scope |
+| SSH CA (`ssh-ca.keystore`, `KeyKind.SshCa`) | any | nothing | a raw signature is always refused; stage 2 of `ssh-keystore.md` adds `SignSshCertificate` |
+
+Every purpose is typed positively. The design proposed typing `Scep` and `Cmp` negatively
+(anything that is not a TBS); that would have let a CA key sign an OCSP `ResponseData`, or the
+payload of a keystore-file signature (the system signing CA's key signs those, inside the
+keystore project, with the same ECDSA and EdDSA schemes), under the `Cmp` label.
+
+**The certificate rules**, for any `TBSCertificate`:
+
+- keyCertSign, cRLSign, a path length and name constraints are refused without `cA=TRUE`;
+- a `cA=TRUE` certificate carries no OCSP-signing EKU;
+- a CA signs a `cA=TRUE` certificate only within its own path length: a CA with a path length
+  must give the new CA a smaller one, and a CA whose path length is zero certifies no CA. CA
+  creation gives every intermediate a path length of zero, so an intermediate under an
+  intermediate, which never validated, is now refused when it is created.
+
+**Who may be a CA.** A `cA=TRUE` certificate is signed only for a key that this signer generated
+under a ceremony context for a new CA (`GenerateKey`, which is where the ceremony row or the
+scope's waiver is checked), still holds uncommitted, and has not yet certified as a CA. The
+signature marks the key certified, under that subject, and it is certified once. That covers
+root creation (the key self-signs) and intermediate creation with or without a ceremony (the
+parent signs, for a parent in the same space or another). It is deliberately not "the context
+names an approved ceremony": the node writes that row. There is no cross-certification flow
+today (trust anchors are imported, not signed), and none is possible under this rule.
+
+**Who may be a responder.** A certificate carrying `id-kp-OCSPSigning` is signed only for a
+delegated key this signer generated and still holds uncommitted: under the creating ceremony
+when the CA is new, or under the CA's infrastructure context on reissue, for that CA. An
+external delegated responder is allowed by the owner's decision of 2026-10-05 only with
+verified evidence, which arrives in stage B, so in this stage it is refused.
+
+**What it protects against, and what it does not.**
+
+- A compromised node cannot get a CA key to certify a key the node holds as a CA, with or
+  without a ceremony row, forged or real. It cannot get a delegated OCSP certificate for a key
+  it holds. It cannot use one purpose's label to sign another purpose's structure, and it
+  cannot have an X.509 key sign an SSH certificate, an `SSHSIG` blob or a keystore file.
+- A compromised node can still have the signer generate a CA key (by forging a ceremony row, or
+  with none where the scope waives ceremonies) and have an existing CA certify it. That CA
+  exists and chains, but its key never leaves the signer, every signature it makes is typed
+  and audited, and it stops with the signer. Stage B (verified approvals) closes the forged
+  row; stage C moves the waiver out of the database.
+- Leaf certificates are signed as before. A compromised node can issue any leaf: any name, any
+  EKU except OCSP-signing, any validity. `anyExtendedKeyUsage` is treated as a leaf EKU.
+- OCSP content is not judged: a node can have a responder sign "good" for a revoked serial of
+  its own CA. The journal's OCSP consistency check (Item 2, stage 3) is what answers that.
+- A single-process install gains the typing as a guard against bugs, not against a compromised
+  process, which holds the keys.
+
+**Refusals.** `UntypedData` (not the structure, not DER, trailing bytes, not v3),
+`AlgorithmMismatch`, `IssuerMismatch`, `EvidenceRequired` (a `cA=TRUE` or OCSP-signing
+certificate for a key the signer does not vouch for) and `PurposeNotPermitted` (a CA-only
+extension without `cA`, a path length exceeded, an SSH key). Each is audited like any other
+refusal, with the hash of the bytes offered. The reason crosses the wire by name, so a node
+older than the signer reports a reason it does not know as a transport failure; node and signer
+are upgraded together.
+
+**Tests.** The contract suite signs well-formed data for every row of the policy table and
+offers every structure under every other purpose, on both bindings. The end-to-end tests
+create a root and an intermediate with and without ceremonies through the real creation
+service, and have each CA issue its responder and TSA certificates, a leaf, CRLs, an OCSP
+response through the responder service and a CMP protection signature. The CRL service itself
+runs against the typed signer on PostgreSQL (`PostgresTypedCrlTests`), since its counter lock
+is raw SQL.
 
 ## Ingress as built (2026-09-17)
 
@@ -409,3 +515,200 @@ has no route" holds. Kestrel's 10 MB request body limit applies on the ingress a
 Follow-ups: a console field for `NodeUpstream` (the API and the audit row exist); HTTP/2
 and gRPC to upstreams are not needed today and not configured; the pod definition for the
 container tier with the ingress as its own container.
+
+**Since 0.4.0 S2 (2026-09-28)** tenant hostnames are gone (see `instance-tenancy.md`), and with
+them the database source above. `Ingress.Routes` is the only source, built once at startup:
+no refresh, no `RouteRefreshSeconds`, no `NodeUpstream`, no route source in the cluster
+metadata. Every name, on the ingress and on a node, is presented the instance's web TLS
+certificate. The `ingress` health entry carries the route count and the probe results. The
+branch, the destinations chosen by arrival, the upstream trust order and the header handling
+are unchanged.
+
+## The pod as built (2026-09-19)
+
+Step 6 of the order of work: `deploy/container/modularca-pod.yaml`, a Kubernetes pod manifest
+that Podman runs as written and Kubernetes runs as a Pod. One image, run twice — `--role signer`
+and `--role node` — sharing the pod's network namespace and nothing else that matters. The
+signer alone mounts the keystores volume; the node never does. The config volume is shared and
+the signer mounts it read-only. The signer publishes no port.
+
+What the design left to the operator's hands, the pod does with init containers, and that needed
+one addition to the product. The identity commands printed two config sections for an operator
+to transcribe onto two hosts. `--issue-node-identity --apply <config.yaml>` now writes both halves
+into the one `Signer:` section of a shared file — the node reads `Mode`, `Endpoint`,
+`ClientCertificate` and `PinnedServerSpki`; the signer reads `Listen`, `ServerCertificate` and
+`PinnedClientSpki`; `SignerConfig` was already one class carrying both — splicing that section
+and leaving every other byte of the file alone, then loading it back and restoring the backup if
+it did not read as written. It is idempotent, which is what makes it an init container: a file
+that already names a remote signer with both pins set is not touched. `--init-identity` already
+refused to replace an existing CA, and the entrypoint gained a `--bootstrap-only` mode so the
+first-install bootstrap runs once, by one process, before anything else from the image starts.
+The entrypoint also refuses to bootstrap for a signer or ingress role: two processes from one
+volume racing to create the keystore was the failure that check exists to prevent.
+
+The image is unchanged from stage 2. Both systemd units now order after `postgresql.service`
+rather than the MySQL units they still named.
+
+Not done here, and recorded: the ingress as its own container in the pod (its follow-up above
+still stands — the pod is the "node container + signer sidecar" row of the deployment table, not
+the multi-tenant shape), and a live proof of the pod on ca4, which needs Podman on a host that
+has it. Stage 3 follows that proof.
+
+## Secrets the node must keep, wrapped behind the signer (2026-09-18)
+
+The signer holds every private key, and a node in remote mode holds none. Three database columns
+are not covered by that, because what they hold is not a signing key: `KerberosRealmEntity.ProtectedKey`
+(symmetric Kerberos keys), `CertRequestEntity.HeldPrivateKey` (a requester's key held between
+request and collection) and `EnrollmentTokenEntity`'s CMP shared secret, which the authority has
+to be able to recover because password-based message authentication is symmetric. All three are
+wrapped with ASP.NET Data Protection, whose keys live on the node. A stolen database plus a stolen
+node therefore yields all three in the clear, which is weaker at rest than the separation suggests.
+
+The wrapping key moves behind the signer, so that recovering those columns needs the keystore as
+well. The contract gains two operations over opaque bytes, distinct from `ExportKeyAsync`, which
+is about keys the signer already holds:
+
+```
+WrapSecretAsync(SecretKind kind, byte[] secret, SigningContext ctx) -> byte[] wrapped
+UnwrapSecretAsync(byte[] wrapped, SigningContext ctx) -> byte[] secret
+```
+
+`kind` is not a key reference: the caller never chooses which key wraps for it. A wrap names what
+the secret **is**, and the signer decides what may wrap and unwrap that kind.
+
+### Which key wraps, and where it lives
+
+The wrapping key is derived, per blob, from a private key the keystore already holds — the key
+pinned for `ca-certs.keystore`, which is the system signer `FileKeystorePersistence` already
+resolves and which the legacy end-entity wrap already unwraps under:
+
+```
+kek = HKDF-SHA256(ikm = PKCS#8 of the designated keystore key,
+                  salt = 32 random bytes, per blob,
+                  info = "ModularCA.SecretWrap.v1" || kind || key id)
+```
+
+and the secret is then AES-256-GCM under that KEK, with the blob's own header as associated data.
+The KEK exists only where that private key exists, which is the keystore, which is behind the
+signer. A node in remote mode cannot derive it.
+
+A dedicated wrapping key pair, generated by the signer and appended to the keystore as its own
+entry, was the first design and was dropped. A keystore entry is a private key **paired with a
+certificate**; the certificate goes into `ca-trust.keystore`, and everything loaded from there is
+a trusted authority, which EST `/cacerts`, SCEP, the CRL service and the trust bundle publish. A
+wrapping key is not a trust anchor and has no business in any of them. Deriving avoids inventing a
+second keystore format, avoids a runtime keystore rewrite, and works whatever algorithm the
+designated key is — RSA, ECDSA, Ed25519 or ML-DSA — because the key is HKDF input material, not an
+encryption key. It is worth saying plainly that this is key reuse: the same private key signs and
+seeds a KEK. It is a one-way derivation from the private key, not an encryption under it, so there
+is no chosen-ciphertext interaction between the two uses; it is still reuse, and an HSM-held key
+cannot do it at all (below).
+
+### How a blob names the key that wrapped it
+
+The blob is self-describing, so a key can be rotated:
+
+```
+"MCAW" | version (1) | kind (1) | key id (32) | salt (32) | nonce (12) | ciphertext+tag
+AAD  = "MCAW" | version | kind | key id          (the first 38 bytes)
+```
+
+The **key id** is SHA-256 over the DER `SubjectPublicKeyInfo` of the designated key's certificate:
+the same SPKI digest the keystore pins, the signer's identity pins and the registry matches on.
+Unwrapping resolves the key by that id and by nothing else. So:
+
+- new secrets are wrapped under whichever key is designated now;
+- old blobs keep unwrapping under the key their id names, for as long as the keystore holds it —
+  and the keystore has no entry removal, so it does;
+- rotation is: designate a new key, and let each column's owner re-wrap its rows on its own sweep.
+  Nothing has to be re-wrapped at once, and nothing breaks if nothing ever is.
+- a blob whose key id the signer does not hold is `UnknownKey`, not a decryption failure.
+
+The **kind** is in the associated data, so the separation below is not only a policy check: a blob
+wrapped as a held private key does not authenticate as a CMP secret even if the policy were
+bypassed, because the AAD would differ and AES-GCM would refuse.
+
+### Who may wrap and unwrap what
+
+| `SigningPurpose` | may wrap | may unwrap |
+|---|---|---|
+| `Cmp` | `CmpSharedSecret` | `CmpSharedSecret` |
+| `Certificate` | `HeldPrivateKey` | — |
+| `Export` | — | `HeldPrivateKey` |
+| every other purpose | nothing | nothing |
+
+`KerberosRealmKey` is a kind the format knows and the policy permits to no purpose, so today it
+cannot be wrapped or unwrapped at all; adopting it means adding its purpose and its row, and the
+availability question below has to be answered first.
+
+A CMP caller therefore cannot unwrap a held private key, and the issuance path that wraps a held
+key cannot read one back — reading it back is the export path's right, which is already the
+right a person holds. Wrap and unwrap are separately permitted for that reason. Neither is held
+to a CA or a space: the wrapping key is the signer's, not a CA's, so there is no owner to hold it
+to. The context still names them and the audit still records them.
+
+Neither operation runs while the signer is locked, and neither runs when the designated key is on
+a PKCS#11 token, since the token will not hand out the key material HKDF needs. An HSM install
+therefore keeps Data Protection for these columns until the signer gains a token-side wrap
+(PKCS#11 C_WrapKey), which is the same shape and a later change.
+
+### What the audit row says
+
+One row per call, allowed or refused, as for every other decision. `Operation` is `WrapSecret` or
+`UnwrapSecret`; `Purpose`, `Caller`, `CaId`, `SpaceId` and `PeerIdentity` as usual; `SecretKind`
+names what kind of secret it was, and `WrappingKeyId` the key id the blob names, so the record
+shows which key a rotation has left in use. `DataHash` is SHA-256 **of the wrapped blob**, on both
+operations and in both directions — never of the plaintext, which would make the audit a
+verification oracle for the secret it is protecting. A refusal records the kind and the key id it
+was told, the way a refused ceremony records the ceremony it was told.
+
+### The CMP secret, first
+
+`EnrollmentTokenEntity.CmpSecretPlaintext` becomes `CmpSecretWrapped`: base64 of the blob above,
+written by `EnrollmentTokenService.GenerateCmpSharedSecretAsync` and read by
+`CmpService.TryVerifyPbmAsync`, which is the only consumer. The column has never been deployed, so
+the rename and the widening fold into `InitialCreate` rather than arriving as a migration. The
+console's "last four characters" hint moves to its own `CmpSecretLastFour` column, because it can
+no longer be taken from a column that is now ciphertext, and four characters of a 43-character
+random secret was already what that screen showed.
+
+The other two columns are not migrated yet. For `CertRequestEntity.HeldPrivateKey` it is the same
+shape and a bigger blast radius: `HeldKeyService` binds its ciphertext to the request id through
+the Data Protection purpose string, which the wrap does not do, so adopting it means either
+accepting that a blob moved between rows still unwraps, or binding the row id into the AAD — the
+latter, and it is a format the envelope already has room for. For `KerberosRealmEntity.ProtectedKey`
+see the next paragraph, which is the reason it is last.
+
+### Availability, honestly
+
+These secrets become unreadable when the signer is unreachable. For CMP that is the right
+coupling: CMP cannot issue anything without the signer either, so the protocol was already down,
+and one extra round trip per CMP transaction is nothing beside the signing round trips in the
+same transaction.
+
+Kerberos realm keys are not like that. They are read on **every** MSAE authentication — every
+Windows autoenrollment request, at machine-account scale, on a schedule the domain sets and not
+us. Putting the signer in that path makes an unreachable signer into a domain-wide authentication
+outage rather than an issuance outage, and makes the signer's throughput the ceiling on
+autoenrollment. So the caching story has to be decided before that column moves, and this is what
+it should be: the realm key is unwrapped once and held in the node's memory, per realm, with a
+bounded lifetime (minutes) and a refresh that fails soft — an unreachable signer keeps serving
+from the cached key until the entry expires, and only then does authentication stop. That is the
+opposite of the fail-closed rule for signing, deliberately: a signature is a new artifact the
+world will trust, and a Kerberos acceptor check is a door that was already open.
+
+And the part that cannot be engineered away: **caching a decrypted secret puts plaintext back in
+the node's memory.** So does using it once without caching. The node has to compute a MAC, so the
+node has to hold the key, so an attacker with code execution on a running node gets every secret
+that node uses while they are there. Caching only widens the window from "during the request" to
+"for the cache's lifetime". It is a real cost and it is chosen, not overlooked.
+
+### What this buys, and what it does not
+
+Wrapping protects these columns **at rest**, and only at rest. A stolen database is now useless
+without the keystore; a stolen database plus a stolen node is now useless too, where before it was
+enough. What it does not buy: a live compromised node can ask the signer to unwrap anything its
+purpose permits, for as long as it is compromised, exactly as it can ask for signatures — bounded
+by the policy table, recorded in the signer's audit, and not prevented. And once unwrapped, the
+secret is plaintext in the node's memory because that is the only place it can be used. This moves
+a class of offline attack out of reach. It does nothing about online ones.

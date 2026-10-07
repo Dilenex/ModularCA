@@ -4,7 +4,6 @@ using ModularCA.Keystore.Config;
 using ModularCA.Keystore.Crypto;
 using ModularCA.Keystore.KeystoreFormat;
 using ModularCA.Shared.Utils;
-using MySqlConnector;
 using System.Text;
 
 namespace ModularCA.Keystore.Utils
@@ -15,7 +14,7 @@ namespace ModularCA.Keystore.Utils
     /// <remarks>
     /// This is the single canonical loader (the duplicate at
     /// <c>ModularCA.API/Startup/KeystoreDbPassphraseLoader.cs</c> was removed). DB connection
-    /// strings are built via <see cref="MySqlConnectionStringBuilder"/> so a password containing
+    /// strings are built via <see cref="ModularCA.Shared.Utils.PostgresConnection"/> so a password containing
     /// <c>;</c>, <c>"</c>, or <c>=</c> cannot inject extra connection-string options. The literal
     /// <c>"ModularCA:PassWrap"</c> passed to <see cref="ScryptKeyDeriver.DeriveFileKey"/> is a
     /// domain-separation tag, not a secret — its purpose is to bind the derivation to this code
@@ -33,68 +32,22 @@ namespace ModularCA.Keystore.Utils
         private const int MaxScryptP = 32;
 
         /// <summary>
-        /// Loads the encrypted passphrase for the named keystore from the database, decrypts it
-        /// with a KEK derived from the runtime-supplied secondary passphrase, and returns the
-        /// plaintext main passphrase.
+        /// Loads the encrypted main passphrase of the named keystore from the database the caller
+        /// already has open, decrypts it with a KEK derived from <paramref name="secondaryPassphrase"/>,
+        /// and returns it as the raw UTF-8 bytes that came out of AES-GCM, so the caller can zero
+        /// them with <see cref="System.Security.Cryptography.CryptographicOperations.ZeroMemory(Span{byte})"/>
+        /// after use. Reads no file: the connection and the secondary passphrase come from the
+        /// caller, which on the signer role took them from the signer's own files.
         /// </summary>
-        /// <summary>
-        /// Returns the decrypted main passphrase as the raw UTF-8 byte
-        /// array that came out of AES-GCM, so callers can zero it with
-        /// <see cref="CryptographicOperations.ZeroMemory"/> after use. Never
-        /// materializes a .NET <c>string</c> that the GC would pin in memory
-        /// unerasably. Legacy callers wanting a string should convert themselves via
-        /// <see cref="System.Text.Encoding.UTF8"/> and deal with the immutable-string
-        /// footgun consciously.
-        /// </summary>
-        public static byte[] RetrieveFromDatabase(string name)
+        /// <param name="db">The application database the keystore rows live in.</param>
+        /// <param name="name">The keystore name, e.g. <c>ca-certs.keystore</c>.</param>
+        /// <param name="secondaryPassphrase">The keystore's secondary passphrase.</param>
+        public static byte[] RetrieveFromDatabase(ModularCADbContext db, string name, string secondaryPassphrase)
         {
-            var configDir = Path.Combine(AppContext.BaseDirectory, "config");
-            var configPath = Path.Combine(configDir, "config.yaml");
-            var config = YamlConfigLoader.Load(configPath);
-
-            // Runtime DB credentials live in db.yaml (config.yaml no longer duplicates them
-            // post-refactor). Mirror the loader path in StartModularCA.cs so the keystore
-            // passphrase retrieval can actually reach the app database.
-            var dbYamlPath = Path.Combine(configDir, "db.yaml");
-            var dbYaml = YamlDbConfigLoader.Load(dbYamlPath);
-            if (dbYaml != null)
-            {
-                config.DB.App.Host = dbYaml.App.Host;
-                config.DB.App.Port = dbYaml.App.Port;
-                config.DB.App.Database = dbYaml.App.Database;
-                config.DB.App.Username = dbYaml.App.Username;
-                config.DB.App.Password = dbYaml.App.Password;
-                config.DB.App.SslMode = dbYaml.App.SslMode;
-            }
-
-            // Build the connection string with MySqlConnectionStringBuilder so values are
-            // properly escaped (defends against ;/"/= in the password).
-            // Enforce TLS on the app DB connection; unparseable mode
-            // values clamp back to Required to prevent a typo silently disabling TLS.
-            var sslMode = Enum.TryParse<MySqlSslMode>(config.DB.App.SslMode, ignoreCase: true, out var _ssl)
-                ? _ssl : MySqlSslMode.Required;
-            var builder = new MySqlConnectionStringBuilder
-            {
-                Server = config.DB.App.Host,
-                Port = (uint)config.DB.App.Port,
-                Database = config.DB.App.Database,
-                UserID = config.DB.App.Username,
-                Password = config.DB.App.Password,
-                SslMode = sslMode
-            };
-            var appConnStr = builder.ConnectionString;
-
-            var options = new DbContextOptionsBuilder<ModularCADbContext>()
-                .UseMySql(appConnStr, ServerVersion.AutoDetect(appConnStr))
-                .Options;
-
-            using var db = new ModularCADbContext(options);
-
+            ArgumentNullException.ThrowIfNull(db);
             var entry = db.Keystores.AsNoTracking().FirstOrDefault(k => k.Name == name)
                 ?? throw new Exception($"❌ Keystore '{name}' not found in database.");
-
-            var keystoreConfigPath = Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml");
-            var secondaryPass = KeystoreYamlLoader.LoadSecondaryPassphrase(keystoreConfigPath, name);
+            var secondaryPass = secondaryPassphrase;
 
             // Bound the KDF parameters exactly as KeystoreFileParser does for the same values
             // when they arrive from a file. These come from a DB row, which was trusted

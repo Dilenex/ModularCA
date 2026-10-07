@@ -9,98 +9,94 @@ using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
+using ModularCA.Shared.Utils;
 using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
 
 /// <summary>
 /// Admin endpoints for managing SSH signing profiles, SSH certificate profiles, and SSH
-/// request profiles. Cross-tenant fence: every handler that resolves a
-/// profile by GUID first verifies the profile's owning CA belongs to a tenant in the
-/// caller's <c>AccessibleTenantIds</c>; otherwise the call collapses to 404 (no leak that
+/// request profiles. Cross-space fence: every handler that resolves a
+/// profile by GUID first verifies the profile's owning CA is inside the caller's
+/// <see cref="SpaceFence"/>; otherwise the call collapses to 404 (no leak that
 /// the row exists) and a failure audit row is emitted so SIEM can alert on probing.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/ssh/profiles")]
 [Authorize]
 [NodeRole(ProcessRole.Control)]
-public class AdminSshProfileController(ModularCADbContext db, IAuditService audit, ICurrentUserService currentUser) : ControllerBase
+public class AdminSshProfileController(ModularCADbContext db, IAuditService audit, ICurrentUserService currentUser,
+    ICaGroupAuthorizationService authService) : ControllerBase
 {
     private readonly ModularCADbContext _db = db;
     private readonly IAuditService _audit = audit;
     private readonly ICurrentUserService _currentUser = currentUser;
 
-    // ── Tenant-fence helpers ───────────────────────────────────────────
+    /// <summary>
+    /// Null when the caller may move a row of scope <paramref name="from"/> (null for a
+    /// system-wide row) to the CA of <paramref name="to"/>: 403 without cert.revoke on that CA,
+    /// 400 when it belongs to another scope (null equals null).
+    /// </summary>
+    private async Task<IActionResult?> RefuseRebindAsync((Guid CaId, Guid? SpaceId)? from, (Guid CaId, Guid? SpaceId) to)
+    {
+        if (_currentUser.User == null || !await authService.HasCaCapabilityAsync(_currentUser.User.Id, to.CaId, Capabilities.CertRevoke))
+            return StatusCode(403, new { error = "You lack cert.revoke on the target CA." });
+        return from?.SpaceId == to.SpaceId
+            ? null
+            : BadRequest(new { error = "The target CA belongs to another scope than the profile." });
+    }
+
+    // ── Space-fence helpers ───────────────────────────────────────────
 
     /// <summary>
-    /// Resolves the owning CA + tenant for an <paramref name="sshCaKeyId"/> and verifies
-    /// the caller's <c>AccessibleTenantIds</c> covers that tenant. Returns the
-    /// (CaId, TenantId) tuple on success, or null when the SSH CA key is missing, the
-    /// linked CA is missing/deleted, or the request is cross-tenant. System admins always
-    /// pass. The 404-collapse policy is enforced at the call site to avoid disclosing
-    /// existence of cross-tenant resources.
+    /// Resolves the owning CA + space for an <paramref name="sshCaKeyId"/> and verifies
+    /// the caller's <see cref="SpaceFence"/> admits that space. Returns the
+    /// (CaId, SpaceId) tuple on success, or null when the SSH CA key is missing, the
+    /// linked CA is missing/deleted, or the request is outside the fence. The 404-collapse
+    /// policy is enforced at the call site to avoid disclosing
+    /// existence of cross-space resources.
     /// </summary>
-    private async Task<(Guid CaId, Guid TenantId)?> ResolveAndFenceBySshCaKeyAsync(Guid sshCaKeyId)
+    private async Task<(Guid CaId, Guid? SpaceId)?> ResolveAndFenceBySshCaKeyAsync(Guid sshCaKeyId)
     {
         var key = await _db.SshCaKeys.AsNoTracking()
             .FirstOrDefaultAsync(k => k.Id == sshCaKeyId);
         if (key == null)
             return null;
 
-        var ca = await _db.CertificateAuthorities
-            .AsNoTracking()
-            .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(c => c.Id == key.CertificateAuthorityId);
-        if (ca == null || ca.IsDeleted)
-            return null;
-
-        if (HttpContext.Items["IsSystemAdmin"] is not true)
-        {
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (tenantIds == null || !tenantIds.Contains(ca.TenantId))
-                return null;
-        }
-        return (ca.Id, ca.TenantId);
+        return await ResolveAndFenceByCaIdAsync(key.CertificateAuthorityId);
     }
 
     /// <summary>
-    /// Resolves the owning CA + tenant for a <paramref name="caId"/> and verifies the
-    /// caller's <c>AccessibleTenantIds</c> covers that tenant. Used by SSH request
+    /// Resolves the owning CA + space for a <paramref name="caId"/> and verifies the
+    /// caller's <see cref="SpaceFence"/> admits that space. Used by SSH request
     /// profile handlers, which carry a direct (optional) CA reference rather than going
     /// through an SSH CA key.
     /// </summary>
-    private async Task<(Guid CaId, Guid TenantId)?> ResolveAndFenceByCaIdAsync(Guid caId)
+    private async Task<(Guid CaId, Guid? SpaceId)?> ResolveAndFenceByCaIdAsync(Guid caId)
     {
         var ca = await _db.CertificateAuthorities
             .AsNoTracking()
-            .IgnoreQueryFilters()
             .FirstOrDefaultAsync(c => c.Id == caId);
-        if (ca == null || ca.IsDeleted)
+        if (ca == null || !Fence.Allows(ca.SpaceId))
             return null;
-
-        if (HttpContext.Items["IsSystemAdmin"] is not true)
-        {
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (tenantIds == null || !tenantIds.Contains(ca.TenantId))
-                return null;
-        }
-        return (ca.Id, ca.TenantId);
+        return (ca.Id, ca.SpaceId);
     }
 
-    /// <summary>True when the caller is a system admin (cross-tenant access permitted).</summary>
+    /// <summary>True when the caller is a system admin (cross-space access permitted).</summary>
     private bool IsSystemAdmin => HttpContext.Items["IsSystemAdmin"] is true;
 
-    /// <summary>Snapshot of tenants the current request may act on; empty set when none.</summary>
-    private HashSet<Guid> AccessibleTenantIds =>
-        (HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>) ?? new HashSet<Guid>();
+    /// <summary>
+    /// The cert.revoke fence the current request may act within, the capability every endpoint
+    /// here demands; an empty one (nothing) when none was resolved.
+    /// </summary>
+    private SpaceFence Fence => SpaceFence.From(HttpContext, Capabilities.CertRevoke);
 
     // ── SSH Signing Profiles ───────────────────────────────────────────
 
     /// <summary>
-    /// Lists all SSH signing profiles. Non-system-admin callers receive only
-    /// profiles whose bound SSH CA key resolves to a CA in an accessible tenant; profiles
-    /// with no SSH CA key binding are excluded for non-system-admins to avoid leaking
-    /// unbound rows that an admin in another tenant could later claim.
+    /// Lists the SSH signing profiles whose bound SSH CA key resolves to a CA inside the
+    /// caller's <see cref="SpaceFence"/>; an instance-wide caller sees all, unbound ones
+    /// included, which are otherwise excluded so another space cannot later claim them.
     /// </summary>
     [HttpGet("signing")]
     [Authorize(Policy = "CaOperator")]
@@ -108,7 +104,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     {
         await _currentUser.EnsureLoadedAsync();
 
-        if (IsSystemAdmin)
+        if (Fence.InstanceWide)
         {
             var all = await _db.SshSigningProfiles.AsNoTracking()
                 .OrderBy(p => p.Name)
@@ -123,17 +119,16 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
             return Ok(all);
         }
 
-        var tenantIds = AccessibleTenantIds;
-        if (tenantIds.Count == 0)
+        if (Fence.IsEmpty)
             return Ok(Array.Empty<object>());
+        var visibleCas = _db.CertificateAuthorities.AsNoTracking()
+            .Where(Fence.Predicate<CertificateAuthorityEntity>(ca => ca.SpaceId));
 
-        // Join SshSigningProfile → SshCaKey → CertificateAuthority and filter by tenant.
+        // SSH CAs are instance CAs, so instance scope is what admits them.
         var profiles = await (
             from p in _db.SshSigningProfiles.AsNoTracking()
             join k in _db.SshCaKeys.AsNoTracking() on p.SshCaKeyId equals k.Id
-            join ca in _db.CertificateAuthorities.AsNoTracking().IgnoreQueryFilters()
-                on k.CertificateAuthorityId equals ca.Id
-            where !ca.IsDeleted && tenantIds.Contains(ca.TenantId)
+            join ca in visibleCas on k.CertificateAuthorityId equals ca.Id
             orderby p.Name
             select new
             {
@@ -147,7 +142,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
 
     /// <summary>
     /// Retrieves a single SSH signing profile by its identifier. Enforces the
-    /// tenant fence via the profile's bound SSH CA key; cross-tenant or missing-key
+    /// space fence via the profile's bound SSH CA key; cross-space or missing-key
     /// requests collapse to 404 and emit a failure audit row.
     /// </summary>
     [HttpGet("signing/{id:guid}")]
@@ -176,9 +171,10 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
 
     /// <summary>
     /// Creates a new SSH signing profile. The target SSH CA key is fenced before
-    /// any row is written so a tenant-A operator cannot bind a new profile to a tenant-B
+    /// any row is written so a space-A operator cannot bind a new profile to a space-B
     /// CA. Failure paths emit a failure audit row. Step-up MFA is required because creating
     /// a signing profile binds it to an SSH CA key whose material can mint host/user certs.
+    /// SourceAddressRestrictions must be a JSON array of addresses or CIDR networks sshd accepts (400).
     /// </summary>
     [HttpPost("signing")]
     [Authorize]
@@ -195,6 +191,9 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
                 new { request.Name, request.SshCaKeyId });
             return NotFound();
         }
+
+        if (SshProfileFieldRules.ValidateSourceAddressRestrictions(request.SourceAddressRestrictions) is { } sourceError)
+            return BadRequest(new { error = sourceError });
 
         var entity = new SshSigningProfileEntity
         {
@@ -217,7 +216,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
             new { entity.Name, entity.SshCaKeyId, entity.MaxValidityHours, entity.AllowUserCerts, entity.AllowHostCerts },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: fence.Value.CaId,
-            tenantId: fence.Value.TenantId);
+            spaceId: fence.Value.SpaceId);
 
         return Ok(new { entity.Id, entity.Name, entity.CreatedAt });
     }
@@ -225,9 +224,11 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// <summary>
     /// Updates an existing SSH signing profile. Fences both the existing
     /// profile's bound SSH CA key AND any new <c>SshCaKeyId</c> in the request, so a
-    /// caller cannot move a profile out of their accessible tenants nor mutate a profile
-    /// they cannot read. Failure paths emit a failure audit row. Step-up MFA is required
+    /// caller cannot move a profile out of their accessible spaces nor mutate a profile
+    /// they cannot read; a new key's CA also needs cert.revoke and the profile's own scope
+    /// (<see cref="RefuseRebindAsync"/>). Failure paths emit a failure audit row. Step-up MFA is required
     /// because mutations alter validity, extensions, or CA-key binding for SSH issuance.
+    /// SourceAddressRestrictions, when sent, must be a JSON array of addresses or CIDR networks sshd accepts (400).
     /// </summary>
     [HttpPut("signing/{id:guid}")]
     [Authorize(Policy = "CaOperator")]
@@ -239,7 +240,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
         if (entity == null) return NotFound();
 
         // Fence on the profile's existing CA key binding.
-        (Guid CaId, Guid TenantId)? fence = entity.SshCaKeyId is Guid existingKeyId
+        (Guid CaId, Guid? SpaceId)? fence = entity.SshCaKeyId is Guid existingKeyId
             ? await ResolveAndFenceBySshCaKeyAsync(existingKeyId)
             : null;
         if (fence == null)
@@ -258,8 +259,13 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
                     new { TargetSshCaKeyId = request.SshCaKeyId.Value });
                 return NotFound();
             }
+            if (await RefuseRebindAsync(fence, newFence.Value) is { } refused)
+                return refused;
             fence = newFence;
         }
+
+        if (SshProfileFieldRules.ValidateSourceAddressRestrictions(request.SourceAddressRestrictions) is { } sourceError)
+            return BadRequest(new { error = sourceError });
 
         if (request.Name != null) entity.Name = request.Name;
         if (request.Description != null) entity.Description = request.Description;
@@ -278,14 +284,14 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
             new { entity.Name, entity.SshCaKeyId, entity.MaxValidityHours },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: fence.Value.CaId,
-            tenantId: fence.Value.TenantId);
+            spaceId: fence.Value.SpaceId);
 
         return Ok(new { entity.Id, entity.Name });
     }
 
     /// <summary>
     /// Deletes an SSH signing profile by its identifier. Fences the profile's
-    /// bound SSH CA key so a tenant-A operator cannot delete tenant-B's profile.
+    /// bound SSH CA key so a space-A operator cannot delete space-B's profile.
     /// Failure paths emit a failure audit row. Step-up MFA is required because deletion
     /// permanently removes issuance constraints tied to a live SSH CA key.
     /// </summary>
@@ -298,7 +304,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
         var entity = await _db.SshSigningProfiles.FindAsync(id);
         if (entity == null) return NotFound();
 
-        (Guid CaId, Guid TenantId)? fence = entity.SshCaKeyId is Guid keyId
+        (Guid CaId, Guid? SpaceId)? fence = entity.SshCaKeyId is Guid keyId
             ? await ResolveAndFenceBySshCaKeyAsync(keyId)
             : null;
         if (fence == null)
@@ -316,7 +322,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
             new { Name = deletedName },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: fence.Value.CaId,
-            tenantId: fence.Value.TenantId);
+            spaceId: fence.Value.SpaceId);
 
         return Ok(new { message = "SSH signing profile deleted" });
     }
@@ -325,10 +331,10 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
 
     /// <summary>
     /// Lists all SSH certificate profiles. <see cref="SshCertProfileEntity"/>
-    /// has no direct CA/tenant linkage in the current schema (it is a global catalog of
+    /// has no direct CA/space linkage in the current schema (it is a global catalog of
     /// principal/extension constraints), so list output is identical for all callers; the
     /// create/update/delete handlers are restricted to system admins so a
-    /// tenant operator cannot mutate this shared catalog out from under another tenant.
+    /// space operator cannot mutate this shared catalog out from under another space.
     /// </summary>
     [HttpGet("cert")]
     [Authorize(Policy = "CaOperator")]
@@ -350,7 +356,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
 
     /// <summary>
     /// Retrieves a single SSH certificate profile by its identifier. Cert
-    /// profiles are a system-wide catalog (no per-tenant binding in the schema), so reads
+    /// profiles are a system-wide catalog (no per-space binding in the schema), so reads
     /// are permitted to any authenticated <c>CaOperator</c>; mutations are gated to
     /// system admins on the corresponding write endpoints.
     /// </summary>
@@ -373,10 +379,11 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
 
     /// <summary>
     /// Creates a new SSH certificate profile. Because
-    /// <see cref="SshCertProfileEntity"/> has no per-tenant FK, creation is restricted to
-    /// system admins so a tenant operator cannot inject globally-visible profiles.
+    /// <see cref="SshCertProfileEntity"/> has no per-space FK, creation is restricted to
+    /// system admins so a space operator cannot inject globally-visible profiles.
     /// Non-admin callers receive 404 and a failure audit row is emitted. Step-up MFA is
-    /// required because cert profiles constrain SSH issuance globally across tenants.
+    /// required because cert profiles constrain SSH issuance globally across spaces.
+    /// AllowedPrincipalPatterns must be a JSON array of .NET regexes that compile (400).
     /// </summary>
     [HttpPost("cert")]
     [Authorize]
@@ -392,6 +399,9 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
                 new { request.Name });
             return NotFound();
         }
+
+        if (SshProfileFieldRules.ValidateAllowedPrincipalPatterns(request.AllowedPrincipalPatterns) is { } patternError)
+            return BadRequest(new { error = patternError });
 
         var entity = new SshCertProfileEntity
         {
@@ -417,9 +427,10 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
 
     /// <summary>
     /// Updates an existing SSH certificate profile. SSH cert profiles are
-    /// system-wide (no tenant FK), so mutation is restricted to system admins. Non-admin
+    /// system-wide (no space FK), so mutation is restricted to system admins. Non-admin
     /// callers receive 404 and a failure audit row is emitted. Step-up MFA is required
-    /// because changes affect issuance constraints applied to every tenant.
+    /// because changes affect issuance constraints applied to every space.
+    /// AllowedPrincipalPatterns, when sent, must be a JSON array of .NET regexes that compile (400).
     /// </summary>
     [HttpPut("cert/{id:guid}")]
     [Authorize]
@@ -437,6 +448,9 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
 
         var entity = await _db.SshCertProfiles.FindAsync(id);
         if (entity == null) return NotFound();
+
+        if (SshProfileFieldRules.ValidateAllowedPrincipalPatterns(request.AllowedPrincipalPatterns) is { } patternError)
+            return BadRequest(new { error = patternError });
 
         if (request.Name != null) entity.Name = request.Name;
         if (request.Description != null) entity.Description = request.Description;
@@ -458,9 +472,9 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
 
     /// <summary>
     /// Deletes an SSH certificate profile by its identifier. SSH cert profiles
-    /// are system-wide (no tenant FK), so deletion is restricted to system admins.
+    /// are system-wide (no space FK), so deletion is restricted to system admins.
     /// Non-admin callers receive 404 and a failure audit row is emitted. Step-up MFA is
-    /// required because deletion strips SSH issuance constraints tenants may depend on.
+    /// required because deletion strips SSH issuance constraints spaces may depend on.
     /// </summary>
     [HttpDelete("cert/{id:guid}")]
     [Authorize]
@@ -493,10 +507,9 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     // ── SSH Request Profiles ───────────────────────────────────────────
 
     /// <summary>
-    /// Lists all SSH request profiles. Non-system-admin callers receive only
-    /// profiles whose <c>CertificateAuthorityId</c> resolves to a CA in an accessible
-    /// tenant; profiles with a null CA scope are surfaced only to system admins so that
-    /// "global" rows do not leak across tenants.
+    /// Lists the SSH request profiles whose <c>CertificateAuthorityId</c> resolves to a CA
+    /// inside the caller's <see cref="SpaceFence"/>; profiles with a null CA scope are
+    /// surfaced only to an instance-wide caller, who sees all.
     /// </summary>
     [HttpGet("request")]
     [Authorize(Policy = "CaOperator")]
@@ -504,7 +517,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     {
         await _currentUser.EnsureLoadedAsync();
 
-        if (IsSystemAdmin)
+        if (Fence.InstanceWide)
         {
             var all = await _db.SshRequestProfiles.AsNoTracking()
                 .OrderBy(p => p.Name)
@@ -519,17 +532,15 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
             return Ok(all);
         }
 
-        var tenantIds = AccessibleTenantIds;
-        if (tenantIds.Count == 0)
+        if (Fence.IsEmpty)
             return Ok(Array.Empty<object>());
+        var visibleCas = _db.CertificateAuthorities.AsNoTracking()
+            .Where(Fence.Predicate<CertificateAuthorityEntity>(ca => ca.SpaceId));
 
         var profiles = await (
             from p in _db.SshRequestProfiles.AsNoTracking()
-            join ca in _db.CertificateAuthorities.AsNoTracking().IgnoreQueryFilters()
-                on p.CertificateAuthorityId equals ca.Id
+            join ca in visibleCas on p.CertificateAuthorityId equals ca.Id
             where p.CertificateAuthorityId != null
-                && !ca.IsDeleted
-                && tenantIds.Contains(ca.TenantId)
             orderby p.Name
             select new
             {
@@ -543,8 +554,8 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
 
     /// <summary>
     /// Retrieves a single SSH request profile by its identifier. Enforces the
-    /// tenant fence on the profile's <c>CertificateAuthorityId</c>; profiles with null CA
-    /// scope are visible only to system admins. Cross-tenant or null-scope-non-admin
+    /// space fence on the profile's <c>CertificateAuthorityId</c>; profiles with null CA
+    /// scope are visible only to system admins. Cross-space or null-scope-non-admin
     /// requests collapse to 404 and emit a failure audit row.
     /// </summary>
     [HttpGet("request/{id:guid}")]
@@ -575,7 +586,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// Creates a new SSH request profile. The target CA (when supplied) is
     /// fenced before any row is written; null-CA (system-wide) rows may only be created
     /// by system admins. Failure paths emit a failure audit row. Step-up MFA is required
-    /// because request profiles gate which signing/cert profiles a tenant can invoke.
+    /// because request profiles gate which signing/cert profiles a space can invoke.
     /// </summary>
     [HttpPost("request")]
     [Authorize]
@@ -585,7 +596,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     {
         await _currentUser.EnsureLoadedAsync();
 
-        (Guid CaId, Guid TenantId)? fence = null;
+        (Guid CaId, Guid? SpaceId)? fence = null;
         if (request.CertificateAuthorityId.HasValue)
         {
             fence = await ResolveAndFenceByCaIdAsync(request.CertificateAuthorityId.Value);
@@ -622,7 +633,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
             new { entity.Name, entity.RequireApproval, entity.MaxValidityHours, entity.CertificateAuthorityId },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: fence?.CaId,
-            tenantId: fence?.TenantId);
+            spaceId: fence?.SpaceId);
 
         return Ok(new { entity.Id, entity.Name, entity.CreatedAt });
     }
@@ -630,9 +641,10 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// <summary>
     /// Updates an existing SSH request profile. The existing CA scope is fenced
     /// before any mutation; if the request rebinds to a new CA, the new target is also
-    /// fenced. Moving a profile to/from null-CA scope requires system admin. Failure paths
+    /// fenced, and needs cert.revoke and the profile's own scope (<see cref="RefuseRebindAsync"/>).
+    /// Moving a profile to/from null-CA scope requires system admin. Failure paths
     /// emit a failure audit row. Step-up MFA is required because changes alter which SSH
-    /// signing/cert bundles a tenant can invoke during enrollment.
+    /// signing/cert bundles a space can invoke during enrollment.
     /// </summary>
     [HttpPut("request/{id:guid}")]
     [Authorize(Policy = "CaOperator")]
@@ -650,7 +662,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
         }
 
         // Capture an audit anchor for the existing CA (may be null for system-wide rows).
-        (Guid CaId, Guid TenantId)? fence = entity.CertificateAuthorityId.HasValue
+        (Guid CaId, Guid? SpaceId)? fence = entity.CertificateAuthorityId.HasValue
             ? await ResolveAndFenceByCaIdAsync(entity.CertificateAuthorityId.Value)
             : null;
 
@@ -664,6 +676,8 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
                     new { TargetCertificateAuthorityId = request.CertificateAuthorityId.Value });
                 return NotFound();
             }
+            if (await RefuseRebindAsync(fence, newFence.Value) is { } refused)
+                return refused;
             fence = newFence;
         }
 
@@ -682,7 +696,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
             new { entity.Name, entity.RequireApproval, entity.MaxValidityHours, entity.CertificateAuthorityId },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: fence?.CaId,
-            tenantId: fence?.TenantId);
+            spaceId: fence?.SpaceId);
 
         return Ok(new { entity.Id, entity.Name });
     }
@@ -691,7 +705,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// Deletes an SSH request profile by its identifier. Fences the profile's
     /// CA scope; null-scope profiles may only be deleted by system admins. Failure paths
     /// emit a failure audit row. Step-up MFA is required because deletion withdraws the
-    /// allow-list of SSH signing/cert bundles available to a tenant.
+    /// allow-list of SSH signing/cert bundles available to a space.
     /// </summary>
     [HttpDelete("request/{id:guid}")]
     [Authorize(Policy = "CaOperator")]
@@ -708,7 +722,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
             return NotFound();
         }
 
-        (Guid CaId, Guid TenantId)? fence = entity.CertificateAuthorityId.HasValue
+        (Guid CaId, Guid? SpaceId)? fence = entity.CertificateAuthorityId.HasValue
             ? await ResolveAndFenceByCaIdAsync(entity.CertificateAuthorityId.Value)
             : null;
 
@@ -721,7 +735,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
             new { Name = deletedName },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: fence?.CaId,
-            tenantId: fence?.TenantId);
+            spaceId: fence?.SpaceId);
 
         return Ok(new { message = "SSH request profile deleted" });
     }
@@ -730,21 +744,21 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
 
     /// <summary>
     /// Returns true when an SSH request profile with the supplied (optional) CA scope is
-    /// accessible to the current caller: system admins always pass; null-CA profiles are
-    /// system-wide and require system admin; otherwise the CA's tenant must be in
-    /// <c>AccessibleTenantIds</c>.
+    /// accessible to the current caller: an instance-wide fence always passes; null-CA
+    /// profiles are system-wide and need it; otherwise the CA's space must be inside the
+    /// caller's <see cref="SpaceFence"/>.
     /// </summary>
     private async Task<bool> IsRequestProfileAccessibleAsync(Guid? certificateAuthorityId)
     {
-        if (IsSystemAdmin) return true;
+        if (Fence.InstanceWide) return true;
         if (!certificateAuthorityId.HasValue) return false;
         return await ResolveAndFenceByCaIdAsync(certificateAuthorityId.Value) != null;
     }
 
     /// <summary>
-    /// Emits a failure audit row when a tenant-fence rejection occurs so SIEM can alert
+    /// Emits a failure audit row when a space-fence rejection occurs so SIEM can alert
     /// on probing attempts. Uses <see cref="AuditActionType.SystemAdminElevatedAccess"/>
-    /// as the action type (the closest existing constant for cross-tenant probing).
+    /// as the action type (the closest existing constant for cross-space probing).
     /// </summary>
     private Task EmitFenceDeniedAsync(string targetEntityType, Guid? targetEntityId, string operation, object? extra = null)
     {
@@ -754,10 +768,10 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
             _currentUser.User?.Username,
             targetEntityType,
             targetEntityId?.ToString(),
-            new { Operation = operation, Reason = "cross-tenant-or-not-found", Extra = extra },
+            new { Operation = operation, Reason = "cross-space-or-not-found", Extra = extra },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             success: false,
-            errorMessage: "Cross-tenant access denied");
+            errorMessage: "Cross-space access denied");
     }
 }
 

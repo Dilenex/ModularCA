@@ -6,6 +6,8 @@ using ModularCA.API.Controllers.v1.Auth;
 using ModularCA.API.Filters;
 using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
+using ModularCA.Shared.Authorization;
+using ModularCA.Core.Helpers;
 using ModularCA.Core.Services;
 using ModularCA.Database;
 using Serilog;
@@ -14,6 +16,7 @@ using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models;
 using ModularCA.Shared.Utils;
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 using ModularCA.Shared.Errors;
 using ModularCA.API.Startup;
 
@@ -31,7 +34,7 @@ namespace ModularCA.API.Controllers.v1.Admin
     [Route("api/v1/admin/authorities")]
     [Authorize]
     [NodeRole(ProcessRole.Control)]
-    public class AdminCaController(ICertificateStore certService, ICurrentUserService currentUser, ModularCADbContext db, IAuditService audit, CaCreationService caCreationService, IDistributedCache cache, ISecurityAlertService alertService, ICaGroupAuthorizationService groupAuth, IKeyCeremonyService ceremonySvc, IFeatureFlagService featureFlags) : ControllerBase
+    public class AdminCaController(ICertificateStore certService, ICurrentUserService currentUser, ModularCADbContext db, IAuditService audit, CaCreationService caCreationService, IDistributedCache cache, ISecurityAlertService alertService, ICaGroupAuthorizationService groupAuth, IKeyCeremonyService ceremonySvc, IFeatureFlagService featureFlags, ModularCA.Core.Services.Ocsp.IOcspResponderReadiness ocspReadiness) : ControllerBase
     {
         private readonly ICertificateStore _certService = certService;
         private readonly ICurrentUserService _currentUser = currentUser;
@@ -43,6 +46,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         private readonly ICaGroupAuthorizationService _groupAuth = groupAuth;
         private readonly IKeyCeremonyService _ceremonySvc = ceremonySvc;
         private readonly IFeatureFlagService _featureFlags = featureFlags;
+        private readonly ModularCA.Core.Services.Ocsp.IOcspResponderReadiness _ocspReadiness = ocspReadiness;
 
         [HttpGet]
         [Authorize(Policy = "CaAuditor")]
@@ -54,10 +58,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                 .AsNoTracking()
                 .AsQueryable();
 
-            // Filter CAs to only those belonging to the user's accessible tenants
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (tenantIds != null)
-                query = query.Where(ca => tenantIds.Contains(ca.TenantId));
+            var fence = SpaceFence.From(HttpContext, Capabilities.CertView);
+            query = query.Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.SpaceId));
 
             var cas = await query.ToListAsync();
 
@@ -85,8 +87,8 @@ namespace ModularCA.API.Controllers.v1.Admin
         }
 
         /// <summary>
-        /// Returns all CA certificates including system CAs, filtered by the current user's tenant access.
-        /// System admins see all CA certificates; other users see only those belonging to their accessible tenants.
+        /// Returns all CA certificates including system CAs, filtered by the caller's
+        /// <see cref="SpaceFence"/>: an instance-wide caller sees all, others those of CAs inside it.
         /// </summary>
         [HttpGet("include-system-ca")]
         [Authorize(Policy = "CaAuditor")]
@@ -99,12 +101,12 @@ namespace ModularCA.API.Controllers.v1.Admin
             var certs = await _certService.GetAllCertificatesAsync();
             var caCerts = certs.Where(c => c.IsCA).ToList();
 
-            // Apply tenant filtering for non-system-admins
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (tenantIds != null && HttpContext.Items["IsSystemAdmin"] is not true)
+            var fence = SpaceFence.From(HttpContext, Capabilities.CertView);
+            if (!fence.InstanceWide)
             {
                 var accessibleCertIds = await _db.CertificateAuthorities
-                    .Where(ca => tenantIds.Contains(ca.TenantId) && ca.CertificateId != null)
+                    .Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.SpaceId))
+                    .Where(ca => ca.CertificateId != null)
                     .Select(ca => ca.CertificateId!.Value)
                     .ToListAsync();
                 var accessibleCertIdSet = new HashSet<Guid>(accessibleCertIds);
@@ -133,8 +135,8 @@ namespace ModularCA.API.Controllers.v1.Admin
 
         /// <summary>
         /// Retrieves CA certificate metadata by serial number. Enforces that
-        /// the caller has access to the owning CA's tenant before returning the record, and
-        /// collapses cross-tenant mismatches to 404 to avoid existence oracles.
+        /// the caller has access to the owning CA's space before returning the record, and
+        /// collapses cross-space mismatches to 404 to avoid existence oracles.
         /// </summary>
         [HttpGet("{serial}")]
         [Authorize(Policy = "CaAuditor")]
@@ -153,7 +155,7 @@ namespace ModularCA.API.Controllers.v1.Admin
 
         /// <summary>
         /// Downloads a CA certificate file by serial. Applies the same
-        /// tenant gate as <see cref="GetCertificateInfo"/> and returns 404 on mismatch.
+        /// space gate as <see cref="GetCertificateInfo"/> and returns 404 on mismatch.
         /// </summary>
         [HttpGet("{serial}/file")]
         [Authorize(Policy = "CaAuditor")]
@@ -202,8 +204,13 @@ namespace ModularCA.API.Controllers.v1.Admin
         }
 
         /// <summary>
-        /// Returns the CA hierarchy tree with full certificate details, protocol configs, and service URLs.
-        /// System admins see all CAs; other users see only CAs belonging to their accessible tenants.
+        /// Returns the CA hierarchy tree with each CA's space, full certificate details, protocol configs, and service URLs.
+        /// Each CA carries <c>ocspResponder</c>: how it answers OCSP (<c>mode</c>), when every request for it
+        /// is refused, why (<c>problem</c>), and the responder certificate it points at
+        /// (<c>responderSerial</c>, <c>responderSubject</c>, <c>responderNotAfter</c>); null for a CA that is
+        /// disabled or has no certificate. <c>certificate.carriesDigitalSignature</c> says whether the CA
+        /// certificate's key usage includes digitalSignature; null when the certificate cannot be read.
+        /// System admins see all CAs; other users see only CAs belonging to their accessible spaces.
         /// </summary>
         [HttpGet("hierarchy")]
         [Authorize(Policy = "CaAuditor")]
@@ -213,14 +220,13 @@ namespace ModularCA.API.Controllers.v1.Admin
         {
             var caQuery = _db.CertificateAuthorities
                 .Include(ca => ca.Certificate)
+                .Include(ca => ca.Space)
                 .AsNoTracking()
                 .Where(ca => !ca.IsSshCa) // SSH CAs are managed separately via /admin/ssh — keep them out of the X.509 hierarchy
                 .AsQueryable();
 
-            // Filter CAs to only those belonging to the user's accessible tenants
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (tenantIds != null)
-                caQuery = caQuery.Where(ca => tenantIds.Contains(ca.TenantId));
+            var fence = SpaceFence.From(HttpContext, Capabilities.CertView);
+            caQuery = caQuery.Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.SpaceId));
 
             var cas = await caQuery.ToListAsync();
             var caIds = cas.Select(ca => ca.Id).ToHashSet();
@@ -237,6 +243,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                 .Where(su => caCertIds.Contains(su.CaCertificateId))
                 .AsNoTracking()
                 .ToListAsync();
+
+            var ocspStates = await _ocspReadiness.AssessAsync(caIds, HttpContext.RequestAborted);
 
             // Guard against a malformed parent chain (a ParentCaId cycle) causing unbounded
             // recursion → StackOverflowException → 500 that would blank the entire CA tree (and with
@@ -271,13 +279,17 @@ namespace ModularCA.API.Controllers.v1.Admin
                     ca.Id,
                     ca.Name,
                     ca.Label,
-                    ca.TenantId,
+                    ca.SpaceId,
+                    SpaceName = ca.Space?.Name,
                     ca.Type,
                     IsRoot = ca.Type == "Root",
                     ca.IsDefault,
                     ca.IsEnabled,
                     ca.ParentCaId,
                     ca.OcspResponderCertificateId,
+                    OcspResponder = ocspStates.TryGetValue(ca.Id, out var ocsp)
+                        ? new { ocsp.Mode, ocsp.Problem, ocsp.ResponderSerial, ocsp.ResponderSubject, ocsp.ResponderNotAfter }
+                        : null,
                     ca.CmpSigningCertificateId,
                     ca.CertificateId,
                     Certificate = ca.Certificate != null ? new
@@ -294,6 +306,9 @@ namespace ModularCA.API.Controllers.v1.Admin
                         ca.Certificate.KeyUsagesJson,
                         ca.Certificate.ExtendedKeyUsagesJson,
                         ca.Certificate.Pem,
+                        // Read from the certificate itself: it decides whether a CA without a CMP
+                        // signer can sign CMP responses that OpenSSL-based clients accept.
+                        CarriesDigitalSignature = CarriesDigitalSignature(ca.Certificate.Pem),
                     } : null,
                     // The key algorithm the CA actually has, read from its certificate. The console
                     // needs it to say, before anything is saved, that SCEP cannot run here.
@@ -309,7 +324,7 @@ namespace ModularCA.API.Controllers.v1.Admin
             }
 
             // Top level = true roots (no parent) PLUS "orphans" whose parent is not in the visible set
-            // (e.g. filtered out by the tenant fence or the SSH-CA exclusion). Surfacing orphans here
+            // (e.g. filtered out by the space fence or the SSH-CA exclusion). Surfacing orphans here
             // means a CA never silently disappears from the tree just because its parent isn't visible —
             // which previously made a freshly-created sub-CA (and the apparent loss of the whole list)
             // look like the data had vanished.
@@ -319,8 +334,22 @@ namespace ModularCA.API.Controllers.v1.Admin
             return Ok(result);
         }
 
+        /// <summary>Whether the certificate in <paramref name="pem"/> carries digitalSignature; null when it cannot be read.</summary>
+        private static bool? CarriesDigitalSignature(string? pem)
+        {
+            if (string.IsNullOrWhiteSpace(pem)) return null;
+            try { return CertificateUtil.CarriesDigitalSignature(CertificateUtil.ParseFromPem(pem)); }
+            catch (Exception) { return null; }
+        }
+
         /// <summary>
         /// Update CA properties. Runtime fields (Name, Label, IsDefault, IsEnabled) take effect immediately.
+        /// A new label must match the label pattern and carry no reserved prefix (400); a label or
+        /// name another CA of the instance has, soft-deleted CAs included, is a conflict (409), as is
+        /// a new label while anything references the current one: issued certificates, ACME accounts
+        /// or orders, or protocol audit records (<see cref="CaLabelRules.EnsureLabelChangeableAsync"/>,
+        /// 409 <see cref="ErrorCodes.CaLabelLocked"/> naming them). A label once used is fixed for good.
+        /// Making a CA the default clears the default on every other CA of the instance.
         /// Requires step-up MFA verification.
         /// </summary>
         [HttpPut("{id:guid}")]
@@ -334,6 +363,37 @@ namespace ModularCA.API.Controllers.v1.Admin
             var ca = await _db.CertificateAuthorities.FindAsync(id);
             if (ca == null)
                 return NotFound(new { error = $"CA with ID {id} not found" });
+
+            var newLabel = request.Label != null && request.Label != ca.Label ? request.Label : null;
+            var newName = request.Name != null && request.Name != ca.Name ? request.Name : null;
+            if (newLabel != null)
+            {
+                try
+                {
+                    CaLabelRules.Validate(newLabel);
+                }
+                catch (ArgumentException ex)
+                {
+                    return BadRequest(new { error = ex.Message });
+                }
+                try
+                {
+                    // The audit database is optional, so it is resolved here rather than injected.
+                    await CaLabelRules.EnsureLabelChangeableAsync(_db, HttpContext.RequestServices.GetService<AuditDbContext>(), id, ca.Label);
+                }
+                catch (ResourceConflictException ex)
+                {
+                    return Conflict(new { error = ex.Message, code = ex.Code });
+                }
+            }
+            try
+            {
+                await CaLabelRules.EnsureUniqueAsync(_db, newLabel, newName, exceptCaId: id);
+            }
+            catch (ResourceConflictException ex)
+            {
+                return Conflict(new { error = ex.Message, code = ex.Code });
+            }
 
             var changes = new List<string>();
 
@@ -366,7 +426,15 @@ namespace ModularCA.API.Controllers.v1.Admin
                 changes.Add("IsEnabled");
             }
 
-            await _db.SaveChangesAsync();
+            try
+            {
+                await _db.SaveChangesAsync();
+            }
+            catch (DbUpdateException ex) when (CaLabelRules.IsNameRace(ex))
+            {
+                var conflict = CaLabelRules.NameRaceConflict(newLabel, newName);
+                return Conflict(new { error = conflict.Message, code = conflict.Code });
+            }
 
             if (changes.Count > 0)
             {
@@ -374,7 +442,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                 await _audit.LogAsync(AuditActionType.CaUpdated, _currentUser.User?.Id, _currentUser.User?.Username,
                     "CertificateAuthority", id.ToString(), new { Changes = changes, ca.Name, ca.Label },
                     HttpContext.Connection.RemoteIpAddress?.ToString(),
-                    certificateAuthorityId: ca.Id, tenantId: ca.TenantId);
+                    certificateAuthorityId: ca.Id, spaceId: ca.SpaceId);
             }
 
             return Ok(new
@@ -387,10 +455,13 @@ namespace ModularCA.API.Controllers.v1.Admin
 
         /// <summary>
         /// Create an intermediate CA signed by a parent CA. Requires step-up MFA verification.
-        /// Open to a tenant administrator: <c>ca.manage</c> held tenant-wide for the target tenant,
-        /// with a parent in that tenant or one the caller holds <c>ca.manage</c> on. The tenant
+        /// Open to a space administrator: <c>ca.manage</c> held space-wide for the target space,
+        /// with a parent in that space or one the caller holds <c>ca.manage</c> on. The space
         /// and parent come from the body, so the check is made here rather than by a route policy
-        /// (see <see cref="CaCreationAccess"/>).
+        /// (see <see cref="CaCreationAccess"/>). A parent that is disabled, revoked or outside its
+        /// validity is refused before any ceremony is opened, as is a name constraint
+        /// <see cref="NameConstraintRules"/> refuses (400). The body names the new CA's scope
+        /// explicitly, a space id or scope "instance"; neither is a 400.
         /// </summary>
         [HttpPost("create-intermediate")]
         [Authorize]
@@ -399,12 +470,14 @@ namespace ModularCA.API.Controllers.v1.Admin
         {
             await _currentUser.EnsureLoadedAsync();
             if (_currentUser.User == null) return Unauthorized();
+            if (ModularCA.Shared.Models.KeyCeremonyParameters.ScopeError(request.SpaceId, request.Scope) is string scopeError)
+                return BadRequest(new { error = scopeError });
 
-            if (!await CaCreationAccess.MayCreateIntermediateAsync(_groupAuth, _db, _currentUser.User.Id, request.TenantId, request.ParentCaId))
+            if (!await CaCreationAccess.MayCreateIntermediateAsync(_groupAuth, _db, _currentUser.User.Id, request.SpaceId, request.ParentCaId))
             {
-                Log.Warning("Authorization denied for user {UserId} ({Username}) creating an intermediate CA in tenant {TenantId} under parent {ParentCaId}",
-                    _currentUser.User.Id, _currentUser.User.Username, request.TenantId, request.ParentCaId);
-                return StatusCode(403, new { error = "You need ca.manage for the target tenant, and for the parent CA when it belongs to another tenant." });
+                Log.Warning("Authorization denied for user {UserId} ({Username}) creating an intermediate CA in space {SpaceId} under parent {ParentCaId}",
+                    _currentUser.User.Id, _currentUser.User.Username, request.SpaceId, request.ParentCaId);
+                return StatusCode(403, new { error = "You need ca.manage for the target space, and for the parent CA when it belongs to another space." });
             }
 
             var parentCa = await _db.CertificateAuthorities
@@ -417,6 +490,12 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (parentCa.Certificate == null)
                 return BadRequest(new { error = "Parent CA has no certificate" });
 
+            if (parentCa.Certificate.Revoked)
+                return BadRequest(new { error = "Parent CA is revoked and cannot sign an intermediate." });
+            var utcNow = DateTime.UtcNow;
+            if (utcNow < parentCa.Certificate.NotBefore || utcNow > parentCa.Certificate.NotAfter)
+                return BadRequest(new { error = "Parent CA is outside its validity and cannot sign an intermediate." });
+
             // The System Signing CA signs keystore entries only — never sub-CAs or
             // end-entity certs. Refuse to let it parent a new CA.
             if (string.Equals(parentCa.Label, "system-signing-ca", StringComparison.OrdinalIgnoreCase))
@@ -426,9 +505,16 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (!KeyAlgorithmPolicy.IsAllowed(request.KeyAlgorithm, request.KeySize))
                 return BadRequest(new { error = $"Key algorithm '{request.KeyAlgorithm}' with size/curve '{request.KeySize}' is not permitted. Allowed: RSA 2048/3072/4096/7680/8192, ECDSA P-256/P-384/P-521, Ed25519, Ed448, ML-DSA-44/65/87, SLH-DSA-*." });
 
-            // Check ceremony-first enforcement for this tenant
-            var tenant = await _db.Tenants.FindAsync(request.TenantId);
-            if (tenant?.RequireKeyCeremony == true)
+            // Before any ceremony is opened, so approvers never vote on constraints that cannot build.
+            if ((NameConstraintRules.ListError(request.NameConstraintsPermitted, nameof(request.NameConstraintsPermitted))
+                ?? NameConstraintRules.ListError(request.NameConstraintsExcluded, nameof(request.NameConstraintsExcluded))) is string ncError)
+                return BadRequest(new { error = ncError });
+
+            // Check ceremony-first enforcement for this scope; an instance CA gets the instance's policy.
+            var space = await new EffectivePolicyResolver(_db).ResolveAsync(request.SpaceId);
+            if (!space.Found)
+                return NotFound(new { error = $"Space '{request.SpaceId}' not found." });
+            if (space.RequireKeyCeremony)
             {
                 var parameters = new ModularCA.Shared.Models.KeyCeremonyParameters
                 {
@@ -441,7 +527,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                     KeyAlgorithm = request.KeyAlgorithm,
                     KeySize = request.KeySize,
                     ValidityYears = request.ValidityYears,
-                    TenantId = request.TenantId,
+                    SpaceId = request.SpaceId,
+                    Scope = request.SpaceId == null ? ModularCA.Shared.Models.KeyCeremonyParameters.InstanceScope : null,
                     ParentCaId = request.ParentCaId,
                     Label = request.Label,
                     PublicBaseUrl = request.PublicBaseUrl,
@@ -449,6 +536,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                     NameConstraintsPermitted = request.NameConstraintsPermitted,
                     NameConstraintsExcluded = request.NameConstraintsExcluded,
                 };
+                if (await AdminKeyCeremonyController.RefuseCaCreationParametersAsync(_caCreation, parameters) is { } refused)
+                    return refused;
                 var ceremony = await _ceremonySvc.InitiateAsync(
                     "CreateIntermediateCA",
                     $"Create intermediate CA '{request.SubjectCN}' under {parentCa.Name}",
@@ -462,7 +551,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     ceremonyId = ceremony.Id,
                     ceremony.Status,
                     ceremony.RequiredApprovals,
-                    message = $"Key ceremony required for tenant '{tenant.Name}'. A ceremony has been created and requires {ceremony.RequiredApprovals} approval(s)."
+                    message = $"Key ceremony required for {space.Describe()}. A ceremony has been created and requires {ceremony.RequiredApprovals} approval(s)."
                 });
             }
 
@@ -473,7 +562,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     request.SubjectCN, request.SubjectO, request.SubjectOU,
                     request.SubjectL, request.SubjectST, request.SubjectC,
                     request.KeyAlgorithm, request.KeySize, request.ValidityYears,
-                    request.Label, request.TenantId,
+                    request.Label, request.SpaceId,
                     publicBaseUrl: request.PublicBaseUrl,
                     certProfileId: request.CertProfileId,
                     nameConstraintsPermittedJson: request.NameConstraintsPermitted is { Count: > 0 } perm
@@ -488,7 +577,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     "CertificateAuthority", newCa.Id.ToString(),
                     new { newCa.Name, newCa.Label, newCa.Type, request.KeyAlgorithm, request.KeySize },
                     HttpContext.Connection.RemoteIpAddress?.ToString(),
-                    certificateAuthorityId: newCa.Id, tenantId: request.TenantId);
+                    certificateAuthorityId: newCa.Id, spaceId: request.SpaceId);
 
                 return Ok(new
                 {
@@ -521,12 +610,12 @@ namespace ModularCA.API.Controllers.v1.Admin
                             request.KeyAlgorithm,
                             request.KeySize,
                             request.ParentCaId,
-                            request.TenantId,
+                            request.SpaceId,
                         },
                         HttpContext.Connection.RemoteIpAddress?.ToString(),
                         success: false,
                         errorMessage: ex.Message,
-                        tenantId: request.TenantId);
+                        spaceId: request.SpaceId);
                 }
                 catch (Exception auditEx)
                 {
@@ -595,32 +684,30 @@ namespace ModularCA.API.Controllers.v1.Admin
         }
 
         /// <summary>
-        /// Shared tenant gate for CA certificate lookups. Returns true
-        /// when the caller is a system admin (all tenants), or when the owning CA's tenant
-        /// is in the caller's <c>AccessibleTenantIds</c>. Also returns true when the cert is
-        /// not attached to any CA record (legacy / standalone trust anchor).
+        /// Shared space gate for CA certificate lookups. Returns true when the caller's
+        /// <see cref="SpaceFence"/> is instance-wide, or when the owning CA's scope is inside it
+        /// (an instance CA needs instance scope). An unbound cert is refused to everyone else.
         /// </summary>
         private async Task<bool> CallerCanSeeCaCertAsync(Guid certificateId)
         {
-            if (HttpContext.Items["IsSystemAdmin"] is true)
+            var fence = SpaceFence.From(HttpContext, Capabilities.CertView);
+            if (fence.InstanceWide)
                 return true;
-
-            var tenantIds = HttpContext.Items["AccessibleTenantIds"] as HashSet<Guid>;
-            if (tenantIds == null)
-                return false;
 
             // If the certificate is not bound to any CertificateAuthorities row, fall back
             // to denying — admin callers should never reach here through an unbound cert.
-            var caTenant = await _db.CertificateAuthorities
+            var ca = await _db.CertificateAuthorities
                 .AsNoTracking()
                 .Where(c => c.CertificateId == certificateId)
-                .Select(c => (Guid?)c.TenantId)
+                .Select(c => new { c.SpaceId })
                 .FirstOrDefaultAsync();
-            return caTenant.HasValue && tenantIds.Contains(caTenant.Value);
+            return ca != null && fence.Allows(ca.SpaceId);
         }
 
         /// <summary>
-        /// Create a new self-signed root CA. Requires step-up MFA verification.
+        /// Create a new self-signed root CA. Requires step-up MFA verification. The body names the
+        /// CA's scope explicitly, a space id or scope "instance"; neither is a 400. A name
+        /// constraint <see cref="NameConstraintRules"/> refuses is a 400, before any ceremony is opened.
         /// </summary>
         [HttpPost("create-root")]
         [Authorize(Policy = "SystemAdmin")]
@@ -629,6 +716,8 @@ namespace ModularCA.API.Controllers.v1.Admin
         {
             await _currentUser.EnsureLoadedAsync();
             if (_currentUser.User == null) return Unauthorized();
+            if (ModularCA.Shared.Models.KeyCeremonyParameters.ScopeError(request.SpaceId, request.Scope) is string scopeError)
+                return BadRequest(new { error = scopeError });
 
             if (string.IsNullOrWhiteSpace(request.SubjectCN))
                 return BadRequest(new { error = "Common Name is required" });
@@ -637,9 +726,16 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (!KeyAlgorithmPolicy.IsAllowed(request.KeyAlgorithm, request.KeySize))
                 return BadRequest(new { error = $"Key algorithm '{request.KeyAlgorithm}' with size/curve '{request.KeySize}' is not permitted. Allowed: RSA 2048/3072/4096/7680/8192, ECDSA P-256/P-384/P-521, Ed25519, Ed448, ML-DSA-44/65/87, SLH-DSA-*." });
 
-            // Check ceremony-first enforcement for this tenant
-            var rootTenant = await _db.Tenants.FindAsync(request.TenantId);
-            if (rootTenant?.RequireKeyCeremony == true)
+            // Before any ceremony is opened, so approvers never vote on constraints that cannot build.
+            if ((NameConstraintRules.ListError(request.NameConstraintsPermitted, nameof(request.NameConstraintsPermitted))
+                ?? NameConstraintRules.ListError(request.NameConstraintsExcluded, nameof(request.NameConstraintsExcluded))) is string ncError)
+                return BadRequest(new { error = ncError });
+
+            // Check ceremony-first enforcement for this scope; an instance CA gets the instance's policy.
+            var rootSpace = await new EffectivePolicyResolver(_db).ResolveAsync(request.SpaceId);
+            if (!rootSpace.Found)
+                return NotFound(new { error = $"Space '{request.SpaceId}' not found." });
+            if (rootSpace.RequireKeyCeremony)
             {
                 var parameters = new ModularCA.Shared.Models.KeyCeremonyParameters
                 {
@@ -652,12 +748,15 @@ namespace ModularCA.API.Controllers.v1.Admin
                     KeyAlgorithm = request.KeyAlgorithm,
                     KeySize = request.KeySize,
                     ValidityYears = request.ValidityYears,
-                    TenantId = request.TenantId,
+                    SpaceId = request.SpaceId,
+                    Scope = request.SpaceId == null ? ModularCA.Shared.Models.KeyCeremonyParameters.InstanceScope : null,
                     Label = request.Label,
                     PublicBaseUrl = request.PublicBaseUrl,
                     NameConstraintsPermitted = request.NameConstraintsPermitted,
                     NameConstraintsExcluded = request.NameConstraintsExcluded,
                 };
+                if (await AdminKeyCeremonyController.RefuseCaCreationParametersAsync(_caCreation, parameters) is { } refused)
+                    return refused;
                 var ceremony = await _ceremonySvc.InitiateAsync(
                     "CreateRootCA",
                     $"Create root CA '{request.SubjectCN}'",
@@ -671,7 +770,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     ceremonyId = ceremony.Id,
                     ceremony.Status,
                     ceremony.RequiredApprovals,
-                    message = $"Key ceremony required for tenant '{rootTenant.Name}'. A ceremony has been created and requires {ceremony.RequiredApprovals} approval(s)."
+                    message = $"Key ceremony required for {rootSpace.Describe()}. A ceremony has been created and requires {ceremony.RequiredApprovals} approval(s)."
                 });
             }
 
@@ -681,7 +780,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     request.SubjectCN, request.SubjectO, request.SubjectOU,
                     request.SubjectL, request.SubjectST, request.SubjectC,
                     request.KeyAlgorithm, request.KeySize, request.ValidityYears,
-                    request.Label, request.TenantId,
+                    request.Label, request.SpaceId,
                     publicBaseUrl: request.PublicBaseUrl,
                     nameConstraintsPermittedJson: request.NameConstraintsPermitted is { Count: > 0 } perm
                         ? System.Text.Json.JsonSerializer.Serialize(perm)
@@ -695,7 +794,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     "CertificateAuthority", newCa.Id.ToString(),
                     new { newCa.Name, newCa.Label, Type = "Root", request.KeyAlgorithm, request.KeySize },
                     HttpContext.Connection.RemoteIpAddress?.ToString(),
-                    certificateAuthorityId: newCa.Id, tenantId: request.TenantId);
+                    certificateAuthorityId: newCa.Id, spaceId: request.SpaceId);
 
                 _ = _alertService.RaiseAlertAsync("RootCaCreated", AlertSeverity.Warning, $"Root CA '{request.SubjectCN}' created by {_currentUser.User?.Username}", new { CaId = newCa.Id, newCa.Name, request.KeyAlgorithm, request.KeySize });
                 return Ok(new
@@ -728,12 +827,12 @@ namespace ModularCA.API.Controllers.v1.Admin
                             request.Label,
                             request.KeyAlgorithm,
                             request.KeySize,
-                            request.TenantId,
+                            request.SpaceId,
                         },
                         HttpContext.Connection.RemoteIpAddress?.ToString(),
                         success: false,
                         errorMessage: ex.Message,
-                        tenantId: request.TenantId);
+                        spaceId: request.SpaceId);
                 }
                 catch (Exception auditEx)
                 {
@@ -808,7 +907,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                         SupersededRevoked = result.SupersededSerialsRevoked,
                     },
                     HttpContext.Connection.RemoteIpAddress?.ToString(),
-                    certificateAuthorityId: ca.Id, tenantId: ca.TenantId);
+                    certificateAuthorityId: ca.Id, spaceId: ca.SpaceId);
 
                 return Ok(new
                 {
@@ -838,7 +937,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     "CertificateAuthority", caId.ToString(),
                     new { Action = "ReissueInfrastructureCerts", Success = false, Error = ex.Message },
                     HttpContext.Connection.RemoteIpAddress?.ToString(),
-                    certificateAuthorityId: ca.Id, tenantId: ca.TenantId);
+                    certificateAuthorityId: ca.Id, spaceId: ca.SpaceId);
 
                 if (ex is RequestValidationException)
                 {
@@ -871,7 +970,9 @@ namespace ModularCA.API.Controllers.v1.Admin
 
     /// <summary>
     /// Request body for creating an intermediate Certificate Authority under an existing parent CA.
+    /// An unknown member (a pre-0.4.0 <c>tenantId</c>) is refused with 400, never read as no space.
     /// </summary>
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public class CreateIntermediateCaRequest
     {
         [Required, MaxLength(256)]
@@ -893,8 +994,12 @@ namespace ModularCA.API.Controllers.v1.Admin
         public string? SubjectC { get; set; }
 
         public Guid ParentCaId { get; set; }
-        /// <summary>Tenant that owns this CA.</summary>
-        public Guid TenantId { get; set; }
+        /// <summary>Space that owns this CA. <see cref="Guid.Empty"/> reads as none; with none, <see cref="Scope"/> must be "instance".</summary>
+        public Guid? SpaceId { get => _spaceId; set => _spaceId = value == Guid.Empty ? null : value; }
+        private Guid? _spaceId;
+        /// <summary>"instance" for an instance CA (no <see cref="SpaceId"/>); omitted with a space.</summary>
+        [MaxLength(20)]
+        public string? Scope { get; set; }
 
         [Required, MaxLength(50)]
         public string KeyAlgorithm { get; set; } = "ECDSA";
@@ -931,7 +1036,9 @@ namespace ModularCA.API.Controllers.v1.Admin
 
     /// <summary>
     /// Request body for creating a new self-signed root Certificate Authority.
+    /// An unknown member (a pre-0.4.0 <c>tenantId</c>) is refused with 400, never read as no space.
     /// </summary>
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public class CreateRootCaRequest
     {
         [Required, MaxLength(256)]
@@ -952,8 +1059,12 @@ namespace ModularCA.API.Controllers.v1.Admin
         [MaxLength(256)]
         public string? SubjectC { get; set; }
 
-        /// <summary>Tenant that owns this CA.</summary>
-        public Guid TenantId { get; set; }
+        /// <summary>Space that owns this CA. <see cref="Guid.Empty"/> reads as none; with none, <see cref="Scope"/> must be "instance".</summary>
+        public Guid? SpaceId { get => _spaceId; set => _spaceId = value == Guid.Empty ? null : value; }
+        private Guid? _spaceId;
+        /// <summary>"instance" for an instance CA (no <see cref="SpaceId"/>); omitted with a space.</summary>
+        [MaxLength(20)]
+        public string? Scope { get; set; }
 
         [Required, MaxLength(50)]
         public string KeyAlgorithm { get; set; } = "ECDSA";

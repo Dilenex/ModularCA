@@ -232,34 +232,6 @@ public class QuotaService : IQuotaService
     }
 
     /// <summary>
-    /// Returns true if the tenant has not exceeded its maximum certificate authorities quota (0 = unlimited).
-    /// </summary>
-    /// <param name="tenantId">The tenant ID.</param>
-    public async Task<bool> CanCreateCaInTenantAsync(Guid tenantId)
-    {
-        var tenant = await _db.Tenants.FindAsync(tenantId);
-        if (tenant == null || tenant.MaxCertificateAuthorities == 0) return true; // unlimited
-        var currentCount = await _db.CertificateAuthorities.CountAsync(ca => ca.TenantId == tenantId);
-        return currentCount < tenant.MaxCertificateAuthorities;
-    }
-
-    /// <summary>
-    /// Returns true if the tenant has not exceeded its total certificates quota across all CAs (0 = unlimited).
-    /// </summary>
-    /// <param name="tenantId">The tenant ID.</param>
-    public async Task<bool> CanIssueCertificateInTenantAsync(Guid tenantId)
-    {
-        var tenant = await _db.Tenants.FindAsync(tenantId);
-        if (tenant == null || tenant.MaxCertificatesTotal == 0) return true; // unlimited
-        var caIds = await _db.CertificateAuthorities.Where(ca => ca.TenantId == tenantId).Select(ca => ca.Id).ToListAsync();
-        // Count certs issued by CAs in this tenant (via signing profiles)
-        var sigProfileIds = await _db.SigningProfiles.Where(sp => sp.IssuerId != null && caIds.Contains(sp.IssuerId.Value)).Select(sp => sp.Id).ToListAsync();
-        var now = DateTime.UtcNow;
-        var currentCount = await _db.Certificates.CountAsync(c => c.SigningProfileId != null && sigProfileIds.Contains(c.SigningProfileId.Value) && !c.Revoked && !c.IsCA && c.NotAfter > now);
-        return currentCount < tenant.MaxCertificatesTotal;
-    }
-
-    /// <summary>
     /// Counts active (non-revoked, non-expired) non-CA certificates issued by signing profiles
     /// that reference the given CA certificate ID as their issuer.
     /// </summary>

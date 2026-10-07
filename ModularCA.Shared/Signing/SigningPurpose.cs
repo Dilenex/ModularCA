@@ -6,6 +6,8 @@ namespace ModularCA.Shared.Signing;
 /// its own CA; a delegated OCSP responder key signs OCSP responses only; the TSA key signs
 /// timestamp tokens only. Ceremony, Backup, Export, Bootstrap and Restore name the contexts under
 /// which key generation, import and export are permitted rather than a signature operation.
+/// A signing purpose also fixes the structure that is signed: the signer parses the bytes and
+/// refuses any that are not it (see <see cref="ISigningService.SignAsync"/>).
 /// </summary>
 public enum SigningPurpose
 {
@@ -36,7 +38,7 @@ public enum SigningPurpose
     /// <summary>Export of an end-entity key to its holder.</summary>
     Export,
 
-    /// <summary>Initial bootstrap of the node, before any ceremony exists.</summary>
+    /// <summary>Initial bootstrap of the node, before any ceremony exists. It moves whole keystore files only and manages no individual key.</summary>
     Bootstrap,
 
     /// <summary>Restore of a backup: keystore files imported through the signer as the archive carries them.</summary>
@@ -44,7 +46,7 @@ public enum SigningPurpose
 
     /// <summary>
     /// A delegated key of an existing CA: its OCSP responder, timestamp or CMP signer. Generated
-    /// and committed without a ceremony, held to the CA and tenant named, and never committed to
+    /// and committed without a ceremony, held to the CA and space named, and never committed to
     /// a CA certificate; reissuing a responder is an operator's action, not a ceremony.
     /// </summary>
     Infrastructure,

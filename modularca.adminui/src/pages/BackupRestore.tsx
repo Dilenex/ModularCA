@@ -12,7 +12,7 @@ import ConfirmModal from '../components/ConfirmModal';
 /** The Restart card on Settings → General (id set in Settings.tsx). */
 const RESTART_PATH = '/settings#restart-application';
 const RestartLink: React.FC<{ children?: React.ReactNode }> = ({ children }) => (
-    <Link to={RESTART_PATH} className="underline hover:text-gray-900 dark:hover:text-white">{children ?? 'Settings → General → Restart Application'}</Link>
+    <Link to={RESTART_PATH} className="underline hover:text-ink">{children ?? 'Settings → General → Restart Application'}</Link>
 );
 
 function formatDate(d: string | null) {
@@ -67,25 +67,25 @@ const CreateBackupSection: React.FC<{ onBackupCreated: () => void }> = ({ onBack
     };
 
     return (
-        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-6 space-y-4">
+        <div className="bg-raised border border-line rounded-lg p-6 space-y-4">
             <div className="flex items-center justify-between">
-                <h3 className="text-gray-900 dark:text-white font-semibold">Create Backup</h3>
+                <h3 className="text-ink font-semibold">Create Backup</h3>
                 <button
                     onClick={handleCreateBackup}
                     disabled={creating}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-gray-900 dark:text-white text-sm font-medium rounded transition-colors"
+                    className="px-4 py-2 bg-accent hover:bg-accent-hover disabled:bg-ink-faint text-on-accent text-sm font-medium rounded transition-colors"
                 >
                     {creating ? 'Creating...' : 'Create Backup Now'}
                 </button>
             </div>
-            <p className="text-gray-600 dark:text-gray-400 text-sm">
+            <p className="text-ink-muted text-sm">
                 Creates a full backup archive containing the application database, audit database,
                 keystores, configuration files, and SSH CA keys.
             </p>
 
-            <div className="bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded p-4 text-sm text-gray-700 dark:text-gray-300">
-                <p className="font-medium text-gray-900 dark:text-white mb-2">Backup includes:</p>
-                <ul className="space-y-1 list-disc list-inside text-gray-600 dark:text-gray-400">
+            <div className="bg-ground border border-line rounded p-4 text-sm text-ink">
+                <p className="font-medium text-ink mb-2">Backup includes:</p>
+                <ul className="space-y-1 list-disc list-inside text-ink-muted">
                     <li>Application database (certificates, profiles, users, feature flags)</li>
                     <li>Audit database (all audit logs)</li>
                     <li>Keystores (CA private keys -- encrypted)</li>
@@ -96,7 +96,7 @@ const CreateBackupSection: React.FC<{ onBackupCreated: () => void }> = ({ onBack
             </div>
 
             {status && (
-                <div className="p-3 bg-blue-50 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded text-blue-800 dark:text-blue-300 text-sm">
+                <div className="p-3 bg-info-soft border border-info/40 rounded text-info text-sm">
                     {status}
                 </div>
             )}
@@ -139,8 +139,12 @@ const BackupEncryptionSection: React.FC = () => {
     const handleSetPassword = async () => {
         setActionError(null);
         setActionSuccess(null);
-        if (newPassword.length < 12) {
-            setActionError('Password must be at least 12 characters.');
+        if (newPassword.length < 16) {
+            setActionError('Password must be at least 16 characters.');
+            return;
+        }
+        if (new Set(newPassword).size < 8) {
+            setActionError('Password must contain at least 8 different characters.');
             return;
         }
         if (newPassword !== confirmPassword) {
@@ -200,13 +204,13 @@ const BackupEncryptionSection: React.FC = () => {
     };
 
     const isStoredPassword = status?.mode === 'StoredPassword';
-    const formInvalid = newPassword.length < 12 || newPassword !== confirmPassword;
+    const formInvalid = newPassword.length < 16 || newPassword !== confirmPassword;
 
     return (
-        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-6 space-y-4">
+        <div className="bg-raised border border-line rounded-lg p-6 space-y-4">
             <div>
-                <h3 className="text-gray-900 dark:text-white font-semibold">Backup Encryption</h3>
-                <p className="text-gray-600 dark:text-gray-400 text-sm mt-1">
+                <h3 className="text-ink font-semibold">Backup Encryption</h3>
+                <p className="text-ink-muted text-sm mt-1">
                     Choose how backup archives are encrypted. RandomKey uses a 32-byte random key file.
                     StoredPassword derives the key from an admin-supplied password via scrypt, enabling
                     password-only disaster recovery if the key file is lost.
@@ -214,83 +218,84 @@ const BackupEncryptionSection: React.FC = () => {
             </div>
 
             {loading && (
-                <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading encryption status...</div>
+                <div className="p-4 text-sm text-ink-muted text-center">Loading encryption status...</div>
             )}
 
             {!loading && status && (
                 <>
-                    <div className="bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded p-4 space-y-2">
+                    <div className="bg-ground border border-line rounded p-4 space-y-2">
                         <div className="flex items-center gap-2">
-                            <span className="text-xs text-gray-600 dark:text-gray-400">Current mode:</span>
+                            <span className="text-xs text-ink-muted">Current mode:</span>
                             <span
                                 className={
                                     isStoredPassword
-                                        ? 'inline-block px-2 py-0.5 rounded text-xs font-semibold bg-green-50 dark:bg-green-900/40 border border-green-300 dark:border-green-700 text-green-800 dark:text-green-300'
-                                        : 'inline-block px-2 py-0.5 rounded text-xs font-semibold bg-blue-50 dark:bg-blue-900/40 border border-blue-300 dark:border-blue-700 text-blue-800 dark:text-blue-300'
+                                        ? 'inline-block px-2 py-0.5 rounded text-xs font-semibold bg-ok-soft border border-ok/40 text-ok'
+                                        : 'inline-block px-2 py-0.5 rounded text-xs font-semibold bg-info-soft border border-info/40 text-info'
                                 }
                             >
                                 {status.mode}
                             </span>
                         </div>
-                        <div className="text-xs text-gray-600 dark:text-gray-400">
+                        <div className="text-xs text-ink-muted">
                             {isStoredPassword ? 'Password file: ' : 'Key file: '}
-                            <span className="font-mono text-gray-800 dark:text-gray-200">
+                            <span className="font-mono text-ink">
                                 {isStoredPassword ? status.passwordFilePath : status.randomKeyFilePath}
                             </span>
                         </div>
                         {isStoredPassword && !status.passwordSet && (
-                            <div className="p-2 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-300 dark:border-yellow-700 rounded text-xs text-yellow-800 dark:text-yellow-300">
+                            <div className="p-2 bg-warn-soft border border-warn/40 rounded text-xs text-warn">
                                 ⚠ Password file missing — restore will require the password you set previously.
                             </div>
                         )}
                     </div>
 
                     {actionError && (
-                        <div className="p-3 bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded text-red-800 dark:text-red-300 text-sm">
+                        <div className="p-3 bg-crit-soft border border-crit/40 rounded text-crit text-sm">
                             {actionError}
                         </div>
                     )}
                     {actionSuccess && (
-                        <div className="p-3 bg-green-50 dark:bg-green-900/30 border border-green-300 dark:border-green-700 rounded text-green-800 dark:text-green-300 text-sm">
+                        <div className="p-3 bg-ok-soft border border-ok/40 rounded text-ok text-sm">
                             {actionSuccess}
                         </div>
                     )}
 
                     <div className="space-y-3">
-                        <h4 className="text-sm font-semibold text-gray-900 dark:text-white">
+                        <h4 className="text-sm font-semibold text-ink">
                             {isStoredPassword ? 'Rotate backup password' : 'Set backup password'}
                         </h4>
                         <div>
-                            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Password</label>
+                            <label className="block text-xs text-ink-muted mb-1">Password</label>
                             <input
                                 type="password"
                                 value={newPassword}
                                 onChange={(e) => setNewPassword(e.target.value)}
                                 disabled={submitting}
-                                className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                                className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                                 autoComplete="new-password"
                             />
                         </div>
                         <div>
-                            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Confirm password</label>
+                            <label className="block text-xs text-ink-muted mb-1">Confirm password</label>
                             <input
                                 type="password"
                                 value={confirmPassword}
                                 onChange={(e) => setConfirmPassword(e.target.value)}
                                 disabled={submitting}
-                                className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                                className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                                 autoComplete="new-password"
                             />
                         </div>
-                        <p className="text-xs text-gray-600 dark:text-gray-400">
-                            Minimum 12 characters. Must include a letter and a digit or symbol. Store this
+                        <p className="text-xs text-ink-muted">
+                            Minimum 16 characters, at least 8 of them different, with a letter and a digit,
+                            symbol or space; a passphrase of several words is easiest. Store this
                             password in a secure location — if lost, any backups created in this mode become
                             unrecoverable unless you also have the password file.
                         </p>
                         <button
                             onClick={handleSetPassword}
                             disabled={submitting || formInvalid}
-                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-gray-900 dark:text-white text-sm font-medium rounded transition-colors"
+                            className="px-4 py-2 bg-accent hover:bg-accent-hover disabled:bg-ink-faint text-on-accent text-sm font-medium rounded transition-colors"
                         >
                             {submitting
                                 ? 'Working...'
@@ -301,15 +306,15 @@ const BackupEncryptionSection: React.FC = () => {
                     </div>
 
                     {isStoredPassword && (
-                        <div className="pt-4 border-t border-gray-300 dark:border-gray-700 space-y-2">
+                        <div className="pt-4 border-t border-line space-y-2">
                             <button
                                 onClick={() => setConfirmRevert(true)}
                                 disabled={submitting}
-                                className="px-4 py-2 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 disabled:bg-gray-600 text-gray-700 dark:text-gray-300 text-sm font-medium rounded transition-colors"
+                                className="px-4 py-2 bg-sunken hover:bg-hover disabled:bg-ink-faint text-ink text-sm font-medium rounded transition-colors"
                             >
                                 Revert to RandomKey mode
                             </button>
-                            <p className="text-xs text-gray-600 dark:text-gray-400">
+                            <p className="text-xs text-ink-muted">
                                 Deletes the password file. Existing archives remain restorable via the password.
                             </p>
                             <ConfirmModal
@@ -326,7 +331,7 @@ const BackupEncryptionSection: React.FC = () => {
                                     </>
                                 }
                                 confirmLabel="Revert"
-                                confirmClass="px-4 py-2 text-sm bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors"
+                                confirmClass="px-4 py-2 text-sm bg-warn text-on-accent rounded hover:bg-warn-hover transition-colors"
                                 loading={submitting}
                                 onConfirm={handleRevertToRandomKey}
                                 onCancel={() => setConfirmRevert(false)}
@@ -337,7 +342,7 @@ const BackupEncryptionSection: React.FC = () => {
             )}
 
             {!loading && !status && actionError && (
-                <div className="p-3 bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded text-red-800 dark:text-red-300 text-sm">
+                <div className="p-3 bg-crit-soft border border-crit/40 rounded text-crit text-sm">
                     {actionError}
                 </div>
             )}
@@ -348,22 +353,22 @@ const BackupEncryptionSection: React.FC = () => {
 /* ─── Backup History Section ─── */
 const BackupHistorySection: React.FC<{ backups: BackupEntry[]; loading: boolean; error: NoticeInput | null; onRefresh: () => void }> = ({ backups, loading, error, onRefresh }) => {
     return (
-        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
-            <div className="px-4 py-3 border-b border-gray-300 dark:border-gray-700 flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Backup History</h3>
+        <div className="bg-raised border border-line rounded-lg overflow-hidden">
+            <div className="px-4 py-3 border-b border-line flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-ink">Backup History</h3>
                 <button
                     onClick={onRefresh}
-                    className="px-3 py-1.5 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 text-xs font-medium rounded transition-colors"
+                    className="px-3 py-1.5 bg-sunken hover:bg-hover text-ink text-xs font-medium rounded transition-colors"
                 >
                     Refresh
                 </button>
             </div>
 
-            {loading && <div className="p-4 text-sm text-gray-600 dark:text-gray-400 text-center">Loading...</div>}
+            {loading && <div className="p-4 text-sm text-ink-muted text-center">Loading...</div>}
             {error && <InlineNotice notice={error} />}
 
             {!loading && !error && backups.length === 0 && (
-                <div className="p-4 text-sm text-gray-600 text-center">No backups found. Create one to get started.</div>
+                <div className="p-4 text-sm text-ink-muted text-center">No backups found. Create one to get started.</div>
             )}
 
             {!loading && !error && backups.length > 0 && (
@@ -376,9 +381,9 @@ const BackupHistorySection: React.FC<{ backups: BackupEntry[]; loading: boolean;
                         empty="No backups yet"
                         sort={{ key: 'created', dir: 'desc' }}
                         columns={[
-                            { key: 'fileName', header: 'Filename', defaultWidth: 320, sortable: true, exportValue: (b) => b.fileName, render: (b) => <span className="font-mono text-xs text-gray-900 dark:text-white truncate">{b.fileName}</span> },
-                            { key: 'created', header: 'Created (UTC)', defaultWidth: 180, sortable: true, sortValue: (b) => b.createdUtc ? new Date(b.createdUtc) : null, exportValue: (b) => formatDate(b.createdUtc), render: (b) => <span className="text-xs text-gray-600 dark:text-gray-400">{formatDate(b.createdUtc)}</span> },
-                            { key: 'size', header: 'Size', defaultWidth: 110, align: 'right', sortable: true, sortValue: (b) => b.sizeBytes ?? null, exportValue: (b) => b.sizeBytes ?? '', render: (b) => <span className="text-xs text-gray-600 dark:text-gray-400 tabular-nums">{formatSize(b.sizeBytes)}</span> },
+                            { key: 'fileName', header: 'Filename', defaultWidth: 320, sortable: true, exportValue: (b) => b.fileName, render: (b) => <span className="data-mono text-ink truncate">{b.fileName}</span> },
+                            { key: 'created', header: 'Created (UTC)', defaultWidth: 180, sortable: true, sortValue: (b) => b.createdUtc ? new Date(b.createdUtc) : null, exportValue: (b) => formatDate(b.createdUtc), render: (b) => <span className="text-xs text-ink-muted">{formatDate(b.createdUtc)}</span> },
+                            { key: 'size', header: 'Size', defaultWidth: 110, align: 'right', sortable: true, sortValue: (b) => b.sizeBytes ?? null, exportValue: (b) => b.sizeBytes ?? '', render: (b) => <span className="text-xs text-ink-muted tabular-nums">{formatSize(b.sizeBytes)}</span> },
                         ] as DataTableColumn<any>[]}
                     />
                 </div>
@@ -435,14 +440,14 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
     };
 
     return (
-        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-6 space-y-4">
-            <h3 className="text-gray-900 dark:text-white font-semibold">Restore from Backup</h3>
-            <p className="text-gray-600 dark:text-gray-400 text-sm">
+        <div className="bg-raised border border-line rounded-lg p-6 space-y-4">
+            <h3 className="text-ink font-semibold">Restore from Backup</h3>
+            <p className="text-ink-muted text-sm">
                 Restores the CA from a backup archive. This will overwrite the current database,
                 keystores, and configuration.
             </p>
 
-            <div className="bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-700 rounded p-3 text-sm text-red-800 dark:text-red-300">
+            <div className="bg-crit-soft border border-crit/40 rounded p-3 text-sm text-crit">
                 <strong>WARNING:</strong> Restore is a destructive operation. All current data will be replaced
                 with the backup contents. The application will need to be restarted after restore completes
                 (<RestartLink>Settings → General → Restart Application</RestartLink>).
@@ -452,11 +457,11 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
             {backups.length > 0 ? (
                 <div className="space-y-3">
                     <div>
-                        <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">Select backup to restore</label>
+                        <label className="block text-xs text-ink-muted mb-1">Select backup to restore</label>
                         <select
                             value={selectedFile}
                             onChange={(e) => { setSelectedFile(e.target.value); setConfirmRestore(false); }}
-                            className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                            className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                         >
                             <option value="">-- Select a backup --</option>
                             {backups.map((b) => (
@@ -469,8 +474,8 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
 
                     {selectedFile && (
                         <div>
-                            <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">
-                                Recovery password <span className="text-gray-600">(optional)</span>
+                            <label className="block text-xs text-ink-muted mb-1">
+                                Recovery password <span className="text-ink-muted">(optional)</span>
                             </label>
                             <input
                                 type="password"
@@ -478,11 +483,11 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
                                 onChange={(e) => setRecoveryPassword(e.target.value)}
                                 placeholder="Leave blank unless restoring a StoredPassword archive without the key file"
                                 autoComplete="off"
-                                className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-900 border border-gray-400 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:border-blue-500"
+                                className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                             />
-                            <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                            <p className="mt-1 text-xs text-ink-muted">
                                 Only needed for disaster recovery: supply the backup password that was set at creation time
-                                when <code className="px-1 bg-gray-200 dark:bg-gray-900 rounded">config/backup-password.key</code>
+                                when <code className="px-1 bg-sunken rounded">config/backup-password.key</code>
                                 is missing or was rotated to a different password. Ignored for RandomKey and legacy archives.
                             </p>
                         </div>
@@ -491,18 +496,18 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
                     {selectedFile && !confirmRestore && (
                         <button
                             onClick={() => setConfirmRestore(true)}
-                            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-gray-900 dark:text-white text-sm font-medium rounded transition-colors"
+                            className="px-4 py-2 bg-crit hover:bg-crit-hover text-on-accent text-sm font-medium rounded transition-colors"
                         >
                             Restore from Selected Backup
                         </button>
                     )}
 
                     {confirmRestore && (
-                        <div className="bg-red-50 dark:bg-red-900/30 border border-red-300 dark:border-red-600 rounded p-4 space-y-3">
-                            <p className="text-red-800 dark:text-red-200 text-sm font-semibold">
+                        <div className="bg-crit-soft border border-crit/40 rounded p-4 space-y-3">
+                            <p className="text-crit text-sm font-semibold">
                                 Are you sure you want to restore from "{selectedFile}"?
                             </p>
-                            <p className="text-red-800 dark:text-red-300 text-xs">
+                            <p className="text-crit text-xs">
                                 This will overwrite the current database, keystores, and configuration.
                                 All current data will be permanently replaced. A restart is required afterward
                                 (<RestartLink>Settings → General → Restart Application</RestartLink>).
@@ -511,14 +516,14 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
                                 <button
                                     onClick={handleRestore}
                                     disabled={restoring}
-                                    className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-gray-900 dark:text-white text-sm font-medium rounded transition-colors"
+                                    className="px-4 py-2 bg-crit hover:bg-crit-hover disabled:bg-ink-faint text-on-accent text-sm font-medium rounded transition-colors"
                                 >
                                     {restoring ? 'Restoring...' : 'Yes, Restore Now'}
                                 </button>
                                 <button
                                     onClick={() => setConfirmRestore(false)}
                                     disabled={restoring}
-                                    className="px-4 py-2 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 text-sm font-medium rounded transition-colors"
+                                    className="px-4 py-2 bg-sunken hover:bg-hover text-ink text-sm font-medium rounded transition-colors"
                                 >
                                     Cancel
                                 </button>
@@ -527,11 +532,11 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
                     )}
                 </div>
             ) : (
-                <div className="text-sm text-gray-600">No backups available to restore from. Create a backup first.</div>
+                <div className="text-sm text-ink-muted">No backups available to restore from. Create a backup first.</div>
             )}
 
             {status && (
-                <div className="p-3 bg-green-50 dark:bg-green-900/30 border border-green-300 dark:border-green-700 rounded text-green-800 dark:text-green-300 text-sm space-y-1">
+                <div className="p-3 bg-ok-soft border border-ok/40 rounded text-ok text-sm space-y-1">
                     <p>{status}</p>
                     {restored && (
                         <p>
@@ -567,31 +572,31 @@ const BackupRestore: React.FC = () => {
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Backup & Restore</h1>
+            <h1 className="text-xl font-semibold text-ink">Backup & Restore</h1>
             <CreateBackupSection onBackupCreated={loadBackups} />
             <BackupEncryptionSection />
             <BackupHistorySection backups={backups} loading={loading} error={error} onRefresh={loadBackups} />
             <RestoreSection backups={backups} />
 
             {/* System Info Card */}
-            <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-6 space-y-4">
-                <h3 className="text-gray-900 dark:text-white font-semibold">System Information</h3>
+            <div className="bg-raised border border-line rounded-lg p-6 space-y-4">
+                <h3 className="text-ink font-semibold">System Information</h3>
                 <div className="grid grid-cols-2 gap-4 text-sm">
                     <div>
-                        <span className="text-gray-600">API Endpoint</span>
-                        <p className="text-gray-800 dark:text-gray-200 font-mono text-xs">{API_BASE}</p>
+                        <span className="text-ink-muted">API Endpoint</span>
+                        <p className="text-ink data-mono">{API_BASE}</p>
                     </div>
                     <div>
-                        <span className="text-gray-600">Current Time (UTC)</span>
-                        <p className="text-gray-800 dark:text-gray-200">{new Date().toUTCString()}</p>
+                        <span className="text-ink-muted">Current Time (UTC)</span>
+                        <p className="text-ink">{new Date().toUTCString()}</p>
                     </div>
                 </div>
-                <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-300 dark:border-yellow-700 rounded p-3 text-sm text-yellow-800 dark:text-yellow-300">
+                <div className="bg-warn-soft border border-warn/40 rounded p-3 text-sm text-warn">
                     <strong>CLI alternative:</strong> Backups can also be managed via the command line:
-                    <code className="block mt-1 bg-gray-50 dark:bg-gray-900 p-2 rounded text-xs font-mono">
+                    <code className="block mt-1 bg-sunken p-2 rounded data-mono">
                         dotnet run --backup [output-path.zip]
                     </code>
-                    <code className="block mt-1 bg-gray-50 dark:bg-gray-900 p-2 rounded text-xs font-mono">
+                    <code className="block mt-1 bg-sunken p-2 rounded data-mono">
                         dotnet run --restore backup-archive.zip
                     </code>
                 </div>

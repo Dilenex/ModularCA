@@ -84,7 +84,7 @@ public class EnrollmentAuthorizationService : IEnrollmentAuthorizationService
         return protocolUpper switch
         {
             "EST" => await ValidateEstAsync(protocolConfig, ca, clientCert, isAuthenticated, callerUsername),
-            "SCEP" => await ValidateScep(protocolConfig, csrPem, isAuthenticated),
+            "SCEP" => await ValidateScep(protocolConfig, ca, csrPem, isAuthenticated),
             "CMP" => ValidateCmp(protocolConfig, clientCert, isAuthenticated),
             "MSAE" => await ValidateMsaeAsync(ca, isAuthenticated, callerUsername),
             "ACME" => (true, null), // ACME handles its own authorization via challenges
@@ -130,7 +130,7 @@ public class EnrollmentAuthorizationService : IEnrollmentAuthorizationService
     /// HTTP authentication is satisfied only when the authenticated account holds the enrollment
     /// capability on <paramref name="ca"/>. Before this, the check was <c>isAuthenticated</c>
     /// alone, which the default bearer scheme sets for every valid session token: any user in any
-    /// tenant could enroll at any EST-enabled CA. A password proves who is asking, not whether they
+    /// space could enroll at any EST-enabled CA. A password proves who is asking, not whether they
     /// may ask here.
     /// </para>
     /// <para>
@@ -194,7 +194,8 @@ public class EnrollmentAuthorizationService : IEnrollmentAuthorizationService
 
     /// <summary>
     /// Authorizes a SCEP enrollment: a message-level credential the responder has already verified
-    /// against this CA, or else the challenge password carried inside the certification request.
+    /// against this CA, or else the challenge password carried inside the certification request,
+    /// which must be an enrollment token scoped to <paramref name="ca"/>.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -214,10 +215,11 @@ public class EnrollmentAuthorizationService : IEnrollmentAuthorizationService
     /// </para>
     /// </remarks>
     /// <param name="config">The CA's SCEP configuration, for <c>ScepChallengeRequired</c>.</param>
+    /// <param name="ca">The CA the request addresses, which the challenge password must be scoped to.</param>
     /// <param name="csrPem">The certification request carrying the challenge password.</param>
     /// <param name="isAuthenticated">Whether the responder verified a message-level credential.</param>
     private async Task<(bool, string?)> ValidateScep(
-        CaProtocolConfigEntity config, string? csrPem, bool isAuthenticated)
+        CaProtocolConfigEntity config, CertificateAuthorityEntity ca, string? csrPem, bool isAuthenticated)
     {
         if (isAuthenticated)
             return (true, null);
@@ -244,7 +246,7 @@ public class EnrollmentAuthorizationService : IEnrollmentAuthorizationService
         // says SCEP is "where it is the ONLY name check", which is exactly what made the gap
         // invisible.
         var (subject, sans) = TryExtractSubjectAndSans(csrPem);
-        return await _tokenService.ValidateAndConsumeAsync(challengePassword, subject, "SCEP", sans);
+        return await _tokenService.ValidateAndConsumeAsync(challengePassword, subject, "SCEP", ca, sans);
     }
 
     /// <summary>

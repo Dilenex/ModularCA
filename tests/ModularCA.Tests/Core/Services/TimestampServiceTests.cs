@@ -63,6 +63,34 @@ public sealed class TimestampServiceTests
         Assert.Empty(await ReadAuditAsync(world));
     }
 
+    /// <summary>
+    /// The label-less TSA answers only as a CA marked default. Round one's deterministic default
+    /// resolution let it fall back to whichever CA sorted first by name when none was marked, so
+    /// a CA the operator never chose signed timestamp tokens; before that, it required a default.
+    /// </summary>
+    [Fact]
+    public async Task The_label_less_tsa_answers_only_as_a_ca_marked_default()
+    {
+        var world = SignerTestWorld.Create();
+        var signer = TestSigner.Over(world.Keystore, world.DatabaseName);
+        using var db = world.OpenDb();
+        var rsa = db.CertificateAuthorities.Single(c => c.Id == world.CaRsaId);
+        rsa.Name = "a-signer-test-rsa";
+        db.SaveChanges();
+        var service = new TimestampService(db, NullLogger<TimestampService>.Instance, signer);
+        var request = new TimeStampRequestGenerator().Generate(TspAlgorithms.Sha256, new byte[32], BigInteger.Two);
+
+        var undesignated = new TimeStampResponse(await service.ProcessTimestampRequestAsync(request.GetEncoded()));
+        Assert.NotEqual(0, undesignated.Status);
+        Assert.Null(undesignated.TimeStampToken);
+
+        rsa.IsDefault = true;
+        db.SaveChanges();
+        var designated = new TimeStampResponse(await service.ProcessTimestampRequestAsync(request.GetEncoded()));
+        Assert.Equal(0, designated.Status);
+        designated.TimeStampToken.Validate(world["tsa"].Certificate);
+    }
+
     private static Task<IReadOnlyList<ModularCA.Shared.Entities.SignerAuditEntity>> ReadAuditAsync(SignerTestWorld world)
     {
         using var db = world.OpenDb();

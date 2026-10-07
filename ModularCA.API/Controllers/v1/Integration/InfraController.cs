@@ -20,8 +20,8 @@ namespace ModularCA.API.Controllers.v1.Integration;
 /// Provides a predictable, idempotent REST API for certificate lifecycle management,
 /// profile discovery, and CA enumeration. Authenticated via a static API key
 /// in the X-API-Key header (configured in IntegrationApi.ApiKey).
-/// AUTH-06: when <see cref="IntegrationApiConfig.TenantId"/> is configured, all operations
-/// are scoped to CAs belonging to that tenant.
+/// AUTH-06: when <see cref="IntegrationApiConfig.SpaceId"/> is configured, all operations
+/// are scoped to CAs belonging to that space, or with <c>instance</c> to the instance's CAs.
 /// </summary>
 [ApiController]
 [Route("api/v1/integration/infra")]
@@ -74,10 +74,10 @@ public class InfraController(
         if (request.SigningProfileId == Guid.Empty)
             return BadRequest(new { error = "signingProfileId is required." });
 
-        // AUTH-06: verify the signing profile's CA belongs to the configured tenant
-        var tenantCheck = await VerifySigningProfileTenantAsync(request.SigningProfileId);
-        if (tenantCheck != null)
-            return tenantCheck;
+        // AUTH-06: verify the signing profile's CA belongs to the configured space
+        var spaceCheck = await VerifySigningProfileSpaceAsync(request.SigningProfileId);
+        if (spaceCheck != null)
+            return spaceCheck;
 
         try
         {
@@ -105,7 +105,7 @@ public class InfraController(
             if (certInfo == null)
                 return StatusCode(502, new { error = "Certificate was issued but the follow-up state read failed; fetch by serial later to retrieve it." });
 
-            var chainPem = await BuildChainPemAsync(certInfo.Pem);
+            var chainPem = await BuildChainPemAsync(certInfo.CertificateId);
 
             return Ok(new InfraCertificateResponse
             {
@@ -146,12 +146,12 @@ public class InfraController(
         if (certInfo == null)
             return NotFound(new { error = "Certificate not found." });
 
-        // AUTH-06: verify the certificate's issuing CA belongs to the configured tenant
-        var tenantCheck = await VerifyCertificateTenantBySerialAsync(serial);
-        if (tenantCheck != null)
-            return tenantCheck;
+        // AUTH-06: verify the certificate's issuing CA belongs to the configured space
+        var spaceCheck = await VerifyCertificateSpaceBySerialAsync(serial);
+        if (spaceCheck != null)
+            return spaceCheck;
 
-        var chainPem = await BuildChainPemAsync(certInfo.Pem);
+        var chainPem = await BuildChainPemAsync(certInfo.CertificateId);
 
         return Ok(new InfraCertificateResponse
         {
@@ -183,10 +183,10 @@ public class InfraController(
         if (certInfo == null)
             return NotFound(new { error = "Certificate not found." });
 
-        // AUTH-06: verify the certificate's issuing CA belongs to the configured tenant
-        var tenantCheck = await VerifyCertificateTenantBySerialAsync(serial);
-        if (tenantCheck != null)
-            return tenantCheck;
+        // AUTH-06: verify the certificate's issuing CA belongs to the configured space
+        var spaceCheck = await VerifyCertificateSpaceBySerialAsync(serial);
+        if (spaceCheck != null)
+            return spaceCheck;
 
         // Idempotent: if already revoked, return success
         if (certInfo.Revoked)
@@ -275,10 +275,10 @@ public class InfraController(
         if (certProfileId == null || signingProfileId == null)
             return BadRequest(new { error = "Cannot determine certificate or signing profile for renewal." });
 
-        // AUTH-06: verify the signing profile's CA belongs to the configured tenant
-        var tenantCheck = await VerifySigningProfileTenantAsync(signingProfileId.Value);
-        if (tenantCheck != null)
-            return tenantCheck;
+        // AUTH-06: verify the signing profile's CA belongs to the configured space
+        var spaceCheck = await VerifySigningProfileSpaceAsync(signingProfileId.Value);
+        if (spaceCheck != null)
+            return spaceCheck;
 
         try
         {
@@ -294,7 +294,7 @@ public class InfraController(
             if (newCertInfo == null)
                 return StatusCode(502, new { error = "Renewal succeeded but the follow-up state read failed; fetch by serial later to retrieve the new certificate." });
 
-            var chainPem = await BuildChainPemAsync(newCertInfo.Pem);
+            var chainPem = await BuildChainPemAsync(newCertInfo.CertificateId);
 
             return Ok(new InfraCertificateResponse
             {
@@ -358,18 +358,17 @@ public class InfraController(
     // ──���────────────────────── CA Read Endpoints ────��────────────────────
 
     /// <summary>
-    /// Lists all enabled Certificate Authorities. Returns CA metadata including
-    /// certificate serial number and subject DN for Terraform data source lookups.
+    /// Lists all enabled Certificate Authorities inside the key's space scope. Returns CA metadata
+    /// including certificate serial number and subject DN for Terraform data source lookups.
     /// </summary>
     /// <returns>A list of all CAs with their basic metadata.</returns>
     [HttpGet("authorities")]
     public async Task<IActionResult> ListAuthorities()
     {
-        var tenantId = _config.IntegrationApi.TenantId;
-        var cas = await _db.CertificateAuthorities
+        var cas = await InScope(_db.CertificateAuthorities
             .Include(ca => ca.Certificate)
             .AsNoTracking()
-            .Where(ca => ca.IsEnabled && (tenantId == null || ca.TenantId == tenantId.Value))
+            .Where(ca => ca.IsEnabled))
             .ToListAsync();
 
         var result = cas.Select(ca => new
@@ -390,20 +389,18 @@ public class InfraController(
     }
 
     /// <summary>
-    /// Retrieves a Certificate Authority by its label. Returns CA metadata and
-    /// the CA certificate PEM for trust anchor configuration in Terraform.
+    /// Retrieves a Certificate Authority by its label, inside the key's space scope. Returns CA
+    /// metadata and the CA certificate PEM for trust anchor configuration in Terraform.
     /// </summary>
     /// <param name="label">The unique label of the Certificate Authority.</param>
     /// <returns>The CA details including certificate PEM, or 404 if not found.</returns>
     [HttpGet("authorities/{label}")]
     public async Task<IActionResult> GetAuthorityByLabel(string label)
     {
-        var tenantId = _config.IntegrationApi.TenantId;
-        var ca = await _db.CertificateAuthorities
+        var ca = await InScope(_db.CertificateAuthorities
             .Include(ca => ca.Certificate)
-            .AsNoTracking()
-            .FirstOrDefaultAsync(ca => ca.Label == label && ca.IsEnabled
-                && (tenantId == null || ca.TenantId == tenantId.Value));
+            .AsNoTracking())
+            .FirstOrDefaultAsync(ca => ca.Label == label && ca.IsEnabled);
 
         if (ca == null)
             return NotFound(new { error = $"CA with label '{label}' not found or disabled." });
@@ -428,14 +425,28 @@ public class InfraController(
     // ���──────────────────────── Helpers ─────────────────────────
 
     /// <summary>
-    /// AUTH-06: verifies that the signing profile's issuing CA belongs to the configured
-    /// tenant. Returns null if the check passes (or no tenant restriction is configured),
-    /// or an <see cref="IActionResult"/> to short-circuit the action if the tenant does not match.
+    /// AUTH-06: the CAs inside the key's space scope: every CA when it is unset, the instance's
+    /// with <c>instance</c>, one space's with a space id, and none for any other value.
     /// </summary>
-    private async Task<IActionResult?> VerifySigningProfileTenantAsync(Guid signingProfileId)
+    private IQueryable<ModularCA.Shared.Entities.CertificateAuthorityEntity> InScope(IQueryable<ModularCA.Shared.Entities.CertificateAuthorityEntity> cas)
     {
-        var tenantId = _config.IntegrationApi.TenantId;
-        if (tenantId == null)
+        var scope = _config.IntegrationApi.SpaceScope();
+        var everything = scope.Kind == IntegrationScopeKind.Everything;
+        var instanceOnly = scope.Kind == IntegrationScopeKind.Instance;
+        var spaceId = scope.Kind == IntegrationScopeKind.Space ? scope.SpaceId : null;
+        return cas.Where(ca => everything || (instanceOnly && ca.SpaceId == null) || (spaceId != null && ca.SpaceId == spaceId));
+    }
+
+    /// <summary>
+    /// AUTH-06: verifies that the signing profile's issuing CA is inside the configured space
+    /// scope (<see cref="IntegrationApiConfig.SpaceScope"/>). Returns null if the check passes (or
+    /// no space restriction is configured), or an <see cref="IActionResult"/> to short-circuit the
+    /// action if it does not.
+    /// </summary>
+    private async Task<IActionResult?> VerifySigningProfileSpaceAsync(Guid signingProfileId)
+    {
+        var scope = _config.IntegrationApi.SpaceScope();
+        if (!scope.IsRestricted)
             return null;
 
         var signingProfile = await _db.SigningProfiles
@@ -443,20 +454,20 @@ public class InfraController(
             .FirstOrDefaultAsync(sp => sp.Id == signingProfileId);
 
         if (signingProfile?.IssuerId == null)
-            return TenantFenceDenied("the target's issuing CA could not be determined.");
+            return SpaceFenceDenied("the target's issuing CA could not be determined.");
 
         var ca = await _db.CertificateAuthorities
             .AsNoTracking()
             .FirstOrDefaultAsync(ca => ca.CertificateId == signingProfile.IssuerId);
 
         if (ca == null)
-            return TenantFenceDenied("the target's issuing CA could not be determined.");
+            return SpaceFenceDenied("the target's issuing CA could not be determined.");
 
-        if (ca.TenantId != tenantId.Value)
+        if (!scope.Allows(ca.SpaceId))
         {
-            Log.Warning("AUTH-06: integration API tenant isolation violation — API key tenant {ConfiguredTenant} attempted to use CA {CaId} belonging to tenant {CaTenant}",
-                tenantId.Value, ca.Id, ca.TenantId);
-            return new ObjectResult(new { error = "Access denied: the target CA does not belong to the configured tenant." })
+            Log.Warning("AUTH-06: integration API space isolation violation — API key scoped to {ConfiguredSpace} attempted to use CA {CaId} belonging to space {CaSpace}",
+                scope.ToString(), ca.Id, ca.SpaceId?.ToString() ?? "instance");
+            return new ObjectResult(new { error = "Access denied: the target CA does not belong to the configured space." })
             {
                 StatusCode = 403
             };
@@ -467,27 +478,26 @@ public class InfraController(
 
     /// <summary>
     /// AUTH-06: verifies that a certificate (by serial) was issued by a CA belonging to
-    /// the configured tenant. Returns null if the check passes, or an <see cref="IActionResult"/>
-    /// to short-circuit the action if the tenant does not match.
+    /// the configured space. Returns null if the check passes, or an <see cref="IActionResult"/>
+    /// to short-circuit the action if the space does not match.
     /// </summary>
     /// <summary>
-    /// The tenant fence's DENY result. Used wherever the fence cannot positively establish that
-    /// the target belongs to the configured tenant.
+    /// The space fence's DENY result. Used wherever the fence cannot positively establish that
+    /// the target belongs to the configured space.
     /// </summary>
     /// <remarks>
     /// Every "cannot determine" path in this fence used to `return null`, which is the ALLOW
     /// sentinel — so a certificate the lookup could not resolve, or one with no SigningProfileId,
     /// sailed through. MtlsController persists mTLS login certificates without a
-    /// SigningProfileId at all, so a key scoped to tenant A could read another tenant's admin
-    /// mTLS certificate and revoke it. An unestablished tenant is not a matching tenant.
+    /// SigningProfileId at all, so a key scoped to space A could read another space's admin
+    /// mTLS certificate and revoke it. An unestablished space is not a matching space.
     /// </remarks>
-    private static IActionResult TenantFenceDenied(string reason) =>
+    private static IActionResult SpaceFenceDenied(string reason) =>
         new ObjectResult(new { error = $"Access denied: {reason}" }) { StatusCode = 403 };
 
-    private async Task<IActionResult?> VerifyCertificateTenantBySerialAsync(string serial)
+    private async Task<IActionResult?> VerifyCertificateSpaceBySerialAsync(string serial)
     {
-        var tenantId = _config.IntegrationApi.TenantId;
-        if (tenantId == null)
+        if (!_config.IntegrationApi.SpaceScope().IsRestricted)
             return null;
 
         var certEntity = await _db.Certificates
@@ -495,67 +505,44 @@ public class InfraController(
             .ResolveBySerialOrNullAsync(serial);
 
         if (certEntity == null)
-            return TenantFenceDenied("the target certificate could not be found.");
+            return SpaceFenceDenied("the target certificate could not be found.");
 
         // Walk from the cert's signing profile to the issuing CA
         var signingProfileId = certEntity.SigningProfileId;
         if (signingProfileId == null)
-            return TenantFenceDenied("the target certificate is not associated with a signing profile, "
-                                   + "so its owning tenant cannot be established.");
+            return SpaceFenceDenied("the target certificate is not associated with a signing profile, "
+                                   + "so its owning space cannot be established.");
 
-        return await VerifySigningProfileTenantAsync(signingProfileId.Value);
+        return await VerifySigningProfileSpaceAsync(signingProfileId.Value);
     }
 
     /// <summary>
-    /// Builds the full PEM certificate chain by walking up the CA hierarchy
-    /// from the issuing CA to the root. Returns the concatenated PEM bundle
-    /// (issuer chain only, not including the leaf certificate).
+    /// Builds the PEM chain of certificate <paramref name="certificateId"/>: its issuers, nearest
+    /// first, up to and including the root, without the certificate itself. The issuers are the
+    /// certificate's own, followed through <see cref="IssuerChainResolver.ResolveIssuerCertificatesAsync"/>,
+    /// never a CA certificate found by issuer DN, which another CA can share. Empty when no issuer
+    /// can be resolved.
     /// </summary>
-    private async Task<string> BuildChainPemAsync(string leafPem)
+    private async Task<string> BuildChainPemAsync(Guid certificateId)
     {
         try
         {
-            var leafCert = CertificateUtil.ParseFromPem(leafPem);
-            var issuerDn = leafCert.IssuerDN.ToString();
-
-            // Find the issuing CA certificate by matching its SubjectDN to our Issuer
-            var issuerCertEntity = await _db.Certificates
-                .AsNoTracking()
-                .FirstOrDefaultAsync(c => c.SubjectDN == issuerDn && c.IsCA);
-
-            if (issuerCertEntity == null)
+            var cert = await _db.Certificates.AsNoTracking().FirstOrDefaultAsync(c => c.CertificateId == certificateId);
+            if (cert == null)
                 return string.Empty;
 
-            var chainPems = new List<string> { issuerCertEntity.Pem.Trim() };
+            var chain = await IssuerChainResolver.ResolveIssuerCertificatesAsync(_db, cert);
+            if (chain.Count == 0)
+                return string.Empty;
 
-            // Walk up the CA hierarchy
-            var currentCa = await _db.CertificateAuthorities
-                .Include(ca => ca.Certificate)
-                .AsNoTracking()
-                .FirstOrDefaultAsync(ca => ca.CertificateId == issuerCertEntity.CertificateId);
+            // The resolver stops below a root that is not the direct issuer; this response has
+            // always carried the root too.
+            var seen = chain.Select(c => c.CertificateId).Append(cert.CertificateId).ToHashSet();
+            foreach (var root in await IssuerChainResolver.ResolveIssuerCertificatesAsync(_db, chain[^1]))
+                if (seen.Add(root.CertificateId))
+                    chain.Add(root);
 
-            if (currentCa != null)
-            {
-                var visited = new HashSet<Guid> { currentCa.Id };
-                var parentCaId = currentCa.ParentCaId;
-
-                while (parentCaId.HasValue && visited.Count < 10)
-                {
-                    var parentCa = await _db.CertificateAuthorities
-                        .Include(ca => ca.Certificate)
-                        .AsNoTracking()
-                        .FirstOrDefaultAsync(ca => ca.Id == parentCaId.Value);
-
-                    if (parentCa?.Certificate == null)
-                        break;
-
-                    visited.Add(parentCa.Id);
-                    chainPems.Add(parentCa.Certificate.Pem.Trim());
-                    parentCaId = parentCa.ParentCaId;
-                }
-            }
-
-            return string.Join("\n", chainPems) + "\n";
+            return string.Join("\n", chain.Select(c => c.Pem.Trim())) + "\n";
         }
         catch
         {

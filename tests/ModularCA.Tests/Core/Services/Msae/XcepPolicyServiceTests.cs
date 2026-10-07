@@ -74,7 +74,7 @@ public class XcepPolicyServiceTests
         var ca = new CertificateAuthorityEntity
         {
             Id = Guid.NewGuid(), Name = "Lab CA", Label = "lab", IsDefault = true, IsEnabled = true,
-            CertificateId = caCertEntity.CertificateId, TenantId = Guid.NewGuid(),
+            CertificateId = caCertEntity.CertificateId, SpaceId = Guid.NewGuid(),
         };
         var signing = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "lab-signing", IssuerId = caCertEntity.CertificateId };
         var device = new CertProfileEntity
@@ -110,7 +110,7 @@ public class XcepPolicyServiceTests
         var profiles = new ProfileResolutionService(db, NullLogger<ProfileResolutionService>.Instance);
         var service = new XcepPolicyService(db, new CaResolverService(db), authorizer, profiles,
             new IssuanceValidationService(db, NullLogger<IssuanceValidationService>.Instance), config,
-            new PublicNameResolver(db, config), NullLogger<XcepPolicyService>.Instance);
+            new PublicNameResolver(config), NullLogger<XcepPolicyService>.Instance);
 
         return new Harness { Db = db, CaCert = caCert, Ca = ca, Signing = signing, DeviceProfile = device, Authorizer = authorizer, Service = service };
     }
@@ -125,7 +125,7 @@ public class XcepPolicyServiceTests
         h.AddTemplate("Alpha", h.DeviceProfile, "2.25.10");
         h.AddTemplate("NotOffered", h.DeviceProfile, oid: null);
         h.AddTemplate("Disabled", h.DeviceProfile, "2.25.40", enabled: false);
-        var otherCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "other", Label = "other", IsEnabled = true, TenantId = h.Ca.TenantId };
+        var otherCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "other", Label = "other", IsEnabled = true, SpaceId = h.Ca.SpaceId };
         h.Db.CertificateAuthorities.Add(otherCa);
         h.Db.SaveChanges();
         h.AddTemplate("Elsewhere", h.DeviceProfile, "2.25.50", caId: otherCa.Id);
@@ -238,20 +238,16 @@ public class XcepPolicyServiceTests
     }
 
     [Fact]
-    public async Task The_ces_url_names_the_request_host_only_when_it_is_a_known_name_for_the_tenant()
+    public async Task The_ces_url_is_on_the_public_domain_whatever_host_the_request_named()
     {
         var h = Build();
         h.AddTemplate("LabDevice", h.DeviceProfile, "2.25.10");
-        h.Db.TenantHostnames.Add(new TenantHostnameEntity { TenantId = h.Ca.TenantId, Hostname = "ca.customer-a.example", IssuingCaId = h.Ca.Id });
-        h.Db.TenantHostnames.Add(new TenantHostnameEntity { TenantId = Guid.NewGuid(), Hostname = "ca.customer-b.example", IssuingCaId = h.Ca.Id });
-        h.Db.SaveChanges();
         var caller = MsaeCaller.Credential("svc-enroll");
 
         async Task<string> Ces(string? host) => Assert.Single((await h.Service.GetPoliciesAsync(null, caller, host)).Cas).CesUri;
 
-        Assert.Equal("https://ca.customer-a.example/msae/lab/ces", await Ces("CA.Customer-A.Example"));   // the tenant's own name
-        Assert.Equal("https://ca.example.test/msae/lab/ces", await Ces("ca.example.test"));               // the public domain
-        Assert.Equal("https://ca.example.test/msae/lab/ces", await Ces("ca.customer-b.example"));         // another tenant's name
+        Assert.Equal("https://ca.example.test/msae/lab/ces", await Ces("CA.Example.Test"));               // the public domain
+        Assert.Equal("https://ca.example.test/msae/lab/ces", await Ces("ca.customer-a.example"));         // a former space hostname
         Assert.Equal("https://ca.example.test/msae/lab/ces", await Ces("attacker.example"));              // an arbitrary Host header
         Assert.Equal("https://ca.example.test/msae/lab/ces", await Ces(null));                            // no host known
     }
@@ -284,7 +280,7 @@ public class XcepPolicyServiceTests
         Assert.Equal(expected, XcepPolicyService.MinimalRsaKeyLength(sizes));
     }
 
-    /// <summary>A caller from an accepted ticket of a forest bound to the lab tenant, with no keys (none are needed past acceptance).</summary>
+    /// <summary>A caller from an accepted ticket of a forest bound to the lab space, with no keys (none are needed past acceptance).</summary>
     private static KerberosCaller KerberosCallerFor(string principal) => new(
         principal, "CORP.LAB.TEST", principal.EndsWith('$'),
         new KerberosRealmKeys("CORP.LAB.TEST", Guid.NewGuid(), "HTTP/ca.lab.test", "corp.lab.test", Guid.NewGuid(), "svc-enroll", true, true, []),

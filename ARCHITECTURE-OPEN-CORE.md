@@ -39,8 +39,10 @@ may only reference projects below it.
 
 **Licence-gated open code.** The implementation is here, under AGPL, readable and forkable. What is
 sold is the right to use it past the free threshold, enforced with a clear refusal and an audit
-record — `TenantCreationGate` is the worked example. Enforcement is honour-system; the protection
-is the licence agreement and the audit trail, not the `if` statement.
+record through `FeatureGate`. Enforcement is honour-system; the protection is the licence agreement
+and the audit trail, not the `if` statement. Spaces are deliberately not gated: past four,
+`SpaceCreationGate` only recommends a licence, because a space delegates within one organisation and
+the licence terms, not a refusal, are what keep separate customers in separate instances.
 
 **Private module.** Code that genuinely is not in this repository. The only mechanism that
 withholds anything, and it can only ever apply to work not yet published.
@@ -88,9 +90,10 @@ Three things are load-bearing:
 - **Say what still works.** An operator refused mid-task assumes the worst — that issuance has
   stopped, that something they built is now unusable. A feature where nothing can be said in that
   sentence is a feature that should not be gated this way.
-- **Gate at one site if you can.** Multi-tenancy is gateable because there is exactly one runtime
-  tenant-creation site, even though `TenantId` reaches 786 places. A feature with no such chokepoint
-  is a poor candidate for licence-gating and probably wants to be a module instead.
+- **Gate at one site if you can.** Space creation could be gated, or as now recommend a licence,
+  because there is exactly one runtime space-creation site, even though `SpaceId` reaches hundreds
+  of places. A feature with no such chokepoint is a poor candidate for licence-gating and probably
+  wants to be a module instead.
 
 ## What is deliberately not built yet
 

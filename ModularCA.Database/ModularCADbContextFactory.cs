@@ -14,9 +14,10 @@ public class ModularCADbContextFactory : IDesignTimeDbContextFactory<ModularCADb
     public ModularCADbContext CreateDbContext(string[] args)
     {
         var optionsBuilder = new DbContextOptionsBuilder<ModularCADbContext>();
-        optionsBuilder.UseMySql(
-            "Server=localhost;Database=modularca-app;Uid=root;Pwd=placeholder;",
-            ServerVersion.Create(8, 0, 0, Pomelo.EntityFrameworkCore.MySql.Infrastructure.ServerType.MySql));
+        // Design-time only: `dotnet ef` needs a provider to resolve the relational model, not a
+        // reachable server. Npgsql does not probe the server to pick a version the way the MySQL
+        // provider did, so migration generation works with no database running at all.
+        optionsBuilder.UseNpgsql("Host=localhost;Database=modularca-app;Username=postgres;Password=placeholder");
         return new ModularCADbContext(optionsBuilder.Options);
     }
 }

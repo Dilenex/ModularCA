@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
     buildCmpRequest, buildTokenRequest, emptyEnrollmentForm, enrollmentKind,
-    ENROLLMENT_PROTOCOLS, enrollmentProtocolMeta, EnrollmentFormState, showsQrResult,
+    ENROLLMENT_PROTOCOLS, enrollmentProtocolMeta, EnrollmentFormState, RESTRICTIONS_REASON, showsQrResult,
     validateEnrollmentForm,
 } from '@adminui/components/enrollmentForm';
 
@@ -16,8 +16,8 @@ const base: EnrollmentFormState = {
     ...emptyEnrollmentForm(),
     expiresInHours: 48,
     maxUses: 5,
-    subjectRestriction: 'O=Acme',
-    sanRestriction: 'acme.test',
+    subjectRestriction: [{ type: 'DN', value: 'O=Acme' }],
+    sanRestriction: [{ type: 'DNS', value: 'acme.test' }],
 };
 
 // A reference validator that only rejects the empty string, so these tests exercise the form
@@ -80,6 +80,26 @@ describe('validation', () => {
         // referenceValue and signingProfileId are empty here, and that must be fine for EST.
         expect(validateEnrollmentForm({ ...base, protocol: 'EST', referenceValue: '', signingProfileId: '' }, refOk)).toBeNull();
     });
+
+    it('blocks a token with an invalid restriction row', () => {
+        expect(validateEnrollmentForm({ ...base, protocol: 'EST', subjectRestriction: [{ type: 'DN', value: 'Acme' }] }, refOk))
+            .toBe(RESTRICTIONS_REASON);
+        expect(validateEnrollmentForm({ ...base, protocol: 'EST', sanRestriction: [{ type: 'DNS', value: '*.acme.test' }] }, refOk))
+            .toBe(RESTRICTIONS_REASON);
+        // A blank row is dropped, not an error.
+        expect(validateEnrollmentForm({ ...base, protocol: 'EST', sanRestriction: [{ type: 'DNS', value: '' }] }, refOk)).toBeNull();
+    });
+
+    it('ignores restriction rows for CMP, which sends none', () => {
+        expect(validateEnrollmentForm({ ...base, protocol: 'CMP', referenceValue: 'fleet', signingProfileId: 'sp1',
+            subjectRestriction: [{ type: 'DN', value: 'bad' }] }, refOk)).toBeNull();
+    });
+
+    it('sends a DN value with a space as one pattern', () => {
+        const body = buildTokenRequest({ ...base, protocol: 'EST',
+            subjectRestriction: [{ type: 'DNS', value: 'acme.test' }, { type: 'DN', value: 'O=Acme Corp' }] });
+        expect(body.subjectRestriction).toBe('acme.test; O=Acme Corp');
+    });
 });
 
 describe('request bodies', () => {
@@ -89,7 +109,7 @@ describe('request bodies', () => {
     });
 
     it('the token body sends null for blank restrictions and 0 for blank uses', () => {
-        const body = buildTokenRequest({ ...base, protocol: 'QR', subjectRestriction: '', sanRestriction: '', maxUses: '' });
+        const body = buildTokenRequest({ ...base, protocol: 'QR', subjectRestriction: [], sanRestriction: [{ type: 'DNS', value: ' ' }], maxUses: '' });
         expect(body.subjectRestriction).toBeNull();
         expect(body.sanRestriction).toBeNull();
         expect(body.maxUses).toBe(0);

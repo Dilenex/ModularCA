@@ -11,7 +11,7 @@ import LogPanel from './LogPanel';
 import TopBar from './TopBar';
 import { switchBadge } from './BadgeSwitcher';
 import { useStepUp } from './StepUpMfaContext';
-import { APP_VERSION, APP_COMMIT, APP_BUILD_TIME, fetchServerVersion, isVersionDrift, type ServerVersion } from '../version';
+import { APP_VERSION, fetchServerVersion, isVersionDrift, type ServerVersion } from '../version';
 import { SourceNotice } from '@shared/components/SourceNotice';
 
 import { navSections } from '../nav';
@@ -81,23 +81,15 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         .filter(section => section.items.length > 0);
 
     const sidebarContent = (
-        <nav className="w-56 h-full bg-white dark:bg-gray-950 text-gray-900 dark:text-white flex flex-col border-r border-gray-200 dark:border-gray-800 overflow-y-auto">
-            <div className="p-4 border-b border-gray-200 dark:border-gray-800 flex-shrink-0 flex items-center justify-between">
+        <nav className="w-56 h-full bg-raised text-ink flex flex-col border-r border-line overflow-y-auto">
+            <div className="p-4 border-b border-line flex-shrink-0 flex items-center justify-between">
                 <Link to="/dashboard">
-                    <h2 className="text-lg font-bold text-blue-800 dark:text-blue-400">
-                        ModularCA{' '}
-                        <span
-                            className="text-[10px] font-normal text-gray-400 dark:text-gray-500 align-top select-none"
-                            title={`commit ${APP_COMMIT}${APP_BUILD_TIME ? ` • built ${APP_BUILD_TIME}` : ''}`}
-                        >
-                            v{APP_VERSION}
-                        </span>
-                    </h2>
-                    <p className="text-xs text-gray-600">{PORTAL_LABEL}</p>
+                    <h2 className="text-base font-semibold tracking-tight text-ink">ModularCA</h2>
+                    <p className="text-xs text-ink-muted">{PORTAL_LABEL}</p>
                 </Link>
                 <button
                     onClick={toggleTheme}
-                    className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-gray-800 transition-colors text-gray-600"
+                    className="p-1.5 rounded hover:bg-hover transition-colors text-ink-muted"
                     title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
                 >
                     {theme === 'dark' ? (
@@ -113,7 +105,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     <div key={section.title} className="mb-1">
                         <button
                             onClick={() => toggleSection(section.title)}
-                            className="w-full px-3 py-1.5 text-xs font-semibold text-gray-600 uppercase tracking-wider hover:text-gray-300 flex justify-between items-center"
+                            className="w-full px-4 pt-3 pb-1 label-caps hover:text-ink flex justify-between items-center"
                         >
                             {section.title}
                             <span className="text-[10px]"><Chevron open={!(collapsed[section.title])} className="w-3 h-3" /></span>
@@ -128,10 +120,10 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                                         <li key={item.path}>
                                             <Link
                                                 to={item.path}
-                                                className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs transition-colors ${
+                                                className={`flex items-center gap-2 px-3 py-1.5 rounded text-sm border-l-2 transition-colors ${
                                                     isActive
-                                                        ? 'bg-blue-600/20 text-blue-800 dark:text-blue-300 border-l-2 border-blue-400'
-                                                        : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-200'
+                                                        ? 'bg-accent-soft text-accent-ink font-medium border-accent'
+                                                        : 'text-ink-muted border-transparent hover:bg-hover hover:text-ink'
                                                 }`}
                                             >
                                                 {item.name}
@@ -145,10 +137,10 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                 ))}
             </div>
 
-            <div className="p-3 border-t border-gray-200 dark:border-gray-800 flex-shrink-0 flex items-center gap-2">
+            <div className="p-3 border-t border-line flex-shrink-0 flex items-center gap-2">
                 <button
                     onClick={apiLogout}
-                    className="flex-1 px-3 py-2 text-sm text-gray-600 dark:text-gray-400 hover:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded transition-colors flex items-center gap-2"
+                    className="flex-1 px-3 py-2 text-sm text-ink-muted hover:text-crit hover:bg-hover rounded transition-colors flex items-center gap-2"
                 >
                     {/* Logout glyph: open door frame with an arrow exiting to the right. */}
                     <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
@@ -162,8 +154,8 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     aria-label="My Account"
                     className={`px-3 py-2 rounded transition-colors ${
                         location.pathname === '/account'
-                            ? 'bg-blue-600/20 text-blue-700 dark:text-blue-300'
-                            : 'text-gray-600 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-gray-100 dark:hover:bg-gray-800'
+                            ? 'bg-accent-soft text-accent-ink'
+                            : 'text-ink-muted hover:text-ink hover:bg-hover'
                     }`}
                 >
                     {/* Account glyph: head + shoulders, matching the logout icon's size/weight. */}
@@ -177,7 +169,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     );
 
     return (
-        <div className="flex h-screen bg-gray-50 dark:bg-gray-900 overflow-hidden">
+        <div className="flex h-screen bg-ground overflow-hidden">
             {/* Desktop sidebar */}
             <div className="hidden lg:block flex-shrink-0">
                 {sidebarContent}
@@ -186,7 +178,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             {/* Mobile sidebar overlay */}
             {sidebarOpen && (
                 <div className="fixed inset-0 z-40 lg:hidden">
-                    <div className="absolute inset-0 bg-black/50" onClick={() => setSidebarOpen(false)} />
+                    <div className="absolute inset-0 bg-scrim" onClick={() => setSidebarOpen(false)} />
                     <div className="relative w-56 h-full z-50">
                         {sidebarContent}
                     </div>
@@ -199,7 +191,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                 {showDrift && serverVersion && (
                     <div
                         role="alert"
-                        className="flex items-center justify-between gap-3 px-4 py-1.5 flex-shrink-0 bg-amber-50 dark:bg-amber-900/30 border-b border-amber-300 dark:border-amber-700 text-[11px] text-amber-800 dark:text-amber-300"
+                        className="flex items-center justify-between gap-3 px-4 py-1.5 flex-shrink-0 bg-warn-soft border-b border-warn/40 text-xs text-warn"
                     >
                         <span>
                             <span className="font-semibold">Version mismatch.</span>{' '}
@@ -210,14 +202,14 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                         <div className="flex items-center gap-3 flex-shrink-0">
                             <button
                                 onClick={() => window.location.reload()}
-                                className="font-semibold underline hover:text-amber-900 dark:hover:text-amber-200 transition-colors"
+                                className="font-semibold underline hover:no-underline"
                             >
                                 Reload
                             </button>
                             <button
                                 onClick={dismissDrift}
                                 aria-label="Dismiss version mismatch warning"
-                                className="text-amber-700 dark:text-amber-400 hover:text-amber-900 dark:hover:text-amber-200 transition-colors"
+                                className="text-warn opacity-70 hover:opacity-100 transition-opacity"
                             >
                                 {'✕'}
                             </button>
@@ -230,17 +222,17 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                 {linkScope && (
                     <div
                         role="status"
-                        className="flex items-center justify-between gap-3 px-4 py-1.5 flex-shrink-0 bg-sky-50 dark:bg-sky-900/30 border-b border-sky-300 dark:border-sky-700 text-[11px] text-sky-900 dark:text-sky-200"
+                        className="flex items-center justify-between gap-3 px-4 py-1.5 flex-shrink-0 bg-info-soft border-b border-info/40 text-xs text-info"
                     >
                         <span>
                             <span className="font-semibold">Scope set by this link:</span> {scopeLabel(scope)}.
                             {' '}Your usual scope is {scopeLabel(linkScope.usual)}; navigating elsewhere returns to it.
                         </span>
                         <span className="flex items-center gap-3 flex-shrink-0">
-                            <button onClick={linkScope.leave} className="font-semibold underline hover:text-sky-950 dark:hover:text-white transition-colors">
+                            <button onClick={linkScope.leave} className="font-semibold underline hover:no-underline">
                                 Back to {scopeLabel(linkScope.usual)}
                             </button>
-                            <button onClick={linkScope.keep} className="underline hover:text-sky-950 dark:hover:text-white transition-colors">
+                            <button onClick={linkScope.keep} className="underline hover:no-underline">
                                 Keep {scopeLabel(scope)}
                             </button>
                         </span>
@@ -252,7 +244,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                 {user?.badge && (
                     <div
                         role="status"
-                        className="flex items-center justify-between gap-3 px-4 py-1.5 flex-shrink-0 bg-violet-50 dark:bg-violet-900/30 border-b border-violet-300 dark:border-violet-700 text-[11px] text-violet-900 dark:text-violet-200"
+                        className="flex items-center justify-between gap-3 px-4 py-1.5 flex-shrink-0 bg-badge-worn-soft border-b border-badge-worn/40 text-xs text-badge-worn"
                     >
                         <span>
                             <span className="font-semibold">Wearing badge:</span> {user.badge.name}. This session holds only the rights the badge keeps.
@@ -260,7 +252,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                         <button
                             onClick={async () => { setBadgeBusy(true); try { await switchBadge(null, requireStepUp); } catch { setBadgeBusy(false); } }}
                             disabled={badgeBusy}
-                            className="font-semibold underline hover:text-violet-950 dark:hover:text-white transition-colors disabled:opacity-60 flex-shrink-0"
+                            className="font-semibold underline hover:no-underline disabled:opacity-60 flex-shrink-0"
                         >
                             Take off
                         </button>
@@ -270,7 +262,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
                 {/* Explicit landmark + id so a future skip-to-content link
                     can target the main region. */}
-                <main id="content" role="main" className="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-900">{children}</main>
+                <main id="content" role="main" className="flex-1 overflow-y-auto bg-ground">{children}</main>
                 {/* The live audit tail reads admin audit endpoints; self-service users cannot. */}
                 {PORTAL === 'admin' && <LogPanel />}
 
@@ -279,7 +271,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     there appears twice in the DOM. The legally load-bearing copy is publicui's,
                     which is the surface an unauthenticated remote user can reach — this one is
                     here because operators are remote users too. */}
-                <footer className="flex-shrink-0 border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 px-4 py-2">
+                <footer className="flex-shrink-0 border-t border-line bg-raised px-4 py-2">
                     <SourceNotice version={__APP_VERSION__} commit={__APP_COMMIT__} />
                 </footer>
             </div>

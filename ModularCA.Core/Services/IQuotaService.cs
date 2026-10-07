@@ -22,18 +22,6 @@ public interface IQuotaService
     /// Returns an aggregated summary of quota usage across all CAs.
     /// </summary>
     Task<QuotaUsageSummary> GetUsageSummaryAsync();
-
-    /// <summary>
-    /// Returns true if the tenant has not exceeded its maximum certificate authorities quota (0 = unlimited).
-    /// </summary>
-    /// <param name="tenantId">The tenant ID.</param>
-    Task<bool> CanCreateCaInTenantAsync(Guid tenantId);
-
-    /// <summary>
-    /// Returns true if the tenant has not exceeded its total certificates quota across all CAs (0 = unlimited).
-    /// </summary>
-    /// <param name="tenantId">The tenant ID.</param>
-    Task<bool> CanIssueCertificateInTenantAsync(Guid tenantId);
 }
 
 /// <summary>

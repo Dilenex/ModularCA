@@ -33,7 +33,7 @@ public class ProtocolCredentialServiceTests
             string actionType, Guid? actorUserId, string? actorUsername,
             string? targetEntityType = null, string? targetEntityId = null, object? details = null,
             string? sourceIp = null, bool success = true, string? errorMessage = null,
-            Guid? certificateAuthorityId = null, Guid? tenantId = null)
+            Guid? certificateAuthorityId = null, Guid? spaceId = null)
         {
             Entries.Add((actionType, actorUsername, success, details));
             return Task.CompletedTask;
@@ -50,7 +50,7 @@ public class ProtocolCredentialServiceTests
             return Task.FromResult((succeeds, (string?)null));
         }
 
-        public Task<List<string>> GetUserGroupsAsync(string username) => Task.FromResult(new List<string>());
+        public Task<List<string>?> GetUserGroupsAsync(string username) => Task.FromResult<List<string>?>(new List<string>());
     }
 
     private sealed class StubPolicy(int maxAttempts, int lockoutMinutes) : ISecurityPolicyService

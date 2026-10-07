@@ -33,6 +33,7 @@ export const adminIssuance: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Reissued certificate details.',
+        notes: 'newSans: absent or null keeps the current SANs; an empty array removes them all. Removing every SAN is refused with 400 (MCA-REQ-004) for a TLS server certificate (serverAuth EKU) or a certificate with an empty subject, before the predecessor is revoked.',
     },
     {
         method: 'POST',
@@ -44,6 +45,7 @@ export const adminIssuance: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Reissued certificate details.',
+        notes: 'newSans: absent or null keeps the current SANs; an empty array removes them all. Removing every SAN is refused with 400 (MCA-REQ-004) for a TLS server certificate (serverAuth EKU) or a certificate with an empty subject, before the predecessor is revoked.',
     },
     {
         method: 'POST',
@@ -55,5 +57,6 @@ export const adminIssuance: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Reissued certificate details.',
+        notes: 'newSans: absent or null keeps the current SANs; an empty array removes them all. Removing every SAN is refused with 400 (MCA-REQ-004) for a TLS server certificate (serverAuth EKU) or a certificate with an empty subject, before the predecessor is revoked.',
     },
 ];

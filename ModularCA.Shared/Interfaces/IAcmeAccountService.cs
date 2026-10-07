@@ -8,12 +8,11 @@ namespace ModularCA.Shared.Interfaces;
 public interface IAcmeAccountService
 {
     /// <summary>
-    /// Creates a new ACME account with the specified JWK and contact information.
-    /// <paramref name="caLabel"/> is persisted so later requests
-    /// to the plain <c>/api/v1/acme/account/{id}</c> endpoint can still resolve
-    /// the right CA context.
+    /// Creates a new ACME account with the specified JWK and contact information, bound to
+    /// <paramref name="certificateAuthorityId"/>, the CA its new-account request addressed.
+    /// <paramref name="caLabel"/> is the route label, kept for display and audit.
     /// </summary>
-    Task<AcmeAccountDto> CreateAsync(string jwkJson, string thumbprint, List<string>? contacts, bool termsAgreed, string? caLabel = null);
+    Task<AcmeAccountDto> CreateAsync(string jwkJson, string thumbprint, List<string>? contacts, bool termsAgreed, Guid certificateAuthorityId, string? caLabel = null);
 
     /// <summary>
     /// Returns the full <see cref="ModularCA.Shared.Entities.AcmeAccountEntity"/> status string
@@ -23,10 +22,24 @@ public interface IAcmeAccountService
     Task<string?> GetStatusByThumbprintAsync(string thumbprint);
 
     /// <summary>
-    /// Returns the CA label the account was created under, or
-    /// null if none was stored.
+    /// Returns the id of the CA the account is bound to, or null when the account does not
+    /// exist or could not be bound at upgrade; such an account is refused at every CA until a
+    /// new-account request with its key binds it (<see cref="BindAsync"/>).
     /// </summary>
-    Task<string?> GetCaLabelByIdAsync(Guid id);
+    Task<Guid?> GetBoundCaIdAsync(Guid id);
+
+    /// <summary>
+    /// The enabled CA the account is bound to, which is the CA its requests on the label-less
+    /// routes address; null when the account is unbound or that CA is disabled or deleted.
+    /// </summary>
+    Task<ModularCA.Shared.Entities.CertificateAuthorityEntity?> GetBoundCaAsync(Guid id);
+
+    /// <summary>
+    /// Binds an account the upgrade left unbound to <paramref name="certificateAuthorityId"/> and
+    /// records <paramref name="caLabel"/> as its label. Returns false, changing nothing, when the
+    /// account does not exist or is already bound.
+    /// </summary>
+    Task<bool> BindAsync(Guid id, Guid certificateAuthorityId, string? caLabel);
 
     /// <summary>
     /// Retrieves an ACME account by its ID.

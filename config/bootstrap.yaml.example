@@ -37,8 +37,37 @@ Features:
   CMP: false
   MSAE: false
 
+Administration:
+  # Will more than one person administer this CA?
+  #   true  - key ceremonies start ON: creating, revoking or deleting a CA needs another
+  #           administrator's approval, and the person who starts a ceremony can never approve it.
+  #   false - just one administrator: key ceremonies start OFF for the instance and for the first
+  #           space, because nobody else could approve one. Turn them on in the console (Settings,
+  #           and the space's page) once a second administrator exists.
+  # Leave the key out and key ceremonies start on.
+  MultipleAdministrators: true
+
+Acme:
+  # Will ACME clients be on a private network? Only read when Features.ACME is true.
+  #   true  - the first CA's http-01 validation may fetch challenges from private, loopback and
+  #           link-local addresses, and resolves names through this host's hosts file as well as
+  #           DNS. An internal CA needs this, or every http-01 request for a private address is
+  #           refused.
+  #   false - those addresses are refused. Keep this for a CA that validates public names: with
+  #           it on, whoever can request a certificate can make this server fetch from addresses
+  #           inside your network.
+  # Leave the key out and it is false. Change it later per CA in the console, under the CA's
+  # protocol settings.
+  AllowPrivateAddressValidation: false
+
 HttpsApi:
   CN: "ModularCA API"
+  # The bare hostname or IP address clients reach this instance by: no scheme, port or path.
+  # ACME directory URLs, redirects, passkey sign-in and the CRL, OCSP and AIA URLs in issued
+  # certificates are built from it, and the node will not start without one. Leave the key out
+  # and it is the first DNS name under SANs that is not localhost, or localhost when there is
+  # none. A name the SANs do not cover is added to the certificate.
+  # PublicDomain: "ca.example.com"
   SANs:
     - "DNS:localhost"
     - "IP:127.0.0.1"
@@ -48,4 +77,4 @@ HttpsApi:
   # issued certificate point here, so it must match what clients can actually reach. Set to 0 to
   # disable plain HTTP, in which case certificates are issued with no distribution point.
   HttpPort: 8080
-  ValidityYears: 2
+  ValidityDays: 397

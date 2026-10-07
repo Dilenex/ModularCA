@@ -1,5 +1,5 @@
 import React, { Suspense, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate, useParams } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom';
 import Layout from './components/Layout';
 import ProtectedRoute from './components/ProtectedRoute';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -9,13 +9,14 @@ import { TablePrefsProvider } from '@shared/context/TablePrefsContext';
 import { AuthClientProvider } from '@shared-auth/api/AuthClientContext';
 import { apiGet, apiPut, authClient } from './api/client';
 import { ToastProvider } from '@shared/context/ToastContext';
-import { TenantProvider } from './context/TenantContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ScrollToTop } from '@shared/components/ScrollToTop';
 import TitleManager from './components/TitleManager';
 import { PORTAL, BASENAME, LOGIN_PATH } from './portal';
 import { ScopeProvider } from './context/ScopeContext';
-import { SYSTEM_ADMIN, CA_MANAGE, CA_AUDIT, GROUP_MANAGE, USER_MANAGE, TOKEN_MANAGE, CERT_VIEW, CERT_REQUEST } from './gates';
+import { legacySpacePath } from './legacyPaths';
+import { profileDetailRoute, profileNewRoute } from './pages/profiles/profileRoutes';
+import { SYSTEM_ADMIN, SYSTEM_OPERATOR, CA_MANAGE, CA_MANAGE_SPACE, CA_AUDIT, GROUP_MANAGE, USER_MANAGE, TOKEN_MANAGE, CERT_VIEW, CERT_REQUEST } from './gates';
 
 // Auth pages — eagerly loaded (entry points, must render immediately)
 import LoginPage from './pages/Login';
@@ -73,8 +74,8 @@ const AccountDetail = React.lazy(() =>
 const CertInventory = React.lazy(() => import('./pages/CertInventory'));
 const Compliance = React.lazy(() => import('./pages/Compliance'));
 const Ceremonies = React.lazy(() => import('./pages/Ceremonies'));
-const TenantsAndQuotas = React.lazy(() => import('./pages/TenantsAndQuotas'));
-const TenantDetail = React.lazy(() => import('./pages/TenantDetail'));
+const SpacesAndQuotas = React.lazy(() => import('./pages/SpacesAndQuotas'));
+const SpaceDetail = React.lazy(() => import('./pages/SpaceDetail'));
 const Whitelists = React.lazy(() => import('./pages/Whitelists'));
 const WhitelistDetail = React.lazy(() => import('./pages/WhitelistDetail'));
 const Schedules = React.lazy(() => import('./pages/Schedules'));
@@ -100,9 +101,15 @@ const LdapCaRedirect: React.FC = () => {
     return <Navigate to={`/distribution?tab=ldap${caId ? `&caId=${caId}` : ''}`} replace />;
 };
 
+/** `/tenants` and `/tenants/:id`, renamed to spaces in 0.4.0, keep their id and query string. */
+const LegacySpaceRedirect: React.FC = () => {
+    const { pathname, search } = useLocation();
+    return <Navigate to={legacySpacePath(pathname, search) ?? '/spaces'} replace />;
+};
+
 const PageLoader = () => (
     <div className="flex items-center justify-center h-64">
-        <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+        <div className="w-6 h-6 border-2 border-accent border-t-transparent rounded-full animate-spin" />
     </div>
 );
 
@@ -171,7 +178,6 @@ const App: React.FC = () => {
                 <TablePrefsProvider transport={{ apiGet, apiPut }}>
                 <ToastProvider>
                     <AuthProvider>
-                        <TenantProvider>
                             <Router basename={BASENAME}>
                                 <ScrollToTop />
                                 <TitleManager />
@@ -207,7 +213,7 @@ const App: React.FC = () => {
                                                             <Route path="/certificates/:serial" element={<ProtectedRoute {...CERT_VIEW}><CertificateDetail /></ProtectedRoute>} />
 
                                                             {/* CA Management */}
-                                                            <Route path="/authorities/manage" element={<ProtectedRoute {...CA_MANAGE}><CaManagement /></ProtectedRoute>} />
+                                                            <Route path="/authorities/manage" element={<ProtectedRoute {...CA_MANAGE_SPACE}><CaManagement /></ProtectedRoute>} />
                                                             <Route path="/authorities/manage/:id" element={<ProtectedRoute {...CA_MANAGE}><CaDetail /></ProtectedRoute>} />
                                                             <Route path="/authorities/protocols" element={<ProtectedRoute {...CA_MANAGE}><ProtocolConfig /></ProtectedRoute>} />
                                                             <Route path="/authorities/windows" element={<ProtectedRoute {...CA_MANAGE}><MsaeSetup /></ProtectedRoute>} />
@@ -222,12 +228,20 @@ const App: React.FC = () => {
 
                                                             {/* Profiles */}
                                                             <Route path="/profiles" element={<ProtectedRoute {...CA_MANAGE}><ProfileManagement /></ProtectedRoute>} />
-                                                            <Route path="/profiles/request/:id" element={<ProtectedRoute {...CA_MANAGE}><RequestProfileDetail /></ProtectedRoute>} />
-                                                            <Route path="/profiles/cert/:id" element={<ProtectedRoute {...CA_MANAGE}><CertProfileDetail /></ProtectedRoute>} />
-                                                            <Route path="/profiles/signing/:id" element={<ProtectedRoute {...CA_MANAGE}><SigningProfileDetail /></ProtectedRoute>} />
-                                                            <Route path="/profiles/ssh-signing/:id" element={<ProtectedRoute {...CA_MANAGE}><SshSigningProfileDetail /></ProtectedRoute>} />
-                                                            <Route path="/profiles/ssh-cert/:id" element={<ProtectedRoute {...CA_MANAGE}><SshCertProfileDetail /></ProtectedRoute>} />
-                                                            <Route path="/profiles/ssh-request/:id" element={<ProtectedRoute {...CA_MANAGE}><SshRequestProfileDetail /></ProtectedRoute>} />
+                                                            {/* Each /new is listed before its /:id and keyed apart from it, so creating
+                                                                remounts the page on the stored profile in view mode. */}
+                                                            <Route path={profileNewRoute('request')} element={<ProtectedRoute {...CA_MANAGE}><RequestProfileDetail key="new" isNew /></ProtectedRoute>} />
+                                                            <Route path={profileDetailRoute('request')} element={<ProtectedRoute {...CA_MANAGE}><RequestProfileDetail /></ProtectedRoute>} />
+                                                            <Route path={profileNewRoute('cert')} element={<ProtectedRoute {...CA_MANAGE}><CertProfileDetail key="new" isNew /></ProtectedRoute>} />
+                                                            <Route path={profileDetailRoute('cert')} element={<ProtectedRoute {...CA_MANAGE}><CertProfileDetail /></ProtectedRoute>} />
+                                                            <Route path={profileNewRoute('signing')} element={<ProtectedRoute {...CA_MANAGE}><SigningProfileDetail key="new" isNew /></ProtectedRoute>} />
+                                                            <Route path={profileDetailRoute('signing')} element={<ProtectedRoute {...CA_MANAGE}><SigningProfileDetail /></ProtectedRoute>} />
+                                                            <Route path={profileNewRoute('ssh-signing')} element={<ProtectedRoute {...CA_MANAGE}><SshSigningProfileDetail key="new" isNew /></ProtectedRoute>} />
+                                                            <Route path={profileDetailRoute('ssh-signing')} element={<ProtectedRoute {...CA_MANAGE}><SshSigningProfileDetail /></ProtectedRoute>} />
+                                                            <Route path={profileNewRoute('ssh-cert')} element={<ProtectedRoute {...CA_MANAGE}><SshCertProfileDetail key="new" isNew /></ProtectedRoute>} />
+                                                            <Route path={profileDetailRoute('ssh-cert')} element={<ProtectedRoute {...CA_MANAGE}><SshCertProfileDetail /></ProtectedRoute>} />
+                                                            <Route path={profileNewRoute('ssh-request')} element={<ProtectedRoute {...CA_MANAGE}><SshRequestProfileDetail key="new" isNew /></ProtectedRoute>} />
+                                                            <Route path={profileDetailRoute('ssh-request')} element={<ProtectedRoute {...CA_MANAGE}><SshRequestProfileDetail /></ProtectedRoute>} />
                                                             <Route path="/templates" element={<ProtectedRoute {...CA_MANAGE}><CertificateTemplates /></ProtectedRoute>} />
 
                                                             {/* Protocols */}
@@ -244,9 +258,10 @@ const App: React.FC = () => {
                                                             <Route path="/roles" element={<ProtectedRoute {...SYSTEM_ADMIN}><RoleManagement /></ProtectedRoute>} />
                                                             <Route path="/roles/:id" element={<ProtectedRoute {...SYSTEM_ADMIN}><RoleDetail /></ProtectedRoute>} />
                                                             <Route path="/enrollment" element={<ProtectedRoute {...TOKEN_MANAGE}><EnrollmentManagement /></ProtectedRoute>} />
-                                                            <Route path="/ceremonies" element={<ProtectedRoute {...CA_MANAGE}><Ceremonies /></ProtectedRoute>} />
-                                                            {/* Quotas merged into Tenants & Quotas — redirect the old path. */}
-                                                            <Route path="/quotas" element={<Navigate to="/tenants" replace />} />
+                                                            <Route path="/ceremonies" element={<ProtectedRoute {...CA_MANAGE_SPACE}><Ceremonies /></ProtectedRoute>} />
+                                                            <Route path="/ceremonies/:id" element={<ProtectedRoute {...CA_MANAGE_SPACE}><Ceremonies /></ProtectedRoute>} />
+                                                            {/* Quotas merged into Spaces & Quotas — redirect the old path. */}
+                                                            <Route path="/quotas" element={<Navigate to="/spaces" replace />} />
 
                                                             {/* Intelligence */}
                                                             <Route path="/intel/inventory" element={<ProtectedRoute {...CERT_VIEW}><CertInventory /></ProtectedRoute>} />
@@ -257,7 +272,7 @@ const App: React.FC = () => {
                                                             {/* Monitoring */}
                                                             <Route path="/audit" element={<ProtectedRoute {...CA_AUDIT}><AuditLogs /></ProtectedRoute>} />
                                                             <Route path="/audit/:type/:id" element={<ProtectedRoute {...CA_AUDIT}><AuditLogDetail /></ProtectedRoute>} />
-                                                            <Route path="/notifications" element={<ProtectedRoute {...CA_MANAGE}><NotificationManagement /></ProtectedRoute>} />
+                                                            <Route path="/notifications" element={<ProtectedRoute {...SYSTEM_OPERATOR}><NotificationManagement /></ProtectedRoute>} />
 
                                                             {/* My Account */}
                                                             <Route path="/account" element={<AccountDetail />} />
@@ -265,8 +280,11 @@ const App: React.FC = () => {
                                                             <Route path="/security" element={<Navigate to="/account" replace />} />
 
                                                             {/* Administration */}
-                                                            <Route path="/tenants" element={<ProtectedRoute {...SYSTEM_ADMIN}><TenantsAndQuotas /></ProtectedRoute>} />
-                                                            <Route path="/tenants/:id" element={<ProtectedRoute {...SYSTEM_ADMIN}><TenantDetail /></ProtectedRoute>} />
+                                                            <Route path="/spaces" element={<ProtectedRoute {...SYSTEM_ADMIN}><SpacesAndQuotas /></ProtectedRoute>} />
+                                                            <Route path="/spaces/:id" element={<ProtectedRoute {...SYSTEM_ADMIN}><SpaceDetail /></ProtectedRoute>} />
+                                                            {/* Renamed in 0.4.0; remove these redirects in 0.5. */}
+                                                            <Route path="/tenants" element={<LegacySpaceRedirect />} />
+                                                            <Route path="/tenants/:id" element={<LegacySpaceRedirect />} />
                                                             <Route path="/whitelists" element={<ProtectedRoute {...SYSTEM_ADMIN}><Whitelists /></ProtectedRoute>} />
                                                             <Route path="/whitelists/:id" element={<ProtectedRoute {...SYSTEM_ADMIN}><WhitelistDetail /></ProtectedRoute>} />
                                                             <Route path="/settings" element={<ProtectedRoute {...SYSTEM_ADMIN}><Settings /></ProtectedRoute>} />
@@ -276,7 +294,7 @@ const App: React.FC = () => {
                                                             <Route path="/webtls" element={<ProtectedRoute {...SYSTEM_ADMIN}><WebTlsManagement /></ProtectedRoute>} />
 
                                                             {/* Catch-all 404 — must come last. Renders inside the authenticated
-                                                                Layout so the operator keeps the sidebar and tenant context
+                                                                Layout so the operator keeps the sidebar and scope context
                                                                 while seeing the page-not-found message. */}
                                                             <Route path="*" element={<NotFound />} />
                                                         </Routes>
@@ -291,7 +309,6 @@ const App: React.FC = () => {
                                 </Routes>
                                 )}
                             </Router>
-                        </TenantProvider>
                     </AuthProvider>
                 </ToastProvider>
                 </TablePrefsProvider>

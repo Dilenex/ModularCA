@@ -17,12 +17,11 @@ namespace ModularCA.API.Ingress;
 public static class IngressHosting
 {
     /// <summary>
-    /// Registers the route table, the provider, the trust policy and YARP. The table is the
-    /// one the hostname service reloads after a change.
+    /// Registers the route table, the provider, the trust policy and YARP.
     /// </summary>
     /// <param name="services">The host's services.</param>
     /// <param name="config">The ingress section, already validated.</param>
-    /// <param name="table">The route table the provider watches.</param>
+    /// <param name="table">The route table built from the configured routes.</param>
     /// <param name="trust">The upstream trust policy.</param>
     public static IServiceCollection AddIngress(this IServiceCollection services, IngressConfig config, IngressRouteTableService table, UpstreamTrustPolicy trust)
     {

@@ -19,8 +19,6 @@ public static class StepUpOps
     public const string SwitchBadge = "switch-badge";
     /// <summary>Creating, changing, keying or deleting a Kerberos realm binding for Windows autoenrollment.</summary>
     public const string ManageKerberosRealm = "manage-kerberos-realm";
-    /// <summary>Adding, removing or reissuing the certificate of a hostname a tenant is reached by.</summary>
-    public const string ManageTenantHostname = "manage-tenant-hostname";
     public const string RevokeCert = "revoke-cert";
     public const string HoldCert = "hold-cert";
     public const string UnholdCert = "unhold-cert";
@@ -163,14 +161,14 @@ public static class StepUpOps
     public const string BulkLdapPublisher = "bulk-ldap-publisher";
 
     // Certificate Transparency log catalog. CT log URL + public key are system-wide
-    // artifacts — corrupting them silently breaks SCT embedding for every tenant,
+    // artifacts — corrupting them silently breaks SCT embedding for every space,
     // so mutations require step-up MFA on top of the SystemOperator policy.
     public const string CreateCtLog = "create-ct-log";
     public const string UpdateCtLog = "update-ct-log";
     public const string DeleteCtLog = "delete-ct-log";
 
     // Certificate template catalog (bundles CA + signing profile + cert profile).
-    // Global artifacts that affect every tenant's enrollment flow; mutations require
+    // Global artifacts that affect every space's enrollment flow; mutations require
     // step-up MFA on top of the SystemOperator policy.
     public const string CreateCertificateTemplate = "create-certificate-template";
     public const string UpdateCertificateTemplate = "update-certificate-template";
@@ -212,14 +210,42 @@ public static class StepUpOps
     public const string MtlsEnroll = "mtls-enroll";
     public const string MtlsDelete = "mtls-delete";
 
-    // Tenants
-    public const string EnableTenant = "enable-tenant";
-    public const string DisableTenant = "disable-tenant";
+    // Spaces
+    public const string EnableSpace = "enable-space";
+    public const string DisableSpace = "disable-space";
 
-    // Combined tenant-settings save (detail page): a single token authorizes one atomic update of
-    // a tenant's ceilings, per-CA issuance quotas, and tenant/CA user-approval quorums — so editing
+    // Combined space-settings save (detail page): a single token authorizes one atomic update of
+    // a space's ceilings, per-CA issuance quotas, and space/CA user-approval quorums — so editing
     // several sensitive fields at once prompts for step-up exactly once.
-    public const string UpdateTenantSettings = "update-tenant-settings";
+    public const string UpdateSpaceSettings = "update-space-settings";
+
+    // Gated in 0.4.0: mutations that had no step-up while their siblings did.
+    /// <summary>Starting a new epoch of the audit hash chain.</summary>
+    public const string RestartAuditChain = "restart-audit-chain";
+    /// <summary>Importing, enabling, disabling or deleting a trust anchor.</summary>
+    public const string ManageTrustAnchor = "manage-trust-anchor";
+    /// <summary>Revoking an SSH certificate.</summary>
+    public const string RevokeSshCert = "revoke-ssh-cert";
+    /// <summary>Creating an enrollment token or a CMP shared secret.</summary>
+    public const string CreateEnrollmentSecret = "create-enrollment-secret";
+    /// <summary>Creating an ACME external account binding key.</summary>
+    public const string CreateEabKey = "create-eab-key";
+    /// <summary>Creating, changing or deleting another user's access badge.</summary>
+    public const string ManageUserBadge = "manage-user-badge";
+    /// <summary>Creating a space.</summary>
+    public const string CreateSpace = "create-space";
+    /// <summary>Creating a certificate profile.</summary>
+    public const string CreateCertProfile = "create-cert-profile";
+    /// <summary>Creating a request profile.</summary>
+    public const string CreateRequestProfile = "create-request-profile";
+    /// <summary>Creating a signing profile.</summary>
+    public const string CreateSigningProfile = "create-signing-profile";
+    /// <summary>Creating, changing or deleting an SSH certificate template.</summary>
+    public const string ManageSshTemplate = "manage-ssh-template";
+    /// <summary>Approving a certificate request.</summary>
+    public const string ApproveRequest = "approve-request";
+    /// <summary>Rejecting a certificate request.</summary>
+    public const string RejectRequest = "reject-request";
 
     /// <summary>
     /// The canonical allow-list consulted by <c>IssueStepUpTokenAsync</c>. Any operation
@@ -229,7 +255,7 @@ public static class StepUpOps
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         SwitchBadge,
-        ManageKerberosRealm, ManageTenantHostname,
+        ManageKerberosRealm,
         RevokeCert, HoldCert, UnholdCert,
         RevokeSelfCert,
         ReissueCert,
@@ -267,7 +293,9 @@ public static class StepUpOps
         TotpSetup, TotpVerifySetup, TotpRemove,
         WebAuthnRegister, WebAuthnDelete,
         MtlsEnroll, MtlsDelete,
-        EnableTenant, DisableTenant, UpdateTenantSettings,
+        EnableSpace, DisableSpace, UpdateSpaceSettings,
+        RestartAuditChain, ManageTrustAnchor, RevokeSshCert, CreateEnrollmentSecret, CreateEabKey, ManageUserBadge,
+        CreateSpace, CreateCertProfile, CreateRequestProfile, CreateSigningProfile, ManageSshTemplate, ApproveRequest, RejectRequest,
     };
 
     /// <summary>

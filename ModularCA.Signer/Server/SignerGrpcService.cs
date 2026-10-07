@@ -128,6 +128,29 @@ public sealed class SignerGrpcService : Wire.Signer.SignerBase
         }, "RetireKey");
 
     /// <inheritdoc />
+    public override Task<WrapSecretResponse> WrapSecret(WrapSecretRequest request, ServerCallContext context)
+        => GuardAsync(async () =>
+        {
+            var wrapped = await _signer.WrapSecretAsync(
+                WireMapping.ToSecretKind(request.Kind),
+                request.Secret.ToByteArray(),
+                ContextFrom(request.Context, context),
+                context.CancellationToken);
+            return new WrapSecretResponse { Wrapped = ByteString.CopyFrom(wrapped) };
+        }, "WrapSecret");
+
+    /// <inheritdoc />
+    public override Task<UnwrapSecretResponse> UnwrapSecret(UnwrapSecretRequest request, ServerCallContext context)
+        => GuardAsync(async () =>
+        {
+            var secret = await _signer.UnwrapSecretAsync(
+                request.Wrapped.ToByteArray(),
+                ContextFrom(request.Context, context),
+                context.CancellationToken);
+            return new UnwrapSecretResponse { Secret = ByteString.CopyFrom(secret) };
+        }, "UnwrapSecret");
+
+    /// <inheritdoc />
     public override Task<HealthResponse> Health(HealthRequest request, ServerCallContext context)
         => GuardAsync(async () => WireMapping.ToWire(await _signer.HealthAsync(context.CancellationToken)), "Health");
 

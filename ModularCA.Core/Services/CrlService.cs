@@ -1,5 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using ModularCA.Core.Helpers;
 using ModularCA.Core.Services.SchedulerJobs;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
@@ -92,7 +93,9 @@ public class CrlService : ICrlService
     /// Generates a new full CRL for the specified CA certificate. Signs with the CA's own
     /// public key algorithm (not the issuer's), excludes expired entries, increments the
     /// monotonic CRL number atomically, and emits the <c>IssuingDistributionPoint</c>
-    /// extension when the configuration scopes over a subset. Emits an
+    /// extension when the configuration scopes over a subset. Covers certificates issued under the
+    /// CA's current certificate and any superseded certificate of the same CA with the same name and
+    /// key (see <see cref="IssuerChainResolver.SameKeyCaCertificateIdsAsync"/>). Emits an
     /// <see cref="AuditActionType.CrlGenerated"/> audit record after successful persistence,
     /// with <c>IsDelta=false</c> in the details payload.
     /// </summary>
@@ -144,15 +147,15 @@ public class CrlService : ICrlService
         int revokedCount = 0;
 
         // Use RepeatableRead + row-level lock on the CrlConfigurations row
-        // so two concurrent generators can't issue the same number. The in-process
-        // MySql `SELECT ... FOR UPDATE` is simple and enough for single-node. HA distributed
+        // so two concurrent generators can't issue the same number. A plain
+        // `SELECT ... FOR UPDATE` is simple and enough for single-node. HA distributed
         // lock lives in the scheduler.
         using var transaction = await _dbContext.Database.BeginTransactionAsync(
             System.Data.IsolationLevel.RepeatableRead, cancellationToken);
         try
         {
             var lockedCrlJob = await _dbContext.CrlConfigurations
-                .FromSqlRaw("SELECT * FROM CrlConfigurations WHERE TaskId = {0} FOR UPDATE", crlJob.TaskId)
+                .FromSqlRaw("""SELECT * FROM "CrlConfigurations" WHERE "TaskId" = {0} FOR UPDATE""", crlJob.TaskId)
                 .FirstOrDefaultAsync(cancellationToken)
                 ?? crlJob;
 
@@ -182,10 +185,11 @@ public class CrlService : ICrlService
             // Issuer-DN match for legacy rows pre-migration. Exclude expired entries per
             // RFC 5280 §3.3.
             var issuerDnString = caPubKey.SubjectDN.ToString();
+            var scope = await IssuerChainResolver.SameKeyCaCertificateIdsAsync(_dbContext, caCertificateId, caPubKey, cancellationToken);
             var revokedCerts = await _dbContext.Certificates
                 .Where(c => c.Revoked
                     && c.NotAfter > now
-                    && ((c.IssuerCertificateId != null && c.IssuerCertificateId == caCertificateId)
+                    && ((c.IssuerCertificateId != null && scope.Contains(c.IssuerCertificateId.Value))
                         || (c.IssuerCertificateId == null && c.Issuer == issuerDnString)))
                 .AsNoTracking()
                 .ToListAsync(cancellationToken);
@@ -285,7 +289,7 @@ public class CrlService : ICrlService
             await _audit.LogAsync(
                 AuditActionType.CrlGenerated,
                 actorUserId: null,
-                actorUsername: "scheduler",
+                actorUsername: SchedulerService.AuditActor,
                 targetEntityType: "CRL",
                 targetEntityId: caCertificateId.ToString(),
                 details: new
@@ -314,6 +318,8 @@ public class CrlService : ICrlService
     /// <summary>
     /// Generates a delta CRL containing only revocations since the last full CRL.
     /// RFC 5280 §5.2.4 — includes DeltaCRLIndicator and IssuingDistributionPoint extensions.
+    /// Scoped like the full CRL: the CA's certificates that share the signing key. Its base, and
+    /// the delta row it replaces, are this CA certificate's own (by configuration, not issuer DN).
     /// Audit findings #26: emits an <see cref="AuditActionType.CrlGenerated"/> audit record
     /// with <c>IsDelta=true</c> in the details payload after successful persistence.
     /// </summary>
@@ -332,9 +338,10 @@ public class CrlService : ICrlService
         var (caPubKey, caKey, signingContext) = await ResolveCaKeyAsync(ca, cancellationToken);
         var issuerDn = caPubKey.SubjectDN.ToString();
 
-        // Find the latest full CRL — the delta is relative to this
+        // Find this CA's latest full CRL — the delta is relative to this. By its configuration's
+        // CA certificate, not the issuer DN, which another CA can share.
         var baseFullCrl = await _dbContext.Crls
-            .Where(c => c.IssuerName == issuerDn && !c.IsDelta)
+            .Where(c => !c.IsDelta && c.Task != null && c.Task.CaCertificateId == caCertificateId)
             .OrderByDescending(c => c.CrlNumber)
             .FirstOrDefaultAsync(cancellationToken);
 
@@ -382,7 +389,7 @@ public class CrlService : ICrlService
         {
             var counterRow = deltaCrlJob ?? fullCrlJob!;
             var lockedCounter = await _dbContext.CrlConfigurations
-                .FromSqlRaw("SELECT * FROM CrlConfigurations WHERE TaskId = {0} FOR UPDATE", counterRow.TaskId)
+                .FromSqlRaw("""SELECT * FROM "CrlConfigurations" WHERE "TaskId" = {0} FOR UPDATE""", counterRow.TaskId)
                 .FirstOrDefaultAsync(cancellationToken)
                 ?? counterRow;
 
@@ -402,12 +409,13 @@ public class CrlService : ICrlService
 
             // Delta CRL includes only entries revoked AFTER the base full CRL was generated
             // and still unexpired (RFC 5280 §3.3).
+            var scope = await IssuerChainResolver.SameKeyCaCertificateIdsAsync(_dbContext, caCertificateId, caPubKey, cancellationToken);
             var revokedSinceBase = await _dbContext.Certificates
                 .Where(c => c.Revoked
                     && c.NotAfter > now
                     && c.RevocationDate != null
                     && c.RevocationDate > baseFullCrl.GeneratedAt
-                    && ((c.IssuerCertificateId != null && c.IssuerCertificateId == caCertificateId)
+                    && ((c.IssuerCertificateId != null && scope.Contains(c.IssuerCertificateId.Value))
                         || (c.IssuerCertificateId == null && c.Issuer == issuerDn)))
                 .AsNoTracking()
                 .ToListAsync(cancellationToken);
@@ -445,7 +453,7 @@ public class CrlService : ICrlService
                     var reinstated = await _dbContext.Certificates
                         .Where(c => baseSerials.Contains(c.SerialNumber)
                             && !c.Revoked
-                            && ((c.IssuerCertificateId != null && c.IssuerCertificateId == caCertificateId)
+                            && ((c.IssuerCertificateId != null && scope.Contains(c.IssuerCertificateId.Value))
                                 || (c.IssuerCertificateId == null && c.Issuer == issuerDn)))
                         .Select(c => c.SerialNumber)
                         .AsNoTracking()
@@ -478,7 +486,7 @@ public class CrlService : ICrlService
             var taskId = lockedCounter.TaskId;
 
             var existingDelta = await _dbContext.Crls
-                .Where(c => c.IssuerName == issuerDn && c.IsDelta)
+                .Where(c => c.IsDelta && c.Task != null && c.Task.CaCertificateId == caCertificateId)
                 .OrderByDescending(c => c.CrlNumber)
                 .FirstOrDefaultAsync(cancellationToken);
 
@@ -545,7 +553,7 @@ public class CrlService : ICrlService
             await _audit.LogAsync(
                 AuditActionType.CrlGenerated,
                 actorUserId: null,
-                actorUsername: "scheduler",
+                actorUsername: SchedulerService.AuditActor,
                 targetEntityType: "CRL",
                 targetEntityId: caCertificateId.ToString(),
                 details: new
@@ -575,8 +583,9 @@ public class CrlService : ICrlService
     /// <summary>
     /// Resolves the CA public certificate from the database-backed <see cref="CertificateEntity"/>
     /// without round-tripping through the <c>SubjectDN</c> string (<c>RawCertificate</c> when
-    /// present, the keystore's public copy for legacy rows), together with the reference the
-    /// signer knows the CA key by and the context naming the CA and its tenant. The key itself is
+    /// present, else its PEM, else the keystore's public copy with the same subject and serial for
+    /// legacy rows), together with the reference the
+    /// signer knows the CA key by and the context naming the CA and its space. The key itself is
     /// never resolved here.
     /// </summary>
     private async Task<(X509Certificate Cert, KeyRef Key, SigningContext Context)> ResolveCaKeyAsync(CertificateEntity ca, CancellationToken cancellationToken)
@@ -591,21 +600,32 @@ public class CrlService : ICrlService
             }
         }
 
+        if (caCert == null && !string.IsNullOrWhiteSpace(ca.Pem))
+        {
+            try { caCert = CertificateUtil.ParseFromPem(ca.Pem); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to parse the PEM of CA {CaId}; will fall back to keystore lookup.", ca.CertificateId);
+            }
+        }
+
         if (caCert == null)
         {
+            // Subject DN and serial together: two CAs can share a subject DN.
             caCert = _keystore.GetTrustedAuthorities()
-                .FirstOrDefault(c => c.SubjectDN.ToString() == ca.SubjectDN)
+                .FirstOrDefault(c => c.SubjectDN.ToString() == ca.SubjectDN
+                    && string.Equals(CertificateUtil.FormatSerialNumber(c.SerialNumber), ca.SerialNumber, StringComparison.OrdinalIgnoreCase))
                 ?? throw new InvalidOperationException($"CA certificate {ca.CertificateId} not found in keystore.");
         }
 
         var owner = await _dbContext.CertificateAuthorities
             .AsNoTracking()
             .Where(c => c.CertificateId == ca.CertificateId)
-            .Select(c => new { c.Id, c.TenantId })
+            .Select(c => new { c.Id, c.SpaceId })
             .FirstOrDefaultAsync(cancellationToken)
             ?? throw new InvalidOperationException($"No certificate authority record names CA certificate {ca.CertificateId}; the signer cannot attribute its key.");
 
-        return (caCert, new KeyRef(ca.CertificateId), SigningContext.ForCa(SignerCaller, SigningPurpose.Crl, owner.Id, owner.TenantId));
+        return (caCert, new KeyRef(ca.CertificateId), SigningContext.ForCa(SignerCaller, SigningPurpose.Crl, owner.Id, owner.SpaceId));
     }
 
     /// <summary>
@@ -784,7 +804,8 @@ public class CrlService : ICrlService
     /// <summary>
     /// Returns the raw DER bytes of the latest full CRL plus cache
     /// metadata the controllers need for HTTP cache headers. Avoids the PEM round-trip on
-    /// every public CRL fetch.
+    /// every public CRL fetch. The CRL is the one whose configuration names
+    /// <paramref name="caCertificateId"/>, never one matched by issuer DN.
     /// </summary>
     public async Task<CrlBlob?> GetLatestCrlRawAsync(Guid caCertificateId, CancellationToken cancellationToken = default)
     {
@@ -795,13 +816,12 @@ public class CrlService : ICrlService
         if (ca == null)
             return null;
 
-        // Look up CRL rows via the config/CaCertificateId FK when available,
-        // falling back to IssuerName for legacy rows inserted before the migration.
+        // By the configuration's CA certificate only. Every CRL row has a configuration (TaskId
+        // is required and restricted), and an IssuerName fallback served another CA's CRL when
+        // two CAs share a subject DN.
         var blob = await _dbContext.Crls
             .AsNoTracking()
-            .Where(c => !c.IsDelta
-                && ((c.Task != null && c.Task.CaCertificateId == caCertificateId)
-                    || c.IssuerName == ca.SubjectDN))
+            .Where(c => !c.IsDelta && c.Task != null && c.Task.CaCertificateId == caCertificateId)
             .OrderByDescending(c => c.CrlNumber)
             .Select(c => new { c.RawData, c.ThisUpdate, c.NextUpdate, c.CrlNumber })
             .FirstOrDefaultAsync(cancellationToken);
@@ -813,7 +833,8 @@ public class CrlService : ICrlService
     }
 
     /// <summary>
-    /// Raw-DER variant of <see cref="GetLatestDeltaCrlAsync"/>.
+    /// Raw-DER variant of <see cref="GetLatestDeltaCrlAsync"/>, matched by configuration like
+    /// <see cref="GetLatestCrlRawAsync"/>.
     /// </summary>
     public async Task<CrlBlob?> GetLatestDeltaCrlRawAsync(Guid caCertificateId, CancellationToken cancellationToken = default)
     {
@@ -826,9 +847,7 @@ public class CrlService : ICrlService
 
         var blob = await _dbContext.Crls
             .AsNoTracking()
-            .Where(c => c.IsDelta
-                && ((c.Task != null && c.Task.CaCertificateId == caCertificateId)
-                    || c.IssuerName == ca.SubjectDN))
+            .Where(c => c.IsDelta && c.Task != null && c.Task.CaCertificateId == caCertificateId)
             .OrderByDescending(c => c.CrlNumber)
             .Select(c => new { c.RawData, c.ThisUpdate, c.NextUpdate, c.CrlNumber })
             .FirstOrDefaultAsync(cancellationToken);

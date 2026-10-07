@@ -38,7 +38,7 @@ single-page apps:
 
 - The .NET SDK targeted by the projects (see the `*.csproj` `TargetFramework`).
 - Node.js LTS + npm (for the frontends).
-- A MySQL-compatible database for running the API locally.
+- A PostgreSQL 14+ server for running the API locally.
 
 ## Building
 
@@ -77,10 +77,19 @@ The schema is managed with EF Core migrations under
 migration rather than editing the schema by hand:
 
 ```bash
-dotnet ef migrations add <DescriptiveName> --project ModularCA.Database
+dotnet ef migrations add <DescriptiveName> --project ModularCA.Database --startup-project ModularCA.Database --context ModularCADbContext
 ```
 
-Use a clear, descriptive migration name.
+Use a clear, descriptive migration name. The baseline migrations are frozen and must never
+be regenerated or edited. For the audit context, preconditions and the upgrade test, see
+"Schema changes after the baselines" in `docs/architecture/postgresql-migration.md`.
+
+A migration runs as the runtime role that owns its database, on every install, with nothing
+else in reach. So it names no role and never uses `SET ROLE`, `GRANT`, `REVOKE`,
+`ALTER DEFAULT PRIVILEGES` or `OWNER TO`. It creates no schema, role or database. It adds no
+extension to the audit context, and none except `citext` to the application context. It never
+combines `suppressTransaction: true` with a `FailIf` precondition. The reasons are in "Who owns
+the schema" in the same document.
 
 ## Coding Conventions
 

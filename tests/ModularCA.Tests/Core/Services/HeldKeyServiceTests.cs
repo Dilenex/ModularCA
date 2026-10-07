@@ -51,7 +51,7 @@ public sealed class HeldKeyServiceTests
                 Pem = CertificateUtil.ExportCertificateToPem(Ca.Certificate), IsCA = true,
                 NotBefore = Now.AddYears(-1), NotAfter = Now.AddYears(3),
             };
-            var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Held Key Test CA", Label = "held-test", CertificateId = CaCert.CertificateId, TenantId = Guid.NewGuid() };
+            var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Held Key Test CA", Label = "held-test", CertificateId = CaCert.CertificateId, SpaceId = Guid.NewGuid() };
             SigningProfile = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "held-test", IssuerId = CaCert.CertificateId, AllowedAlgorithms = "[]" };
             Db.Certificates.Add(CaCert);
             Db.CertificateAuthorities.Add(ca);

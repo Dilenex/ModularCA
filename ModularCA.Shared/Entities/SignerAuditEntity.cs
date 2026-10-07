@@ -8,7 +8,7 @@ namespace ModularCA.Shared.Entities;
 /// context, and whether policy allowed it. The signer writes a row for every decision, allowed
 /// or refused, before it answers, so this table is the record of what was signed even when the
 /// node's own audit is lost. It carries no foreign keys on purpose: a row must outlive the CA,
-/// the certificate and the tenant it names.
+/// the certificate and the space it names.
 /// </summary>
 [Table("SignerAudit")]
 public class SignerAuditEntity
@@ -42,8 +42,17 @@ public class SignerAuditEntity
     /// <summary>The CA the context said the operation was for.</summary>
     public Guid? CaId { get; set; }
 
-    /// <summary>The tenant the context said the operation was for.</summary>
-    public Guid? TenantId { get; set; }
+    /// <summary>The space the context said the operation was for.</summary>
+    public Guid? SpaceId { get; set; }
+
+    /// <summary>
+    /// The scope the context stated, which <see cref="SpaceId"/> alone cannot tell apart when it
+    /// is null: <see cref="InstanceScope"/>, <see cref="SpaceScope"/> (<see cref="TenantScope"/>
+    /// on rows written before 0.4.0; read both with <see cref="IsSpaceScope"/>) or
+    /// <see cref="NoScope"/>. Null on rows written before the column existed.
+    /// </summary>
+    [MaxLength(16)]
+    public string? EffectiveScope { get; set; }
 
     /// <summary>
     /// The <c>KeyCeremonies</c> row the context named, when it named one, whether or not the
@@ -76,9 +85,44 @@ public class SignerAuditEntity
     [MaxLength(64)]
     public string? DataHash { get; set; }
 
+    /// <summary>
+    /// What kind of secret a <c>WrapSecret</c> or <c>UnwrapSecret</c> decision was about, as the
+    /// <c>SecretKind</c> member's name, including for a refusal: the row says which separation
+    /// the policy was applying. Null for every operation that is about a key rather than a
+    /// secret.
+    /// </summary>
+    [MaxLength(32)]
+    public string? SecretKind { get; set; }
+
+    /// <summary>
+    /// The id of the key that wrapped, or was asked to unwrap, a secret: SHA-256 over the DER
+    /// SubjectPublicKeyInfo of the keystore key the wrapping key was derived from, lower-case
+    /// hex, as the blob's own header names it. This is what makes a rotation legible after the
+    /// fact: the rows say which key was still in use, and for what. Null for every operation
+    /// that is about a key rather than a secret.
+    /// </summary>
+    [MaxLength(64)]
+    public string? WrappingKeyId { get; set; }
+
     /// <summary>The policy allowed the operation.</summary>
     public const string AllowedOutcome = "allowed";
 
     /// <summary>The policy refused the operation.</summary>
     public const string RefusedOutcome = "refused";
+
+    /// <summary>The context stated the instance as its scope.</summary>
+    public const string InstanceScope = "instance";
+
+    /// <summary>The context stated a space as its scope. Written from 0.4.0.</summary>
+    public const string SpaceScope = "space";
+
+    /// <summary>The context stated a space as its scope: the token rows written before 0.4.0 hold. Never written now.</summary>
+    public const string TenantScope = "tenant";
+
+    /// <summary>Whether <paramref name="effectiveScope"/> states a space: <see cref="SpaceScope"/> or the legacy <see cref="TenantScope"/>.</summary>
+    public static bool IsSpaceScope(string? effectiveScope)
+        => effectiveScope is SpaceScope or TenantScope;
+
+    /// <summary>The context stated no scope.</summary>
+    public const string NoScope = "none";
 }

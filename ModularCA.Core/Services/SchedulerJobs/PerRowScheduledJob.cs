@@ -9,7 +9,7 @@ namespace ModularCA.Core.Services.SchedulerJobs;
 
 /// <summary>
 /// Base class for jobs that own multiple per-row schedules (CRL export per CA, LDAP publish
-/// per (Tenant, CA, target)). Each tick walks <see cref="RowsAsync"/>, dispatches every row
+/// per (Space, CA, target)). Each tick walks <see cref="RowsAsync"/>, dispatches every row
 /// whose <c>NextRunUtc</c> projection is past due, and advances that row's next-run timestamp
 /// after a successful execution.
 /// </summary>

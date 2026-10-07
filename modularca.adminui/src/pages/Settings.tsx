@@ -4,19 +4,35 @@ import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { Chevron } from '@shared/components/Chevron';
 import { Link, useSearchParams } from 'react-router-dom';
-import { apiGet, apiPost, apiPut, apiPutWithMfa, apiPostWithMfa } from '../api/client';
+import { apiGet, apiPost, apiPutWithMfa, apiPostWithMfa, getToken, forceRefresh, API_BASE } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
+import { useAuth } from '../context/AuthContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { StepUpOps } from '@shared/generated';
 import ConfirmModal from '../components/ConfirmModal';
+import { ceremonyLink } from './ceremonyLinks';
+import { KEY_CEREMONIES_ANCHOR, USERS_PATH, requirementWarning } from './ceremonyRefusal';
 import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
+import { ChipListInput, type ChipSuggestion } from '@shared/components/ChipListInput';
+import { invalidItems, listFromValue, listToCsv } from '@shared/components/chipList';
+import {
+    type Validator, validateAbsoluteFilePath, validateEmail, validateOrigin, validatePathPrefix, validatePositiveInteger,
+} from '@shared/validators';
+import {
+    DEPRECATED_ALGORITHM_SUGGESTIONS, POLICY_SIGNATURE_ALGORITHMS, certExpiryNotificationBody, warningDaysFromConfig,
+} from './settingsLists';
+import { LdapMappingsEditor, SunsetRulesEditor } from './SettingsTables';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
     return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
+
+/** Mirrors PasswordPolicyBounds on the server. */
+const PASSWORD_MIN_LENGTH_FLOOR = 8;
+const PASSWORD_HISTORY_MAX = 24;
 
 const TABS = ['General', 'Security', 'Certificates', 'Integrations', 'Logging', 'Features'] as const;
 type Tab = typeof TABS[number];
@@ -27,14 +43,14 @@ type Tab = typeof TABS[number];
 const RESTART_ANCHOR = 'restart-application';
 
 /* --- Shared Form Helpers --- */
-const cardClass = 'bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden';
+const cardClass = 'bg-raised border border-line rounded-lg overflow-hidden';
 
 /* Every primitive takes `hint`: what the value does, or what saving it causes, shown under the
    control. The label names the setting; the hint says what happens when you change it. */
-const ConfigInput: React.FC<{ label: string; value: any; onChange: (v: string) => void; type?: string; placeholder?: string; hint?: React.ReactNode }> = ({ label, value, onChange, type = 'text', placeholder, hint }) => (
+const ConfigInput: React.FC<{ label: string; value: any; onChange: (v: string) => void; type?: string; placeholder?: string; hint?: React.ReactNode; disabled?: boolean }> = ({ label, value, onChange, type = 'text', placeholder, hint, disabled }) => (
     <div>
         <label className={labelClass}>{label}</label>
-        <input type={type} value={value ?? ''} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className={inputClass} />
+        <input type={type} value={value ?? ''} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className={inputClass} disabled={disabled} />
         {hint && <FieldHint>{hint}</FieldHint>}
     </div>
 );
@@ -47,26 +63,26 @@ const ConfigTextarea: React.FC<{ label: string; value: any; onChange: (v: string
             onChange={(e) => onChange(e.target.value)}
             placeholder={placeholder}
             rows={rows}
-            className={`${inputClass} font-mono text-xs resize-y`}
+            className={`${inputClass} data-mono resize-y`}
         />
         {hint && <FieldHint>{hint}</FieldHint>}
     </div>
 );
 
-const ConfigNumber: React.FC<{ label: string; value: any; onChange: (v: number | string) => void; fallback?: number; hint?: React.ReactNode }> = ({ label, value, onChange, fallback = 0, hint }) => (
+const ConfigNumber: React.FC<{ label: string; value: any; onChange: (v: number | string) => void; fallback?: number; hint?: React.ReactNode; disabled?: boolean }> = ({ label, value, onChange, fallback = 0, hint, disabled }) => (
     <div>
         <label className={labelClass}>{label}</label>
-        <input type="text" inputMode="numeric" value={value ?? ''} onChange={(e) => { const v = e.target.value.replace(/\D/g, ''); onChange(v === '' ? '' : parseInt(v)); }} onBlur={() => { if (!value && value !== 0) onChange(fallback); }} className={inputClass} />
+        <input type="text" inputMode="numeric" value={value ?? ''} onChange={(e) => { const v = e.target.value.replace(/\D/g, ''); onChange(v === '' ? '' : parseInt(v)); }} onBlur={() => { if (!value && value !== 0) onChange(fallback); }} className={inputClass} disabled={disabled} />
         {hint && <FieldHint>{hint}</FieldHint>}
     </div>
 );
 
-const ConfigToggle: React.FC<{ label: string; checked: boolean; onChange: (v: boolean) => void; hint?: React.ReactNode; hintTone?: 'muted' | 'warn' }> = ({ label, checked, onChange, hint, hintTone }) => (
+const ConfigToggle: React.FC<{ label: string; checked: boolean; onChange: (v: boolean) => void; hint?: React.ReactNode; hintTone?: 'muted' | 'warn'; disabled?: boolean }> = ({ label, checked, onChange, hint, hintTone, disabled }) => (
     <div>
         <div className="flex items-center justify-between">
-            <label className="text-xs text-gray-600 dark:text-gray-400">{label}</label>
-            <button type="button" role="switch" aria-checked={checked} onClick={() => onChange(!checked)} className={`relative w-11 h-6 rounded-full transition-colors ${checked ? 'bg-blue-600' : 'bg-gray-600'}`}>
-                <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${checked ? 'translate-x-5' : 'translate-x-0'}`} />
+            <label className="text-xs text-ink-muted">{label}</label>
+            <button type="button" role="switch" aria-checked={checked} disabled={disabled} onClick={() => onChange(!checked)} className={`relative w-11 h-6 rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${checked ? 'bg-accent' : 'bg-ink-faint'}`}>
+                <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${checked ? 'translate-x-5' : 'translate-x-0'}`} />
             </button>
         </div>
         {hint && <FieldHint tone={hintTone}>{hint}</FieldHint>}
@@ -83,44 +99,63 @@ const ConfigSelect: React.FC<{ label: string; value: string; options: string[]; 
     </div>
 );
 
-const SaveButton: React.FC<{ saving: boolean; onClick: () => void; label?: string; disabled?: boolean }> = ({ saving, onClick, label, disabled }) => (
-    <button onClick={onClick} disabled={saving || disabled} className="px-4 py-2 text-sm bg-blue-600 text-gray-900 dark:text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors">
-        {saving ? 'Saving...' : (label || 'Save')}
-    </button>
+/* `blockedReason` disables the button and says why underneath it. */
+const SaveButton: React.FC<{ saving: boolean; onClick: () => void; label?: string; disabled?: boolean; blockedReason?: string | null }> = ({ saving, onClick, label, disabled, blockedReason }) => (
+    <div>
+        <button onClick={onClick} disabled={saving || disabled || !!blockedReason} className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors">
+            {saving ? 'Saving...' : (label || 'Save')}
+        </button>
+        {blockedReason && <FieldHint tone="warn">{blockedReason}</FieldHint>}
+    </div>
 );
+
+/* A list setting edited as chips. Invalid entries stay visible and marked; the card's Save is
+   blocked on them through `listBlocked`. */
+const ConfigChips: React.FC<{ label: string; value: string[]; onChange: (v: string[]) => void; validate?: Validator; suggestions?: ChipSuggestion[]; placeholder?: string; hint?: React.ReactNode; numeric?: boolean; sort?: 'asc' | 'desc'; mono?: boolean; caseInsensitive?: boolean }> = ({ label, hint, ...chip }) => {
+    const id = React.useId();
+    return (
+        <div>
+            <label htmlFor={id} className={labelClass}>{label}</label>
+            <ChipListInput id={id} aria-describedby={hint ? `${id}-hint` : undefined} {...chip} />
+            {hint && <FieldHint id={`${id}-hint`}>{hint}</FieldHint>}
+        </div>
+    );
+};
+
+/* Why a card's Save is blocked: the labels of its list fields that hold invalid entries. */
+const listBlocked = (fields: [string, unknown, Validator][]): string | null => {
+    const bad = fields.filter(([, value, validate]) => invalidItems(listFromValue(value), validate).length > 0).map(([label]) => label);
+    return bad.length ? `Fix the entries marked invalid in ${bad.join(' and ')} before saving.` : null;
+};
+
+const FORBIDDEN_ALGORITHM_SUGGESTIONS: ChipSuggestion[] = POLICY_SIGNATURE_ALGORITHMS.map((value) => ({ value }));
+const DEPRECATED_SUGGESTIONS: ChipSuggestion[] = DEPRECATED_ALGORITHM_SUGGESTIONS.map((value) => ({ value }));
+const validateWarningDay: Validator = (v) => validatePositiveInteger(v, 3650);
 
 /* Note shown on cards whose cron schedule is owned by the scheduler job's detail page. The card's
    Save deliberately sends an empty `schedule`, which the backend patch-guards
    (`if (!IsNullOrEmpty) ...`) so a stale Settings tab can't clobber a cron edited there. */
 const ScheduleMovedNote: React.FC<{ job: string }> = ({ job }) => (
-    <p className="text-[11px] text-gray-500 dark:text-gray-500">
+    <p className="text-[11px] text-ink-muted">
         The run schedule (cron) is edited on the{' '}
-        <Link to={`/schedules/jobs/${encodeURIComponent(job)}`} className="underline hover:text-gray-700 dark:hover:text-gray-300">{job} job page</Link>
+        <Link to={`/schedules/jobs/${encodeURIComponent(job)}`} className="underline hover:text-ink">{job} job page</Link>
         {' '}(Schedules → open the job → Edit).
     </p>
 );
 
-const LiveTag = () => <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-green-50 dark:bg-green-900/50 text-green-800 dark:text-green-400 border border-green-300 dark:border-green-800">Live</span>;
-const RestartTag = () => <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-50 dark:bg-amber-900/50 text-amber-800 dark:text-amber-400 border border-amber-300 dark:border-amber-700">Restart</span>;
+const LiveTag = () => <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-ok-soft text-ok border border-ok/40">Live</span>;
+const RestartTag = () => <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-warn-soft text-warn border border-warn/40">Restart</span>;
 
-const ReadOnlyTag = () => <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-gray-700/50 text-gray-600 border border-gray-600">Read-only</span>;
+const ReadOnlyTag = () => <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-sunken text-ink-muted border border-line-strong">Read-only</span>;
 
 const SectionHeader: React.FC<{ title: string; expanded: boolean; onToggle: () => void; description?: string; tag?: 'live' | 'restart' | 'read-only' }> = ({ title, expanded, onToggle, description, tag }) => (
-    <button onClick={onToggle} className="w-full px-4 py-3 flex items-center gap-2 text-left hover:bg-gray-200/50 dark:bg-gray-700/50 transition-colors">
-        <span className="text-gray-600 text-xs"><Chevron open={expanded} className="w-3 h-3" /></span>
-        <span className="text-sm font-semibold text-gray-900 dark:text-white">{title}</span>
-        {description && <span className="text-xs text-gray-600 ml-2">{description}</span>}
+    <button onClick={onToggle} className="w-full px-4 py-3 flex items-center gap-2 text-left hover:bg-hover bg-sunken transition-colors">
+        <span className="text-ink-muted text-xs"><Chevron open={expanded} className="w-3 h-3" /></span>
+        <span className="text-sm font-semibold text-ink">{title}</span>
+        {description && <span className="text-xs text-ink-muted ml-2">{description}</span>}
         <span className="ml-auto">{tag === 'live' ? <LiveTag /> : tag === 'restart' ? <RestartTag /> : tag === 'read-only' ? <ReadOnlyTag /> : null}</span>
     </button>
 );
-
-/** Convert a backend List<string> to a comma-separated display string */
-const listToStr = (value: any): string => (Array.isArray(value) ? value.join(', ') : (value ?? ''));
-/** Convert a comma-separated display string to a string array for the backend */
-const strToList = (value: string): string[] => value.split(',').map((s: string) => s.trim()).filter(Boolean);
-/** Same, for a textarea labelled "one per line" — accepts newlines and commas. */
-const listToLines = (value: any): string => (Array.isArray(value) ? value.join('\n') : (value ?? ''));
-const linesToList = (value: string): string[] => value.split(/[\n,]/).map((s: string) => s.trim()).filter(Boolean);
 
 /* --- Webhook Test Card --- */
 const WebhookTestCard: React.FC = () => {
@@ -145,21 +180,21 @@ const WebhookTestCard: React.FC = () => {
             <div className="p-4">
                 <div className="flex items-center justify-between">
                     <div>
-                        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Webhook Test</h3>
-                        <p className="text-xs text-gray-600 mt-1">
+                        <h3 className="text-sm font-semibold text-ink">Webhook Test</h3>
+                        <p className="text-xs text-ink-muted mt-1">
                             Send a test event to all configured webhook endpoints to verify connectivity.
                         </p>
                     </div>
                     <button
                         onClick={handleTestWebhook}
                         disabled={sending}
-                        className="px-4 py-2 text-sm bg-purple-600 text-gray-900 dark:text-white rounded hover:bg-purple-700 disabled:opacity-50 transition-colors flex-shrink-0"
+                        className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors flex-shrink-0"
                     >
                         {sending ? 'Sending...' : 'Send Test Webhook'}
                     </button>
                 </div>
                 {result && (
-                    <div className={`mt-3 p-2 rounded text-xs ${result.success ? 'bg-green-50 dark:bg-green-900/20 border border-green-300 dark:border-green-800 text-green-800 dark:text-green-300' : 'bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-800 text-red-800 dark:text-red-300'}`}>
+                    <div className={`mt-3 p-2 rounded text-xs ${result.success ? 'bg-ok-soft border border-ok/40 text-ok' : 'bg-crit-soft border border-crit/40 text-crit'}`}>
                         {result.message}
                     </div>
                 )}
@@ -187,6 +222,7 @@ const POLICY_FIELDS: Record<string, { label: string; hint: string }> = {
 /* --- Config Tab (accepts tab prop to determine which sections to show) --- */
 const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     const { requireStepUp } = useStepUp();
+    const { user } = useAuth();
     const { showToast } = useToast();
     const [config, setConfig] = useState<any>(null);
     const [loading, setLoading] = useState(true);
@@ -195,6 +231,8 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     const [saving, setSaving] = useState<string | null>(null);
     const [successMsg, setSuccessMsg] = useState<string | null>(null);
     const [restarting, setRestarting] = useState(false);
+    const [ldapMappingsInvalid, setLdapMappingsInvalid] = useState(false);
+    const [sunsetInvalid, setSunsetInvalid] = useState(false);
 
     // Restarting the server is the most destructive control on this page, and it was the
     // one place in adminui still using a native window.confirm — ConfirmModal is used in
@@ -202,25 +240,93 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     // dismissed by reflex.
     const [confirmRestart, setConfirmRestart] = useState(false);
 
+    const restartPoll = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const restartTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const restartRun = useRef(0);
+    const stopRestartPoll = () => {
+        restartRun.current++;
+        if (restartPoll.current) clearTimeout(restartPoll.current);
+        if (restartTimeout.current) clearTimeout(restartTimeout.current);
+        restartPoll.current = null;
+        restartTimeout.current = null;
+    };
+    useEffect(() => stopRestartPoll, []);
+
+    // Raw fetch with the current token: no refresh attempt and no 401 logout while the server is down.
+    // Returns the process start on the server's clock (ms), null if the server answered without
+    // an uptime, 'unauthorized' on a 401, or throws if it did not answer.
+    const readServerStart = async (): Promise<number | null | 'unauthorized'> => {
+        const token = getToken();
+        const res = await fetch(`${API_BASE}/health/ready`, {
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+            cache: 'no-store',
+        });
+        if (res.status >= 502 && res.status <= 504 && !res.headers.get('content-type')?.includes('json')) throw new Error('gateway');
+        if (res.status === 401) return 'unauthorized';
+        const body = await res.json().catch(() => null);
+        if (typeof body?.uptimeSeconds !== 'number' || typeof body?.timestamp !== 'string') return null;
+        const now = Date.parse(body.timestamp.replace(/(\.\d{3})\d+/, '$1'));
+        return Number.isNaN(now) ? null : now - body.uptimeSeconds * 1000;
+    };
+
     const doRestart = async () => {
         setConfirmRestart(false);
         setRestarting(true);
         try {
+            const first = await readServerStart().catch(() => null);
+            const baseline = typeof first === 'number' ? first : null;
             await apiPostWithMfa('/api/v1/admin/config/restart', {}, requireStepUp, StepUpOps.Restart);
-            setSuccessMsg('Restart initiated. Reconnecting...');
-            const poll = setInterval(async () => {
-                try {
-                    await apiGet('/api/v1/admin/config');
-                    clearInterval(poll);
-                    setRestarting(false);
-                    setSuccessMsg('Server restarted successfully');
-                    load();
-                } catch { /* still restarting */ }
-            }, 2000);
-            setTimeout(() => {
-                clearInterval(poll);
+            setSuccessMsg('Restart initiated. Waiting for the server to come back...');
+            stopRestartPoll();
+            const run = restartRun.current;
+            let sawDown = false;
+            const finish = () => {
+                stopRestartPoll();
                 setRestarting(false);
-            }, 60000);
+                setSuccessMsg('Server restarted successfully');
+                load();
+            };
+            // One request in flight at a time. With a baseline, success is a reply from a process that
+            // started after it; without one (no uptime visible to this user), fall back to down-then-up.
+            const tick = async () => {
+                try {
+                    let start = await readServerStart();
+                    if (run !== restartRun.current) return;
+                    if (start === 'unauthorized') {
+                        start = null;
+                        // One forced rotation per attempt, whatever the local expiry says (clock skew).
+                        // A transient failure keeps the tokens; a definitive rejection ends the session.
+                        if (getToken()) {
+                            const token = await forceRefresh().catch(() => undefined);
+                            if (run !== restartRun.current) return;
+                            if (!getToken()) { stopRestartPoll(); return; }
+                            if (token) {
+                                const retried = await readServerStart();
+                                if (run !== restartRun.current) return;
+                                start = retried === 'unauthorized' ? null : retried;
+                            }
+                        }
+                    }
+                    if (baseline != null ? (start != null && start > baseline + 1000) : sawDown) {
+                        finish();
+                        return;
+                    }
+                } catch {
+                    if (run !== restartRun.current) return;
+                    if (!sawDown) setSuccessMsg('Server is down. Reconnecting...');
+                    sawDown = true;
+                }
+                restartPoll.current = setTimeout(tick, 1000);
+            };
+            restartPoll.current = setTimeout(tick, 1000);
+            restartTimeout.current = setTimeout(() => {
+                stopRestartPoll();
+                setRestarting(false);
+                setSuccessMsg(null);
+                showToast('error', sawDown
+                    ? 'The server did not come back within 2 minutes. Check the host, then reload this page.'
+                    : 'A restarted server was not observed within 2 minutes. Reload this page to check its state.');
+            }, 120000);
         } catch (err: any) {
             showToast('error', err.message || 'Failed to restart');
             setRestarting(false);
@@ -240,11 +346,16 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     const [securityPolicyLoading, setSecurityPolicyLoading] = useState(false);
     const [securityPolicyError, setSecurityPolicyError] = useState<NoticeInput | null>(null);
     const [securityPolicySaving, setSecurityPolicySaving] = useState(false);
+    /* How many accounts other than this one could approve a key ceremony on an instance CA;
+       null until known. Read to warn before the requirement is saved where nobody could. */
+    const [instanceApprovers, setInstanceApprovers] = useState<number | null>(null);
 
     /* Snapshots of what the server last returned, for the unsaved-changes guard. Each loader
        stamps its own key; `dirty` is true when any live buffer differs from its snapshot. */
     const saved = useRef<Record<string, string>>({});
     const snap = (key: string, value: any) => { saved.current[key] = JSON.stringify(value); };
+    /** The config as the server last returned it, or null. */
+    const savedConfig = (): any => { try { return JSON.parse(saved.current.config ?? 'null'); } catch { return null; } };
     const differs = (key: string, value: any) => value != null && saved.current[key] !== undefined && saved.current[key] !== JSON.stringify(value);
 
     const load = () => {
@@ -270,6 +381,9 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
             .then((s) => { setSecurityPolicy(s); snap('securityPolicy', s); })
             .catch((err) => setSecurityPolicyError(errorNotice(err, 'The request failed.')))
             .finally(() => setSecurityPolicyLoading(false));
+        apiGet<any>('/api/v1/admin/ceremonies/approvers', { toast: false })
+            .then((a) => setInstanceApprovers(typeof a?.eligibleApprovers === 'number' ? a.eligibleApprovers : null))
+            .catch(() => setInstanceApprovers(null));
     };
 
     /* Protocol Rate Limits (DB) — multi-row */
@@ -312,6 +426,13 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
         document.getElementById(RESTART_ANCHOR)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }, [loading, tab]);
 
+    // Other pages link to /settings?tab=Security#key-ceremonies: open that card and scroll to it.
+    useEffect(() => {
+        if (loading || tab !== 'Security' || window.location.hash !== `#${KEY_CEREMONIES_ANCHOR}`) return;
+        setExpanded('keyCeremonies');
+        document.getElementById(KEY_CEREMONIES_ANCHOR)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, [loading, tab]);
+
     const saveSection = async (endpoint: string, data: any, sectionKey: string) => {
         setSaving(sectionKey);
         setSuccessMsg(null);
@@ -340,7 +461,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
         setConfig({ ...config, [section]: { ...config[section], [field]: value } });
     };
 
-    if (loading) return <div className="p-4 text-sm text-gray-600 dark:text-gray-400">Loading...</div>;
+    if (loading) return <div className="p-4 text-sm text-ink-muted">Loading...</div>;
     if (error) return <InlineNotice notice={error} />;
     if (!config) return null;
 
@@ -348,37 +469,51 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     const handleSavePolicy = async () => {
         setPolicySaving(true);
         try {
-            await apiPut('/api/v1/admin/password-policy', policy);
+            await apiPutWithMfa('/api/v1/admin/password-policy', policy, requireStepUp, StepUpOps.UpdateConfig);
             snap('policy', policy);
             showToast('success', 'Password policy updated');
         } catch (err: any) {
-            showToast('error', err.message || 'Failed to save policy');
+            if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to save policy');
         } finally {
             setPolicySaving(false);
         }
     };
     const updatePolicyField = (key: string, value: any) => setPolicy({ ...policy, [key]: value });
 
-    /* Cross-field checks the backend does not make. MaxLength 0 means "no cap", so the
-       comparisons only apply when a cap is set. A policy no password can satisfy locks every
-       user out at their next change. */
+    /* The bounds the server enforces (AdminPasswordPolicyController), checked before saving.
+       MaxLength 0 means "no cap", so the comparisons only apply when a cap is set. A policy no
+       password can satisfy locks every user out at their next change. */
     const policyNum = (k: string) => (policy && typeof policy[k] === 'number' ? policy[k] : 0);
     const policyMinsTotal = policyNum('minUppercase') + policyNum('minLowercase') + policyNum('minDigits') + policyNum('minSpecial');
     const policyProblems: string[] = [];
+    if (policy && policyNum('minLength') < PASSWORD_MIN_LENGTH_FLOOR)
+        policyProblems.push(`Minimum length must be at least ${PASSWORD_MIN_LENGTH_FLOOR}.`);
     if (policy && policyNum('maxLength') > 0 && policyNum('minLength') > policyNum('maxLength'))
         policyProblems.push(`Minimum length (${policyNum('minLength')}) is greater than maximum length (${policyNum('maxLength')}); no password can satisfy both.`);
     if (policy && policyNum('maxLength') > 0 && policyMinsTotal > policyNum('maxLength'))
         policyProblems.push(`The character-class minimums add up to ${policyMinsTotal}, more than the maximum length (${policyNum('maxLength')}).`);
-    if (policy && policyNum('minLength') === 0 && policyMinsTotal === 0)
-        policyProblems.push('Minimum length is 0 and no character counts are required; an empty password would pass.');
+    if (policy && policyNum('historyCount') > PASSWORD_HISTORY_MAX)
+        policyProblems.push(`Password history can remember at most ${PASSWORD_HISTORY_MAX} passwords.`);
 
     /* --- Security Policy (DB) helpers --- */
     const handleSaveSecurityPolicy = async () => {
         setSecurityPolicySaving(true);
         try {
-            await apiPutWithMfa('/api/v1/admin/security-policy', securityPolicy, requireStepUp, StepUpOps.UpdateConfig);
-            snap('securityPolicy', securityPolicy);
-            showToast('success', 'Security policy updated');
+            // A super turning the instance's ceremony requirement off applies it directly, so the
+            // server asks for the disable-ceremony-requirement step-up instead (KC-07).
+            const wasRequired = saved.current.securityPolicy ? JSON.parse(saved.current.securityPolicy).requireKeyCeremony !== false : true;
+            const op = user?.isSuper && wasRequired && securityPolicy.requireKeyCeremony === false
+                ? StepUpOps.DisableCeremonyRequirement : StepUpOps.UpdateConfig;
+            const result = await apiPutWithMfa<any>('/api/v1/admin/security-policy', securityPolicy, requireStepUp, op);
+            // 202 + ceremonyId: a non-super change to the instance's key-ceremony policy waits for
+            // an InstancePolicyChange ceremony; everything else was saved. Reload to show which.
+            if (result?.ceremonyId) {
+                showToast('info', `Instance policy change ceremony started. Approve it at ${ceremonyLink(result.ceremonyId)}`);
+                loadSecurityPolicy();
+            } else {
+                snap('securityPolicy', securityPolicy);
+                showToast('success', 'Security policy updated');
+            }
         } catch (err: any) {
             if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to save security policy');
         } finally {
@@ -386,6 +521,13 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
         }
     };
     const updateSecurityPolicyField = (key: string, value: any) => setSecurityPolicy({ ...securityPolicy, [key]: value });
+    const instanceCeremonyWarning = securityPolicy ? requirementWarning({
+        required: securityPolicy.requireKeyCeremony !== false,
+        wasRequired: saved.current.securityPolicy ? JSON.parse(saved.current.securityPolicy).requireKeyCeremony !== false : true,
+        approvals: Number(securityPolicy.ceremonyRequiredApprovals) || 1,
+        eligibleApprovers: instanceApprovers,
+        scope: 'the instance',
+    }) : null;
 
     /* --- Rate Limits helpers --- */
     const updateRateLimitField = (protocol: string, key: 'maxRequests' | 'windowMinutes', value: any) => {
@@ -412,10 +554,22 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
     const ocspTtlHint = 'Clients may cache this answer for this long (nextUpdate). Longer means less responder load and slower revocation visibility.';
 
+    /* Cards whose list fields hold invalid entries cannot be saved until they are fixed. */
+    const httpBlocked = listBlocked([['CORS Origins', config.http?.corsOrigins, validateOrigin]]);
+    const mtlsBlocked = listBlocked([
+        ['Required Paths', config.mtls?.requiredPaths, validatePathPrefix],
+        ['Trusted CA Cert Paths', config.mtls?.trustedCaCertPaths, validateAbsoluteFilePath],
+    ]);
+    const ipWhitelistBlocked = listBlocked([['Exempt Paths', config.ipWhitelist?.exemptPaths, validatePathPrefix]]);
+    const warningDays = warningDaysFromConfig(config.certExpiryNotification);
+    const expiryBlocked = listBlocked([['Warning Days', warningDays, validateWarningDay]]);
+    const emailBlocked = listBlocked([['Admin Recipients', config.email?.adminRecipients, validateEmail]]);
+    const networkAuditBlocked = listBlocked([['Exclude Paths', config.networkAudit?.excludePaths, validatePathPrefix]]);
+
     return (
         <div className="space-y-2">
             {successMsg && (
-                <div className="bg-green-50 dark:bg-green-900/20 border border-green-300 dark:border-green-800 rounded-lg p-3 text-xs text-green-800 dark:text-green-300">{successMsg}</div>
+                <div className="bg-ok-soft border border-ok/40 rounded-lg p-3 text-xs text-ok">{successMsg}</div>
             )}
 
             {/* ================================================================ */}
@@ -428,8 +582,8 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Public Domain" expanded={expanded === 'baseurl'} onToggle={() => toggle('baseurl')}
                             description={config.https?.publicDomain || 'Not configured — using request origin'} tag="restart" />
                         {expanded === 'baseurl' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
-                                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-800 rounded p-3 text-xs text-blue-800 dark:text-blue-300">
+                            <div className="p-4 border-t border-line space-y-4">
+                                <div className="bg-info-soft border border-info/40 rounded p-3 text-xs text-info">
                                     The public hostname used for management-UI HTTPS redirects and ACME URL binding.
                                     Must be a bare hostname or IP — no scheme, no port. Per-CA AIA/CDP base URLs are configured
                                     separately in CA Management.
@@ -441,9 +595,9 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                         hint="The port external clients reach this server on, which may differ from the listen port behind a proxy. Anything other than 443 is written into every generated URL." />
                                 </div>
                                 {config.https?.publicDomain && (
-                                    <div className="text-xs text-gray-600 space-y-1">
-                                        <div>HTTPS base: <code className="mono text-gray-600 dark:text-gray-400">https://{config.https.publicDomain}{config.https.publicPort && config.https.publicPort !== 443 ? `:${config.https.publicPort}` : ''}</code></div>
-                                        <div>ACME directory: <code className="mono text-gray-600 dark:text-gray-400">https://{config.https.publicDomain}{config.https.publicPort && config.https.publicPort !== 443 ? `:${config.https.publicPort}` : ''}/acme/{'<label>'}/directory</code></div>
+                                    <div className="text-xs text-ink-muted space-y-1">
+                                        <div>HTTPS base: <code className="mono text-ink-muted">https://{config.https.publicDomain}{config.https.publicPort && config.https.publicPort !== 443 ? `:${config.https.publicPort}` : ''}</code></div>
+                                        <div>ACME directory: <code className="mono text-ink-muted">https://{config.https.publicDomain}{config.https.publicPort && config.https.publicPort !== 443 ? `:${config.https.publicPort}` : ''}/acme/{'<label>'}/directory</code></div>
                                     </div>
                                 )}
                                 <SaveButton saving={saving === 'baseurl'} onClick={() => saveSection('https', config.https, 'baseurl')} />
@@ -456,21 +610,22 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="HTTP" expanded={expanded === 'http'} onToggle={() => toggle('http')}
                             description={`Port ${config.http?.port || 0}, Swagger ${config.http?.swaggerEnabled ? 'On' : 'Off'}`} tag="restart" />
                         {expanded === 'http' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigNumber label="HTTP Port (0 = disabled)" value={config.http.port} onChange={(v) => update('http', 'port', v)}
                                         hint="Plain-HTTP listener for CRL, OCSP and AIA fetches, which relying parties make without TLS. 0 turns it off, and those URLs stop answering." />
                                     <ConfigNumber label="Public Port (behind proxy)" value={config.http.publicPort} onChange={(v) => update('http', 'publicPort', v)} fallback={0}
                                         hint="Port external clients connect to when a proxy sits in front (proxy on 80, this process on 8080). It is written into CRL/OCSP/AIA URLs. 0 uses the listener port." />
-                                    <ConfigInput label="CORS Origins (comma-separated)" value={config.http.corsOrigins} onChange={(v) => update('http', 'corsOrigins', v)}
-                                        hint="HTTPS origins whose browser scripts may call this API. Only read when Enable CORS is on." />
+                                    <ConfigChips label="CORS Origins" value={listFromValue(config.http.corsOrigins)} onChange={(v) => update('http', 'corsOrigins', listToCsv(v))}
+                                        validate={validateOrigin} caseInsensitive mono placeholder="https://app.example.com"
+                                        hint="HTTPS origins whose browser scripts may call this API, as scheme, host and optional port with no path. Plain http is accepted only for localhost. Only read when Enable CORS is on." />
                                     <ConfigToggle label="Enable CORS" checked={config.http.enableCors ?? false} onChange={(v) => update('http', 'enableCors', v)}
                                         hint="Allows browser pages on the listed origins to call the API. Off means every cross-origin browser request is refused, even in Development." />
                                     <ConfigToggle label="Swagger Enabled" checked={config.http.swaggerEnabled} onChange={(v) => update('http', 'swaggerEnabled', v)}
                                         hint="Publishes the interactive API documentation at /swagger to anyone who can reach the port. Leave off in production." />
                                 </div>
-                                <p className="text-[10px] text-gray-600">Trusted Proxy CIDRs moved to the <strong>Reverse Proxy</strong> card (Security tab).</p>
-                                <SaveButton saving={saving === 'http'} onClick={() => saveSection('http', config.http, 'http')} />
+                                <p className="text-[10px] text-ink-muted">Trusted Proxy CIDRs moved to the <strong>Reverse Proxy</strong> card (Security tab).</p>
+                                <SaveButton saving={saving === 'http'} onClick={() => saveSection('http', config.http, 'http')} blockedReason={httpBlocked} />
                             </div>
                         )}
                     </div>
@@ -480,12 +635,12 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="HTTPS" expanded={expanded === 'https'} onToggle={() => toggle('https')}
                             description={`${config.https?.mode} — Port ${config.https?.port}`} tag="read-only" />
                         {expanded === 'https' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-2">
+                            <div className="p-4 border-t border-line space-y-2">
                                 <DetailField label="Mode" value={config.https.mode} />
                                 <DetailField label="Listen Address" value={config.https.listenAddress} />
                                 <DetailField label="Port" value={String(config.https.port)} />
                                 <DetailField label="Renewal Window" value={config.https.renewalWindow} />
-                                <div className="text-xs text-gray-600 mt-2">HTTPS settings are managed via bootstrap and require a restart to change.</div>
+                                <div className="text-xs text-ink-muted mt-2">HTTPS settings are managed via bootstrap and require a restart to change.</div>
                             </div>
                         )}
                     </div>
@@ -495,7 +650,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Metrics" expanded={expanded === 'metrics'} onToggle={() => toggle('metrics')}
                             description={config.metrics?.enabled ? `Enabled at ${config.metrics.path}` : 'Disabled'} tag="restart" />
                         {expanded === 'metrics' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigToggle label="Enabled" checked={config.metrics.enabled} onChange={(v) => update('metrics', 'enabled', v)}
                                         hint="Serves Prometheus metrics at the path below. Anyone who can reach the port can scrape them; restrict at the network or whitelist level." />
@@ -512,7 +667,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="SSH CA" expanded={expanded === 'sshCa'} onToggle={() => toggle('sshCa')}
                             description={`${config.sshCa?.sshKeygenPath || 'ssh-keygen'}`} tag="restart" />
                         {expanded === 'sshCa' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigInput label="ssh-keygen Path" value={config.sshCa.sshKeygenPath} onChange={(v) => update('sshCa', 'sshKeygenPath', v)}
                                         hint="The OpenSSH binary used to sign SSH certificates. A bare name is resolved on PATH; if it is missing, every SSH issuance fails." />
@@ -529,11 +684,11 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="HSM" expanded={expanded === 'hsm'} onToggle={() => toggle('hsm')}
                             description={config.hsm?.enabled ? 'Enabled' : 'Disabled'} tag="read-only" />
                         {expanded === 'hsm' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-2">
+                            <div className="p-4 border-t border-line space-y-2">
                                 <DetailField label="Enabled" value={config.hsm?.enabled ? 'Yes' : 'No'} />
                                 <DetailField label="Module Path" value={config.hsm?.modulePath || 'Not configured'} />
                                 <DetailField label="Slot ID" value={config.hsm?.slotId != null ? String(config.hsm.slotId) : 'Not configured'} />
-                                <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-800 rounded p-3 text-xs text-amber-800 dark:text-amber-300 mt-3">
+                                <div className="bg-warn-soft border border-warn/40 rounded p-3 text-xs text-warn mt-3">
                                     HSM configuration must be set in config.yaml — cannot be changed at runtime.
                                 </div>
                             </div>
@@ -545,7 +700,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Backup" expanded={expanded === 'backup'} onToggle={() => toggle('backup')}
                             description={`Retain ${config.backup?.retentionCount ?? 0} · ${config.backup?.outputPath || 'default path'}`} tag="restart" />
                         {expanded === 'backup' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigInput label="Output Path" value={config.backup?.outputPath} onChange={(v) => update('backup', 'outputPath', v)}
                                         hint="Directory archives are written to. A relative path resolves from the application directory, so it lives on the same disk as the data it protects." />
@@ -565,11 +720,11 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                     </div>
 
                     {/* Restart */}
-                    <div id={RESTART_ANCHOR} className="bg-gray-100 dark:bg-gray-800 border border-yellow-300 dark:border-yellow-700/50 rounded-lg p-4 scroll-mt-4">
+                    <div id={RESTART_ANCHOR} className="bg-raised border border-warn/40 rounded-lg p-4 scroll-mt-4">
                         <div className="flex items-center justify-between">
                             <div>
-                                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Restart Application</h3>
-                                <p className="text-xs text-gray-600 mt-1">
+                                <h3 className="text-sm font-semibold text-ink">Restart Application</h3>
+                                <p className="text-xs text-ink-muted mt-1">
                                     Apply pending configuration changes that require a restart (logging, HTTP, HTTPS), or bring a restored
                                     backup into service. The application will shut down and the process manager will restart it.
                                 </p>
@@ -577,7 +732,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                             <button
                                 onClick={() => setConfirmRestart(true)}
                                 disabled={restarting}
-                                className="px-4 py-2 text-sm bg-yellow-600 text-gray-900 dark:text-white rounded hover:bg-yellow-700 disabled:opacity-50 transition-colors flex-shrink-0"
+                                className="px-4 py-2 text-sm bg-warn text-on-accent rounded hover:bg-warn-hover disabled:opacity-50 transition-colors flex-shrink-0"
                             >
                                 {restarting ? 'Restarting...' : 'Restart Server'}
                             </button>
@@ -587,7 +742,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                             title="Restart server"
                             message="Restart the ModularCA server? Active connections will be dropped and issuance, OCSP and CRL responses will be unavailable until it comes back."
                             confirmLabel="Restart"
-                            confirmClass="bg-yellow-600 hover:bg-yellow-700"
+                            tone="warn"
                             loading={restarting}
                             onConfirm={doRestart}
                             onCancel={() => setConfirmRestart(false)}
@@ -608,8 +763,8 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Login Protection" expanded={expanded === 'loginProtection'} onToggle={() => toggle('loginProtection')}
                             description={securityPolicy ? `Lockout ${securityPolicy.lockoutMinutes}m / ${securityPolicy.maxFailedLoginAttempts} tries` : 'Loading...'} />
                         {expanded === 'loginProtection' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
-                                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-800 rounded p-3 text-xs text-blue-800 dark:text-blue-300">
+                            <div className="p-4 border-t border-line space-y-4">
+                                <div className="bg-info-soft border border-info/40 rounded p-3 text-xs text-info">
                                     Two independent layers defend against password guessing. <strong>Account lockout</strong> disables an
                                     account after repeated failures and applies live. The <strong>per-username rate limit</strong> throttles
                                     attempts in the request pipeline and is wired at startup (restart to change). Each has its own Save,
@@ -617,8 +772,8 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                 </div>
 
                                 {/* Account Lockout — DB SecurityPolicy (live) */}
-                                <div className="flex items-center gap-2"><h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Account Lockout</h4><LiveTag /></div>
-                                {securityPolicyLoading && <div className="text-sm text-gray-600 dark:text-gray-400">Loading...</div>}
+                                <div className="flex items-center gap-2"><h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide">Account Lockout</h4><LiveTag /></div>
+                                {securityPolicyLoading && <div className="text-sm text-ink-muted">Loading...</div>}
                                 {securityPolicyError && <InlineNotice notice={securityPolicyError} />}
                                 {securityPolicy && (
                                     <>
@@ -635,7 +790,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                 )}
 
                                 {/* Per-Username Rate Limit — yaml middleware (restart) */}
-                                <div className="flex items-center gap-2 pt-2"><h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Per-Username Rate Limit</h4><RestartTag /></div>
+                                <div className="flex items-center gap-2 pt-2"><h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide">Per-Username Rate Limit</h4><RestartTag /></div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigNumber label="Per-Username Failure Limit" value={config.security.maxPerUsernameLoginFailures} onChange={(v) => update('security', 'maxPerUsernameLoginFailures', v)}
                                         hint="Failed logins allowed for one username from any number of IPs within the window before further attempts are refused. Catches many-IP attacks on a single account, which per-IP limits miss." />
@@ -653,25 +808,25 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Token Binding & Lifetime" expanded={expanded === 'tokenBinding'} onToggle={() => toggle('tokenBinding')}
                             description={`Refresh ${config.tokens?.refreshTokenDays || 7}d — JWT IP binding: ${['Off', 'Exact', 'Subnet24'][config.security?.bindJwtToIp ?? 0]}`} />
                         {expanded === 'tokenBinding' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
-                                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-800 rounded p-3 text-xs text-blue-800 dark:text-blue-300">
+                            <div className="p-4 border-t border-line space-y-4">
+                                <div className="bg-info-soft border border-info/40 rounded p-3 text-xs text-info">
                                     The lifetime lives in the <strong>tokens</strong> config section and applies live; the binding rules live in
                                     the <strong>security</strong> section and are wired at startup. Each group has its own Save, and each writes
                                     only its own fields.
                                 </div>
                                 {/* Refresh Token Lifetime — tokens (live) */}
-                                <div className="flex items-center gap-2"><h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Refresh Token Lifetime</h4><LiveTag /></div>
+                                <div className="flex items-center gap-2"><h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide">Refresh Token Lifetime</h4><LiveTag /></div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigNumber label="Refresh Token Lifetime (days)" value={config.tokens.refreshTokenDays} onChange={(v) => update('tokens', 'refreshTokenDays', v)} fallback={7}
+                                    <ConfigNumber label="Refresh Token Lifetime (days, 1-30)" value={config.tokens.refreshTokenDays} onChange={(v) => update('tokens', 'refreshTokenDays', v)} fallback={7}
                                         hint="Days a session can be renewed without logging in again. A stolen refresh token stays usable for the same period, subject to the bindings below and the session caps in Security Policy." />
                                 </div>
                                 <SaveButton saving={saving === 'tokens'} onClick={() => saveSection('tokens', config.tokens, 'tokens')} label="Save Lifetime" />
 
                                 {/* JWT & Refresh Binding — yaml middleware (restart) */}
-                                <div className="flex items-center gap-2 pt-2"><h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide">JWT &amp; Refresh Binding</h4><RestartTag /></div>
+                                <div className="flex items-center gap-2 pt-2"><h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide">JWT &amp; Refresh Binding</h4><RestartTag /></div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <div>
-                                        <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">JWT IP Binding</label>
+                                        <label className="block text-xs text-ink-muted mb-1">JWT IP Binding</label>
                                         <select value={config.security.bindJwtToIp ?? 0} onChange={(e) => update('security', 'bindJwtToIp', parseInt(e.target.value))} className={inputClass}>
                                             <option value={0}>Off (no IP binding)</option>
                                             <option value={1}>Exact (must match issue-time IP)</option>
@@ -698,8 +853,8 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Reverse Proxy" expanded={expanded === 'reverseProxy'} onToggle={() => toggle('reverseProxy')}
                             description={config.security?.behindReverseProxy ? 'Behind proxy' : 'Direct'} tag="restart" />
                         {expanded === 'reverseProxy' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
-                                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-800 rounded p-3 text-xs text-blue-800 dark:text-blue-300">
+                            <div className="p-4 border-t border-line space-y-4">
+                                <div className="bg-info-soft border border-info/40 rounded p-3 text-xs text-info">
                                     Settings for running behind a load balancer or reverse proxy. The proxy mode flag lives in the
                                     <strong> security</strong> section and its Save writes only that flag. The trusted CIDRs live in the
                                     <strong> http</strong> section, so that Save writes the whole HTTP section, including any unsaved edits
@@ -713,7 +868,52 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                 <SaveButton saving={saving === 'securityProxy'} onClick={() => saveSecurityFields(['behindReverseProxy'], 'securityProxy')} label="Save Proxy Mode" />
                                 <ConfigInput label="Trusted Proxy CIDRs" value={config.http.trustedProxyCidrs} onChange={(v) => update('http', 'trustedProxyCidrs', v)} placeholder="10.0.0.0/8, 172.16.0.0/12"
                                     hint="Only proxies in these ranges may set forwarded headers. Empty means loopback only. Name the actual proxy subnet, not RFC1918 wholesale." />
-                                <SaveButton saving={saving === 'http'} onClick={() => saveSection('http', config.http, 'http')} label="Save HTTP Section" />
+                                <SaveButton saving={saving === 'http'} onClick={() => saveSection('http', config.http, 'http')} label="Save HTTP Section" blockedReason={httpBlocked} />
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Key ceremonies: the instance's requirement, stored on the SecurityPolicy row and
+                        edited in its own card so it can be found and linked to. */}
+                    <div className={`${cardClass} scroll-mt-4`} id={KEY_CEREMONIES_ANCHOR}>
+                        <SectionHeader title="Key Ceremonies" expanded={expanded === 'keyCeremonies'} onToggle={() => toggle('keyCeremonies')}
+                            description={securityPolicy
+                                ? (securityPolicy.requireKeyCeremony === false ? 'Off for instance CAs' : 'Required for instance CAs')
+                                : 'Loading...'} tag="live" />
+                        {expanded === 'keyCeremonies' && (
+                            <div className="p-4 border-t border-line space-y-4">
+                                {securityPolicyLoading && <div className="text-sm text-ink-muted">Loading...</div>}
+                                {securityPolicyError && <InlineNotice notice={securityPolicyError} />}
+                                {securityPolicy && (
+                                    <>
+                                        <p className="text-xs text-ink-muted">
+                                            A key ceremony makes other administrators approve before a CA is created, revoked or deleted.
+                                            Whoever starts one can never approve it, so it needs at least one other administrator. This
+                                            switch covers the instance&apos;s own CAs (the system signing CA and SSH CAs). Each space has
+                                            its own switch, on its page under <Link to="/spaces" className="underline">Spaces</Link>.
+                                        </p>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <ConfigToggle label="Require key ceremonies for instance CAs" checked={securityPolicy.requireKeyCeremony ?? true} onChange={(v) => updateSecurityPolicyField('requireKeyCeremony', v)}
+                                                hintTone={securityPolicy.requireKeyCeremony === false ? 'warn' : 'muted'}
+                                                hint="Creating, revoking or deleting an instance CA needs a key ceremony. Off lets an administrator do it directly." />
+                                            <ConfigNumber label="Approvals required (min 1)" value={securityPolicy.ceremonyRequiredApprovals} onChange={(v) => updateSecurityPolicyField('ceremonyRequiredApprovals', v)} fallback={2}
+                                                hint="Approvals from other people for a key ceremony on an instance CA. The initiator is never counted." />
+                                        </div>
+                                        {instanceCeremonyWarning && (
+                                            <div role="alert" className="bg-warn-soft border border-warn/40 rounded p-3 text-xs text-warn">
+                                                {instanceCeremonyWarning}{' '}
+                                                <Link to={USERS_PATH} className="underline font-medium">Add an administrator</Link>
+                                            </div>
+                                        )}
+                                        {!user?.isSuper && (
+                                            <p className="text-[11px] text-ink-muted">
+                                                Only a system super-administrator changes these directly. Saving a change opens a ceremony
+                                                that another system administrator approves.
+                                            </p>
+                                        )}
+                                        <SaveButton saving={securityPolicySaving} onClick={handleSaveSecurityPolicy} label="Save Key Ceremony Policy" />
+                                    </>
+                                )}
                             </div>
                         )}
                     </div>
@@ -724,17 +924,17 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Security Policy" expanded={expanded === 'securityPolicy'} onToggle={() => toggle('securityPolicy')}
                             description={securityPolicy ? `Session, MFA & OCSP policy` : 'Loading...'} tag="live" />
                         {expanded === 'securityPolicy' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
-                                {securityPolicyLoading && <div className="text-sm text-gray-600 dark:text-gray-400">Loading...</div>}
+                            <div className="p-4 border-t border-line space-y-4">
+                                {securityPolicyLoading && <div className="text-sm text-ink-muted">Loading...</div>}
                                 {securityPolicyError && <InlineNotice notice={securityPolicyError} />}
                                 {securityPolicy && (
                                     <>
-                                        <div className="bg-green-50 dark:bg-green-900/20 border border-green-300 dark:border-green-800 rounded p-3 text-xs text-green-800 dark:text-green-300">
-                                            Stored in the DB-backed <code className="bg-gray-900/40 px-1 rounded">SecurityPolicy</code> table.
+                                        <div className="bg-ok-soft border border-ok/40 rounded p-3 text-xs text-ok">
+                                            Stored in the DB-backed <code className="bg-sunken px-1 rounded">SecurityPolicy</code> table.
                                             Changes take effect on the next request scope after save (step-up MFA required).
                                         </div>
-                                        <div className="text-[11px] text-gray-500 dark:text-gray-500">Login lockout moved to the <strong>Login Protection</strong> card above.</div>
-                                        <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Session</h4>
+                                        <div className="text-[11px] text-ink-muted">Login lockout moved to the <strong>Login Protection</strong> card above.</div>
+                                        <h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide">Session</h4>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                             <ConfigNumber label="Session Idle Timeout (min, 0 = none)" value={securityPolicy.sessionIdleTimeoutMinutes} onChange={(v) => updateSecurityPolicyField('sessionIdleTimeoutMinutes', v)}
                                                 hint="Minutes without any request before the session ends and the user must log in again. 0 means a session never ends from inactivity." />
@@ -743,15 +943,16 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                             <ConfigNumber label="Max Session Lifetime (days, 0 = unlimited)" value={securityPolicy.maxSessionLifetimeDays} onChange={(v) => updateSecurityPolicyField('maxSessionLifetimeDays', v)}
                                                 hint="Hard cap from first login, however active the user is; after this a fresh login is required. 0 removes the cap." />
                                         </div>
-                                        <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide pt-2">Approval &amp; mTLS</h4>
+                                        <h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide pt-2">Approval &amp; mTLS</h4>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                             <ConfigToggle label="Allow System Super Self-Approval" checked={securityPolicy.allowSystemSuperSelfApproval ?? false} onChange={(v) => updateSecurityPolicyField('allowSystemSuperSelfApproval', v)}
+                                                disabled={!user?.isSuper}
                                                 hintTone={securityPolicy.allowSystemSuperSelfApproval ? 'warn' : 'muted'}
-                                                hint="Members of system-super may approve certificate requests they submitted themselves. Keeps a single-operator install working, and removes the two-person check for those accounts." />
+                                                hint={`Members of system-super may approve certificate requests they submitted themselves. Keeps a single-operator install working, and removes the two-person check for those accounts.${user?.isSuper ? '' : ' Only a system super-administrator can change this.'}`} />
                                             <ConfigToggle label="Require mTLS OCSP Check" checked={securityPolicy.requireMtlsOcspCheck ?? false} onChange={(v) => updateSecurityPolicyField('requireMtlsOcspCheck', v)}
                                                 hint="Client certificates presented for mTLS login are checked for revocation against the issuing CA. Off means a revoked certificate still logs in until it expires." />
                                         </div>
-                                        <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide pt-2">MFA / Step-Up</h4>
+                                        <h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide pt-2">MFA / Step-Up</h4>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                             <ConfigNumber label="Step-Up Token TTL (sec, 30-300)" value={securityPolicy.stepUpTokenTtlSeconds} onChange={(v) => updateSecurityPolicyField('stepUpTokenTtlSeconds', v)}
                                                 hint="How long a completed step-up MFA proof stays valid for the sensitive operation it was requested for. Values outside 30–300 are clamped on save." />
@@ -766,7 +967,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                             <ConfigNumber label="Step-Up Failure Window (sec)" value={securityPolicy.stepUpFailureWindowSeconds} onChange={(v) => updateSecurityPolicyField('stepUpFailureWindowSeconds', v)}
                                                 hint="Sliding window, in seconds, over which those failures are counted." />
                                         </div>
-                                        <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide pt-2">OCSP Responder</h4>
+                                        <h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide pt-2">OCSP Responder</h4>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                             <ConfigToggle label="Allow CA Direct Signing" checked={securityPolicy.allowCaDirectSigning ?? false} onChange={(v) => updateSecurityPolicyField('allowCaDirectSigning', v)}
                                                 hint="A CA with no delegated OCSP responder certificate signs responses with its own key. Off means such a CA answers Unauthorized until a responder certificate is issued." />
@@ -782,15 +983,27 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                             <ConfigNumber label="Max Single-Requests per OCSPRequest" value={securityPolicy.maxSingleRequestsPerRequest} onChange={(v) => updateSecurityPolicyField('maxSingleRequestsPerRequest', v)}
                                                 hint="Certificates one OCSP request may ask about at once; larger requests are rejected. Limits the work a single request can demand." />
                                         </div>
-                                        <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wide pt-2">Controlled-User Ceremonies</h4>
-                                        <p className="text-[11px] text-gray-500 dark:text-gray-500">
+                                        <h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide pt-2">Controlled-User Ceremonies</h4>
+                                        <p className="text-[11px] text-ink-muted">
                                             <strong>User quorum</strong> = approvals required to promote / demote / delete a controlled user (admin / operator / CA-admin)
-                                            when initiated by a non-super. Distinct from the <strong>key quorum</strong> (per-tenant CA-ceremony approvals, set in Tenants).
+                                            when initiated by a non-super. Distinct from the <strong>key quorum</strong> (CA-ceremony approvals, set per space in Spaces and for the instance in the Key Ceremonies card above).
                                             The initiator is always excluded, so the effective minimum is 1 other approver.
                                         </p>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                            <ConfigNumber label="User Quorum (min 1)" value={securityPolicy.userQuorum} onChange={(v) => updateSecurityPolicyField('userQuorum', v)} fallback={1}
-                                                hint="Approvals from other people. The initiator is always excluded, so the effective minimum is 1 other approver. Tenants and CAs may set a lower figure, never a higher one." />
+                                            <ConfigNumber label="User Quorum (min 1)" value={securityPolicy.userQuorum} onChange={(v) => updateSecurityPolicyField('userQuorum', v)} fallback={1} disabled={!user?.isSuper}
+                                                hint="Approvals from other people. The initiator is always excluded, so the effective minimum is 1 other approver. Spaces and CAs may set a lower figure, never a higher one." />
+                                        </div>
+                                        <h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide pt-2">Instance CA Policy</h4>
+                                        <p className="text-[11px] text-ink-muted">
+                                            Governs the instance's own CAs only (no space: the system signing CA, SSH CAs). Each space keeps its own
+                                            policy, set in Spaces; the two are independent and nothing merges. System administrators only. The key
+                                            ceremony requirement and its approvals are in the <strong>Key Ceremonies</strong> card above.
+                                        </p>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <ConfigNumber label="Max Cert Validity (days, 0 = unlimited)" value={securityPolicy.maxValidityDays} onChange={(v) => updateSecurityPolicyField('maxValidityDays', v)}
+                                                hint="Longest validity a leaf issued by an instance CA may carry." />
+                                            <ConfigSelect label="Over the ceiling" value={securityPolicy.validityCeilingBehavior || 'Shorten'} options={['Shorten', 'Refuse']} onChange={(v) => updateSecurityPolicyField('validityCeilingBehavior', v)}
+                                                hint="Refuse applies to admin issuance only; enrollment protocols and automatic renewals always shorten." />
                                         </div>
                                         <SaveButton saving={securityPolicySaving} onClick={handleSaveSecurityPolicy} label="Save Security Policy" />
                                     </>
@@ -804,14 +1017,14 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Login Banner" expanded={expanded === 'loginBanner'} onToggle={() => toggle('loginBanner')}
                             description={securityPolicy?.loginBanner ? 'Configured' : 'Not configured'} tag="live" />
                         {expanded === 'loginBanner' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
-                                {securityPolicyLoading && <div className="text-sm text-gray-600 dark:text-gray-400">Loading...</div>}
+                            <div className="p-4 border-t border-line space-y-4">
+                                {securityPolicyLoading && <div className="text-sm text-ink-muted">Loading...</div>}
                                 {securityPolicyError && <InlineNotice notice={securityPolicyError} />}
                                 {securityPolicy && (
                                     <>
-                                        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-800 rounded p-3 text-xs text-amber-800 dark:text-amber-200">
+                                        <div className="bg-warn-soft border border-warn/40 rounded p-3 text-xs text-warn">
                                             Users must acknowledge this banner before reaching the login page. Stored on the
-                                            <code className="bg-gray-900/40 px-1 rounded mx-1">SecurityPolicy</code>row; step-up MFA required to save.
+                                            <code className="bg-sunken px-1 rounded mx-1">SecurityPolicy</code>row; step-up MFA required to save.
                                             Leave empty to skip the banner step entirely. This Save writes the whole Security Policy row,
                                             including any unsaved edits in the Security Policy card above.
                                         </div>
@@ -841,12 +1054,12 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Password Policy" expanded={expanded === 'passwordPolicy'} onToggle={() => toggle('passwordPolicy')}
                             description="Complexity and rotation rules" tag="live" />
                         {expanded === 'passwordPolicy' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
-                                {policyLoading && <div className="text-sm text-gray-600 dark:text-gray-400">Loading...</div>}
+                            <div className="p-4 border-t border-line space-y-4">
+                                {policyLoading && <div className="text-sm text-ink-muted">Loading...</div>}
                                 {policyError && <InlineNotice notice={policyError} />}
                                 {policy && (
                                     <>
-                                        <p className="text-[11px] text-gray-500 dark:text-gray-500">
+                                        <p className="text-[11px] text-ink-muted">
                                             Applies to local accounts at their next password change; LDAP users are governed by the directory.
                                             The "require at least one" switches and the minimum counts are independent rules: a count of 2 is
                                             enforced even with its switch off, and a switch on with a count of 0 demands exactly one.
@@ -874,9 +1087,9 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                                             type="checkbox"
                                                             checked={!!value}
                                                             onChange={(e) => updatePolicyField(key, e.target.checked)}
-                                                            className="w-4 h-4 bg-gray-50 dark:bg-gray-900 border-gray-300 dark:border-gray-700 rounded"
+                                                            className="w-4 h-4 bg-raised border-line-strong rounded"
                                                         />
-                                                        <label htmlFor={`pw-${key}`} className="text-xs text-gray-700 dark:text-gray-300">{POLICY_FIELDS[key]?.label ?? key}</label>
+                                                        <label htmlFor={`pw-${key}`} className="text-xs text-ink">{POLICY_FIELDS[key]?.label ?? key}</label>
                                                     </div>
                                                     {POLICY_FIELDS[key] && <FieldHint className="pl-6">{POLICY_FIELDS[key].hint}</FieldHint>}
                                                 </div>
@@ -895,12 +1108,12 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="JWT" expanded={expanded === 'jwt'} onToggle={() => toggle('jwt')}
                             description={`Expiry: ${config.jwt?.expirationMinutes || 120}m`} tag="read-only" />
                         {expanded === 'jwt' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-2">
+                            <div className="p-4 border-t border-line space-y-2">
                                 <DetailField label="Expiration (minutes)" value={String(config.jwt.expirationMinutes)} />
                                 <DetailField label="Issuer" value={config.jwt.issuer} />
                                 <DetailField label="Audience" value={config.jwt.audience} />
                                 <DetailField label="Secret" value="***" />
-                                <div className="text-xs text-gray-600 mt-2">JWT settings are managed via config.yaml and require a restart to change.</div>
+                                <div className="text-xs text-ink-muted mt-2">JWT settings are managed via config.yaml and require a restart to change.</div>
                             </div>
                         )}
                     </div>
@@ -910,20 +1123,22 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="mTLS" expanded={expanded === 'mtls'} onToggle={() => toggle('mtls')}
                             description={config.mtls?.enabled ? (config.mtls.authSubdomain || 'AuthSubdomain not set') : 'Disabled'} tag="restart" />
                         {expanded === 'mtls' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigToggle label="Enabled" checked={config.mtls?.enabled ?? false} onChange={(v) => update('mtls', 'enabled', v)}
                                         hint="Offers certificate-based login: connections to the auth subdomain are asked for a client certificate; every other hostname gets a normal handshake." />
                                     <ConfigInput label="Auth Subdomain" value={config.mtls?.authSubdomain} onChange={(v) => update('mtls', 'authSubdomain', v)} placeholder="mtls.ca.example.com"
                                         hint="Hostname whose TLS handshake requests a client certificate. Needs DNS pointing here and the Web TLS certificate's SANs must include it, or clients fail before login." />
-                                    <ConfigInput label="Required Paths (comma-separated)" value={listToStr(config.mtls?.requiredPaths)} onChange={(v) => update('mtls', 'requiredPaths', strToList(v))}
-                                        hint="Paths that refuse any request not carrying a valid client certificate, regardless of hostname." />
+                                    <ConfigChips label="Required Paths" value={listFromValue(config.mtls?.requiredPaths)} onChange={(v) => update('mtls', 'requiredPaths', v)}
+                                        validate={validatePathPrefix} mono placeholder="/api/v1/admin"
+                                        hint="Path prefixes that refuse any request not carrying a valid client certificate, regardless of hostname." />
                                     <div className="md:col-span-2">
-                                        <ConfigInput label="Trusted CA Cert Paths (comma-separated file paths)" value={listToStr(config.mtls?.trustedCaCertPaths)} onChange={(v) => update('mtls', 'trustedCaCertPaths', strToList(v))}
-                                            hint="PEM files of the CAs whose certificates count as a login. A certificate from any other issuer is rejected at the handshake." />
+                                        <ConfigChips label="Trusted CA Cert Paths" value={listFromValue(config.mtls?.trustedCaCertPaths)} onChange={(v) => update('mtls', 'trustedCaCertPaths', v)}
+                                            validate={validateAbsoluteFilePath} mono placeholder="/etc/modularca/client-ca.pem"
+                                            hint="Absolute paths of PEM files on the server, for the CAs whose certificates count as a login. A certificate from any other issuer is rejected at the handshake. Each file is checked when you save." />
                                     </div>
                                 </div>
-                                <SaveButton saving={saving === 'mtls'} onClick={() => saveSection('mtls', config.mtls, 'mtls')} />
+                                <SaveButton saving={saving === 'mtls'} onClick={() => saveSection('mtls', config.mtls, 'mtls')} blockedReason={mtlsBlocked} />
                             </div>
                         )}
                     </div>
@@ -933,10 +1148,10 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="IP Whitelist" expanded={expanded === 'ipwhitelist'} onToggle={() => toggle('ipwhitelist')}
                             description={config.ipWhitelist?.enabled ? 'Enabled — managed at /admin/whitelists' : 'Disabled (master kill switch)'} tag="live" />
                         {expanded === 'ipwhitelist' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
-                                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-800 rounded p-3 text-xs text-blue-800 dark:text-blue-300">
+                            <div className="p-4 border-t border-line space-y-4">
+                                <div className="bg-info-soft border border-info/40 rounded p-3 text-xs text-info">
                                     CIDR allow-list rules now live in the centralized <code className="mono">Whitelists</code> table and
-                                    are managed at <Link to="/whitelists" className="underline hover:text-blue-200">/admin/whitelists</Link>.
+                                    are managed at <Link to="/whitelists" className="underline hover:text-accent-hover">/admin/whitelists</Link>.
                                     This card only exposes the master kill switch and the path-based exempt list — both of which stay in
                                     <code className="mono"> config.yaml</code>.
                                 </div>
@@ -945,17 +1160,17 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     hint={config.ipWhitelist?.enabled === false
                                         ? 'Off: every rule on the Whitelists page is ignored and all addresses reach every endpoint.'
                                         : 'On: each request is matched against the Whitelists rules. Turning this off bypasses all of them at once.'} />
-                                <ConfigInput label="Exempt Paths (comma-separated)" value={(config.ipWhitelist?.exemptPaths || []).join(', ')}
-                                    onChange={(v) => update('ipWhitelist', 'exemptPaths', v.split(',').map((s: string) => s.trim()).filter(Boolean))}
-                                    placeholder="/api/v1/auth, /api/v1/public/ca"
-                                    hint="Path prefixes that always pass, whatever the rules say. A prefix here undoes any tightening of that path on the Whitelists page." />
-                                <div className="text-xs text-gray-600">
+                                <ConfigChips label="Exempt Paths" value={listFromValue(config.ipWhitelist?.exemptPaths)}
+                                    onChange={(v) => update('ipWhitelist', 'exemptPaths', v)}
+                                    validate={validatePathPrefix} mono placeholder="/api/v1/public/ca"
+                                    hint="Path prefixes that always pass, whatever the rules say. A prefix covers every path that starts with it, and undoes any tightening of those paths on the Whitelists page." />
+                                <div className="text-xs text-ink-muted">
                                     When the master switch is off, <code className="mono">IpWhitelistMiddleware</code> short-circuits to pass-through
                                     and no rule lookup happens. When on, the middleware consults the <code className="mono">Whitelists</code> table
                                     per request via the cached <code className="mono">IWhitelistService</code>. Exempt paths always pass through
                                     regardless of the master switch — they're the path-based exclusions that bypass rule evaluation entirely.
                                 </div>
-                                <SaveButton saving={saving === 'ipwhitelist'} onClick={() => saveSection('ip-whitelist', config.ipWhitelist, 'ipwhitelist')} />
+                                <SaveButton saving={saving === 'ipwhitelist'} onClick={() => saveSection('ip-whitelist', config.ipWhitelist, 'ipwhitelist')} blockedReason={ipWhitelistBlocked} />
                             </div>
                         )}
                     </div>
@@ -965,22 +1180,22 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Rate Limiting" expanded={expanded === 'rateLimiting'} onToggle={() => toggle('rateLimiting')}
                             description={rateLimits.length ? `${rateLimits.length} protocol rows` : 'Defaults (no overrides)'} tag="live" />
                         {expanded === 'rateLimiting' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
-                                <div className="bg-green-50 dark:bg-green-900/20 border border-green-300 dark:border-green-800 rounded p-3 text-xs text-green-800 dark:text-green-300">
+                            <div className="p-4 border-t border-line space-y-4">
+                                <div className="bg-ok-soft border border-ok/40 rounded p-3 text-xs text-ok">
                                     Per-protocol, per-IP limits stored in the DB-backed
-                                    <code className="bg-gray-900/40 px-1 mx-1 rounded">ProtocolRateLimits</code> table.
+                                    <code className="bg-sunken px-1 mx-1 rounded">ProtocolRateLimits</code> table.
                                     Protocols without a row fall back to middleware defaults. Step-up MFA required on save.
                                     Each row means: one client IP may make at most <em>Max Requests</em> to that protocol within
                                     <em> Window Min</em> minutes; further requests get 429 until the window passes.
                                 </div>
-                                {rateLimitsLoading && <div className="text-sm text-gray-600 dark:text-gray-400">Loading...</div>}
+                                {rateLimitsLoading && <div className="text-sm text-ink-muted">Loading...</div>}
                                 {rateLimitsError && <InlineNotice notice={rateLimitsError} />}
                                 {rateLimits.length > 0 && (
                                     <>
                                         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
                                             {rateLimits.map((row) => (
                                                 <div key={row.protocol} className="space-y-2">
-                                                    <h4 className="text-xs font-semibold text-gray-900 dark:text-white uppercase tracking-wide">{row.protocol}</h4>
+                                                    <h4 className="text-xs font-semibold text-ink uppercase tracking-wide">{row.protocol}</h4>
                                                     <ConfigNumber label="Max Requests" value={row.maxRequests}
                                                         onChange={(v) => updateRateLimitField(row.protocol, 'maxRequests', v)} fallback={100} />
                                                     <ConfigNumber label="Window Min" value={row.windowMinutes}
@@ -1000,44 +1215,53 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="LDAP Authentication" expanded={expanded === 'ldapAuth'} onToggle={() => toggle('ldapAuth')}
                             description={config.ldapAuth?.enabled ? `${config.ldapAuth.host}:${config.ldapAuth.port}` : 'Disabled'} tag="live" />
                         {expanded === 'ldapAuth' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
+                                {!user?.isSuper && (
+                                    <p className="text-[11px] text-ink-muted">
+                                        Only a system super-administrator can change the server, TLS, bind identity, search settings or group mappings, or turn LDAP sign-in on.
+                                        A directory bind signs in as the local account of the same name, so whoever controls the directory can sign in as any account.
+                                        You can turn LDAP sign-in off and change group sync and auto-provisioning.
+                                    </p>
+                                )}
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <ConfigToggle label="Enabled" checked={config.ldapAuth.enabled} onChange={(v) => update('ldapAuth', 'enabled', v)}
+                                    <ConfigToggle label="Enabled" checked={config.ldapAuth.enabled} onChange={(v) => update('ldapAuth', 'enabled', v)} disabled={!user?.isSuper && !config.ldapAuth.enabled}
                                         hint="Logins are verified by binding to the directory as the user; a successful bind is accepted as proof of the password. Applies live, no restart." />
-                                    <ConfigInput label="Host" value={config.ldapAuth.host} onChange={(v) => update('ldapAuth', 'host', v)}
+                                    <ConfigInput label="Host" value={config.ldapAuth.host} onChange={(v) => update('ldapAuth', 'host', v)} disabled={!user?.isSuper}
                                         hint="Directory server this instance binds to. Whoever controls this host can approve any login, so change it only over a verified channel." />
-                                    <ConfigNumber label="Port" value={config.ldapAuth.port} onChange={(v) => update('ldapAuth', 'port', v)} fallback={389}
+                                    <ConfigNumber label="Port" value={config.ldapAuth.port} onChange={(v) => update('ldapAuth', 'port', v)} fallback={389} disabled={!user?.isSuper}
                                         hint="389 for plain LDAP, 636 for LDAPS." />
-                                    <ConfigToggle label="Use SSL" checked={config.ldapAuth.useSsl} onChange={(v) => update('ldapAuth', 'useSsl', v)}
+                                    <ConfigToggle label="Use SSL" checked={config.ldapAuth.useSsl} onChange={(v) => update('ldapAuth', 'useSsl', v)} disabled={!user?.isSuper}
                                         hintTone={config.ldapAuth.useSsl ? 'muted' : 'warn'}
                                         hint="Connects over LDAPS. Off sends the service-account password and every user's login password to the directory in clear text; there is no StartTLS path." />
-                                    <ConfigInput label="Search Base DN" value={config.ldapAuth.searchBaseDn} onChange={(v) => update('ldapAuth', 'searchBaseDn', v)}
+                                    <ConfigInput label="Search Base DN" value={config.ldapAuth.searchBaseDn} onChange={(v) => update('ldapAuth', 'searchBaseDn', v)} disabled={!user?.isSuper}
                                         hint="Subtree searched for the user's entry, e.g. OU=People,DC=example,DC=com." />
-                                    <ConfigInput label="Search Filter" value={config.ldapAuth.searchFilter} onChange={(v) => update('ldapAuth', 'searchFilter', v)}
+                                    <ConfigInput label="Search Filter" value={config.ldapAuth.searchFilter} onChange={(v) => update('ldapAuth', 'searchFilter', v)} disabled={!user?.isSuper}
                                         hint="LDAP filter locating the user; {0} is replaced with the login name." />
-                                    <ConfigInput label="Bind DN" value={config.ldapAuth.bindDn} onChange={(v) => update('ldapAuth', 'bindDn', v)}
+                                    <ConfigInput label="Bind DN" value={config.ldapAuth.bindDn} onChange={(v) => update('ldapAuth', 'bindDn', v)} disabled={!user?.isSuper}
                                         hint="Service account used to search for users before they authenticate. Blank attempts an anonymous search." />
                                     {/* The bind password was previously not editable here at all, so it could
                                         only be set in config.yaml. It loads as *** when one is stored; leaving
                                         that placeholder untouched keeps the existing password. */}
-                                    <ConfigInput label="Bind Password" value={config.ldapAuth.bindPassword} onChange={(v) => update('ldapAuth', 'bindPassword', v)} type="password" placeholder="Leave unchanged to keep current"
+                                    <ConfigInput label="Bind Password" value={config.ldapAuth.bindPassword} onChange={(v) => update('ldapAuth', 'bindPassword', v)} type="password" placeholder="Leave unchanged to keep current" disabled={!user?.isSuper}
                                         hint="Shown as *** when one is stored. Leave it as-is to keep the current password; type a new one to replace it." />
                                     <ConfigToggle label="Group Sync Enabled" checked={config.ldapAuth.groupSyncEnabled} onChange={(v) => update('ldapAuth', 'groupSyncEnabled', v)}
                                         hint="The LdapGroupSync job periodically re-reads each LDAP user's groups and applies the mappings below, granting and revoking local group membership to match." />
                                     <ConfigToggle label="Auto Provision Users" checked={config.ldapAuth.autoProvisionUsers} onChange={(v) => update('ldapAuth', 'autoProvisionUsers', v)}
-                                        hint="A first successful LDAP login creates the local account automatically. Off means only users an administrator created here can log in." />
-                                    <ConfigInput label="Group Search Base DN" value={config.ldapAuth.groupSearchBaseDn} onChange={(v) => update('ldapAuth', 'groupSearchBaseDn', v)}
+                                        hint="Has no effect: an LDAP login never creates an account. Every account is created here by an administrator, and a directory bind signs in only as the existing local account of the same name." />
+                                    <ConfigInput label="Group Search Base DN" value={config.ldapAuth.groupSearchBaseDn} onChange={(v) => update('ldapAuth', 'groupSearchBaseDn', v)} disabled={!user?.isSuper}
                                         hint="Subtree searched for groups during sync." />
-                                    <ConfigInput label="Group Search Filter" value={config.ldapAuth.groupSearchFilter} onChange={(v) => update('ldapAuth', 'groupSearchFilter', v)}
+                                    <ConfigInput label="Group Search Filter" value={config.ldapAuth.groupSearchFilter} onChange={(v) => update('ldapAuth', 'groupSearchFilter', v)} disabled={!user?.isSuper}
                                         hint="Filter selecting the groups a user belongs to; {0} is replaced with the user's DN." />
-                                    <ConfigInput label="Group Member Attribute" value={config.ldapAuth.groupMemberAttribute} onChange={(v) => update('ldapAuth', 'groupMemberAttribute', v)}
+                                    <ConfigInput label="Group Member Attribute" value={config.ldapAuth.groupMemberAttribute} onChange={(v) => update('ldapAuth', 'groupMemberAttribute', v)} disabled={!user?.isSuper}
                                         hint="Attribute on the user entry listing its groups (memberOf on Active Directory)." />
                                     <div className="md:col-span-2">
-                                        <ConfigInput label="Group to Role Mappings (JSON)" value={config.ldapAuth.groupToRoleMappings} onChange={(v) => update('ldapAuth', 'groupToRoleMappings', v)} placeholder='{"CN=Admins,DC=...": "CaAdmin"}'
-                                            hint="JSON object mapping an LDAP group DN to a local group name. LDAP groups not listed here grant nothing." />
+                                        <LdapMappingsEditor value={config.ldapAuth.groupToRoleMappings} savedValue={savedConfig()?.ldapAuth?.groupToRoleMappings}
+                                            onChange={(v) => update('ldapAuth', 'groupToRoleMappings', v)}
+                                            disabled={!user?.isSuper} onInvalidChange={setLdapMappingsInvalid} />
                                     </div>
                                 </div>
-                                <SaveButton saving={saving === 'ldapAuth'} onClick={() => saveSection('ldap-auth', config.ldapAuth, 'ldapAuth')} />
+                                <SaveButton saving={saving === 'ldapAuth'} onClick={() => saveSection('ldap-auth', config.ldapAuth, 'ldapAuth')}
+                                    blockedReason={ldapMappingsInvalid ? 'Fix the group mappings marked in red before saving.' : null} />
                             </div>
                         )}
                     </div>
@@ -1054,7 +1278,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Certificate Policy" expanded={expanded === 'certPolicy'} onToggle={() => toggle('certPolicy')}
                             description={config.certPolicy?.enabled ? `Min RSA ${config.certPolicy.minRsaKeySize || 2048}` : 'Disabled'} tag="live" />
                         {expanded === 'certPolicy' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigToggle label="Enabled" checked={config.certPolicy?.enabled ?? false} onChange={(v) => update('certPolicy', 'enabled', v)}
                                         hintTone={config.certPolicy?.enabled ? 'muted' : 'warn'}
@@ -1064,22 +1288,17 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     <ConfigToggle label="Require SANs" checked={config.certPolicy?.requireSans ?? false} onChange={(v) => update('certPolicy', 'requireSans', v)}
                                         hint="Requests without a Subject Alternative Name are refused. Browsers ignore the Common Name, so a certificate without SANs fails hostname checks anyway." />
                                     <div className="md:col-span-2">
-                                        <ConfigInput label="Forbidden Algorithms (comma-separated)" value={listToStr(config.certPolicy?.forbiddenAlgorithms)} onChange={(v) => update('certPolicy', 'forbiddenAlgorithms', strToList(v))} placeholder="MD5, SHA1"
-                                            hint="Signature algorithms refused at issuance, e.g. SHA1WithRSA, MD5WithRSA." />
+                                        <ConfigChips label="Forbidden Algorithms" value={listFromValue(config.certPolicy?.forbiddenAlgorithms)} onChange={(v) => update('certPolicy', 'forbiddenAlgorithms', v)}
+                                            suggestions={FORBIDDEN_ALGORITHM_SUGGESTIONS} caseInsensitive mono placeholder="e.g. SHA1withRSA"
+                                            hint="A request whose signature algorithm has exactly one of these names is refused at issuance (case does not matter). Use the full name, such as SHA1withRSA; a fragment like SHA1 matches nothing. An algorithm the server has no name for is matched by its OID, e.g. 1.2.840.113549.1.1.4 for MD5withRSA." />
                                     </div>
                                     <div className="md:col-span-2">
-                                        <label className={labelClass}>Algorithm Sunset Rules (one per line: &quot;RSA-2048:2030-01-01&quot;)</label>
-                                        <textarea
-                                            value={listToLines(config.certPolicy?.algorithmSunsetRules)}
-                                            onChange={(e) => update('certPolicy', 'algorithmSunsetRules', linesToList(e.target.value))}
-                                            placeholder={"RSA-2048:2030-01-01\nSHA-256:2035-01-01"}
-                                            rows={4}
-                                            className={`${inputClass} font-mono text-xs`}
-                                        />
-                                        <FieldHint>From the date onward, issuance with that algorithm (or algorithm-keysize pair) is refused. Until then the rule does nothing, so sunsets can be entered years ahead.</FieldHint>
+                                        <SunsetRulesEditor value={config.certPolicy?.algorithmSunsetRules}
+                                            onChange={(v) => update('certPolicy', 'algorithmSunsetRules', v)} onInvalidChange={setSunsetInvalid} />
                                     </div>
                                 </div>
-                                <SaveButton saving={saving === 'certPolicy'} onClick={() => saveSection('certificate-policy', config.certPolicy, 'certPolicy')} />
+                                <SaveButton saving={saving === 'certPolicy'} onClick={() => saveSection('certificate-policy', config.certPolicy, 'certPolicy')}
+                                    blockedReason={sunsetInvalid ? 'Fix the sunset rules marked in red before saving.' : null} />
                             </div>
                         )}
                     </div>
@@ -1089,7 +1308,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Auto-Renewal" expanded={expanded === 'autoRenewal'} onToggle={() => toggle('autoRenewal')}
                             description={config.autoRenewal?.enabled ? `Renew ${config.autoRenewal.renewDaysBeforeExpiry || 30}d before expiry` : 'Disabled'} tag="live" />
                         {expanded === 'autoRenewal' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigToggle label="Enabled" checked={config.autoRenewal?.enabled ?? false} onChange={(v) => update('autoRenewal', 'enabled', v)}
                                         hint="The AutoRenewal job creates renewal requests for certificates approaching expiry, with a fresh key pair. Off means certificates simply expire unless someone renews them." />
@@ -1107,17 +1326,18 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                     {/* Cert Expiry Notifications */}
                     <div className={cardClass}>
                         <SectionHeader title="Cert Expiry Notifications" expanded={expanded === 'certExpiryNotification'} onToggle={() => toggle('certExpiryNotification')}
-                            description={config.certExpiryNotification?.enabled ? `Warn at ${config.certExpiryNotification.warningDays || '90,60,30,14,7'}d` : 'Disabled'} tag="live" />
+                            description={config.certExpiryNotification?.enabled ? (warningDays.length ? `Warn at ${warningDays.join(', ')} days` : 'No warning days set') : 'Disabled'} tag="live" />
                         {expanded === 'certExpiryNotification' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigToggle label="Enabled" checked={config.certExpiryNotification?.enabled ?? false} onChange={(v) => update('certExpiryNotification', 'enabled', v)}
                                         hint="The CertExpiryNotification job emails and webhooks a warning as certificates approach expiry. Needs Email or Webhook configured under Integrations to reach anyone." />
-                                    <ConfigInput label="Warning Days (comma-separated)" value={config.certExpiryNotification?.warningDays} onChange={(v) => update('certExpiryNotification', 'warningDays', v)} placeholder="90,60,30,14,7"
-                                        hint="A notice is sent once as a certificate crosses each of these day marks before expiry. The list is checked in order and the first match fires." />
+                                    <ConfigChips label="Warning Days" value={warningDays} onChange={(v) => update('certExpiryNotification', 'warningDaysBeforeExpiry', v)}
+                                        validate={validateWarningDay} numeric sort="desc" placeholder="e.g. 30"
+                                        hint="Days before expiry, from 1 to 3650. A notice is sent once as a certificate crosses each mark; the order does not matter. Empty means no notices are sent." />
                                 </div>
                                 <ScheduleMovedNote job="CertExpiryNotification" />
-                                <SaveButton saving={saving === 'certExpiryNotification'} onClick={() => saveSection('cert-expiry-notifications', { ...config.certExpiryNotification, schedule: '' }, 'certExpiryNotification')} />
+                                <SaveButton saving={saving === 'certExpiryNotification'} onClick={() => saveSection('cert-expiry-notifications', certExpiryNotificationBody(config.certExpiryNotification, warningDays), 'certExpiryNotification')} blockedReason={expiryBlocked} />
                             </div>
                         )}
                     </div>
@@ -1127,8 +1347,8 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Compliance Scan" expanded={expanded === 'complianceScan'} onToggle={() => toggle('complianceScan')}
                             description={config.complianceScan?.enabled ? `Min RSA ${config.complianceScan.minRsaKeySize || 2048}` : 'Disabled'} tag="live" />
                         {expanded === 'complianceScan' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
-                                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-800 rounded p-3 text-xs text-blue-800 dark:text-blue-300">
+                            <div className="p-4 border-t border-line space-y-4">
+                                <div className="bg-info-soft border border-info/40 rounded p-3 text-xs text-info">
                                     These thresholds <strong>flag existing certificates</strong> in the inventory. Issuance is enforced
                                     separately by <strong>Certificate Policy</strong> above{config.certPolicy?.enabled ? '' : ' (currently disabled)'}.
                                     Keep the two aligned to avoid surprises — the active policy baseline is shown beneath each field.
@@ -1140,16 +1360,17 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     <div>
                                         <ConfigNumber label="Min RSA Key Size" value={config.complianceScan?.minRsaKeySize} onChange={(v) => update('complianceScan', 'minRsaKeySize', v)} fallback={0}
                                             hint="Issued certificates with a shorter RSA key are flagged as weak." />
-                                        <p className="text-[10px] text-gray-600 mt-1">Policy: {config.certPolicy?.enabled ? `blocks issuance below ${config.certPolicy?.minRsaKeySize || 'unset'}` : 'enforcement off'}</p>
+                                        <p className="text-[10px] text-ink-muted mt-1">Policy: {config.certPolicy?.enabled ? `blocks issuance below ${config.certPolicy?.minRsaKeySize || 'unset'}` : 'enforcement off'}</p>
                                     </div>
                                     <div>
                                         <ConfigNumber label="Warn Over Validity Days" value={config.complianceScan?.warnOverValidityDays} onChange={(v) => update('complianceScan', 'warnOverValidityDays', v)} fallback={0} />
-                                        <p className="text-[10px] text-gray-600 mt-1">Reports only — it never blocks issuance. The enforced ceiling is per tenant, under Tenants &amp; Quotas.</p>
+                                        <p className="text-[10px] text-ink-muted mt-1">Reports only — it never blocks issuance. The enforced ceiling is per space, under Spaces &amp; Quotas.</p>
                                     </div>
                                     <div className="md:col-span-2">
-                                        <ConfigInput label="Deprecated Algorithms (comma-separated)" value={listToStr(config.complianceScan?.deprecatedAlgorithms)} onChange={(v) => update('complianceScan', 'deprecatedAlgorithms', strToList(v))} placeholder="MD5, SHA1, RSA-1024"
-                                            hint="Issued certificates signed with these are flagged." />
-                                        <p className="text-[10px] text-gray-600 mt-1">Policy forbids at issuance: {listToStr(config.certPolicy?.forbiddenAlgorithms) || 'none'}</p>
+                                        <ConfigChips label="Deprecated Algorithms" value={listFromValue(config.complianceScan?.deprecatedAlgorithms)} onChange={(v) => update('complianceScan', 'deprecatedAlgorithms', v)}
+                                            suggestions={DEPRECATED_SUGGESTIONS} caseInsensitive mono placeholder="e.g. SHA1"
+                                            hint="Issued certificates whose signature algorithm name contains one of these are flagged, ignoring case and hyphens: SHA1 matches SHA-1withRSA and SHA-1withECDSA." />
+                                        <p className="text-[10px] text-ink-muted mt-1">Policy forbids at issuance: {listFromValue(config.certPolicy?.forbiddenAlgorithms).join(', ') || 'none'}</p>
                                     </div>
                                 </div>
                                 <ScheduleMovedNote job="Compliance" />
@@ -1170,7 +1391,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Email / SMTP" expanded={expanded === 'email'} onToggle={() => toggle('email')}
                             description={config.email?.enabled ? `${config.email.authMethod} — ${config.email.smtpHost}` : 'Disabled'} tag="live" />
                         {expanded === 'email' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigToggle label="Enabled" checked={config.email.enabled} onChange={(v) => update('email', 'enabled', v)}
                                         hint="Expiry notices, alerts and approval mail go out over SMTP. Off means they are dropped silently." />
@@ -1208,11 +1429,12 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                         hint="Must be an address the mail server allows this account to send as, or messages are rejected." />
                                     <ConfigInput label="From Name" value={config.email.fromName} onChange={(v) => update('email', 'fromName', v)} />
                                     <div className="md:col-span-2">
-                                        <ConfigInput label="Admin Recipients (comma-separated)" value={config.email.adminRecipients} onChange={(v) => update('email', 'adminRecipients', v)} placeholder="admin@example.com"
+                                        <ConfigChips label="Admin Recipients" value={listFromValue(config.email.adminRecipients)} onChange={(v) => update('email', 'adminRecipients', listToCsv(v))}
+                                            validate={validateEmail} caseInsensitive placeholder="admin@example.com"
                                             hint="Addresses that receive system alerts (backup failures, scheduler failures, security changes). Empty means alerts reach nobody by mail." />
                                     </div>
                                 </div>
-                                <SaveButton saving={saving === 'email'} onClick={() => saveSection('email', config.email, 'email')} />
+                                <SaveButton saving={saving === 'email'} onClick={() => saveSection('email', config.email, 'email')} blockedReason={emailBlocked} />
                             </div>
                         )}
                     </div>
@@ -1222,7 +1444,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Webhook" expanded={expanded === 'webhook'} onToggle={() => toggle('webhook')}
                             description={config.webhook?.enabled ? `Enabled, ${config.webhook.maxRetries || 3} retries` : 'Disabled'} tag="live" />
                         {expanded === 'webhook' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigToggle label="Enabled" checked={config.webhook?.enabled ?? false} onChange={(v) => update('webhook', 'enabled', v)}
                                         hint="Certificate lifecycle events are POSTed to the endpoints in config.yaml. Off means no deliveries are attempted." />
@@ -1231,7 +1453,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     <ConfigNumber label="Retry Delay Seconds" value={config.webhook?.retryDelaySeconds} onChange={(v) => update('webhook', 'retryDelaySeconds', v)} fallback={10}
                                         hint="Wait before the first retry; each later retry waits exponentially longer." />
                                 </div>
-                                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-300 dark:border-blue-800 rounded p-3 text-xs text-blue-800 dark:text-blue-300">
+                                <div className="bg-info-soft border border-info/40 rounded p-3 text-xs text-info">
                                     Webhook endpoints are configured in config.yaml. These settings control the global retry behavior for all endpoints.
                                 </div>
                                 <SaveButton saving={saving === 'webhook'} onClick={() => saveSection('webhook', config.webhook, 'webhook')} />
@@ -1244,7 +1466,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Cert-Manager Integration" expanded={expanded === 'certManager'} onToggle={() => toggle('certManager')}
                             description={config.certManager?.enabled ? 'Enabled' : 'Disabled'} tag="restart" />
                         {expanded === 'certManager' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigToggle label="Enabled" checked={config.certManager?.enabled ?? false} onChange={(v) => update('certManager', 'enabled', v)}
                                         hint="Opens /api/v1/integration/cert-manager/sign to any caller presenting the API key; that caller can obtain certificates without a human approval." />
@@ -1265,7 +1487,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Integration API" expanded={expanded === 'integrationApi'} onToggle={() => toggle('integrationApi')}
                             description={config.integrationApi?.enabled ? 'Enabled' : 'Disabled'} tag="restart" />
                         {expanded === 'integrationApi' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigToggle label="Enabled" checked={config.integrationApi?.enabled ?? false} onChange={(v) => update('integrationApi', 'enabled', v)}
                                         hint="Opens the infrastructure-as-code endpoints (Terraform, Ansible) to any caller presenting the API key." />
@@ -1282,7 +1504,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="ACME Policies" expanded={expanded === 'acme'} onToggle={() => toggle('acme')}
                             description={`EAB: ${config.acme?.externalAccountRequired ? 'Required' : 'Off'}, CAA: ${config.acme?.enforceCaa ? 'On' : 'Off'}, ToS: ${config.acme?.termsOfServiceUrl ? 'Published' : 'None'}`} tag="live" />
                         {expanded === 'acme' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigToggle label="External Account Required" checked={config.acme?.externalAccountRequired ?? false} onChange={(v) => update('acme', 'externalAccountRequired', v)}
                                         hint="New ACME accounts must carry an externalAccountBinding signed with a pre-shared key issued here. Clients without one cannot register, which is how you keep the directory from being open to anyone who can reach it." />
@@ -1290,7 +1512,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                         hint="Before issuing, the DNS CAA records for each requested name are checked; a record that does not name this CA blocks issuance. Needs working DNS resolution from this host." />
                                 </div>
                                 <ConfigInput label="Terms of Service URL" value={config.acme?.termsOfServiceUrl} onChange={(v) => update('acme', 'termsOfServiceUrl', v)} placeholder="https://ca.example.com/terms (leave empty to publish none)" />
-                                <p className="text-xs text-gray-600 dark:text-gray-400">
+                                <p className="text-xs text-ink-muted">
                                     Setting this advertises the URL in the ACME directory <em>and</em> makes account
                                     registration require agreement. Leave it empty and clients register without agreeing —
                                     per RFC 8555 a server may only demand agreement to terms it actually publishes.
@@ -1305,7 +1527,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Policy Sync" expanded={expanded === 'policySync'} onToggle={() => toggle('policySync')}
                             description={config.policySync?.enabled ? `Dir: ${config.policySync.policyDirectory || 'Not set'}` : 'Disabled'} tag="live" />
                         {expanded === 'policySync' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigToggle label="Enabled" checked={config.policySync?.enabled ?? false} onChange={(v) => update('policySync', 'enabled', v)}
                                         hint="Profile definitions are imported from YAML files in the directory below, GitOps-style. Imported files overwrite the database copy of a profile with the same name." />
@@ -1329,7 +1551,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                             }
                                         }}
                                         disabled={saving === 'policySyncNow'}
-                                        className="px-4 py-2 text-sm bg-purple-600 text-gray-900 dark:text-white rounded hover:bg-purple-700 disabled:opacity-50 transition-colors"
+                                        className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
                                     >
                                         {saving === 'policySyncNow' ? 'Syncing...' : 'Sync Now'}
                                     </button>
@@ -1343,7 +1565,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Alert" expanded={expanded === 'alert'} onToggle={() => toggle('alert')}
                             description={config.alert?.enabled ? `Min severity: ${config.alert.minimumSeverity || 'Warning'}` : 'Disabled'} tag="live" />
                         {expanded === 'alert' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigToggle label="Enabled" checked={config.alert?.enabled ?? false} onChange={(v) => update('alert', 'enabled', v)}
                                         hint="Security and operational alerts (stale backups, failing jobs, config changes) are sent to the admin recipients and webhooks. Off means they are only logged." />
@@ -1372,10 +1594,10 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Logging" expanded={expanded === 'logging'} onToggle={() => toggle('logging')}
                             description={config.logging?.minLevel || 'Information'} tag="live" />
                         {expanded === 'logging' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
                                 <ConfigSelect label="Min Level" value={config.logging.minLevel || 'Information'} options={['Debug', 'Information', 'Warning', 'Error']} onChange={(v) => update('logging', 'minLevel', v)}
                                     hint="Events below this level are discarded. Debug records every request in detail and fills the disk quickly; Warning hides normal operation, so a quiet log no longer means a healthy service." />
-                                <div className="text-xs text-gray-600">
+                                <div className="text-xs text-ink-muted">
                                     Log level changes take effect immediately — no restart needed. This Save writes only the level; the
                                     storage fields below have their own Save.
                                 </div>
@@ -1389,7 +1611,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Log Storage" expanded={expanded === 'logStorage'} onToggle={() => toggle('logStorage')}
                             description={`${config.logging?.retentionDays || 30}d retention, ${config.logging?.maxFileSizeMb || 100}MB max`} tag="restart" />
                         {expanded === 'logStorage' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigInput label="File Path" value={config.logging.filePath} onChange={(v) => update('logging', 'filePath', v)}
                                         hint="Log file path; the date is inserted before the extension on each daily roll. A relative path resolves from the application directory." />
@@ -1399,11 +1621,11 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                         hint="A file that reaches this size rolls to a new one, in addition to the daily roll." />
                                     <ConfigSelect label="Console Format" value={config.logging.consoleFormat || 'Auto'} options={['Auto', 'Systemd', 'Json', 'Text']} onChange={(v) => update('logging', 'consoleFormat', v)} />
                                 </div>
-                                <div className="text-xs text-gray-600">
+                                <div className="text-xs text-ink-muted">
                                     Log files roll daily and when they reach the max file size. Old files are deleted after the retention period.
                                     This Save writes the whole logging section, including the level above.
                                 </div>
-                                <div className="text-xs text-gray-600 dark:text-gray-400">
+                                <div className="text-xs text-ink-muted">
                                     <span className="font-medium">Console Format</span> controls stdout only &mdash; the log file is always JSON.
                                     <span className="font-medium"> Auto</span> picks by what is reading stdout: under systemd, one
                                     priority-prefixed line per event so <code>journalctl -p err</code> filters correctly; in a container,
@@ -1420,7 +1642,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         <SectionHeader title="Network Audit" expanded={expanded === 'networkAudit'} onToggle={() => toggle('networkAudit')}
                             description={config.networkAudit?.enabled ? 'Enabled' : 'Disabled'} tag="restart" />
                         {expanded === 'networkAudit' && (
-                            <div className="p-4 border-t border-gray-300 dark:border-gray-700 space-y-4">
+                            <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigToggle label="Enabled" checked={config.networkAudit?.enabled ?? false} onChange={(v) => update('networkAudit', 'enabled', v)}
                                         hint="Every protocol and admin request is recorded (who, what, from where). Off removes the request trail auditors expect." />
@@ -1428,19 +1650,19 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                         <ConfigToggle label="Log All Requests" checked={config.networkAudit?.logAllRequests ?? false} onChange={(v) => update('networkAudit', 'logAllRequests', v)}
                                             hint="Off records protocol and admin endpoints only. On records everything, static files included." />
                                         {config.networkAudit?.logAllRequests && (
-                                            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-800 rounded p-2 text-xs text-amber-800 dark:text-amber-300 mt-2">
+                                            <div className="bg-warn-soft border border-warn/40 rounded p-2 text-xs text-warn mt-2">
                                                 Enabling logs ALL HTTP requests including static files. This can generate significant log volume.
                                             </div>
                                         )}
                                     </div>
                                     <div className="md:col-span-2">
-                                        <ConfigInput label="Exclude Paths (comma-separated)" value={listToStr(config.networkAudit?.excludePaths)}
-                                            onChange={(v) => update('networkAudit', 'excludePaths', strToList(v))}
-                                            placeholder="/health,/metrics"
+                                        <ConfigChips label="Exclude Paths" value={listFromValue(config.networkAudit?.excludePaths)}
+                                            onChange={(v) => update('networkAudit', 'excludePaths', v)}
+                                            validate={validatePathPrefix} mono placeholder="/health"
                                             hint="Path prefixes never recorded, typically health checks and metrics scrapes that would otherwise dominate the log." />
                                     </div>
                                 </div>
-                                <SaveButton saving={saving === 'networkAudit'} onClick={() => saveSection('network-audit', config.networkAudit, 'networkAudit')} />
+                                <SaveButton saving={saving === 'networkAudit'} onClick={() => saveSection('network-audit', config.networkAudit, 'networkAudit')} blockedReason={networkAuditBlocked} />
                             </div>
                         )}
                     </div>
@@ -1481,34 +1703,34 @@ const FeatureFlagsTab: React.FC = () => {
         }
     };
 
-    if (loading) return <div className="p-4 text-sm text-gray-600 dark:text-gray-400">Loading...</div>;
+    if (loading) return <div className="p-4 text-sm text-ink-muted">Loading...</div>;
     if (error) return <InlineNotice notice={error} />;
 
     return (
-        <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg overflow-hidden">
-            <div className="px-4 py-3 border-b border-gray-300 dark:border-gray-700">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Feature Flags</h3>
+        <div className="bg-raised border border-line rounded-lg overflow-hidden">
+            <div className="px-4 py-3 border-b border-line">
+                <h3 className="text-sm font-semibold text-ink">Feature Flags</h3>
             </div>
-            <div className="px-4 py-3 border-b border-gray-300 dark:border-gray-700 bg-blue-50 dark:bg-blue-900/20 text-xs text-blue-800 dark:text-blue-300">
+            <div className="px-4 py-3 border-b border-line bg-info-soft text-xs text-info">
                 Changes here apply <strong>live</strong> — toggling a feature takes effect immediately, no restart required.
                 Items marked <RestartTag /> need a service restart before the change takes effect.
             </div>
             {features.length === 0 && (
-                <div className="p-4 text-sm text-gray-600 text-center">No feature flags configured</div>
+                <div className="p-4 text-sm text-ink-muted text-center">No feature flags configured</div>
             )}
             {features.map((f) => (
-                <div key={f.name} className="px-4 py-3 flex items-center justify-between border-b border-gray-300 dark:border-gray-700 last:border-b-0">
+                <div key={f.name} className="px-4 py-3 flex items-center justify-between border-b border-line last:border-b-0">
                     <div className="flex items-center gap-2">
-                        <span className="text-sm text-gray-900 dark:text-white">{f.name}</span>
-                        {f.description && <span className="text-xs text-gray-600">{f.description}</span>}
+                        <span className="text-sm text-ink">{f.name}</span>
+                        {f.description && <span className="text-xs text-ink-muted">{f.description}</span>}
                         {f.requiresRestart && <RestartTag />}
                     </div>
                     <button
                         onClick={() => handleToggle(f)}
-                        className={`relative w-11 h-6 rounded-full transition-colors ${f.enabled ? 'bg-blue-600' : 'bg-gray-600'}`}
+                        className={`relative w-11 h-6 rounded-full transition-colors ${f.enabled ? 'bg-accent' : 'bg-ink-faint'}`}
                     >
                         <span
-                            className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${f.enabled ? 'translate-x-5' : 'translate-x-0'}`}
+                            className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${f.enabled ? 'translate-x-5' : 'translate-x-0'}`}
                         />
                     </button>
                 </div>
@@ -1526,17 +1748,17 @@ const Settings: React.FC = () => {
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Settings</h1>
+            <h1 className="text-xl font-semibold text-ink">Settings</h1>
 
             {/* Tabs */}
-            <div className="flex gap-1 border-b border-gray-300 dark:border-gray-700">
+            <div className="flex gap-1 border-b border-line">
                 {TABS.map((tab) => (
                     <button
                         key={tab}
                         onClick={() => setActiveTab(tab)}
                         className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${activeTab === tab
-                            ? 'text-blue-800 dark:text-blue-400 border-blue-400'
-                            : 'text-gray-600 dark:text-gray-400 border-transparent hover:text-gray-700 dark:text-gray-300'
+                            ? 'text-accent-ink border-accent'
+                            : 'text-ink-muted border-transparent hover:text-ink'
                             }`}
                     >
                         {tab}

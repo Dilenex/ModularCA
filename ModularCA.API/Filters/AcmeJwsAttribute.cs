@@ -35,6 +35,7 @@ public class AcmeJwsAttribute : Attribute, IFilterFactory
             serviceProvider.GetRequiredService<IAcmeJwsService>(),
             serviceProvider.GetRequiredService<IAcmeNonceService>(),
             serviceProvider.GetRequiredService<IAcmeAccountService>(),
+            serviceProvider.GetRequiredService<ICaResolverService>(),
             serviceProvider.GetRequiredService<SystemConfig>(),
             AllowNewAccount,
             AllowJwk);
@@ -52,10 +53,38 @@ public class AcmeJwsActionFilter(
     IAcmeJwsService jwsService,
     IAcmeNonceService nonceService,
     IAcmeAccountService accountService,
+    ICaResolverService caResolver,
     SystemConfig config,
     bool allowNewAccount,
     bool allowJwk) : IAsyncActionFilter
 {
+    /// <summary>
+    /// The <c>HttpContext.Items</c> key holding the <see cref="ModularCA.Shared.Entities.CertificateAuthorityEntity"/>
+    /// the request addresses (null when none resolves): for a request signed by an account, the
+    /// CA it is bound to; otherwise the CA the route's label names, or the default CA.
+    /// </summary>
+    public const string AddressedCaItem = "AcmeCa";
+
+    /// <summary>The detail of the refusal of an account at a CA other than the one it is bound to.</summary>
+    public const string AccountBoundElsewhere =
+        "This account is not registered at this CA. An ACME account is bound to the CA whose directory it registered "
+        + "at; register a separate account, with its own key, at this CA's directory.";
+
+    /// <summary>The detail of the refusal of an account the upgrade could not bind to any CA.</summary>
+    public const string AccountUnbound =
+        "This account is not bound to a CA. Post new-account with the account key to the directory of the CA it "
+        + "should use; that binds it.";
+
+    /// <summary>
+    /// Verifies the JWS, resolves the signing account, and decides which CA the request addresses.
+    /// A request signed by an account addresses the CA the account is bound to: on the label-less
+    /// routes that CA, whatever the default is now, and on a labelled route only when the label
+    /// names it; any other CA is refused (403 <c>unauthorized</c>). That covers new-order,
+    /// finalize, order, authz, challenge, certificate, revocation, key change, account update and
+    /// the new-account lookup of an existing key. An unbound account is refused everywhere except
+    /// new-account, which addresses the route's CA (the default on the label-less routes) and
+    /// binds it there. A new-account request with a new key addresses the route's CA.
+    /// </summary>
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
         var request = context.HttpContext.Request;
@@ -132,8 +161,40 @@ public class AcmeJwsActionFilter(
             jws.AccountId = existing.Id;
         }
 
+        var routeLabel = context.HttpContext.Request.RouteValues["caLabel"] as string;
+        ModularCA.Shared.Entities.CertificateAuthorityEntity? addressedCa;
+        if (jws.AccountId is Guid accountId)
+        {
+            var boundCaId = await accountService.GetBoundCaIdAsync(accountId);
+            if (boundCaId == null)
+            {
+                if (!allowNewAccount)
+                {
+                    context.Result = AcmeError(403, "urn:ietf:params:acme:error:unauthorized", AccountUnbound);
+                    return;
+                }
+                addressedCa = await caResolver.ResolveCaEntityAsync(routeLabel);
+            }
+            else
+            {
+                addressedCa = string.IsNullOrWhiteSpace(routeLabel)
+                    ? await accountService.GetBoundCaAsync(accountId)
+                    : await caResolver.ResolveCaEntityAsync(routeLabel);
+                if (addressedCa == null || addressedCa.Id != boundCaId)
+                {
+                    context.Result = AcmeError(403, "urn:ietf:params:acme:error:unauthorized", AccountBoundElsewhere);
+                    return;
+                }
+            }
+        }
+        else
+        {
+            addressedCa = await caResolver.ResolveCaEntityAsync(routeLabel);
+        }
+
         // Store parsed JWS in HttpContext for controllers
         context.HttpContext.Items["AcmeJws"] = jws;
+        context.HttpContext.Items[AddressedCaItem] = addressedCa;
 
         // Add fresh nonce to response
         var newNonce = await nonceService.GenerateAsync();

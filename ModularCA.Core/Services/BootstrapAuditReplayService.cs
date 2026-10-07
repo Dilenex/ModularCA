@@ -28,11 +28,14 @@ public sealed class BootstrapAuditReplayService(
     /// <c>.replayed</c> suffix. Exceptions are caught and logged so a replay
     /// failure does not block application startup.
     /// </summary>
-    public async Task ReplayPendingAsync(CancellationToken cancellationToken = default)
+    public Task ReplayPendingAsync(CancellationToken cancellationToken = default)
+        => ReplayPendingAsync(Path.Combine(AppContext.BaseDirectory, "logs"), cancellationToken);
+
+    /// <summary><see cref="ReplayPendingAsync(CancellationToken)"/> over <paramref name="logsDir"/>.</summary>
+    internal async Task ReplayPendingAsync(string logsDir, CancellationToken cancellationToken = default)
     {
         try
         {
-            var logsDir = Path.Combine(AppContext.BaseDirectory, "logs");
             if (!Directory.Exists(logsDir))
             {
                 return;
@@ -80,6 +83,15 @@ public sealed class BootstrapAuditReplayService(
         }
     }
 
+    // The writers emit camelCase keys; read without regard to case, or every line binds to nothing
+    // and is skipped.
+    private static readonly JsonSerializerOptions LineOptions = new() { PropertyNameCaseInsensitive = true };
+
+    /// <summary>
+    /// Replays one file. A keystore line is logged against its keystore, as a failure with its
+    /// detail when the writer recorded one; a setup decision against the target it names, with its
+    /// own details.
+    /// </summary>
     private async Task ReplayFileAsync(string filePath, CancellationToken cancellationToken)
     {
         var lines = await File.ReadAllLinesAsync(filePath, cancellationToken);
@@ -93,7 +105,7 @@ public sealed class BootstrapAuditReplayService(
             BootstrapAuditEntry? entry = null;
             try
             {
-                entry = JsonSerializer.Deserialize<BootstrapAuditEntry>(line);
+                entry = JsonSerializer.Deserialize<BootstrapAuditEntry>(line, LineOptions);
             }
             catch (JsonException ex)
             {
@@ -105,6 +117,27 @@ public sealed class BootstrapAuditReplayService(
 
             if (entry is null || string.IsNullOrWhiteSpace(entry.Action))
             {
+                continue;
+            }
+
+            // A setup decision names its own target and carries its own details.
+            if (!string.IsNullOrWhiteSpace(entry.TargetEntityType))
+            {
+                await auditService.LogAsync(
+                    actionType: entry.Action,
+                    actorUserId: null,
+                    actorUsername: "system-bootstrap",
+                    targetEntityType: entry.TargetEntityType,
+                    targetEntityId: entry.TargetEntityId,
+                    details: new
+                    {
+                        ReplayedFromBootstrap = true,
+                        BootstrapTimestamp = entry.Timestamp,
+                        entry.InstanceId,
+                        Decision = entry.Details,
+                    },
+                    sourceIp: "local",
+                    success: true);
                 continue;
             }
 
@@ -121,9 +154,11 @@ public sealed class BootstrapAuditReplayService(
                     entry.InstanceId,
                     entry.SubjectDn,
                     entry.Thumbprint,
+                    entry.Detail,
                 },
                 sourceIp: "local",
-                success: true);
+                success: entry.Success ?? true,
+                errorMessage: entry.Success == false ? entry.Detail : null);
         }
     }
 
@@ -135,5 +170,10 @@ public sealed class BootstrapAuditReplayService(
         public string? SubjectDn { get; set; }
         public string? Thumbprint { get; set; }
         public string? InstanceId { get; set; }
+        public bool? Success { get; set; }
+        public string? Detail { get; set; }
+        public string? TargetEntityType { get; set; }
+        public string? TargetEntityId { get; set; }
+        public JsonElement? Details { get; set; }
     }
 }

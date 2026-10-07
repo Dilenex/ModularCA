@@ -9,6 +9,7 @@
  */
 
 export interface TokenRowLike {
+    id?: string | null;
     token?: string | null;
     usedForCmp?: boolean;
     cmpReferenceValue?: string | null;
@@ -28,16 +29,16 @@ export function isCmpCredentialRow(t: TokenRowLike): boolean {
 }
 
 /**
- * The short label the table shows in the Token column. Bearer tokens show their prefix; CMP
- * rows show the reference value, since the secret is never returned and the reference is what
- * a client is configured with.
+ * The short label the table shows in the Token column. CMP rows show the reference value, since
+ * the secret is never returned and the reference is what a client is configured with. Bearer
+ * tokens show their row id: the token itself used to be shown here, but only its hash is stored
+ * now, so there is no token to display after the moment it was created.
  */
 export function tokenColumnLabel(t: TokenRowLike): string {
     if (isCmpCredentialRow(t)) {
         return `CMP · ${t.cmpReferenceValue || '(no reference)'}`;
     }
-    const token = t.token || '';
-    return token.length > 20 ? `${token.substring(0, 20)}…` : token;
+    return `Token ${rowIdPrefix(t)}`;
 }
 
 /** The drawer title for a row. */
@@ -45,8 +46,13 @@ export function drawerTitle(t: TokenRowLike): string {
     if (isCmpCredentialRow(t)) {
         return `CMP credential ${t.cmpReferenceValue || ''}`.trim();
     }
-    const token = t.token || '';
-    return `Token ${token.substring(0, 12)}…`;
+    return `Token ${rowIdPrefix(t)}`;
+}
+
+/** The short, stable handle a bearer token row is identified by now that its value is gone. */
+function rowIdPrefix(t: TokenRowLike): string {
+    const id = t.id || '';
+    return id ? `${id.substring(0, 8)}…` : '(unidentified)';
 }
 
 /** Option label for a signing profile: the name, and the issuing CA when the API supplied it. */

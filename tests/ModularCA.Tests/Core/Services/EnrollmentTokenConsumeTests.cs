@@ -25,8 +25,18 @@ namespace ModularCA.Tests.Core.Services;
 /// </summary>
 public class EnrollmentTokenConsumeTests
 {
+    /// <summary>The plaintext every token in this class is issued as.</summary>
+    private const string DefaultPlaintext = "tok";
+
+    /// <summary>An instance CA, where a token bound to no CA and no space is valid.</summary>
+    private static readonly CertificateAuthorityEntity InstanceCa = new() { Id = Guid.NewGuid(), Name = "instance" };
+
+    /// <summary>
+    /// Builds a stored token row. <paramref name="token"/> is the PLAINTEXT; what lands in the
+    /// row is its hash, because that is all the column ever holds.
+    /// </summary>
     private static EnrollmentTokenEntity Token(
-        string token = "tok",
+        string token = DefaultPlaintext,
         int maxUses = 1,
         int usesRemaining = 1,
         string? subjectRestriction = null,
@@ -35,7 +45,7 @@ public class EnrollmentTokenConsumeTests
         bool revoked = false,
         DateTime? expiresAt = null) => new()
         {
-            Token = token,
+            Token = EnrollmentTokenService.HashEnrollmentToken(token),
             MaxUses = maxUses,
             UsesRemaining = usesRemaining,
             SubjectRestriction = subjectRestriction,
@@ -46,15 +56,20 @@ public class EnrollmentTokenConsumeTests
             CreatedAt = DateTime.UtcNow,
         };
 
+    /// <summary>
+    /// Stores <paramref name="token"/> and presents <paramref name="plaintext"/> to the service,
+    /// which is the only thing a caller ever has.
+    /// </summary>
     private static async Task<(bool ok, string? error)> ValidateAsync(
-        EnrollmentTokenEntity token, string? subject, string? protocol = "SCEP", IEnumerable<string>? sans = null)
+        EnrollmentTokenEntity token, string? subject, string? protocol = "SCEP",
+        IEnumerable<string>? sans = null, string plaintext = DefaultPlaintext)
     {
         using var db = InMemoryDbContextFactory.Create();
         db.EnrollmentTokens.Add(token);
         await db.SaveChangesAsync();
 
         var service = new EnrollmentTokenService(db);
-        return await service.ValidateAndConsumeAsync(token.Token, subject, protocol, sans);
+        return await service.ValidateAndConsumeAsync(plaintext, subject, protocol, InstanceCa, sans);
     }
 
     // ── The bug this shares with the public enrollment path ────────────────────
@@ -109,6 +124,49 @@ public class EnrollmentTokenConsumeTests
         Assert.Contains("evil.attacker.net", error!);
     }
 
+    // ── Scope: a SCEP challenge password or QR token works only at its own CA ──
+
+    /// <summary>
+    /// A token bound to a CA is valid at that CA only; one bound only to a space at that space's
+    /// CAs only; one bound to neither at instance CAs only. Before the token was checked against
+    /// nothing, so a challenge password minted for one CA enrolled at every SCEP-enabled CA.
+    /// </summary>
+    [Theory]
+    [InlineData("ca", "same-ca", true)]
+    [InlineData("ca", "other-ca-same-space", false)]
+    [InlineData("ca", "instance-ca", false)]
+    [InlineData("space", "same-ca", true)]
+    [InlineData("space", "other-ca-same-space", true)]
+    [InlineData("space", "other-space", false)]
+    [InlineData("space", "instance-ca", false)]
+    [InlineData("neither", "instance-ca", true)]
+    [InlineData("neither", "same-ca", false)]
+    [InlineData("neither", "other-space", false)]
+    public async Task A_token_is_valid_only_within_its_scope(string bound, string presentedAt, bool valid)
+    {
+        var space = Guid.NewGuid();
+        var tokenCa = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "token-ca", SpaceId = space };
+        var at = presentedAt switch
+        {
+            "same-ca" => tokenCa,
+            "other-ca-same-space" => new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "sibling", SpaceId = space },
+            "other-space" => new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "foreign", SpaceId = Guid.NewGuid() },
+            _ => InstanceCa,
+        };
+        var token = Token(maxUses: 0, usesRemaining: 0);
+        token.CertificateAuthorityId = bound == "ca" ? tokenCa.Id : null;
+        token.SpaceId = bound is "ca" or "space" ? space : null;
+
+        using var db = InMemoryDbContextFactory.Create();
+        db.EnrollmentTokens.Add(token);
+        await db.SaveChangesAsync();
+        var (ok, error) = await new EnrollmentTokenService(db).ValidateAndConsumeAsync(DefaultPlaintext, "CN=x", "SCEP", at);
+
+        Assert.Equal(valid, ok);
+        if (!valid)
+            Assert.Contains("not valid at", error!);
+    }
+
     // ── Pre-existing gates still hold ──────────────────────────────────────────
 
     [Fact]
@@ -117,7 +175,7 @@ public class EnrollmentTokenConsumeTests
         using var db = InMemoryDbContextFactory.Create();
         var service = new EnrollmentTokenService(db);
 
-        var (ok, error) = await service.ValidateAndConsumeAsync("no-such-token", "CN=x", "SCEP");
+        var (ok, error) = await service.ValidateAndConsumeAsync("no-such-token", "CN=x", "SCEP", InstanceCa);
 
         Assert.False(ok);
         Assert.Contains("Invalid", error!, StringComparison.OrdinalIgnoreCase);

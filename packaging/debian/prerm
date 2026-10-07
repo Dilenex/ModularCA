@@ -1,17 +1,37 @@
 #!/bin/sh
 # ModularCA — pre-removal.
 #
-# Stops the service before its binaries go away. Nothing here touches configuration, keystores or
-# the database; see postrm for why those survive even a purge.
+# Stops both units before their binaries are replaced or removed. On an upgrade it first records
+# which of them were running, in a root-only directory under /run, so postinst starts exactly those
+# again once the new version is configured. Nothing here touches configuration, keystores or the
+# database; see postrm for why those survive even a purge.
 set -e
 
+MARKERS=/run/modularca-upgrade
+UNITS="modularca.service modularca-signer.service"
+
 case "$1" in
-    remove|upgrade|deconfigure)
+    upgrade)
         if [ -d /run/systemd/system ]; then
-            # || true: a unit that is already stopped, masked, or was never enabled must not fail
-            # the removal. dpkg leaves a package half-configured when a maintainer script exits
-            # non-zero, and that is a worse state than a service that was already down.
-            systemctl stop modularca.service >/dev/null 2>&1 || true
+            rm -rf "$MARKERS"
+            if mkdir -m 0700 "$MARKERS" 2>/dev/null; then
+                for unit in $UNITS; do
+                    if systemctl is-active --quiet "$unit" 2>/dev/null; then
+                        touch "$MARKERS/restart-$unit" 2>/dev/null || true
+                    fi
+                done
+            fi
+            # || true: a unit that is already stopped, masked, or was never installed must not
+            # fail the upgrade. dpkg leaves a package half-configured when a maintainer script
+            # exits non-zero, and that is a worse state than a service that was already down.
+            # shellcheck disable=SC2086
+            systemctl stop $UNITS >/dev/null 2>&1 || true
+        fi
+        ;;
+    remove|deconfigure)
+        if [ -d /run/systemd/system ]; then
+            # shellcheck disable=SC2086
+            systemctl stop $UNITS >/dev/null 2>&1 || true
         fi
         ;;
 esac

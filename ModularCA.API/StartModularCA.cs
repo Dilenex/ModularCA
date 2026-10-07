@@ -49,6 +49,32 @@ var bootstrapConsoleFormat = ConsoleLogFormatResolver.Resolve(
     underSystemd: SystemdHelpers.IsSystemdService(),
     inContainer: string.Equals(Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"), "true", StringComparison.OrdinalIgnoreCase));
 
+// Where a signer process reads its files: the shared layout under config/, or the directory
+// --signer-dir names (SignerPaths). Resolved first, because the signer's logs go there too. The
+// flag is the signer role's alone; a directory it names that does not exist yet is the shared
+// layout, warned about below, so a split install upgraded before it migrated keeps running.
+SignerPaths signerPaths;
+string? absentSignerDirectory = null;
+try
+{
+    var signerCommand = ModularCA.API.Startup.SignerIdentityCommands.IsIdentityCommand(args)
+        || ModularCA.API.Startup.SignerDirectoryMigration.IsNamedIn(args);
+    if (signerCommand)
+        signerPaths = SignerPaths.FromArgs(args, AppContext.BaseDirectory);
+    else
+        signerPaths = SignerPaths.ForRun(args, AppContext.BaseDirectory, out absentSignerDirectory);
+    if (SignerPaths.IsNamedIn(args) && ModularCA.API.Startup.ProcessRoles.Parse(args) != ModularCA.API.Startup.ProcessRole.Signer)
+        throw new ArgumentException($"{SignerPaths.Flag} is read by the signer role only: add --role signer.");
+    if (signerCommand && signerPaths.SignerDirectory is { } namedDirectory && !Directory.Exists(namedDirectory))
+        throw new ArgumentException($"{namedDirectory} does not exist. Create it owned by the signer's account, mode 0700, first.");
+}
+catch (ArgumentException ex)
+{
+    Console.Error.WriteLine($"[FATAL] {ex.Message}");
+    Environment.Exit(1);
+    throw;
+}
+
 var bootstrapConfig = new LoggerConfiguration().MinimumLevel.Information();
 switch (bootstrapConsoleFormat)
 {
@@ -65,10 +91,14 @@ switch (bootstrapConsoleFormat)
 
 Log.Logger = bootstrapConfig
     .WriteTo.File(new CompactJsonFormatter(),
-        Path.Combine(AppContext.BaseDirectory, "logs", "modularca-bootstrap-.log"),
+        Path.Combine(signerPaths.LogsDirectory, "modularca-bootstrap-.log"),
         rollingInterval: RollingInterval.Day,
         retainedFileCountLimit: 14)
     .CreateBootstrapLogger();
+
+if (absentSignerDirectory != null)
+    Log.Warning("{Flag} names {Directory}, which does not exist: the signer reads the shared layout under config/ as before. "
+        + "Create the directory and migrate as README-DEPLOY.md, \"Two units\", describes.", SignerPaths.Flag, absentSignerDirectory);
 
 // === Handle CLI flags ===
 if (args.Contains("--reset", StringComparer.OrdinalIgnoreCase))
@@ -113,7 +143,7 @@ if (args.Contains("--reset", StringComparer.OrdinalIgnoreCase))
     }
 
     // Print the retention-by-design warning in the reset banner so
-    // operators are not surprised when audit rows from the previous tenant reappear.
+    // operators are not surprised when audit rows from the previous space reappear.
     Console.WriteLine("================================================================");
     Console.WriteLine("FACTORY RESET — Destroying all data...");
     Console.WriteLine();
@@ -167,23 +197,56 @@ if (args.Contains("--bootstrap", StringComparer.OrdinalIgnoreCase))
         Console.WriteLine("⚠  --wipe-audit: existing audit history will be DESTROYED, not preserved.\n");
     }
 
-    var exitCode = BootstrapModularCA.Run(wipeAudit);
+    int exitCode;
+    try
+    {
+        exitCode = BootstrapModularCA.Run(wipeAudit);
+    }
+    catch (RequestValidationException ex)
+    {
+        Log.Error("Bootstrap refused [{Code}]: {Message}", ex.Code, ex.Message);
+        Console.WriteLine($"❌ Bootstrap refused [{ex.Code}]: {ex.Message}");
+        if (!string.IsNullOrWhiteSpace(ex.Remediation))
+            Console.WriteLine($"   {ex.Remediation}");
+        exitCode = 1;
+    }
+    await Log.CloseAndFlushAsync();
     Environment.Exit(exitCode);
 }
 // The command-line backup and restore run before the node's container exists, so the keystore
 // files go through a maintenance signer: locked, holding no key, auditing to the application
-// database the operation names. The node's own paths use its signer instead.
-static ModularCA.Shared.Signing.ISigningService MaintenanceSignerFor(string appConnectionString)
+// database the operation names. The node's own paths use its signer instead. keystore.yaml is
+// the signer's (signerPaths): config/keystore.yaml, or the one in --signer-dir.
+ModularCA.Shared.Signing.ISigningService MaintenanceSignerFor(string appConnectionString)
     => ModularCA.Keystore.Signing.MaintenanceSigner.Create(
-        Path.Combine(AppContext.BaseDirectory, "keystores"),
-        Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml"),
+        signerPaths.KeystoresDirectory,
+        signerPaths.KeystoreYamlPath,
         appConnectionString);
+
+// The command-line backup also wraps the Data Protection key ring and the SSH CA keys, which
+// needs the keystore unlocked; where it cannot be (a node whose signer is remote) the backup
+// gets the locked maintenance signer and refuses rather than write the ring in the clear.
+ModularCA.Shared.Signing.ISigningService BackupSignerFor(string appConnectionString)
+{
+    try
+    {
+        return ModularCA.Keystore.Signing.MaintenanceSigner.CreateUnlocked(
+            signerPaths.KeystoresDirectory,
+            signerPaths.KeystoreYamlPath,
+            appConnectionString);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"  (i) The keystore could not be unlocked for this backup ({ex.GetType().Name}: {ex.Message}).");
+        return MaintenanceSignerFor(appConnectionString);
+    }
+}
 
 if (args.Contains("--backup", StringComparer.OrdinalIgnoreCase))
 {
     var outputPath = args.SkipWhile(a => !a.Equals("--backup", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
     Log.Information("Operator triggered backup (--backup) outputPath={OutputPath}", outputPath ?? "(default)");
-    var exitCode = await BackupRestore.Backup(outputPath, MaintenanceSignerFor);
+    var exitCode = await BackupRestore.Backup(outputPath, BackupSignerFor);
     Environment.Exit(exitCode);
 }
 if (args.Contains("--restore", StringComparer.OrdinalIgnoreCase))
@@ -288,14 +351,15 @@ if (args.Contains("--backfill-keystore-pins", StringComparer.OrdinalIgnoreCase))
     var writeMode = args.Contains("--write", StringComparer.OrdinalIgnoreCase);
     Log.Warning("Operator triggered keystore pin backfill writeMode={WriteMode}", writeMode);
 
-    var cfgPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
+    // The signer's files: config/ by default, its own directory with --role signer --signer-dir.
+    var cfgPath = signerPaths.ConfigPath;
     if (!File.Exists(cfgPath))
     {
-        Console.Error.WriteLine("❌ config.yaml not found — bootstrap must complete before backfill can run.");
+        Console.Error.WriteLine($"❌ {cfgPath} not found — bootstrap must complete before backfill can run.");
         Environment.Exit(1);
     }
     var cfg = YamlConfigLoader.Load(cfgPath);
-    var dbYamlPath2 = Path.Combine(AppContext.BaseDirectory, "config", "db.yaml");
+    var dbYamlPath2 = signerPaths.DbYamlPath;
     var dbYaml2 = YamlDbConfigLoader.Load(dbYamlPath2);
     if (dbYaml2 != null)
     {
@@ -307,28 +371,17 @@ if (args.Contains("--backfill-keystore-pins", StringComparer.OrdinalIgnoreCase))
         cfg.DB.App.SslMode = dbYaml2.App.SslMode;
     }
 
-    // Honor the operator-selected TLS mode; clamp typos to Required.
-    var backfillSslMode = Enum.TryParse<MySqlConnector.MySqlSslMode>(
-        cfg.DB.App.SslMode, ignoreCase: true, out var _backfillSsl)
-        ? _backfillSsl : MySqlConnector.MySqlSslMode.Required;
-    var appCsb = new MySqlConnector.MySqlConnectionStringBuilder
-    {
-        Server = cfg.DB.App.Host,
-        Port = (uint)cfg.DB.App.Port,
-        Database = cfg.DB.App.Database,
-        UserID = cfg.DB.App.Username,
-        Password = cfg.DB.App.Password,
-        SslMode = backfillSslMode,
-    };
-    var backfillConnStr = appCsb.ConnectionString;
+    // Honor the operator-selected TLS mode; clamp typos to Require.
+    ModularCA.Shared.Utils.LegacyDatabaseGuard.EnsureNotMySql(cfg.DB);
+    var backfillConnStr = ModularCA.Shared.Utils.PostgresConnection.Build(cfg.DB.App);
     var dbOptions = new DbContextOptionsBuilder<ModularCADbContext>()
-        .UseMySql(backfillConnStr, ServerVersion.AutoDetect(backfillConnStr))
+        .UseNpgsql(backfillConnStr)
         .Options;
     using var backfillDb = new ModularCADbContext(dbOptions);
-    var keystoresDir = Path.Combine(AppContext.BaseDirectory, "keystores");
+    var keystoresDir = signerPaths.KeystoresDirectory;
     // Supply the secondary passphrase so the backfill can authenticate the pin it writes.
     // Without it the pin goes in unprotected, which is the state the backfill exists to clear.
-    var keystoreYamlPath = Path.Combine(AppContext.BaseDirectory, "config", "keystore.yaml");
+    var keystoreYamlPath = signerPaths.KeystoreYamlPath;
     var report = ModularCA.Keystore.Services.KeystoreService.BackfillPinnedSpki(
         backfillDb, keystoresDir, persist: writeMode,
         secondaryPassphraseResolver: name =>
@@ -351,22 +404,129 @@ if (args.Contains("--backfill-keystore-pins", StringComparer.OrdinalIgnoreCase))
     // idempotent by discarding the DbContext without SaveChanges.
     Environment.Exit(report.Failed.Count == 0 ? 0 : 1);
 }
+// Read-only: probes schema ownership as the db.yaml roles and prints the report and the repair.
+// Runs as the service user; it needs no administrative credential and changes nothing.
+if (args.Contains("--db-ownership", StringComparer.OrdinalIgnoreCase))
+{
+    var ownershipVerb = args.SkipWhile(a => !a.Equals("--db-ownership", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
+    if (!string.Equals(ownershipVerb, "check", StringComparison.OrdinalIgnoreCase))
+    {
+        Console.Error.WriteLine("Usage: --db-ownership check   (read-only; run as the service user, never as root)");
+        Environment.Exit(1);
+    }
+    var ownershipDbYaml = YamlDbConfigLoader.Load(Path.Combine(AppContext.BaseDirectory, "config", "db.yaml"));
+    if (ownershipDbYaml == null)
+    {
+        Console.Error.WriteLine("db.yaml not found: bootstrap must complete before ownership can be checked.");
+        Environment.Exit(1);
+    }
+    var ownershipConfig = new SystemConfig();
+    foreach (var (target, source) in new[] { (ownershipConfig.DB.App, ownershipDbYaml.App), (ownershipConfig.DB.Audit, ownershipDbYaml.Audit) })
+    {
+        target.Host = source.Host;
+        target.Port = source.Port;
+        target.Database = source.Database;
+        target.Username = source.Username;
+        target.Password = source.Password;
+        target.SslMode = source.SslMode;
+    }
+    new ModularCA.Shared.Utils.EnvVarConfigOverlay().Apply(ownershipConfig);
+    var ownershipTargets = new List<ModularCA.API.Startup.SchemaTarget>
+    {
+        new("application", DatabaseKind.Application, ownershipConfig.DB.App),
+    };
+    if (!string.IsNullOrWhiteSpace(ownershipConfig.DB.Audit.Database))
+        ownershipTargets.Add(new("audit", DatabaseKind.Audit, ownershipConfig.DB.Audit));
+    Environment.Exit(await ModularCA.API.Startup.SchemaStartup.CheckOwnershipAsync(ownershipTargets));
+}
+// Read-only apart from a dry run it rolls back: would this build's control role upgrade the
+// databases cleanly? Runs as the service user with the db.yaml roles; --config-dir names the
+// installed config, so a new build can be checked from where it was unpacked. 0 clean, 3 refused,
+// 75 unreachable, 1 usage.
+if (args.Contains("--upgrade-check", StringComparer.OrdinalIgnoreCase))
+{
+    var checkConfigDir = args.SkipWhile(a => !a.Equals("--config-dir", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
+    if (args.Contains("--config-dir", StringComparer.OrdinalIgnoreCase) && (string.IsNullOrWhiteSpace(checkConfigDir) || checkConfigDir.StartsWith("--", StringComparison.Ordinal)))
+    {
+        Console.Error.WriteLine("Usage: --upgrade-check [--config-dir <installed config directory>]   (run as the service user, never as root)");
+        Environment.Exit(1);
+    }
+    checkConfigDir = Path.GetFullPath(checkConfigDir ?? Path.Combine(AppContext.BaseDirectory, "config"));
+    Environment.Exit(await ModularCA.API.Startup.UpgradeCheckCommand.RunAsync(checkConfigDir));
+}
+// Host-local recovery: unlocks an account with the db.yaml application credentials and audits it
+// with the db.yaml audit credentials. See UnlockUserCommand.
+if (args.Contains(ModularCA.API.Startup.UnlockUserCommand.Flag, StringComparer.OrdinalIgnoreCase))
+{
+    var unlockName = args.SkipWhile(a => !a.Equals(ModularCA.API.Startup.UnlockUserCommand.Flag, StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
+    var unlockDbYaml = YamlDbConfigLoader.Load(Path.Combine(AppContext.BaseDirectory, "config", "db.yaml"));
+    if (string.IsNullOrWhiteSpace(unlockName) || unlockName.StartsWith("--", StringComparison.Ordinal) || unlockDbYaml == null)
+    {
+        Console.Error.WriteLine("Usage: --unlock-user <username>   (run as the service user after bootstrap)");
+        Environment.Exit(1);
+    }
+    var unlockConfig = new SystemConfig();
+    unlockConfig.DB.App.Host = unlockDbYaml.App.Host;
+    unlockConfig.DB.App.Port = unlockDbYaml.App.Port;
+    unlockConfig.DB.App.Database = unlockDbYaml.App.Database;
+    unlockConfig.DB.App.Username = unlockDbYaml.App.Username;
+    unlockConfig.DB.App.Password = unlockDbYaml.App.Password;
+    unlockConfig.DB.App.SslMode = unlockDbYaml.App.SslMode;
+    unlockConfig.DB.Audit.Host = unlockDbYaml.Audit.Host;
+    unlockConfig.DB.Audit.Port = unlockDbYaml.Audit.Port;
+    unlockConfig.DB.Audit.Database = unlockDbYaml.Audit.Database;
+    unlockConfig.DB.Audit.Username = unlockDbYaml.Audit.Username;
+    unlockConfig.DB.Audit.Password = unlockDbYaml.Audit.Password;
+    unlockConfig.DB.Audit.SslMode = unlockDbYaml.Audit.SslMode;
+    new ModularCA.Shared.Utils.EnvVarConfigOverlay().Apply(unlockConfig);
+    using var unlockDb = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>()
+        .UseNpgsql(ModularCA.Shared.Utils.PostgresConnection.Build(unlockConfig.DB.App)).Options);
+    using var unlockAuditDb = string.IsNullOrWhiteSpace(unlockConfig.DB.Audit.Database) ? null
+        : new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+            .UseNpgsql(ModularCA.Shared.Utils.PostgresConnection.Build(unlockConfig.DB.Audit)).Options);
+    Log.Warning("Operator triggered --unlock-user for {Username}", unlockName);
+    Environment.Exit(await ModularCA.API.Startup.UnlockUserCommand.RunAsync(unlockDb, unlockAuditDb, unlockName, Console.Out));
+}
+
+// Moves a split install's signer onto its own directory; see SignerDirectoryMigration.
+if (ModularCA.API.Startup.SignerDirectoryMigration.IsNamedIn(args))
+{
+    Log.Information("Operator triggered {Flag} into {Directory}", ModularCA.API.Startup.SignerDirectoryMigration.Flag, signerPaths.SignerDirectory ?? "(none)");
+    var migrateExit = signerPaths.IsDedicated
+        ? ModularCA.API.Startup.SignerDirectoryMigration.Run(SignerPaths.Shared(AppContext.BaseDirectory), signerPaths, Console.Out, Console.Error)
+        : 1;
+    if (!signerPaths.IsDedicated)
+        Console.Error.WriteLine($"Usage: --role signer {SignerPaths.Flag} <dir> {ModularCA.API.Startup.SignerDirectoryMigration.Flag}   (run as the signer's account)");
+    await Log.CloseAndFlushAsync();
+    Environment.Exit(migrateExit);
+}
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseSystemd();
 
-// Load DB credentials from db.yaml (runtime app DB creds)
-var dbYamlPath = Path.Combine(AppContext.BaseDirectory, "config", "db.yaml");
+// Load DB credentials from db.yaml (runtime app DB creds). A signer run with --signer-dir reads
+// its own db.yaml and signer.yaml instead (signerPaths); every other process, and a signer
+// without the flag, reads config/db.yaml and config/config.yaml.
+var dbYamlPath = signerPaths.DbYamlPath;
 var dbYaml = YamlDbConfigLoader.Load(dbYamlPath);
 
 // Load config.yaml for everything else (JWT, HTTPS, logging, scheduler, etc.)
-var configPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
+var configPath = signerPaths.ConfigPath;
 SystemConfig config;
 bool isSetupMode = false;
 
 if (File.Exists(configPath))
 {
-    config = YamlConfigLoader.Load(configPath);
+    try
+    {
+        config = YamlConfigLoader.Load(configPath);
+    }
+    catch (ConfigKeyConflictException ex)
+    {
+        Console.Error.WriteLine($"[FATAL] {ex.Message}");
+        Environment.Exit(ModularCA.API.Startup.SchemaStartup.ExitCode);
+        throw;
+    }
 }
 else
 {
@@ -392,6 +552,11 @@ if (dbYaml != null)
     config.DB.Audit.Username = dbYaml.Audit.Username;
     config.DB.Audit.Password = dbYaml.Audit.Password;
     config.DB.Audit.SslMode = dbYaml.Audit.SslMode;
+}
+else if (signerPaths.IsDedicated)
+{
+    // The signer's own directory has no setup mode, and nothing under config/ stands in for it.
+    isSetupMode = true;
 }
 else
 {
@@ -444,7 +609,7 @@ if (config.LdapAuth.Enabled && !config.LdapAuth.UseSsl)
         "Set LdapAuth.UseSsl=true or use LDAPS (port 636) for production deployments.");
 }
 
-if (isSetupMode)
+if (isSetupMode && !signerPaths.IsDedicated)
 {
     Console.WriteLine("[WARNING] Running in setup mode.");
     Console.WriteLine("         Navigate to the web interface to complete initial setup.");
@@ -483,42 +648,14 @@ if (!isSetupMode)
 }
 
 // === Serilog structured logging ===
-// Quick feature flag lookup for logging sinks (before DI is available).
+// Quick feature flag lookup for logging sinks (before DI is available), filled in once the
+// schema check below has passed. The UseSerilog callback reads it when the host is built.
 // emit a warning when the lookup fails so operators running on cached defaults can see it;
 // emit a warning when the metrics flag is explicitly disabled so silent monitoring loss is
 // visible in SIEM.
 var sinkFlags = new Dictionary<string, bool>();
 var sinkFlagsQueryFailed = false;
 Exception? sinkFlagsQueryError = null;
-// Skip the DB query entirely in setup mode — tables don't exist yet and the errors
-// bury the setup token in the console output.
-if (!isSetupMode)
-{
-    try
-    {
-        var flagConnBuilder = new MySqlConnector.MySqlConnectionStringBuilder
-        {
-            Server = config.DB.App.Host,
-            Port = (uint)config.DB.App.Port,
-            Database = config.DB.App.Database,
-            UserID = config.DB.App.Username,
-            Password = config.DB.App.Password
-        };
-        using var flagConn = new MySqlConnector.MySqlConnection(flagConnBuilder.ConnectionString);
-        flagConn.Open();
-        using var flagCmd = new MySqlConnector.MySqlCommand("SELECT Name, Enabled FROM FeatureFlags WHERE Name IN ('Syslog.Enabled','EventLog.Enabled','Metrics.Enabled')", flagConn);
-        using var reader = flagCmd.ExecuteReader();
-        while (reader.Read())
-            sinkFlags[reader.GetString(0)] = reader.GetBoolean(1);
-    }
-    catch (Exception ex)
-    {
-        // DB may not exist yet (first run before bootstrap). Remember so we can log a
-        // warning after the host logger is wired up.
-        sinkFlagsQueryFailed = true;
-        sinkFlagsQueryError = ex;
-    }
-}
 
 var serilogMinLevel = config.Logging.MinLevel?.ToLowerInvariant() switch
 {
@@ -675,21 +812,32 @@ builder.Host.UseSerilog((context, services, configuration) =>
 });
 
 // Add services to the container.
-// Enforce TLS on MySQL connections. Default is "Required"; operators
-// can tighten to VerifyCA/VerifyFull or (non-compliant) downgrade via db.yaml / env var.
-// Unparseable values clamp back to MySqlSslMode.Required so a typo cannot silently drop TLS.
-var appSslMode = Enum.TryParse<MySqlConnector.MySqlSslMode>(config.DB.App.SslMode, ignoreCase: true, out var _appSsl)
-    ? _appSsl : MySqlConnector.MySqlSslMode.Required;
-var appConnBuilder = new MySqlConnector.MySqlConnectionStringBuilder
+//
+// Refuse a MySQL/MariaDB configuration before anything opens a connection. This build speaks
+// PostgreSQL only, and the failure mode without this check is either an unreadable protocol
+// error from deep inside Npgsql or — far worse — a migration applied over a live MariaDB
+// schema. The guard names docs/architecture/postgresql-migration.md and the three-step upgrade
+// path, so the operator learns they ran the upgrade out of order rather than filing a bug.
+//
+// Skipped in setup mode, where the database is not configured yet and the port is whatever
+// default the wizard has not yet overwritten.
+if (!isSetupMode)
 {
-    Server = config.DB.App.Host,
-    Port = (uint)config.DB.App.Port,
-    Database = config.DB.App.Database,
-    UserID = config.DB.App.Username,
-    Password = config.DB.App.Password,
-    SslMode = appSslMode
-};
-var appConnStr = appConnBuilder.ConnectionString;
+    try
+    {
+        ModularCA.Shared.Utils.LegacyDatabaseGuard.EnsureNotMySql(config.DB);
+    }
+    catch (InvalidOperationException ex)
+    {
+        Console.Error.WriteLine($"[FATAL] {ex.Message}");
+        Environment.Exit(1);
+    }
+}
+
+// Enforce TLS on PostgreSQL connections. Default is "Required"; operators can tighten to
+// VerifyCA/VerifyFull or (non-compliant) downgrade via db.yaml / env var. Unparseable values
+// clamp back to SslMode.Require so a typo cannot silently drop TLS.
+var appConnStr = ModularCA.Shared.Utils.PostgresConnection.Build(config.DB.App);
 
 // === Process roles ===
 // Every role by default: one process, the signer in it, as every install before stage 2.
@@ -726,12 +874,12 @@ if (ModularCA.API.Startup.SignerIdentityCommands.IsIdentityCommand(args))
         Environment.Exit(1);
     }
     Log.Information("Operator triggered a signer identity command ({Args})", string.Join(' ', args));
-    Environment.Exit(ModularCA.API.Startup.SignerIdentityCommands.Run(args, config.Signer, AppContext.BaseDirectory));
+    Environment.Exit(ModularCA.API.Startup.SignerIdentityCommands.Run(args, config.Signer, signerPaths));
 }
 if (processRoles == ModularCA.API.Startup.ProcessRole.Signer)
 {
     Log.Information("Starting in the signer role");
-    Environment.Exit(await ModularCA.API.Startup.SignerRole.RunAsync(config, appConnStr, isSetupMode));
+    Environment.Exit(await ModularCA.API.Startup.SignerRole.RunAsync(config, appConnStr, isSetupMode, signerPaths));
 }
 
 // The setup wizard is the control role's. A process without it has nothing to serve on an
@@ -748,6 +896,56 @@ Console.WriteLine($"[ROLES] This process runs: {string.Join(", ", activeRoles.Na
         : " (signer as Signer.Mode says)"));
 Log.Information("Process roles: {Roles}", string.Join(",", activeRoles.Names));
 
+// Schema check for the application and audit databases (SchemaStartup.EnforceAllAsync), before
+// this process reads either: the sink flags just below, the keystore unlock and the HSM signers,
+// the mTLS and EST anchors and the CMP check in the listener setup all read the application
+// database. Both are read, and ownership checked,
+// before either is written. The control role applies pending migrations; every other role waits
+// for it. An unreachable database, a migration in progress or a migration that failed on a
+// transient error is waited for or retried up to Schema.WaitSeconds, extending the systemd start
+// timeout, then the process exits 75 to be retried; anything the operator must fix exits 3. A
+// missing or empty database is left to setup recovery below. Setup mode skips the check:
+// bootstrap creates the schema. An ingress-only process reads the application database (the
+// listener's trust anchors) and never the audit database, and applies no migration.
+if (!isSetupMode)
+{
+    var schemaTargets = new List<ModularCA.API.Startup.SchemaTarget>
+    {
+        new("application", DatabaseKind.Application, config.DB.App),
+    };
+    if (!ingressOnly && !string.IsNullOrWhiteSpace(config.DB.Audit.Database))
+        schemaTargets.Add(new("audit", DatabaseKind.Audit, config.DB.Audit));
+    var schemaExit = await ModularCA.API.Startup.SchemaStartup.EnforceAllAsync(
+        schemaTargets, controlActive, config.Schema, new SystemdNotifier());
+    if (schemaExit is int code)
+    {
+        await Log.CloseAndFlushAsync();
+        Environment.Exit(code);
+    }
+
+    try
+    {
+        using var flagConn = new Npgsql.NpgsqlConnection(appConnStr);
+        flagConn.Open();
+        // Quoted identifiers: EF created these as "FeatureFlags"."Name", and PostgreSQL folds
+        // unquoted identifiers to lower case, so an unquoted copy of this query would look for
+        // a table called featureflags and fail.
+        using var flagCmd = new Npgsql.NpgsqlCommand(
+            """SELECT "Name", "Enabled" FROM "FeatureFlags" WHERE "Name" IN ('Syslog.Enabled','EventLog.Enabled','Metrics.Enabled')""",
+            flagConn);
+        using var reader = flagCmd.ExecuteReader();
+        while (reader.Read())
+            sinkFlags[reader.GetString(0)] = reader.GetBoolean(1);
+    }
+    catch (Exception ex)
+    {
+        // DB may not exist yet (first run before bootstrap). Remember so we can log a
+        // warning after the host logger is wired up.
+        sinkFlagsQueryFailed = true;
+        sinkFlagsQueryError = ex;
+    }
+}
+
 // EF Core command interceptor measuring db query duration.
 // Shared singleton instance — interceptor itself is stateless and thread-safe.
 var dbDurationInterceptor = new ModularCA.Core.Services.DbCommandDurationInterceptor();
@@ -758,18 +956,20 @@ var dbDurationInterceptor = new ModularCA.Core.Services.DbCommandDurationInterce
 const int defaultCommandTimeoutSeconds = 30;
 
 // In setup mode with no DB credentials, the prior code wired a dummy
-// connection to `localhost:3306` as root with empty password — a footgun on developer
-// machines with a local MySQL. Instead register a sentinel DbContextOptions that fails
-// loudly on first query, forcing callers in setup mode to route through the setup wizard.
+// connection to the database default port as root with empty password — a footgun on
+// developer machines running a local server. Instead register a sentinel DbContextOptions
+// that fails loudly on first query, forcing callers in setup mode to route through the setup
+// wizard.
 if (isSetupMode && string.IsNullOrWhiteSpace(config.DB.App.Username))
 {
     builder.Services.AddDbContext<ModularCADbContext>(options =>
-        options.UseMySql(
+        options.UseNpgsql(
             // Syntactically-valid but unusable connection string: the hostname is an RFC
             // 2606 reserved name that will never resolve, and the credentials are empty.
-            "Server=setup-placeholder.invalid;Database=modularca-setup;Uid=disabled;Pwd='';",
-            new MySqlServerVersion(new System.Version(8, 0, 0)),
-            mysql => mysql.CommandTimeout(defaultCommandTimeoutSeconds))
+            // Npgsql needs no server version, so unlike the MySQL provider this never
+            // attempts a connection just to build the model.
+            "Host=setup-placeholder.invalid;Database=modularca-setup;Username=disabled;Password=disabled",
+            npgsql => npgsql.CommandTimeout(defaultCommandTimeoutSeconds))
         .AddInterceptors(dbDurationInterceptor)
         .ConfigureWarnings(w => w.Ignore(
             Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId
@@ -778,10 +978,9 @@ if (isSetupMode && string.IsNullOrWhiteSpace(config.DB.App.Username))
 else
 {
     builder.Services.AddDbContext<ModularCADbContext>(options =>
-        options.UseMySql(
+        options.UseNpgsql(
             appConnStr,
-            ServerVersion.AutoDetect(appConnStr),
-            mysql => mysql.CommandTimeout(defaultCommandTimeoutSeconds)
+            npgsql => npgsql.CommandTimeout(defaultCommandTimeoutSeconds)
         ).AddInterceptors(dbDurationInterceptor)
         .ConfigureWarnings(w => w.Ignore(
             Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId
@@ -826,30 +1025,13 @@ builder.Services.AddSingleton<ModularCA.Shared.Interfaces.IEntitlementService>(s
 if (!string.IsNullOrWhiteSpace(config.DB.Audit.Database))
 {
     // Audit DB gets the same TLS-Required default as the app DB.
-    var auditSslMode = Enum.TryParse<MySqlConnector.MySqlSslMode>(config.DB.Audit.SslMode, ignoreCase: true, out var _auditSsl)
-        ? _auditSsl : MySqlConnector.MySqlSslMode.Required;
-    var auditConnBuilder = new MySqlConnector.MySqlConnectionStringBuilder
-    {
-        Server = config.DB.Audit.Host,
-        Port = (uint)config.DB.Audit.Port,
-        Database = config.DB.Audit.Database,
-        UserID = config.DB.Audit.Username,
-        Password = config.DB.Audit.Password,
-        SslMode = auditSslMode
-    };
-    var auditConnStr = auditConnBuilder.ConnectionString;
+    var auditConnStr = ModularCA.Shared.Utils.PostgresConnection.Build(config.DB.Audit);
     builder.Services.AddDbContext<AuditDbContext>(options =>
-        options.UseMySql(
+        options.UseNpgsql(
             auditConnStr,
-            ServerVersion.AutoDetect(auditConnStr),
-            mysql => mysql.CommandTimeout(defaultCommandTimeoutSeconds)
+            npgsql => npgsql.CommandTimeout(defaultCommandTimeoutSeconds)
         ).AddInterceptors(dbDurationInterceptor));
 }
-
-// Scoped tenant context feeds the global query filter in
-// ModularCADbContext so every tenant-scoped read is fenced to the authenticated caller's
-// accessible tenants. Populated by TenantResolutionMiddleware after the auth pipeline.
-builder.Services.AddScoped<ModularCA.Shared.Interfaces.ITenantContext, ModularCA.API.Services.TenantContext>();
 
 builder.Services.AddScoped<ISigningProfileService, SigningProfileService>();
 
@@ -858,7 +1040,8 @@ builder.Services.AddScoped<CertificateBuilderService>();
 builder.Services.AddSingleton<IPqcKeyGenerationService, PqcKeyGenerationService>();
 builder.Services.AddScoped<ICertPolicyService, CertPolicyService>();
 builder.Services.AddScoped<IQuotaService, QuotaService>();
-builder.Services.AddScoped<ITenantPolicyChangeService, TenantPolicyChangeService>();
+builder.Services.AddScoped<ISpacePolicyChangeService, SpacePolicyChangeService>();
+builder.Services.AddScoped<IEffectivePolicyResolver, EffectivePolicyResolver>();
 builder.Services.AddScoped<ModularCA.Auth.Authorization.IControlledUserCeremonyService, ModularCA.Auth.Authorization.ControlledUserCeremonyService>();
 builder.Services.AddScoped<ICertificateIssuanceService, CertificateIssuanceService>();
 builder.Services.AddScoped<ICertificateAccessService, CertificateAccessService>();
@@ -913,11 +1096,12 @@ else if (!isSetupMode)
 // self-traffic is still auditable.
 builder.Services.AddHostedService<AuditNetworkDrainService>();
 
-// Stage 2 TLS provisioning: if Mode=Pending, register the hosted service that issues
-// the real web TLS cert via the standard pipeline on first startup. It issues a certificate
-// and rewrites config.yaml, so it is the control plane's.
+// Stage 2 TLS provisioning: if Mode=Pending, or the self-issued PFX is gone (a restore onto a
+// new host), register the hosted service that issues the web TLS cert via the standard
+// pipeline at startup. It issues a certificate and rewrites config.yaml, so it is the control
+// plane's.
 if (!isSetupMode && activeRoles.Has(ModularCA.API.Startup.ProcessRole.Control)
-    && string.Equals(config.Https.Mode?.Trim(), "Pending", StringComparison.OrdinalIgnoreCase))
+    && ModularCA.Core.Services.WebTlsProvisioningService.NeedsProvisioning(config.Https, AppContext.BaseDirectory))
     builder.Services.AddHostedService<ModularCA.Core.Services.WebTlsProvisioningService>();
 
 builder.Services.AddHttpContextAccessor();
@@ -962,6 +1146,7 @@ builder.Services.AddHttpClient("CtLog");
 
 // OCSP Protocol Service
 builder.Services.AddScoped<IOcspService, OcspResponderService>();
+builder.Services.AddScoped<ModularCA.Core.Services.Ocsp.IOcspResponderReadiness, ModularCA.Core.Services.Ocsp.OcspResponderReadiness>();
 
 // The shared middle every enrollment protocol runs between parsing and responding.
 builder.Services.AddScoped<ModularCA.Core.Services.Enrollment.IEnrollmentPipeline,
@@ -1077,15 +1262,8 @@ builder.Services.AddScoped<Microsoft.AspNetCore.Authorization.IAuthorizationHand
 
 builder.Services.AddAuthorization(options =>
 {
-    // System-level policies (system group membership required)
-    options.AddPolicy("SystemAdmin", policy => policy.Requirements.Add(new ModularCA.Auth.Authorization.CaGroupRequirement(ModularCA.Shared.Authorization.Capabilities.SystemManage, isSystemOnly: true)));
-    options.AddPolicy("SystemOperator", policy => policy.Requirements.Add(new ModularCA.Auth.Authorization.CaGroupRequirement(ModularCA.Shared.Authorization.Capabilities.CaManage, isSystemOnly: true)));
-    options.AddPolicy("SystemAuditor", policy => policy.Requirements.Add(new ModularCA.Auth.Authorization.CaGroupRequirement(ModularCA.Shared.Authorization.Capabilities.AuditView, isSystemOnly: true)));
-    // CA-scoped policies (system, tenant, or CA group membership)
-    options.AddPolicy("CaAdmin", policy => policy.Requirements.Add(new ModularCA.Auth.Authorization.CaGroupRequirement(ModularCA.Shared.Authorization.Capabilities.CaManage)));
-    options.AddPolicy("CaOperator", policy => policy.Requirements.Add(new ModularCA.Auth.Authorization.CaGroupRequirement(ModularCA.Shared.Authorization.Capabilities.CertRevoke)));
-    options.AddPolicy("CaAuditor", policy => policy.Requirements.Add(new ModularCA.Auth.Authorization.CaGroupRequirement(ModularCA.Shared.Authorization.Capabilities.CertView)));
-    options.AddPolicy("CaUser", policy => policy.Requirements.Add(new ModularCA.Auth.Authorization.CaGroupRequirement(ModularCA.Shared.Authorization.Capabilities.CertRequest)));
+    // System-level (system scope only) and CA-scoped (system, space, or CA) capability policies.
+    ModularCA.Auth.Authorization.PolicyDefinitions.AddTo(options);
 
     // Fail closed. Any controller/action without an
     // explicit [Authorize] attribute now requires authentication by default. Genuinely
@@ -1417,43 +1595,10 @@ builder.Services.AddScoped<ICsrService, CsrService>();
 builder.Services.AddControllers(options =>
 {
     options.Conventions.Add(new ModularCA.API.Startup.NodeRoleConvention(processRoles));
-}).AddJsonOptions(opts =>
-{
-    opts.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
-    // Emit every DateTime as ISO-8601 UTC with a trailing 'Z'. EF (MySQL datetime) and NCrontab
-    // hand us DateTimeKind.Unspecified values, which System.Text.Json would otherwise serialize
-    // without a zone — causing browsers to parse UTC instants as local time. See the converter.
-    opts.JsonSerializerOptions.Converters.Add(new ModularCA.API.Json.UtcDateTimeJsonConverter());
-});
+}).AddJsonOptions(opts => ModularCA.API.Json.ApiJsonOptions.Apply(opts.JsonSerializerOptions));
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(c =>
-{
-    c.SwaggerDoc("v1", new Microsoft.OpenApi.OpenApiInfo
-    {
-        Title = "ModularCA API",
-        Version = "0.1.0-rc1",
-        Description = "Enterprise Certificate Authority — REST API for certificate lifecycle management, PKI protocols, and administration.",
-        Contact = new Microsoft.OpenApi.OpenApiContact { Name = "ModularCA" }
-    });
-
-    // JWT Bearer auth in Swagger UI
-    c.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.OpenApiSecurityScheme
-    {
-        Description = "JWT Authorization header using the Bearer scheme. Enter 'Bearer {token}'",
-        Name = "Authorization",
-        In = Microsoft.OpenApi.ParameterLocation.Header,
-        Type = Microsoft.OpenApi.SecuritySchemeType.ApiKey,
-        Scheme = "Bearer"
-    });
-    // Security requirement applied globally — Swagger UI shows the lock icon on all endpoints
-
-    // Include XML comments from the API project
-    var xmlFile = $"{System.Reflection.Assembly.GetExecutingAssembly().GetName().Name}.xml";
-    var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
-    if (File.Exists(xmlPath))
-        c.IncludeXmlComments(xmlPath);
-});
+builder.Services.AddSwaggerGen(ModularCA.API.Startup.ApiSwagger.Configure);
 
 builder.Services.AddScoped<ICertProfileService, CertProfileService>();
 builder.Services.AddScoped<IProfileResolutionService, ProfileResolutionService>();
@@ -1500,6 +1645,7 @@ builder.Services.AddHttpClient("Webhook")
     .ConfigureHttpClient(c => c.Timeout = TimeSpan.FromSeconds(10));
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<ISecurityAlertService, SecurityAlertService>();
+builder.Services.AddScoped<ICeremonyQuorumGuard, CeremonyQuorumGuard>();
 builder.Services.AddScoped<IKeyCeremonyService, KeyCeremonyService>();
 builder.Services.AddSchedulerJob<CertExpiryNotificationJob>(activeRoles);
 builder.Services.AddSchedulerJob<ComplianceScanJob>(activeRoles);
@@ -1535,11 +1681,8 @@ builder.Services.AddScoped<CertificateTemplateService>();
 builder.Services.AddScoped<ModularCA.Core.Services.Msae.MsaeReadinessService>();
 builder.Services.AddScoped<ModularCA.Core.Services.Msae.MsaeSetupKitService>();
 builder.Services.AddSingleton<ModularCA.Core.Services.Msae.IHostNameProbe, ModularCA.Core.Services.Msae.DnsHostNameProbe>();
-// Names this service is known by: the public domain plus each tenant's own hostnames, and the
-// endpoint certificates those names are served under.
+// The name this service is known by: the public domain.
 builder.Services.AddScoped<ModularCA.Core.Services.Hostnames.IPublicNameResolver, ModularCA.Core.Services.Hostnames.PublicNameResolver>();
-builder.Services.AddScoped<ModularCA.Core.Services.Hostnames.ITenantHostnameCertificateIssuer, ModularCA.Core.Services.Hostnames.TenantHostnameCertificateService>();
-builder.Services.AddScoped<ModularCA.Core.Services.Hostnames.TenantHostnameService>();
 builder.Services.Configure<ModularCA.Core.Services.Msae.MsaeOptions>(builder.Configuration.GetSection(ModularCA.Core.Services.Msae.MsaeOptions.Section));
 
 builder.Services.AddScoped<TrustAnchorService>();
@@ -1552,17 +1695,10 @@ builder.Services.AddScoped<TrustAnchorService>();
 // Http.EnableCors so a misset ASPNETCORE_ENVIRONMENT=Development cannot
 // enable broad cross-origin access in production.
 var corsOrigins = config.Http.CorsOrigins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-foreach (var origin in corsOrigins)
-{
-    if (origin == "*")
-        throw new InvalidOperationException("[CORS] Wildcard origin '*' is not allowed. Specify exact origins in Http.CorsOrigins.");
-    if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri))
-        throw new InvalidOperationException($"[CORS] Invalid origin '{origin}' in Http.CorsOrigins — must be an absolute URL.");
-    var isLocal = string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase)
-                  || uri.Host == "127.0.0.1" || uri.Host == "::1";
-    if (!isLocal && !string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase))
-        throw new InvalidOperationException($"[CORS] Non-local origin '{origin}' must use https:// in Http.CorsOrigins.");
-}
+// Same rules PUT /admin/config/http applies at save, minus the bare-origin check, so a config
+// saved before that check existed still starts.
+if (ModularCA.Shared.Utils.ConfigInputRules.CorsOriginsError(config.Http.CorsOrigins, requireBareOrigin: false) is { } corsError)
+    throw new InvalidOperationException($"[CORS] {corsError}");
 
 // Wire UseHsts to the same Http.Hsts config that
 // SecurityHeadersMiddleware reads. Both middlewares agree on max-age /
@@ -1603,34 +1739,12 @@ builder.Services.AddCors(options =>
 var apiCertProvider = new ApiCertificateProvider();
 builder.Services.AddSingleton(apiCertProvider);
 
-// Tenant hostnames: each name a tenant is reached by carries its own certificate, picked by SNI
-// on the same listener. The cache is filled once the listener is configured (below) and
-// rebuilt by the hostname service after every change; a five-minute TTL catches changes
-// made elsewhere. In setup mode there is no database and no tenant, so it stays empty.
-var tenantHostnameDbOptions = new Lazy<DbContextOptions<ModularCADbContext>>(() =>
-    new DbContextOptionsBuilder<ModularCADbContext>()
-        .UseMySql(appConnStr, ServerVersion.AutoDetect(appConnStr))
-        .Options);
-var tenantHostnameCerts = new ModularCA.Core.Services.Hostnames.TenantHostnameCertificateCache(
-    () =>
-    {
-        if (isSetupMode)
-            return new Dictionary<string, System.Security.Cryptography.X509Certificates.X509Certificate2>();
-        using var hostnameDb = new ModularCADbContext(tenantHostnameDbOptions.Value);
-        return ModularCA.Core.Services.Hostnames.TenantHostnamePfxStore.LoadAll(
-            hostnameDb, config.Https.CertificatePassword ?? string.Empty,
-            message => Log.Warning("[TLS] Tenant hostname certificate: {Message}", message));
-    },
-    TimeSpan.FromMinutes(5),
-    message => Log.Warning("[TLS] Tenant hostname certificate reload failed: {Message}", message));
-builder.Services.AddSingleton(tenantHostnameCerts);
 builder.Services.AddSchedulerJob<TlsRenewalJob>(activeRoles);
 
-// The ingress route table: Ingress.Routes merged with the tenant hostnames whose NodeUpstream
-// is set, re-read on a short interval and after every change the hostname service makes in
-// this process. A name with no upstream is served here, so a single process with no route
-// configured routes nothing. The section is validated first: a route the ingress could not
-// honour safely (the dangerous flag on a node that is not loopback) stops startup.
+// The ingress route table: Ingress.Routes, built once. A name with no upstream is served here,
+// so a single process with no route configured routes nothing. The section is validated
+// first: a route the ingress could not honour safely (the dangerous flag on a node that is
+// not loopback) stops startup.
 ModularCA.Core.Services.Ingress.IngressRouteTableService? ingressRoutes = null;
 if (activeRoles.Has(ModularCA.API.Startup.ProcessRole.Ingress))
 {
@@ -1655,16 +1769,6 @@ if (activeRoles.Has(ModularCA.API.Startup.ProcessRole.Ingress))
     }
     ingressRoutes = new ModularCA.Core.Services.Ingress.IngressRouteTableService(
         config.Ingress,
-        () =>
-        {
-            if (isSetupMode)
-                return Array.Empty<ModularCA.Core.Services.Ingress.TenantHostnameUpstream>();
-            using var routeDb = new ModularCADbContext(tenantHostnameDbOptions.Value);
-            return routeDb.TenantHostnames.AsNoTracking()
-                .Select(h => new ModularCA.Core.Services.Ingress.TenantHostnameUpstream(h.Hostname, h.NodeUpstream))
-                .ToList();
-        },
-        TimeSpan.FromSeconds(config.Ingress.RouteRefreshSeconds),
         message => Log.Warning("[INGRESS] {Message}", message));
     ModularCA.API.Ingress.IngressHosting.AddIngress(builder.Services, config.Ingress, ingressRoutes, ingressTrust);
 }
@@ -1679,7 +1783,7 @@ if (isSetupMode)
 
     // The setup wizard is defense-in-depth'd by
     // (1) cert fingerprint verification printed to console, (2) a process-wide semaphore
-    // + MySQL advisory lock preventing racing callers, (3) MySqlConnectionStringBuilder
+    // + a PostgreSQL advisory lock preventing racing callers, (3) NpgsqlConnectionStringBuilder
     // + strict input validation on /api/v1/setup/database/test, and (4) the
     // IpWhitelistMiddleware RFC1918+loopback fallback gate. ModularCA is a headless server
     // product, so the Kestrel listener defaults to IPAddress.Any — operators reach the
@@ -1841,7 +1945,18 @@ else
             : Path.Combine(AppContext.BaseDirectory, config.Https.CertificatePath);
     }
 
-    if (pfxPath != null && File.Exists(pfxPath))
+    // A self-issued PFX that is gone or does not open with the configured password: a restore,
+    // since no backup carries the PFX.
+    var replaceWebTls = !pendingTlsProvisioning
+        && ModularCA.Core.Services.WebTlsProvisioningService.NeedsProvisioning(config.Https, AppContext.BaseDirectory);
+
+    if (replaceWebTls)
+    {
+        Console.WriteLine("[STARTUP] Web TLS certificate file not found or not readable — starting on a temporary certificate.");
+        Console.WriteLine("         A replacement is issued automatically by this instance's CA.");
+        apiCertProvider.SetCertificate(GenerateSetupTlsCert());
+    }
+    else if (pfxPath != null && File.Exists(pfxPath))
     {
         // Load initial cert into the provider
         apiCertProvider.SetCertificate(System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadPkcs12FromFile(
@@ -1850,10 +1965,10 @@ else
     }
     else if (!pendingTlsProvisioning)
     {
-        // Web TLS cert missing (post-reset or misconfigured) — generate temp self-signed cert
-        // so the setup wizard or login page is still served over HTTPS
+        // A custom Web TLS certificate is missing — generate temp self-signed cert so the
+        // login page is still served over HTTPS
         Console.WriteLine("[WARNING] Web TLS certificate not found — using temporary self-signed certificate.");
-        Console.WriteLine("         Complete the setup wizard or re-run --bootstrap to generate a proper Web TLS cert.");
+        Console.WriteLine("         Put the certificate back at Https.CertificatePath, or reissue the Web TLS certificate from the console.");
         apiCertProvider.SetCertificate(GenerateSetupTlsCert());
     }
 
@@ -1965,7 +2080,7 @@ else
                 try
                 {
                     var anchorDbOptions = new DbContextOptionsBuilder<ModularCADbContext>()
-                        .UseMySql(appConnStr, ServerVersion.AutoDetect(appConnStr))
+                        .UseNpgsql(appConnStr)
                         .Options;
                     using var anchorDb = new ModularCADbContext(anchorDbOptions);
 
@@ -2049,7 +2164,7 @@ else
             if (!isSetupMode && !string.IsNullOrEmpty(estSubdomainFqdn))
             {
                 var estDbOptions = new DbContextOptionsBuilder<ModularCADbContext>()
-                    .UseMySql(appConnStr, ServerVersion.AutoDetect(appConnStr))
+                    .UseNpgsql(appConnStr)
                     .Options;
 
                 estTrustAnchors = new ModularCA.Core.Services.Est.EstTrustAnchorCache(
@@ -2132,7 +2247,7 @@ else
                 try
                 {
                     var cmpDbOptions = new DbContextOptionsBuilder<ModularCADbContext>()
-                        .UseMySql(appConnStr, ServerVersion.AutoDetect(appConnStr))
+                        .UseNpgsql(appConnStr)
                         .Options;
                     using var cmpDb = new ModularCADbContext(cmpDbOptions);
                     var unsignedCmpCas = (from cfg in cmpDb.CaProtocolConfigs.AsNoTracking()
@@ -2203,12 +2318,6 @@ else
                 Environment.Exit(1);
             }
 
-            // Tenant hostname certificates for SNI selection. Never fatal: a name whose file is
-            // missing is answered with the console's certificate and reported in the log.
-            var tenantHostnameCount = tenantHostnameCerts.LoadNow();
-            if (tenantHostnameCount > 0)
-                Console.WriteLine($"[TLS] {tenantHostnameCount} tenant hostname certificate(s) loaded for SNI selection: {string.Join(", ", tenantHostnameCerts.Hostnames)}");
-
             Action<Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions> configureHttps = listenOptions =>
             {
                 listenOptions.UseHttps(new Microsoft.AspNetCore.Server.Kestrel.Https.TlsHandshakeCallbackOptions
@@ -2227,11 +2336,9 @@ else
 
                         var options = new System.Net.Security.SslServerAuthenticationOptions
                         {
-                            // A tenant hostname gets its own certificate by exact SNI match; the
-                            // public domain, unknown names and clients that send no SNI get the
-                            // console's certificate, whichever mode supplied it.
-                            ServerCertificate = ModularCA.Core.Services.Hostnames.TlsServerCertificateSelector.Select(
-                                sni, tenantHostnameCerts, apiCertProvider.GetCertificate()),
+                            // Every name, and a client that sends no SNI, gets the instance's web
+                            // TLS certificate, whichever mode supplied it.
+                            ServerCertificate = ModularCA.Core.Services.Hostnames.TlsServerCertificateSelector.Select(sni, apiCertProvider),
                             EnabledSslProtocols = sslProtocols,
 
                             // True on the EST subdomain as well, but it means something different
@@ -2402,8 +2509,8 @@ else
             // cannot use HTTPS to fetch the CRL/OCSP that validates that same cert). Those are
             // the validation role's endpoints, so the listener is the validation role's: a
             // process without it serves nothing that belongs on plain HTTP.
-            // The ingress opens it as well, routing by Host, so a tenant's revocation URLs reach
-            // that tenant's node on plain HTTP without a redirect.
+            // The ingress opens it as well, routing by Host, so a space's revocation URLs reach
+            // that space's node on plain HTTP without a redirect.
             if (config.Http.Port > 0
                 && !activeRoles.Has(ModularCA.API.Startup.ProcessRole.Validation)
                 && !activeRoles.Has(ModularCA.API.Startup.ProcessRole.Ingress))
@@ -2533,67 +2640,54 @@ if (hsmSession != null)
     app.Lifetime.ApplicationStopping.Register(() => hsmSession.Dispose());
 }
 
+// A restore leaves the Data Protection key ring and the SSH CA keys wrapped under
+// config/restore-pending/; the signer now holds the restored keystore, so unwrap them before
+// anything reads the key ring. A blob that does not unwrap stays for the next start.
+if (!isSetupMode && activeRoles.HasAnyNodeRole)
+{
+    var pendingResult = await BackupWrappedSecrets.ApplyPendingAsync(
+        app.Services.GetRequiredService<ModularCA.Shared.Signing.ISigningService>(),
+        Path.Combine(AppContext.BaseDirectory, "config"));
+    foreach (var target in pendingResult.Applied)
+        Log.Warning("Restore: wrapped configuration secret {Target} unwrapped by the signer and written back", target);
+    foreach (var (file, reason) in pendingResult.Failed)
+        Log.Error("Restore: wrapped configuration secret {File} could not be unwrapped and stays pending: {Reason}. "
+                  + "TOTP, held keys, Kerberos and LDAP publishing that depend on the restored key ring will fail until it is.", file, reason);
+}
+
 //var trustStore = app.Services.GetRequiredService<ITrustStoreProvider>();
 //trustStore.LoadFromFile("ca-trust.keystore"); // adjust path if needed
 
 
-// Apply pending EF Core migrations for the main database on startup
-// In setup mode, skip migrations entirely — the setup wizard handles schema creation
-// via BootstrapService.Initialize() which calls Migrate() with root credentials.
-//
-// Everything in this block writes: migrations, the template OID repair, the feature-flag
-// backfill, the audit migrations further down, the policy sync and the audit replay at the
-// end. Those are the control plane's; an enrollment or validation process reads the schema
-// the control plane maintains and changes nothing at startup.
+// The schema check ran before the first database read, after the process roles were resolved.
+// The startup repairs below write: the template OID repair, the feature-flag backfill, the
+// policy sync and the audit replay at the end. Those are the control plane's; an enrollment or
+// validation process changes nothing at startup.
 if (!isSetupMode && !controlActive)
 {
     Console.WriteLine("[STARTUP] Migrations and startup repairs are the control role's; this process applies none.");
 }
-if (!isSetupMode && controlActive)
+
+if (!isSetupMode && controlActive && !string.IsNullOrWhiteSpace(config.LdapAuth.GroupToRoleMappings))
 {
     try
     {
-        using var scope = app.Services.CreateScope();
-        var mainDb = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
-        var pendingMigrations = await mainDb.Database.GetPendingMigrationsAsync();
-        if (pendingMigrations.Any())
+        using var ldapScope = app.Services.CreateScope();
+        var renamedWarning = await ldapScope.ServiceProvider.GetRequiredService<ILdapGroupSyncService>().RenamedMappingTargetsWarningAsync();
+        if (renamedWarning is not null)
         {
-            var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-            logger.LogInformation("Applying {Count} pending migration(s): {Migrations}",
-                pendingMigrations.Count(), string.Join(", ", pendingMigrations));
-            try
-            {
-                await mainDb.Database.MigrateAsync();
-                logger.LogInformation("Database migrations applied successfully.");
-            }
-            catch (Exception migrateEx)
-            {
-                // This used to "recover" by calling EnsureDeletedAsync() — an unconditional DROP
-                // of the live application schema — and then retrying. The catch was unqualified,
-                // so a lock-wait timeout, a GRANT the app user lacks for one DDL statement, or a
-                // connection drop mid-migration was indistinguishable from the dirty-schema case
-                // it was written for. A second catch then swallowed the rebuild failure and let
-                // the process continue booting on an empty database, so the first sign of trouble
-                // was an operational CA with no certificates, no revocations, and no users.
-                //
-                // Startup never destroys data. A failed migration leaves the existing schema
-                // untouched and is surfaced loudly; recovering from a genuinely dirty schema is a
-                // deliberate operator action (`--reset --force`), not something a service does to
-                // itself at 3am because a lock timed out.
-                logger.LogError(migrateEx,
-                    "Database migration failed. The existing schema has been left untouched. " +
-                    "If this is a transient fault (lock timeout, connection drop) retry the start. " +
-                    "If the schema predates migrations, run the bootstrap reset deliberately — " +
-                    "the service will not drop the database on its own.");
-            }
+            Log.Warning("{RenamedLdapMappings}", renamedWarning);
+            Console.WriteLine($"[STARTUP] WARNING: {renamedWarning}");
         }
     }
     catch (Exception ex)
     {
-        var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-        logger.LogWarning(ex, "Failed to check/apply migrations — the database may not exist yet. Setup wizard will handle initialization.");
+        Console.WriteLine($"[STARTUP] LDAP mapping check skipped: {ex.Message}");
     }
+}
 
+if (!isSetupMode && controlActive)
+{
     // New templates are minted under this product's own arc with nothing configured. Identifiers
     // generated by an older build move to it only when Msae:MoveGeneratedTemplateOids says so,
     // in one pass, so a template's identifier changes exactly once: a Windows client recognises a
@@ -2644,6 +2738,148 @@ if (!isSetupMode && controlActive)
     }
 }
 
+// CA-scoped access and the console's lists scope certificates by IssuerCertificateId. Rows written
+// before it was recorded have none and are invisible to CA-scoped users; link the ones whose issuer
+// can be proved (key identifier or DN, plus signature), and leave ambiguous ones alone.
+if (!isSetupMode && controlActive)
+{
+    try
+    {
+        using var issuerScope = app.Services.CreateScope();
+        var issuerDb = issuerScope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        var result = await ModularCA.Core.Services.IssuerCertificateBackfill.RunAsync(issuerDb,
+            app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("IssuerBackfill"));
+        if (result.Scanned > 0)
+            Console.WriteLine($"[STARTUP] Issuer backfill: linked {result.Linked} of {result.Scanned} certificate(s); "
+                + $"{result.Ambiguous} ambiguous and {result.Unmatched} unmatched left unlinked.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[STARTUP] Issuer backfill skipped; it runs again at the next start. {ex.Message}");
+    }
+}
+
+// Records written before the audit hash canonical form was versioned cannot be recomputed, and
+// a report that lists them as unverifiable forever is a report nobody reads. Draw the line once,
+// as the node, with a marker that says why: every chain that still has such records and has not
+// been restarted since gets a fresh epoch, after which the verify report has one clean answer.
+if (!isSetupMode && controlActive)
+{
+    try
+    {
+        using var chainScope = app.Services.CreateScope();
+        var chainAuditDb = chainScope.ServiceProvider.GetService<AuditDbContext>();
+        var chainService = chainScope.ServiceProvider.GetService<ModularCA.Core.Services.AuditHashChainService>();
+        if (chainAuditDb is not null && chainService is not null)
+        {
+            var restarted = await chainService.RestartLegacyChainsAsync(chainAuditDb);
+            if (restarted.Count > 0)
+                Console.WriteLine($"[STARTUP] Audit chain restarted for {restarted.Count} chain(s): records before "
+                    + "this start were hashed under the previous canonical form and stay link-checked only.");
+
+            // 0.4.0 S3: new records go to the instance chain; each per-space chain is sealed once,
+            // and its final hash anchored in the instance chain. The migration cannot reach the
+            // audit database, so the control role does it here.
+            var sealedChains = await chainService.SealRetiredChainsAsync(chainAuditDb);
+            if (sealedChains.Count > 0)
+                Console.WriteLine($"[STARTUP] Sealed {sealedChains.Count} retired per-space audit chain(s); their final hashes are anchored in the instance chain.");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[STARTUP] Audit chain epoch check skipped; it runs again at the next start. {ex.Message}");
+    }
+}
+
+// An instance key-ceremony quorum no approver pool can meet locks the instance's CAs out of
+// every ceremony. Warn at each start; the operator lowers it or adds approvers.
+if (!isSetupMode && controlActive)
+{
+    try
+    {
+        using var quorumScope = app.Services.CreateScope();
+        var quorumDb = quorumScope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        var quorumWarning = await ModularCA.Core.Services.InstanceQuorumCheck.WarningAsync(quorumDb);
+        if (quorumWarning is not null)
+        {
+            Log.Warning("{InstanceQuorumWarning}", quorumWarning);
+            Console.WriteLine($"[STARTUP] WARNING: {quorumWarning}");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[STARTUP] Instance ceremony quorum check skipped: {ex.Message}");
+    }
+}
+
+// Several CAs can be marked default after the 0.4.0 fold into one instance. Name them at each start.
+if (!isSetupMode && controlActive)
+{
+    try
+    {
+        using var defaultScope = app.Services.CreateScope();
+        var defaultDb = defaultScope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        var defaultWarning = await ModularCA.Core.Services.DefaultCaCheck.WarningAsync(defaultDb);
+        if (defaultWarning is not null)
+        {
+            Log.Warning("{DefaultCaWarning}", defaultWarning);
+            Console.WriteLine($"[STARTUP] WARNING: {defaultWarning}");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[STARTUP] Default CA check skipped: {ex.Message}");
+    }
+}
+
+// 0.4.0 S5: ca.manage at instance scope became a controlled tier. Name the accounts that hold it
+// outside the system-operator group, so the change is visible after an upgrade. Likewise the
+// Kerberos realms whose enrollment identity is not a service identity of the realm's scope.
+if (!isSetupMode && controlActive)
+{
+    try
+    {
+        using var operatorScope = app.Services.CreateScope();
+        var operatorDb = operatorScope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        var operatorWarning = await ModularCA.Core.Services.InstanceOperatorHolderCheck.WarningAsync(operatorDb);
+        if (operatorWarning is not null)
+        {
+            Log.Warning("{InstanceOperatorWarning}", operatorWarning);
+            Console.WriteLine($"[STARTUP] WARNING: {operatorWarning}");
+        }
+        var realmWarning = await ModularCA.Core.Services.Msae.Kerberos.KerberosRealmService.UnconfinedRealmsWarningAsync(operatorDb);
+        if (realmWarning is not null)
+        {
+            Log.Warning("{KerberosRealmWarning}", realmWarning);
+            Console.WriteLine($"[STARTUP] WARNING: {realmWarning}");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[STARTUP] Instance operator holder check skipped: {ex.Message}");
+    }
+}
+
+// An integration key fenced to a space that no longer exists reaches no CA and fails every request
+// without saying why. Name it where the integration runs.
+if (!isSetupMode && activeRoles.Has(ModularCA.API.Startup.ProcessRole.Enrollment))
+{
+    try
+    {
+        using var scopeCheckScope = app.Services.CreateScope();
+        var scopeCheckDb = scopeCheckScope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        foreach (var scopeWarning in await ModularCA.Core.Services.IntegrationScopeCheck.WarningsAsync(scopeCheckDb, config))
+        {
+            Log.Warning("{IntegrationScopeWarning}", scopeWarning);
+            Console.WriteLine($"[STARTUP] WARNING: {scopeWarning}");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[STARTUP] Integration key scope check skipped: {ex.Message}");
+    }
+}
+
 if (!isSetupMode)
 {
     try
@@ -2664,33 +2900,6 @@ if (!isSetupMode)
 else
 {
     Console.WriteLine("[STARTUP] IWhitelistService warmup skipped (setup mode) — middleware will use the hardcoded fallback for /setup paths.");
-}
-
-// Apply pending audit database migrations on startup (skip in setup mode; the control role's)
-if (!isSetupMode && controlActive)
-{
-    try
-    {
-        using var scope = app.Services.CreateScope();
-        var auditDb = scope.ServiceProvider.GetService<AuditDbContext>();
-        if (auditDb != null)
-        {
-            var pendingAudit = await auditDb.Database.GetPendingMigrationsAsync();
-            if (pendingAudit.Any())
-            {
-                var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-                logger.LogInformation("Applying {Count} pending audit migration(s): {Migrations}",
-                    pendingAudit.Count(), string.Join(", ", pendingAudit));
-                await auditDb.Database.MigrateAsync();
-                logger.LogInformation("Audit database migrations applied successfully.");
-            }
-        }
-    }
-    catch (Exception ex)
-    {
-        var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
-        logger.LogWarning(ex, "Failed to apply audit migrations — the database may not exist yet.");
-    }
 }
 
 // Determine if the system needs setup (no CAs exist)
@@ -2923,12 +3132,12 @@ app.UseForwardedHeaders(forwardedOptions);
 // after the forwarded headers from any proxy in front of this one are honoured and before
 // any local middleware: no scheme redirect, security header, rate limit or authentication of
 // this process touches it, since the node it reaches applies its own. Plain-HTTP arrivals go
-// to the node's plain-HTTP listener when the route names one, so a tenant's CRL and OCSP URLs
-// are answered there. A host with no upstream, the public domain included, continues down
-// the local pipeline exactly as before the role existed.
+// to the node's plain-HTTP listener when the route names one, so the routed name's CRL and
+// OCSP URLs are answered there. A host with no upstream, the public domain included, continues
+// down the local pipeline exactly as before the role existed.
 if (ingressRoutes != null)
 {
-    var ingressRouteCount = ingressRoutes.LoadNow();
+    var ingressRouteCount = ingressRoutes.Routes.Count;
     Console.WriteLine(ingressRouteCount == 0
         ? "[INGRESS] No route has an upstream; every name is served by this process."
         : $"[INGRESS] {ingressRouteCount} route(s): " + string.Join(", ", ingressRoutes.Routes.Select(r => $"{r.Host} -> {r.Upstream}" + (r.PlainHttpUpstream != null ? $" (plain {r.PlainHttpUpstream})" : string.Empty))));
@@ -3054,7 +3263,7 @@ if (controlActive)
 app.UseRouting();
 app.UseAuthentication();
 app.UseMiddleware<ModularCA.API.Middleware.TokenRevocationMiddleware>();
-app.UseMiddleware<ModularCA.API.Middleware.TenantResolutionMiddleware>();
+app.UseMiddleware<ModularCA.API.Middleware.SpaceFenceMiddleware>();
 app.UseAuthorization();
 app.UseMiddleware<ModularCA.API.Middleware.ReservedCaLabelGuardMiddleware>(); // Reject reserved system CA labels on any /{caLabel}/ protocol route
 app.UseMiddleware<ModularCA.API.Middleware.ProtocolFeatureGateMiddleware>(); // Gate protocol endpoints by feature flag
@@ -3285,7 +3494,6 @@ try
     var secPolicyRow = ocspStartupDb.SecurityPolicies.AsNoTracking().FirstOrDefault();
     var allowCaDirect = secPolicyRow?.AllowCaDirectSigning ?? false;
     var missingResponder = ocspStartupDb.CertificateAuthorities
-        .IgnoreQueryFilters()
         .Where(ca => ca.IsEnabled && !ca.IsDeleted && !ca.IsSshCa && ca.OcspResponderCertificateId == null)
         .Select(ca => new { ca.Label, ca.Name })
         .ToList();

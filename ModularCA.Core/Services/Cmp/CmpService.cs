@@ -504,12 +504,44 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                 if (tokenEntity != null && tokenEntity.ExpiresAt >= DateTime.UtcNow
                     && (tokenEntity.MaxUses <= 0 || tokenEntity.UsesRemaining > 0))
                 {
-                    // We already hash in EnrollmentTokenService; here we need a
-                    // byte-wise secret for PBMAC. The stored plaintext `Token` column
-                    // IS the plaintext shared secret (issued once at admin creation).
-                    // It is never returned from admin GET endpoints (see
-                    // AdminProtocolConfigController).
-                    candidates.Add((System.Text.Encoding.UTF8.GetBytes(tokenEntity.Token), referenceValue, tokenEntity));
+                    // PBMAC needs the secret itself, not a hash: verification recomputes the MAC.
+                    // The row holds it wrapped, under a key the signer derives from the keystore,
+                    // so recovering it is a call to the signer — which this transaction is about
+                    // to make anyway to sign its response. An unreachable signer therefore stops
+                    // PBMAC the same way it already stops issuance, and the secret is in this
+                    // process's memory only for as long as the MAC takes, plus the zeroing the
+                    // caller's finally does.
+                    if (string.IsNullOrEmpty(tokenEntity.CmpSecretWrapped))
+                    {
+                        _logger.LogWarning(
+                            "CMP PBMAC credential {TokenId} has no stored shared secret — rejected.",
+                            tokenEntity.Id);
+                    }
+                    else
+                    {
+                        byte[]? secret = null;
+                        try
+                        {
+                            secret = await _signer.UnwrapSecretAsync(
+                                Convert.FromBase64String(tokenEntity.CmpSecretWrapped),
+                                new SigningContext(SignerCaller, SigningPurpose.Cmp, tokenEntity.SpaceId, caId));
+                        }
+                        catch (SigningRefusedException ex)
+                        {
+                            _logger.LogWarning(
+                                "CMP PBMAC credential {TokenId} could not be unwrapped by the signer ({Reason}) — rejected.",
+                                tokenEntity.Id, ex.Reason);
+                        }
+                        catch (FormatException)
+                        {
+                            _logger.LogWarning(
+                                "CMP PBMAC credential {TokenId} does not hold a wrapped secret — rejected.",
+                                tokenEntity.Id);
+                        }
+
+                        if (secret != null)
+                            candidates.Add((secret, referenceValue, tokenEntity));
+                    }
                 }
             }
 
@@ -645,7 +677,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
         // REQUEST ADDRESSES, not merely by some CA in the deployment.
         //
         // This used to search every CA row whose subject matched the signer's issuer DN and accept
-        // a signature that verified against any of them. A certificate issued by a lab or tenant CA
+        // a signature that verified against any of them. A certificate issued by a lab or space CA
         // therefore authenticated CMP requests to the production CA: the caller picked the target
         // by URL, and nothing tied the credential to it. Combined with revocation being authorized
         // for anything the addressed CA had issued, that was a cross-CA revocation primitive.
@@ -956,7 +988,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
             {
                 await _db.SaveChangesAsync();
             }
-            catch (DbUpdateException ex) when (MySqlErrorUtil.IsUniqueViolation(ex))
+            catch (DbUpdateException ex) when (PostgresErrorUtil.IsUniqueViolation(ex))
             {
                 // MySQL ER_DUP_ENTRY (1062) on the unique (CaId, TransactionId) index from a
                 // concurrent insert race — the canonical replay signal. Other DbUpdateException
@@ -1421,7 +1453,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
             EnrollmentAuditEvent.Issued => _protocolAudit.LogCmpAsync(
                 IssueOperation, record.Subject, record.SerialNumber,
                 record.KeyAlgorithm, record.KeySize, record.CaLabel, record.Correlation, null, reqCtx.SourceIp,
-                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                certificateAuthorityId: record.CaId, spaceId: record.SpaceId,
                 callerPrincipal: reqCtx.CallerPrincipal),
 
             // A request an approver owns is one this client can never collect, so it is recorded as
@@ -1430,14 +1462,14 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                 RejectOperation, record.Subject, null,
                 record.KeyAlgorithm, record.KeySize, record.CaLabel, record.Correlation, null, reqCtx.SourceIp,
                 success: false, errorMessage: ApprovalUnsupported,
-                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                certificateAuthorityId: record.CaId, spaceId: record.SpaceId,
                 callerPrincipal: reqCtx.CallerPrincipal),
 
             _ => _protocolAudit.LogCmpAsync(
                 RejectOperation, record.Subject, null,
                 record.KeyAlgorithm, record.KeySize, record.CaLabel, record.Correlation, null, reqCtx.SourceIp,
                 success: false, errorMessage: record.Message ?? "Enrollment refused.",
-                certificateAuthorityId: record.CaId, tenantId: record.TenantId,
+                certificateAuthorityId: record.CaId, spaceId: record.SpaceId,
                 callerPrincipal: reqCtx.CallerPrincipal),
         };
 
@@ -1913,13 +1945,14 @@ public class CmpService : ICmpService, IEnrollmentProtocol
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The CA certificate's key usage is <c>keyCertSign, cRLSign</c>; it does not carry
+    /// A CA certificate whose key usage is <c>keyCertSign, cRLSign</c> does not carry
     /// <c>digitalSignature</c>, and OpenSSL refuses such a certificate as a CMP message signer
-    /// ("no suitable sender cert"). Every signature-protected exchange therefore failed at the
-    /// client while PBMAC exchanges, whose responses are MAC-protected, worked. A dedicated signer
-    /// issued from the CA detail page carries the right bit and is rotated without touching the
-    /// CA certificate. The CA-direct path is kept as the fallback so an unconfigured CA still
-    /// answers PBMAC clients; it warns once per process so the gap is visible.
+    /// ("no suitable sender cert"): every signature-protected exchange fails at the client while
+    /// PBMAC exchanges, whose responses are MAC-protected, work. A dedicated signer issued from
+    /// the CA detail page carries the right bit and is rotated without touching the CA
+    /// certificate. The CA-direct path is kept as the fallback so an unconfigured CA still
+    /// answers; it warns once per process, and says whether this CA's certificate carries
+    /// <c>digitalSignature</c>, since a CA created from a profile that lists it does.
     /// </para>
     /// <para>
     /// The third element is the CA certificate when a delegated signer is in use, for
@@ -1935,7 +1968,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
             if (certEntity != null)
             {
                 var caCert = CertificateUtil.ParseFromPem(certEntity.Pem);
-                var caContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Cmp, context.Ca.Id, context.Ca.TenantId);
+                var caContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Cmp, context.Ca.Id, context.Ca.SpaceId);
                 var held = await _signer.ListKeysAsync(caContext);
 
                 if (context.Ca.CmpSigningCertificateId != null)
@@ -1964,10 +1997,16 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                 }
                 else if (DirectSignerWarned.TryAdd(context.Ca.Id, 0))
                 {
-                    _logger.LogWarning(
-                        "CA {CaLabel} has no CMP signing certificate. Signature-protected CMP responses will be signed with the CA certificate, " +
-                        "which lacks digitalSignature and is rejected by OpenSSL-based clients. Issue one from the CA detail page.",
-                        context.Ca.Label);
+                    if (CertificateUtil.CarriesDigitalSignature(caCert))
+                        _logger.LogWarning(
+                            "CA {CaLabel} has no CMP signing certificate. Signature-protected CMP responses will be signed with the CA certificate. " +
+                            "Issue a CMP signer from the CA detail page to keep the CA key out of CMP traffic.",
+                            context.Ca.Label);
+                    else
+                        _logger.LogWarning(
+                            "CA {CaLabel} has no CMP signing certificate. Signature-protected CMP responses will be signed with the CA certificate, " +
+                            "which lacks digitalSignature and is rejected by OpenSSL-based clients. Issue one from the CA detail page.",
+                            context.Ca.Label);
                 }
 
                 if (held.Any(k => k.Key.CertificateId == certEntity.CertificateId))
@@ -1982,7 +2021,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
             var spki = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(signer.PublicCertificate.GetPublicKey()).GetDerEncoded();
             var info = caKeys.FirstOrDefault(k => k.Kind == KeyKind.Ca && k.CaId != null && k.PublicKeyDer.AsSpan().SequenceEqual(spki));
             if (info != null)
-                return (signer.PublicCertificate, new CmpSignerKey(info.Key, new SigningContext(SignerCaller, SigningPurpose.Cmp, info.TenantId, info.CaId)), null);
+                return (signer.PublicCertificate, new CmpSignerKey(info.Key, SigningContext.ForCa(SignerCaller, SigningPurpose.Cmp, info.CaId!.Value, info.SpaceId)), null);
         }
         return null;
     }

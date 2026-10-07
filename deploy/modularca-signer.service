@@ -5,15 +5,17 @@
 # loopback. It hosts no controller, console, scheduler or enrollment protocol. The node runs
 # modularca.service with --role node and Signer.Mode: Remote, and holds no key.
 #
-# Install (after the node is set up as a single process and its wizard has completed):
-#   sudo useradd --system --home /opt/modularca --shell /usr/sbin/nologin modularca-signer
-#   sudo cp deploy/modularca-signer.service /etc/systemd/system/
-#   sudo -u modularca-signer /opt/modularca/ModularCA.API --role signer --init-identity
-#   sudo -u modularca-signer /opt/modularca/ModularCA.API --role signer --issue-node-identity /tmp/node-identity
-#   # set Signer.PinnedClientSpki (printed) and the node's Signer section (from /tmp/node-identity)
-#   sudo systemctl daemon-reload && sudo systemctl enable --now modularca-signer
-#   sudo systemctl restart modularca
-# See README-DEPLOY.md, "Two units: the signer apart from the node", for the ownership changes.
+# install.sh installs this unit as /etc/systemd/system/modularca-signer.service and the .deb as
+# /lib/systemd/system/modularca-signer.service; neither enables it. Set up the split as
+# README-DEPLOY.md, "Two units: the signer apart from the node", describes (after the node is set
+# up as a single process and its wizard has completed): the signer's account, keystores/ and the
+# signer's own directory /opt/modularca/signer, the identity, then
+#   sudo systemctl enable --now modularca-signer
+# Upgrades leave the ownership the split set alone. The binaries this unit runs belong to root.
+#
+# --signer-dir: the signer reads signer.yaml, db.yaml, keystore.yaml and its identity from
+# /opt/modularca/signer (modularca-signer, 0700) and nothing under config/, which the node writes.
+# While that directory does not exist the signer reads config/ as before and warns at every start.
 #
 # Logs:  journalctl -u modularca-signer -f
 
@@ -21,11 +23,13 @@
 Description=ModularCA Signer (keystore and signing service)
 Documentation=https://github.com/edphemeral/modularCA
 # The signer classifies keys, verifies ceremonies and writes its audit through the database.
-After=network-online.target mysql.service mariadb.service
+# After the node, not before it: the node's control role applies migrations before it reports
+# ready, and the signer waits for them in-process (Schema.WaitSeconds). Ordered first, a waiting
+# signer held up the node's start job while the node was what it waited for. The node refuses
+# enrollment while the signer is unreachable and reconnects on its own, so it needs nothing from
+# the signer to start. This is ordering only.
+After=network-online.target postgresql.service modularca.service
 Wants=network-online.target
-# The node refuses enrollment while the signer is unreachable and reconnects on its own, so
-# this is ordering only: start the signer first, and let the node find it.
-Before=modularca.service
 
 StartLimitIntervalSec=300
 StartLimitBurst=5
@@ -38,13 +42,16 @@ NotifyAccess=main
 User=modularca-signer
 Group=modularca-signer
 WorkingDirectory=/opt/modularca
-ExecStart=/opt/modularca/ModularCA.API --role signer
+ExecStart=/opt/modularca/ModularCA.API --role signer --signer-dir /opt/modularca/signer
 
 Environment=DOTNET_ENVIRONMENT=Production
 Environment=DOTNET_CONSOLE_ANSI_COLOR=false
 
 Restart=always
 RestartSec=5s
+# Exit status 3: the startup schema check refused, which only an operator can fix; not retried.
+# Status 75: it waited Schema.WaitSeconds for the database or the node's migrations; retried.
+RestartPreventExitStatus=3
 
 # The signer listens on loopback 8446 by default (Signer.Listen); no privileged port.
 CapabilityBoundingSet=
@@ -52,7 +59,7 @@ CapabilityBoundingSet=
 # --- Hardening -------------------------------------------------------------------
 # This is the process that holds the CA private keys. Everything the node's unit locks down
 # is locked down here, and the writable surface is smaller still: the keystores (a committed
-# key appends to them) and the logs, nothing else.
+# key appends to them) and the signer's own directory (its logs), nothing else.
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
@@ -72,15 +79,18 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 
-# Only what the signer writes. config/ is read-only here: the identity commands run as this
-# user before the unit starts, and the unit itself changes no configuration.
-ReadWritePaths=/opt/modularca/keystores /opt/modularca/logs
+# Only what the signer writes: the keystores, and its own directory, where its file logs and
+# keystore audit go (logs/ there). The leading "-" lets the unit start while the directory does not
+# exist yet. config/ and logs/ are the node's: read-only here, and not read with --signer-dir.
+ReadWritePaths=/opt/modularca/keystores -/opt/modularca/signer
 # A PKCS#11 module needs its device; add e.g. DeviceAllow= and drop PrivateDevices when using one.
 
 # Core dumps of this process would contain unwrapped key material.
 LimitCORE=0
 
 LimitNOFILE=8192
+# While the schema check waits it extends this with EXTEND_TIMEOUT_USEC (systemd 236 or later), so
+# this bounds a start that hangs; Schema.WaitSeconds bounds the wait.
 TimeoutStartSec=120
 TimeoutStopSec=30
 KillSignal=SIGTERM

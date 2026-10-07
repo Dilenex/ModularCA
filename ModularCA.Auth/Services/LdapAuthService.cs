@@ -14,8 +14,11 @@ public interface ILdapAuthService
     /// <summary>Authenticates a user against the configured LDAP server.</summary>
     Task<(bool Success, string? Error)> AuthenticateAsync(string username, string password);
 
-    /// <summary>Retrieves the LDAP group DNs for the specified user.</summary>
-    Task<List<string>> GetUserGroupsAsync(string username);
+    /// <summary>
+    /// Retrieves the LDAP group DNs for the specified user: an empty list when the user belongs to
+    /// no groups, <c>null</c> when the lookup could not be answered (disabled, failure, user not found).
+    /// </summary>
+    Task<List<string>?> GetUserGroupsAsync(string username);
 }
 
 /// <summary>
@@ -98,11 +101,16 @@ public class LdapAuthService : ILdapAuthService, ModularCA.Core.Services.ILdapGr
         }
     }
 
-    public Task<List<string>> GetUserGroupsAsync(string username)
+    /// <summary>
+    /// Queries the directory for the user's group DNs. Returns <c>null</c> (not an empty list) when
+    /// LDAP or group sync is disabled, the user is not found, or the query fails, so callers can tell
+    /// "unknown" apart from "no groups" and leave memberships untouched.
+    /// </summary>
+    public Task<List<string>?> GetUserGroupsAsync(string username)
     {
         var ldapConfig = _config.LdapAuth;
         if (!ldapConfig.Enabled || !ldapConfig.GroupSyncEnabled)
-            return Task.FromResult(new List<string>());
+            return Task.FromResult<List<string>?>(null);
 
         // AUTH-019: hard-fail when RequireTls is on but SSL is not configured
         if (ldapConfig.RequireTls && !ldapConfig.UseSsl)
@@ -125,7 +133,7 @@ public class LdapAuthService : ILdapAuthService, ModularCA.Core.Services.ILdapGr
             var userSearch = new SearchRequest(ldapConfig.SearchBaseDn, userFilter, SearchScope.Subtree, "distinguishedName");
             var userResponse = (SearchResponse)conn.SendRequest(userSearch);
             if (userResponse.Entries.Count == 0)
-                return Task.FromResult(new List<string>());
+                return Task.FromResult<List<string>?>(null);
 
             var userDn = userResponse.Entries[0].DistinguishedName;
 
@@ -145,12 +153,12 @@ public class LdapAuthService : ILdapAuthService, ModularCA.Core.Services.ILdapGr
             }
 
             _logger.LogDebug("LDAP groups for {Username}: {Groups}", username, string.Join(", ", groups));
-            return Task.FromResult(groups);
+            return Task.FromResult<List<string>?>(groups);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "LDAP group query failed for user {Username}", username);
-            return Task.FromResult(new List<string>());
+            return Task.FromResult<List<string>?>(null);
         }
     }
 

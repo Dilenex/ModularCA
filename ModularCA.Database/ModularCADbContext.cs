@@ -2,97 +2,31 @@
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Logging;
 using ModularCA.Shared.Entities;
-using ModularCA.Shared.Interfaces;
+using ModularCA.Database.Conventions;
 
 namespace ModularCA.Database;
 
 /// <summary>
 /// Primary EF Core database context for the ModularCA application data (certificates, profiles, ACME, users, etc.).
 /// <para>
-/// The context accepts an optional <see cref="ITenantContext"/>
-/// that feeds the global query filter applied to every tenant-scoped entity. When the
-/// context is unresolved (background jobs, anonymous public routes, migrations) the filter
-/// allows all rows through so CRL generation, OCSP, and EF migrations continue to work.
-/// Cross-tenant admin UIs that legitimately need every row call <c>IgnoreQueryFilters()</c>
-/// on the query AND explicitly gate the call on
-/// <see cref="ITenantContext.IsSystemAdmin"/>.
+/// The only global query filters are soft-delete ones (spaces, CAs, users). Spaces are an
+/// access scope, not a partition of data: every read sees every space, and callers that list
+/// rows for a user apply <c>SpaceFence</c> explicitly.
 /// </para>
 /// </summary>
 public class ModularCADbContext : DbContext
 {
-    // Never null — the single-arg constructor populates this with UnresolvedTenantContext.Instance.
-    private readonly ITenantContext _tenantContext;
-
-    // True when the filter should allow every row through — i.e. during bootstrap, design-time
-    // tooling, background jobs, or for system-admin callers.
-    //
-    // This MUST stay a computed property. It was previously a readonly field assigned in the
-    // constructor, which silently disabled tenant isolation on every authenticated request:
-    // TenantResolutionMiddleware takes ModularCADbContext as a method-injected parameter, so DI
-    // constructs the scoped context BEFORE the middleware body runs — and therefore before it
-    // calls tenantContext.Set(...). At construction HasContext is still false, so the snapshot
-    // latched to true, and because AddDbContext is scoped that same bypassed instance was then
-    // handed to every downstream controller and service for the rest of the request. A tenant-A
-    // user querying CertificateAuthorities saw tenant B's rows.
-    //
-    // The ITenantContext reference is live, so reading through it here picks up the middleware's
-    // Set(...) regardless of construction order. EF Core binds DbContext-instance members as SQL
-    // parameters when it compiles each query for execution, not once at model-build time, so a
-    // property is evaluated per query — which is exactly what makes this correct.
-    private bool TenantFilterBypass => !_tenantContext.HasContext || _tenantContext.IsSystemAdmin;
-
-    // Materialized HashSet<Guid> so EF can translate .Contains() on it directly — HashSet<T>
-    // .Contains has a dedicated SQL translator, unlike IReadOnlySet<T>.Contains, and the
-    // interface form falls back to client evaluation and NREs during parameter binding.
-    //
-    // Cached against the source set's identity rather than rebuilt per access: the filter is
-    // evaluated on every tenant-scoped query, and Set(...) is called at most once per request,
-    // so the cache is refreshed exactly when the underlying set is replaced. Empty in the bypass
-    // case, so the Contains() path yields 0 rows if it is ever reached (it should not be —
-    // TenantFilterBypass short-circuits first).
-    private HashSet<Guid>? _accessibleTenantIdsCache;
-    private IReadOnlySet<Guid>? _accessibleTenantIdsSource;
-
-    private HashSet<Guid> AccessibleTenantIds
-    {
-        get
-        {
-            if (TenantFilterBypass)
-                return _emptyTenantIds;
-
-            var source = _tenantContext.AccessibleTenantIds;
-            if (!ReferenceEquals(source, _accessibleTenantIdsSource))
-            {
-                _accessibleTenantIdsSource = source;
-                _accessibleTenantIdsCache = new HashSet<Guid>(source);
-            }
-            return _accessibleTenantIdsCache!;
-        }
-    }
-
-    private static readonly HashSet<Guid> _emptyTenantIds = new();
-
     /// <summary>
-    /// Constructs a <see cref="ModularCADbContext"/> with an unresolved tenant context.
-    /// Used by EF design-time tooling (`dotnet ef migrations add`), bootstrap, CRL/OCSP
-    /// responders, and background services that do not have an HTTP scope. The unresolved
-    /// context reports <c>HasContext=false</c> so the query filter allows every row through.
+    /// Name of the shadow property that carries the PostgreSQL <c>xmin</c> optimistic-concurrency
+    /// token. Shadow, because no entity needs to see it: EF reads it back after every write and
+    /// compares it on the next one, which is the whole of the contract. Named rather than
+    /// repeated as a literal so the seven registrations below cannot drift apart.
     /// </summary>
+    private const string XminShadowProperty = "xmin";
+
+    /// <summary>Constructs the context over <paramref name="options"/>.</summary>
     public ModularCADbContext(DbContextOptions<ModularCADbContext> options) : base(options)
     {
-        _tenantContext = UnresolvedTenantContext.Instance;
-    }
-
-    /// <summary>
-    /// Constructs a <see cref="ModularCADbContext"/> with a scoped
-    /// <see cref="ITenantContext"/>. Called by ASP.NET Core DI for every HTTP request
-    /// so the query filter knows which tenants the caller can see.
-    /// </summary>
-    public ModularCADbContext(DbContextOptions<ModularCADbContext> options, ITenantContext tenantContext) : base(options)
-    {
-        // Deliberately no snapshotting here — see TenantFilterBypass. The middleware populates
-        // this same ITenantContext instance after DI has already constructed us.
-        _tenantContext = tenantContext ?? UnresolvedTenantContext.Instance;
     }
 
     public DbSet<CrlEntity> Crls { get; set; }
@@ -117,7 +51,7 @@ public class ModularCADbContext : DbContext
     public DbSet<RoleAssignmentEntity> RoleAssignments { get; set; }
     public DbSet<UserCapabilityGrantEntity> UserCapabilityGrants { get; set; }
 
-    public DbSet<TenantEntity> Tenants { get; set; }
+    public DbSet<SpaceEntity> Spaces { get; set; }
     public DbSet<CertificateAuthorityEntity> CertificateAuthorities { get; set; }
 
     public DbSet<RefreshTokenEntity> RefreshTokens { get; set; }
@@ -126,10 +60,9 @@ public class ModularCADbContext : DbContext
     public DbSet<AccessBadgeEntity> AccessBadges { get; set; }
     public DbSet<AccessBadgeSourceEntity> AccessBadgeSources { get; set; }
 
-    /// <summary>Kerberos realm bindings for Windows autoenrollment: one forest to one tenant, with its service keys.</summary>
+    /// <summary>Kerberos realm bindings for Windows autoenrollment: one forest to one space, with its service keys.</summary>
     public DbSet<KerberosRealmEntity> KerberosRealms { get; set; }
     public DbSet<KerberosRealmKeyEntity> KerberosRealmKeys { get; set; }
-    public DbSet<TenantHostnameEntity> TenantHostnames { get; set; }
 
     // CA Service URLs (CDP, OCSP, AIA)
     public DbSet<CaServiceUrlEntity> CaServiceUrls { get; set; }
@@ -233,6 +166,25 @@ public class ModularCADbContext : DbContext
     /// </summary>
     public DbSet<SignerAuditEntity> SignerAudit { get; set; }
 
+    /// <summary>
+    /// Applies the model-wide conventions that are not entity-specific.
+    /// <para>
+    /// Every <see cref="DateTime"/> and <see cref="DateTime"/>? property is routed through
+    /// <see cref="UtcDateTimeConverter"/>. PostgreSQL columns are <c>timestamp with time
+    /// zone</c>, and Npgsql rejects a value whose <see cref="DateTimeKind"/> is not UTC rather
+    /// than silently storing a local wall-clock reading the way MySQL's <c>datetime(6)</c> did.
+    /// Registering the conversion once here rather than per-property is what keeps that
+    /// guarantee true of properties added later.
+    /// </para>
+    /// </summary>
+    /// <param name="configurationBuilder">The convention builder EF Core supplies.</param>
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+    {
+        base.ConfigureConventions(configurationBuilder);
+        configurationBuilder.Properties<DateTime>().HaveConversion<UtcDateTimeConverter>();
+        configurationBuilder.Properties<DateTime?>().HaveConversion<NullableUtcDateTimeConverter>();
+    }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -257,20 +209,20 @@ public class ModularCADbContext : DbContext
                   .HasForeignKey(e => e.CertificateAuthorityId)
                   .OnDelete(DeleteBehavior.Restrict);
         });
-        // Deliberately GLOBAL, not per-tenant — and knowingly so.
+        // Deliberately GLOBAL, not per-space — and knowingly so.
         //
-        // CertProfiles, CaGroups and Roles all carry a TenantId, so a per-tenant unique name
-        // would be the natural multi-tenant shape (and CertificateAuthorityEntity was moved to
+        // CertProfiles, CaGroups and Roles all carry a SpaceId, so a per-space unique name
+        // would be the natural multi-space shape (and CertificateAuthorityEntity was moved to
         // it). They are left global because the CODE still resolves them by bare name:
         //   CaCreationService: CertProfiles.FirstOrDefault(cp => cp.Name == "Main CA Certificate Profile")
         //   BootstrapProfileSeeder / BootstrapService: CaGroups.First(g => g.Name == "system-super")
         //   RoleAssignmentHelper: Roles.FirstOrDefault(r => r.Name == templateName && r.IsBuiltIn)
         //
         // The unique index is what makes those lookups deterministic. Relaxing it without
-        // rewriting every one of them would turn "two tenants cannot reuse a profile name" —
-        // an inconvenience — into "a CA creation silently picked up another tenant's profile",
-        // which is a cross-tenant correctness bug. The index is not the defect here; the
-        // tenant-blind lookups are, and they have to move first.
+        // rewriting every one of them would turn "two spaces cannot reuse a profile name" —
+        // an inconvenience — into "a CA creation silently picked up another space's profile",
+        // which is a cross-space correctness bug. The index is not the defect here; the
+        // space-blind lookups are, and they have to move first.
         modelBuilder.Entity<CertProfileEntity>().HasIndex(c => c.Name).IsUnique();
         modelBuilder.Entity<CertProfileEntity>(entity =>
         {
@@ -282,12 +234,15 @@ public class ModularCADbContext : DbContext
                   .WithMany()
                   .HasForeignKey(e => e.InheritsFromId)
                   .OnDelete(DeleteBehavior.SetNull);
-            // Tenant-scoped profile index for fast per-tenant lookups.
-            entity.HasIndex(e => e.TenantId);
+            // Space-scoped profile index for fast per-space lookups.
+            entity.HasIndex(e => e.SpaceId);
         });
         modelBuilder.Entity<CertRequestEntity>(entity =>
         {
             entity.HasIndex(c => c.SubmittedAt);
+            // The lifecycle checks join requests to the certificates they renew
+            // (CertificateLifecycle.ResolveReplacementsAsync, PendingRenewalsAsync).
+            entity.HasIndex(c => c.RenewalOfCertificateId);
             entity.HasOne(c => c.IssuedCertificate)
                   .WithMany()
                   .HasForeignKey(c => c.IssuedCertificateId)
@@ -297,12 +252,17 @@ public class ModularCADbContext : DbContext
         {
             c.HasIndex(c => new { c.SerialNumber, c.Issuer }).IsUnique();
 
-            // Prefix index. SubjectDN widened from 255 to 1024 so it can hold every DN the
-            // application will issue (see CertificateEntity.SubjectDnMaxLength), and InnoDB caps an
-            // index key at 3072 bytes — 768 characters under utf8mb4 — so the full column is no
-            // longer indexable. 255 characters is ample selectivity for the lookups that use this,
-            // which search for a subject rather than range over it.
-            c.HasIndex(c => c.SubjectDN).HasPrefixLength(255);
+            // Full-column index. This was a 255-character prefix index under MySQL, because
+            // SubjectDN was widened from 255 to 1024 (see CertificateEntity.SubjectDnMaxLength)
+            // and InnoDB caps an index key at 3072 bytes — 768 characters under utf8mb4 — which
+            // put the whole column out of reach.
+            //
+            // PostgreSQL has no prefix index, and does not need one here: its btree limit is
+            // roughly 2704 bytes per index entry, which a 1024-character DN fits inside for any
+            // DN this application will issue. The expression-index alternative,
+            // left("SubjectDN", 255), would only be used by a query written against that same
+            // expression, so it would silently stop serving the lookups this index exists for.
+            c.HasIndex(c => c.SubjectDN);
 
             // Index for CRL revoked-cert lookup by issuer FK.
             c.HasIndex(c => c.IssuerCertificateId);
@@ -312,6 +272,12 @@ public class ModularCADbContext : DbContext
             // so the responder MUST filter by IssuerCertificateId to avoid
             // cross-CA serial collisions returning the wrong status.
             c.HasIndex(c => new { c.IssuerCertificateId, c.SerialNumber });
+
+            // Expiry: the lifecycle summary's band, the list's status, date-range and replaced
+            // filters, its NotAfter sort and the expiry chart all bound or order by NotAfter.
+            // NotAfter alone rather than (Revoked, NotAfter): several of those carry no Revoked
+            // predicate, which a Revoked-led index would not serve, and Revoked selects little.
+            c.HasIndex(c => c.NotAfter);
 
             c.HasOne(c => c.SigningProfile)
                 .WithMany()
@@ -427,7 +393,7 @@ public class ModularCADbContext : DbContext
             .HasForeignKey(g => g.CertificateAuthorityId)
             .OnDelete(DeleteBehavior.SetNull);
         modelBuilder.Entity<CaGroupEntity>()
-            .HasIndex(g => g.TenantId);
+            .HasIndex(g => g.SpaceId);
         modelBuilder.Entity<CaGroupMemberEntity>()
             .HasIndex(gm => new { gm.GroupId, gm.UserId }).IsUnique();
         modelBuilder.Entity<CaGroupMemberEntity>()
@@ -446,14 +412,8 @@ public class ModularCADbContext : DbContext
             .HasIndex(ur => ur.Id).IsUnique();
         modelBuilder.Entity<UserEntity>()
             .HasIndex(ur => ur.Email).IsUnique();
-        // Tenant entity
-        // Tenant rows gain IsDeleted + DeletedAt soft-delete columns.
-        // MySQL/Pomelo does not expose partial/filtered unique indexes, so the unique
-        // constraints remain "absolute": an operator re-creating a tenant with the same
-        // Name/Slug after soft-deleting the old one must hard-delete the soft record (or
-        // rename it) via a SystemAdmin IgnoreQueryFilters path. That trade-off is acceptable
-        // in exchange for the global query filter never leaking soft-deleted rows.
-        modelBuilder.Entity<TenantEntity>(entity =>
+        // Space Name and Slug are unique over all rows, soft-deleted ones included.
+        modelBuilder.Entity<SpaceEntity>(entity =>
         {
             entity.HasIndex(e => e.Name).IsUnique();
             entity.HasIndex(e => e.Slug).IsUnique();
@@ -463,32 +423,19 @@ public class ModularCADbContext : DbContext
 
         modelBuilder.Entity<CertificateAuthorityEntity>(entity =>
         {
-            // Name is per-tenant for the same reason Label is, below. This entity was only half
-            // migrated: Label was made composite and Name was left global, so two tenants could
-            // each have an "issuing-ca" label but not both call a CA "Issuing CA". Beyond the
-            // inconvenience, a global unique name is a cross-tenant oracle — a tenant learns
-            // whether another tenant already uses a name by trying to take it.
-            //
-            // Safe to relax because nothing resolves a CA by bare Name: lookups go through Label
-            // or Id. That is NOT true of CertProfiles, CaGroups or Roles, which are still
-            // globally unique here deliberately — see the note further down.
-            entity.HasIndex(e => new { e.TenantId, e.Name }).IsUnique();
-            // Label uniqueness is per-tenant, not global. Two tenants may each
-            // have a CA labeled "issuing-ca" without collision. The composite unique index
-            // also replaces the old global one so existing queries targeting Label get a
-            // fast per-tenant prefix lookup.
-            entity.HasIndex(e => new { e.TenantId, e.Label }).IsUnique();
-            // Soft-delete flag indexed to make the global query
-            // filter predicate (IsDeleted = false) index-friendly.
+            // Label and Name are unique across the instance, soft-deleted CAs included: a label is
+            // the path in the CRL, OCSP, AIA and enrolment URLs of every certificate the CA issued.
+            entity.HasIndex(e => e.Label).IsUnique();
+            entity.HasIndex(e => e.Name).IsUnique();
             entity.HasIndex(e => e.IsDeleted);
             entity.Property(e => e.IsDeleted).HasDefaultValue(false);
             entity.HasOne(e => e.ParentCa)
                   .WithMany(e => e.ChildCAs)
                   .HasForeignKey(e => e.ParentCaId)
                   .OnDelete(DeleteBehavior.Restrict);
-            entity.HasOne(e => e.Tenant)
+            entity.HasOne(e => e.Space)
                   .WithMany()
-                  .HasForeignKey(e => e.TenantId)
+                  .HasForeignKey(e => e.SpaceId)
                   .OnDelete(DeleteBehavior.Restrict);
         });
 
@@ -577,8 +524,15 @@ public class ModularCADbContext : DbContext
         });
 
         // ACME Protocol
-        modelBuilder.Entity<AcmeAccountEntity>()
-            .HasIndex(a => a.JwkThumbprint).IsUnique();
+        modelBuilder.Entity<AcmeAccountEntity>(entity =>
+        {
+            entity.HasIndex(a => a.JwkThumbprint).IsUnique();
+            entity.HasIndex(a => a.CertificateAuthorityId);
+            entity.HasOne<CertificateAuthorityEntity>()
+                  .WithMany()
+                  .HasForeignKey(a => a.CertificateAuthorityId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
 
         modelBuilder.Entity<AcmeOrderEntity>(entity =>
         {
@@ -735,11 +689,12 @@ public class ModularCADbContext : DbContext
         modelBuilder.Entity<RoleEntity>(entity =>
         {
             entity.HasIndex(e => e.Name).IsUnique();
-            entity.HasIndex(e => e.TenantId);
-            entity.HasOne(e => e.Tenant)
+            entity.HasIndex(e => e.SpaceId);
+            // Restrict, not SetNull: a null space means instance scope.
+            entity.HasOne(e => e.Space)
                   .WithMany()
-                  .HasForeignKey(e => e.TenantId)
-                  .OnDelete(DeleteBehavior.SetNull);
+                  .HasForeignKey(e => e.SpaceId)
+                  .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.CreatedByUser)
                   .WithMany()
                   .HasForeignKey(e => e.CreatedByUserId)
@@ -761,7 +716,7 @@ public class ModularCADbContext : DbContext
         {
             entity.HasIndex(e => new { e.UserId, e.RoleId });
             entity.HasIndex(e => new { e.GroupId, e.RoleId });
-            entity.HasIndex(e => new { e.TenantId, e.CertificateAuthorityId });
+            entity.HasIndex(e => new { e.SpaceId, e.CertificateAuthorityId });
             entity.HasOne(e => e.Role)
                   .WithMany(r => r.Assignments)
                   .HasForeignKey(e => e.RoleId)
@@ -774,10 +729,10 @@ public class ModularCADbContext : DbContext
                   .WithMany(g => g.RoleAssignments)
                   .HasForeignKey(e => e.GroupId)
                   .OnDelete(DeleteBehavior.Cascade);
-            entity.HasOne(e => e.Tenant)
+            entity.HasOne(e => e.Space)
                   .WithMany()
-                  .HasForeignKey(e => e.TenantId)
-                  .OnDelete(DeleteBehavior.SetNull);
+                  .HasForeignKey(e => e.SpaceId)
+                  .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.CertificateAuthority)
                   .WithMany()
                   .HasForeignKey(e => e.CertificateAuthorityId)
@@ -810,18 +765,18 @@ public class ModularCADbContext : DbContext
         modelBuilder.Entity<UserEntity>(entity =>
         {
             entity.HasIndex(e => e.IsServiceIdentity);
-            entity.HasIndex(e => e.ServiceScopeTenantId);
+            entity.HasIndex(e => e.ServiceScopeSpaceId);
             entity.HasIndex(e => e.ServiceScopeCaId);
         });
 
         modelBuilder.Entity<KerberosRealmEntity>(entity =>
         {
             entity.HasIndex(e => e.Realm).IsUnique();
-            entity.HasIndex(e => e.TenantId);
-            entity.HasOne(e => e.Tenant)
+            entity.HasIndex(e => e.SpaceId);
+            entity.HasOne(e => e.Space)
                   .WithMany()
-                  .HasForeignKey(e => e.TenantId)
-                  .OnDelete(DeleteBehavior.Cascade);
+                  .HasForeignKey(e => e.SpaceId)
+                  .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.EnrollmentUser)
                   .WithMany()
                   .HasForeignKey(e => e.EnrollmentUserId)
@@ -838,36 +793,18 @@ public class ModularCADbContext : DbContext
                   .OnDelete(DeleteBehavior.Cascade);
         });
 
-        modelBuilder.Entity<TenantHostnameEntity>(entity =>
-        {
-            entity.HasIndex(e => e.Hostname).IsUnique();
-            entity.HasIndex(e => e.TenantId);
-            entity.HasOne(e => e.Tenant)
-                  .WithMany()
-                  .HasForeignKey(e => e.TenantId)
-                  .OnDelete(DeleteBehavior.Cascade);
-            entity.HasOne(e => e.IssuingCa)
-                  .WithMany()
-                  .HasForeignKey(e => e.IssuingCaId)
-                  .OnDelete(DeleteBehavior.Restrict);
-            entity.HasOne(e => e.Certificate)
-                  .WithMany()
-                  .HasForeignKey(e => e.CertificateId)
-                  .OnDelete(DeleteBehavior.SetNull);
-        });
-
         modelBuilder.Entity<UserCapabilityGrantEntity>(entity =>
         {
             entity.HasIndex(e => new { e.UserId, e.Capability });
-            entity.HasIndex(e => new { e.TenantId, e.CertificateAuthorityId });
+            entity.HasIndex(e => new { e.SpaceId, e.CertificateAuthorityId });
             entity.HasOne(e => e.User)
                   .WithMany(u => u.UserGrants)
                   .HasForeignKey(e => e.UserId)
                   .OnDelete(DeleteBehavior.Cascade);
-            entity.HasOne(e => e.Tenant)
+            entity.HasOne(e => e.Space)
                   .WithMany()
-                  .HasForeignKey(e => e.TenantId)
-                  .OnDelete(DeleteBehavior.SetNull);
+                  .HasForeignKey(e => e.SpaceId)
+                  .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.CertificateAuthority)
                   .WithMany()
                   .HasForeignKey(e => e.CertificateAuthorityId)
@@ -980,67 +917,45 @@ public class ModularCADbContext : DbContext
             entity.HasIndex(c => c.ValidatedAt);
         });
 
-        // Concurrency tokens on the high-risk entities that get mutated
-        // by multi-step admin workflows. EF maps a `byte[] RowVersion` with IsRowVersion() to
-        // MySQL as a TIMESTAMP(6) stamped on every UPDATE, producing optimistic-concurrency
-        // semantics without requiring application-level counter maintenance. Controllers
-        // that mutate these entities should catch DbUpdateConcurrencyException and return
-        // 409 Conflict.
-        modelBuilder.Entity<CertificateAuthorityEntity>()
-            .Property(e => e.RowVersion)
-            .IsRowVersion();
-        modelBuilder.Entity<UserEntity>()
-            .Property(e => e.RowVersion)
-            .IsRowVersion();
-        modelBuilder.Entity<CaGroupEntity>()
-            .Property(e => e.RowVersion)
-            .IsRowVersion();
-        modelBuilder.Entity<CertRequestEntity>()
-            .Property(e => e.RowVersion)
-            .IsRowVersion();
-        modelBuilder.Entity<CsrApprovalEntity>()
-            .Property(e => e.RowVersion)
-            .IsRowVersion();
-        modelBuilder.Entity<SigningProfileEntity>()
-            .Property(e => e.RowVersion)
-            .IsRowVersion();
-        modelBuilder.Entity<KeyCeremonyEntity>()
-            .Property(e => e.RowVersion)
-            .IsRowVersion();
-
-        // Global query filters for tenant isolation +
-        // soft-delete. The filter is evaluated against the scoped ITenantContext and,
-        // for tenant-scoped entities, against the caller's AccessibleTenantIds set.
+        // Concurrency tokens on the high-risk entities that get mutated by multi-step admin
+        // workflows. Controllers that mutate these entities catch DbUpdateConcurrencyException
+        // and return 409 Conflict.
         //
-        // Bypass rules:
-        //   - When ITenantContext is not resolved (background jobs, migrations, anonymous
-        //     public routes), HasContext is false and the filter degrades to "allow all
-        //     non-deleted rows". That lets OCSP/CRL/ACME and EF migrations continue to read.
-        //   - System admins (IsSystemAdmin == true) similarly see all non-deleted rows.
-        //   - Cross-tenant admin UIs that need soft-deleted rows call IgnoreQueryFilters()
-        //     with an explicit IsSystemAdmin gate.
+        // These used to be a `byte[] RowVersion` property marked IsRowVersion(), which the MySQL
+        // provider implemented as a TIMESTAMP(6) column it stamped on every UPDATE. PostgreSQL
+        // has no such column type and no such provider behaviour, but it does not need one: every
+        // row already carries a system column, `xmin`, holding the id of the transaction that
+        // last wrote it. Npgsql maps it through UseXminAsConcurrencyToken(), which gives exactly
+        // the same optimistic-concurrency semantics with no application-maintained counter, no
+        // schema column, and — because xmin is maintained by the storage engine rather than by a
+        // trigger or a provider convention — no way for a writer that bypasses EF to forget it.
+        // The now-unused `byte[] RowVersion` property has been removed from all seven entities;
+        // nothing outside this file ever read it.
         //
-        // Tenant-scoped entities (TenantEntity, CertificateAuthorityEntity, CertProfileEntity)
-        // fence on TenantId; global entities with only IsDeleted (UserEntity) fence only on
-        // the soft-delete flag.
-        // Tenant filter. The filter references only scalar bools and a concrete
-        // HashSet<Guid> — both have dedicated EF Core SQL translators, avoiding the
-        // "IReadOnlySet.Contains is not translatable → client-eval → NRE" trap. The
-        // bypass bool short-circuits the Contains() path entirely during bootstrap,
-        // design-time tooling, background jobs, and for system admins.
-        modelBuilder.Entity<TenantEntity>().HasQueryFilter(t =>
-            !t.IsDeleted &&
-            (TenantFilterBypass || AccessibleTenantIds.Contains(t.Id)));
+        // The mapping is a shadow `uint` property marked IsRowVersion(). Npgsql's model-
+        // finalizing convention recognises exactly that shape — uint, generated on add or
+        // update, concurrency token — and rewrites it onto the `xmin` system column of type
+        // `xid`; its migrations generator then excludes system columns, so nothing appears in
+        // the schema. (The older, more obvious `UseXminAsConcurrencyToken()` helper was removed
+        // in Npgsql 9; this is its replacement, not a workaround for it.)
+        //
+        // Guarded by provider because none of this is meaningful to the InMemory and SQLite
+        // providers the unit suite runs against, where a uint shadow property would become a
+        // real column rather than a system one.
+        if (Database.IsNpgsql())
+        {
+            modelBuilder.Entity<CertificateAuthorityEntity>().Property<uint>(XminShadowProperty).IsRowVersion();
+            modelBuilder.Entity<UserEntity>().Property<uint>(XminShadowProperty).IsRowVersion();
+            modelBuilder.Entity<CaGroupEntity>().Property<uint>(XminShadowProperty).IsRowVersion();
+            modelBuilder.Entity<CertRequestEntity>().Property<uint>(XminShadowProperty).IsRowVersion();
+            modelBuilder.Entity<CsrApprovalEntity>().Property<uint>(XminShadowProperty).IsRowVersion();
+            modelBuilder.Entity<SigningProfileEntity>().Property<uint>(XminShadowProperty).IsRowVersion();
+            modelBuilder.Entity<KeyCeremonyEntity>().Property<uint>(XminShadowProperty).IsRowVersion();
+        }
 
-        modelBuilder.Entity<CertificateAuthorityEntity>().HasQueryFilter(ca =>
-            !ca.IsDeleted &&
-            (TenantFilterBypass || AccessibleTenantIds.Contains(ca.TenantId)));
-
-        modelBuilder.Entity<CertProfileEntity>().HasQueryFilter(cp =>
-            TenantFilterBypass
-            || cp.TenantId == null
-            || AccessibleTenantIds.Contains(cp.TenantId.Value));
-
+        // Soft-delete filters only. Spaces are fenced explicitly by the callers (SpaceFence).
+        modelBuilder.Entity<SpaceEntity>().HasQueryFilter(t => !t.IsDeleted);
+        modelBuilder.Entity<CertificateAuthorityEntity>().HasQueryFilter(ca => !ca.IsDeleted);
         modelBuilder.Entity<UserEntity>().HasQueryFilter(u => !u.IsDeleted);
 
         // IP allow-list rules (Whitelists)
@@ -1133,6 +1048,10 @@ public class ModularCADbContext : DbContext
             entity.HasIndex(e => e.CmpReferenceValue);
         });
 
+        // Last, because it reads the indexes and the max lengths every block above declared:
+        // decide per column whether case matters, rather than letting the server collation decide
+        // for all of them the way MySQL did. See TextCaseSensitivity for the reasoning per column.
+        TextCaseSensitivity.Apply(modelBuilder);
     }
 
     // ===========================================================================================

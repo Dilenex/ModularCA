@@ -18,7 +18,6 @@
 export const StepUpOps = {
     SwitchBadge: 'switch-badge',
     ManageKerberosRealm: 'manage-kerberos-realm',
-    ManageTenantHostname: 'manage-tenant-hostname',
     RevokeCert: 'revoke-cert',
     HoldCert: 'hold-cert',
     UnholdCert: 'unhold-cert',
@@ -112,9 +111,22 @@ export const StepUpOps = {
     WebAuthnDelete: 'webauthn-delete',
     MtlsEnroll: 'mtls-enroll',
     MtlsDelete: 'mtls-delete',
-    EnableTenant: 'enable-tenant',
-    DisableTenant: 'disable-tenant',
-    UpdateTenantSettings: 'update-tenant-settings',
+    EnableSpace: 'enable-space',
+    DisableSpace: 'disable-space',
+    UpdateSpaceSettings: 'update-space-settings',
+    RestartAuditChain: 'restart-audit-chain',
+    ManageTrustAnchor: 'manage-trust-anchor',
+    RevokeSshCert: 'revoke-ssh-cert',
+    CreateEnrollmentSecret: 'create-enrollment-secret',
+    CreateEabKey: 'create-eab-key',
+    ManageUserBadge: 'manage-user-badge',
+    CreateSpace: 'create-space',
+    CreateCertProfile: 'create-cert-profile',
+    CreateRequestProfile: 'create-request-profile',
+    CreateSigningProfile: 'create-signing-profile',
+    ManageSshTemplate: 'manage-ssh-template',
+    ApproveRequest: 'approve-request',
+    RejectRequest: 'reject-request',
 } as const;
 
 /** Union of every valid step-up operation string. */

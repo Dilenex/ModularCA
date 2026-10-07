@@ -251,7 +251,7 @@ public class ProfileResolutionService : IProfileResolutionService
         // a CA profile is narrowing, which is exactly what this model is supposed to permit, and
         // forcing it back to true silently turned a leaf-issuing profile into one that stamps
         // basicConstraints cA=TRUE. Meanwhile the genuine escalation — a leaf-only parent with a
-        // child claiming IsCaProfile — was not checked at all, so a tenant admin editing a
+        // child claiming IsCaProfile — was not checked at all, so a space admin editing a
         // CA-scoped profile that inherits from the system "TLS Server" profile could set
         // IsCaProfile and have CertificateBuilderService emit cA=TRUE plus keyCertSign|cRLSign,
         // minting a sub-CA from a leaf-only policy.

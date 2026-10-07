@@ -57,7 +57,7 @@ public sealed class LicenseClaims
 /// <summary>Well-known keys for <see cref="LicenseClaims.Limits"/>.</summary>
 public static class LicenseLimits
 {
-    /// <summary>Maximum number of tenants that may exist. Counts, never deletes.</summary>
+    /// <summary>A space count signed into older licences. Kept verbatim; space creation no longer reads it.</summary>
     public const string MaxTenants = "maxTenants";
 }
 

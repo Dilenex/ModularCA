@@ -38,8 +38,4 @@ public class CsrApprovalEntity
     public string? Comment { get; set; }
 
     public DateTime Timestamp { get; set; } = DateTime.UtcNow;
-
-    /// <summary>Optimistic concurrency token (MySQL TIMESTAMP(6)).</summary>
-    [Timestamp]
-    public byte[]? RowVersion { get; set; }
 }

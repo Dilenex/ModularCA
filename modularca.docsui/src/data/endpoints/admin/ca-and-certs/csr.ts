@@ -82,9 +82,10 @@ export const adminCsr: ApiEndpoint[] = [
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for approve-request, issued for the request id. Required for this operation.' },
         ],
         responseDescription: 'Approval status including message, status (Approved or PartiallyApproved), approvalCount, and requiredCount.',
-        notes: 'Prevents self-approval of own requests (unless system-super with AllowSystemSuperSelfApproval). Prevents duplicate approvals. Enforces profile.use capability and tenant isolation.',
+        notes: 'Prevents self-approval of own requests (unless system-super with AllowSystemSuperSelfApproval). Prevents duplicate approvals. Enforces profile.use capability and space isolation.',
     },
     {
         method: 'GET',
@@ -96,7 +97,7 @@ export const adminCsr: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Array of approval records with id, approverId, approverUsername, decision, comment, and timestamp.',
-        notes: 'Enforces tenant isolation via the CSR signing profile.',
+        notes: 'Enforces space isolation via the CSR signing profile.',
     },
     {
         method: 'POST',
@@ -109,9 +110,10 @@ export const adminCsr: ApiEndpoint[] = [
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for reject-request, issued for the request id. Required for this operation.' },
         ],
         responseDescription: 'Object with message, id, and reason.',
-        notes: 'Only Pending requests can be rejected. Enforces tenant isolation.',
+        notes: 'Only Pending requests can be rejected. Enforces space isolation.',
     },
     {
         method: 'POST',
@@ -126,6 +128,6 @@ export const adminCsr: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Object with message, id, and reason.',
-        notes: 'Only Pending or Approved requests that have not yet been issued can be cancelled. Enforces tenant isolation.',
+        notes: 'Only Pending or Approved requests that have not yet been issued can be cancelled. Enforces space isolation.',
     },
 ];

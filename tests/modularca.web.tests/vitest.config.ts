@@ -34,6 +34,7 @@ export default defineConfig({
             // of a component, split out precisely so they can be covered here. Importing a .tsx
             // through this alias would drag React into a test project that deliberately has none.
             { find: /^@adminui\//, replacement: fromHere('../../modularca.adminui/src/') },
+            { find: /^@docsui\//, replacement: fromHere('../../modularca.docsui/src/') },
         ],
     },
     test: {

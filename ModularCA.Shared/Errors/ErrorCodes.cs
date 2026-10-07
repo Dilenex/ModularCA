@@ -74,8 +74,8 @@ public static class ErrorCodes
     /// <summary>No usable private key is available for the issuing CA.</summary>
     public const string IssuingCaKeyUnavailable = "MCA-CFG-005";
 
-    /// <summary>The owning tenant is disabled, which blocks issuance beneath it.</summary>
-    public const string TenantDisabled = "MCA-CFG-006";
+    /// <summary>The owning space is disabled, which blocks issuance beneath it.</summary>
+    public const string SpaceDisabled = "MCA-CFG-006";
 
     /// <summary>The reserved system signing CA was asked to issue a non-keystore certificate.</summary>
     public const string SystemSigningCaReserved = "MCA-CFG-007";
@@ -89,7 +89,11 @@ public static class ErrorCodes
     /// <summary>The previous certificate's revocation reason does not permit reissue.</summary>
     public const string ReissueReasonNotPermitted = "MCA-CFG-010";
 
-    /// <summary>The issuing CA carries name-constraint types this CA cannot enforce.</summary>
+    /// <summary>
+    /// Retired in 0.4.0, never to be reused: the issuing CA carried IP, email, URI or DN name
+    /// constraints, which issuance could not enforce and refused. All five types are enforced now,
+    /// and a violation is <see cref="NameConstraintViolation"/>; see <see cref="Retired"/>.
+    /// </summary>
     public const string NameConstraintTypeUnsupported = "MCA-CFG-011";
 
     /// <summary>
@@ -103,6 +107,45 @@ public static class ErrorCodes
     /// </summary>
     public const string CaExtendedKeyUsageForbidden = "MCA-CFG-013";
 
+    /// <summary>The issuing CA certificate is not yet valid or has expired.</summary>
+    public const string IssuingCaOutsideValidity = "MCA-CFG-014";
+
+    /// <summary>The issuing CA (X.509 or SSH) is disabled or deleted, or the space that owns it no longer exists.</summary>
+    public const string IssuingCaDisabled = "MCA-CFG-015";
+
+    /// <summary>No certificate authority record names the issuing CA certificate.</summary>
+    public const string IssuingCaUnregistered = "MCA-CFG-016";
+
+    /// <summary>
+    /// Retired in 0.4.0, never to be reused: a second space was refused in single-organisation
+    /// mode. Creating a space no longer refuses; see <see cref="Retired"/>.
+    /// </summary>
+    public const string MultipleOrganizationsDisabled = "MCA-CFG-017";
+
+    /// <summary>
+    /// Bootstrap found a space already in the database it was about to seed, so the
+    /// database reset before it did not happen.
+    /// </summary>
+    public const string BootstrapDatabaseNotEmpty = "MCA-CFG-018";
+
+    /// <summary>
+    /// The certificate profile belongs to another scope than the issuing CA: another space, or a
+    /// CA other than the issuing one. See <c>CertProfileScope</c>.
+    /// </summary>
+    public const string CertProfileOutOfScope = "MCA-CFG-019";
+
+    /// <summary>
+    /// A ceremony was not opened because no account other than its initiator could approve it.
+    /// See <see cref="CeremonyQuorumUnreachableException"/>.
+    /// </summary>
+    public const string CeremonyNoApprover = "MCA-CFG-020";
+
+    /// <summary>
+    /// A ceremony was not opened because fewer accounts other than its initiator could approve it
+    /// than it needs approvals. See <see cref="CeremonyQuorumUnreachableException"/>.
+    /// </summary>
+    public const string CeremonyQuorumUnreachable = "MCA-CFG-021";
+
     // ---- RES: missing resource, or collision with existing state ---------------------------
 
     /// <summary>A resource the request named does not exist or is not of the required kind.</summary>
@@ -111,7 +154,7 @@ public static class ErrorCodes
     /// <summary>The request collides with existing state; no narrower classification yet.</summary>
     public const string ResourceConflict = "MCA-RES-001";
 
-    /// <summary>A CA or tenant certificate quota is already at its ceiling.</summary>
+    /// <summary>A CA or space certificate quota is already at its ceiling.</summary>
     public const string QuotaExceeded = "MCA-RES-002";
 
     /// <summary>A CA label, or an auto-generated group name, is already taken.</summary>
@@ -122,6 +165,12 @@ public static class ErrorCodes
 
     /// <summary>The CSR is not in a state from which this operation can proceed.</summary>
     public const string CsrStateNotEligible = "MCA-RES-005";
+
+    /// <summary>
+    /// The CA has issued certificates, so its label, which is in their CRL, OCSP and AIA URLs,
+    /// cannot change.
+    /// </summary>
+    public const string CaLabelLocked = "MCA-RES-006";
 
     // ---- POL: deliberate certificate-policy limits ------------------------------------------
 
@@ -153,21 +202,21 @@ public static class ErrorCodes
     public const string ExtendedKeyUsageDropped = "MCA-ISS-003";
 
     /// <summary>
-    /// Validity was shortened because the owning tenant caps how long its certificates may live.
+    /// Validity was shortened because the owning space caps how long its certificates may live.
     /// Distinct from <see cref="ValidityClampedToIssuer"/> because the remedies have nothing in
     /// common: a CA that expires first is fixed by renewing the CA, whereas this is a deliberate
-    /// policy ceiling and the only way through it is for someone with tenant authority to raise it.
+    /// policy ceiling and the only way through it is for someone with space authority to raise it.
     /// </summary>
-    public const string ValidityClampedToTenant = "MCA-ISS-004";
+    public const string ValidityClampedToSpace = "MCA-ISS-004";
 
     /// <summary>
-    /// Issuance was refused because the request asked for longer validity than the owning tenant
-    /// permits, and that tenant is configured to refuse rather than shorten.
+    /// Issuance was refused because the request asked for longer validity than the owning space
+    /// permits, and that space is configured to refuse rather than shorten.
     /// <para>
     /// The one refusal in a block of advisories, and the distinction from
-    /// <see cref="ValidityClampedToTenant"/> is the tenant's <c>ValidityCeilingBehavior</c> and
+    /// <see cref="ValidityClampedToSpace"/> is the space's <c>ValidityCeilingBehavior</c> and
     /// nothing else: the same request, against the same ceiling, raises MCA-ISS-004 and a
-    /// certificate on a tenant set to Shorten, and this with no certificate on a tenant set to
+    /// certificate on a space set to Shorten, and this with no certificate on a space set to
     /// Refuse. It lives here rather than in the CFG block so that an operator who has seen
     /// MCA-ISS-004 finds its counterpart next to it — severity is a separate axis from identity,
     /// which is the same reason this block already shares the catalog with the refusal codes.
@@ -175,10 +224,10 @@ public static class ErrorCodes
     /// <para>
     /// It reaches interactive and admin issuance only. ACME, EST, SCEP, CMP and the renewal jobs
     /// always shorten, so a client that sees this code came from a path where a human can shorten
-    /// the request or raise the tenant ceiling — which is exactly the remedy.
+    /// the request or raise the space ceiling — which is exactly the remedy.
     /// </para>
     /// </summary>
-    public const string ValidityExceedsTenantCeiling = "MCA-ISS-005";
+    public const string ValidityExceedsSpaceCeiling = "MCA-ISS-005";
 
     // ---- LIC: the installation is not licensed for what was asked --------------------------
     //
@@ -192,7 +241,7 @@ public static class ErrorCodes
     /// <summary>The licence does not grant this feature at all.</summary>
     public const string FeatureNotEntitled = "MCA-LIC-001";
 
-    /// <summary>A licensed ceiling — tenants, seats — is already reached.</summary>
+    /// <summary>A licensed ceiling — spaces, seats — is already reached.</summary>
     public const string LicenseLimitReached = "MCA-LIC-002";
 
     /// <summary>
@@ -207,6 +256,12 @@ public static class ErrorCodes
 
     /// <summary>The profile does not permit the submitted key or signature parameters.</summary>
     public const string KeyParametersNotPermitted = "MCA-PRF-000";
+
+    /// <summary>
+    /// Codes nothing raises any more. They stay in <see cref="All"/> so their numbers are never
+    /// reused, and so a log line or runbook that names one still resolves.
+    /// </summary>
+    public static IReadOnlyCollection<string> Retired { get; } = [NameConstraintTypeUnsupported, MultipleOrganizationsDisabled];
 
     /// <summary>
     /// Every code declared above, discovered by reflection so the list cannot drift from the

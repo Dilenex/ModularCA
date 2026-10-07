@@ -33,7 +33,8 @@ public class PublicEnrollmentController(
 {
     /// <summary>
     /// Validates an enrollment token and returns the enrollment context (CA name, cert profile info,
-    /// subject restrictions) so the client can render an enrollment form.
+    /// subject restrictions) so the client can render an enrollment form. Without a signing profile
+    /// the CA name shown is the default CA's (<see cref="CaResolverService.DefaultCandidates"/>).
     /// </summary>
     [HttpGet("{token}")]
     public async Task<IActionResult> GetEnrollmentInfo(string token)
@@ -79,9 +80,7 @@ public class PublicEnrollmentController(
         // Fall back to default CA name
         if (caName == null)
         {
-            var defaultCa = await db.CertificateAuthorities.AsNoTracking()
-                .Where(ca => ca.IsEnabled)
-                .OrderByDescending(ca => ca.IsDefault)
+            var defaultCa = await CaResolverService.DefaultCandidates(db.CertificateAuthorities.AsNoTracking())
                 .FirstOrDefaultAsync();
             caName = defaultCa?.Name ?? "ModularCA";
         }
@@ -102,7 +101,10 @@ public class PublicEnrollmentController(
     /// <summary>
     /// Accepts a PEM-encoded CSR, validates it against the enrollment token's profile constraints,
     /// issues the certificate (or queues it for approval), and returns the PEM certificate chain.
-    /// The enrollment token is consumed (one use deducted) on successful submission.
+    /// The enrollment token is consumed (one use deducted) on successful submission, and only when
+    /// it is scoped to the CA that will issue, the signing profile's issuer
+    /// (<see cref="EnrollmentTokenService.ScopeRefusal"/>). A token without profiles falls back to
+    /// its own CA's protocol configuration, or to the default CA's when it names no CA.
     /// Returns 400 on invalid token or CSR input, 503 when the operator has not finished
     /// configuring a CA or enrollment profile (setup incomplete), and 500 on unknown
     /// server-side issuance failures.
@@ -177,12 +179,12 @@ public class PublicEnrollmentController(
         }
         else
         {
-            // Fall back to the default CA's configuration for the "QR" pseudo-protocol
-            // Use the default CA to find a suitable protocol config, or fall back to any enabled config
-            var defaultCa = await db.CertificateAuthorities.AsNoTracking()
-                .Where(ca => ca.IsEnabled)
-                .OrderByDescending(ca => ca.IsDefault)
-                .FirstOrDefaultAsync();
+            // Fall back to a protocol configuration of the token's own CA, or, for a token bound
+            // to no CA, of the default CA.
+            var defaultCa = entity.CertificateAuthorityId != null
+                ? await db.CertificateAuthorities.AsNoTracking()
+                    .FirstOrDefaultAsync(ca => ca.Id == entity.CertificateAuthorityId && ca.IsEnabled)
+                : await CaResolverService.DefaultCandidates(db.CertificateAuthorities.AsNoTracking()).FirstOrDefaultAsync();
 
             if (defaultCa == null)
                 return StatusCode(503, new { error = "No enabled Certificate Authority is configured. The system is not ready to accept enrollments." });
@@ -204,6 +206,12 @@ public class PublicEnrollmentController(
         var signingProfile = await db.SigningProfiles.FindAsync(signingProfileId);
         if (signingProfile == null)
             return StatusCode(503, new { error = "Configured signing profile not found. The system is not ready to accept enrollments." });
+
+        // The CA that will issue is the signing profile's issuer; the token must be scoped to it.
+        var issuingCa = signingProfile.IssuerId == null ? null
+            : await db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(ca => ca.CertificateId == signingProfile.IssuerId);
+        if (issuingCa == null)
+            return StatusCode(503, new { error = "Configured signing profile does not issue from a Certificate Authority. The system is not ready to accept enrollments." });
 
         var certProfile = await db.CertProfiles.FindAsync(certProfileId);
         if (certProfile == null)
@@ -234,7 +242,7 @@ public class PublicEnrollmentController(
         // Passing entity.Protocol here compared the restriction to itself, so it never applied:
         // a CMP shared secret or a SCEP challenge (same table, same column) redeemed here and,
         // carrying no profile of its own, fell back to the default CA's configuration.
-        var (consumed, consumeError) = await tokenService.ValidateAndConsumeAsync(token, subject, "QR");
+        var (consumed, consumeError) = await tokenService.ValidateAndConsumeAsync(token, subject, "QR", issuingCa);
         if (!consumed)
             return BadRequest(new { error = consumeError ?? "Token validation failed." });
 
@@ -323,6 +331,7 @@ public class PublicEnrollmentController(
     /// <summary>
     /// Serves a minimal, mobile-friendly HTML enrollment page for the given token.
     /// This standalone page validates the token, accepts a CSR paste, and returns the issued certificate.
+    /// Without a signing profile the CA name shown is the default CA's (<see cref="CaResolverService.DefaultCandidates"/>).
     /// </summary>
     [HttpGet("{token}/page")]
     [Produces("text/html")]
@@ -362,9 +371,7 @@ public class PublicEnrollmentController(
 
         if (caName == "ModularCA")
         {
-            var defaultCa = await db.CertificateAuthorities.AsNoTracking()
-                .Where(ca => ca.IsEnabled)
-                .OrderByDescending(ca => ca.IsDefault)
+            var defaultCa = await CaResolverService.DefaultCandidates(db.CertificateAuthorities.AsNoTracking())
                 .FirstOrDefaultAsync();
             if (defaultCa != null) caName = defaultCa.Name;
         }

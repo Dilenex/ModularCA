@@ -62,14 +62,68 @@ public static class BootstrapServiceUrlBuilder
         if (httpPort <= 0)
             return null;
 
-        var host = !string.IsNullOrWhiteSpace(publicDomain)
-            ? publicDomain!.Trim()
-            : FirstRoutableDnsSan(dnsSans) ?? "localhost";
+        var host = ResolvePublicDomain(publicDomain, dnsSans);
 
         // Port 80 is the scheme default and is omitted, which keeps the URL short and matches what
         // operators expect to see in a certificate. Every other port must be present or the client
         // silently tries 80.
         return httpPort == 80 ? $"http://{host}" : $"http://{host}:{httpPort}";
+    }
+
+    /// <summary>
+    /// The name clients reach this instance by: <paramref name="publicDomain"/> when given,
+    /// otherwise the first <c>DNS:</c> SAN that is not <c>localhost</c>, otherwise
+    /// <c>localhost</c>. The unattended bootstrap writes it to <c>Https.PublicDomain</c>, which
+    /// the node refuses to start without, and builds the revocation URLs from it, so the two agree.
+    /// </summary>
+    public static string ResolvePublicDomain(string? publicDomain, IEnumerable<string>? dnsSans)
+        => !string.IsNullOrWhiteSpace(publicDomain)
+            ? publicDomain!.Trim()
+            : FirstRoutableDnsSan(dnsSans) ?? "localhost";
+
+    /// <summary>
+    /// Refuses a public domain the node would refuse at startup: anything but a bare hostname or
+    /// IP address, with no scheme, port or path.
+    /// </summary>
+    public static void EnsurePublicDomainUsable(string? publicDomain)
+    {
+        if (string.IsNullOrWhiteSpace(publicDomain))
+            return;
+        var domain = publicDomain.Trim();
+        var kind = domain.Contains("://") || domain.Contains('/') ? UriHostNameType.Unknown : Uri.CheckHostName(domain);
+        if (kind is not (UriHostNameType.Dns or UriHostNameType.IPv4 or UriHostNameType.IPv6))
+            throw new ModularCA.Shared.Errors.InvalidRequestException(
+                $"HttpsApi.PublicDomain '{domain}' must be a bare hostname or IP address, with no scheme, port or path. Example: ca.example.com",
+                ModularCA.Shared.Errors.ErrorCodes.RequestInvalid);
+    }
+
+    /// <summary>
+    /// The Web TLS SANs with <paramref name="publicDomain"/> added in front when no entry covers
+    /// it, so the certificate is valid for the name clients are told to use. <c>localhost</c> is
+    /// never added.
+    /// </summary>
+    public static List<string> SansCovering(string publicDomain, IEnumerable<string>? sans)
+    {
+        var result = (sans ?? []).Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim()).ToList();
+        var domain = publicDomain.Trim();
+        if (domain.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+            return result;
+        var isIp = System.Net.IPAddress.TryParse(domain, out var address);
+        var covered = result.Any(s =>
+        {
+            var colon = s.IndexOf(':');
+            if (colon <= 0) return false;
+            var type = s[..colon].Trim();
+            var value = s[(colon + 1)..].Trim();
+            if (isIp)
+                return type.Equals("IP", StringComparison.OrdinalIgnoreCase)
+                    && System.Net.IPAddress.TryParse(value, out var other) && other.Equals(address);
+            return type.Equals("DNS", StringComparison.OrdinalIgnoreCase)
+                && value.Equals(domain, StringComparison.OrdinalIgnoreCase);
+        });
+        if (!covered)
+            result.Insert(0, (isIp ? "IP:" : "DNS:") + domain);
+        return result;
     }
 
     /// <summary>

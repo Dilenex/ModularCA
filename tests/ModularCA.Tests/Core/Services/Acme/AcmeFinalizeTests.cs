@@ -34,37 +34,37 @@ public class AcmeFinalizeTests
     /// <summary>Captures ACME protocol audit rows; no other protocol's method belongs here.</summary>
     private sealed class RecordingAudit : IProtocolAuditService
     {
-        public List<(string Operation, bool Success, string? Error, string? CaLabel, Guid? SigningProfileId, Guid? CertProfileId, string? Serial)> Entries { get; } = [];
+        public List<(string Operation, bool Success, string? Error, string? CaLabel, Guid? SigningProfileId, Guid? CertProfileId, string? Serial, Guid? CaId, Guid? SpaceId)> Entries { get; } = [];
 
         public Task LogAcmeAsync(string operation, Guid? accountId, Guid? orderId, string? subjectDN, string? certSerial,
             string? identifiers, string? revocationReason, string? sourceIp, bool success = true, string? errorMessage = null,
-            string? caLabel = null, Guid? certificateAuthorityId = null, Guid? tenantId = null,
+            string? caLabel = null, Guid? certificateAuthorityId = null, Guid? spaceId = null,
             Guid? signingProfileId = null, Guid? certProfileId = null)
         {
-            Entries.Add((operation, success, errorMessage, caLabel, signingProfileId, certProfileId, certSerial));
+            Entries.Add((operation, success, errorMessage, caLabel, signingProfileId, certProfileId, certSerial, certificateAuthorityId, spaceId));
             return Task.CompletedTask;
         }
 
         public Task LogMsaeAsync(string operation, string? subjectDN, string? certSerial, string? keyAlgorithm,
             string? keySize, string? templateName, string? caLabel, string? sourceIp, bool success = true,
-            string? errorMessage = null, Guid? certificateAuthorityId = null, Guid? tenantId = null,
+            string? errorMessage = null, Guid? certificateAuthorityId = null, Guid? spaceId = null,
             string? callerPrincipal = null, string? realm = null, string? authMethod = null)
             => throw new NotSupportedException();
         public Task LogEstAsync(string operation, string? subjectDN, string? certSerial, string? keyAlgorithm, string? keySize,
             string? caLabel, string? sourceIp, bool success = true, string? errorMessage = null,
-            Guid? certificateAuthorityId = null, Guid? tenantId = null, string? callerPrincipal = null)
+            Guid? certificateAuthorityId = null, Guid? spaceId = null, string? callerPrincipal = null)
             => throw new NotSupportedException();
         public Task LogScepAsync(string operation, string? subjectDN, string? certSerial, string? keyAlgorithm, string? keySize,
             string? caLabel, string? transactionId, string? sourceIp, bool success = true, string? errorMessage = null,
-            Guid? certificateAuthorityId = null, Guid? tenantId = null, string? callerPrincipal = null)
+            Guid? certificateAuthorityId = null, Guid? spaceId = null, string? callerPrincipal = null)
             => throw new NotSupportedException();
         public Task LogCmpAsync(string messageType, string? subjectDN, string? certSerial, string? keyAlgorithm, string? keySize,
             string? caLabel, string? transactionId, string? revocationReason, string? sourceIp, bool success = true,
-            string? errorMessage = null, Guid? certificateAuthorityId = null, Guid? tenantId = null, string? callerPrincipal = null)
+            string? errorMessage = null, Guid? certificateAuthorityId = null, Guid? spaceId = null, string? callerPrincipal = null)
             => throw new NotSupportedException();
         public Task LogNetworkRequestAsync(string sourceIp, string requestPath, string httpMethod, int statusCode,
             long? responseTimeMs, string? protocol, string? caLabel, bool blocked, string? reason, string? userAgent,
-            Guid? certificateAuthorityId = null, Guid? tenantId = null)
+            Guid? certificateAuthorityId = null, Guid? spaceId = null)
             => throw new NotSupportedException();
     }
 
@@ -129,6 +129,10 @@ public class AcmeFinalizeTests
         public required SigningProfileEntity DefaultSigning { get; init; }
         /// <summary>The labelled CA the order in these tests belongs to.</summary>
         public required SigningProfileEntity ProdSigning { get; init; }
+        /// <summary>The default CA, "lab".</summary>
+        public required CertificateAuthorityEntity LabCa { get; init; }
+        /// <summary>The labelled CA, "prod", the one the account in these tests is bound to.</summary>
+        public required CertificateAuthorityEntity ProdCa { get; init; }
     }
 
     /// <summary>
@@ -151,7 +155,7 @@ public class AcmeFinalizeTests
             var ca = new CertificateAuthorityEntity
             {
                 Id = Guid.NewGuid(), Name = label, Label = label, IsDefault = isDefault, IsEnabled = true,
-                CertificateId = certEntity.CertificateId, TenantId = Guid.NewGuid(),
+                CertificateId = certEntity.CertificateId, SpaceId = Guid.NewGuid(),
             };
             var signing = new SigningProfileEntity
             {
@@ -197,6 +201,8 @@ public class AcmeFinalizeTests
             Issuance = issuance,
             DefaultSigning = defaultSigning,
             ProdSigning = prodSigning,
+            LabCa = db.CertificateAuthorities.Single(c => c.Label == "lab"),
+            ProdCa = db.CertificateAuthorities.Single(c => c.Label == "prod"),
             Service = new AcmeOrderService(db, audit, pipeline, new PermissiveCaa()),
         };
     }
@@ -245,7 +251,7 @@ public class AcmeFinalizeTests
         var h = Build();
         var order = ReadyOrder(h);
 
-        var dto = await h.Service.FinalizeAsync(order.Id, CsrFor("device-01.example.com"), "https://ca.example.com");
+        var dto = await h.Service.FinalizeAsync(order.Id, CsrFor("device-01.example.com"), "https://ca.example.com", h.ProdCa);
 
         Assert.Equal("valid", dto.Status);
         var row = Assert.Single(await h.Db.CertificateRequests.ToListAsync());
@@ -265,8 +271,91 @@ public class AcmeFinalizeTests
         Assert.Equal("CertificateIssued", audited.Operation);
         Assert.True(audited.Success);
         Assert.Equal("prod", audited.CaLabel);
+        Assert.Equal(h.ProdCa.Id, audited.CaId);
+        Assert.Equal(h.ProdCa.SpaceId, audited.SpaceId);
         Assert.Equal(h.ProdSigning.Id, audited.SigningProfileId);
         Assert.NotNull(audited.Serial);
+    }
+
+    /// <summary>
+    /// The finding: on the label-less routes finalize skipped the order-to-CA check and issued
+    /// from the order's label. An order placed at the default CA ("lab") by an account now bound
+    /// to "prod" is refused, so a finalize cannot reach a CA other than the account's own.
+    /// </summary>
+    [Fact]
+    public async Task A_finalize_of_an_order_placed_at_another_ca_than_the_accounts_is_refused()
+    {
+        var h = Build();
+        var order = ReadyOrder(h, caLabel: "lab");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => h.Service.FinalizeAsync(order.Id, CsrFor("device-01.example.com"), "https://ca.example.com", h.ProdCa));
+
+        Assert.Equal(nameof(AcmeOrderStatus.Invalid), (await h.Db.AcmeOrders.FindAsync(order.Id))!.Status);
+        Assert.Empty(h.Issuance.IssuedCsrIds);
+    }
+
+    /// <summary>
+    /// An order that names no CA (placed before 0.4.0) is not finalized at a labelled CA, and a
+    /// CA without a label is not finalized when the label-less resolution would pick another CA.
+    /// </summary>
+    [Fact]
+    public async Task An_order_or_ca_without_a_label_is_finalized_only_where_it_resolves()
+    {
+        var h = Build();
+        var legacy = ReadyOrder(h, caLabel: null);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => h.Service.FinalizeAsync(legacy.Id, CsrFor("device-01.example.com"), "https://ca.example.com", h.ProdCa));
+
+        var unlabelled = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Unlabelled", IsEnabled = true };
+        h.Db.CertificateAuthorities.Add(unlabelled);
+        h.Db.SaveChanges();
+        var order = ReadyOrder(h, caLabel: null);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => h.Service.FinalizeAsync(order.Id, CsrFor("device-01.example.com"), "https://ca.example.com", unlabelled));
+        Assert.Empty(h.Issuance.IssuedCsrIds);
+    }
+
+    /// <summary>
+    /// The URLs an order hands out are under its CA's path, so they address the account's CA
+    /// whichever route the client used. They were label-less, which then meant the default CA.
+    /// </summary>
+    [Fact]
+    public async Task An_orders_urls_are_under_its_cas_path()
+    {
+        var h = Build();
+
+        var dto = await h.Service.CreateAsync(Guid.NewGuid(),
+            new CreateAcmeOrderRequest { Identifiers = [new AcmeIdentifier { Type = "dns", Value = "device-01.example.com" }] },
+            "https://ca.example.com", h.ProdCa);
+
+        Assert.Equal($"https://ca.example.com/acme/prod/order/{dto.Id}/finalize", dto.Finalize);
+        var authz = Assert.Single(dto.Authorizations);
+        Assert.StartsWith("https://ca.example.com/acme/prod/authz/", authz);
+        Assert.Equal("prod", (await h.Db.AcmeOrders.FindAsync(dto.Id))!.CaLabel);
+
+        var authzId = Guid.Parse(authz[(authz.LastIndexOf('/') + 1)..]);
+        var authzDto = await new AcmeAuthorizationService(h.Db).GetByIdAsync(authzId, "https://ca.example.com");
+        Assert.All(authzDto!.Challenges, c => Assert.StartsWith("https://ca.example.com/acme/prod/challenge/", c.Url));
+    }
+
+    /// <summary>The finalize refusal row carries the CA's id and space, as the issued row does.</summary>
+    [Fact]
+    public async Task A_finalize_refusal_is_audited_under_the_ca()
+    {
+        var h = Build(prodRequestProfile: new RequestProfileEntity
+        {
+            Id = Guid.NewGuid(), Name = "approval-required", SubjectDnRules = "[]", RequireApproval = true,
+        });
+        var order = ReadyOrder(h);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => h.Service.FinalizeAsync(order.Id, CsrFor("device-01.example.com"), "https://ca.example.com", h.ProdCa));
+
+        var audited = Assert.Single(h.Audit.Entries);
+        Assert.Equal("FinalizeRefused", audited.Operation);
+        Assert.Equal(h.ProdCa.Id, audited.CaId);
+        Assert.Equal(h.ProdCa.SpaceId, audited.SpaceId);
     }
 
     [Fact]
@@ -276,7 +365,7 @@ public class AcmeFinalizeTests
         var order = ReadyOrder(h);
 
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => h.Service.FinalizeAsync(order.Id, CsrFor("device-01.example.com"), "https://ca.example.com", caLabel: "lab"));
+            () => h.Service.FinalizeAsync(order.Id, CsrFor("device-01.example.com"), "https://ca.example.com", h.LabCa));
 
         Assert.Equal(nameof(AcmeOrderStatus.Invalid), (await h.Db.AcmeOrders.FindAsync(order.Id))!.Status);
         Assert.Empty(await h.Db.CertificateRequests.ToListAsync());
@@ -290,7 +379,7 @@ public class AcmeFinalizeTests
         var order = ReadyOrder(h);
 
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => h.Service.FinalizeAsync(order.Id, CsrFor("elsewhere.example.com"), "https://ca.example.com"));
+            () => h.Service.FinalizeAsync(order.Id, CsrFor("elsewhere.example.com"), "https://ca.example.com", h.ProdCa));
 
         Assert.Equal(nameof(AcmeOrderStatus.Invalid), (await h.Db.AcmeOrders.FindAsync(order.Id))!.Status);
         Assert.Empty(await h.Db.CertificateRequests.ToListAsync());
@@ -317,7 +406,7 @@ public class AcmeFinalizeTests
         var order = ReadyOrder(h);
 
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => h.Service.FinalizeAsync(order.Id, CsrFor("device-01.example.com"), "https://ca.example.com"));
+            () => h.Service.FinalizeAsync(order.Id, CsrFor("device-01.example.com"), "https://ca.example.com", h.ProdCa));
 
         Assert.Empty(h.Issuance.IssuedCsrIds);
         Assert.Equal(nameof(AcmeOrderStatus.Invalid), (await h.Db.AcmeOrders.FindAsync(order.Id))!.Status);
@@ -344,7 +433,7 @@ public class AcmeFinalizeTests
         var order = ReadyOrder(h);
 
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => h.Service.FinalizeAsync(order.Id, CsrFor("device-01.example.com"), "https://ca.example.com"));
+            () => h.Service.FinalizeAsync(order.Id, CsrFor("device-01.example.com"), "https://ca.example.com", h.ProdCa));
 
         Assert.Empty(await h.Db.CertificateRequests.ToListAsync());
         var audited = Assert.Single(h.Audit.Entries);

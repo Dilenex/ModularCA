@@ -199,7 +199,7 @@ namespace ModularCA.Core.Services.SchedulerJobs
                 }
             }
 
-            await _audit.LogAsync(AuditActionType.CrlExported, null, "Scheduler",
+            await _audit.LogAsync(AuditActionType.CrlExported, null, SchedulerService.AuditActor,
                 "CRL", task.CaCertificateId.ToString(),
                 new { CaCertificateId = task.CaCertificateId, IsDelta = crlJob?.IsDelta ?? false, HadNewEntries = hadNewEntries });
         }
@@ -208,7 +208,9 @@ namespace ModularCA.Core.Services.SchedulerJobs
         /// Returns <c>true</c> when there are revoked certs newer than the latest CRL's
         /// <c>GeneratedAt</c> (or when no CRL exists yet, per RFC 5280 §3.3 — an empty CRL is
         /// still required). Used to decide whether to actually regenerate a CRL on this tick or
-        /// just advance the schedule.
+        /// just advance the schedule. The latest CRL is this CA certificate's own, by configuration,
+        /// and the revoked certificates are those issued under it (or, for legacy rows with no
+        /// issuer link, under its subject DN): another CA can share the subject DN.
         /// </summary>
         internal async Task<bool> CheckNewCrlEntries(CertificateEntity caCertificate, CancellationToken cancellationToken = default)
         {
@@ -217,13 +219,15 @@ namespace ModularCA.Core.Services.SchedulerJobs
 
             // Get the latest CRL for this CA
             var latestCrl = await _db.Crls
-                .Where(c => c.IssuerName == caCertificate.SubjectDN)
+                .Where(c => c.Task != null && c.Task.CaCertificateId == caCertificate.CertificateId)
                 .OrderByDescending(c => c.CrlNumber)
                 .FirstOrDefaultAsync(cancellationToken);
 
             // Get all revoked certs for this CA
             var revokedCerts = await _db.Certificates
-                .Where(c => c.Revoked && c.Issuer == caCertificate.SubjectDN)
+                .Where(c => c.Revoked
+                    && (c.IssuerCertificateId == caCertificate.CertificateId
+                        || (c.IssuerCertificateId == null && c.Issuer == caCertificate.SubjectDN)))
                 .AsNoTracking()
                 .ToListAsync(cancellationToken);
 

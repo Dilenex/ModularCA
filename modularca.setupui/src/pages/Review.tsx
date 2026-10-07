@@ -31,7 +31,7 @@ interface ReviewProps {
     setupToken?: string;
     /**
      * Invoked once initialize succeeds so the parent wizard can
-     * scrub the cleartext root MySQL password and admin password from React state.
+     * scrub the cleartext database superuser password and admin password from React state.
      */
     onClearSecrets?: () => void;
 }
@@ -110,11 +110,14 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
                 username: admin.username.trim(),
                 email: admin.email.trim() || undefined,
                 password: admin.password,
+                // Decides whether key ceremonies start on; the server refuses a request without it.
+                multipleAdministrators: admin.multipleAdministrators,
             },
             features: {
                 enableCrl: security.enableCrl,
                 enableOcsp: security.enableOcsp,
                 enableAcme: security.enableAcme,
+                acmeAllowPrivateAddressValidation: security.enableAcme && security.acmeAllowPrivateAddressValidation,
                 enableEst: security.enableEst,
                 enableScep: security.enableScep,
                 enableCmp: security.enableCmp,
@@ -220,30 +223,30 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
     if (success) {
         return (
             <div className="space-y-6 text-center">
-                <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-8">
+                <div className="bg-ok-soft border border-ok/40 rounded-xl p-8">
                     <div className="flex justify-center mb-4">
-                        <div className="w-16 h-16 bg-green-100 dark:bg-green-900/40 rounded-full flex items-center justify-center">
-                            <svg className="w-8 h-8 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <div className="w-16 h-16 bg-ok-soft rounded-full flex items-center justify-center">
+                            <svg className="w-8 h-8 text-ok" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                             </svg>
                         </div>
                     </div>
-                    <h2 className="text-2xl font-bold text-green-800 dark:text-green-200 mb-2">Setup Complete!</h2>
-                    <p className="text-green-700 dark:text-green-300 mb-1">ModularCA has been initialized successfully.</p>
-                    <p className="text-sm text-green-600 dark:text-green-400">
+                    <h2 className="text-2xl font-bold text-ok mb-2">Setup Complete!</h2>
+                    <p className="text-ok mb-1">ModularCA has been initialized successfully.</p>
+                    <p className="text-sm text-ok">
                         Admin username: <span className="font-mono font-semibold">{admin.username}</span>
                     </p>
                 </div>
-                <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-4">
-                    <p className="text-amber-800 dark:text-amber-300 font-medium">The server is restarting out of setup mode.</p>
-                    <p className="text-sm text-amber-700 dark:text-amber-400 mt-1">
+                <div className="bg-warn-soft border border-warn/40 rounded-lg p-4">
+                    <p className="text-warn font-medium">The server is restarting out of setup mode.</p>
+                    <p className="text-sm text-warn mt-1">
                         This may take a few moments. If the login page does not load, wait a few seconds and try again.
                         If the server does not restart automatically, you may need to restart it manually.
                     </p>
                 </div>
                 <a
                     href="/login"
-                    className="inline-block px-8 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors"
+                    className="inline-block px-8 py-3 bg-accent hover:bg-accent-hover text-on-accent font-medium rounded-lg transition-colors"
                 >
                     Go to Login
                 </a>
@@ -254,8 +257,8 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
     return (
         <div className="space-y-6">
             <div>
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Review Configuration</h2>
-                <p className="text-gray-600 dark:text-gray-400 mt-1">
+                <h2 className="text-2xl font-bold text-ink">Review Configuration</h2>
+                <p className="text-ink-muted mt-1">
                     Review your settings before initializing ModularCA.
                 </p>
             </div>
@@ -284,11 +287,26 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
                 <SummaryRow label="Username" value={admin.username} />
                 {admin.email && <SummaryRow label="Email" value={admin.email} />}
                 <SummaryRow label="Password" value={"*".repeat(12)} />
+                <SummaryRow label="Administrators" value={admin.multipleAdministrators ? 'Several people' : 'Just me'} />
+                <SummaryRow
+                    label="Key Ceremonies"
+                    value={admin.multipleAdministrators
+                        ? 'On: a second administrator approves CA changes'
+                        : 'Off: turn on in Settings once a second administrator exists'}
+                />
             </SummaryCard>
 
             {/* Security & Features */}
             <SummaryCard title="Security &amp; Features">
                 <SummaryRow label="Enabled Protocols" value={enabledFeatures.length > 0 ? enabledFeatures.join(', ') : 'None'} />
+                {security.enableAcme && (
+                    <SummaryRow
+                        label="ACME Clients"
+                        value={security.acmeAllowPrivateAddressValidation
+                            ? 'Private network: HTTP-01 may reach private addresses'
+                            : 'Public addresses: HTTP-01 refuses private addresses'}
+                    />
+                )}
                 <SummaryRow label="Max Failed Logins" value={String(security.maxFailedLoginAttempts)} />
                 <SummaryRow label="Lockout Duration" value={`${security.lockoutMinutes} min`} />
                 <SummaryRow label="JWT Lifetime" value={`${security.jwtExpirationMinutes} min`} />
@@ -327,7 +345,7 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
                         <SummaryRow label="Management UI" value={httpsBaseUrl} />
                         <SummaryRow label="CRL / OCSP / AIA" value={httpBaseUrl} />
                         {portsProxied && (
-                            <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
+                            <p className="text-xs text-warn mt-2">
                                 Public ports differ from the listener ports, which assumes a proxy
                                 forwards {network.httpsBindPort}&nbsp;&rarr;&nbsp;{httpsPublicPort} and{' '}
                                 {network.httpPort}&nbsp;&rarr;&nbsp;{httpPublicPort}. If nothing does
@@ -336,7 +354,7 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
                         )}
                     </>
                 ) : (
-                    <p className="text-xs text-amber-600 dark:text-amber-400">
+                    <p className="text-xs text-warn">
                         No public domain set, so these URLs are derived at runtime from the request
                         host. Certificates issued before a public domain is configured may carry
                         addresses that clients outside this host cannot resolve.
@@ -358,11 +376,11 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
 
             {/* Error banner */}
             {error && (
-                <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
-                    <p className="text-sm text-red-800 dark:text-red-300">{error}</p>
+                <div className="bg-crit-soft border border-crit/40 rounded-lg p-4">
+                    <p className="text-sm text-crit">{error}</p>
                     <button
                         onClick={() => setError(null)}
-                        className="mt-2 text-sm text-red-600 dark:text-red-400 underline hover:no-underline"
+                        className="mt-2 text-sm text-crit underline hover:no-underline"
                     >
                         Try Again
                     </button>
@@ -374,10 +392,10 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
                 <button
                     onClick={handleInitialize}
                     disabled={submitting}
-                    className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 dark:disabled:bg-blue-800 text-white font-semibold rounded-lg transition-colors flex items-center justify-center gap-2"
+                    className="w-full py-3 bg-accent hover:bg-accent-hover disabled:bg-ink-faint text-on-accent font-semibold rounded-lg transition-colors flex items-center justify-center gap-2"
                 >
                     {submitting && (
-                        <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <svg className="animate-spin h-5 w-5 text-on-accent" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                         </svg>
@@ -390,9 +408,9 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
 };
 
 const SummaryCard: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
-    <div className="bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-        <div className="px-4 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">{title}</h3>
+    <div className="bg-ground border border-line rounded-lg overflow-hidden">
+        <div className="px-4 py-2 bg-raised border-b border-line">
+            <h3 className="text-sm font-semibold text-ink">{title}</h3>
         </div>
         <div className="px-4 py-3 space-y-2">
             {children}
@@ -402,8 +420,8 @@ const SummaryCard: React.FC<{ title: string; children: React.ReactNode }> = ({ t
 
 const SummaryRow: React.FC<{ label: string; value: string }> = ({ label, value }) => (
     <div className="flex justify-between items-start text-sm gap-4">
-        <span className="text-gray-600 dark:text-gray-400 shrink-0">{label}</span>
-        <span className="text-gray-900 dark:text-white text-right break-all">{value}</span>
+        <span className="text-ink-muted shrink-0">{label}</span>
+        <span className="text-ink text-right break-all">{value}</span>
     </div>
 );
 

@@ -56,6 +56,7 @@ export const adminRequestProfiles: ApiEndpoint[] = [
         category: 'Admin Request Profiles',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for create-request-profile. Required for this operation.' },
         ],
         responseDescription: 'Created request profile with ID.',
     },

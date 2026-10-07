@@ -11,9 +11,11 @@ namespace ModularCA.Shared.Enums;
 /// CreateSshCa, DeleteSshCa, RevokeCa, etc.) — anything that mutates CA state.
 /// </para>
 /// <para>
-/// <b>TenantPolicyChange</b> gates downgrades of <see cref="Entities.TenantEntity.RequireKeyCeremony"/>
-/// and <see cref="Entities.TenantEntity.CeremonyRequiredApprovals"/>. The quorum that protects
-/// this ceremony is snapshotted from the tenant's <i>current</i> CeremonyRequiredApprovals so an
+/// <b>SpacePolicyChange</b> (<c>TenantPolicyChange</c> before 0.4.0; the int is unchanged and
+/// the RenameTenantToSpace migration renames stored operation types) gates downgrades of
+/// <see cref="Entities.SpaceEntity.RequireKeyCeremony"/>
+/// and <see cref="Entities.SpaceEntity.CeremonyRequiredApprovals"/>. The quorum that protects
+/// this ceremony is snapshotted from the space's <i>current</i> CeremonyRequiredApprovals so an
 /// in-flight downgrade can't ratchet itself down through a second pending ceremony.
 /// </para>
 /// </remarks>
@@ -22,8 +24,8 @@ public enum CeremonyType
     /// <summary>Ceremonies that mutate CA state (create/revoke/delete).</summary>
     CaCreation = 0,
 
-    /// <summary>Ceremonies that mutate tenant security policy (ceremony-requirement fields).</summary>
-    TenantPolicyChange = 1,
+    /// <summary>Ceremonies that mutate a space's security policy (ceremony-requirement fields).</summary>
+    SpacePolicyChange = 1,
 
     /// <summary>
     /// Ceremonies that change a <i>controlled user</i>'s privileges — promote (grant),
@@ -32,4 +34,12 @@ public enum CeremonyType
     /// approval threshold comes from the <i>user quorum</i> (distinct from the CA/key quorum).
     /// </summary>
     ControlledUserChange = 2,
+
+    /// <summary>
+    /// Ceremonies that change the instance's own CA policy on
+    /// <see cref="Entities.SecurityPolicyEntity"/> (ceremony requirement, key quorum, instance-CA
+    /// user quorum). The instance counterpart of <see cref="SpacePolicyChange"/>; its quorum is
+    /// the instance's <c>CeremonyRequiredApprovals</c>, one pending at a time.
+    /// </summary>
+    InstancePolicyChange = 3,
 }

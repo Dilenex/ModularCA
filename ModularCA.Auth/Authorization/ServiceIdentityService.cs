@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using ModularCA.Core.Authorization;
 using ModularCA.Database;
 using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Entities;
@@ -14,15 +15,15 @@ public sealed class ServiceIdentityCannotSignInException()
     : InvalidOperationException("A service identity cannot sign in; it only holds permissions.");
 
 /// <summary>
-/// Where a service identity lives and who may manage it: the system (both null), one tenant, or
+/// Where a service identity lives and who may manage it: the system (both null), one space, or
 /// one CA. Managing it needs <c>ca.manage</c> at that scope or above, and its groups must lie
 /// within the scope, so a CA administrator can only ever create an identity that is confined to
 /// their CA.
 /// </summary>
-public sealed record ServiceIdentityScope(Guid? TenantId, Guid? CaId)
+public sealed record ServiceIdentityScope(Guid? SpaceId, Guid? CaId)
 {
     public static readonly ServiceIdentityScope System = new(null, null);
-    public bool IsSystem => TenantId == null && CaId == null;
+    public bool IsSystem => SpaceId == null && CaId == null;
 }
 
 /// <summary>What a caller asks for when creating a service identity.</summary>
@@ -39,7 +40,7 @@ public sealed record ServiceIdentitySpec(
 /// existing authorization check works on them unchanged because they are users; every sign-in
 /// path refuses them because <see cref="UserEntity.IsServiceIdentity"/> is set.
 /// </summary>
-public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthorizationService auth)
+public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthorizationService auth, IControlledUserCeremonyService? controlledUsers = null)
 {
     /// <summary>The synthetic mail domain given to service identities, which have no mailbox.</summary>
     public const string MailDomain = "service-identity.invalid";
@@ -47,31 +48,32 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
     /// <summary>
     /// Whether the caller may create, change or delete an identity of <paramref name="scope"/>:
     /// <c>system.manage</c> anywhere; <c>ca.manage</c> at system scope for a system identity;
-    /// tenant-wide <c>ca.manage</c> for a tenant identity; <c>ca.manage</c> on the CA for a CA
-    /// identity (tenant-wide and system holders pass that check too).
+    /// space-wide <c>ca.manage</c> for a space identity; <c>ca.manage</c> on the CA for a CA
+    /// identity (space-wide and system holders pass that check too).
     /// </summary>
     public async Task<bool> MayManageAsync(Guid callerId, ServiceIdentityScope scope)
     {
         if (await auth.IsSystemAdminAsync(callerId)) return true;
         if (scope.IsSystem) return await auth.HasSystemCapabilityAsync(callerId, Capabilities.CaManage);
         if (scope.CaId is Guid caId) return await auth.HasCaCapabilityAsync(callerId, caId, Capabilities.CaManage);
-        return await auth.HasTenantCapabilityAsync(callerId, scope.TenantId!.Value, Capabilities.CaManage);
+        return await auth.HasSpaceCapabilityAsync(callerId, scope.SpaceId!.Value, Capabilities.CaManage);
     }
 
     /// <summary>
     /// Whether a group may be held by an identity of <paramref name="scope"/>. Never a system
-    /// group and never a group of the System tenant (its CAs are system infrastructure): a
-    /// service identity cannot be given system-tier rights by any route. A CA-scoped group fits
-    /// a system identity, an identity of the group's tenant, or an identity of that CA. A
-    /// tenant-wide group fits a system identity or an identity of that tenant.
+    /// group and never an instance group (<paramref name="groupIsInstance"/>: no space, as the
+    /// system signing CA's and the SSH CAs' groups, which were the system tenant's before 0.4.0): a service
+    /// identity cannot be given system-tier rights by any route. A CA-scoped group fits a system
+    /// identity, an identity of the group's space, or an identity of that CA. A space-wide group
+    /// fits a system identity or an identity of that space.
     /// </summary>
-    public static bool GroupFitsScope(CaGroupEntity group, ServiceIdentityScope scope, bool groupTenantIsSystem)
+    public static bool GroupFitsScope(CaGroupEntity group, ServiceIdentityScope scope, bool groupIsInstance)
     {
-        if (group.IsSystemGroup || group.IsSystemTierSuper || groupTenantIsSystem) return false;
+        if (group.IsSystemGroup || group.IsSystemTierSuper || groupIsInstance || group.SpaceId == null) return false;
         if (scope.IsSystem) return true;
         if (group.CertificateAuthorityId is Guid groupCa)
-            return scope.CaId == groupCa || (scope.CaId == null && scope.TenantId == group.TenantId);
-        return scope.CaId == null && scope.TenantId == group.TenantId;
+            return scope.CaId == groupCa || (scope.CaId == null && scope.SpaceId == group.SpaceId);
+        return scope.CaId == null && scope.SpaceId == group.SpaceId;
     }
 
     /// <summary>The identities the caller may manage, with their groups, ordered by username.</summary>
@@ -83,14 +85,14 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
 
         if (!await auth.IsSystemAdminAsync(callerId) && !await auth.HasSystemCapabilityAsync(callerId, Capabilities.CaManage))
         {
-            var tenants = await auth.GetTenantIdsWithCapabilityAsync(callerId, Capabilities.CaManage);
+            var spaces = await auth.GetSpaceIdsWithCapabilityAsync(callerId, Capabilities.CaManage);
             var cas = await auth.GetAccessibleCaIdsAsync(callerId, Capabilities.CaManage);
-            var tenantCas = await db.CertificateAuthorities.AsNoTracking().IgnoreQueryFilters()
-                .Where(ca => tenants.Contains(ca.TenantId)).Select(ca => ca.Id).ToListAsync();
-            var visibleCas = cas.Concat(tenantCas).Distinct().ToList();
+            var spaceCas = await db.CertificateAuthorities.AsNoTracking()
+                .Where(ca => ca.SpaceId != null && spaces.Contains(ca.SpaceId.Value)).Select(ca => ca.Id).ToListAsync();
+            var visibleCas = cas.Concat(spaceCas).Distinct().ToList();
             query = query.Where(u =>
                 (u.ServiceScopeCaId != null && visibleCas.Contains(u.ServiceScopeCaId.Value))
-                || (u.ServiceScopeCaId == null && u.ServiceScopeTenantId != null && tenants.Contains(u.ServiceScopeTenantId.Value)));
+                || (u.ServiceScopeCaId == null && u.ServiceScopeSpaceId != null && spaces.Contains(u.ServiceScopeSpaceId.Value)));
         }
 
         return await query.OrderBy(u => u.Username).ToListAsync();
@@ -101,7 +103,7 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
         => db.Users.AsNoTracking().Include(u => u.GroupMemberships).ThenInclude(m => m.Group)
             .FirstOrDefaultAsync(u => u.Id == id && u.IsServiceIdentity);
 
-    /// <summary>Creates an identity in the caller's scope with the requested groups. No password is ever set.</summary>
+    /// <summary>Creates an identity in the caller's scope with the requested groups. No password is ever set. Controlled groups need system-super.</summary>
     public async Task<UserEntity> CreateAsync(Guid callerId, ServiceIdentitySpec spec)
     {
         var username = NormalizeUsername(spec.Username);
@@ -112,6 +114,7 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
             throw new InvalidOperationException($"Username '{username}' is taken.");
 
         var groups = await AssignableGroupsAsync(callerId, scope, spec.GroupIds);
+        await EnsureMayChangeControlledMembershipAsync(callerId, groups);
 
         var user = new UserEntity
         {
@@ -120,7 +123,7 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
             DisplayName = string.IsNullOrWhiteSpace(spec.DisplayName) ? username : spec.DisplayName.Trim(),
             Description = spec.Description?.Trim(),
             IsServiceIdentity = true,
-            ServiceScopeTenantId = scope.TenantId,
+            ServiceScopeSpaceId = scope.SpaceId,
             ServiceScopeCaId = scope.CaId,
             PasswordHash = string.Empty,
             PasswordNeverExpires = true,
@@ -150,7 +153,8 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
 
     /// <summary>
     /// Replaces the identity's group memberships. Every group added or removed must fit the
-    /// identity's scope and be one the caller administers.
+    /// identity's scope and be one the caller administers; adding or removing a controlled group
+    /// needs system-super.
     /// </summary>
     public async Task<UserEntity> SetGroupsAsync(Guid callerId, Guid id, IReadOnlyList<Guid> groupIds)
     {
@@ -162,6 +166,10 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
         var wanted = await AssignableGroupsAsync(callerId, scope, groupIds);
         var wantedIds = wanted.Select(g => g.Id).ToHashSet();
         var current = await db.CaGroupMembers.Include(m => m.Group).Where(m => m.UserId == id).ToListAsync();
+        var currentIds = current.Select(m => m.GroupId).ToHashSet();
+        await EnsureMayChangeControlledMembershipAsync(callerId,
+            current.Where(m => !wantedIds.Contains(m.GroupId) && m.Group != null).Select(m => m.Group!)
+                .Concat(wanted.Where(g => !currentIds.Contains(g.Id))));
 
         foreach (var m in current.Where(m => !wantedIds.Contains(m.GroupId)))
         {
@@ -169,7 +177,6 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
                 throw new UnauthorizedAccessException($"You cannot remove membership of '{m.Group.DisplayName}'.");
             db.CaGroupMembers.Remove(m);
         }
-        var currentIds = current.Select(m => m.GroupId).ToHashSet();
         foreach (var g in wanted.Where(g => !currentIds.Contains(g.Id)))
             db.CaGroupMembers.Add(new CaGroupMemberEntity { GroupId = g.Id, UserId = id, AddedByUserId = callerId });
 
@@ -177,7 +184,7 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
         return (await GetAsync(id))!;
     }
 
-    /// <summary>Deletes the identity. Refused while a Kerberos realm binding acts as it.</summary>
+    /// <summary>Deletes the identity. Refused while a Kerberos realm binding acts as it, and for non-super callers while it holds a controlled group.</summary>
     public async Task DeleteAsync(Guid callerId, Guid id)
     {
         var user = await LoadAsync(id);
@@ -186,14 +193,15 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
         var realms = await db.KerberosRealms.Where(r => r.EnrollmentUserId == id).Select(r => r.Realm).ToListAsync();
         if (realms.Count > 0)
             throw new InvalidOperationException($"Kerberos realm {string.Join(", ", realms)} acts as this identity; point the realm elsewhere first.");
-        var memberships = await db.CaGroupMembers.Where(m => m.UserId == id).ToListAsync();
+        var memberships = await db.CaGroupMembers.Include(m => m.Group).Where(m => m.UserId == id).ToListAsync();
+        await EnsureMayChangeControlledMembershipAsync(callerId, memberships.Where(m => m.Group != null).Select(m => m.Group!));
         db.CaGroupMembers.RemoveRange(memberships);
         db.Users.Remove(user);
         await db.SaveChangesAsync();
     }
 
     /// <summary>The scope an existing identity was created with.</summary>
-    public static ServiceIdentityScope ScopeOf(UserEntity user) => new(user.ServiceScopeTenantId, user.ServiceScopeCaId);
+    public static ServiceIdentityScope ScopeOf(UserEntity user) => new(user.ServiceScopeSpaceId, user.ServiceScopeCaId);
 
     // ── Internals ──
 
@@ -201,18 +209,18 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
         => await db.Users.FirstOrDefaultAsync(u => u.Id == id && u.IsServiceIdentity)
             ?? throw new KeyNotFoundException("Service identity not found.");
 
-    /// <summary>A CA scope carries its tenant; a tenant scope must name a real tenant.</summary>
+    /// <summary>A CA scope carries its space; a space scope must name a real space. A deleted CA or space is refused.</summary>
     private async Task<ServiceIdentityScope> NormalizeScopeAsync(ServiceIdentityScope scope)
     {
         if (scope.CaId is Guid caId)
         {
-            var ca = await db.CertificateAuthorities.AsNoTracking().IgnoreQueryFilters()
-                .Where(c => c.Id == caId).Select(c => new { c.TenantId }).FirstOrDefaultAsync()
+            var ca = await db.CertificateAuthorities.AsNoTracking()
+                .Where(c => c.Id == caId).Select(c => new { c.SpaceId }).FirstOrDefaultAsync()
                 ?? throw new InvalidOperationException("The CA does not exist.");
-            return new ServiceIdentityScope(ca.TenantId, caId);
+            return new ServiceIdentityScope(ca.SpaceId, caId);
         }
-        if (scope.TenantId is Guid tenantId && !await db.Tenants.IgnoreQueryFilters().AnyAsync(t => t.Id == tenantId))
-            throw new InvalidOperationException("The tenant does not exist.");
+        if (scope.SpaceId is Guid spaceId && !await db.Spaces.AnyAsync(t => t.Id == spaceId))
+            throw new InvalidOperationException("The space does not exist.");
         return scope;
     }
 
@@ -223,10 +231,9 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
         var groups = await db.CaGroups.Where(g => ids.Contains(g.Id)).ToListAsync();
         if (groups.Count != ids.Count)
             throw new InvalidOperationException("A requested group does not exist.");
-        var systemTenants = await db.Tenants.IgnoreQueryFilters().Where(t => t.IsSystemTenant).Select(t => t.Id).ToListAsync();
         foreach (var g in groups)
         {
-            if (!GroupFitsScope(g, scope, systemTenants.Contains(g.TenantId)))
+            if (!GroupFitsScope(g, scope, g.SpaceId == null))
                 throw new InvalidOperationException($"Group '{g.DisplayName}' is outside the identity's scope.");
             if (!await MayAssignGroupAsync(callerId, g))
                 throw new UnauthorizedAccessException($"You do not administer group '{g.DisplayName}'.");
@@ -234,14 +241,37 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
         return groups;
     }
 
-    /// <summary>System groups are never assignable here; otherwise ca.manage on the group's CA, or tenant-wide for its tenant.</summary>
+    /// <summary>
+    /// Adding an identity to, or removing it from, a privilege-controlled group (structure or
+    /// capability, see <see cref="ControlledTierResolver.ClassifyGroupAsync"/>) is reserved to
+    /// system-super (as the caller's worn badge allows); anyone else is refused with <see cref="UnauthorizedAccessException"/>. Service
+    /// identities have no ceremony path.
+    /// </summary>
+    private async Task EnsureMayChangeControlledMembershipAsync(Guid callerId, IEnumerable<CaGroupEntity> changedGroups)
+    {
+        CaGroupEntity? controlled = null;
+        foreach (var g in changedGroups)
+        {
+            if (await ControlledTierResolver.ClassifyGroupAsync(db, g) != null) { controlled = g; break; }
+        }
+        if (controlled == null) return;
+        var isSuper = controlledUsers != null
+            ? await controlledUsers.IsSuperAsync(callerId)
+            : await db.CaGroupMembers.AnyAsync(m => m.UserId == callerId && m.Group.IsSystemTierSuper);
+        if (isSuper) return;
+        throw new UnauthorizedAccessException(
+            $"Group '{controlled.DisplayName}' confers a privileged tier; only a system-super can add a service identity to it, remove one from it, or delete an identity that holds it.");
+    }
+
+    /// <summary>System groups are never assignable here; otherwise ca.manage on the group's CA, or space-wide for its space.</summary>
     private async Task<bool> MayAssignGroupAsync(Guid callerId, CaGroupEntity group)
     {
         if (group.IsSystemGroup) return false;
         if (await auth.IsSystemAdminAsync(callerId)) return true;
         if (group.CertificateAuthorityId is Guid caId)
             return await auth.HasCaCapabilityAsync(callerId, caId, Capabilities.CaManage);
-        return await auth.HasTenantCapabilityAsync(callerId, group.TenantId, Capabilities.CaManage);
+        return group.SpaceId is Guid spaceId
+            && await auth.HasSpaceCapabilityAsync(callerId, spaceId, Capabilities.CaManage);
     }
 
     internal static string NormalizeUsername(string username)

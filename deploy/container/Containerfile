@@ -4,24 +4,52 @@
 # same image runs under Podman and Docker. To build by hand, from the repository root with the
 # tarball in dist/:
 #
-#   podman build -f deploy/container/Containerfile --build-arg DIST=dist/modularca-0.3.0-linux-x64.tar.gz -t modularca:0.3.0 .
+#   podman build -f deploy/container/Containerfile --build-arg DIST=dist/modularca-0.4.0-linux-x64.tar.gz -t modularca:0.4.0 .
 #
-# The image carries no configuration and no data. /opt/modularca/config and /var/lib/modularca
-# are volumes; the entrypoint bootstraps the node headlessly the first time it starts with a
-# bootstrap.yaml and a setup-database.yaml in the config volume, and just starts it afterwards.
+# The image carries no configuration and no data. config, keystores, logs and backups under
+# /opt/modularca are volumes, and the only directories the service account can write: the program
+# files belong to root, as install.sh leaves them. With no configuration the entrypoint starts the
+# setup wizard; with a bootstrap.yaml and a setup-database.yaml in the config volume it bootstraps
+# headlessly instead. Afterwards it just starts.
 FROM docker.io/library/debian:12-slim
 
 ARG DIST
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates libicu72 libssl3 tzdata \
+# pg_dump takes the backups and pg_restore restores them, and neither works against a server
+# newer than itself. Debian 12 carries version 15, so the client comes from the PostgreSQL
+# project's repository at the major version named here. Match it to the server:
+# --build-arg PG_MAJOR=17 for PostgreSQL 17.
+ARG PG_MAJOR=16
+
+ADD https://www.postgresql.org/media/keys/ACCC4CF8.asc /usr/share/keyrings/pgdg.asc
+
+# openssh-client is ssh-keygen, which signs SSH certificates.
+RUN chmod 0644 /usr/share/keyrings/pgdg.asc \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates libicu72 libssl3 tzdata openssh-client \
+ && echo "deb [signed-by=/usr/share/keyrings/pgdg.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends "postgresql-client-${PG_MAJOR}" \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --system modularca && useradd --system --gid modularca --home-dir /opt/modularca --shell /usr/sbin/nologin modularca
 
+# share/ holds the schema-ownership repair SQL, which is run as the PostgreSQL superuser: it stays
+# root-owned under /usr/share/modularca. install.sh and deploy/ are for a host install.
+# /var/lib/modularca is kept only so that a mount an older manifest names still has a target.
 COPY ${DIST} /tmp/dist.tar.gz
-RUN mkdir -p /opt/modularca /var/lib/modularca \
+RUN mkdir -p /opt/modularca /var/lib/modularca /usr/share/modularca \
  && tar -xzf /tmp/dist.tar.gz --strip-components=1 -C /opt/modularca \
  && rm /tmp/dist.tar.gz \
- && chown -R modularca:modularca /opt/modularca /var/lib/modularca
+ && mv /opt/modularca/share/sql /usr/share/modularca/sql && rmdir /opt/modularca/share \
+ && rm -rf /opt/modularca/install.sh /opt/modularca/deploy \
+ && chown -R root:root /opt/modularca /usr/share/modularca \
+ && chmod -R u=rwX,go=rX /opt/modularca /usr/share/modularca \
+ && chmod 0755 /opt/modularca/ModularCA.API /opt/modularca/ModularCA.Keystore.Unlocker /opt/modularca/modularca-migrate \
+ && for dir in config keystores logs backups; do \
+      mkdir -p "/opt/modularca/$dir" \
+      && chown -R modularca:modularca "/opt/modularca/$dir" \
+      && chmod 0750 "/opt/modularca/$dir" || exit 1; \
+    done \
+ && chown modularca:modularca /var/lib/modularca
 
 COPY deploy/container/entrypoint.sh /usr/local/bin/modularca-entrypoint
 RUN chmod +x /usr/local/bin/modularca-entrypoint
@@ -29,6 +57,6 @@ RUN chmod +x /usr/local/bin/modularca-entrypoint
 USER modularca
 WORKDIR /opt/modularca
 ENV DOTNET_ENVIRONMENT=Production DOTNET_CONSOLE_ANSI_COLOR=false
-VOLUME ["/opt/modularca/config", "/var/lib/modularca"]
+VOLUME ["/opt/modularca/config", "/opt/modularca/keystores", "/opt/modularca/logs", "/opt/modularca/backups"]
 EXPOSE 8443 8080
 ENTRYPOINT ["/usr/local/bin/modularca-entrypoint"]

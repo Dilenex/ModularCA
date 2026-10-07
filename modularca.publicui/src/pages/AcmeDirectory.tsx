@@ -72,16 +72,16 @@ const AcmeDirectory: React.FC = () => {
     return (
         <div className="space-y-6">
             <div>
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">ACME Directory</h1>
-                <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                <h1 className="text-xl font-semibold text-ink">ACME Directory</h1>
+                <p className="text-sm text-ink-muted mt-1">
                     Use the ACME protocol to automatically obtain and renew TLS certificates.
                 </p>
             </div>
 
             {/* No ACME-enabled CA */}
             {!loading && !error && cas.length === 0 && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-5">
-                    <p className="text-sm text-gray-600 dark:text-gray-400">
+                <div className="bg-raised border border-line rounded-lg p-5">
+                    <p className="text-sm text-ink-muted">
                         ACME is not enabled for any certificate authority on this deployment.
                     </p>
                 </div>
@@ -89,12 +89,12 @@ const AcmeDirectory: React.FC = () => {
 
             {/* CA Selector */}
             {cas.length > 1 && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-5">
-                    <h2 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Certificate Authority</h2>
+                <div className="bg-raised border border-line rounded-lg p-5">
+                    <h2 className="text-sm font-semibold text-ink mb-3">Certificate Authority</h2>
                     <select
                         value={selectedLabel}
                         onChange={(e) => setSelectedLabel(e.target.value)}
-                        className="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-white rounded px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                        className="w-full bg-raised border border-line-strong text-ink rounded px-3 py-2 text-sm focus:border-accent focus:outline-none"
                     >
                         {cas.map((ca) => (
                             <option key={ca.label} value={ca.label}>
@@ -107,33 +107,33 @@ const AcmeDirectory: React.FC = () => {
 
             {/* Directory URL */}
             {directoryUrl && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-5">
-                    <h2 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Directory URL</h2>
-                    <div className="bg-gray-50 dark:bg-gray-900 rounded px-4 py-3 font-mono text-sm text-blue-800 dark:text-blue-400 select-all">
+                <div className="bg-raised border border-line rounded-lg p-5">
+                    <h2 className="text-sm font-semibold text-ink mb-3">Directory URL</h2>
+                    <div className="bg-sunken rounded px-4 py-3 data-mono text-accent-ink select-all">
                         {directoryUrl}
                     </div>
                 </div>
             )}
 
             {/* Directory endpoints */}
-            {loading && <p className="text-sm text-gray-600 dark:text-gray-400">Loading directory...</p>}
-            {error && <p className="text-sm text-red-800 dark:text-red-400">{error}</p>}
+            {loading && <p className="text-sm text-ink-muted">Loading directory...</p>}
+            {error && <p className="text-sm text-crit">{error}</p>}
 
             {directory && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-5">
-                    <h2 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Endpoints</h2>
+                <div className="bg-raised border border-line rounded-lg p-5">
+                    <h2 className="text-sm font-semibold text-ink mb-3">Endpoints</h2>
                     <div className="space-y-2">
                         {Object.entries(directory).filter(([k]) => k !== 'meta').map(([key, url]) => (
-                            <div key={key} className="flex items-center justify-between py-1 border-b border-gray-300 dark:border-gray-700/50 last:border-b-0">
-                                <span className="text-xs text-gray-600 dark:text-gray-400 font-mono">{key}</span>
-                                <span className="text-xs text-gray-700 dark:text-gray-300 font-mono">{String(url)}</span>
+                            <div key={key} className="flex items-center justify-between py-1 border-b border-line last:border-b-0">
+                                <span className="text-ink-muted data-mono">{key}</span>
+                                <span className="text-ink data-mono">{String(url)}</span>
                             </div>
                         ))}
                     </div>
                     {directory.meta && (
-                        <div className="mt-4 pt-3 border-t border-gray-300 dark:border-gray-700">
-                            <h3 className="text-xs font-semibold text-gray-600 mb-2">Metadata</h3>
-                            <pre className="text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 rounded p-3 overflow-x-auto">
+                        <div className="mt-4 pt-3 border-t border-line">
+                            <h3 className="text-xs font-semibold text-ink-muted mb-2">Metadata</h3>
+                            <pre className="text-xs text-ink-muted bg-sunken rounded p-3 overflow-x-auto">
                                 {JSON.stringify(directory.meta, null, 2)}
                             </pre>
                         </div>
@@ -143,12 +143,12 @@ const AcmeDirectory: React.FC = () => {
 
             {/* Client examples */}
             {directoryUrl && (
-                <div className="bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-5 space-y-4">
-                    <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Client Configuration</h2>
+                <div className="bg-raised border border-line rounded-lg p-5 space-y-4">
+                    <h2 className="text-sm font-semibold text-ink">Client Configuration</h2>
 
                     <div>
-                        <h3 className="text-xs font-semibold text-blue-800 dark:text-blue-400 mb-1">certbot</h3>
-                        <pre className="text-xs text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-900 rounded p-3 overflow-x-auto">
+                        <h3 className="text-xs font-semibold text-accent-ink mb-1">certbot</h3>
+                        <pre className="text-xs text-ink bg-sunken rounded p-3 overflow-x-auto">
 {`certbot certonly \\
   --server ${directoryUrl} \\
   --standalone \\
@@ -157,8 +157,8 @@ const AcmeDirectory: React.FC = () => {
                     </div>
 
                     <div>
-                        <h3 className="text-xs font-semibold text-blue-800 dark:text-blue-400 mb-1">acme.sh</h3>
-                        <pre className="text-xs text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-900 rounded p-3 overflow-x-auto">
+                        <h3 className="text-xs font-semibold text-accent-ink mb-1">acme.sh</h3>
+                        <pre className="text-xs text-ink bg-sunken rounded p-3 overflow-x-auto">
 {`acme.sh --issue \\
   --server ${directoryUrl} \\
   --standalone \\
@@ -167,15 +167,15 @@ const AcmeDirectory: React.FC = () => {
                     </div>
 
                     <div>
-                        <h3 className="text-xs font-semibold text-blue-800 dark:text-blue-400 mb-1">win-acme</h3>
-                        <pre className="text-xs text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-900 rounded p-3 overflow-x-auto">
+                        <h3 className="text-xs font-semibold text-accent-ink mb-1">win-acme</h3>
+                        <pre className="text-xs text-ink bg-sunken rounded p-3 overflow-x-auto">
 {`wacs.exe --baseuri ${directoryUrl}`}
                         </pre>
                     </div>
 
-                    <div className="text-xs text-gray-600 pt-2 border-t border-gray-300 dark:border-gray-700">
+                    <div className="text-xs text-ink-muted pt-2 border-t border-line">
                         If this CA uses a self-signed root certificate, you may need to add the
-                        <code className="mx-1 px-1 bg-gray-50 dark:bg-gray-900 rounded">--no-verify-ssl</code> flag
+                        <code className="mx-1 px-1 bg-sunken rounded">--no-verify-ssl</code> flag
                         or install the CA certificate in your trust store first.
                     </div>
                 </div>

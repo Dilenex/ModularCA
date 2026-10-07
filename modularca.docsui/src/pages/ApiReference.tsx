@@ -50,10 +50,10 @@ export default function ApiReference() {
     return (
         <div className="max-w-4xl mx-auto">
             <div className="mb-8">
-                <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
+                <h1 className="text-2xl font-semibold text-ink mb-2">
                     API Reference
                 </h1>
-                <p className="text-gray-600 dark:text-gray-400">
+                <p className="text-ink-muted">
                     Complete REST API documentation for all ModularCA endpoints.
                 </p>
             </div>
@@ -65,7 +65,7 @@ export default function ApiReference() {
                     placeholder="Search endpoints by path, summary, or category..."
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    className="w-full px-4 py-2 text-sm bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-lg text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    className="w-full px-4 py-2 text-sm bg-raised border border-line-strong rounded-lg text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
                 />
             </div>
 
@@ -77,8 +77,8 @@ export default function ApiReference() {
                         onClick={() => setActiveCategory(null)}
                         className={`px-3 py-1 text-sm rounded-full border transition-colors cursor-pointer ${
                             activeCategory === null
-                                ? 'bg-blue-600 text-white border-blue-600'
-                                : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500'
+                                ? 'bg-accent text-on-accent border-accent'
+                                : 'bg-raised text-ink border-line-strong hover:border-accent'
                         }`}
                     >
                         All
@@ -90,8 +90,8 @@ export default function ApiReference() {
                             onClick={() => setActiveCategory(cat === activeCategory ? null : cat)}
                             className={`px-3 py-1 text-sm rounded-full border transition-colors cursor-pointer ${
                                 activeCategory === cat
-                                    ? 'bg-blue-600 text-white border-blue-600'
-                                    : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500'
+                                    ? 'bg-accent text-on-accent border-accent'
+                                    : 'bg-raised text-ink border-line-strong hover:border-accent'
                             }`}
                         >
                             {cat}
@@ -101,13 +101,13 @@ export default function ApiReference() {
             )}
 
             {/* Count */}
-            <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
+            <p className="text-sm text-ink-muted mb-6">
                 Showing {filtered.length} of {endpoints.length} endpoints
             </p>
 
             {/* Grouped endpoint list */}
             {grouped.length === 0 ? (
-                <div className="text-center py-12 text-gray-500 dark:text-gray-400">
+                <div className="text-center py-12 text-ink-muted">
                     {endpoints.length === 0
                         ? 'No endpoints loaded. The endpoint data file has not been created yet.'
                         : 'No endpoints match your search.'}
@@ -116,7 +116,7 @@ export default function ApiReference() {
                 <div className="space-y-8">
                     {grouped.map(([category, eps]) => (
                         <section key={category}>
-                            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
+                            <h2 className="text-xl font-semibold text-ink mb-4">
                                 {category}
                             </h2>
                             <div className="space-y-2">

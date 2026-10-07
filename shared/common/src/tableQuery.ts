@@ -3,7 +3,7 @@
  * `useTableQuery` hook binds them to the router.
  *
  * Values equal to their defaults are left out of the URL, so a plain page link stays plain
- * and only what the user changed shows. The console's scope keys (`ca`, `tenant`, `scope`)
+ * and only what the user changed shows. The console's scope keys (`ca`, `space`, `scope`)
  * are never written or cleared here: scope belongs to the sidebar, not to any one table.
  */
 
@@ -13,7 +13,7 @@ export interface SortSpec {
     dir: 'asc' | 'desc';
 }
 
-export const SCOPE_KEYS: ReadonlySet<string> = new Set(['ca', 'tenant', 'scope']);
+export const SCOPE_KEYS: ReadonlySet<string> = new Set(['ca', 'space', 'scope']);
 
 /** Parses `-field` / `field` / `field:desc`; null for nothing or an empty string. */
 export function parseSort(raw: string | null | undefined): SortSpec | null {

@@ -1,11 +1,11 @@
 # ModularCA — systemd unit stub
 #
 # Install:
-#   sudo useradd --system --home /opt/modularca --shell /usr/sbin/nologin modularca
-#   sudo mkdir -p /opt/modularca && sudo cp -r dist/linux-x64/* /opt/modularca/
-#   sudo chown -R modularca:modularca /opt/modularca
-#   sudo cp deploy/modularca.service /etc/systemd/system/
-#   sudo systemctl daemon-reload && sudo systemctl enable --now modularca
+#   sudo ./install.sh     (from the extracted archive; it creates the account), or install the .deb
+#   sudo systemctl enable --now modularca
+#
+# The program files in /opt/modularca belong to root; the service account owns only the runtime
+# directories listed in ReadWritePaths below. install.sh and the .deb's postinst set this up.
 #
 # Logs:  journalctl -u modularca -f
 #
@@ -17,7 +17,7 @@ Description=ModularCA Certificate Authority
 Documentation=https://github.com/edphemeral/modularCA
 # The CA cannot serve issuance, OCSP or CRL without its database. Ordering only —
 # add Requires= if the DB is local and the service should not start without it.
-After=network-online.target mysql.service mariadb.service
+After=network-online.target postgresql.service
 Wants=network-online.target
 
 # These belong in [Unit], not [Service]: they moved in systemd 229 and a modern systemd ignores
@@ -40,8 +40,8 @@ Group=modularca
 WorkingDirectory=/opt/modularca
 ExecStart=/opt/modularca/ModularCA.API
 
-# Config, keystores and backups resolve relative to AppContext.BaseDirectory, i.e. the
-# install directory — so it must stay writable by this user. See ReadWritePaths below.
+# Config, keystores, logs and backups resolve relative to AppContext.BaseDirectory, i.e. the
+# install directory. See ReadWritePaths below.
 Environment=DOTNET_ENVIRONMENT=Production
 # Serilog writes structured JSON to stdout when running under systemd; journald captures it.
 Environment=DOTNET_CONSOLE_ANSI_COLOR=false
@@ -61,6 +61,15 @@ Environment=DOTNET_CONSOLE_ANSI_COLOR=false
 # override it.
 Restart=always
 RestartSec=5s
+# Exit status 3 is the startup schema check refusing: something only an operator can fix (a schema
+# newer than this build, a wrong password or pg_hba rule, tables the runtime role does not own, a
+# migration that failed for good). A restart cannot fix it, so the unit stops as failed at once
+# instead of using up its start limit. Transient conditions are waited for or retried inside the
+# process, not by restarts: an unreachable database, a migration in progress, and a migration that
+# failed on a lock timeout, a deadlock or a lost connection. Status 75 means that went on for
+# longer than Schema.WaitSeconds (900 s); systemd retries it, and each such restart takes at least
+# that long, so the start limit below is not reached by a database that is merely slow to come back.
+RestartPreventExitStatus=3
 
 # CRL/OCSP/AIA must be reachable over plain HTTP per RFC 5280, and operators commonly
 # move Http.Port/Https.Port to 80/443. Defaults are 8080/8443, which need no capability
@@ -90,14 +99,21 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 
-# ProtectSystem=strict makes the whole filesystem read-only, so every path the app
-# writes must be listed. Keystores, config and backups all live under the install dir.
-ReadWritePaths=/opt/modularca
+# ProtectSystem=strict makes the whole filesystem read-only, so every path the app writes must be
+# listed: the runtime directories, the list RUNTIME_DIRS keeps in install.sh and postinst. The
+# program files around them stay read-only. A Backup.OutputPath, AuditRetention.ArchivePath,
+# SshCa.KeyStoragePath or Logging.FilePath configured outside these needs its own entry in a
+# drop-in, and must be owned by this user.
+ReadWritePaths=/opt/modularca/config /opt/modularca/keystores /opt/modularca/logs /opt/modularca/backups
 
 # Core dumps of this process would contain unwrapped key material.
 LimitCORE=0
 
 LimitNOFILE=65535
+# The schema check runs before READY=1. Throughout it (reading, waiting, retrying, migrating) a
+# heartbeat extends this every 20 s with EXTEND_TIMEOUT_USEC (systemd 236 or later), so it bounds
+# a start that hangs elsewhere, not the check. The check's own connect and command timeouts,
+# Schema.WaitSeconds and Schema.MigrationCommandTimeoutSeconds in config.yaml bound that.
 TimeoutStartSec=120
 TimeoutStopSec=30
 KillSignal=SIGTERM

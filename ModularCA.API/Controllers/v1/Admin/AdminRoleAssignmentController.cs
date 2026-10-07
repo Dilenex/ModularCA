@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.API.Filters;
+using ModularCA.Core.Authorization;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
@@ -71,7 +72,7 @@ public class AdminRoleAssignmentController(
             UserName = ra.User?.Username,
             ra.GroupId,
             GroupName = ra.Group?.DisplayName,
-            ra.TenantId,
+            ra.SpaceId,
             ra.CertificateAuthorityId,
             ra.AssignedAt
         }));
@@ -81,6 +82,10 @@ public class AdminRoleAssignmentController(
     /// Creates a new role assignment. Exactly one of UserId or GroupId must be provided.
     /// Validates that the referenced role exists before creating the assignment. Requires step-up
     /// MFA because a fresh assignment immediately grants every capability bound to the role.
+    /// Classification runs under a row lock on the role (shared with role capability changes) so a
+    /// concurrently added controlled capability cannot slip past the controlled-user gate. A
+    /// controlled assignment by a non-super opens a ceremony (202); 409 when the caller reset the
+    /// password or MFA of an account it promotes in the last 30 days.
     /// </summary>
     [HttpPost]
     [RequireStepUp(StepUpOps.AssignRole)]
@@ -119,23 +124,23 @@ public class AdminRoleAssignmentController(
                 return NotFound(new { error = $"Group with ID {request.GroupId} not found." });
         }
 
-        // Validate tenant exists if provided
-        if (request.TenantId.HasValue)
+        // Validate space exists if provided
+        if (request.SpaceId.HasValue)
         {
-            var tenantExists = await _db.Tenants.AnyAsync(t => t.Id == request.TenantId.Value);
-            if (!tenantExists)
-                return BadRequest(new { error = $"Tenant with ID {request.TenantId.Value} not found." });
+            var spaceExists = await _db.Spaces.AnyAsync(t => t.Id == request.SpaceId.Value);
+            if (!spaceExists)
+                return BadRequest(new { error = $"Space with ID {request.SpaceId.Value} not found." });
         }
 
-        // Validate CA exists if provided, and belongs to the specified tenant
+        // Validate CA exists if provided, and belongs to the specified space
         if (request.CertificateAuthorityId.HasValue)
         {
             var ca = await _db.CertificateAuthorities.AsNoTracking()
                 .FirstOrDefaultAsync(c => c.Id == request.CertificateAuthorityId.Value);
             if (ca == null)
                 return BadRequest(new { error = $"Certificate Authority with ID {request.CertificateAuthorityId.Value} not found." });
-            if (request.TenantId.HasValue && ca.TenantId != request.TenantId.Value)
-                return BadRequest(new { error = $"CA {request.CertificateAuthorityId.Value} does not belong to tenant {request.TenantId.Value}." });
+            if (request.SpaceId.HasValue && ca.SpaceId != request.SpaceId.Value)
+                return BadRequest(new { error = $"CA {request.CertificateAuthorityId.Value} does not belong to space {request.SpaceId.Value}." });
         }
 
         // Rate limit: prevent more than 1000 role assignments per user or group
@@ -150,7 +155,7 @@ public class AdminRoleAssignmentController(
             ra.RoleId == request.RoleId
             && ra.UserId == request.UserId
             && ra.GroupId == request.GroupId
-            && ra.TenantId == request.TenantId
+            && ra.SpaceId == request.SpaceId
             && ra.CertificateAuthorityId == request.CertificateAuthorityId);
 
         if (duplicate)
@@ -159,9 +164,17 @@ public class AdminRoleAssignmentController(
         // Controlled-user gate: assigning a role that carries a controlled capability (e.g.
         // system.manage) promotes a controlled user/group. A non-super must route it through a
         // ControlledUserChange ceremony; system-super assigns directly.
-        var minted = await _controlledUserSvc.ClassifyRoleAssignmentAsync(request.RoleId, request.CertificateAuthorityId);
+        // The role row is locked before classifying, and a capability change on the role takes the
+        // same lock, so the role cannot gain a controlled capability between this classification and
+        // the insert below.
+        await using var tx = await _db.Database.BeginTransactionAsync();
+        await ControlledTierResolver.LockRoleAsync(_db, request.RoleId);
+        var minted = await _controlledUserSvc.ClassifyRoleAssignmentAsync(
+            request.RoleId, request.CertificateAuthorityId, request.SpaceId, request.GroupId);
         if (minted != null && _currentUser.User != null && !await _controlledUserSvc.IsSuperAsync(_currentUser.User.Id))
         {
+            await tx.CommitAsync();
+
             if (!await _controlledUserSvc.CanInitiateAsync(_currentUser.User.Id, minted.Value))
                 return StatusCode(403, new { error = "You cannot assign a role above your own tier. A higher-tier admin must initiate this." });
 
@@ -169,20 +182,28 @@ public class AdminRoleAssignmentController(
                 ? await _db.Users.Where(u => u.Id == request.UserId.Value).Select(u => u.Username).FirstOrDefaultAsync()
                 : null;
 
-            var ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
-                new Shared.Models.ControlledUserChangeParameters
-                {
-                    ChangeType = "AssignRole",
-                    TargetUserId = request.UserId ?? Guid.Empty,
-                    TargetUsername = targetUsername,
-                    RoleId = request.RoleId,
-                    GroupId = request.GroupId,
-                    TenantId = request.TenantId,
-                    CertificateAuthorityId = request.CertificateAuthorityId,
-                },
-                minted.Value,
-                _currentUser.User.Id,
-                _currentUser.User.Username ?? string.Empty);
+            Guid ceremonyId;
+            try
+            {
+                ceremonyId = await _controlledUserSvc.InitiateChangeAsync(
+                    new Shared.Models.ControlledUserChangeParameters
+                    {
+                        ChangeType = "AssignRole",
+                        TargetUserId = request.UserId ?? Guid.Empty,
+                        TargetUsername = targetUsername,
+                        RoleId = request.RoleId,
+                        GroupId = request.GroupId,
+                        SpaceId = request.SpaceId,
+                        CertificateAuthorityId = request.CertificateAuthorityId,
+                    },
+                    minted.Value,
+                    _currentUser.User.Id,
+                    _currentUser.User.Username ?? string.Empty);
+            }
+            catch (ControlledUserInitiationRefusedException ex)
+            {
+                return Conflict(new { error = ex.Message });
+            }
 
             return Accepted(new
             {
@@ -198,13 +219,14 @@ public class AdminRoleAssignmentController(
             RoleId = request.RoleId,
             UserId = request.UserId,
             GroupId = request.GroupId,
-            TenantId = request.TenantId,
+            SpaceId = request.SpaceId,
             CertificateAuthorityId = request.CertificateAuthorityId,
             AssignedByUserId = _currentUser.User?.Id
         };
 
         _db.RoleAssignments.Add(assignment);
         await _db.SaveChangesAsync();
+        await tx.CommitAsync();
 
         await _audit.LogAsync(
             AuditActionType.ConfigUpdated,
@@ -219,7 +241,7 @@ public class AdminRoleAssignmentController(
                 RoleName = role.Name,
                 assignment.UserId,
                 assignment.GroupId,
-                assignment.TenantId,
+                assignment.SpaceId,
                 assignment.CertificateAuthorityId
             },
             HttpContext.Connection.RemoteIpAddress?.ToString());
@@ -231,7 +253,7 @@ public class AdminRoleAssignmentController(
             RoleName = role.Name,
             assignment.UserId,
             assignment.GroupId,
-            assignment.TenantId,
+            assignment.SpaceId,
             assignment.CertificateAuthorityId,
             assignment.AssignedAt
         });
@@ -240,6 +262,8 @@ public class AdminRoleAssignmentController(
     /// <summary>
     /// Revokes (deletes) a role assignment by its ID. Requires step-up MFA because the
     /// revocation can immediately strip the target principal of role-derived capabilities.
+    /// Removing a controlled assignment is refused for every caller when no one other than the
+    /// caller would still dominate its tier; otherwise non-super opens a ceremony.
     /// </summary>
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.UnassignRole, "id")]
@@ -258,12 +282,14 @@ public class AdminRoleAssignmentController(
 
         // Controlled-user gate (demote): unassigning a role that carries a controlled capability
         // demotes a controlled user — non-super routes it through a ceremony, with the last-user guard.
-        var demoteTier = await _controlledUserSvc.ClassifyRoleAssignmentAsync(assignment.RoleId, assignment.CertificateAuthorityId);
+        var demoteTier = await _controlledUserSvc.ClassifyRoleAssignmentAsync(
+            assignment.RoleId, assignment.CertificateAuthorityId, assignment.SpaceId, assignment.GroupId);
+        if (demoteTier != null && _currentUser.User != null
+            && await _controlledUserSvc.CountDominatingControlledUsersAsync(demoteTier.Value, assignment.UserId ?? Guid.Empty,
+                actorUserId: _currentUser.User.Id, ignoreRoleAssignmentId: assignment.Id) == 0)
+            return BadRequest(new { error = "Refusing to remove the last controlled user of this scope." });
         if (demoteTier != null && _currentUser.User != null && !await _controlledUserSvc.IsSuperAsync(_currentUser.User.Id))
         {
-            if (assignment.UserId.HasValue
-                && await _controlledUserSvc.CountDominatingControlledUsersAsync(demoteTier.Value, assignment.UserId.Value) == 0)
-                return BadRequest(new { error = "Refusing to remove the last controlled user of this scope." });
             if (!await _controlledUserSvc.CanInitiateAsync(_currentUser.User.Id, demoteTier.Value))
                 return StatusCode(403, new { error = "You cannot demote a privilege above your own tier." });
 
@@ -275,7 +301,7 @@ public class AdminRoleAssignmentController(
                     RecordId = assignment.Id,
                     RoleId = assignment.RoleId,
                     GroupId = assignment.GroupId,
-                    TenantId = assignment.TenantId,
+                    SpaceId = assignment.SpaceId,
                     CertificateAuthorityId = assignment.CertificateAuthorityId,
                 },
                 demoteTier.Value,
@@ -315,8 +341,10 @@ public class AdminRoleAssignmentController(
 }
 
 /// <summary>
-/// Request body for creating a new role assignment.
+/// Request body for creating a new role assignment. An unknown member (a pre-0.4.0
+/// <c>tenantId</c>) is refused with 400, never read as no space.
 /// </summary>
+[System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
 public class CreateRoleAssignmentRequest
 {
     /// <summary>The role to assign.</summary>
@@ -328,9 +356,9 @@ public class CreateRoleAssignmentRequest
     /// <summary>The group to assign the role to. Mutually exclusive with UserId.</summary>
     public Guid? GroupId { get; set; }
 
-    /// <summary>Optional tenant scope. Null for global assignments.</summary>
-    public Guid? TenantId { get; set; }
+    /// <summary>Optional space scope. Null for global assignments.</summary>
+    public Guid? SpaceId { get; set; }
 
-    /// <summary>Optional CA scope. Null for tenant-wide or global assignments.</summary>
+    /// <summary>Optional CA scope. Null for space-wide or global assignments.</summary>
     public Guid? CertificateAuthorityId { get; set; }
 }

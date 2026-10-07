@@ -1,0 +1,383 @@
+const code = 'text-sm bg-raised px-1.5 py-0.5 rounded';
+
+export default function SpaceModelDiagram() {
+    return (
+        <div className="max-w-4xl mx-auto">
+            <h1 className="text-2xl font-semibold text-ink mb-4">
+                Instance and Space Model
+            </h1>
+            <p className="text-lg text-ink-muted leading-relaxed mb-8">
+                A ModularCA deployment is one instance, run for one organisation. The instance owns its own
+                infrastructure CAs (the System Signing CA and any SSH CAs) and the system groups; none of
+                them belongs to a space. Spaces group the other CAs for delegated administration: a space
+                owns the CAs created in it, CAs have groups, and groups contain users with role-based
+                permissions. Bootstrap creates the first space, named after the organisation, which owns
+                the root CA. Spaces were called tenants before 0.4.0.
+            </p>
+
+            {/* Model Diagram */}
+            <section className="mb-10">
+                <h2 className="text-2xl font-bold text-ink mb-3">Instance and Spaces</h2>
+                <div className="bg-sunken rounded p-4 data-mono overflow-x-auto mb-4">
+                    <pre className="text-ink">{`
+  +----------------------------------------------------------------------+
+  |                    ModularCA Instance                                |
+  |   policy: SecurityPolicy (RequireKeyCeremony, approvals, ceiling)    |
+  +----------------------------------------------------------------------+
+  |                                                                      |
+  |  Instance CAs (no space)            +-----------------------------+  |
+  |  +------------+  +------------+     |   Space "Acme"              |  |
+  |  | System     |  | SSH CAs    |     |   policy: its own fields    |  |
+  |  | Signing CA |  |            |     +-------------+---------------+  |
+  |  +-----+------+  +------------+                   |                  |
+  |        |                             +------------+----------+       |
+  |  +-----+----------------------+      |                       |       |
+  |  | system_system-signing-ca_* |   +--+------+  +---------+---+       |
+  |  +----------------------------+   | Acme    |  | Acme      |         |
+  |                                   | Root CA |  | Issuing CA|         |
+  |  System groups (no space)         +---------+  +-----+-----+         |
+  |  - system-super                                      |               |
+  |  - system-admin                  +-------------------+----------+    |
+  |  - system-operator               | acme_issuing-ca_admin        |    |
+  |  - system-auditor                | acme_issuing-ca_operator ... |    |
+  |       |                          +-------------------+----------+    |
+  |  +----+--------+                               +-----+--------+      |
+  |  | Users       |                               | Users        |      |
+  |  | - admin     |                               | - alice      |      |
+  |  +-------------+                               +--------------+      |
+  +----------------------------------------------------------------------+
+`}</pre>
+                </div>
+            </section>
+
+            {/* The Instance */}
+            <section className="mb-10">
+                <h2 className="text-2xl font-bold text-ink mb-3">The Instance</h2>
+                <p className="text-ink leading-relaxed mb-3">
+                    Instance-wide settings belong to the instance, not to a space. A CA, group, Kerberos realm,
+                    grant or role assignment with no space is at instance scope.
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li>The System Signing CA and SSH CAs are instance CAs: they have no space</li>
+                    <li>The system groups (system-super, system-admin, system-operator, system-auditor) have no space</li>
+                    <li>Instance CA policy lives on the <code className={code}>SecurityPolicy</code> row
+                        (Settings, Security Policy): RequireKeyCeremony, CeremonyRequiredApprovals, MaxValidityDays and ValidityCeilingBehavior</li>
+                    <li>Scopes are independent: the instance's policy governs instance CAs only, and a space's policy governs its own CAs only; nothing merges</li>
+                    <li>Members of a system group, or of an instance CA's group, see the instance CAs</li>
+                </ul>
+                <div className="border-l-4 border-info bg-info-soft p-4 rounded-r">
+                    <p className="text-ink text-sm">
+                        <span className="font-semibold">Upgrading from 0.3.x:</span> release 0.4.0 folds the former System
+                        tenant into the instance, and renames tenants to spaces. Their ids are kept, and each space's
+                        <code className={code}>org-&lt;slug&gt;-*</code> groups become <code className={code}>space-&lt;slug&gt;-*</code>.
+                    </p>
+                </div>
+            </section>
+
+            {/* Spaces */}
+            <section className="mb-10">
+                <h2 className="text-2xl font-bold text-ink mb-3">Spaces</h2>
+                <p className="text-ink leading-relaxed mb-3">
+                    Spaces delegate administration within one organisation. They share sign-in, backups, the
+                    audit trail and instance administrators. For a separate customer, create a separate instance.
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li>Created by system administrators on the Spaces &amp; Quotas page, or with POST /api/v1/admin/spaces</li>
+                    <li>Own their CA hierarchy, profiles and ceilings; their administrators see only what the space holds</li>
+                    <li>Up to four spaces need no licence; from the fifth, creation still succeeds and a licence is recommended</li>
+                    <li>Can be enabled or disabled without affecting other spaces (disabled spaces cannot issue certificates)</li>
+                    <li>Support soft-delete
+                        (<code className={code}>IsDeleted</code>), hidden by the soft-delete query filter, which is the only global filter left; it filters no space</li>
+                    <li>URL-safe <code className={code}>Slug</code> field, which the console's <code className={code}>?space=</code> scope names</li>
+                </ul>
+
+                <h3 className="text-lg font-semibold text-ink mb-2">Space Fields</h3>
+                <table className="w-full border-collapse mb-4">
+                    <thead>
+                        <tr className="border-b border-line">
+                            <th className="text-left py-2 pr-4 text-ink font-semibold">Field</th>
+                            <th className="text-left py-2 text-ink font-semibold">Description</th>
+                        </tr>
+                    </thead>
+                    <tbody className="text-ink">
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">RequireKeyCeremony</td>
+                            <td className="py-2">When true, creating, revoking or deleting one of this space's CAs requires a multi-party key ceremony (the instance has its own)</td>
+                        </tr>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">CeremonyRequiredApprovals</td>
+                            <td className="py-2">Number of admin approvals needed before a ceremony can execute (default: 2)</td>
+                        </tr>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">MaxValidityDays</td>
+                            <td className="py-2">Longest validity a leaf certificate of this space's CAs may carry (0 = unlimited). Quotas are per CA</td>
+                        </tr>
+                        <tr>
+                            <td className="py-2 pr-4 data-mono">CanBeDeleted</td>
+                            <td className="py-2">Bootstrap-created spaces are protected from deletion</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            {/* Group Naming Convention */}
+            <section className="mb-10">
+                <h2 className="text-2xl font-bold text-ink mb-3">Group Naming Convention</h2>
+                <p className="text-ink leading-relaxed mb-3">
+                    Auto-generated CA groups are named
+                    <code className={code}>&#123;spaceSlug&#125;_&#123;caLabel&#125;_&#123;role&#125;</code>,
+                    with underscores between the three segments and a lowercase role. The space slug keeps the
+                    names of two spaces' groups apart; the underscores remove the hyphen-boundary ambiguity in a name like
+                    <code className={code}>modularca_modularca-root-cert-1_admin</code>.
+                    Instance CAs have no space, so their groups use the slug <code className={code}>system</code>,
+                    which no space may take. Each space also has four space-wide groups,
+                    <code className={code}>space-&#123;slug&#125;-admin</code>, <code className={code}>-operator</code>,
+                    <code className={code}>-auditor</code> and <code className={code}>-user</code>. System-level groups use a
+                    <code className={code}>system-</code> prefix.
+                </p>
+                <table className="w-full border-collapse mb-4">
+                    <thead>
+                        <tr className="border-b border-line">
+                            <th className="text-left py-2 pr-4 text-ink font-semibold">Scope</th>
+                            <th className="text-left py-2 pr-4 text-ink font-semibold">Prefix</th>
+                            <th className="text-left py-2 text-ink font-semibold">Examples</th>
+                        </tr>
+                    </thead>
+                    <tbody className="text-ink">
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4">Space-wide</td>
+                            <td className="py-2 pr-4 data-mono">{'space-{spaceSlug}-'}</td>
+                            <td className="py-2 data-mono">space-acme-admin, space-acme-operator</td>
+                        </tr>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4">CA-scoped</td>
+                            <td className="py-2 pr-4 data-mono">{'{spaceSlug}_{caLabel}_'}</td>
+                            <td className="py-2 data-mono">acme_webserver-ca_admin, acme_webserver-ca_operator</td>
+                        </tr>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4">Instance CA</td>
+                            <td className="py-2 pr-4 data-mono">{'system_{caLabel}_'}</td>
+                            <td className="py-2 data-mono">system_system-signing-ca_admin</td>
+                        </tr>
+                        <tr>
+                            <td className="py-2 pr-4">System (global)</td>
+                            <td className="py-2 pr-4 data-mono">system-</td>
+                            <td className="py-2 data-mono">system-admin, system-super</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            {/* Groups and Roles */}
+            <section className="mb-10">
+                <h2 className="text-2xl font-bold text-ink mb-3">CA-Scoped Groups and Roles</h2>
+                <p className="text-ink leading-relaxed mb-3">
+                    Authorization is based on CA-scoped groups rather than global roles. When a CA is created,
+                    groups are automatically generated using the CA label as a prefix. Users are added to groups
+                    with a specific role level that determines their permissions.
+                </p>
+
+                <h3 className="text-lg font-semibold text-ink mb-2">Auto-Generated Groups per CA</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    When a CA with label <code className={code}>webserver-ca</code> is
+                    created inside space <code className={code}>acme</code>,
+                    these four groups are generated automatically:
+                </p>
+                <div className="bg-sunken rounded p-4 data-mono mb-4">
+                    acme_webserver-ca_admin&nbsp;&nbsp;&nbsp;&nbsp;-- Administrator: full control over this CA<br />
+                    acme_webserver-ca_operator&nbsp;-- Operator: issue and revoke certificates<br />
+                    acme_webserver-ca_auditor&nbsp;&nbsp;-- Auditor: read-only access to logs and certs<br />
+                    acme_webserver-ca_user&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;-- Requester: self-service certificate requests
+                </div>
+
+                <h3 className="text-lg font-semibold text-ink mb-2">System Groups</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    System groups provide global access across all CAs and spaces in the instance.
+                    These use the <code className={code}>system-</code> prefix:
+                </p>
+                <div className="bg-sunken rounded p-4 data-mono mb-4">
+                    system-super&nbsp;&nbsp;&nbsp;&nbsp;-- Full access to everything (superuser)<br />
+                    system-admin&nbsp;&nbsp;&nbsp;&nbsp;-- Full platform administration<br />
+                    system-operator -- Manage all CAs and certificates<br />
+                    system-auditor&nbsp;&nbsp;-- Read-only access to all audit data
+                </div>
+                <div className="border-l-4 border-warn bg-warn-soft p-4 rounded-r mb-4">
+                    <p className="text-ink text-sm">
+                        <span className="font-semibold">Important:</span> The <code className={code}>system-super</code> group
+                        grants unrestricted access to all resources in every space. Membership should be tightly controlled.
+                    </p>
+                </div>
+
+                <h3 className="text-lg font-semibold text-ink mb-2">Role Levels</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    Each group carries a role level that determines the permission tier. Lower numbers indicate
+                    higher privilege:
+                </p>
+                <table className="w-full border-collapse mb-4">
+                    <thead>
+                        <tr className="border-b border-line">
+                            <th className="text-left py-2 pr-4 text-ink font-semibold">Role</th>
+                            <th className="text-left py-2 pr-4 text-ink font-semibold">Level</th>
+                            <th className="text-left py-2 text-ink font-semibold">Permissions</th>
+                        </tr>
+                    </thead>
+                    <tbody className="text-ink">
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">Admin</td>
+                            <td className="py-2 pr-4 data-mono">1</td>
+                            <td className="py-2">Full control: create CAs, manage profiles, manage groups, issue/revoke certificates, view audit</td>
+                        </tr>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">Operator</td>
+                            <td className="py-2 pr-4 data-mono">2</td>
+                            <td className="py-2">Operational: issue/revoke certificates, approve requests, generate CRLs</td>
+                        </tr>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">Auditor</td>
+                            <td className="py-2 pr-4 data-mono">3</td>
+                            <td className="py-2">Read-only: view certificates, audit logs, compliance reports</td>
+                        </tr>
+                        <tr>
+                            <td className="py-2 pr-4 data-mono">User</td>
+                            <td className="py-2 pr-4 data-mono">4</td>
+                            <td className="py-2">Self-service: request certificates, view own certificates</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            {/* Quorum Settings */}
+            <section className="mb-10">
+                <h2 className="text-2xl font-bold text-ink mb-3">Quorum Settings</h2>
+                <p className="text-ink leading-relaxed mb-3">
+                    Groups can have quorum requirements for sensitive operations such as key ceremonies.
+                    A quorum defines the minimum number of group members who must approve an action before
+                    it can proceed.
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li>Quorum is configured per group and applies to key ceremony operations</li>
+                    <li>Typical use: require multiple Admin approvals before generating or rotating a CA key pair</li>
+                    <li>A quorum of 1 means single-approval (default); higher values enforce multi-party authorization</li>
+                    <li>Quorum checks are enforced at the service layer before any cryptographic material is accessed</li>
+                </ul>
+                <div className="bg-sunken rounded p-4 data-mono overflow-x-auto mb-4">
+                    <pre className="text-ink">{`
+  Key Ceremony Request
+        |
+        v
+  +---------------------+     +----------------------+
+  | Group Membership    |---->| Quorum Check         |
+  | (is user in group?) |     | (enough approvals?)  |
+  +----------+----------+     +----------+-----------+
+             |                           |
+        Yes  | No                   Met  | Not Met
+             v                           v
+        Continue                   Pending Approval
+             |                     (wait for more
+             v                      approvals)
+  +---------------------+
+  | Execute Ceremony    |
+  +---------------------+
+`}</pre>
+                </div>
+            </section>
+
+            {/* Quota Enforcement */}
+            <section className="mb-10">
+                <h2 className="text-2xl font-bold text-ink mb-3">Quota Enforcement</h2>
+                <p className="text-ink leading-relaxed mb-3">
+                    Quotas are configured per CA, on the CA's admin group, and enforced at issuance time.
+                    Space-level quotas (max CAs, certificates and users) were removed in 0.4.0.
+                </p>
+                <h3 className="text-lg font-semibold text-ink mb-2">Quota Types</h3>
+                <table className="w-full border-collapse mb-4">
+                    <thead>
+                        <tr className="border-b border-line">
+                            <th className="text-left py-2 pr-4 text-ink font-semibold">Quota</th>
+                            <th className="text-left py-2 text-ink font-semibold">Description</th>
+                        </tr>
+                    </thead>
+                    <tbody className="text-ink">
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4">Max Certificates</td>
+                            <td className="py-2">Active certificates per CA (set on the CA's admin group)</td>
+                        </tr>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4">Max Pending Requests</td>
+                            <td className="py-2">Pending requests per CA (set on the CA's admin group)</td>
+                        </tr>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4">Rate Limit</td>
+                            <td className="py-2">Maximum certificate issuance rate (per hour/day)</td>
+                        </tr>
+                        <tr>
+                            <td className="py-2 pr-4">Max Validity</td>
+                            <td className="py-2">Maximum certificate validity, per space or for the instance</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div className="bg-sunken rounded p-4 data-mono overflow-x-auto">
+                    <pre className="text-ink">{`
+  Issuance Request
+        |
+        v
+  +------------------+     +------------------+
+  | CA Quota         |---->| Rate Limit       |
+  | (per-CA limit)   |     | (per-hour limit) |
+  +--------+---------+     +--------+---------+
+           |                        |
+      Pass | Fail              Pass | Fail
+           v                        v
+      Continue              429 Rate Limited
+      409 Quota Exceeded
+`}</pre>
+                </div>
+            </section>
+
+            {/* Space Fence */}
+            <section className="mb-10">
+                <h2 className="text-2xl font-bold text-ink mb-3">The Space Fence</h2>
+                <p className="text-ink leading-relaxed mb-3">
+                    The isolation boundary is the instance; a space is a scope for delegating administration,
+                    not a partition of data. There is no space query filter: each endpoint that lists or reads
+                    rows of several spaces applies the caller's fence explicitly, and the fence equals what
+                    authorization allows.
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li>CAs and groups carry a space ID; instance CAs and system groups carry none</li>
+                    <li>The fence holds the spaces of the caller's groups, of space-scoped grants and roles on the user, and of the CAs the user holds grants on; instance rows need an instance group or a grant on an instance CA</li>
+                    <li>A capability held at system scope (system operator, system auditor and the like) makes the fence instance-wide: every space's CAs are listed</li>
+                    <li>CA labels and names are unique across the instance, so a label in a URL names one CA</li>
+                    <li>A certificate profile is used only by a CA of its own scope, whatever the protocol</li>
+                    <li>The Admin UI's scope switcher narrows what a caller may see; it never widens it</li>
+                </ul>
+                <div className="bg-sunken rounded p-4 data-mono overflow-x-auto mb-4">
+                    <pre className="text-ink">{`
+  Authenticated Request
+        |
+        v
+  +---------------------+     +----------------------+     +---------------------+
+  | Resolve the fence   |---->| Endpoint applies it  |---->| Return fenced       |
+  | from all grants     |     | to rows it returns   |     | results             |
+  +---------------------+     +----------+-----------+     +---------------------+
+                                         |
+                            Capability at system scope?
+                                    |          |
+                                   Yes         No
+                                    |          |
+                                    v          v
+                              All spaces    Fenced spaces
+                              visible       (+ instance rows)
+`}</pre>
+                </div>
+                <div className="border-l-4 border-warn bg-warn-soft p-4 rounded-r">
+                    <p className="text-ink text-sm">
+                        <span className="font-semibold">Important:</span> The fence is application-level,
+                        not database-level. All spaces share the same database. Each endpoint applies the
+                        caller's fence, which the space fence middleware stores for the request.
+                    </p>
+                </div>
+            </section>
+        </div>
+    );
+}

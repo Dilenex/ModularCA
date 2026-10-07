@@ -97,7 +97,7 @@ public class RequestValidationExceptionTests
     [Fact]
     public void A_collision_answers_409_because_the_same_request_will_work_once_it_is_resolved()
     {
-        var ex = new ResourceConflictException("A CA with label 'issuing-01' already exists in this tenant.");
+        var ex = new ResourceConflictException("A CA with label 'issuing-01' already exists in this space.");
 
         Assert.Equal(409, ex.Status);
         Assert.IsAssignableFrom<RequestValidationException>(ex);
@@ -200,7 +200,7 @@ public class SignatureAlgorithmVocabularyTests
             "var SignatureAlgorithms = new List<string>", '{', '}');
 
         var offered = ListLiteral(
-            ReadRepoFile(Path.Combine("modularca.adminui", "src", "pages", "profileHelpers.tsx")),
+            ReadRepoFile(Path.Combine("modularca.adminui", "src", "pages", "profiles", "keyPolicy.ts")),
             "export const ALLOWED_SIGNATURE_ALGORITHM_OPTIONS", '[', ']');
 
         var missing = seeded.Except(offered, StringComparer.Ordinal).ToList();
@@ -217,7 +217,7 @@ public class SignatureAlgorithmVocabularyTests
         // Called out separately from the parity test above: this is the specific pairing that
         // broke, and it stays broken-in-spirit if someone "tidies" the picker down to v1.5.
         var offered = ListLiteral(
-            ReadRepoFile(Path.Combine("modularca.adminui", "src", "pages", "profileHelpers.tsx")),
+            ReadRepoFile(Path.Combine("modularca.adminui", "src", "pages", "profiles", "keyPolicy.ts")),
             "export const ALLOWED_SIGNATURE_ALGORITHM_OPTIONS", '[', ']');
 
         foreach (var pss in new[] { "SHA256withRSAandMGF1", "SHA384withRSAandMGF1", "SHA512withRSAandMGF1" })

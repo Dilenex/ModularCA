@@ -4,10 +4,11 @@ import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet } from '../api/client';
-import { StatusBadge } from '@shared/components/cards/StatusBadge';
+import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { MsaeWhyNotice } from './AuditLogs';
+import { AuditFields } from '../components/AuditFields';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -16,7 +17,7 @@ function formatDate(d: string | null) {
 
 const TYPES = new Set(['general', 'est', 'scep', 'cmp', 'acme', 'msae', 'network']);
 // Keys rendered with their own formatting / not in the generic dump.
-const TIMESTAMP_KEYS = new Set(['timestamp']);
+const TIMESTAMP_KEYS: ReadonlySet<string> = new Set(['timestamp']);
 
 function auditTitle(type: string, log: any): string {
     if (type === 'network') return `${log.httpMethod || ''} ${log.requestPath || ''}`.trim() || 'Network event';
@@ -26,11 +27,11 @@ function auditTitle(type: string, log: any): string {
 
 function auditStatus(type: string, log: any): React.ReactNode {
     if (type === 'network') {
-        if (log.blocked) return <StatusBadge status="revoked" label="BLOCKED" />;
+        if (log.blocked) return <StatusBadge status="revoked" label="Blocked" />;
         if (log.statusCode >= 400) return <StatusBadge status="expired" label={`${log.statusCode}`} />;
         return <StatusBadge status="active" label={`${log.statusCode ?? 'OK'}`} />;
     }
-    return <StatusBadge status={log.success ? 'active' : 'revoked'} label={log.success ? 'OK' : 'FAIL'} />;
+    return <StatusBadge status={log.success ? 'active' : 'revoked'} label={log.success ? 'OK' : 'Failed'} />;
 }
 
 /// <summary>
@@ -59,30 +60,28 @@ const AuditLogDetail: React.FC = () => {
         return () => { cancelled = true; };
     }, [type, id]);
 
-    if (loading) return <div className="p-6 text-sm text-gray-600 dark:text-gray-400">Loading…</div>;
+    if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return (
         <div className="p-6 space-y-3">
             <InlineNotice notice={error} variant="line" />
-            <button onClick={() => navigate('/audit')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Audit Logs</button>
+            <button onClick={() => navigate('/audit')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Audit Logs</button>
         </div>
     );
     if (!log) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-gray-600 dark:text-gray-400">Audit entry not found.</p>
-            <button onClick={() => navigate('/audit')} className="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded">Back to Audit Logs</button>
+            <p className="text-sm text-ink-muted">Audit entry not found.</p>
+            <button onClick={() => navigate('/audit')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Audit Logs</button>
         </div>
     );
 
     const typeLabel = type === 'general' ? 'General' : type.toUpperCase();
-    // Dump every populated field; DetailField hides null/empty. Render objects as JSON.
-    const entries = Object.entries(log).filter(([k]) => !TIMESTAMP_KEYS.has(k.toLowerCase()));
 
     return (
         <DetailPage
             breadcrumbs={[{ label: 'Audit Logs', to: '/audit' }, { label: typeLabel }, { label: auditTitle(type, log) }]}
             title={auditTitle(type, log)}
             status={auditStatus(type, log)}
-            subtitle={<><StatusBadge status="pending" label={typeLabel} /> <span className="ml-2">{formatDate(log.timestamp)}</span></>}
+            subtitle={<><Tag label={typeLabel} /> <span className="ml-2">{formatDate(log.timestamp)}</span></>}
             backTo="/audit"
         >
             {() => (
@@ -90,14 +89,7 @@ const AuditLogDetail: React.FC = () => {
                     {type === 'msae' && <MsaeWhyNotice log={log} className="mb-4" />}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
                         <DetailField label="Timestamp" value={formatDate(log.timestamp)} />
-                        {entries.map(([k, v]) => (
-                            <DetailField
-                                key={k}
-                                label={k}
-                                value={v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v))}
-                                mono={typeof v === 'object' || /id$|serial|hash|ip$/i.test(k)}
-                            />
-                        ))}
+                        <AuditFields log={log} omit={TIMESTAMP_KEYS} wideClassName="md:col-span-2" />
                     </div>
                 </DetailSection>
             )}

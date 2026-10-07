@@ -6,13 +6,13 @@ using Microsoft.Extensions.Logging;
 namespace ModularCA.Core.Services.Msae.Kerberos;
 
 /// <summary>
-/// A tenant's Active Directory forest as ModularCA knows it: the realm, whose tenant it is, the
+/// A space's Active Directory forest as ModularCA knows it: the realm, whose space it is, the
 /// service principal its tickets must name, and the AES keys that seal them. Produced by
 /// <see cref="IKerberosRealmKeyProvider"/> from the realm bindings; the acceptor never sees the
 /// database.
 /// </summary>
 /// <param name="Realm">Upper-case Kerberos realm, e.g. <c>CORP.CUSTOMER-A.LOCAL</c>.</param>
-/// <param name="TenantId">The tenant the forest belongs to; the isolation boundary.</param>
+/// <param name="SpaceId">The space the forest belongs to, or null for an instance realm; the isolation boundary.</param>
 /// <param name="ServicePrincipal">The SPN registered in the forest, e.g. <c>HTTP/ca4.maroongang.net</c>. Tickets for any other name are refused.</param>
 /// <param name="DnsDomain">Lower-case DNS domain used to build machine names and UPNs.</param>
 /// <param name="EnrollmentUserId">The ModularCA user whose capabilities the forest's principals act with.</param>
@@ -22,7 +22,7 @@ namespace ModularCA.Core.Services.Msae.Kerberos;
 /// <param name="Keys">Every live key version for the service principal, newest first.</param>
 public sealed record KerberosRealmKeys(
     string Realm,
-    Guid TenantId,
+    Guid? SpaceId,
     string ServicePrincipal,
     string DnsDomain,
     Guid EnrollmentUserId,
@@ -49,8 +49,8 @@ public enum KerberosRefusal
     NtlmOffered,
     /// <summary>The ticket's realm has no enabled binding.</summary>
     UnknownRealm,
-    /// <summary>The realm is bound to a different tenant than the CA being addressed.</summary>
-    WrongTenant,
+    /// <summary>The realm is bound to a different space than the CA being addressed.</summary>
+    WrongSpace,
     /// <summary>The ticket names a service principal other than the binding's.</summary>
     WrongServicePrincipal,
     /// <summary>The ticket could not be decrypted with any live key, or failed validation (time, replay, PAC).</summary>
@@ -101,8 +101,8 @@ public sealed record KerberosAcceptResult(KerberosCaller? Caller, KerberosRefusa
 /// <summary>
 /// Accepts SPNEGO/Kerberos tokens from many forests without the operating system's Kerberos
 /// stack. The ticket's realm and service name travel in the clear, so the acceptor reads them
-/// first, finds the one realm binding they belong to, checks it against the tenant being
-/// addressed, and only then decrypts with that binding's keys. Keys of other tenants are never
+/// first, finds the one realm binding they belong to, checks it against the space being
+/// addressed, and only then decrypts with that binding's keys. Keys of other spaces are never
 /// tried: a <see cref="KeyTable"/> is built per request from one realm, because the library's
 /// lookup would otherwise fall back across entries.
 /// </summary>
@@ -116,9 +116,10 @@ public sealed class KerberosAcceptor(
 
     /// <summary>
     /// Accepts <paramref name="token"/> (the bytes after <c>Negotiate </c> in the Authorization
-    /// header) for a request addressed to a CA of <paramref name="tenantId"/>.
+    /// header) for a request addressed to a CA of <paramref name="spaceId"/> (null for an
+    /// instance CA, which only an instance realm serves).
     /// </summary>
-    public async Task<KerberosAcceptResult> AcceptAsync(ReadOnlyMemory<byte> token, Guid tenantId, CancellationToken cancellation = default)
+    public async Task<KerberosAcceptResult> AcceptAsync(ReadOnlyMemory<byte> token, Guid? spaceId, CancellationToken cancellation = default)
     {
         KrbApReq apReq;
         string? spnegoMech;
@@ -140,8 +141,8 @@ public sealed class KerberosAcceptor(
         var binding = await realms.FindAsync(realm, cancellation);
         if (binding == null)
             return new KerberosAcceptResult(null, KerberosRefusal.UnknownRealm, realm, sname);
-        if (binding.TenantId != tenantId)
-            return new KerberosAcceptResult(null, KerberosRefusal.WrongTenant, realm, sname);
+        if (binding.SpaceId != spaceId)
+            return new KerberosAcceptResult(null, KerberosRefusal.WrongSpace, realm, sname);
         if (!string.Equals(sname, binding.ServicePrincipal, StringComparison.OrdinalIgnoreCase))
             return new KerberosAcceptResult(null, KerberosRefusal.WrongServicePrincipal, realm, sname);
 

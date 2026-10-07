@@ -22,12 +22,17 @@
  * necessity, because a reader asking "what built this" deserves an answer even where no licence
  * compels one.
  *
+ * Files copied into the source tree (the Plex fonts) come from no package manager, so a
+ * `vendored.json` beside them names each one, its version, licence and licence file. Every such
+ * manifest under the SPA trees is listed here with the licence text in full, and a font file that
+ * no manifest lists is refused.
+ *
  *   node scripts/generate-third-party-notices.mjs
  *   node scripts/generate-third-party-notices.mjs --check   # CI: fail if the file is stale
  */
 import { execSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
-import { resolve, dirname, join } from 'node:path';
+import { resolve, dirname, join, relative, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -172,13 +177,56 @@ function npmProduction() {
     return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/* ── vendored assets ──────────────────────────────────────────────────────── */
+
+const VENDOR_ROOTS = ['shared', 'modularca.adminui', 'modularca.publicui', 'modularca.setupui', 'modularca.docsui'];
+const FONT = /\.(woff2?|ttf|otf|eot)$/i;
+
+function walkFiles(dir, out = []) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name.startsWith('.')) continue;
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walkFiles(full, out);
+        else out.push(full);
+    }
+    return out;
+}
+
+/** Every asset listed by a vendored.json, with its licence text; throws on a gap. */
+function vendoredAssets() {
+    const files = VENDOR_ROOTS.filter((r) => existsSync(join(ROOT, r))).flatMap((r) => walkFiles(join(ROOT, r)));
+    const rel = (f) => relative(ROOT, f).replace(/\\/g, '/');
+    const listed = new Set();
+    const assets = [];
+    for (const manifest of files.filter((f) => basename(f) === 'vendored.json')) {
+        const dir = dirname(manifest);
+        for (const a of JSON.parse(readFileSync(manifest, 'utf8')).assets ?? []) {
+            for (const key of ['name', 'version', 'license', 'copyright', 'licenseFile', 'files']) {
+                if (!a[key]) throw new Error(`${rel(manifest)}: "${a.name ?? '?'}" has no ${key}`);
+            }
+            const licPath = join(dir, a.licenseFile);
+            if (!existsSync(licPath)) throw new Error(`${rel(manifest)}: licence file ${a.licenseFile} is missing`);
+            for (const f of a.files) {
+                if (!existsSync(join(dir, f))) throw new Error(`${rel(manifest)}: listed file ${f} is missing`);
+                listed.add(rel(join(dir, f)));
+            }
+            assets.push({ ...a, dir: rel(dir), licenseText: readFileSync(licPath, 'utf8').replace(/\r\n/g, '\n').trim() });
+        }
+    }
+    const unlisted = files.map(rel).filter((f) => FONT.test(f) && !listed.has(f));
+    if (unlisted.length) {
+        throw new Error(`Vendored font files not listed in any vendored.json:\n  ${unlisted.join('\n  ')}`);
+    }
+    return assets.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 /* ── render ───────────────────────────────────────────────────────────────── */
 
 const clean = (s) => (s ?? '').replace(/^git\+/, '').replace(/\.git$/, '');
 
-function render(nuget, npm) {
+function render(nuget, npm, vendored) {
     const licenceCounts = new Map();
-    for (const p of [...nuget, ...npm]) {
+    for (const p of [...nuget, ...npm, ...vendored]) {
         const l = p.license ?? 'unstated';
         licenceCounts.set(l, (licenceCounts.get(l) ?? 0) + 1);
     }
@@ -260,6 +308,34 @@ function render(nuget, npm) {
     }
     lines.push('');
 
+    if (vendored.length) {
+        lines.push(`## Vendored assets (${vendored.length})`);
+        lines.push('');
+        lines.push('Copied into the source tree and bundled into every interface, so no package manager');
+        lines.push('lists them. Each is named by the `vendored.json` beside it.');
+        lines.push('');
+        lines.push('| Asset | Version | Licence | Copyright | Source |');
+        lines.push('| --- | --- | --- | --- | --- |');
+        for (const a of vendored) {
+            const name = a.project ? `[${a.name}](${a.project})` : a.name;
+            lines.push(`| ${name} | ${a.version} | ${a.license} | ${a.copyright} | ${a.source ?? '—'}, \`${a.dir}\` |`);
+        }
+        lines.push('');
+        const texts = new Map();
+        for (const a of vendored) {
+            if (!texts.has(a.licenseText)) texts.set(a.licenseText, []);
+            texts.get(a.licenseText).push(a.name);
+        }
+        for (const [text, names] of texts) {
+            lines.push(`### Licence: ${names.join(', ')}`);
+            lines.push('');
+            lines.push('```text');
+            lines.push(text);
+            lines.push('```');
+            lines.push('');
+        }
+    }
+
     lines.push('## Build tooling (not distributed)');
     lines.push('');
     lines.push('These produce the binary and are not part of it, so no redistribution obligation');
@@ -275,7 +351,8 @@ function render(nuget, npm) {
     lines.push('interface and in `ModularCA.API/obj/project.assets.json` after a restore.');
     lines.push('');
 
-    return lines.join('\n');
+    // Package NOTICE files and a Windows checkout bring CRLF; the file and --check use LF.
+    return lines.join('\n').replace(/\r\n/g, '\n');
 }
 
 /* ── run ──────────────────────────────────────────────────────────────────── */
@@ -283,11 +360,12 @@ function render(nuget, npm) {
 const root = nugetRoot();
 const nuget = nugetPackages().map((p) => nugetMeta(root, p));
 const npm = npmProduction();
-const text = render(nuget, npm);
+const vendored = vendoredAssets();
+const text = render(nuget, npm, vendored);
 
 if (CHECK) {
     const current = existsSync(OUT) ? readFileSync(OUT, 'utf8') : '';
-    if (current.trim() !== text.trim()) {
+    if (current.replace(/\r\n/g, '\n').trim() !== text.trim()) {
         console.error('THIRD-PARTY-NOTICES.md is stale. Run: node scripts/generate-third-party-notices.mjs');
         process.exit(1);
     }
