@@ -285,14 +285,15 @@ still carries one section's proposed values.
                       ActorId uuid null, ActorName text, Source text, Reason text null;
                       UNIQUE (Key, Version); INDEX (Revision)
 "SettingsState"       Id int PK (always 1), Revision bigint
+"SettingsSecrets"     Key varchar(200) PK, Kind text ('wrapped' | 'hash'), Value bytea null,
+                      Version int, Revision bigint, UpdatedAt timestamptz,
+                      ActorId uuid null, ActorName text, Source text
 ```
 
-These three exist (migration `SettingsStore`). Still to come, with the stage that needs each:
+`SettingsHistory` also has `SecretDigest varchar(64) null`. These four exist (migration
+`SettingsStore`). Still to come, with the stage that needs each:
 
 ```
-"SettingsSecrets"     Key varchar(200) PK, Version int, Revision bigint,
-                      Kind text ('wrapped' | 'hash'), Value bytea, WrappingKeyId bytea null,
-                      UpdatedAt, ActorId, ActorName
 "SettingsNodes"       NodeId text PK, Host text, Roles text, Build text, StartedRevision bigint,
                       AppliedRevision bigint, PendingRestart jsonb, EnvKeys text[],
                       Problems jsonb, LastSeenAt timestamptz
@@ -312,9 +313,12 @@ These three exist (migration `SettingsStore`). Still to come, with the stage tha
 - History is append-only. A rollback is a new revision whose values are old ones.
 - Which changed settings need a restart is read from the catalog by key, not stored.
 - A secret never appears in `Settings` or `SettingsHistory`. History records that a secret
-  changed, with the SHA-256 of the **wrapped** blob. A hash of the plaintext would turn the
-  history into a guessing oracle, the reason `signer-separation.md` gives for hashing the wrapped
-  blob in the signer's audit.
+  changed, with the SHA-256 of what was stored for it (`SecretDigest`): the **wrapped** blob,
+  or the stored hash. A hash of the plaintext would turn the history into a guessing oracle,
+  the reason `signer-separation.md` gives for hashing the wrapped blob in the signer's audit.
+  The audit record carries less still: the key and "set", "replaced" or "cleared".
+- The key that wrapped a blob is named in the blob's own header, so the table has no column
+  for it.
 - `Webhook_Endpoints` is one setting whose elements each carry a secret. The whole list is kept
   as one wrapped secret; splitting it into a readable list and per-element secrets is not worth
   the bookkeeping.
@@ -328,6 +332,27 @@ These three exist (migration `SettingsStore`). Still to come, with the stage tha
 
 When a secret comes from the environment, the store holds nothing for it. The node uses the
 environment value, and an environment API key is hashed in memory at load.
+
+As built:
+
+- **A secret is written like any setting**, by its value, through `ISettingsStore.WriteAsync`.
+  The store wraps or hashes it before anything is stored. The value is in no row, no history
+  entry, no audit record and no refusal message.
+- **A wrapped secret is bound to its key.** The store asks the signer to wrap it for
+  `setting:<key>` (`setting:JWT_Secret`), and the signer returns a version 2 envelope that
+  unwraps only for that name (`signer-hardening.md`, "The wrap: envelope v2"). A blob copied to
+  another setting's row is refused there.
+- **When the signer will not wrap, the write is refused whole.** Nothing is held in the clear
+  to be wrapped later, and the other settings in the same write are not saved either.
+- **Setting a wrapped secret again always replaces it**, even with the same value: two wraps of
+  one value differ, so the stored blob cannot say whether the value changed.
+- **A hashed secret is SHA-256 of the key**, and only of a key of at least 32 characters. A
+  plain hash protects nothing that can be guessed, so a shorter key is refused. This is new:
+  `config.yaml` accepts any API key today. The import has to decide what it does with an
+  existing shorter key (open question 11).
+- **Reading back**: `ISettingsStore.ApplySecretsAsync` unwraps each wrapped secret onto a
+  `SystemConfig` and reports the ones it could not. A hashed secret is never set on the
+  configuration; a presented key is checked with `SettingsSnapshot.HashedSecretMatches`.
 
 ### Renamed and reshaped settings
 
@@ -894,11 +919,13 @@ unchanged.
 - The `Settings`, `SettingsHistory` and `SettingsState` tables (migration `SettingsStore`).
 - `ISettingsStore`: load, write (set and clear, expected versions, one revision per write,
   history, audit before save, retry on a lost race) and per-setting history. It refuses a key
-  that is unknown, host-local, signer-local or bootstrap, a value of the wrong type, and for now
-  every secret.
+  that is unknown, host-local, signer-local or bootstrap, and a value of the wrong type.
 - `SettingsSnapshot.ApplyTo`: stored values onto a `SystemConfig`, reporting rows it cannot use.
+- Secrets: the `SettingsSecrets` table, wrapping through the signer bound to the setting's key,
+  hashing for the two API keys, and `ApplySecretsAsync` to read wrapped secrets back. In the
+  signer: envelope version 2, the `SettingSecret` kind and the `Configuration` purpose.
 
-Not built: secrets, per-section validators and change policies, the import and strip, bootstrap
+Not built: per-section validators and change policies, the import and strip, bootstrap
 seeding, the write sites, startup reading the store, the generic endpoint, the CLI, and all of
 stages 2 to 6. The store does not yet link a row to its audit record, so the integrity check in
 section 2 has nothing to check against.
@@ -932,6 +959,11 @@ section 2 has nothing to check against.
    be debugged alone?
 10. **Visor.** When the visor changes settings through the API, is its scoped role allowed
     security-tier changes at all, or only routine ones?
+11. **Existing short API keys.** The store hashes an API key and refuses one under 32
+    characters. An install whose `IntegrationApi.ApiKey` or `CertManager.ApiKey` is shorter
+    cannot have it imported as it is. Should the import refuse to start until the operator
+    sets a longer key, or generate a new key and show it once, or leave the short key working
+    from `config.yaml` with a warning until it is replaced?
 
 ## Found along the way
 

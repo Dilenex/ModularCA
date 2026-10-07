@@ -79,6 +79,51 @@ public class SettingHistoryEntity
     /// <summary>Why the change was made, when the writer said.</summary>
     [MaxLength(1000)]
     public string? Reason { get; set; }
+
+    /// <summary>
+    /// For a secret setting, SHA-256 in hex of what was stored for it: the wrapped blob or the
+    /// hash, never the secret. Null for an ordinary setting, and for a secret that was cleared.
+    /// A secret's row here never carries a value.
+    /// </summary>
+    [MaxLength(64)]
+    public string? SecretDigest { get; set; }
+}
+
+/// <summary>
+/// One secret setting that has been set. The value is never the secret: it is the blob the
+/// signer wrapped it into, bound to this row's key, or the SHA-256 of a key the node only has
+/// to recognise.
+/// </summary>
+[Table("SettingsSecrets")]
+public class SettingSecretEntity
+{
+    /// <summary>The catalog key. Written from the catalog and compared exactly.</summary>
+    [Key]
+    [MaxLength(200)]
+    public string Key { get; set; } = string.Empty;
+
+    /// <summary><c>wrapped</c> or <c>hash</c>: see <c>SettingSecretKind</c>.</summary>
+    [MaxLength(16)]
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>The wrapped blob or the hash; null when the secret was set and later cleared.</summary>
+    public byte[]? Value { get; set; }
+
+    /// <summary>Counts the changes to this secret.</summary>
+    public int Version { get; set; }
+
+    /// <summary>The instance-wide revision of the change that wrote this value.</summary>
+    public long Revision { get; set; }
+
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+    public Guid? ActorId { get; set; }
+
+    [MaxLength(256)]
+    public string ActorName { get; set; } = string.Empty;
+
+    [MaxLength(32)]
+    public string Source { get; set; } = string.Empty;
 }
 
 /// <summary>

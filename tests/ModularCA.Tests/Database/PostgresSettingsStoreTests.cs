@@ -126,8 +126,56 @@ public class PostgresSettingsStoreTests
             Assert.Equal(("3", 1, "bob"), (stored.ValueJson, stored.Version, stored.ActorName));
         });
 
+    private static readonly SettingsTestSigner Signer = new();
+
     private static SettingsStore Store(ModularCADbContext db, IAuditService audit) =>
-        new(db, audit, NullLogger<SettingsStore>.Instance);
+        new(db, audit, Signer, NullLogger<SettingsStore>.Instance);
+
+    [RequiresEnvironmentFact(ServerVariable)]
+    public Task Secrets_are_stored_as_bytes_the_database_cannot_read_and_come_back_through_the_signer() =>
+        OnPostgresAsync(async open =>
+        {
+            const string secret = "jwt-signing-secret-that-must-never-be-stored-as-itself-0123456789abcdef";
+            const string apiKey = "integration-api-key-0123456789-abcdefghij";
+            await using (var db = open())
+            {
+                await Store(db, new RecordingAuditService()).WriteAsync(new SettingsChange
+                {
+                    Set = new Dictionary<string, JsonNode?>
+                    {
+                        ["JWT_Secret"] = JsonValue.Create(secret),
+                        ["IntegrationApi_ApiKey"] = JsonValue.Create(apiKey),
+                    },
+                    Actor = new SettingsActor(null, "alice"), Source = SettingsSource.Api,
+                });
+            }
+
+            await using var fresh = open();
+            // Neither the secret nor the key is anywhere in the two tables that hold them.
+            var conn = (NpgsqlConnection)fresh.Database.GetDbConnection();
+            await conn.OpenAsync();
+            await using (var command = new NpgsqlCommand(
+                """
+                SELECT count(*) FROM "SettingsSecrets" WHERE position(convert_to(@needle, 'UTF8') in "Value") > 0
+                """, conn))
+            {
+                foreach (var needle in new[] { secret, apiKey })
+                {
+                    command.Parameters.Clear();
+                    command.Parameters.AddWithValue("needle", needle);
+                    Assert.Equal(0L, await command.ExecuteScalarAsync());
+                }
+            }
+            Assert.Empty(await fresh.Settings.ToListAsync());
+            Assert.All(await fresh.SettingsHistory.ToListAsync(), h => Assert.Null(h.ValueJson));
+
+            var store = Store(fresh, new RecordingAuditService());
+            var snapshot = await store.LoadAsync();
+            var config = new ModularCA.Shared.Models.Config.SystemConfig();
+            Assert.Empty(await store.ApplySecretsAsync(snapshot, config));
+            Assert.Equal(secret, config.JWT.Secret);
+            Assert.True(snapshot.HashedSecretMatches("IntegrationApi_ApiKey", apiKey));
+        });
 
     /// <summary>
     /// Creates a database on the <c>MODULARCA_TEST_PG</c> server, applies every application

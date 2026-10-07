@@ -876,6 +876,13 @@ signer, or to keep serving while the signer is down.
 
 ### The wrap: envelope v2
 
+Built 2026-10-06 for the settings store, as described here with two differences in naming. The
+caller's name for the place is called a **binding**, and it is the `binding` field of the two
+wire messages, not `secret_context`. A setting's binding is `setting:` and its store key, which
+is written with underscores: `setting:JWT_Secret`. A kind is either always bound or never:
+`SettingSecret` is refused without a binding, and the earlier kinds are refused with one, so
+`HeldPrivateKey` has not moved to this envelope yet.
+
 The secret wrap (`WrappedSecretEnvelope.cs:32-50`) has room for one gap: nothing binds a blob to
 where it is stored. A blob copied from the webhook secret's row to the JWT secret's row would
 unwrap. Version 2 adds a context:

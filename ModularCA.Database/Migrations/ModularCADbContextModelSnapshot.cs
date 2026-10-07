@@ -2774,6 +2774,10 @@ namespace ModularCA.Database.Migrations
                     b.Property<long>("Revision")
                         .HasColumnType("bigint");
 
+                    b.Property<string>("SecretDigest")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<string>("Source")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -2793,6 +2797,47 @@ namespace ModularCA.Database.Migrations
                         .IsUnique();
 
                     b.ToTable("SettingsHistory");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.SettingSecretEntity", b =>
+                {
+                    b.Property<string>("Key")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<Guid?>("ActorId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ActorName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<byte[]>("Value")
+                        .HasColumnType("bytea");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Key");
+
+                    b.ToTable("SettingsSecrets");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.SettingsStateEntity", b =>

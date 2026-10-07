@@ -11,11 +11,18 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 - **Groundwork for settings in the database.** Instance-wide settings are moving from
   `config.yaml` into the database, one row per setting under a name made of its path joined by
   underscores (`Acme_Http01_MaxAddresses`), so a change reaches every host, is versioned and is
-  audited. This build adds the three tables (`Settings`, `SettingsHistory`, `SettingsState`) and
-  the store that reads and writes them. Nothing reads them yet: `config.yaml` is still where
-  every setting comes from, and nothing is copied out of it. The database connection, the
-  signer's settings and each host's listeners, paths and certificates stay in files for good.
-  See `docs/architecture/settings-store.md`.
+  audited. This build adds four tables (`Settings`, `SettingsSecrets`, `SettingsHistory`,
+  `SettingsState`) and the store that reads and writes them. Nothing reads them yet:
+  `config.yaml` is still where every setting comes from, and nothing is copied out of it. The
+  database connection, the signer's settings and each host's listeners, paths and certificates
+  stay in files for good. See `docs/architecture/settings-store.md`.
+- **Secret settings will be stored wrapped by the signer, or hashed.** The store keeps the JWT
+  secret, the LDAP bind password, the mail credentials and the webhook endpoints as blobs only
+  the signer can open, each bound to its own setting so that a blob copied to another row does
+  not open there. The two API keys are kept as SHA-256 hashes, which the node can check and
+  nobody can read back. The signer gains a second wrapped-secret format for this; secrets it
+  wrapped before are read as before. A node and a signer run as separate processes have to be
+  upgraded together, as for any release.
 
 ### Fixed
 

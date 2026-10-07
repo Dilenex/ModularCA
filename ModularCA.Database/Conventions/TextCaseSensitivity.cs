@@ -154,6 +154,10 @@ public static class TextCaseSensitivity
             [new(typeof(SettingHistoryEntity), nameof(SettingHistoryEntity.Key))] =
                 "The settings catalog key of the row above, copied from it, under the same rule.",
 
+            [new(typeof(SettingSecretEntity), nameof(SettingSecretEntity.Key))] =
+                "A settings catalog key, as SettingEntity.Key. It is also the name the wrapped "
+                + "value is bound to, byte for byte, so it is never folded.",
+
             [new(typeof(RefreshTokenEntity), nameof(RefreshTokenEntity.Token))] =
                 "A bearer secret. Comparing it without regard to case collapses the alphabet the "
                 + "token was drawn from, which is a straight reduction in the work needed to "

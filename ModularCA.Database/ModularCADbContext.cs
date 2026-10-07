@@ -94,6 +94,8 @@ public class ModularCADbContext : DbContext
 
     /// <summary>The instance-wide settings that have been set, one row each. See <c>docs/architecture/settings-store.md</c>.</summary>
     public DbSet<SettingEntity> Settings { get; set; }
+    /// <summary>The secret settings that have been set, each wrapped by the signer or hashed.</summary>
+    public DbSet<SettingSecretEntity> SettingsSecrets { get; set; }
     /// <summary>Every change to a setting, append-only.</summary>
     public DbSet<SettingHistoryEntity> SettingsHistory { get; set; }
     /// <summary>The one row that orders settings writes.</summary>
