@@ -3175,6 +3175,11 @@ namespace ModularCA.Database.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<bool>("AllowOwnUsername")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
+
                     b.Property<Guid>("CertificateAuthorityId")
                         .HasColumnType("uuid");
 
@@ -3303,6 +3308,9 @@ namespace ModularCA.Database.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)");
 
+                    b.Property<string>("LoginNameGrounds")
+                        .HasColumnType("text");
+
                     b.Property<string>("Principals")
                         .IsRequired()
                         .HasColumnType("text");
@@ -3325,6 +3333,9 @@ namespace ModularCA.Database.Migrations
                     b.Property<Guid>("SshCaKeyId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("SubjectUserId")
+                        .HasColumnType("uuid");
+
                     b.Property<DateTime>("ValidAfter")
                         .HasColumnType("timestamp with time zone");
 
@@ -3334,6 +3345,8 @@ namespace ModularCA.Database.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("SshCaKeyId");
+
+                    b.HasIndex("SubjectUserId");
 
                     b.ToTable("SshCertificates");
                 });
@@ -3423,6 +3436,68 @@ namespace ModularCA.Database.Migrations
                     b.HasKey("SshCaKeyId");
 
                     b.ToTable("SshKeyImports");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.SshLoginNameGrantEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("GrantedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("GrantedByUsername")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<Guid?>("GroupId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("LoginName")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<int?>("MaxValidityHours")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<Guid>("SshCaKeyId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("GrantedByUserId");
+
+                    b.HasIndex("GroupId");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("SshCaKeyId", "LoginName", "GroupId")
+                        .IsUnique()
+                        .HasFilter("\"GroupId\" IS NOT NULL");
+
+                    b.HasIndex("SshCaKeyId", "LoginName", "UserId")
+                        .IsUnique()
+                        .HasFilter("\"UserId\" IS NOT NULL");
+
+                    b.ToTable("SshLoginNameGrants", t =>
+                        {
+                            t.HasCheckConstraint("CK_SshLoginNameGrants_ExactlyOneTarget", "(\"UserId\" IS NULL) <> (\"GroupId\" IS NULL)");
+                        });
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.SshRequestProfileEntity", b =>
@@ -4562,6 +4637,11 @@ namespace ModularCA.Database.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("ModularCA.Shared.Entities.UserEntity", null)
+                        .WithMany()
+                        .HasForeignKey("SubjectUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.Navigation("SshCaKey");
                 });
 
@@ -4597,6 +4677,36 @@ namespace ModularCA.Database.Migrations
                     b.Navigation("SshRequestProfile");
 
                     b.Navigation("SshSigningProfile");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.SshLoginNameGrantEntity", b =>
+                {
+                    b.HasOne("ModularCA.Shared.Entities.UserEntity", null)
+                        .WithMany()
+                        .HasForeignKey("GrantedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("ModularCA.Shared.Entities.CaGroupEntity", "Group")
+                        .WithMany()
+                        .HasForeignKey("GroupId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.HasOne("ModularCA.Shared.Entities.SshCaKeyEntity", "SshCaKey")
+                        .WithMany()
+                        .HasForeignKey("SshCaKeyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("ModularCA.Shared.Entities.UserEntity", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.Navigation("Group");
+
+                    b.Navigation("SshCaKey");
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.SshSigningProfileEntity", b =>

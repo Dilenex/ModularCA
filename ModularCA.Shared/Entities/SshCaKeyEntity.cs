@@ -54,6 +54,13 @@ public class SshCaKeyEntity
     public bool IsUserCa { get; set; } = true;
     public bool IsHostCa { get; set; } = false;
     public int MaxValidityHours { get; set; } = 24;
+
+    /// <summary>
+    /// Whether everyone may get a certificate from this key that logs in as their own username,
+    /// without a grant. Turned off where console usernames are not accounts on the hosts.
+    /// </summary>
+    public bool AllowOwnUsername { get; set; } = true;
+
     public bool IsEnabled { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }

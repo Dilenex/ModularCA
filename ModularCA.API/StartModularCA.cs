@@ -1765,6 +1765,7 @@ builder.Services.AddScoped<ICtSubmissionService, CtSubmissionService>();
 builder.Services.AddScoped<ICertificateExportService, CertificateExportService>();
 builder.Services.AddScoped<IHeldKeyService, HeldKeyService>();
 builder.Services.AddScoped<ITimestampService, TimestampService>();
+builder.Services.AddScoped<ISshLoginNameService, SshLoginNameService>();
 builder.Services.AddScoped<ISshCaService, SshCaService>();
 // SSH CA keys that are still plaintext files on the node are imported into the signer by the
 // control role: once at start, after the restore's wrapped secrets are unwrapped, and again in

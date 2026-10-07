@@ -279,11 +279,11 @@ public class SshKeyFileImportTests
 
         // And the imported key signs: a certificate through the service, verified under the row's public key.
         var certificate = SshCertificate.ParseOpenSsh((await install.Node.Service.SignUserKeyAsync(
-            key.Id, SshNode.SubjectKey(), ["alice"], 1, "alice-laptop", ["permit-pty"], install.Node.Actor)).SignedCertificate);
+            key.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, ["permit-pty"], install.Node.Actor)).SignedCertificate);
         Assert.Equal(publicKey, certificate.SignatureKey);
         Assert.True(certificate.VerifySignature());
         var host = SshCertificate.ParseOpenSsh((await install.Node.Service.SignHostKeyAsync(
-            key.Id, SshNode.SubjectKey("ECDSA", "P-256", "host1"), ["host1.example.com"], 1, null, install.Node.Actor)).SignedCertificate);
+            key.Id, SshNode.SubjectKey("ECDSA", "P-256", "host1"), ["host1.example.com"], 1, install.Node.Actor)).SignedCertificate);
         Assert.Equal(publicKey, host.SignatureKey);
         Assert.True(host.VerifySignature());
 
@@ -302,14 +302,14 @@ public class SshKeyFileImportTests
         var key = install.Seed("Old SSH");
 
         await Assert.ThrowsAsync<SshCaKeyUnavailableException>(() =>
-            install.Node.Service.SignUserKeyAsync(key.Id, SshNode.SubjectKey(), ["alice"], 1, null, null, install.Node.Actor));
+            install.Node.Service.SignUserKeyAsync(key.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null, install.Node.Actor));
         Assert.Empty(install.Node.Relay.SshSigned);
 
         await install.Import().RunAsync();
 
         using var node = install.Node.Reopen();
         var service = new SshCaService(node, install.Node.Relay, install.Node.Audit, NullLogger<SshCaService>.Instance);
-        var signed = await service.SignUserKeyAsync(key.Id, SshNode.SubjectKey(), ["alice"], 1, null, null, install.Node.Actor);
+        var signed = await service.SignUserKeyAsync(key.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null, install.Node.Actor);
         Assert.True(SshCertificate.ParseOpenSsh(signed.SignedCertificate).VerifySignature());
     }
 
@@ -578,7 +578,7 @@ public class SshKeyFileImportTests
         Assert.False(File.Exists(file));
         Assert.Single(install.Node.Audit.Of(AuditActionType.SshCaKeyImported));
         Assert.True(SshCertificate.ParseOpenSsh((await install.Node.Service.SignUserKeyAsync(
-            key.Id, SshNode.SubjectKey(), ["alice"], 1, null, null, install.Node.Actor)).SignedCertificate).VerifySignature());
+            key.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null, install.Node.Actor)).SignedCertificate).VerifySignature());
     }
 
     [Fact]

@@ -332,9 +332,9 @@ public class IssuingCaRefusalTests
         var pub = SshNode.SubjectKey();
 
         var user = await Assert.ThrowsAsync<ConfigurationValidationException>(
-            () => service.SignUserKeyAsync(key.Id, pub, ["alice"], 1, null, null));
+            () => service.SignUserKeyAsync(key.Id, pub, SshNode.Ci, ["alice"], 1, null));
         var host = await Assert.ThrowsAsync<ConfigurationValidationException>(
-            () => service.SignHostKeyAsync(key.Id, pub, ["host.example"], 1, null));
+            () => service.SignHostKeyAsync(key.Id, pub, ["host.example"], 1));
 
         Assert.Equal(ErrorCodes.IssuingCaDisabled, user.Code);
         Assert.Equal(ErrorCodes.IssuingCaDisabled, host.Code);

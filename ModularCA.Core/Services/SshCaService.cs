@@ -19,7 +19,9 @@ namespace ModularCA.Core.Services;
 /// key and builds and signs every SSH certificate; this service holds no key, reads no key file
 /// and runs no program. It keeps what the signer does not decide: the CA, group, key and
 /// certificate rows, the serial's uniqueness, the default signing profiles and the audit entry
-/// of each operation, written here once whichever controller or ceremony called.
+/// of each operation, written here once whichever controller or ceremony called. It also writes
+/// every certificate's key id (<see cref="SshKeyIds"/>), and holds a certificate for a user to the
+/// login names that user holds on the key (<see cref="ISshLoginNameService"/>).
 /// </summary>
 /// <remarks>
 /// A row whose <see cref="SshCaKeyEntity.KeyStorage"/> is <see cref="SshCaKeyStorage.LegacyFile"/>
@@ -56,9 +58,6 @@ public class SshCaService : ISshCaService
     /// </summary>
     public static readonly bool ServeKrlWithNoEntries = true;
 
-    /// <summary>The longest key id stored: the width of <see cref="SshCertificateEntity.KeyId"/>.</summary>
-    private const int MaxKeyIdLength = 255;
-
     /// <summary>The longest comment written after a public key or a certificate.</summary>
     private const int MaxCommentLength = 256;
 
@@ -69,14 +68,21 @@ public class SshCaService : ISshCaService
     private readonly ISigningService _signer;
     private readonly IAuditService _audit;
     private readonly ILogger<SshCaService> _logger;
+    private readonly ISshLoginNameService _loginNames;
 
-    /// <summary>Creates the service over the application database, the signer and the audit.</summary>
-    public SshCaService(ModularCADbContext db, ISigningService signer, IAuditService audit, ILogger<SshCaService> logger)
+    /// <summary>
+    /// Creates the service over the application database, the signer and the audit.
+    /// <paramref name="loginNames"/> decides which login names a user holds; without one, the
+    /// rule is read from the same database and audit.
+    /// </summary>
+    public SshCaService(ModularCADbContext db, ISigningService signer, IAuditService audit, ILogger<SshCaService> logger,
+        ISshLoginNameService? loginNames = null)
     {
         _db = db;
         _signer = signer;
         _audit = audit;
         _logger = logger;
+        _loginNames = loginNames ?? new SshLoginNameService(db, audit);
     }
 
     /// <summary>
@@ -441,38 +447,74 @@ public class SshCaService : ISshCaService
     /// <summary>
     /// Signs a user public key under the given SSH CA key, through the signer. Refuses a
     /// disabled or deleted CA, a key that does not sign user certificates, and a key that still
-    /// awaits its import into the signer. The certificate carries exactly
-    /// <paramref name="extensions"/> (see <see cref="SshCertificateOptions"/>).
+    /// awaits its import into the signer. The key id is written from <paramref name="subject"/>
+    /// (<see cref="SshKeyIds"/>). For a user, the user must exist, be active and be one the SSH CA
+    /// may refer to, every principal must be a login name that user holds on the key, and the
+    /// certificate ends no later than those names allow (<see cref="SshLoginNameHolding"/>). For a
+    /// service identity the principals are as the caller checked them. The certificate carries
+    /// exactly <paramref name="extensions"/> (see <see cref="SshCertificateOptions"/>).
     /// </summary>
-    public Task<SshCertificateEntity> SignUserKeyAsync(Guid caKeyId, string publicKey, List<string> principals,
-        int? validityHours, string? keyId, List<string>? extensions, SshCaActor? actor = null)
-        => SignAsync(caKeyId, publicKey, principals, validityHours, keyId, extensions, SshCertificateType.User, actor);
+    public Task<SshCertificateEntity> SignUserKeyAsync(Guid caKeyId, string publicKey, SshCertificateSubject subject, List<string> principals,
+        int? validityHours, List<string>? extensions, SshCaActor? actor = null, int? profileMaxValidityHours = null)
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+        return SignAsync(caKeyId, publicKey, subject, principals, validityHours, profileMaxValidityHours, extensions, SshCertificateType.User, actor);
+    }
 
     /// <summary>
     /// Signs a host public key under the given SSH CA key, through the signer. Refuses a
     /// disabled or deleted CA, a key that does not sign host certificates, and a key that still
-    /// awaits its import into the signer. A host certificate carries no options.
+    /// awaits its import into the signer. The key id is the first hostname. A host certificate
+    /// carries no options.
     /// </summary>
     public Task<SshCertificateEntity> SignHostKeyAsync(Guid caKeyId, string publicKey, List<string> hostnames,
-        int? validityHours, string? keyId, SshCaActor? actor = null)
-        => SignAsync(caKeyId, publicKey, hostnames, validityHours, keyId, null, SshCertificateType.Host, actor);
+        int? validityHours, SshCaActor? actor = null, int? profileMaxValidityHours = null)
+        => SignAsync(caKeyId, publicKey, null, hostnames, validityHours, profileMaxValidityHours, null, SshCertificateType.Host, actor);
 
     /// <summary>
-    /// What both certificate types share. Who may ask, and for what, was decided by the caller
-    /// from the profiles; this checks the subject key and the CA key's row, picks a serial no
-    /// certificate of the CA key has, and asks the signer for the certificate under an
-    /// <see cref="SigningPurpose.SshCertificate"/> context naming the SSH CA at instance scope.
+    /// The key id the CA would write for <paramref name="subject"/>: the username of an existing,
+    /// active user, or <c>svc:</c> and the label of a service identity.
+    /// </summary>
+    public async Task<string> KeyIdOfAsync(SshCertificateSubject subject)
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+        return subject.UserId is Guid userId
+            ? SshKeyIds.ForUser((await SubjectUserAsync(userId)).Username)
+            : SshKeyIds.ForService(subject.ServiceLabel);
+    }
+
+    /// <summary>The user a certificate is asked for, who must exist and be active.</summary>
+    /// <exception cref="InvalidRequestException">There is no such user, or the user is not active.</exception>
+    private async Task<(Guid Id, string Username)> SubjectUserAsync(Guid userId)
+    {
+        var user = await _db.Users.AsNoTracking().Where(u => u.Id == userId).Select(u => new { u.Id, u.Username, u.IsActive }).FirstOrDefaultAsync();
+        if (user == null || !user.IsActive)
+            throw new InvalidRequestException(SubjectRefused);
+        return (user.Id, user.Username);
+    }
+
+    /// <summary>One sentence for a subject that is unknown, inactive or out of the SSH CA's scope, so the answer does not say which.</summary>
+    private const string SubjectRefused =
+        "The user this certificate is for does not exist, is not active, or has no membership, role or grant in this SSH CA's scope.";
+
+    /// <summary>
+    /// What both certificate types share. Which profiles apply was decided by the caller; this
+    /// checks the subject key and the CA key's row, writes the key id, holds a user certificate
+    /// to the login names its subject holds, picks a serial no certificate of the CA key has, and
+    /// asks the signer for the certificate under an <see cref="SigningPurpose.SshCertificate"/>
+    /// context naming the SSH CA at instance scope.
     /// </summary>
     /// <remarks>
-    /// The principals, the key id and the options reach the signer exactly as given: nothing is
-    /// rewritten on the way, so what the profiles approved is what is certified, and what the
-    /// signer's rules refuse is refused with its reason. The row stored is read back from the
-    /// certificate the signer returned (serial, key id, principals, validity, options, subject
-    /// key), never from the request. The certificate is signed before it is stored; should the
-    /// save then fail, the signer's own audit still holds the certificate's hash, serial and key id.
+    /// The principals and the options reach the signer exactly as given: nothing is rewritten on
+    /// the way, so what was approved is what is certified, and what the signer's rules refuse is
+    /// refused with its reason. The row stored is read back from the certificate the signer
+    /// returned (serial, key id, principals, validity, options, subject key), never from the
+    /// request, together with who the certificate is for and why that subject held each login
+    /// name. The certificate is signed before it is stored; should the save then fail, the
+    /// signer's own audit still holds the certificate's hash, serial and key id.
     /// </remarks>
-    private async Task<SshCertificateEntity> SignAsync(Guid caKeyId, string publicKey, List<string> principals, int? validityHours,
-        string? keyId, List<string>? extensions, SshCertificateType type, SshCaActor? actor)
+    private async Task<SshCertificateEntity> SignAsync(Guid caKeyId, string publicKey, SshCertificateSubject? certificateFor, List<string> principals,
+        int? validityHours, int? profileMaxValidityHours, List<string>? extensions, SshCertificateType type, SshCaActor? actor)
     {
         var subject = ParseSubjectKey(publicKey);
         principals ??= [];
@@ -490,18 +532,64 @@ public class SshCaService : ISshCaService
         if (caPublicKey != null && SshCertificateRules.CheckSubjectKey(subject, caPublicKey) is { } keyProblem)
             throw new InvalidRequestException(keyProblem);
 
-        var certKeyId = keyId ?? $"{typeName}-{Guid.NewGuid():N}";
-        if (certKeyId.Length > MaxKeyIdLength)
-            throw new InvalidRequestException($"The key id is longer than {MaxKeyIdLength} characters.");
+        (Guid Id, string Username)? subjectUser = null;
+        string? serviceLabel = null;
+        string certKeyId;
+        if (type == SshCertificateType.Host)
+        {
+            certKeyId = SshKeyIds.ForHost(principals);
+        }
+        else if (certificateFor!.UserId is Guid subjectUserId)
+        {
+            subjectUser = await SubjectUserAsync(subjectUserId);
+            certKeyId = SshKeyIds.ForUser(subjectUser.Value.Username);
+        }
+        else
+        {
+            serviceLabel = certificateFor.ServiceLabel;
+            certKeyId = SshKeyIds.ForService(serviceLabel);
+        }
 
-        var hours = Math.Min(validityHours ?? caKey.MaxValidityHours, caKey.MaxValidityHours);
         int serial;
         do
         {
             serial = RandomNumberGenerator.GetInt32(1, int.MaxValue);
         } while (await _db.SshCertificates.AnyAsync(c => c.SshCaKeyId == caKey.Id && c.SerialNumber == serial));
 
-        var asked = new { CertificateType = typeName, KeyId = certKeyId, SerialNumber = (long)serial, PrincipalCount = principals.Count };
+        // What a failure entry says: never a principal, so not a host certificate's key id, which is one.
+        var asked = new
+        {
+            CertificateType = typeName, KeyId = type == SshCertificateType.Host ? null : certKeyId, SerialNumber = (long)serial,
+            PrincipalCount = principals.Count,
+            SubjectUserId = subjectUser?.Id, SubjectUsername = subjectUser?.Username, ServiceLabel = serviceLabel,
+        };
+
+        var validAfter = DateTimeOffset.UtcNow.Subtract(ValidAfterBackdate).ToUnixTimeSeconds();
+        var startsAt = DateTimeOffset.FromUnixTimeSeconds(validAfter).UtcDateTime;
+        var limitHours = Math.Min(caKey.MaxValidityHours, profileMaxValidityHours ?? caKey.MaxValidityHours);
+        SshLoginNameIssuance? names = null;
+        IReadOnlyList<SshLoginNameGround>? grounds = null;
+        if (subjectUser is { } forUser)
+        {
+            try
+            {
+                if (!await _loginNames.MayReferenceUserAsync(caKey.Id, forUser.Id))
+                    throw new InvalidRequestException(SubjectRefused);
+                names = await _loginNames.ForIssuanceAsync(forUser.Id, caKey.Id, principals, startsAt);
+                grounds = names.Grounds;
+            }
+            catch (InvalidRequestException)
+            {
+                await AuditFailureAsync(AuditActionType.SshCertIssued, actor, "SshCaKey", caKey.Id.ToString(), asked,
+                    new InvalidRequestException("The subject does not hold a login name asked for, or the SSH CA may not refer to the subject."));
+                throw;
+            }
+        }
+        else if (type == SshCertificateType.User)
+        {
+            grounds = SshLoginNameHolding.Typed(principals);
+        }
+        var endsAt = new DateTimeOffset(SshLoginNameHolding.ValidBefore(startsAt, validityHours, limitHours, names)).ToUnixTimeSeconds();
 
         if (caKey.KeyStorage == SshCaKeyStorage.LegacyFile)
         {
@@ -512,10 +600,9 @@ public class SshCaService : ISshCaService
         }
 
         var (criticalOptions, certExtensions) = SshCertificateOptions.From(type == SshCertificateType.Host ? null : extensions);
-        var validAfter = DateTimeOffset.UtcNow.Subtract(ValidAfterBackdate).ToUnixTimeSeconds();
         var request = new SshCertificateRequest(
             new KeyRef(caKey.Id, KeyRef.SshKeystore), subject.Blob, typeName, (ulong)serial, certKeyId, principals.ToList(),
-            validAfter, validAfter + (long)hours * 3600, criticalOptions, certExtensions);
+            validAfter, endsAt, criticalOptions, certExtensions);
         var context = SigningContext.ForCa(SignerCaller, SigningPurpose.SshCertificate, caKey.CertificateAuthorityId, spaceId: null);
 
         byte[] blob;
@@ -558,6 +645,8 @@ public class SshCaService : ISshCaService
             SignedCertificate = SshCertificate.ToOpenSsh(blob, comment),
             Extensions = options.Count > 0 ? JsonSerializer.Serialize(options) : null,
             IssuedByUserId = actor?.UserId,
+            SubjectUserId = subjectUser?.Id,
+            LoginNameGrounds = grounds == null ? null : SshLoginNameHolding.Serialize(grounds),
             SourceIp = actor?.SourceIp,
         };
 
@@ -576,7 +665,11 @@ public class SshCaService : ISshCaService
 
         await _audit.LogAsync(AuditActionType.SshCertIssued, actor?.UserId, actor?.Username,
             "SshCertificate", entity.Id.ToString(),
-            new { entity.CertificateType, entity.KeyId, entity.SerialNumber, entity.Principals },
+            new
+            {
+                entity.CertificateType, entity.KeyId, entity.SerialNumber, entity.Principals,
+                SubjectUserId = subjectUser?.Id, SubjectUsername = subjectUser?.Username, ServiceLabel = serviceLabel,
+            },
             actor?.SourceIp);
         _logger.LogInformation("SSH {Type} cert issued: KeyId={KeyId}, Serial={Serial}, Principals={Principals}",
             entity.CertificateType, entity.KeyId, entity.SerialNumber, string.Join(",", issued.Principals));

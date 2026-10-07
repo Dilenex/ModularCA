@@ -72,9 +72,9 @@ public sealed class SshCaOpenSshInteropTests : IDisposable
         {
             using var node = new SshNode();
             var ca = await node.CreateCaAsync($"Interop {keyType}", keyType, keySize);
-            var revoked = await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice", "ops"], 2, "alice-laptop",
+            var revoked = await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice", "ops"], 2,
                 ["permit-pty", "force-command=/usr/bin/uptime", "source-address=192.0.2.0/24"], node.Actor);
-            var standing = await node.Service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey("ECDSA", "P-256", "host1"), ["host1.example.com"], 2, "host1", node.Actor);
+            var standing = await node.Service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey("ECDSA", "P-256", "host1"), ["host1.example.com"], 2, node.Actor);
             var caFingerprint = SshPublicKey.ParseAuthorizedKey(ca.PublicKey).Fingerprint;
 
             var userFile = Write($"{keyType}-user-cert.pub", revoked.SignedCertificate);
@@ -84,7 +84,7 @@ public sealed class SshCaOpenSshInteropTests : IDisposable
             Assert.True(userExit == 0, user);
             Assert.Contains("user certificate", user);
             Assert.Contains($"Serial: {revoked.SerialNumber}", user);
-            Assert.Contains("Key ID: \"alice-laptop\"", user);
+            Assert.Contains($"Key ID: \"{SshNode.CiKeyId}\"", user);
             Assert.Contains(caFingerprint, user);
             Assert.Contains("alice", user);
             Assert.Contains("ops", user);

@@ -268,8 +268,8 @@ public class SshCaServiceTests
         var caKey = KeyOf(ca);
         var before = DateTimeOffset.UtcNow;
 
-        var user = await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice", "ops"], 2, "alice-laptop", ["permit-pty"], node.Actor);
-        var host = await node.Service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey("ECDSA", "P-256", "host1"), ["host1.example.com"], 4, null, node.Actor);
+        var user = await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice", "ops"], 2, ["permit-pty"], node.Actor);
+        var host = await node.Service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey("ECDSA", "P-256", "host1"), ["host1.example.com"], 4, node.Actor);
 
         var after = DateTimeOffset.UtcNow;
         foreach (var (row, type, principals, hours) in new[]
@@ -295,8 +295,12 @@ public class SshCaServiceTests
             Assert.Equal(node.Actor.SourceIp, row.SourceIp);
             Assert.Equal(ca.Id, row.SshCaKeyId);
         }
-        Assert.Equal("alice-laptop", user.KeyId);
-        Assert.StartsWith("host-", host.KeyId);
+        Assert.Equal(SshNode.CiKeyId, user.KeyId);
+        Assert.Equal("host1.example.com", host.KeyId);
+        Assert.Null(user.SubjectUserId);
+        Assert.Null(host.SubjectUserId);
+        Assert.Null(host.LoginNameGrounds);
+        Assert.Equal(new[] { "typed", "typed" }, SshLoginNameHolding.Parse(user.LoginNameGrounds)!.Select(g => g.Source).ToArray());
         Assert.EndsWith(" alice@laptop", user.SignedCertificate);
         Assert.Null(host.Extensions);
 
@@ -324,8 +328,8 @@ public class SshCaServiceTests
         using var node = new SshNode();
         var ca = await node.CreateCaAsync(maxValidityHours: 6);
 
-        var longer = SshCertificate.ParseOpenSsh((await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice"], 100, null, null, node.Actor)).SignedCertificate);
-        var unstated = SshCertificate.ParseOpenSsh((await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice"], null, null, null, node.Actor)).SignedCertificate);
+        var longer = SshCertificate.ParseOpenSsh((await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 100, null, node.Actor)).SignedCertificate);
+        var unstated = SshCertificate.ParseOpenSsh((await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], null, null, node.Actor)).SignedCertificate);
 
         Assert.Equal(6UL * 3600, longer.Fields.ValidBefore - longer.Fields.ValidAfter);
         Assert.Equal(6UL * 3600, unstated.Fields.ValidBefore - unstated.Fields.ValidAfter);
@@ -355,7 +359,7 @@ public class SshCaServiceTests
         using var node = new SshNode();
         var ca = await node.CreateCaAsync();
 
-        var row = await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice"], 1, null, asked?.ToList(), node.Actor);
+        var row = await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, asked?.ToList(), node.Actor);
 
         var certificate = SshCertificate.ParseOpenSsh(row.SignedCertificate);
         Assert.Equal(criticalOptions.OrderBy(o => o, StringComparer.Ordinal), SshCertificateOptions.Describe(certificate.Fields.CriticalOptions, []));
@@ -376,7 +380,7 @@ public class SshCaServiceTests
         var ca = await node.CreateCaAsync();
 
         var ex = await Assert.ThrowsAsync<InvalidRequestException>(
-            () => node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice"], 1, null, [option], node.Actor));
+            () => node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, [option], node.Actor));
 
         Assert.Equal(400, ex.Status);
         Assert.Contains(reason, ex.Message);
@@ -391,24 +395,24 @@ public class SshCaServiceTests
         var ca = await node.CreateCaAsync();
 
         var ex = await Assert.ThrowsAsync<InvalidRequestException>(() => node.Service.SignUserKeyAsync(
-            ca.Id, SshNode.SubjectKey(), ["alice"], 1, null, ["Force-Command=/bin/sh", "force-command=/usr/bin/restricted"], node.Actor));
+            ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, ["Force-Command=/bin/sh", "force-command=/usr/bin/restricted"], node.Actor));
 
         Assert.Contains("force-command", ex.Message);
         Assert.Contains("twice", ex.Message);
     }
 
     [Fact]
-    public async Task Principals_and_the_key_id_reach_the_certificate_exactly_as_given()
+    public async Task The_principals_of_a_service_identity_reach_the_certificate_exactly_as_typed_under_the_key_id_the_ca_writes()
     {
         using var node = new SshNode();
         var ca = await node.CreateCaAsync();
         var principals = new List<string> { "ro ot", "dev;ops", "häns@example.com", "fe80::1" };
 
-        var row = await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), principals, 1, "id with $(spaces) & more", null, node.Actor);
+        var row = await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, principals, 1, null, node.Actor);
 
         var certificate = SshCertificate.ParseOpenSsh(row.SignedCertificate);
         Assert.Equal(principals, certificate.Fields.Principals);
-        Assert.Equal("id with $(spaces) & more", certificate.Fields.KeyId);
+        Assert.Equal(SshNode.CiKeyId, certificate.Fields.KeyId);
         Assert.Equal(principals, Strings(row.Principals));
     }
 
@@ -429,7 +433,7 @@ public class SshCaServiceTests
             Extensions = [new SshCertificateOption("permit-user-rc")],
         }, context);
 
-        var row = await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice"], 2, "the-node-asked-this", ["permit-pty"], node.Actor);
+        var row = await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 2, ["permit-pty"], node.Actor);
 
         var certificate = SshCertificate.ParseOpenSsh(row.SignedCertificate);
         AssertRowIsCertificate(row, certificate);
@@ -453,7 +457,7 @@ public class SshCaServiceTests
             difference == "another serial" ? request with { Serial = request.Serial + 1 } : request with { SubjectPublicKey = other }, context);
 
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice"], 1, null, null, node.Actor));
+            () => node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null, node.Actor));
 
         using var db = node.Reopen();
         Assert.Empty(db.SshCertificates);
@@ -485,14 +489,14 @@ public class SshCaServiceTests
             ("ssh-ed25519 " + Convert.ToBase64String(new byte[20]), "cannot be used"),
             (valid + "\n" + valid, "one line"),
             ("sk-ssh-ed25519@openssh.com AAAA", "Security key"),
-            (SshCertificate.ParseOpenSsh((await node.Service.SignUserKeyAsync(ca.Id, valid, ["alice"], 1, null, null, node.Actor)).SignedCertificate).ToOpenSsh(), "certificate"),
+            (SshCertificate.ParseOpenSsh((await node.Service.SignUserKeyAsync(ca.Id, valid, SshNode.Ci, ["alice"], 1, null, node.Actor)).SignedCertificate).ToOpenSsh(), "certificate"),
         };
         var asked = node.Relay.SshSigned.Count;
 
         foreach (var (key, says) in cases)
         {
-            var user = await Assert.ThrowsAsync<InvalidRequestException>(() => node.Service.SignUserKeyAsync(ca.Id, key, ["alice"], 1, null, null, node.Actor));
-            var host = await Assert.ThrowsAsync<InvalidRequestException>(() => node.Service.SignHostKeyAsync(ca.Id, key, ["host1"], 1, null, node.Actor));
+            var user = await Assert.ThrowsAsync<InvalidRequestException>(() => node.Service.SignUserKeyAsync(ca.Id, key, SshNode.Ci, ["alice"], 1, null, node.Actor));
+            var host = await Assert.ThrowsAsync<InvalidRequestException>(() => node.Service.SignHostKeyAsync(ca.Id, key, ["host1"], 1, node.Actor));
             Assert.Equal(400, user.Status);
             Assert.Contains(says, user.Message);
             Assert.Contains(says, host.Message);
@@ -507,7 +511,7 @@ public class SshCaServiceTests
         var ca = await node.CreateCaAsync();
 
         var ex = await Assert.ThrowsAsync<InvalidRequestException>(
-            () => node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice"], 1, new string('k', 256), null, node.Actor));
+            () => node.Service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey(), [new string('h', 256)], 1, node.Actor));
 
         Assert.Contains("key id", ex.Message);
         Assert.Empty(node.Relay.SshSigned);
@@ -520,8 +524,8 @@ public class SshCaServiceTests
         var userOnly = await node.Service.GenerateKeyPairAsync("Users Only", "ed25519", isUserCa: true, isHostCa: false, 24);
         var hostOnly = await node.Service.GenerateKeyPairAsync("Hosts Only", "ed25519", isUserCa: false, isHostCa: true, 24);
 
-        var host = await Assert.ThrowsAsync<ConfigurationValidationException>(() => node.Service.SignHostKeyAsync(userOnly.Id, SshNode.SubjectKey(), ["host1"], 1, null));
-        var user = await Assert.ThrowsAsync<ConfigurationValidationException>(() => node.Service.SignUserKeyAsync(hostOnly.Id, SshNode.SubjectKey(), ["alice"], 1, null, null));
+        var host = await Assert.ThrowsAsync<ConfigurationValidationException>(() => node.Service.SignHostKeyAsync(userOnly.Id, SshNode.SubjectKey(), ["host1"], 1));
+        var user = await Assert.ThrowsAsync<ConfigurationValidationException>(() => node.Service.SignUserKeyAsync(hostOnly.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null));
 
         Assert.Contains("host certificates", host.Message);
         Assert.Contains("user certificates", user.Message);
@@ -539,8 +543,8 @@ public class SshCaServiceTests
         var signer = new UnaskedSigner();
         var service = node.ServiceOver(signer);
 
-        var user = await Assert.ThrowsAsync<SshCaKeyUnavailableException>(() => service.SignUserKeyAsync(legacy.Id, SshNode.SubjectKey(), ["alice"], 1, null, null, node.Actor));
-        var host = await Assert.ThrowsAsync<SshCaKeyUnavailableException>(() => service.SignHostKeyAsync(legacy.Id, SshNode.SubjectKey(), ["host1"], 1, null, node.Actor));
+        var user = await Assert.ThrowsAsync<SshCaKeyUnavailableException>(() => service.SignUserKeyAsync(legacy.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null, node.Actor));
+        var host = await Assert.ThrowsAsync<SshCaKeyUnavailableException>(() => service.SignHostKeyAsync(legacy.Id, SshNode.SubjectKey(), ["host1"], 1, node.Actor));
 
         Assert.Contains(SshCaKeyUnavailableException.AwaitingImport, user.Message);
         Assert.Contains("SSH CA key awaiting import into the signer", host.Message);
@@ -582,7 +586,7 @@ public class SshCaServiceTests
         var ca = await node.CreateCaAsync();
 
         var ex = await Assert.ThrowsAsync<SshCaKeyUnavailableException>(
-            () => node.ServiceOver(Locked(node)).SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice"], 1, null, null, node.Actor));
+            () => node.ServiceOver(Locked(node)).SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null, node.Actor));
 
         Assert.Equal(SigningRefusalReason.SignerLocked, ex.SignerReason);
         Assert.True(ex.RetryMayHelp);
@@ -604,7 +608,7 @@ public class SshCaServiceTests
         }
         node.Db.ChangeTracker.Clear();
         var token = await Assert.ThrowsAsync<SshCaKeyUnavailableException>(
-            () => node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice"], 1, null, null, node.Actor));
+            () => node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null, node.Actor));
         Assert.Equal(SigningRefusalReason.OperationUnsupported, token.SignerReason);
         Assert.Contains(SshCaKeyStorage.Pkcs11, token.Message);
 
@@ -612,7 +616,7 @@ public class SshCaServiceTests
         node.Relay.OnSignSsh = (_, _) => throw new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
             "The signer predates the SSH keystore: it does not implement SignSshCertificate. Upgrade the signer first.");
         var older = await Assert.ThrowsAsync<SshCaKeyUnavailableException>(
-            () => node.Service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey(), ["host1"], 1, null, node.Actor));
+            () => node.Service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey(), ["host1"], 1, node.Actor));
         Assert.Contains("predates the SSH keystore", older.Message);
     }
 
@@ -623,22 +627,22 @@ public class SshCaServiceTests
         var ca = await node.CreateCaAsync(maxValidityHours: 6);
 
         var none = await Assert.ThrowsAsync<InvalidRequestException>(
-            () => node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), [], 1, null, null, node.Actor));
+            () => node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, [], 1, null, node.Actor));
         Assert.Equal(400, none.Status);
         Assert.Contains("At least one principal is required", none.Message);
 
         var empty = await Assert.ThrowsAsync<InvalidRequestException>(
-            () => node.Service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey(), [""], 1, null, node.Actor));
+            () => node.Service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey(), [""], 1, node.Actor));
         Assert.Contains("A principal is empty", empty.Message);
 
         var window = await Assert.ThrowsAsync<InvalidRequestException>(
-            () => node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice"], 0, null, null, node.Actor));
+            () => node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 0, null, node.Actor));
         Assert.Contains("validity window is empty", window.Message);
 
         // Over the key's maximum: the node never asks for that, so the request is lengthened on the way.
         node.Relay.OnSignSsh = (request, context) => node.RealSigner.SignSshCertificateAsync(request with { ValidBefore = request.ValidBefore + 3600 }, context);
         var tooLong = await Assert.ThrowsAsync<InvalidRequestException>(
-            () => node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice"], 6, null, null, node.Actor));
+            () => node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 6, null, node.Actor));
         Assert.Contains("maximum of 6 hours", tooLong.Message);
 
         using var db = node.Reopen();
@@ -656,7 +660,7 @@ public class SshCaServiceTests
         node.Db.SaveChanges();
 
         var ex = await Assert.ThrowsAsync<ConfigurationValidationException>(
-            () => node.Service.SignUserKeyAsync(keyless.Id, SshNode.SubjectKey(), ["alice"], 1, null, null, node.Actor));
+            () => node.Service.SignUserKeyAsync(keyless.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null, node.Actor));
 
         Assert.Equal(ErrorCodes.IssuingCaKeyUnavailable, ex.Code);
         Assert.Equal(400, ex.Status);
@@ -670,7 +674,7 @@ public class SshCaServiceTests
         node.Relay.OnSignSsh = (_, _) => throw new SigningRefusedException(SigningRefusalReason.IntegrityFailure, "The signature did not verify.");
 
         var ex = await Assert.ThrowsAsync<SigningRefusedException>(
-            () => node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice"], 1, null, null, node.Actor));
+            () => node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null, node.Actor));
 
         Assert.Equal(SigningRefusalReason.IntegrityFailure, ex.Reason);
     }
@@ -776,8 +780,8 @@ public class SshCaServiceTests
         var other = await node.CreateCaAsync("Other SSH", "ecdsa", 256);
         var certs = new List<SshCertificateEntity>();
         for (var i = 0; i < 4; i++)
-            certs.Add(await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), [$"user{i}"], 1, null, null, node.Actor));
-        var elsewhere = await node.Service.SignUserKeyAsync(other.Id, SshNode.SubjectKey(), ["alice"], 1, null, null, node.Actor);
+            certs.Add(await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, [$"user{i}"], 1, null, node.Actor));
+        var elsewhere = await node.Service.SignUserKeyAsync(other.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null, node.Actor);
         var unasked = node.ServiceOver(new UnaskedSigner());
 
         Assert.True(await unasked.RevokeCertificateAsync(certs[0].Id, ca.Id, node.Actor));
@@ -810,8 +814,8 @@ public class SshCaServiceTests
         using var node = new SshNode();
         var ca = await node.CreateCaAsync();
         var legacy = node.SeedLegacyCa();
-        await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice"], 1, null, null, node.Actor);
-        await node.Service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey(), ["host1"], 1, null, node.Actor);
+        await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null, node.Actor);
+        await node.Service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey(), ["host1"], 1, node.Actor);
         var signer = new UnaskedSigner();
         var service = node.ServiceOver(signer);
         var ceremony = Guid.NewGuid();
@@ -839,7 +843,7 @@ public class SshCaServiceTests
         // The key is still in the signer, which signs nothing for a disabled row; the node refuses first.
         Assert.Single(node.Persistence.SshAppended);
         var refused = await Assert.ThrowsAsync<ConfigurationValidationException>(
-            () => service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice"], 1, null, null, node.Actor));
+            () => service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null, node.Actor));
         Assert.Equal(ErrorCodes.IssuingCaDisabled, refused.Code);
         Assert.Equal(0, signer.Calls);
         Assert.Equal(2, ReadKrl(await service.GenerateKrlAsync(ca.Id)).Sections.Single().Serials.Count);

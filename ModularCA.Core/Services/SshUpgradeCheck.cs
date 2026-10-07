@@ -24,6 +24,11 @@ public sealed record SshUpgradeSigningProfile(Guid Id, string Name, bool AllowUs
 /// <param name="RequiredExtensions">The extensions it adds to every certificate, a JSON array of strings.</param>
 public sealed record SshUpgradeCertProfile(Guid Id, string Name, string? RequiredExtensions);
 
+/// <summary>A live SSH user certificate, as the upgrade check reads it.</summary>
+/// <param name="KeyId">The certificate's key id.</param>
+/// <param name="Principals">Its principals, a JSON array of strings.</param>
+public sealed record SshUpgradeUserCertificate(string? KeyId, string? Principals);
+
 /// <summary>What the upgrade check concludes about the SSH CA key files.</summary>
 /// <param name="Refused">Whether the upgrade is refused until the operator has acted.</param>
 /// <param name="Summary">One clause for the verdict line.</param>
@@ -33,9 +38,10 @@ public sealed record SshUpgradeKeysFinding(bool Refused, string Summary, string 
 /// <summary>
 /// What <c>--upgrade-check</c> says about SSH (<c>docs/architecture/ssh-keystore.md</c>, "Upgrade
 /// check"): whether every SSH CA key file the first start will import into the signer is there
-/// and holds its SSH CA's key, and which user signing profiles relied on extensions that were
-/// added by default before certificates became exact. The key files themselves are looked at
-/// by the import, which is the one place that reads them.
+/// and holds its SSH CA's key, which user signing profiles relied on extensions that were
+/// added by default before certificates became exact, and what SSH login names change for
+/// requests (<c>docs/architecture/ssh-login-names.md</c>). The key files themselves are looked
+/// at by the import, which is the one place that reads them.
 /// </summary>
 public static class SshUpgradeCheck
 {
@@ -155,6 +161,40 @@ public static class SshUpgradeCheck
         lines.AddRange(narrower);
         lines.Add("To keep a permit, add it to the signing profile's default extensions. A cert profile's required extensions are added too; "
             + "a request that names its own extensions carries those and the required ones, and nothing by default.");
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    /// <summary>
+    /// The note about SSH login names, or null when the install has no SSH CA key. From this
+    /// release the CA writes the key id, a self-service request may only name the requester's
+    /// own username and the login names granted to them, and the admin form signs for a user or
+    /// a service identity. It counts the live user certificates that carry a name other than
+    /// their key id, which are the ones a requester could not get again as they are; they stay
+    /// valid until they expire. It informs only and never refuses.
+    /// </summary>
+    /// <param name="sshCaKeys">How many SSH CA keys the install has.</param>
+    /// <param name="liveUserCertificates">The unexpired, unrevoked user certificates.</param>
+    /// <param name="beforeUpgrade">Whether the database is still from before login names, so that the change is ahead.</param>
+    public static string? LoginNamesNote(int sshCaKeys, IReadOnlyList<SshUpgradeUserCertificate> liveUserCertificates, bool beforeUpgrade = true)
+    {
+        ArgumentNullException.ThrowIfNull(liveUserCertificates);
+        if (sshCaKeys <= 0)
+            return null;
+        var otherNames = liveUserCertificates.Count(c => Strings(c.Principals).Any(p => !string.Equals(p, c.KeyId, StringComparison.Ordinal)));
+        var lines = new List<string>
+        {
+            beforeUpgrade
+                ? "After this upgrade the CA writes the key id of every SSH certificate, and a self-service request may only name the requester's "
+                  + "own username and the login names granted to them on the SSH CA. The admin form signs for a user, who must hold the names, or "
+                  + "for a service identity. A request that sends a key id, or names another account, will be refused."
+                : "The CA writes the key id of every SSH certificate, and a self-service request may only name the requester's own username and "
+                  + "the login names granted to them on the SSH CA. The admin form signs for a user, who must hold the names, or for a service "
+                  + "identity. A request that sends a key id, or names another account, is refused.",
+            $"{otherNames} of {liveUserCertificates.Count} live user certificate(s) carry a name other than their key id. "
+            + (beforeUpgrade ? "The upgrade revokes none of them: they stay valid until they expire." : "The upgrade revoked none of them: they stay valid until they expire."),
+            "Every SSH CA key lets everyone log in as their own username until that is turned off on the key. Grant the other login names "
+            + "on each SSH CA before those certificates are due to be asked for again.",
+        };
         return string.Join(Environment.NewLine, lines);
     }
 

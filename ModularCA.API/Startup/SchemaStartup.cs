@@ -284,7 +284,9 @@ public static partial class SchemaStartup
     /// files on the node (<see cref="SshUpgradeAsync"/>): how many the first start will import
     /// into the signer, or a refusal naming each enabled SSH CA whose key file is missing or is
     /// not its key on this host. It then notes, without refusing, the SSH signing profiles
-    /// whose certificates carry fewer extensions now that none is added by default.
+    /// whose certificates carry fewer extensions now that none is added by default, and, where
+    /// there is an SSH CA key, what SSH login names change for requests and how many live user
+    /// certificates carry a name other than their key id.
     /// </para>
     /// </summary>
     /// <param name="targets">The databases the control role checks, the application database first.</param>
@@ -325,6 +327,11 @@ public static partial class SchemaStartup
             {
                 output.WriteLine("SSH signing profiles");
                 output.WriteLine("  note: " + ssh.ProfilesNote.ReplaceLineEndings(Environment.NewLine + "    "));
+            }
+            if (ssh.LoginNamesNote != null)
+            {
+                output.WriteLine("SSH login names");
+                output.WriteLine("  note: " + ssh.LoginNamesNote.ReplaceLineEndings(Environment.NewLine + "    "));
             }
         }
         output.WriteLine(UpgradeCheckVerdict(findings));

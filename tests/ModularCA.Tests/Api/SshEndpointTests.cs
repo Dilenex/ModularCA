@@ -75,7 +75,8 @@ public sealed class SshEndpointTests
     private static object AdminController(SshNode node, ISshCaService service, IDistributedCache? cache = null,
         ISigningService? signer = null, SshKeyImportState? imports = null)
         => New(Admin, node.Actor.UserId!.Value, service, new CurrentUserStub(node.Actor.UserId!.Value), node.Db, new SystemConfig(),
-            new KeyCeremonyService(node.Db, new RecordingAuditService()), cache ?? NewCache(), signer ?? node.Relay, imports ?? new SshKeyImportState());
+            new KeyCeremonyService(node.Db, new RecordingAuditService()), cache ?? NewCache(), signer ?? node.Relay, imports ?? new SshKeyImportState(),
+            node.LoginNames);
 
     private static object PublicController(ISshCaService service) => New(Public, Guid.NewGuid(), service, new SystemConfig());
 
@@ -116,9 +117,10 @@ public sealed class SshEndpointTests
         return profile.Id;
     }
 
+    /// <summary>An admin request for a user certificate for the service identity <c>ci</c>, whose principals are typed.</summary>
     private static object UserRequest(SshNode node, SshCaKeyEntity key, params string[] principals)
         => Body("ModularCA.API.Controllers.v1.Admin.SignSshUserKeyRequest",
-            ("PublicKey", SshNode.SubjectKey()), ("Principals", principals.ToList()), ("ValidityHours", (int?)1),
+            ("PublicKey", SshNode.SubjectKey()), ("ServiceLabel", "ci"), ("Principals", principals.ToList()), ("ValidityHours", (int?)1),
             ("SshSigningProfileId", SigningProfile(node, key, host: false)), ("SshCertProfileId", SshCertProfile(node)));
 
     private static object HostRequest(SshNode node, SshCaKeyEntity key, params string[] hostnames)
@@ -193,7 +195,8 @@ public sealed class SshEndpointTests
 
     /// <summary>
     /// A rule the signer refuses on leaves the action as the request-validation family, which
-    /// the API's middleware renders as 400 with the message; the action does not swallow it.
+    /// the API's middleware renders as 400 with the message; the action does not swallow it. A
+    /// user certificate with no principal never reaches the signer: the action answers 400 itself.
     /// </summary>
     [Fact]
     public async Task A_certificate_the_signer_refuses_leaves_the_action_as_a_400_with_the_signer_s_reason()
@@ -202,14 +205,16 @@ public sealed class SshEndpointTests
         var ca = await node.CreateCaAsync();
         var controller = AdminController(node, node.Service);
 
-        var none = await Assert.ThrowsAsync<InvalidRequestException>(() => Call(controller, "SignUserKey", ca.Id, UserRequest(node, ca)));
+        var none = Assert.IsType<BadRequestObjectResult>(await Call(controller, "SignUserKey", ca.Id, UserRequest(node, ca)));
+        var noHost = await Assert.ThrowsAsync<InvalidRequestException>(() => Call(controller, "SignHostKey", ca.Id, HostRequest(node, ca)));
         var dsa = Body("ModularCA.API.Controllers.v1.Admin.SignSshHostKeyRequest",
             ("PublicKey", SshNode.DsaKey()), ("Hostnames", new List<string> { "host1" }), ("ValidityHours", (int?)1),
             ("SshSigningProfileId", SigningProfile(node, ca, host: true)), ("SshCertProfileId", SshCertProfile(node)));
         var refusedKey = await Assert.ThrowsAsync<InvalidRequestException>(() => Call(controller, "SignHostKey", ca.Id, dsa));
 
-        Assert.Equal(400, none.Status);
-        Assert.Contains("At least one principal is required", none.Message);
+        Assert.Contains("At least one principal is required", Json(none));
+        Assert.Equal(400, noHost.Status);
+        Assert.Contains("At least one principal is required", noHost.Message);
         Assert.Equal(400, refusedKey.Status);
         Assert.Contains("DSA", refusedKey.Message);
     }
@@ -249,7 +254,7 @@ public sealed class SshEndpointTests
         node.Db.SaveChanges();
 
         object Controller(ISshCaService service) => New(Self, user.Id, node.Db, service, new CurrentUserStub(user.Id),
-            new RecordingAuditService(), new CaGroupAuthorizationService(node.Db, NullLogger<CaGroupAuthorizationService>.Instance));
+            new RecordingAuditService(), new CaGroupAuthorizationService(node.Db, NullLogger<CaGroupAuthorizationService>.Instance), node.LoginNames);
         object Request(params string[] principals) => Body("ModularCA.API.Controllers.v1.User.UserSshSignRequest",
             ("PublicKey", SshNode.SubjectKey()), ("Principals", principals.ToList()), ("ValidityHours", (int?)1), ("SshRequestProfileId", requestProfile.Id));
 
@@ -264,8 +269,7 @@ public sealed class SshEndpointTests
         var locked = Controller(node.ServiceOver(Locked(node)));
         Assert.Contains("not unlocked", AssertUnavailable(locked, await Call(locked, "SignUserKey", Request("ssh-operator"))));
 
-        var refused = await Assert.ThrowsAsync<InvalidRequestException>(() => Call(Controller(node.Service), "SignUserKey", Request()));
-        Assert.Equal(400, refused.Status);
+        Assert.IsType<BadRequestObjectResult>(await Call(Controller(node.Service), "SignUserKey", Request()));
     }
 
     // ---- Create ------------------------------------------------------------------------------
@@ -395,7 +399,7 @@ public sealed class SshEndpointTests
     {
         using var node = new SshNode();
         var ca = await node.CreateCaAsync();
-        var cert = await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice"], 1, null, null, node.Actor);
+        var cert = await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null, node.Actor);
         var signer = new UnaskedSigner();
         var service = node.ServiceOver(signer);
         var admin = AdminController(node, service);

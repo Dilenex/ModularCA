@@ -20,20 +20,27 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
 /// Admin endpoints for managing SSH CA keys and issuing SSH certificates. The audit entries of
 /// creating, signing, revoking and disabling are written by <see cref="ISshCaService"/>, not here.
+/// The CA writes the key id of every certificate, and a user certificate is for a named user,
+/// carrying only login names that user holds, or for a service identity.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/ssh")]
 [Authorize]
 [NodeRole(ProcessRole.Control)]
 public class AdminSshController(ISshCaService sshCaService, ICurrentUserService currentUser, ModularCADbContext db, ModularCA.Shared.Models.Config.SystemConfig config, IKeyCeremonyService ceremonySvc, IDistributedCache cache,
-    ModularCA.Shared.Signing.ISigningService signer, SshKeyImportState sshImports) : ControllerBase
+    ModularCA.Shared.Signing.ISigningService signer, SshKeyImportState sshImports, ISshLoginNameService loginNames) : ControllerBase
 {
+    /// <summary>The sentence for a key id sent with a sign request.</summary>
+    private const string KeyIdRefused = "The CA writes the key id of an SSH certificate: the username of the user it is for, svc: and the label of a "
+        + "service identity, or the first hostname of a host certificate. Leave keyId out.";
+
     /// <summary>Who is asking, as the SSH service records it in the audit and on a certificate row.</summary>
     private SshCaActor Actor() => new(currentUser.User?.Id, currentUser.User?.Username, HttpContext.Connection.RemoteIpAddress?.ToString());
 
     /// <summary>
     /// Lists the SSH CA keys whose CA is inside the caller's <see cref="SpaceFence"/> (SSH CAs are
-    /// instance CAs, so this needs instance scope), with their metadata, including the public KRL
+    /// instance CAs, so this needs instance scope), with their metadata, including the id of the
+    /// certificate authority each belongs to (which rights on the key are held on), the public KRL
     /// download URL and where each private key is held (<c>keyStorage</c>: <c>signer</c>,
     /// <c>legacyFile</c> for a key file still awaiting its import into the signer, or <c>pkcs11</c>).
     /// </summary>
@@ -71,7 +78,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
             var held = custody.GetValueOrDefault(k.Id);
             return new
             {
-                k.Id, k.Name, k.KeyType, k.KeySize, k.PublicKey, k.IsUserCa, k.IsHostCa,
+                k.Id, k.Name, k.CertificateAuthorityId, k.KeyType, k.KeySize, k.PublicKey, k.IsUserCa, k.IsHostCa,
                 k.MaxValidityHours, k.IsEnabled, k.CreatedAt,
                 KeyStorage = JsonNamingPolicy.CamelCase.ConvertName(k.KeyStorage),
                 SignerState = held?.State ?? SshKeyCustody.Unknown,
@@ -220,19 +227,44 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     }
 
     /// <summary>
-    /// Signs a user public key, producing an SSH user certificate.
+    /// Signs a user public key, producing an SSH user certificate for exactly one of a user of
+    /// this console (<c>subjectUserId</c>) or a service identity with no account
+    /// (<c>serviceLabel</c>); neither or both is 400. For a user, who must exist and be active,
+    /// every principal must be a login name that user holds on the key (400 naming the one that
+    /// is not): an administrator grants a name first and cannot add one here. For a service
+    /// identity the principals are typed and checked against the certificate profile. The CA
+    /// writes the key id: a <c>keyId</c> in the body is refused (400) unless it is exactly what
+    /// the CA would write. At least one principal is required. Whoever signs here decides whose
+    /// name a public key is certified under, so the route asks step-up MFA
+    /// (<c>sign-ssh-user-cert</c>, issued for the key id).
     /// Requires both an SSH signing profile and cert profile for validation.
     /// The CA key is identified by the route parameter; the signing profile must reference the same key.
+    /// A validity over a profile's maximum, or over what a login name asked for allows, is 400;
+    /// with none asked the certificate lasts as long as the profiles, the key and the login
+    /// names allow.
     /// The certificate carries exactly the extensions the profiles and the request come to. A
     /// locked signer, a key the signer cannot serve and a key awaiting its import into the signer
     /// are 503 with the reason; a certificate the signer's rules refuse is 400 with its reason.
     /// </summary>
     [HttpPost("ca-keys/{caKeyId:guid}/certificates/sign-user")]
     [Authorize(Policy = "CaOperator")]
+    [RequireStepUp(StepUpOps.SignSshUserCert, "caKeyId")]
     [RequireUnlockedSigner]
     public async Task<IActionResult> SignUserKey(Guid caKeyId, [FromBody] SignSshUserKeyRequest request)
     {
         await currentUser.EnsureLoadedAsync();
+
+        if (request.SubjectUserId.HasValue == !string.IsNullOrEmpty(request.ServiceLabel))
+            return BadRequest(new { error = "Name exactly one of subjectUserId, a user of this console, or serviceLabel, a service identity with no account." });
+        request.Principals ??= new();
+        if (request.Principals.Count == 0)
+            return BadRequest(new { error = "At least one principal is required: name the login names the certificate is for." });
+
+        var subject = request.SubjectUserId is Guid subjectUserId
+            ? SshCertificateSubject.ForUser(subjectUserId)
+            : SshCertificateSubject.ForService(request.ServiceLabel!);
+        if (request.KeyId != null && request.KeyId != await sshCaService.KeyIdOfAsync(subject))
+            return BadRequest(new { error = KeyIdRefused });
 
         var extensions = request.Extensions;
         var validityHours = request.ValidityHours;
@@ -246,9 +278,6 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
             return BadRequest(new { error = "Signing profile does not allow user certificates" });
         if (validityHours.HasValue && validityHours.Value > signingProfile.MaxValidityHours)
             return BadRequest(new { error = $"Validity exceeds signing profile maximum of {signingProfile.MaxValidityHours} hours" });
-        validityHours = validityHours.HasValue
-            ? Math.Min(validityHours.Value, signingProfile.MaxValidityHours)
-            : signingProfile.MaxValidityHours;
         if (signingProfile.SshCaKeyId == null)
             return BadRequest(new { error = "Signing profile has no SSH CA key assigned. Generate an SSH CA key and assign it to this profile first." });
         if (signingProfile.SshCaKeyId.Value != caKeyId)
@@ -290,8 +319,8 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         try
         {
             cert = await sshCaService.SignUserKeyAsync(
-                caKeyId, request.PublicKey, request.Principals,
-                validityHours, request.KeyId, extensions, Actor());
+                caKeyId, request.PublicKey, subject, request.Principals,
+                validityHours, extensions, Actor(), Math.Min(signingProfile.MaxValidityHours, certProfile.MaxValidityHours));
         }
         catch (ModularCA.Shared.Errors.SshCaKeyUnavailableException ex)
         {
@@ -303,8 +332,11 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
 
     /// <summary>
     /// Signs a host public key, producing an SSH host certificate.
+    /// The CA writes the key id, the first hostname: a <c>keyId</c> in the body is refused (400)
+    /// unless it is exactly that.
     /// Requires both an SSH signing profile and cert profile for validation.
     /// The CA key is identified by the route parameter; the signing profile must reference the same key.
+    /// With no validity asked the certificate lasts as long as the profiles and the key allow.
     /// A locked signer, a key the signer cannot serve and a key awaiting its import into the
     /// signer are 503 with the reason; a certificate the signer's rules refuse is 400 with its reason.
     /// </summary>
@@ -314,6 +346,10 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     public async Task<IActionResult> SignHostKey(Guid caKeyId, [FromBody] SignSshHostKeyRequest request)
     {
         await currentUser.EnsureLoadedAsync();
+
+        request.Hostnames ??= new();
+        if (request.KeyId != null && request.KeyId != SshKeyIds.ForHost(request.Hostnames))
+            return BadRequest(new { error = KeyIdRefused });
 
         var validityHours = request.ValidityHours;
 
@@ -326,9 +362,6 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
             return BadRequest(new { error = "Signing profile does not allow host certificates" });
         if (validityHours.HasValue && validityHours.Value > signingProfile.MaxValidityHours)
             return BadRequest(new { error = $"Validity exceeds signing profile maximum of {signingProfile.MaxValidityHours} hours" });
-        validityHours = validityHours.HasValue
-            ? Math.Min(validityHours.Value, signingProfile.MaxValidityHours)
-            : signingProfile.MaxValidityHours;
         if (signingProfile.SshCaKeyId == null)
             return BadRequest(new { error = "Signing profile has no SSH CA key assigned. Generate an SSH CA key and assign it to this profile first." });
         if (signingProfile.SshCaKeyId.Value != caKeyId)
@@ -349,7 +382,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         {
             cert = await sshCaService.SignHostKeyAsync(
                 caKeyId, request.PublicKey, request.Hostnames,
-                validityHours, request.KeyId, Actor());
+                validityHours, Actor(), Math.Min(signingProfile.MaxValidityHours, certProfile.MaxValidityHours));
         }
         catch (ModularCA.Shared.Errors.SshCaKeyUnavailableException ex)
         {
@@ -421,14 +454,17 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     }
 
     /// <summary>
-    /// Lists issued SSH certificates for a specific CA key with pagination.
+    /// Lists issued SSH certificates for a specific CA key with pagination. Each carries, besides
+    /// its row, who it is for (a user, a service identity, a host, or unknown for a user
+    /// certificate from before login names), who issued it and whether that was the subject, and
+    /// why the subject held each login name.
     /// </summary>
     [HttpGet("ca-keys/{caKeyId:guid}/certificates")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetCertificates(Guid caKeyId, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, [FromQuery] string? sort = null)
     {
         var certs = await sshCaService.GetCertificatesAsync(page, pageSize, caKeyId, sort);
-        return Ok(certs);
+        return Ok(await loginNames.DescribeAsync(certs, HttpContext.RequestAborted));
     }
 
     /// <summary>
@@ -566,16 +602,23 @@ public class GenerateSshCaKeyRequest
     public Guid? SpaceId { get; set; }
 }
 
-/// <summary>Request model for signing a user SSH public key via the admin endpoint.</summary>
+/// <summary>
+/// Request model for signing a user SSH public key via the admin endpoint. It names exactly one
+/// of <see cref="SubjectUserId"/> and <see cref="ServiceLabel"/>.
+/// </summary>
 public class SignSshUserKeyRequest
 {
     /// <summary>The user's SSH public key to be signed.</summary>
     public string PublicKey { get; set; } = string.Empty;
-    /// <summary>List of principals (usernames) allowed on the certificate.</summary>
+    /// <summary>The user of this console the certificate is for; its principals must be login names that user holds.</summary>
+    public Guid? SubjectUserId { get; set; }
+    /// <summary>The label of the service identity the certificate is for: 1 to 64 letters, digits and <c>. _ -</c>. Hosts log it as <c>svc:label</c>.</summary>
+    public string? ServiceLabel { get; set; }
+    /// <summary>The login names the certificate is for.</summary>
     public List<string> Principals { get; set; } = new();
-    /// <summary>Optional validity duration in hours.</summary>
+    /// <summary>Optional validity duration in hours; omitted, the most allowed.</summary>
     public int? ValidityHours { get; set; }
-    /// <summary>Optional key identifier for the certificate.</summary>
+    /// <summary>The CA writes the key id. Leave this out: a value is refused unless it is exactly what the CA would write.</summary>
     public string? KeyId { get; set; }
     /// <summary>Optional SSH extensions to include.</summary>
     public List<string>? Extensions { get; set; }
@@ -592,9 +635,9 @@ public class SignSshHostKeyRequest
     public string PublicKey { get; set; } = string.Empty;
     /// <summary>List of hostnames to include in the certificate.</summary>
     public List<string> Hostnames { get; set; } = new();
-    /// <summary>Optional validity duration in hours.</summary>
+    /// <summary>Optional validity duration in hours; omitted, the most allowed.</summary>
     public int? ValidityHours { get; set; }
-    /// <summary>Optional key identifier for the certificate.</summary>
+    /// <summary>The CA writes the key id, the first hostname. Leave this out: a value is refused unless it is exactly that.</summary>
     public string? KeyId { get; set; }
     /// <summary>Required SSH signing profile ID; determines the CA key and restrictions.</summary>
     public Guid SshSigningProfileId { get; set; }

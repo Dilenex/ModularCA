@@ -315,7 +315,7 @@ public class SshKeyCustodyTests
 
         var defaults = JsonSerializer.Deserialize<List<string>>(profile.DefaultExtensions)!;
         var certificate = ModularCA.Ssh.SshCertificate.ParseOpenSsh(
-            (await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice"], 1, null, defaults, node.Actor)).SignedCertificate);
+            (await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, defaults, node.Actor)).SignedCertificate);
 
         Assert.Equal(new[] { "permit-agent-forwarding", "permit-port-forwarding", "permit-pty" },
             certificate.Fields.Extensions.Select(e => e.Name).OrderBy(n => n, StringComparer.Ordinal));

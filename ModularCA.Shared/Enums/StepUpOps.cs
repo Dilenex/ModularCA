@@ -254,6 +254,12 @@ public static class StepUpOps
     /// <summary>Replacing the JWT secret with a newly generated one.</summary>
     public const string RotateJwtSecret = "rotate-jwt-secret";
 
+    /// <summary>Granting, changing or removing SSH login names on an SSH CA key, or switching its own-username rule.</summary>
+    public const string ManageSshLoginNames = "manage-ssh-login-names";
+
+    /// <summary>Signing an SSH user certificate for a user or a service identity through the admin route.</summary>
+    public const string SignSshUserCert = "sign-ssh-user-cert";
+
     /// <summary>
     /// The canonical allow-list consulted by <c>IssueStepUpTokenAsync</c>. Any operation
     /// string not present here is rejected at issuance time with
@@ -304,6 +310,7 @@ public static class StepUpOps
         EnableSpace, DisableSpace, UpdateSpaceSettings,
         RestartAuditChain, ManageTrustAnchor, RevokeSshCert, CreateEnrollmentSecret, CreateEabKey, ManageUserBadge,
         CreateSpace, CreateCertProfile, CreateRequestProfile, CreateSigningProfile, ManageSshTemplate, ApproveRequest, RejectRequest,
+        ManageSshLoginNames, SignSshUserCert,
     };
 
     /// <summary>

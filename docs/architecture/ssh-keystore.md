@@ -10,6 +10,9 @@ Stage 4 is built (2026-10-07), backend only: the control role imports the key fi
 install into the signer and removes them, backup, restore and reset know `ssh-ca.keystore`, and
 `--upgrade-check`, the readiness page and the admin API say what is awaiting import and why; see
 "Stage 4 as built". The console and docs-site pages of stages 3 and 4, and stage 5, are not built.
+Since then the CA writes every certificate's key id and a user certificate carries only login
+names its subject holds; that is in `ssh-login-names.md`, and where it differs from "Stage 3 as
+built" below, it is what is built.
 
 Release: 0.4.2 (owner, 2026-10-06). 0.4.1 is the settings release; the signer journal and verified
 approvals in `signer-hardening.md` follow this, from 0.4.3.
@@ -594,7 +597,8 @@ shared.
   option strings into the exact option set (`SshCertificateOptions`), backdates `valid_after` by
   `SshCaService.ValidAfterBackdate` and calls `SignSshCertificate` under
   `SigningPurpose.SshCertificate` naming the SSH CA at instance scope. Principals, key id and
-  option values reach the signer as given; nothing is rewritten for a command line any more. The
+  option values reach the signer as given; nothing is rewritten for a command line any more
+  (the key id is no longer given by a caller: see `ssh-login-names.md`). The
   row stored is read from the returned certificate, which is stored only when it is for the
   subject key and serial asked and signed by the row's key.
 - **Options.** Names are matched without regard to case. A `no-*` name withholds its `permit-*`

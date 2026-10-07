@@ -298,7 +298,8 @@ public sealed class ControlledUserBypassEndpointTests
     // ---- last-user guard ---------------------------------------------------------------------
 
     private static object Groups(ControlledUserWorld w, Guid actor)
-        => New(Ns + "AdminGroupController", actor, w.Db, new CurrentUserStub(actor), new RecordingAuditService(), NewCache(), null, w.Controlled);
+        => New(Ns + "AdminGroupController", actor, w.Db, new CurrentUserStub(actor), new RecordingAuditService(), NewCache(), null, w.Controlled,
+            new ModularCA.Core.Services.SshLoginNameService(w.Db, new RecordingAuditService()));
 
     [Fact]
     public async Task A_super_may_remove_the_only_system_admin_because_the_super_still_dominates()
@@ -532,12 +533,14 @@ public sealed class ControlledUserBypassEndpointTests
         w.User("member", custom);
 
         var asAdmin = New(Ns + "AdminGroupController", w.SystemAdmin,
-            w.Db, new CurrentUserStub(w.SystemAdmin), new RecordingAuditService(), NewCache(), null, w.Controlled);
+            w.Db, new CurrentUserStub(w.SystemAdmin), new RecordingAuditService(), NewCache(), null, w.Controlled,
+            new ModularCA.Core.Services.SshLoginNameService(w.Db, new RecordingAuditService()));
         Assert.Equal(403, Status(await Call(asAdmin, "Delete", custom.Id)));
         Assert.True(w.Db.CaGroups.Any(g => g.Id == custom.Id));
 
         var asSuper = New(Ns + "AdminGroupController", w.Super,
-            w.Db, new CurrentUserStub(w.Super), new RecordingAuditService(), NewCache(), null, w.Controlled);
+            w.Db, new CurrentUserStub(w.Super), new RecordingAuditService(), NewCache(), null, w.Controlled,
+            new ModularCA.Core.Services.SshLoginNameService(w.Db, new RecordingAuditService()));
         Assert.Equal(200, Status(await Call(asSuper, "Delete", custom.Id)));
         Assert.False(w.Db.CaGroups.Any(g => g.Id == custom.Id));
     }

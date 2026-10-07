@@ -88,6 +88,9 @@ public class PostgresUpgradeHarnessTests
     /// <summary>The 0.4.2 migration that adds the record of each SSH CA key imported from a file, without its timestamp.</summary>
     public const string SshKeyImports = "SshKeyImports";
 
+    /// <summary>The 0.4.2 migration that adds SSH login name grants and who a certificate is for, without its timestamp.</summary>
+    public const string SshLoginNames = "SshLoginNames";
+
     private const string ServerVariable = "MODULARCA_TEST_PG";
     private const string RehearsalVariable = "MODULARCA_TEST_PG_REHEARSAL";
     private const string RehearsalAuditVariable = "MODULARCA_TEST_PG_REHEARSAL_AUDIT";
@@ -1469,6 +1472,84 @@ public class PostgresUpgradeHarnessTests
             // No foreign key: the record stays when its key row goes.
             await ExecAsync(app, $"DELETE FROM \"SshCaKeys\" WHERE \"Id\" = '{key}';");
             Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshKeyImports\""));
+
+            await MigrateToLatestAsync(app, "application");
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await DropDatabaseAsync(server, appName);
+        }
+    }
+
+    /// <summary>
+    /// The <c>SshLoginNames</c> backfill, seeded at the stage before it. A user certificate whose
+    /// key id is exactly its issuer's username gets that user as its subject. A key id that was
+    /// typed, one that differs from the username in case, a host certificate, and a certificate
+    /// with no issuer keep no subject. No certificate is revoked, none gets grounds, every
+    /// existing SSH CA key lets everyone log in as their own username, and no grant is made.
+    /// </summary>
+    [RequiresEnvironmentFact(ServerVariable)]
+    public async Task The_ssh_login_names_backfill_gives_a_subject_only_where_the_key_id_is_the_issuer_s_username()
+    {
+        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+        await CreateDatabaseAsync(server, appName);
+        try
+        {
+            await using var app = CreateApp(WithDatabase(server, appName));
+            await MigrateThroughAsync(app, SshKeyImports);
+            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM information_schema.tables WHERE table_name = 'SshLoginNameGrants'"));
+
+            var ca = Guid.NewGuid();
+            var key = Guid.NewGuid();
+            var alice = Guid.NewGuid();
+            var own = Guid.NewGuid();
+            var typed = Guid.NewGuid();
+            var otherCase = Guid.NewGuid();
+            var host = Guid.NewGuid();
+            var noIssuer = Guid.NewGuid();
+            var revoked = Guid.NewGuid();
+            const string certificateColumns = "\"Id\",\"SshCaKeyId\",\"CertificateType\",\"KeyId\",\"SerialNumber\",\"Principals\",\"ValidAfter\",\"ValidBefore\","
+                + "\"PublicKey\",\"SignedCertificate\",\"IsRevoked\",\"IssuedByUserId\",\"CreatedAt\"";
+            string Certificate(Guid id, string type, string keyId, int serial, string issuer, bool isRevoked = false)
+                => $"('{id}','{key}','{type}','{keyId}',{serial},'[\"root\"]',now(),now() + interval '1 day','ssh-ed25519 AAAA','ssh-ed25519-cert-v01@openssh.com AAAA',"
+                    + $"{(isRevoked ? "true" : "false")},{issuer},now())";
+            await ExecAsync(app,
+                "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"SpaceId\",\"IsDeleted\") "
+                + $"VALUES ('{ca}','Ops SSH','ops-ssh',false,'SSH',true,'Software',true,NULL,false); "
+                + "INSERT INTO \"SshCaKeys\" (\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"KeyStorage\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"IsEnabled\",\"CreatedAt\") "
+                + $"VALUES ('{key}','Ops SSH','ed25519','ssh-ed25519 AAAA','Signer','{ca}',true,true,24,true,now()); "
+                + "INSERT INTO \"Users\" (\"Id\",\"Username\",\"Email\",\"PasswordHash\",\"PasswordNeverExpires\",\"PasswordChangeOnNextLogon\",\"FirstName\","
+                + "\"LastName\",\"IsActive\",\"IsServiceIdentity\",\"IsLocked\",\"FailedLoginAttempts\",\"CreatedAt\",\"SecurityStamp\",\"IsDeleted\") "
+                + $"VALUES ('{alice}','alice','alice@acme.example','not-a-hash',false,false,'A','Lice',true,false,false,0,now(),'stamp',false); "
+                + $"INSERT INTO \"SshCertificates\" ({certificateColumns}) VALUES "
+                + Certificate(own, "user", "alice", 1, $"'{alice}'") + ", "
+                + Certificate(typed, "user", "alice-laptop", 2, $"'{alice}'") + ", "
+                + Certificate(otherCase, "user", "Alice", 3, $"'{alice}'") + ", "
+                + Certificate(host, "host", "alice", 4, $"'{alice}'") + ", "
+                + Certificate(noIssuer, "user", "alice", 5, "NULL") + ", "
+                + Certificate(revoked, "user", "alice", 6, $"'{alice}'", isRevoked: true) + ";");
+
+            await MigrateThroughAsync(app, SshLoginNames);
+
+            async Task<string> Subject(Guid certificate)
+                => await TextAsync(app, $"SELECT coalesce(\"SubjectUserId\"::text, 'none') FROM \"SshCertificates\" WHERE \"Id\" = '{certificate}'");
+            Assert.Equal(alice.ToString(), await Subject(own));
+            Assert.Equal(alice.ToString(), await Subject(revoked));
+            Assert.Equal("none", await Subject(typed));
+            Assert.Equal("none", await Subject(otherCase));
+            Assert.Equal("none", await Subject(host));
+            Assert.Equal("none", await Subject(noIssuer));
+
+            Assert.Equal(6, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertificates\" WHERE \"LoginNameGrounds\" IS NULL"));
+            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertificates\" WHERE \"IsRevoked\""));
+            Assert.Equal(1, await ScalarAsync(app, $"SELECT count(*) FROM \"SshCaKeys\" WHERE \"Id\" = '{key}' AND \"AllowOwnUsername\""));
+            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"SshLoginNameGrants\""));
+
+            // Deleting the user leaves the certificates, with no subject.
+            await ExecAsync(app, $"UPDATE \"SshCertificates\" SET \"IssuedByUserId\" = NULL; DELETE FROM \"Users\" WHERE \"Id\" = '{alice}';");
+            Assert.Equal(6, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertificates\" WHERE \"SubjectUserId\" IS NULL"));
 
             await MigrateToLatestAsync(app, "application");
         }

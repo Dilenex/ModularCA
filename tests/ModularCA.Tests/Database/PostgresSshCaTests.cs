@@ -44,9 +44,9 @@ public class PostgresSshCaTests
         {
             var ca = await service.GenerateKeyPairAsync("Fleet SSH", "ed25519", true, true, 48, actor: Actor);
 
-            var user = await service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), ["alice"], 2, "alice-laptop",
+            var user = await service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 2,
                 ["permit-pty", "force-command=/usr/bin/true"], Actor);
-            var host = await service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey("ECDSA", "P-256", "host1"), ["host1.example.com"], 4, null, Actor);
+            var host = await service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey("ECDSA", "P-256", "host1"), ["host1.example.com"], 4, Actor);
 
             Assert.True(SshCertificate.ParseOpenSsh(user.SignedCertificate).VerifySignature());
             Assert.True(SshCertificate.ParseOpenSsh(host.SignedCertificate).VerifySignature());
@@ -69,7 +69,7 @@ public class PostgresSshCaTests
 
             await service.DisableAsync(ca.Id, Actor);
             await Assert.ThrowsAsync<ConfigurationValidationException>(() =>
-                service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey(), ["host2.example.com"], 1, null, Actor));
+                service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey(), ["host2.example.com"], 1, Actor));
         });
 
     [RequiresEnvironmentFact(ServerVariable)]
@@ -211,7 +211,7 @@ public class PostgresSshCaTests
                 Assert.Empty(await ModularCA.Bootstrap.BackupRestore.LegacySshKeyFilesAsync(connection));
 
                 // The imported key signs, and what the readiness page reads says it is held.
-                var signed = await service.SignUserKeyAsync(key.Id, SshNode.SubjectKey(), ["alice"], 1, "alice-laptop", ["permit-pty"], Actor);
+                var signed = await service.SignUserKeyAsync(key.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, ["permit-pty"], Actor);
                 var certificate = SshCertificate.ParseOpenSsh(signed.SignedCertificate);
                 Assert.True(certificate.VerifySignature());
                 Assert.Equal(ModularCA.Tests.Ssh.SshFixtures.CaPublic("p256"), certificate.SignatureKey);
@@ -231,6 +231,121 @@ public class PostgresSshCaTests
             {
                 try { Directory.Delete(install, true); } catch (IOException) { }
             }
+        });
+
+    private static UserEntity NewUser(string username)
+        => new() { Id = Guid.NewGuid(), Username = username, Email = $"{username}@example.test", PasswordHash = "x" };
+
+    private const string GrantColumns = "\"Id\",\"SshCaKeyId\",\"LoginName\",\"UserId\",\"GroupId\",\"CreatedAt\"";
+
+    private static string GrantRow(Guid key, string name, Guid? user, Guid? group)
+        => $"('{Guid.NewGuid()}','{key}','{name}',{(user is Guid u ? $"'{u}'" : "NULL")},{(group is Guid g ? $"'{g}'" : "NULL")},now())";
+
+    /// <summary>
+    /// The schema of login name grants (<c>docs/architecture/ssh-login-names.md</c>, "The
+    /// tables"), which the in-memory provider does not have: a grant names a user or a group and
+    /// never both or neither, and one target has a name once per key. Names differ by case.
+    /// </summary>
+    [RequiresEnvironmentFact(ServerVariable)]
+    public Task A_login_name_grant_names_exactly_one_target_and_a_target_has_a_name_once_per_key() =>
+        OnPostgresAsync(async (open, service, _) =>
+        {
+            var ca = await service.GenerateKeyPairAsync("Fleet SSH", "ed25519", true, false, 48, actor: Actor);
+            var lab = await service.GenerateKeyPairAsync("Lab SSH", "ed25519", true, false, 48, actor: Actor);
+            var alice = NewUser("alice");
+            var ops = new CaGroupEntity { Id = Guid.NewGuid(), Name = "web-ops", DisplayName = "Web operators", SpaceId = null };
+            await using (var seed = open())
+            {
+                seed.Users.Add(alice);
+                seed.CaGroups.Add(ops);
+                await seed.SaveChangesAsync();
+            }
+
+            await using var db = open();
+            Task Insert(string row) => PostgresUpgradeHarnessTests.ExecAsync(db, $"INSERT INTO \"SshLoginNameGrants\" ({GrantColumns}) VALUES {row};");
+            async Task<string> RefusedAsync(string row) => (await Assert.ThrowsAsync<PostgresException>(() => Insert(row))).ConstraintName ?? string.Empty;
+
+            Assert.Equal(SshLoginNameGrantConstraints.ExactlyOneTarget, await RefusedAsync(GrantRow(ca.Id, "root", null, null)));
+            Assert.Equal(SshLoginNameGrantConstraints.ExactlyOneTarget, await RefusedAsync(GrantRow(ca.Id, "root", alice.Id, ops.Id)));
+
+            await Insert(GrantRow(ca.Id, "root", alice.Id, null));
+            await Insert(GrantRow(ca.Id, "root", null, ops.Id));
+            await Insert(GrantRow(ca.Id, "Root", alice.Id, null));
+            await Insert(GrantRow(lab.Id, "root", alice.Id, null));
+            Assert.Equal("IX_SshLoginNameGrants_SshCaKeyId_LoginName_UserId", await RefusedAsync(GrantRow(ca.Id, "root", alice.Id, null)));
+            Assert.Equal("IX_SshLoginNameGrants_SshCaKeyId_LoginName_GroupId", await RefusedAsync(GrantRow(ca.Id, "root", null, ops.Id)));
+            Assert.Equal(4, await PostgresUpgradeHarnessTests.ScalarAsync(db, "SELECT count(*) FROM \"SshLoginNameGrants\""));
+
+            // The service answers the same collision as a conflict, before the index has to.
+            var names = new SshLoginNameService(open(), new SshAuditLog());
+            await Assert.ThrowsAsync<ResourceConflictException>(() => names.GrantAsync(ca.Id, new SshLoginNameGrantRequest(["deploy", "root"], null, ops.Id, null, null, null), Actor));
+            Assert.Equal(4, await PostgresUpgradeHarnessTests.ScalarAsync(db, "SELECT count(*) FROM \"SshLoginNameGrants\""));
+            Assert.Equal(128, await PostgresUpgradeHarnessTests.ScalarAsync(db,
+                "SELECT character_maximum_length FROM information_schema.columns WHERE table_name = 'SshLoginNameGrants' AND column_name = 'LoginName'"));
+            Assert.Equal(256, await PostgresUpgradeHarnessTests.ScalarAsync(db,
+                "SELECT character_maximum_length FROM information_schema.columns WHERE table_name = 'SshLoginNameGrants' AND column_name = 'Note'"));
+        });
+
+    /// <summary>
+    /// Deleting a user or a group deletes its grants; deleting whoever made a grant leaves the
+    /// grant, with the name kept as text; and a certificate outlives its subject, with none.
+    /// </summary>
+    [RequiresEnvironmentFact(ServerVariable)]
+    public Task Deleting_a_user_or_a_group_removes_its_grants_and_leaves_the_certificates() =>
+        OnPostgresAsync(async (open, service, _) =>
+        {
+            var ca = await service.GenerateKeyPairAsync("Fleet SSH", "ed25519", true, false, 48, actor: Actor);
+            var alice = NewUser("alice");
+            var bob = NewUser("bob");
+            var edward = NewUser("edward");
+            var ops = new CaGroupEntity { Id = Guid.NewGuid(), Name = "web-ops", DisplayName = "Web operators", SpaceId = null };
+            await using (var seed = open())
+            {
+                var requesters = await seed.CaGroups.SingleAsync(g => g.Name == "fleet-ssh-user");
+                seed.Users.AddRange(alice, bob, edward);
+                seed.CaGroups.Add(ops);
+                seed.CaGroupMembers.AddRange(
+                    new CaGroupMemberEntity { GroupId = requesters.Id, UserId = alice.Id }, new CaGroupMemberEntity { GroupId = requesters.Id, UserId = bob.Id },
+                    new CaGroupMemberEntity { GroupId = ops.Id, UserId = bob.Id });
+                await seed.SaveChangesAsync();
+            }
+            var granter = new SshCaActor(edward.Id, "edward");
+            var names = new SshLoginNameService(open(), new SshAuditLog());
+            await names.GrantAsync(ca.Id, new SshLoginNameGrantRequest(["root"], alice.Id, null, null, null, null), granter);
+            await names.GrantAsync(ca.Id, new SshLoginNameGrantRequest(["root"], bob.Id, null, null, null, null), granter);
+            await names.GrantAsync(ca.Id, new SshLoginNameGrantRequest(["deploy"], null, ops.Id, 8, null, null), granter);
+            var certificate = await service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshCertificateSubject.ForUser(alice.Id), ["alice", "root"], 1, null, Actor);
+            var throughGroup = await service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshCertificateSubject.ForUser(bob.Id), ["deploy"], null, null, Actor);
+            Assert.Equal(TimeSpan.FromHours(8), throughGroup.ValidBefore - throughGroup.ValidAfter);
+
+            await using var db = open();
+            async Task<long> CountAsync(string where) => await PostgresUpgradeHarnessTests.ScalarAsync(db, $"SELECT count(*) FROM \"SshLoginNameGrants\" WHERE {where}");
+            Assert.Equal(1, (await names.ListAsync(ca.Id))!.Grants.Single(g => g.User?.Id == alice.Id).LiveCertificates);
+            Assert.Equal(1, (await names.ListAsync(ca.Id))!.Grants.Single(g => g.Group != null).Group!.MemberCount);
+
+            // The granter goes: the grants stay, by name.
+            await PostgresUpgradeHarnessTests.ExecAsync(db, $"DELETE FROM \"Users\" WHERE \"Id\" = '{edward.Id}';");
+            Assert.Equal(3, await CountAsync("\"GrantedByUserId\" IS NULL AND \"GrantedByUsername\" = 'edward'"));
+
+            // The user goes: their grant goes, the others stay, and the certificate stays with no subject.
+            await PostgresUpgradeHarnessTests.ExecAsync(db, $"DELETE FROM \"Users\" WHERE \"Id\" = '{alice.Id}';");
+            Assert.Equal(0, await CountAsync($"\"UserId\" = '{alice.Id}'"));
+            Assert.Equal(2, await CountAsync("true"));
+            Assert.Equal(1, await PostgresUpgradeHarnessTests.ScalarAsync(db,
+                $"SELECT count(*) FROM \"SshCertificates\" WHERE \"Id\" = '{certificate.Id}' AND \"SubjectUserId\" IS NULL AND \"LoginNameGrounds\" IS NOT NULL"));
+
+            // The group goes: its grant goes, and what is left is bob's own.
+            await PostgresUpgradeHarnessTests.ExecAsync(db, $"DELETE FROM \"CaGroups\" WHERE \"Id\" = '{ops.Id}';");
+            Assert.Equal(1, await CountAsync("true"));
+            Assert.Equal(1, await CountAsync($"\"UserId\" = '{bob.Id}'"));
+
+            // And the reconciliation sees what the database now says: bob no longer holds deploy.
+            Assert.Equal(1, await new SshLoginNameService(open(), new SshAuditLog()).ReconcileUsersAsync([bob.Id], "a group was deleted"));
+            Assert.Equal(1, await PostgresUpgradeHarnessTests.ScalarAsync(db, $"SELECT count(*) FROM \"SshCertificates\" WHERE \"Id\" = '{throughGroup.Id}' AND \"IsRevoked\""));
+
+            // The key goes: its grants go with it.
+            await PostgresUpgradeHarnessTests.ExecAsync(db, $"DELETE FROM \"SshCertificates\"; DELETE FROM \"SshSigningProfiles\"; DELETE FROM \"SshCaKeys\" WHERE \"Id\" = '{ca.Id}';");
+            Assert.Equal(0, await CountAsync("true"));
         });
 
     /// <summary>

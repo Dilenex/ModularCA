@@ -111,6 +111,8 @@ public class ModularCADbContext : DbContext
     /// <summary>The SSH CA keys that were plaintext files on the node and have been imported into the signer.</summary>
     public DbSet<SshKeyImportEntity> SshKeyImports { get; set; }
     public DbSet<SshCertificateEntity> SshCertificates { get; set; }
+    /// <summary>The login names granted on SSH CA keys to users and to groups.</summary>
+    public DbSet<SshLoginNameGrantEntity> SshLoginNameGrants { get; set; }
     public DbSet<SshSigningProfileEntity> SshSigningProfiles { get; set; }
     public DbSet<SshCertProfileEntity> SshCertProfiles { get; set; }
     public DbSet<SshRequestProfileEntity> SshRequestProfiles { get; set; }
@@ -844,6 +846,46 @@ public class ModularCADbContext : DbContext
         // SSH CA keys: a row that names no storage is a key the signer holds.
         modelBuilder.Entity<SshCaKeyEntity>()
             .Property(e => e.KeyStorage).HasDefaultValue(SshCaKeyStorage.Signer);
+        modelBuilder.Entity<SshCaKeyEntity>()
+            .Property(e => e.AllowOwnUsername).HasDefaultValue(true);
+
+        // SSH certificates: the subject goes null when its user is deleted; the row stays.
+        modelBuilder.Entity<SshCertificateEntity>(entity =>
+        {
+            entity.HasIndex(e => e.SubjectUserId);
+            entity.HasOne<UserEntity>()
+                  .WithMany()
+                  .HasForeignKey(e => e.SubjectUserId)
+                  .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        // SSH login name grants: to one user or one group, once per key and name; a grant goes
+        // with its user, its group or its key.
+        modelBuilder.Entity<SshLoginNameGrantEntity>(entity =>
+        {
+            entity.ToTable(t => t.HasCheckConstraint(
+                SshLoginNameGrantConstraints.ExactlyOneTarget, "(\"UserId\" IS NULL) <> (\"GroupId\" IS NULL)"));
+            entity.HasIndex(e => new { e.SshCaKeyId, e.LoginName, e.UserId }).IsUnique().HasFilter("\"UserId\" IS NOT NULL");
+            entity.HasIndex(e => new { e.SshCaKeyId, e.LoginName, e.GroupId }).IsUnique().HasFilter("\"GroupId\" IS NOT NULL");
+            entity.HasIndex(e => e.UserId);
+            entity.HasIndex(e => e.GroupId);
+            entity.HasOne(e => e.SshCaKey)
+                  .WithMany()
+                  .HasForeignKey(e => e.SshCaKeyId)
+                  .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.User)
+                  .WithMany()
+                  .HasForeignKey(e => e.UserId)
+                  .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.Group)
+                  .WithMany()
+                  .HasForeignKey(e => e.GroupId)
+                  .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<UserEntity>()
+                  .WithMany()
+                  .HasForeignKey(e => e.GrantedByUserId)
+                  .OnDelete(DeleteBehavior.SetNull);
+        });
 
         // SSH Signing Profiles
         modelBuilder.Entity<SshSigningProfileEntity>(entity =>

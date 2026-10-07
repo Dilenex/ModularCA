@@ -42,7 +42,6 @@ public class StepUpGuardTests
         ["AdminIssuanceController.IssueWithServerKey"] = RoutineIssuance,
         ["AdminCertificateController.RenewCertificate"] = RoutineIssuance,
         ["AdminSshController.SignHostKey"] = RoutineIssuance,
-        ["AdminSshController.SignUserKey"] = RoutineIssuance,
 
         ["AdminEnrollmentTokenController.RevokeToken"] = "takes an enrollment credential away",
         ["AdminCertificateController.AddCertificateTag"] = "a label on a certificate; trust is unchanged",

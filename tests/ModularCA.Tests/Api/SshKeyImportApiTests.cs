@@ -52,7 +52,7 @@ public sealed class SshKeyImportApiTests
             new SshCaService(db, install.Node.Relay, install.Node.Audit, NullLogger<SshCaService>.Instance), new CurrentUserStub(actor), db, new SystemConfig(),
             new KeyCeremonyService(db, new RecordingAuditService()),
             (IDistributedCache)new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions())),
-            (ISigningService)install.Node.Relay, install.State)!;
+            (ISigningService)install.Node.Relay, install.State, new SshLoginNameService(db, install.Node.Audit))!;
         var http = new DefaultHttpContext
         {
             User = new ClaimsPrincipal(new ClaimsIdentity(new[] { new Claim("sub", actor.ToString()) }, "test")),

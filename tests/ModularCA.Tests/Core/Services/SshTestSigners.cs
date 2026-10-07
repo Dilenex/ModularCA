@@ -170,6 +170,45 @@ internal sealed class SshNode : IDisposable
     /// <summary>The user the tests sign and create as.</summary>
     public ModularCA.Shared.Interfaces.SshCaActor Actor { get; } = new(Guid.NewGuid(), "ssh-operator", "192.0.2.7");
 
+    /// <summary>
+    /// A service identity to sign user certificates for where the test is not about login
+    /// names: its principals are as typed, and its key id is <see cref="CiKeyId"/>.
+    /// </summary>
+    public static ModularCA.Shared.Interfaces.SshCertificateSubject Ci { get; } = ModularCA.Shared.Interfaces.SshCertificateSubject.ForService("ci");
+
+    /// <summary>The key id the CA writes for <see cref="Ci"/>.</summary>
+    public const string CiKeyId = "svc:ci";
+
+    /// <summary>The login name rule over this node's database and audit.</summary>
+    public SshLoginNameService LoginNames => new(Db, Audit);
+
+    /// <summary>Adds an active user, and makes them a member of <paramref name="groups"/>.</summary>
+    public UserEntity AddUser(string username, params Guid[] groups)
+    {
+        var user = new UserEntity { Id = Guid.NewGuid(), Username = username, Email = $"{username}@example.test", PasswordHash = "x" };
+        Db.Users.Add(user);
+        foreach (var group in groups)
+            Db.CaGroupMembers.Add(new CaGroupMemberEntity { GroupId = group, UserId = user.Id });
+        Db.SaveChanges();
+        return user;
+    }
+
+    /// <summary>The group the SSH CA of <paramref name="key"/> was created with for <paramref name="template"/>: admin, operator, auditor or user.</summary>
+    public CaGroupEntity GroupOf(SshCaKeyEntity key, string template)
+    {
+        var label = Db.CertificateAuthorities.Single(c => c.Id == key.CertificateAuthorityId).Label;
+        return Db.CaGroups.Single(g => g.Name == $"{label}-{template}");
+    }
+
+    /// <summary>Adds an instance group that belongs to no CA.</summary>
+    public CaGroupEntity AddGroup(string name)
+    {
+        var group = new CaGroupEntity { Id = Guid.NewGuid(), Name = name, DisplayName = name, SpaceId = null };
+        Db.CaGroups.Add(group);
+        Db.SaveChanges();
+        return group;
+    }
+
     /// <param name="requireKeyCeremony">Whether the instance requires a key ceremony.</param>
     /// <param name="unlocked">Whether the signer has unlocked its keystore.</param>
     public SshNode(bool requireKeyCeremony = false, bool unlocked = true)

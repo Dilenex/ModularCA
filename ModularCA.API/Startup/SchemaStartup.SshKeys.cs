@@ -4,24 +4,25 @@ using Npgsql;
 
 namespace ModularCA.API.Startup;
 
-// The --upgrade-check finding for SSH CA keys that are still files, and its note about SSH
-// signing profiles. Kept apart because it reads the application database by column names that
-// exist on both sides of the SSH keystore migrations, in SQL, not through the model.
+// The --upgrade-check finding for SSH CA keys that are still files, and its notes about SSH
+// signing profiles and SSH login names. Kept apart because it reads the application database by
+// column names that exist on both sides of the SSH migrations, in SQL, not through the model.
 public static partial class SchemaStartup
 {
     /// <summary>
     /// What <see cref="SshUpgradeAsync"/> read: the finding for the SSH CA key files, and the
-    /// informational note about signing profiles, null when there is nothing to say.
+    /// informational notes about signing profiles and about login names, each null when there
+    /// is nothing to say.
     /// </summary>
-    private sealed record SshUpgradeResult(UpgradeFinding Keys, string? ProfilesNote);
+    private sealed record SshUpgradeResult(UpgradeFinding Keys, string? ProfilesNote, string? LoginNamesNote = null);
 
     /// <summary>
-    /// Reads the SSH CA key rows that name a key file, and the SSH signing and certificate
-    /// profiles, from the application database, and judges them (<see cref="SshUpgradeCheck"/>):
-    /// the key files are looked for on this host, a relative path under
-    /// <paramref name="installDirectory"/>. Read-only: one read-only transaction as the runtime
-    /// role, rolled back. A database without the SSH tables has nothing to check; one that
-    /// cannot be read here is reported unreachable, and its schema finding says why.
+    /// Reads the SSH CA key rows that name a key file, the SSH signing and certificate
+    /// profiles, and the live user certificates, from the application database, and judges them
+    /// (<see cref="SshUpgradeCheck"/>): the key files are looked for on this host, a relative
+    /// path under <paramref name="installDirectory"/>. Read-only: one read-only transaction as
+    /// the runtime role, rolled back. A database without the SSH tables has nothing to check;
+    /// one that cannot be read here is reported unreachable, and its schema finding says why.
     /// </summary>
     /// <param name="target">The application database.</param>
     /// <param name="installDirectory">The installed application directory, the parent of the config directory.</param>
@@ -32,7 +33,9 @@ public static partial class SchemaStartup
         var keys = new List<SshUpgradeKeyRow>();
         var signingProfiles = new List<SshUpgradeSigningProfile>();
         var certProfiles = new List<SshUpgradeCertProfile>();
-        bool beforeUpgrade;
+        var liveUserCertificates = new List<SshUpgradeUserCertificate>();
+        var keyCount = 0;
+        bool beforeUpgrade, beforeLoginNames;
         try
         {
             await using var connection = new NpgsqlConnection(GateReadConnectionString(target.Instance));
@@ -41,7 +44,7 @@ public static partial class SchemaStartup
             await using (var readOnly = new NpgsqlCommand("SET TRANSACTION READ ONLY", connection, transaction))
                 await readOnly.ExecuteNonQueryAsync(ct);
 
-            bool hasKeys, hasSigningProfiles, hasCertProfiles;
+            bool hasKeys, hasSigningProfiles, hasCertProfiles, hasCertificates;
             await using (var probe = new NpgsqlCommand(SshUpgradeProbeSql, connection, transaction))
             await using (var reader = await probe.ExecuteReaderAsync(ct))
             {
@@ -50,15 +53,29 @@ public static partial class SchemaStartup
                 hasSigningProfiles = reader.GetBoolean(1);
                 hasCertProfiles = reader.GetBoolean(2);
                 beforeUpgrade = !reader.GetBoolean(3);
+                hasCertificates = reader.GetBoolean(4);
+                beforeLoginNames = !reader.GetBoolean(5);
             }
 
             if (hasKeys)
             {
-                await using var query = new NpgsqlCommand(SshUpgradeKeysSql, connection, transaction);
+                await using (var query = new NpgsqlCommand(SshUpgradeKeysSql, connection, transaction))
+                await using (var reader = await query.ExecuteReaderAsync(ct))
+                {
+                    while (await reader.ReadAsync(ct))
+                        keys.Add(new SshUpgradeKeyRow(reader.GetGuid(0), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetString(2),
+                            reader.GetString(3), reader.GetBoolean(4)));
+                }
+                await using var count = new NpgsqlCommand("""SELECT count(*) FROM "SshCaKeys" """, connection, transaction);
+                keyCount = Convert.ToInt32(await count.ExecuteScalarAsync(ct));
+            }
+            if (hasCertificates && keyCount > 0)
+            {
+                await using var query = new NpgsqlCommand(SshUpgradeLiveUserCertificatesSql, connection, transaction);
                 await using var reader = await query.ExecuteReaderAsync(ct);
                 while (await reader.ReadAsync(ct))
-                    keys.Add(new SshUpgradeKeyRow(reader.GetGuid(0), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetString(2),
-                        reader.GetString(3), reader.GetBoolean(4)));
+                    liveUserCertificates.Add(new SshUpgradeUserCertificate(
+                        reader.IsDBNull(0) ? null : reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1)));
             }
             if (hasSigningProfiles)
             {
@@ -90,20 +107,35 @@ public static partial class SchemaStartup
         var finding = SshUpgradeCheck.Keys(keys, installDirectory);
         return new SshUpgradeResult(
             new UpgradeFinding(name, finding.Refused ? UpgradeReadiness.Refused : UpgradeReadiness.Clean, finding.Summary, finding.Detail, 0),
-            SshUpgradeCheck.ProfilesNote(signingProfiles, certProfiles, beforeUpgrade));
+            SshUpgradeCheck.ProfilesNote(signingProfiles, certProfiles, beforeUpgrade),
+            SshUpgradeCheck.LoginNamesNote(keyCount, liveUserCertificates, beforeLoginNames));
     }
 
     /// <summary>
-    /// Whether the three SSH tables exist, as <c>to_regclass</c> resolves them on the
-    /// <c>search_path</c>, and whether the key table already has the storage column the SSH
-    /// keystore added, which says the database has been upgraded past it.
+    /// Whether the SSH tables exist, as <c>to_regclass</c> resolves them on the
+    /// <c>search_path</c>; whether the key table already has the storage column the SSH
+    /// keystore added, which says the database has been upgraded past it; and whether it has the
+    /// own-username column, which says the database has been upgraded past login names.
     /// </summary>
     private const string SshUpgradeProbeSql = """
         SELECT to_regclass('"SshCaKeys"') IS NOT NULL,
                to_regclass('"SshSigningProfiles"') IS NOT NULL,
                to_regclass('"SshCertProfiles"') IS NOT NULL,
                EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('"SshCaKeys"')
-                       AND attname = 'KeyStorage' AND attnum > 0 AND NOT attisdropped)
+                       AND attname = 'KeyStorage' AND attnum > 0 AND NOT attisdropped),
+               to_regclass('"SshCertificates"') IS NOT NULL,
+               EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('"SshCaKeys"')
+                       AND attname = 'AllowOwnUsername' AND attnum > 0 AND NOT attisdropped)
+        """;
+
+    /// <summary>
+    /// The key id and the principals of every unexpired, unrevoked SSH user certificate, by
+    /// columns the table has had since before login names.
+    /// </summary>
+    private const string SshUpgradeLiveUserCertificatesSql = """
+        SELECT "KeyId", "Principals"
+        FROM "SshCertificates"
+        WHERE "CertificateType" = 'user' AND NOT "IsRevoked" AND "ValidBefore" > now()
         """;
 
     /// <summary>

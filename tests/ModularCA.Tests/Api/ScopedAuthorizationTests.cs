@@ -119,7 +119,7 @@ public sealed class ScopedAuthorizationTests
     {
         var badge = Badge(badgeGroups);
         return New(Ns + "AdminGroupController", actor, w.Db, new CurrentUserStub(actor), new RecordingAuditService(), NewCache(),
-            GroupAuth(w, badge), Controlled(w, badge));
+            GroupAuth(w, badge), Controlled(w, badge), new ModularCA.Core.Services.SshLoginNameService(w.Db, new RecordingAuditService()));
     }
 
     /// <summary>Creates an account named <paramref name="name"/> in <paramref name="group"/> as <paramref name="actor"/>.</summary>
@@ -708,7 +708,7 @@ public sealed class ScopedAuthorizationTests
         var cache = NewCache();
         var controller = New(Ns + "AdminSshController", w.Operator,
             null, new CurrentUserStub(w.Operator), w.Db, new SystemConfig(),
-            new KeyCeremonyService(w.Db, new RecordingAuditService()), cache, null, null);
+            new KeyCeremonyService(w.Db, new RecordingAuditService()), cache, null, null, null);
         object Request(Guid? spaceId) => Body("GenerateSshCaKeyRequest", ("Name", "ops ssh"), ("SpaceId", spaceId));
 
         var bad = Assert.IsType<BadRequestObjectResult>(await Call(controller, "GenerateCaKey", Request(w.SpaceA), StepUp(cache, w.Operator, StepUpOps.CreateSshCa)));

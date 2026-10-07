@@ -89,16 +89,21 @@ public class LdapGroupSyncService : ILdapGroupSyncService
     private readonly SystemConfig _config;
     private readonly ILdapGroupProvider _groupProvider;
     private readonly ILogger<LdapGroupSyncService> _logger;
+    private readonly ModularCA.Shared.Interfaces.ISshLoginNameService? _sshLoginNames;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="LdapGroupSyncService"/> class.
+    /// <paramref name="sshLoginNames"/> revokes SSH certificates when a sync takes a user out of a
+    /// group that gave a login name; without it nothing is revoked.
     /// </summary>
-    public LdapGroupSyncService(ModularCADbContext db, SystemConfig config, ILdapGroupProvider groupProvider, ILogger<LdapGroupSyncService> logger)
+    public LdapGroupSyncService(ModularCADbContext db, SystemConfig config, ILdapGroupProvider groupProvider, ILogger<LdapGroupSyncService> logger,
+        ModularCA.Shared.Interfaces.ISshLoginNameService? sshLoginNames = null)
     {
         _db = db;
         _config = config;
         _groupProvider = groupProvider;
         _logger = logger;
+        _sshLoginNames = sshLoginNames;
     }
 
     /// <summary>
@@ -108,7 +113,8 @@ public class LdapGroupSyncService : ILdapGroupSyncService
     /// instance group (no space) or a disabled space's. Only an account with no memberships at all
     /// falls back to the single enabled space, when exactly one exists. System and privilege-controlled groups are
     /// skipped with a warning, and their memberships are never removed by sync. A <c>null</c> group
-    /// list means the directory lookup failed, so nothing is changed.
+    /// list means the directory lookup failed, so nothing is changed. A membership removed here
+    /// revokes the SSH certificates that carried a login name the user held through that group.
     /// </summary>
     public async Task SyncUserGroupsAsync(Guid userId, List<string>? ldapGroups)
     {
@@ -217,6 +223,8 @@ public class LdapGroupSyncService : ILdapGroupSyncService
         }
 
         await _db.SaveChangesAsync();
+        if (membershipsToRemove.Count > 0 && _sshLoginNames != null)
+            await _sshLoginNames.ReconcileUsersAsync([userId], "a directory sync took the user out of a group");
     }
 
     /// <summary>

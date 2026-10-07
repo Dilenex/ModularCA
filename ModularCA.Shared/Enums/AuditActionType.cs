@@ -77,6 +77,14 @@ public static class AuditActionType
     public const string SshCertIssued = "SshCertIssued";
     public const string SshCertRevoked = "SshCertRevoked";
     public const string SshCaKeyDisabled = "SshCaKeyDisabled";
+    /// <summary>A login name was granted on an SSH CA key to a user or a group; the details name the key, the name and the target.</summary>
+    public const string SshLoginNameGranted = "SshLoginNameGranted";
+    /// <summary>A login name grant's limit, end or note was changed.</summary>
+    public const string SshLoginNameGrantChanged = "SshLoginNameGrantChanged";
+    /// <summary>A login name grant was removed, by an administrator or with its user or group.</summary>
+    public const string SshLoginNameGrantRemoved = "SshLoginNameGrantRemoved";
+    /// <summary>Whether everyone may log in as their own username was changed on an SSH CA key.</summary>
+    public const string SshOwnUsernameChanged = "SshOwnUsernameChanged";
 
     // Scheduled jobs
     public const string TlsCertificateRenewed = "TlsCertificateRenewed";

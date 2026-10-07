@@ -158,6 +158,11 @@ public static class TextCaseSensitivity
                 "A settings catalog key, as SettingEntity.Key. It is also the name the wrapped "
                 + "value is bound to, byte for byte, so it is never folded.",
 
+            [new(typeof(SshLoginNameGrantEntity), nameof(SshLoginNameGrantEntity.LoginName))] =
+                "An account name on a host, written into an SSH certificate as a principal. sshd "
+                + "matches a principal byte for byte, so Deploy and deploy are two accounts and "
+                + "a grant of one is not a grant of the other.",
+
             [new(typeof(RefreshTokenEntity), nameof(RefreshTokenEntity.Token))] =
                 "A bearer secret. Comparing it without regard to case collapses the alphabet the "
                 + "token was drawn from, which is a straight reduction in the work needed to "
