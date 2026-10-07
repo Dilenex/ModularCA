@@ -1,3 +1,5 @@
+using ModularCA.Shared.Settings;
+
 namespace ModularCA.Shared.Models.Config;
 
 /// <summary>
@@ -43,12 +45,14 @@ public class SourceCodeConfig
     /// Set this to your own repository if you have modified ModularCA. Leave it alone if you are
     /// running an unmodified release.
     /// </remarks>
+    [Setting(SettingClass.InstanceWide, SettingReload.Live)]
     public string Url { get; set; } = UpstreamUrl;
 
     /// <summary>
     /// SPDX identifier shown alongside the link. Only change this if you hold a commercial
     /// licence for the core, in which case the AGPL notice does not describe your terms.
     /// </summary>
+    [Setting(SettingClass.InstanceWide, SettingReload.Live)]
     public string License { get; set; } = "AGPL-3.0-only";
 
     /// <summary>Returns <see cref="Url"/>, falling back to upstream when it is blank.</summary>

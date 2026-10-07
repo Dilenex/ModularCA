@@ -1,6 +1,7 @@
 # Settings store
 
-Status: draft, for owner review (2026-10-05). Nothing here is built.
+Status: design from 2026-10-05, with the owner's decisions since. Building started 2026-10-06 for
+0.4.1; "Built so far" under section 10 says what exists.
 
 ## Why
 
@@ -39,9 +40,10 @@ streaming replication, so anything in the database reaches the standby for free.
 - Every `SystemConfig` property gets one of five classes (below). Only *instance-wide* settings
   and *secrets* move to the database. Bootstrap, host-local and signer-local settings stay in
   files.
-- Storage is **one JSONB document per section**, holding only the values that were set. Each
-  document has a schema version. A global revision number orders every change. History is
-  append-only, and every change is audited before it commits.
+- Storage is **one row per setting**, for the settings that were set, under a key that is the
+  property path joined by underscores (`Acme_Http01_MaxAddresses`). The value is JSON of the
+  setting's type. A global revision number orders every change. History is append-only, and
+  every change is audited before it commits.
 - Secrets live in a separate table. Secrets the node has to *use* are wrapped by the signer, as
   `signer-hardening.md` (in progress) specifies. API keys, which the node only has to *verify*,
   are stored as hashes.
@@ -70,6 +72,12 @@ streaming replication, so anything in the database reaches the standby for free.
 - **Environment variables may override instance-wide settings.** The console shows them as "set
   by environment", they cannot be edited there, and a change of value is audited.
 - The other open questions in section 11 are still open.
+
+## Owner decisions (2026-10-06)
+
+- **One row per setting, named with underscores.** "Items can be split with underscores", for
+  example `Acme_Http01_MaxAddresses`. Section 2 is rewritten for it. The database connection is
+  not among them: a setting needed to reach the database cannot live in it.
 
 ## 1. Classification
 
@@ -217,60 +225,99 @@ host-local key in it holds the default.
 
 ### Classification in code
 
-Each leaf property carries `[Setting(SettingClass.X, Reload.Y)]`. An architecture test fails the
-build when a property has no class or no reload mode, the same way the `NodeRole` convention test
-fails on an undeclared controller. The table above is generated from those attributes for the
-console and the docs, so the two cannot drift.
+Each leaf property carries `[Setting(SettingClass.X, SettingReload.Y)]`, and a secret says how it
+is kept (`Secret = SettingSecretKind.Wrapped` or `Hashed`). `SettingsCatalog` builds the list of
+settings from those attributes and refuses to build when a leaf has none, so the test that builds
+it fails on an undeclared setting, the same way the `NodeRole` convention test fails on an
+undeclared controller. The reload mode is the one in the "Reload after" column: what the setting
+does once its reader takes it from the store. The catalog is also what the console and the docs
+will list settings from, so they cannot drift from the code.
+
+A list or a dictionary is one setting. The element types (`WebhookEndpoint`, `IngressRouteConfig`,
+`HsmKeyMapping`) declare nothing, so the catalog holds 216 settings where the table above counts
+223 properties. `Backup.DatabaseTimeoutMinutes`, added after the table was drawn, is
+instance-wide and live.
 
 ## 2. Storage model
 
-### JSONB per section, sparse
+### One row per setting
 
-One row per section, holding a JSONB document of **only the values that were set**. Defaults
-come from the C# type. Lists replace the default whole and are not merged.
+One row per setting **that has been set**, under a key made of the property path joined by
+underscores: `Acme.Http01.MaxAddresses` is stored as `Acme_Http01_MaxAddresses`. The value is the
+JSON of the setting's own type. A setting nobody has set has no row, and its default comes from
+the C# type.
 
-| Option | Why not |
+The draft proposed one JSON document per section and argued against rows. The owner chose rows
+with underscore-separated names (2026-10-06). Each objection the draft raised has an answer in
+the row model:
+
+| Objection to rows | Answer |
 |---|---|
-| Typed columns | A migration for every new setting, about 220 columns, and every release has to touch the schema to add a knob. `SecurityPolicy` already shows the cost. |
-| Key/value rows | No types, awkward lists and dictionaries (`JobTimeouts`, `Webhook.Endpoints`), and a multi-key change needs care to stay atomic. A one-line change produces a history that is a scatter of rows. |
-| **JSONB per section** | A section is already the unit of the API (one PUT per card), of validation, of reload (a consumer binds a section) and of a readable diff. It maps 1:1 onto the existing C# types through `System.Text.Json`. Schema evolution is per section. |
+| No types | The value is JSON, checked against the property's CLR type at write (`SettingsCatalog.Problem`) and again at load. |
+| Awkward lists and dictionaries | A list or a dictionary is one setting and one row, stored whole (`IpWhitelist_ExemptPaths`, `Scheduler_JobTimeouts`). It replaces the default and is never merged into it. |
+| A multi-key change has to stay atomic | One write sets any number of settings in one transaction under one revision. A reader sees all of the change or none. |
+| History is a scatter of rows | History is one row per changed setting, grouped by the write's revision. A diff is the rows of a revision, and "who last changed this setting" is a lookup by key. |
+
+Rows also give what a document could not: a version and a last-changed-by per setting, so two
+admins changing different settings on one card do not conflict, and a key that maps one to one
+onto the environment variable that overrides it (`MODULARCA__ACME__HTTP01__MAXADDRESSES`).
 
 Sparse storage matters. A default that a new build changes reaches every install that never set
 the value, as it does with YAML today. The console can show "default" as a source, and the history
-shows what someone chose rather than a wall of defaults.
+shows what someone chose rather than a wall of defaults. Clearing a setting keeps its row with a
+null value, so its version keeps counting; the setting is back on its default.
+
+One value has one stored spelling: through the setting's type and back, with the members of
+every object in name order. "The same value again" is then a text comparison and changes nothing.
+
+The sections below were written for the document model and describe stages that are not built.
+Where they say a section's document, read the rows of that section's settings: the API still
+takes and returns a section, the import still writes one revision per section, and a ceremony
+still carries one section's proposed values.
 
 ### Tables
 
 ```
-"Settings"            Section text PK, SchemaVersion int, Version int, Revision bigint,
-                      Document jsonb, ContentHash bytea, AuditLogId text,
+"Settings"            Key varchar(200) PK, ValueJson text null, Version int, Revision bigint,
                       UpdatedAt timestamptz, ActorId uuid null, ActorName text, Source text
-"SettingsHistory"     Revision bigint PK, Section text, Version int, SchemaVersion int,
-                      Document jsonb, ContentHash bytea, ChangedPaths text[],
-                      RestartPaths text[], ActorId uuid null, ActorName text,
-                      Source text, Reason text null, CeremonyId uuid null, AuditLogId text,
-                      ChangedAt timestamptz;  UNIQUE (Section, Version)
-"SettingsSecrets"     Section text, Path text, PK (Section, Path), Version int, Revision bigint,
+"SettingsHistory"     Id bigint PK, Revision bigint, Key varchar(200), Version int,
+                      ValueJson text null, PreviousValueJson text null, ChangedAt timestamptz,
+                      ActorId uuid null, ActorName text, Source text, Reason text null;
+                      UNIQUE (Key, Version); INDEX (Revision)
+"SettingsState"       Id int PK (always 1), Revision bigint
+```
+
+These three exist (migration `SettingsStore`). Still to come, with the stage that needs each:
+
+```
+"SettingsSecrets"     Key varchar(200) PK, Version int, Revision bigint,
                       Kind text ('wrapped' | 'hash'), Value bytea, WrappingKeyId bytea null,
                       UpdatedAt, ActorId, ActorName
 "SettingsNodes"       NodeId text PK, Host text, Roles text, Build text, StartedRevision bigint,
-                      AppliedRevision bigint, PendingRestart jsonb, EnvPaths text[],
+                      AppliedRevision bigint, PendingRestart jsonb, EnvKeys text[],
                       Problems jsonb, LastSeenAt timestamptz
-"SettingsImports"     Id uuid PK, Host text, FileHash bytea, SectionHashes jsonb,
+"SettingsImports"     Id uuid PK, Host text, FileHash bytea, KeyHashes jsonb,
                       ImportedAt timestamptz, Revision bigint
-sequence "SettingsRevision"
 ```
 
-- `Version` counts per section and is the concurrency token. `Revision` comes from one sequence
-  across all sections, so a node's state is a single number.
+- Values are `text` holding JSON, as every other JSON column in the schema is. Nothing queries
+  inside a value.
+- `Version` counts per setting and is what a writer names to detect a concurrent change.
+  `Revision` is one number across all settings, so a node's state is a single number.
+- `SettingsState` is one row whose `Revision` is a concurrency token. A write raises it in the
+  same save as its changes, so two writes cannot take the same revision: the second fails whole,
+  reads again and retries. This replaces the sequence the draft proposed; it needs no raw SQL
+  and no explicit lock.
 - `Source` is `Api`, `Import`, `Cli`, `Bootstrap`, `Rollback`, `Ceremony`, `Restore` or `Upgrade`.
-- History is append-only. A rollback is a new revision whose document is an old one.
-- `ChangedPaths` and `RestartPaths` are computed at write. The second is the subset whose reload
-  mode is restart, and it drives the pending-restart display.
-- A secret never appears in `Document` or `SettingsHistory`. History records that a secret
+- History is append-only. A rollback is a new revision whose values are old ones.
+- Which changed settings need a restart is read from the catalog by key, not stored.
+- A secret never appears in `Settings` or `SettingsHistory`. History records that a secret
   changed, with the SHA-256 of the **wrapped** blob. A hash of the plaintext would turn the
   history into a guessing oracle, the reason `signer-separation.md` gives for hashing the wrapped
   blob in the signer's audit.
+- `Webhook_Endpoints` is one setting whose elements each carry a secret. The whole list is kept
+  as one wrapped secret; splitting it into a readable list and per-element secrets is not worth
+  the bookkeeping.
 
 ### Secrets
 
@@ -282,44 +329,47 @@ sequence "SettingsRevision"
 When a secret comes from the environment, the store holds nothing for it. The node uses the
 environment value, and an environment API key is hashed in memory at load.
 
-### Schema versions
+### Renamed and reshaped settings
 
-Each section type declares `SchemaVersion`. Renames and reshapes are upgraders registered per
-section, the same shape as `YamlConfigLoader.RenamedKeys`. The store upgrades a document when it
-reads it. The control role persists the upgrade once, as a revision with source `Upgrade`. An
-unknown key is refused at write and ignored with a warning at read.
+A rename is a pair of keys, old and new, registered the way `YamlConfigLoader.RenamedKeys` is;
+a reshape is a function from the old value to the new. The control role applies them once at
+start, as a revision with source `Upgrade`. An unknown key is refused at write and ignored with
+a warning at read (`SettingsSnapshot.ApplyTo` reports it).
 
 ### Write path and concurrency
 
 ```
-read Settings row FOR UPDATE
-If-Match given and Version differs          -> 409, current version and a diff
-apply the change policy (below)             -> 403, or 202 with a ceremony
-validate the merged effective section       -> 400
-revision = nextval('SettingsRevision')
-append the audit row: section, revision, ContentHash, changed paths with before
-  and after (secrets as "changed"), source, reason, ceremony     -> AuditLogId
-UPDATE Settings; INSERT SettingsHistory; pg_notify('modularca_settings', revision)
-COMMIT
-on a failed commit: append ConfigUpdateAborted naming the revision
+read SettingsState and the Settings rows the write names
+an expected version given and the row differs   -> 409, current version and a diff
+apply the change policy (below)                 -> 403, or 202 with a ceremony
+check each value's type; validate the section with the change applied   -> 400
+drop settings whose value would not change; nothing left -> done, no revision
+revision = SettingsState.Revision + 1
+append the audit row: revision, each changed key with before and after
+  (secrets as "changed"), source, reason, ceremony
+save in one transaction: the Settings rows, one SettingsHistory row per changed
+  key, SettingsState raised to the revision; pg_notify('modularca_settings', revision)
+on a save lost to another writer: append ConfigUpdateAborted naming the revision,
+  read again and retry
 ```
 
-The audit row is written **before** the commit, so `Audit.FailMode=FailClosed` holds: no change
-without its record. The cost is an occasional "aborted" row. The existing PUT endpoints send no
-`If-Match`. For them the server does the read-modify-write under the row lock, which also fixes
-today's lost updates between two partial PUTs. The new console sends `If-Match`.
+The audit row is written **before** the save, so `Audit.FailMode=FailClosed` holds: no change
+without its record. The cost is an occasional "aborted" row. The existing PUT endpoints name no
+expected versions. A write of theirs changes only the settings whose value differs, so two
+partial PUTs to one card no longer overwrite each other's fields, which they do today. The new
+console sends the versions it read, as `If-Match`.
 
 ### Integrity: detect what cannot be prevented
 
 The runtime role owns its tables (the 0.4.0 ownership model), and an owner can `UPDATE` anything,
 so privileges cannot stop a direct edit. The store detects one instead. At load, a node checks
-that `SHA-256(canonical JSON of Document)` equals `ContentHash`, and that the audit row
-`AuditLogId` names the same hash. That audit row sits in the hash chain, so forging it means
-rewriting the chain. The hash is taken over canonical JSON (sorted keys, no whitespace), because
-`jsonb` normalises text and the stored bytes are not a stable input.
+each row against the audit record of the revision that wrote it: the record carries the key and
+the value after the change, in the canonical spelling the row stores, so the two are compared as
+text. That audit row sits in the hash chain, so forging it means rewriting the chain. This needs
+the row to name its audit record, which the store does not do yet (see "Built so far").
 
-A mismatch raises a Critical `SettingsIntegrity` alert, and the node loads the newest revision of
-that section that does verify. If none verifies, it loads the defaults. If the audit database
+A mismatch raises a Critical `SettingsIntegrity` alert, and the node loads the newest value of
+that setting in the history that does verify. If none verifies, it loads the default. If the audit database
 cannot be reached at load, the node loads without verifying and says so in `/health/ready`.
 Under `FailMode=FailClosed` it waits and retries instead, as for the schema check.
 
@@ -833,6 +883,25 @@ silently loses a per-host value, and an unwrap problem stops the control role. T
 
 The second risk is the new dependency: a control start now needs the signer to unwrap the JWT
 secret.
+
+### Built so far
+
+2026-10-06, the foundation of stage 1a. Nothing reads the store at run time yet, so behaviour is
+unchanged.
+
+- `[Setting]` on every leaf of `SystemConfig`, and `SettingsCatalog`: the keys, the classes, and
+  the check and canonical spelling of a value.
+- The `Settings`, `SettingsHistory` and `SettingsState` tables (migration `SettingsStore`).
+- `ISettingsStore`: load, write (set and clear, expected versions, one revision per write,
+  history, audit before save, retry on a lost race) and per-setting history. It refuses a key
+  that is unknown, host-local, signer-local or bootstrap, a value of the wrong type, and for now
+  every secret.
+- `SettingsSnapshot.ApplyTo`: stored values onto a `SystemConfig`, reporting rows it cannot use.
+
+Not built: secrets, per-section validators and change policies, the import and strip, bootstrap
+seeding, the write sites, startup reading the store, the generic endpoint, the CLI, and all of
+stages 2 to 6. The store does not yet link a row to its audit record, so the integrity check in
+section 2 has nothing to check against.
 
 ## 11. Open questions for the owner
 

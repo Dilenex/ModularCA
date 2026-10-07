@@ -1,3 +1,5 @@
+using ModularCA.Shared.Settings;
+
 namespace ModularCA.Shared.Models.Config;
 
 /// <summary>
@@ -23,6 +25,7 @@ public class SignerConfig
     public const string RemoteMode = "Remote";
 
     /// <summary><see cref="InProcessMode"/> or <see cref="RemoteMode"/>. Read by the node role.</summary>
+    [Setting(SettingClass.HostLocal, SettingReload.Restart)]
     public string Mode { get; set; } = InProcessMode;
 
     /// <summary>Whether the node reaches its signer over the wire.</summary>
@@ -31,12 +34,15 @@ public class SignerConfig
     // ---- Node side ----
 
     /// <summary>The signer role's address, <c>https://host:port</c>; loopback on a single host.</summary>
+    [Setting(SettingClass.HostLocal, SettingReload.Restart)]
     public string Endpoint { get; set; } = "https://127.0.0.1:8446";
 
     /// <summary>PKCS#12 holding the node's client certificate and key, issued by the signer's identity CA.</summary>
+    [Setting(SettingClass.HostLocal, SettingReload.Restart)]
     public string ClientCertificate { get; set; } = "config/signer-client.pfx";
 
     /// <summary>The password of <see cref="ClientCertificate"/>; empty when the file has none.</summary>
+    [Setting(SettingClass.HostLocal, SettingReload.Restart)]
     public string ClientCertificatePassword { get; set; } = string.Empty;
 
     /// <summary>
@@ -44,17 +50,21 @@ public class SignerConfig
     /// <c>--issue-node-identity</c> writes it to <c>signer-pin.txt</c>. The node accepts no
     /// other server certificate, whatever chain it presents.
     /// </summary>
+    [Setting(SettingClass.HostLocal, SettingReload.Restart)]
     public string PinnedServerSpki { get; set; } = string.Empty;
 
     // ---- Signer side ----
 
     /// <summary>The address the signer role listens on, <c>host:port</c>; loopback on a single host.</summary>
+    [Setting(SettingClass.SignerLocal, SettingReload.Restart)]
     public string Listen { get; set; } = "127.0.0.1:8446";
 
     /// <summary>PKCS#12 holding the signer's server certificate and key, written by <c>--init-identity</c>.</summary>
+    [Setting(SettingClass.SignerLocal, SettingReload.Restart)]
     public string ServerCertificate { get; set; } = "config/signer-server.pfx";
 
     /// <summary>The password of <see cref="ServerCertificate"/>; empty when the file has none.</summary>
+    [Setting(SettingClass.SignerLocal, SettingReload.Restart)]
     public string ServerCertificatePassword { get; set; } = string.Empty;
 
     /// <summary>
@@ -62,6 +72,7 @@ public class SignerConfig
     /// <c>--issue-node-identity</c> prints it. The signer refuses every other client at the
     /// TLS handshake.
     /// </summary>
+    [Setting(SettingClass.SignerLocal, SettingReload.Restart)]
     public string PinnedClientSpki { get; set; } = string.Empty;
 
     /// <summary>
@@ -69,9 +80,11 @@ public class SignerConfig
     /// Written by <c>--init-identity</c>, read by <c>--issue-node-identity</c>, and by nothing
     /// at runtime.
     /// </summary>
+    [Setting(SettingClass.SignerLocal, SettingReload.Restart)]
     public string IdentityCa { get; set; } = "config/signer-identity-ca.pfx";
 
     /// <summary>The password of <see cref="IdentityCa"/>; empty when the file has none.</summary>
+    [Setting(SettingClass.SignerLocal, SettingReload.Restart)]
     public string IdentityCaPassword { get; set; } = string.Empty;
 
     /// <summary>

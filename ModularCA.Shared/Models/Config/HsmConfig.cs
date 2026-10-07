@@ -1,3 +1,5 @@
+using ModularCA.Shared.Settings;
+
 namespace ModularCA.Shared.Models.Config;
 
 /// <summary>
@@ -7,18 +9,23 @@ namespace ModularCA.Shared.Models.Config;
 public class HsmConfig
 {
     /// <summary>Whether HSM support is enabled.</summary>
+    [Setting(SettingClass.SignerLocal, SettingReload.Restart)]
     public bool Enabled { get; set; } = false;
 
     /// <summary>Path to the PKCS#11 module (.so on Linux, .dll on Windows).</summary>
+    [Setting(SettingClass.SignerLocal, SettingReload.Restart)]
     public string ModulePath { get; set; } = string.Empty;
 
     /// <summary>PKCS#11 slot ID to use.</summary>
+    [Setting(SettingClass.SignerLocal, SettingReload.Restart)]
     public ulong SlotId { get; set; } = 0;
 
     /// <summary>PIN for authenticating to the HSM token.</summary>
+    [Setting(SettingClass.SignerLocal, SettingReload.Restart)]
     public string Pin { get; set; } = string.Empty;
 
     /// <summary>Mappings from CA labels to HSM key labels.</summary>
+    [Setting(SettingClass.SignerLocal, SettingReload.Restart)]
     public List<HsmKeyMapping> KeyMappings { get; set; } = new();
 }
 

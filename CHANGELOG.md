@@ -6,6 +6,17 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### Changed
+
+- **Groundwork for settings in the database.** Instance-wide settings are moving from
+  `config.yaml` into the database, one row per setting under a name made of its path joined by
+  underscores (`Acme_Http01_MaxAddresses`), so a change reaches every host, is versioned and is
+  audited. This build adds the three tables (`Settings`, `SettingsHistory`, `SettingsState`) and
+  the store that reads and writes them. Nothing reads them yet: `config.yaml` is still where
+  every setting comes from, and nothing is copied out of it. The database connection, the
+  signer's settings and each host's listeners, paths and certificates stay in files for good.
+  See `docs/architecture/settings-store.md`.
+
 ### Fixed
 
 - **ACME: certbot and Caddy can finalize an order.** Both send a certification request with an

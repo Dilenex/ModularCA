@@ -95,6 +95,8 @@ public static class AuditActionType
 
     // Configuration changes
     public const string ConfigUpdated = "ConfigUpdated";
+    /// <summary>A settings change that was recorded and then not saved; names the revision of the <see cref="ConfigUpdated"/> record it cancels.</summary>
+    public const string ConfigUpdateAborted = "ConfigUpdateAborted";
     public const string ApplicationRestarted = "ApplicationRestarted";
 
     // Profile management

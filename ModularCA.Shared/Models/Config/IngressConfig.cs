@@ -1,3 +1,5 @@
+using ModularCA.Shared.Settings;
+
 namespace ModularCA.Shared.Models.Config;
 
 /// <summary>
@@ -19,15 +21,19 @@ namespace ModularCA.Shared.Models.Config;
 public class IngressConfig
 {
     /// <summary>The routes named in configuration; each host once.</summary>
+    [Setting(SettingClass.HostLocal, SettingReload.Restart)]
     public List<IngressRouteConfig> Routes { get; set; } = new();
 
     /// <summary>Seconds between active health probes of each upstream. A node that fails its probes is marked down and answered 503 for its hosts.</summary>
+    [Setting(SettingClass.HostLocal, SettingReload.Restart)]
     public int HealthCheckIntervalSeconds { get; set; } = 10;
 
     /// <summary>Seconds a health probe may take before it counts as failed.</summary>
+    [Setting(SettingClass.HostLocal, SettingReload.Restart)]
     public int HealthCheckTimeoutSeconds { get; set; } = 5;
 
     /// <summary>The path probed on each upstream; the node answers it anonymously on both listeners.</summary>
+    [Setting(SettingClass.HostLocal, SettingReload.Restart)]
     public string HealthCheckPath { get; set; } = "/health/live";
 
     /// <summary>
@@ -35,12 +41,14 @@ public class IngressConfig
     /// application base directory when relative. Empty means the system trust store, unless a
     /// route pins a key or the dangerous flag applies.
     /// </summary>
+    [Setting(SettingClass.HostLocal, SettingReload.Restart)]
     public string UpstreamCaCertificatePath { get; set; } = string.Empty;
 
     /// <summary>
     /// Accept any certificate from an upstream on loopback. Refused at startup when any
     /// <c>https://</c> route in <see cref="Routes"/> is not loopback.
     /// </summary>
+    [Setting(SettingClass.HostLocal, SettingReload.Restart)]
     public bool DangerousAcceptAnyUpstreamCertificate { get; set; }
 
     /// <summary>The shortest health probe interval honoured.</summary>

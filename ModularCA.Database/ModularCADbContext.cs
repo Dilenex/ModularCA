@@ -91,6 +91,13 @@ public class ModularCADbContext : DbContext
     // Runtime-tunable policy tables (moved out of config.yaml so admins can
     // change them via the admin API without a restart).
     public DbSet<SecurityPolicyEntity> SecurityPolicies { get; set; }
+
+    /// <summary>The instance-wide settings that have been set, one row each. See <c>docs/architecture/settings-store.md</c>.</summary>
+    public DbSet<SettingEntity> Settings { get; set; }
+    /// <summary>Every change to a setting, append-only.</summary>
+    public DbSet<SettingHistoryEntity> SettingsHistory { get; set; }
+    /// <summary>The one row that orders settings writes.</summary>
+    public DbSet<SettingsStateEntity> SettingsState { get; set; }
     public DbSet<LdapPublisherPolicyEntity> LdapPublisherPolicies { get; set; }
     public DbSet<ProtocolRateLimitEntity> ProtocolRateLimits { get; set; }
     public DbSet<EnrollmentTokenEntity> EnrollmentTokens { get; set; }
@@ -334,6 +341,12 @@ public class ModularCADbContext : DbContext
         modelBuilder.Entity<OIDOptionEntity>().HasIndex(o => o.OID).IsUnique();
 
         modelBuilder.Entity<FeatureFlagEntity>().HasIndex(f => f.Name).IsUnique();
+
+        modelBuilder.Entity<SettingHistoryEntity>(entity =>
+        {
+            entity.HasIndex(h => new { h.Key, h.Version }).IsUnique();
+            entity.HasIndex(h => h.Revision);
+        });
         modelBuilder.Entity<CrlConfigurationEntity>().HasIndex(c => c.Name).IsUnique();
 
         // CRL history must not be deletable as a side effect.
