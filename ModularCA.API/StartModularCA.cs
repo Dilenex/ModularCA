@@ -1325,10 +1325,13 @@ if (isSetupMode && string.IsNullOrWhiteSpace(loadedConfig.JWT.Secret))
 if (!isSetupMode && string.IsNullOrWhiteSpace(loadedConfig.JWT.Secret) && settingsPersistence.StoreInUse)
 {
     loadedConfig.JWT.Secret = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(64));
+    // Nobody set this one, so a later save of the settings does not store it.
+    settingsPersistence.KeepSecretsAsHeld();
     if (!ingressOnly)
     {
         Log.Error("The JWT secret could not be read from the settings store, so this process signs sessions with a temporary one. "
-            + "Everyone is signed out at its next restart, and another node will not accept its sessions. See the Settings warnings above for why.");
+            + "Everyone is signed out at its next restart, and another node will not accept its sessions. See the Settings warnings above for why. "
+            + "If the stored secret is lost for good, rotate it in the console (Settings, Security, JWT) and restart.");
         Console.WriteLine("[WARNING] The stored JWT secret could not be read; using a temporary one for this start.");
     }
 }

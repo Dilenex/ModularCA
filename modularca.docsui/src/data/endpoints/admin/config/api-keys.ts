@@ -10,8 +10,21 @@ export const adminSettings: ApiEndpoint[] = [
         auth: 'Authorize (SystemAdmin)',
         category: 'Admin Configuration',
         headers: [bearer],
-        responseDescription: '{ storeInUse, revision, movedAt, settings }. Each setting has key (with underscores, as it is stored), path (dotted), section, kept ("database", "host" for this host\'s config.yaml, "signer" or "bootstrap"), applies ("live": a saved change takes effect at once on the node that saved it; "restart": at its next start), source (where the value in force comes from: "database", "default", "environment" or "file"), secret, and version, updatedBy and updatedAt when a value is stored.',
+        responseDescription: '{ storeInUse, revision, movedAt, waitingForRestart, settings }. waitingForRestart lists the keys of secrets stored since the node started, which it takes up at its next start. Each setting has key (with underscores, as it is stored), path (dotted), section, kept ("database", "host" for this host\'s config.yaml, "signer" or "bootstrap"), applies ("live": a saved change takes effect at once on the node that saved it; "restart": at its next start), source (where the value in force comes from: "database", "default", "environment" or "file"), secret, and version, updatedBy and updatedAt when a value is stored.',
         notes: 'The values themselves are returned by GET /api/v1/admin/config, which redacts secrets. A setting whose source is "environment" is decided by an environment variable on that node and cannot be changed through the API.',
+    },
+    {
+        method: 'POST',
+        path: '/api/v1/admin/settings/jwt-secret/rotate',
+        summary: 'Replace the JWT secret with a new random one, stored wrapped by the signer. No value is sent and none is returned. Requires step-up MFA.',
+        auth: 'Authorize (SystemAdmin)',
+        category: 'Admin Configuration',
+        headers: [
+            bearer,
+            { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token scoped to rotate-jwt-secret.' },
+        ],
+        responseDescription: '{ message, version, waitingForRestart }. 409 when an environment variable supplies the secret on that node, or its settings have not been moved to the database. 503 when the signer is locked or out of reach; nothing is stored.',
+        notes: 'The node keeps signing and accepting sessions with the secret it started with. Each node uses the new one from its next start: from then on it refuses access tokens signed with the old secret, so every client signs in again. Until every node has restarted, a node on the old secret and one on the new do not accept each other\'s tokens. GET /api/v1/admin/settings lists JWT_Secret under waitingForRestart until the node restarts. The change is audited as ConfigUpdated.',
     },
 ];
 

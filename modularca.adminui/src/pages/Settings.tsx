@@ -25,7 +25,8 @@ import {
 } from './settingsLists';
 import { LdapMappingsEditor, SunsetRulesEditor } from './SettingsTables';
 import { ApiKeysPanel } from '../components/ApiKeysPanel';
-import { CARD_FIELDS, type SettingsIndex, describeField, fieldBadges, fieldLocked, fieldsApply, indexSettings } from './settingsMeta';
+import { CARD_FIELDS, type SettingsIndex, describeField, fieldBadges, fieldLocked, fieldsApply, indexSettings, secretState } from './settingsMeta';
+import { actionButton } from '@shared/components/actionButtons';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -279,6 +280,10 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     const { showToast } = useToast();
     const [config, setConfig] = useState<any>(null);
     const [settingsMeta, setSettingsMeta] = useState<SettingsIndex>(new Map());
+    const [settingsStore, setSettingsStore] = useState<{ inUse: boolean; waitingForRestart: string[] }>({ inUse: false, waitingForRestart: [] });
+    const [confirmRotateJwt, setConfirmRotateJwt] = useState(false);
+    const [rotatingJwt, setRotatingJwt] = useState(false);
+    const [rotateJwtError, setRotateJwtError] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
     const [expanded, setExpanded] = useState<string | null>(null);
@@ -412,17 +417,38 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     const savedConfig = (): any => { try { return JSON.parse(saved.current.config ?? 'null'); } catch { return null; } };
     const differs = (key: string, value: any) => value != null && saved.current[key] !== undefined && saved.current[key] !== JSON.stringify(value);
 
+    // Where each setting is kept and when a change takes effect. The page works without it:
+    // a field then shows no badge, and the cards keep their own tags.
+    const loadSettingsMeta = () => {
+        apiGet<any>('/api/v1/admin/settings')
+            .then((d) => {
+                setSettingsMeta(indexSettings(d?.settings));
+                setSettingsStore({ inUse: !!d?.storeInUse, waitingForRestart: Array.isArray(d?.waitingForRestart) ? d.waitingForRestart : [] });
+            })
+            .catch(() => setSettingsMeta(new Map()));
+    };
+
     const load = () => {
         setLoading(true);
         apiGet<any>('/api/v1/admin/config')
             .then((c) => { setConfig(c); snap('config', c); })
             .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
-        // Where each setting is kept and when a change takes effect. The page works without it:
-        // a field then shows no badge, and the cards keep their own tags.
-        apiGet<any>('/api/v1/admin/settings')
-            .then((d) => setSettingsMeta(indexSettings(d?.settings)))
-            .catch(() => setSettingsMeta(new Map()));
+        loadSettingsMeta();
+    };
+
+    const rotateJwtSecret = async () => {
+        setRotatingJwt(true);
+        setRotateJwtError(null);
+        try {
+            await apiPostWithMfa('/api/v1/admin/settings/jwt-secret/rotate', {}, requireStepUp, StepUpOps.RotateJwtSecret);
+            loadSettingsMeta();
+        } catch (err: any) {
+            if (err.message !== 'Step-up MFA cancelled') setRotateJwtError(err.message);
+        } finally {
+            setRotatingJwt(false);
+            setConfirmRotateJwt(false);
+        }
     };
 
     const loadPolicy = () => {
@@ -522,6 +548,17 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
 
     if (loading) return <div className="p-4 text-sm text-ink-muted">Loading...</div>;
     if (error) return <InlineNotice notice={error} />;
+
+    // The JWT secret is never sent to the console; this is what can be said of it.
+    const jwtSecret = describeField(settingsMeta, 'jwt.secret');
+    const jwtSecretState = secretState(jwtSecret, settingsStore.waitingForRestart);
+    const jwtSecretLine = jwtSecretState === 'environment' ? 'Supplied by an environment variable on this node'
+        : jwtSecretState === 'file' ? "In this host's config.yaml"
+        : jwtSecretState ? `Stored, wrapped by the signer. Version ${jwtSecret?.version}, changed ${formatDate(jwtSecret?.updatedAt ?? null)} by ${jwtSecret?.updatedBy || 'unknown'}`
+        : '***';
+    const jwtRotateBlocked = jwtSecretState === 'environment' ? 'An environment variable supplies the secret on this node. Change it there.'
+        : !settingsStore.inUse ? 'The settings have not been moved to the database on this node.'
+        : null;
     if (!config) return null;
 
     /* --- Password Policy helpers --- */
@@ -1171,14 +1208,41 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                     {/* JWT (read-only) */}
                     <div className={cardClass}>
                         <SectionHeader title="JWT" expanded={expanded === 'jwt'} onToggle={() => toggle('jwt')}
-                            description={`Expiry: ${config.jwt?.expirationMinutes || 120}m`} tag="read-only" />
+                            description={`Expiry: ${config.jwt?.expirationMinutes || 120}m`} tag="restart" />
                         {expanded === 'jwt' && (
                             <div className="p-4 border-t border-line space-y-2">
                                 <DetailField label="Expiration (minutes)" value={String(config.jwt.expirationMinutes)} />
                                 <DetailField label="Issuer" value={config.jwt.issuer} />
                                 <DetailField label="Audience" value={config.jwt.audience} />
-                                <DetailField label="Secret" value="***" />
-                                <div className="text-xs text-ink-muted mt-2">Changed on the host with the <code className="mono">--settings</code> command; a change takes effect when the node next starts. The secret is stored wrapped by the signer and is never shown.</div>
+                                <DetailField label="Secret" value={jwtSecretLine} />
+                                <div className="text-xs text-ink-muted mt-2">Expiration, issuer and audience are changed on the host with the <code className="mono">--settings</code> command, and a change takes effect when the node next starts. The secret is never shown.</div>
+                                {jwtSecretState === 'waiting' && (
+                                    <div className="bg-warn-soft border border-warn/40 rounded p-3 text-xs text-warn">
+                                        A new secret is stored and waits for a restart. This node signs and accepts sessions with the previous
+                                        one until it restarts (Restart Server, on the General tab).
+                                    </div>
+                                )}
+                                {rotateJwtError && (
+                                    <div className="px-4 py-2 bg-crit-soft border border-crit/40 rounded text-crit text-sm">{rotateJwtError}</div>
+                                )}
+                                <div className="flex items-center gap-3 pt-2 flex-wrap">
+                                    <button type="button" onClick={() => setConfirmRotateJwt(true)} disabled={rotatingJwt || !!jwtRotateBlocked} className={actionButton}>
+                                        {rotatingJwt ? 'Rotating...' : 'Rotate secret'}
+                                    </button>
+                                    <span className="text-xs text-ink-muted">
+                                        {jwtRotateBlocked || 'Generates a new secret and stores it wrapped by the signer. Each node uses it from its next start.'}
+                                    </span>
+                                </div>
+                                <ConfirmModal
+                                    isOpen={confirmRotateJwt}
+                                    title="Rotate JWT secret"
+                                    message="Generate a new JWT secret? It is stored now and used from each node's next start. From then on, access tokens signed with the old secret are refused, so everyone signed in has to sign in again. Until every node has restarted, a node on the old secret and one on the new do not accept each other's sessions. This cannot be undone."
+                                    confirmLabel="Rotate"
+                                    tone="warn"
+                                    loading={rotatingJwt}
+                                    onConfirm={rotateJwtSecret}
+                                    onCancel={() => setConfirmRotateJwt(false)}
+                                />
                             </div>
                         )}
                     </div>

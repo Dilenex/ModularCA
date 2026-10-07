@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { CARD_FIELDS, type SettingDescription, describeField, fieldBadges, fieldLocked, fieldsApply, indexSettings } from '@adminui/pages/settingsMeta';
+import { CARD_FIELDS, type SettingDescription, describeField, fieldBadges, fieldLocked, fieldsApply, indexSettings, secretState } from '@adminui/pages/settingsMeta';
 
 const setting = (path: string, over: Partial<SettingDescription> = {}): SettingDescription => ({
     key: path.replace(/\./g, '_'), path, section: path.split('.')[0],
@@ -68,6 +68,29 @@ describe('what a card says about its settings', () => {
         expect(fieldsApply(index, undefined)).toBeNull();
         // One it does not describe does not change what the others say.
         expect(fieldsApply(index, ['metrics.enabled', 'acme.enforceCaa'])).toBe('live');
+    });
+});
+
+describe('what the page says of a secret it never sees', () => {
+    const stored = setting('JWT.Secret', { secret: true, applies: 'restart', source: 'database', version: 3 });
+
+    it('is stored once the database holds it, and in the file until then', () => {
+        expect(secretState(stored, [])).toBe('stored');
+        expect(secretState(setting('JWT.Secret', { secret: true, source: 'file' }), [])).toBe('file');
+    });
+
+    it('waits for a restart when a new one was stored since this node started', () => {
+        expect(secretState(stored, ['JWT_Secret'])).toBe('waiting');
+        expect(secretState(stored, ['Email_Password'])).toBe('stored');
+        expect(secretState(stored, undefined)).toBe('stored');
+    });
+
+    it('is the environment\'s where a variable supplies it, whatever is stored', () => {
+        expect(secretState(setting('JWT.Secret', { secret: true, source: 'environment', version: 3 }), ['JWT_Secret'])).toBe('environment');
+    });
+
+    it('says nothing of one the server does not describe', () => {
+        expect(secretState(undefined, ['JWT_Secret'])).toBeNull();
     });
 });
 

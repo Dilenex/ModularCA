@@ -129,6 +129,7 @@ export const StepUpOps = {
     RejectRequest: 'reject-request',
     CreateApiKey: 'create-api-key',
     RevokeApiKey: 'revoke-api-key',
+    RotateJwtSecret: 'rotate-jwt-secret',
 } as const;
 
 /** Union of every valid step-up operation string. */

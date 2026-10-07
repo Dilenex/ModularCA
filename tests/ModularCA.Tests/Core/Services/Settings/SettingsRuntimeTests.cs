@@ -669,6 +669,94 @@ public sealed class SettingsRuntimeTests : IDisposable
         Assert.Equal(revision, (await Store().LoadAsync()).Revision);
     }
 
+    // ---- replacing the JWT secret ---------------------------------------------------------------
+
+    [Fact]
+    public async Task Rotating_the_JWT_secret_stores_a_new_one_for_the_next_start_and_leaves_this_start_on_its_own()
+    {
+        var signer = new SettingsTestSigner();
+        var path = WriteFullFile(FromFileWithSecrets());
+        var started = await StartFromFile(path, signer);
+        Assert.Empty(started.Persistence.WaitingForRestart);
+
+        var version = await started.Persistence.RotateJwtSecretAsync(Store(signer), Alice);
+
+        // Stored, and not taken up: the key sessions are checked against was fixed at start.
+        Assert.Equal(2, version);
+        Assert.Equal(JwtSecret, started.Config.JWT.Secret);
+        Assert.Equal([SettingsPersistence.JwtSecretKey], started.Persistence.WaitingForRestart);
+        Assert.Equal(2, started.Persistence.Snapshot!.Secrets["JWT_Secret"].Version);
+
+        // Saving something else afterwards does not put the old secret back.
+        started.Config.Acme.Http01.MaxAddresses = 5;
+        await started.Persistence.SaveAsync(Store(signer), Alice);
+        Assert.Equal(2, (await Store().LoadAsync()).Secrets["JWT_Secret"].Version);
+
+        // The next start runs on the new one, which is as long as the node requires.
+        var next = await StartFromFile(path, signer);
+        Assert.NotEqual(JwtSecret, next.Config.JWT.Secret);
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(next.Config.JWT.Secret) >= 64);
+        Assert.Empty(next.Persistence.WaitingForRestart);
+        Assert.Empty(next.Report.SecretProblems!);
+
+        // The change is recorded as a change to a secret, by who made it, and holds no secret.
+        var record = _audit.Entries.Last(e => System.Text.Json.JsonSerializer.Serialize(e.Details).Contains("Rotated"));
+        var recorded = System.Text.Json.JsonSerializer.Serialize(record.Details);
+        Assert.Contains("replaced", recorded);
+        Assert.DoesNotContain(next.Config.JWT.Secret, System.Text.Json.JsonSerializer.Serialize(_audit.Entries.Select(e => e.Details)));
+
+        // A second rotation is a different secret.
+        await next.Persistence.RotateJwtSecretAsync(Store(signer), Alice);
+        var after = await StartFromFile(path, signer);
+        Assert.NotEqual(next.Config.JWT.Secret, after.Config.JWT.Secret);
+    }
+
+    [Fact]
+    public async Task Rotating_the_JWT_secret_is_refused_before_the_settings_are_moved_and_when_the_signer_will_not_wrap()
+    {
+        var config = FromFileWithSecrets();
+        var path = WriteFullFile(config);
+        var unmoved = new SettingsPersistence(config, new EnvVarConfigOverlay(), path);
+        var refused = await Assert.ThrowsAsync<SettingsRefusedException>(() => unmoved.RotateJwtSecretAsync(Store(new SettingsTestSigner()), Alice));
+        Assert.Equal(SettingsRefusal.NotStoredInDatabase, refused.Reason);
+        Assert.Empty((await Store().LoadAsync()).Secrets);
+
+        var signer = new SettingsTestSigner();
+        var started = await StartFromFile(path, signer);
+        signer.Unreachable = true;
+        refused = await Assert.ThrowsAsync<SettingsRefusedException>(() => started.Persistence.RotateJwtSecretAsync(Store(signer), Alice));
+        Assert.Equal(SettingsRefusal.SignerRefused, refused.Reason);
+        Assert.Empty(started.Persistence.WaitingForRestart);
+        Assert.Equal(1, (await Store().LoadAsync()).Secrets["JWT_Secret"].Version);
+    }
+
+    /// <summary>
+    /// A start that could not read the stored JWT secret runs on one it made up. That one is
+    /// nobody's choice: saving a setting must not store it over the real one.
+    /// </summary>
+    [Fact]
+    public async Task A_secret_the_process_made_up_for_itself_is_not_stored_by_a_later_save()
+    {
+        var signer = new SettingsTestSigner();
+        var path = WriteFullFile(FromFileWithSecrets());
+        await StartFromFile(path, signer);
+
+        signer.Unreachable = true;
+        var later = await StartFromFile(path, signer);
+        Assert.Equal(string.Empty, later.Config.JWT.Secret);
+        later.Config.JWT.Secret = "a-temporary-secret-made-up-for-this-start";
+        later.Persistence.KeepSecretsAsHeld();
+
+        signer.Unreachable = false;
+        later.Config.Acme.Http01.MaxAddresses = 5;
+        await later.Persistence.SaveAsync(Store(signer), Alice);
+
+        Assert.Equal(1, (await Store().LoadAsync()).Secrets["JWT_Secret"].Version);
+        var again = await StartFromFile(path, signer);
+        Assert.Equal(JwtSecret, again.Config.JWT.Secret);
+        Assert.Equal(5, again.Config.Acme.Http01.MaxAddresses);
+    }
+
     // ---- what the console is told about each setting -------------------------------------------
 
     [Fact]
@@ -781,5 +869,48 @@ public sealed class SettingsRuntimeTests : IDisposable
         Assert.Contains(says, result.Err);
         Assert.Empty((await Store().LoadAsync()).Settings);
         Assert.DoesNotContain("anything-at-all", result.Err + result.Out);
+    }
+}
+
+/// <summary>
+/// Rotating the JWT secret on a node whose secret comes from the environment. Apart from
+/// <see cref="SettingsRuntimeTests"/> because it sets a process-wide variable.
+/// </summary>
+[Collection(EnvVarsCollection.Name)]
+public sealed class JwtSecretFromEnvironmentTests
+{
+    [Fact]
+    public async Task Rotating_is_refused_where_an_environment_variable_supplies_the_secret()
+    {
+        const string variable = "MODULARCA__JWT__SECRET";
+        var config = new SystemConfig();
+        var overlay = new EnvVarConfigOverlay();
+        var original = Environment.GetEnvironmentVariable(variable);
+        Environment.SetEnvironmentVariable(variable, "the-jwt-secret-from-the-environment");
+        try { overlay.Apply(config); }
+        finally { Environment.SetEnvironmentVariable(variable, original); }
+
+        var databaseName = $"settings-jwt-env-{Guid.NewGuid():N}";
+        var signer = new SettingsTestSigner();
+        SettingsStore Store() => new(InMemoryDbContextFactory.Create(databaseName), new RecordingAuditService(), signer, NullLogger<SettingsStore>.Instance);
+        var path = Path.Combine(Path.GetTempPath(), $"mca-settings-jwt-env-{Guid.NewGuid():N}.yaml");
+        try
+        {
+            var persistence = new SettingsPersistence(config, overlay, path);
+            await SettingsRuntime.StartAsync(Store(), config, persistence, overlay.EnvSourcedPaths, mayMove: true, withSecrets: true);
+            Assert.True(persistence.StoreInUse);
+
+            var refused = await Assert.ThrowsAsync<SettingsRefusedException>(
+                () => persistence.RotateJwtSecretAsync(Store(), new SettingsActor(Guid.NewGuid(), "alice")));
+
+            Assert.Equal(SettingsRefusal.NotStoredInDatabase, refused.Reason);
+            Assert.Contains("environment variable", refused.Message);
+            Assert.False((await Store().LoadAsync()).Secrets.ContainsKey("JWT_Secret"));
+            Assert.Equal(0, signer.Wraps);
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { }
+        }
     }
 }

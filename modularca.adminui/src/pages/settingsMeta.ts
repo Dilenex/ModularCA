@@ -124,3 +124,16 @@ export function fieldsApply(index: SettingsIndex, fields: readonly string[] | un
     if (live + restart === 0) return null;
     return restart === 0 ? 'live' : live === 0 ? 'restart' : 'mixed';
 }
+
+/**
+ * What can be said of a secret the console never sees: `environment` when an environment
+ * variable supplies it on this node, `waiting` when a new one was stored since this node started
+ * and is taken up at its next start, `stored` when it is in the database, `file` when it is
+ * still in this host's config.yaml. Null when the server does not describe it.
+ */
+export function secretState(setting: SettingDescription | undefined, waitingForRestart: readonly string[] | null | undefined): 'environment' | 'waiting' | 'stored' | 'file' | null {
+    if (!setting) return null;
+    if (setting.source === 'environment') return 'environment';
+    if ((waitingForRestart || []).includes(setting.key)) return 'waiting';
+    return setting.version != null ? 'stored' : 'file';
+}

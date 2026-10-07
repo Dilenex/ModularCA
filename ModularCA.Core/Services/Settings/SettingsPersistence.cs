@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text.Json.Nodes;
 using ModularCA.Shared.Models.Config;
 using ModularCA.Shared.Settings;
 using ModularCA.Shared.Utils;
@@ -25,8 +27,18 @@ public sealed class SettingsPersistence(
     EnvVarConfigOverlay environment,
     string configPath)
 {
+    /// <summary>The key of the JWT secret in the settings store.</summary>
+    public const string JwtSecretKey = "JWT_Secret";
+
     private volatile SettingsSnapshot? _snapshot;
     private volatile IReadOnlyDictionary<string, string>? _secretBaseline;
+    private volatile IReadOnlyList<string> _waitingForRestart = [];
+
+    /// <summary>
+    /// The keys of secrets stored since this process started that it is not running on: it
+    /// reads them at its next start.
+    /// </summary>
+    public IReadOnlyList<string> WaitingForRestart => _waitingForRestart;
 
     /// <summary>The stored settings as last read or written by this process; null while the store is not in use.</summary>
     public SettingsSnapshot? Snapshot => _snapshot;
@@ -46,6 +58,52 @@ public sealed class SettingsPersistence(
     {
         _snapshot = snapshot;
         _secretBaseline = secretBaseline;
+    }
+
+    /// <summary>
+    /// Takes the secrets as the configuration holds them now for unchanged. For a secret this
+    /// process made up for itself (the temporary JWT secret of a start that could not read the
+    /// stored one), which a later save must not store as if someone had set it.
+    /// </summary>
+    public void KeepSecretsAsHeld()
+    {
+        if (_secretBaseline != null)
+            _secretBaseline = SettingsRuntime.SecretBaseline(config, environment.EnvSourcedPaths);
+    }
+
+    /// <summary>
+    /// Stores a new, random JWT secret, wrapped by the signer, and returns its version. The
+    /// configuration in memory keeps the secret this process started with, because the key
+    /// sessions are checked against is fixed at start: the new one is used from the next start
+    /// of each node, when access tokens signed with the old one stop being accepted.
+    /// </summary>
+    /// <exception cref="SettingsRefusedException">
+    /// The settings are not in the database yet, an environment variable supplies the secret, or
+    /// the signer would not wrap. Nothing was stored.
+    /// </exception>
+    public async Task<int> RotateJwtSecretAsync(ISettingsStore store, SettingsActor actor, CancellationToken cancellationToken = default)
+    {
+        if (!StoreInUse)
+            throw new SettingsRefusedException(SettingsRefusal.NotStoredInDatabase,
+                "The settings have not been moved to the database on this node, so the JWT secret is the one in its config.yaml.", JwtSecretKey);
+        if (environment.EnvSourcedPaths.Contains(SettingsCatalog.Find(JwtSecretKey)!.Path))
+            throw new SettingsRefusedException(SettingsRefusal.NotStoredInDatabase,
+                "An environment variable supplies the JWT secret on this node and wins over a stored one. Change it there.", JwtSecretKey);
+
+        // 64 random bytes, as setup generates it.
+        var secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(64));
+        await store.WriteAsync(new SettingsChange
+        {
+            Set = new Dictionary<string, JsonNode?> { [JwtSecretKey] = JsonValue.Create(secret) },
+            Actor = actor, Source = SettingsSource.Api,
+            Reason = "Rotated: a new secret was generated. In use from each node's next start.",
+        }, cancellationToken);
+
+        var snapshot = await store.LoadAsync(cancellationToken);
+        _snapshot = snapshot;
+        if (!_waitingForRestart.Contains(JwtSecretKey))
+            _waitingForRestart = [.. _waitingForRestart, JwtSecretKey];
+        return snapshot.Secrets[JwtSecretKey].Version;
     }
 
     /// <summary>

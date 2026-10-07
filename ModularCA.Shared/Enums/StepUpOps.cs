@@ -251,6 +251,8 @@ public static class StepUpOps
     public const string CreateApiKey = "create-api-key";
     /// <summary>Revoking an integration's API key.</summary>
     public const string RevokeApiKey = "revoke-api-key";
+    /// <summary>Replacing the JWT secret with a newly generated one.</summary>
+    public const string RotateJwtSecret = "rotate-jwt-secret";
 
     /// <summary>
     /// The canonical allow-list consulted by <c>IssueStepUpTokenAsync</c>. Any operation
@@ -294,7 +296,7 @@ public static class StepUpOps
         UpdateCaServiceUrl, DeleteCaServiceUrl,
         UpdateFeatureFlag,
         DeleteEabKey,
-        CreateApiKey, RevokeApiKey,
+        CreateApiKey, RevokeApiKey, RotateJwtSecret,
         CreateSshProfile, UpdateSshProfile, DeleteSshProfile,
         TotpSetup, TotpVerifySetup, TotpRemove,
         WebAuthnRegister, WebAuthnDelete,
