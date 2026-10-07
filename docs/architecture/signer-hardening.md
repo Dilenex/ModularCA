@@ -1079,31 +1079,43 @@ M, given the settings store:
 6. **`systemd-creds` for the signer's secrets**: the documented default for new Linux installs, or
    an option?
 
-## Recommended staging across 0.4.x
+## Staging across 0.4.x
 
-| Release | Item 1 | Item 2 | Item 3 |
-|---|---|---|---|
-| 0.4.1 | **Stage A, typed signing.** Closes `cA=TRUE` and OCSP-signing certificates without a ceremony, and purpose laundering. Approvals are still database rows | **Stage 1, the journal.** Every signature is recorded where the node cannot reach and a restore does not touch. The head is in every backup | Envelope v2, `SettingSecret`, `Configuration` |
-| 0.4.2 | **Stage B, verified approvals**, opt-in. Approvals are WebAuthn evidence the signer checks against its registry. Forged approval rows stop working | **Stage 2, recovery.** Restores re-adopt certificates and reapply revocations. Revocations are recorded as they happen | Secrets into the settings store with the settings-store work; the migration; write-only console fields; the JWT ring |
-| 0.4.3 | **Stage C.** Policy, waivers and key scopes held in the registry; generic kinds; `VerifyEvidence`. Verified mode is the default for new installs | **Stage 3.** CRL monotonicity and OCSP consistency at the signer | Signer-signed session tokens, if open question 1 is accepted |
+As the owner set it on 2026-10-06: 0.4.1 is the settings release, 0.4.2 closes the SSH hole
+(`ssh-keystore.md`), and the journal and verified approvals follow from 0.4.3. The secrets' move
+into the settings store was drafted here for 0.4.2 and was built with the settings store, in
+0.4.1. How the stages after 0.4.3 fall is a proposal, not a decision.
+
+| Release | Item 1 | Item 2 | Item 3 | Elsewhere |
+|---|---|---|---|---|
+| 0.4.1 | **Stage A, typed signing. Built.** Closes `cA=TRUE` and OCSP-signing certificates without a ceremony, and purpose laundering. Approvals are still database rows | | **Built.** Envelope v2, `SettingSecret`, `Configuration`; the secrets the node uses moved into the settings store, wrapped; the JWT secret rotated from the console | The settings store (`settings-store.md`) |
+| 0.4.2 | | | | **The SSH keystore** (`ssh-keystore.md`): SSH CA keys behind the signer, which builds and signs each certificate from its fields |
+| 0.4.3 | **Stage B, verified approvals**, opt-in. Approvals are WebAuthn evidence the signer checks against its registry. Forged approval rows stop working | **Stage 1, the journal.** Every signature is recorded where the node cannot reach and a restore does not touch. The head is in every backup | Write-only console fields; the JWT ring | |
+| 0.4.4 | **Stage C.** Policy, waivers and key scopes held in the registry; generic kinds; `VerifyEvidence`. Verified mode is the default for new installs | **Stage 2, recovery.** Restores re-adopt certificates and reapply revocations. Revocations are recorded as they happen | Signer-signed session tokens, if open question 1 is accepted | |
+| 0.4.5 | | **Stage 3.** CRL monotonicity and OCSP consistency at the signer | | |
 
 What each release protects against, honestly:
 
 - **0.4.1.** A compromised node can no longer mint a CA or a delegated responder without a
-  ceremony row. It can still forge the row. A database restore no longer erases the signer's
-  record. The node still holds plaintext secrets in `config.yaml`.
-- **0.4.2.** A compromised node can no longer forge approvals, on installs that enrol. It can
-  still trick approvers through the console it serves. A restore no longer loses certificates or
-  revocations. Secrets are wrapped at rest, in the database and in archives.
-- **0.4.3.** A compromised node can no longer waive, lower or re-scope the ceremony policy, or
-  unrevoke through a CRL. What remains is the residue named in each item:
+  ceremony row. It can still forge the row. The secrets the node uses are wrapped at rest, in
+  the database and in archives made from then on. A database restore still erases the signer's
+  record, and SSH CA keys are still plaintext files the node reads.
+- **0.4.2.** SSH CA keys are no longer in a file the node can read, and the node can get no
+  signature from one except on a well-formed certificate within that key's limits.
+- **0.4.3.** A compromised node can no longer forge approvals, on installs that enrol. It can
+  still trick approvers through the console it serves. A database restore no longer erases the
+  signer's record.
+- **0.4.4.** A compromised node can no longer waive, lower or re-scope the ceremony policy. A
+  restore no longer loses certificates or revocations.
+- **0.4.5.** A compromised node can no longer unrevoke through a CRL. What remains is the
+  residue named in each item:
   - ordinary signatures while compromised;
   - approval phishing;
   - secrets in the running node's memory;
   - a single-process install, where node and signer are one process.
 
-Item 1 Stage A and Item 2 Stage 1 are independent and can start at once. Item 1 Stage B depends on
-the journal for statement state and single use. Item 3 depends on `settings-store.md`.
+Item 1 Stage B depends on the journal for statement state and single use, which is why the two
+share a release. Stage 2 depends on Stage 1.
 
 ## How this fits the HA plan
 
