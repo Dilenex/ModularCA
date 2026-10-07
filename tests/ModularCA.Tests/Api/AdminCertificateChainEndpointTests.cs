@@ -43,7 +43,8 @@ public sealed class AdminCertificateChainEndpointTests
     private static X509Certificate2 CaCert(string cn, X509Certificate2? issuer, byte[] serial)
     {
         var from = DateTimeOffset.UtcNow.AddDays(-1);
-        var to = DateTimeOffset.UtcNow.AddYears(1);
+        // A certificate keeps whole seconds, so a child stamped a moment after its issuer could outlive it.
+        var to = issuer != null ? new DateTimeOffset(issuer.NotAfter) : DateTimeOffset.UtcNow.AddYears(1);
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var req = new CertificateRequest(cn, key, HashAlgorithmName.SHA256);
         req.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
