@@ -186,11 +186,11 @@ export const SSH_EXTENSION_TITLES: Record<string, string> = {
     'permit-agent-forwarding': 'Allows the SSH agent to be forwarded to the remote host.',
     'permit-X11-forwarding': 'Allows X11 display forwarding.',
     'permit-user-rc': 'Allows ~/.ssh/rc to run on login.',
-    'no-pty': 'Explicitly denies terminal allocation; the certificate can run commands but not open a shell.',
-    'no-port-forwarding': 'Explicitly denies TCP port forwarding.',
-    'no-agent-forwarding': 'Explicitly denies SSH agent forwarding.',
-    'no-X11-forwarding': 'Explicitly denies X11 forwarding.',
-    'no-user-rc': 'Explicitly denies running ~/.ssh/rc on login.',
+    'no-pty': 'Withholds permit-pty, even when it is also named: the certificate can run commands but not open a shell. Adds nothing to the certificate.',
+    'no-port-forwarding': 'Withholds permit-port-forwarding, even when it is also named. Adds nothing to the certificate.',
+    'no-agent-forwarding': 'Withholds permit-agent-forwarding, even when it is also named. Adds nothing to the certificate.',
+    'no-X11-forwarding': 'Withholds permit-X11-forwarding, even when it is also named. Adds nothing to the certificate.',
+    'no-user-rc': 'Withholds permit-user-rc, even when it is also named. Adds nothing to the certificate.',
 };
 export const sshExtensionTitle = (ext: string): string | undefined => SSH_EXTENSION_TITLES[ext];
 
@@ -284,7 +284,7 @@ export const CT_LOG_IDS_HINT = 'Every enabled log submits each issued certificat
 export const CT_ENABLED_HINT = 'When on, each issued certificate is submitted to the CT logs chosen below. A parent profile with CT on cannot be turned off here.';
 
 /** Hint under an SSH signing profile's Force Command input. */
-export const FORCE_COMMAND_HINT = 'Every session using a certificate from this profile runs this command instead of the one the user asked for, including scp and sftp. Leave blank for normal shell access.';
+export const FORCE_COMMAND_HINT = 'Every session using a certificate from this profile runs this command instead of the one the user asked for, including scp and sftp. Leave blank to force no command.';
 
 /**
  * Hint under an SSH cert profile's Required Extensions picker.
@@ -293,7 +293,7 @@ export const FORCE_COMMAND_HINT = 'Every session using a certificate from this p
  * append Required afterwards, so a required-but-not-allowed extension is still written into every
  * certificate while a caller who asks for it by name is refused. The forms block save on that.
  */
-export const SSH_REQUIRED_EXTENSIONS_HINT = 'Required must be a subset of Allowed. Required extensions are added to every certificate after the Allowed check, so one that is required here but not allowed above still lands in the certificate while a requester who names it explicitly is refused. Save is blocked until the two agree.';
+export const SSH_REQUIRED_EXTENSIONS_HINT = 'Required must be a subset of Allowed. Required extensions are added to every certificate after the Allowed check, so one that is required here but not allowed above still lands in the certificate while a requester who names it explicitly is refused. Save is blocked until the two agree. A required no-* name withholds its permit-* from every certificate.';
 
 /** Field source indicator for resolved profile views */
 export const FieldSourceBadge: React.FC<{ source?: string }> = ({ source }) => {

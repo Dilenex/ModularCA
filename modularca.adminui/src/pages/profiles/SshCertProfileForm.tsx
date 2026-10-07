@@ -43,9 +43,9 @@ const PrincipalTester: React.FC<{ patterns: string[] }> = ({ patterns }) => {
 };
 
 /**
- * What each OpenSSH certificate extension permits, shown under each checkbox. The
- * `permit-*` names are the extensions OpenSSH actually writes into a certificate; the `no-*` names
- * mirror ssh-keygen's -O flags and mean "issue without the matching permit-* extension".
+ * What each OpenSSH certificate extension does, shown under each checkbox. A certificate carries
+ * exactly the `permit-*` extensions its profiles and request name. A `no-*` name adds nothing to
+ * a certificate: it withholds the matching `permit-*`, even where the same list names it.
  */
 const SSH_EXTENSION_HELP: Record<string, string> = {
     'permit-pty': 'Allows the session to allocate a pseudo-terminal. Without it the user gets no interactive shell, only non-interactive commands.',
@@ -54,13 +54,16 @@ const SSH_EXTENSION_HELP: Record<string, string> = {
     'permit-X11-forwarding': 'Allows X11 display forwarding from the server back to the client.',
     'permit-user-rc': 'Allows ~/.ssh/rc on the server to run at login, a common persistence spot.',
     'no-touch-required': 'For FIDO/U2F security-key certificates: the server does not demand a physical touch on each authentication.',
-    'no-pty': 'Issue without permit-pty: the certificate cannot open an interactive shell.',
-    'no-port-forwarding': 'Issue without permit-port-forwarding: no tunnels through the server.',
-    'no-agent-forwarding': 'Issue without permit-agent-forwarding: the user\'s agent is never exposed to the server.',
-    'no-X11-forwarding': 'Issue without permit-X11-forwarding.',
-    'no-user-rc': 'Issue without permit-user-rc: ~/.ssh/rc is not executed at login.',
+    'no-pty': 'Withholds permit-pty, even when it is also named: the certificate cannot open an interactive shell. Adds nothing to the certificate.',
+    'no-port-forwarding': 'Withholds permit-port-forwarding, even when it is also named: no tunnels through the server. Adds nothing to the certificate.',
+    'no-agent-forwarding': 'Withholds permit-agent-forwarding, even when it is also named: the user\'s agent is never exposed to the server. Adds nothing to the certificate.',
+    'no-X11-forwarding': 'Withholds permit-X11-forwarding, even when it is also named. Adds nothing to the certificate.',
+    'no-user-rc': 'Withholds permit-user-rc, even when it is also named: ~/.ssh/rc is not executed at login. Adds nothing to the certificate.',
 };
 const extensionHelp = (ext: string): string => SSH_EXTENSION_HELP[ext] || `OpenSSH extension ${ext}.`;
+
+/** Shown above the two extension pickers. */
+const EXACT_EXTENSIONS_HINT = 'A certificate carries exactly the extensions named for it: the signing profile\'s default extensions, or the ones the request names instead, plus the required extensions below. None is added by default. A certificate with no permit-* extension allows no terminal, no forwarding and no ~/.ssh/rc. The names under Withhold put nothing into a certificate; each only withholds the permit-* of the same name.';
 
 /// <summary>
 /// The SSH cert profile fields, used unchanged by the new-profile page and the edit view.
@@ -95,6 +98,7 @@ export const SshCertProfileForm: React.FC<{
                 <FieldHint id="ssh-cp-principals-hint">One regular expression per entry. Every requested principal must match at least one pattern. Leave empty to allow any principal; this is a ceiling, so no patterns means unrestricted, not none.</FieldHint>
                 <PrincipalTester patterns={f.allowedPrincipalPatterns} />
             </div>
+            <FieldHint>{EXACT_EXTENSIONS_HINT}</FieldHint>
             <GroupedCheckboxList id="ssh-cp-allowed-ext" legend="Allowed Extensions" value={f.allowedExtensions} onChange={(next) => set('allowedExtensions', next)}
                 groups={groupSshExtensions(SSH_EXTENSION_OPTIONS, extensionHelp)} ceiling={{ anyLabel: 'Any extension' }}
                 mode={f.allowedExtensionsMode} onModeChange={(m) => set('allowedExtensionsMode', m)}

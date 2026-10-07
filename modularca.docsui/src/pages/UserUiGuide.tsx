@@ -139,17 +139,27 @@ export default function UserUiGuide() {
                     Route: /user/ssh
                 </div>
                 <p className="text-ink leading-relaxed mb-3">
-                    Request and manage personal SSH certificates for server access.
+                    View and download your personal SSH certificates for server access.
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
-                    <li>Submit an SSH public key for signing</li>
                     <li>View issued SSH certificates with principals and validity</li>
                     <li>Download signed SSH certificates</li>
-                    <li>View SSH CA public key for trust configuration</li>
+                </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    The page lists and downloads; it has no signing form. A certificate is requested through the API, with
+                    <code className="text-sm bg-sunken px-1.5 py-0.5 rounded"> POST /api/v1/user/ssh/sign-user</code>, or an administrator
+                    signs your key in the admin console. From 0.4.2:
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li>The certificate carries exactly the extensions the profiles and your request name. None is added by default, so a certificate that names no permit-pty opens no interactive shell. Ask your administrator to add the permits you need to the signing profile</li>
+                    <li>A request needs at least one principal</li>
+                    <li>When signing is unavailable the answer is 503 with the reason in <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">error</code>: the signer is locked (try again shortly), or the SSH CA key is awaiting import into the signer (an administrator has to act)</li>
+                    <li>When the certificate itself is refused the answer is 400 with the reason in <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">error</code></li>
                 </ul>
                 <div className="bg-sunken rounded p-4 data-mono">
                     POST /api/v1/user/ssh/sign-user<br />
-                    GET /api/v1/user/ssh/certificates
+                    GET /api/v1/user/ssh/certificates<br />
+                    GET /api/v1/user/ssh/certificates/&#123;id&#125;/download
                 </div>
             </section>
 

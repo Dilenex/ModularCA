@@ -158,7 +158,8 @@ export default function CaHierarchyDiagram() {
                 </div>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li>Separate CA keys for user certificates and host certificates</li>
-                    <li>SSH CA keys are stored in the same keystore as X.509 keys</li>
+                    <li>SSH CA keys are held by the signer, in a keystore of their own (ssh-ca.keystore) beside the X.509 keystores; the node holds none</li>
+                    <li>The signer builds and signs each SSH certificate; a certificate carries exactly the extensions its profiles and request name</li>
                     <li>Key types: Ed25519 (recommended), ECDSA, RSA</li>
                     <li>Certificate types: user (for authentication) and host (for server identity)</li>
                     <li>Principals define which usernames or hostnames the certificate is valid for</li>

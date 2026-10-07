@@ -12,6 +12,8 @@ import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { StepUpOps } from '@shared/generated';
 import { actionButton, actionButtonDanger } from '@shared/components/actionButtons';
+import { signBlockedReason, sshKeyCustody } from './sshKeyCustody';
+import { SshPlaintextNoticePanel, useSshPlaintextNotice } from '../components/SshPlaintextNotice';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -28,9 +30,10 @@ function downloadText(content: string, filename: string) {
 
 
 /// <summary>
-/// Read-only detail page for a single SSH CA key: shows algorithm, validity, public key and
-/// integration hints, with download / disable actions in the action bar. SSH CA keys are not
-/// edited in place, so the page is View-only (Edit disabled).
+/// Read-only detail page for a single SSH CA key: shows algorithm, validity, public key, where
+/// the private key is held and integration hints, with download / disable actions in the action
+/// bar. A key that was a plaintext file on the node also carries the plaintext notice. SSH CA
+/// keys are not edited in place, so the page is View-only (Edit disabled).
 /// </summary>
 const SshCaKeyDetail: React.FC = () => {
     const { id } = useParams<{ id: string }>();
@@ -44,6 +47,7 @@ const SshCaKeyDetail: React.FC = () => {
     const [refresh, setRefresh] = useState(0);
     const [confirmOpen, setConfirmOpen] = useState(false);
     const [disabling, setDisabling] = useState(false);
+    const plaintextNotice = useSshPlaintextNotice(refresh);
 
     useEffect(() => {
         let cancelled = false;
@@ -107,12 +111,19 @@ const SshCaKeyDetail: React.FC = () => {
 
     const enabled = key.isEnabled !== false;
     const algorithm = `${key.keyType || key.algorithm}${key.keySize ? ` (${key.keySize} bits)` : ''}`;
+    const custody = sshKeyCustody(key);
+    const signBlocked = signBlockedReason(key);
+    const wasPlaintext = !!key.importedAt || custody.state === 'awaitingImport';
+    const custodyBadge = <StatusBadge status={custody.badge.status} label={custody.badge.label} />;
 
     return (
         <DetailPage
             breadcrumbs={[{ label: 'SSH Certificates', to: '/ssh' }, { label: key.name || 'Unnamed' }]}
             title={key.name || 'Unnamed'}
-            status={enabled ? <Tag label="CA Key" /> : <StatusBadge status="revoked" label="Disabled" />}
+            status={<>
+                {enabled ? <Tag label="CA Key" /> : <StatusBadge status="revoked" label="Disabled" />}
+                {custody.state !== 'held' && custodyBadge}
+            </>}
             subtitle={algorithm}
             backTo="/ssh"
             actions={
@@ -142,6 +153,27 @@ const SshCaKeyDetail: React.FC = () => {
                         <DetailField label="Public Key" value={key.publicKey} mono />
                     </div>
                 </DetailSection>
+
+                <DetailSection title="Key storage">
+                    <div className="max-w-4xl">
+                        <DetailField label="Held in" value={custody.heldIn} />
+                        <DetailField label="State" value={custodyBadge} />
+                        <DetailField label="What it means" value={custody.summary} />
+                        <DetailField label="Reason" value={custody.reason} />
+                        <DetailField label="Expected key file" value={custody.keyFile} mono />
+                        <DetailField label="What to do" value={custody.remedy} />
+                        {signBlocked && (
+                            <DetailField label="Signing" value="Unavailable with this key. The Sign key action on the SSH Certificates page is disabled for it. Certificates it has already issued can still be revoked, and its KRL is still served." />
+                        )}
+                        {key.importedAt && (
+                            <DetailField label="Imported" value={`${formatDate(key.importedAt)}, from a plaintext key file on the node`} />
+                        )}
+                    </div>
+                </DetailSection>
+
+                {wasPlaintext && plaintextNotice?.applies && (
+                    <SshPlaintextNoticePanel notice={plaintextNotice} currentKeyId={key.id} />
+                )}
 
                 <DetailSection title="Integration">
                     <div className="text-xs text-ink-muted space-y-1">

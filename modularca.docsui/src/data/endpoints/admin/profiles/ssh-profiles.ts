@@ -33,6 +33,7 @@ export const adminSshProfiles: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Created SSH signing profile.',
+        notes: 'defaultExtensions are the extensions of a user certificate whose request names none; a request that names any replaces the set. A certificate carries exactly the extensions that result, with the profile\'s force-command and source-address and the cert profile\'s required extensions. None is added by default: before 0.4.2 every user certificate also carried permit-X11-forwarding, permit-agent-forwarding, permit-port-forwarding, permit-pty and permit-user-rc by default. A no-* name adds nothing and withholds the matching permit-*.',
     },
     {
         method: 'PUT',
@@ -88,6 +89,7 @@ export const adminSshProfiles: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Created SSH certificate profile.',
+        notes: 'allowedExtensions is a ceiling on the extensions a request may name; empty means unrestricted. requiredExtensions are added to every certificate. A certificate carries exactly the extensions its profiles and request name, and none by default. A no-* name adds nothing and withholds the matching permit-*, so a required no-pty keeps permit-pty out of every certificate.',
     },
     {
         method: 'PUT',

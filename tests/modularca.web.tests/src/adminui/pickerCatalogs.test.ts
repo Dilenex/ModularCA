@@ -21,9 +21,10 @@ describe('picker catalogs', () => {
         expect(groupEkuOptions(['1.3.6.1.5.5.7.3.1'], (o) => o).map((g) => g.id)).toEqual(['tls']);
     });
 
-    it('splits SSH extensions into permit and deny, marking conflicts', () => {
-        const groups = groupSshExtensions(['permit-pty', 'no-pty', 'permit-user-rc'], () => undefined, (e) => (e === 'permit-user-rc' ? 'warn' : undefined));
-        expect(groups.map((g) => g.options.map((o) => o.value))).toEqual([['permit-pty', 'permit-user-rc'], ['no-pty']]);
+    it('splits SSH extensions into the permits and the names that withhold one, marking conflicts', () => {
+        const groups = groupSshExtensions(['permit-pty', 'no-pty', 'permit-user-rc', 'no-touch-required'], () => undefined, (e) => (e === 'permit-user-rc' ? 'warn' : undefined));
+        expect(groups.map((g) => g.options.map((o) => o.value))).toEqual([['permit-pty', 'permit-user-rc', 'no-touch-required'], ['no-pty']]);
+        expect(groups.map((g) => g.label)).toEqual(['Permit', 'Withhold']);
         expect(groups[0].options[1].tone).toBe('warn');
     });
 });

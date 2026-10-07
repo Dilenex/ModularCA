@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import type { NoticeInput } from '@shared/notifications/notice';
+import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPost, apiPostWithMfa, apiDeleteWithMfa, apiBlob } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
@@ -16,6 +18,8 @@ import { ChipListInput } from '@shared/components/ChipListInput';
 import { type CeremonyRefusal, readCeremonyRefusal } from './ceremonyRefusal';
 import { CeremonyRefusalNotice } from '../components/CeremonyRefusalNotice';
 import { runWithOneStepUp } from '@shared-auth/api/stepUpBatch';
+import { signBlockedReason, sshKeyCustody, sshSignerState } from './sshKeyCustody';
+import { SshPlaintextNoticeBanner } from '../components/SshPlaintextNotice';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -48,6 +52,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
     const [showGenForm, setShowGenForm] = useState(false);
     // Creating the CA was refused because nobody else could approve its ceremony.
     const [genRefusal, setGenRefusal] = useState<CeremonyRefusal | null>(null);
+    const [genError, setGenError] = useState<NoticeInput | null>(null);
     const [confirmAction, setConfirmAction] = useState<{ action: () => Promise<void>; title: string; message: string; confirmLabel: string } | null>(null);
     const [confirmLoading, setConfirmLoading] = useState(false);
 
@@ -85,6 +90,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
         if (caRoleMissing) return;
         setGenerating(true);
         setGenRefusal(null);
+        setGenError(null);
         try {
             const result: any = await apiPostWithMfa('/api/v1/admin/ssh/ca-keys', {
                 name: genForm.name || 'SSH CA Key',
@@ -106,8 +112,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
         } catch (err: any) {
             const refusal = readCeremonyRefusal(err);
             if (refusal) setGenRefusal(refusal);
-            else if (err.message !== 'Step-up MFA cancelled')
-                showToast('error', err.message || 'Failed to generate CA key');
+            else setGenError(errorNotice(err, 'Failed to generate CA key'));
         } finally {
             setGenerating(false);
         }
@@ -161,6 +166,12 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
     const columns: DataTableColumn<any>[] = [
         { key: 'name', header: 'Name', defaultWidth: 200, minWidth: 140, truncate: false, exportValue: (k) => k.name || 'Unnamed', render: (k) => <span className="text-ink font-medium truncate">{k.name || 'Unnamed'}</span> },
         { key: 'status', header: 'Status', defaultWidth: 130, truncate: false, exportValue: keyStatusLabel, render: keyStatusBadge },
+        {
+            key: 'storage', header: 'Storage', defaultWidth: 160, truncate: false,
+            headerTitle: 'Where the private key is held. Open a row for the reason when the signer does not hold it.',
+            exportValue: (k) => { const c = sshKeyCustody(k); return c.reason ? `${c.badge.label}: ${c.reason}` : c.badge.label; },
+            render: (k) => { const c = sshKeyCustody(k); return <span title={c.reason || c.summary}><StatusBadge status={c.badge.status} label={c.badge.label} /></span>; },
+        },
         { key: 'algorithm', header: 'Algorithm', defaultWidth: 150, exportValue: (k) => `${k.keyType || k.algorithm}${k.keySize ? ` (${k.keySize})` : ''}`, render: (k) => <span className="text-xs text-ink">{k.keyType || k.algorithm}{k.keySize ? ` (${k.keySize})` : ''}</span> },
         {
             key: 'role', header: 'Role', defaultWidth: 120, truncate: false,
@@ -181,25 +192,35 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
         { label: 'Disable', single: true, variant: 'danger', enabledFor: (k) => k.isEnabled !== false, onClick: (rows) => handleDisableKey(rows[0].id, rows[0].name) },
     ];
 
-    const caKeyDrawer = (k: any) => (
-        <div className="text-sm">
-            <DetailField label="ID" value={k.id} mono />
-            <DetailField label="Status" value={keyStatusLabel(k)} />
-            <DetailField label="Algorithm" value={`${k.keyType || k.algorithm}${k.keySize ? ` (${k.keySize} bits)` : ''}`} />
-            <DetailField label="Max Validity" value={`${k.maxValidityHours}h`} />
-            <DetailField label="Created" value={formatDate(k.createdAt)} />
-            <DetailField label="User CA" value={k.isUserCa ? 'Yes' : 'No'} />
-            <DetailField label="Host CA" value={k.isHostCa ? 'Yes' : 'No'} />
-            <DetailField label="Public Key" value={k.publicKey} mono />
-        </div>
-    );
+    const caKeyDrawer = (k: any) => {
+        const custody = sshKeyCustody(k);
+        return (
+            <div className="text-sm">
+                <DetailField label="ID" value={k.id} mono />
+                <DetailField label="Status" value={keyStatusLabel(k)} />
+                <DetailField label="Key storage" value={custody.heldIn} />
+                <DetailField label="Storage state" value={<StatusBadge status={custody.badge.status} label={custody.badge.label} />} />
+                <DetailField label="What it means" value={custody.summary} />
+                <DetailField label="Reason" value={custody.reason} />
+                <DetailField label="Expected key file" value={custody.keyFile} mono />
+                <DetailField label="What to do" value={custody.remedy} />
+                {k.importedAt && <DetailField label="Imported" value={`${formatDate(k.importedAt)}, from a key file on the node`} />}
+                <DetailField label="Algorithm" value={`${k.keyType || k.algorithm}${k.keySize ? ` (${k.keySize} bits)` : ''}`} />
+                <DetailField label="Max Validity" value={`${k.maxValidityHours}h`} />
+                <DetailField label="Created" value={formatDate(k.createdAt)} />
+                <DetailField label="User CA" value={k.isUserCa ? 'Yes' : 'No'} />
+                <DetailField label="Host CA" value={k.isHostCa ? 'Yes' : 'No'} />
+                <DetailField label="Public Key" value={k.publicKey} mono />
+            </div>
+        );
+    };
 
     return (
         <div className="space-y-4">
             {canGenerate && showGenForm && (
                 <form onSubmit={handleGenerate} className="bg-raised border border-line rounded-lg p-4 space-y-3">
                     <h3 className="text-sm font-semibold text-ink">Generate New SSH CA Key</h3>
-                    <FieldHint>SSH CAs belong to the instance, not to a space.</FieldHint>
+                    <FieldHint>SSH CAs belong to the instance, not to a space. The private key is generated by the signer and held in the signer's SSH keystore; it is never written to the node.</FieldHint>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                         <div>
                             <label className="block text-xs text-ink-muted mb-1">Name</label>
@@ -293,6 +314,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
                         {generating ? 'Generating...' : 'Generate'}
                     </button>
                     {genRefusal && <CeremonyRefusalNotice refusal={genRefusal} />}
+                    <InlineNotice notice={genError} onDismiss={() => setGenError(null)} />
                 </form>
             )}
 
@@ -310,7 +332,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
 
             <DataTable<any>
                 tableId="ssh-ca-keys"
-                toolbarAction={canGenerate ? <NewButton what="SSH CA key" open={showGenForm} onClick={() => setShowGenForm(!showGenForm)} /> : undefined}
+                toolbarAction={canGenerate ? <NewButton what="SSH CA key" open={showGenForm} onClick={() => { setShowGenForm(!showGenForm); setGenError(null); }} /> : undefined}
                 title="SSH CA Keys"
                 rows={keys}
                 rowKey={(k) => k.id || k.fingerprint}
@@ -373,19 +395,25 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
     const [error, setError] = useState<NoticeInput | null>(null);
     const [showSignForm, setShowSignForm] = useState(false);
     const [confirmRevoke, setConfirmRevoke] = useState<any[] | null>(null);
-    const [signForm, setSignForm] = useState({ certType: 'user' as 'user' | 'host', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: [] as string[], allowAnyPrincipal: false, validityHours: '' });
+    const [signForm, setSignForm] = useState({ certType: 'user' as 'user' | 'host', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: [] as string[], validityHours: '' });
     const [validationErrors, setValidationErrors] = useState<string[]>([]);
     const [signing, setSigning] = useState(false);
     const [signResult, setSignResult] = useState<any>(null);
     const [revoking, setRevoking] = useState<string | null>(null);
     const [selectedCaKeyId, setSelectedCaKeyId] = useState<string>('');
+    const [signError, setSignError] = useState<NoticeInput | null>(null);
 
-    // Auto-select first CA key when available
+    // Auto-select the first enabled CA key the signer can sign with, when there is one.
     useEffect(() => {
         if (caKeys.length > 0 && !selectedCaKeyId) {
-            setSelectedCaKeyId(caKeys[0].id);
+            const enabled = caKeys.filter((k) => k.isEnabled !== false);
+            setSelectedCaKeyId((enabled.find((k) => !signBlockedReason(k)) ?? enabled[0] ?? caKeys[0]).id);
         }
     }, [caKeys]);
+
+    const selectedCaKey = caKeys.find((k) => k.id === selectedCaKeyId);
+    const signBlocked = selectedCaKey ? signBlockedReason(selectedCaKey) : null;
+    const signerStateUnknown = !!selectedCaKey && sshSignerState(selectedCaKey) === 'unknown';
 
     useEffect(() => {
         if (!selectedCaKeyId) { setLoading(false); return; }
@@ -491,9 +519,8 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
     // Profile selection is complete when all three are chosen
     const profilesSelected = !!(signForm.sshRequestProfileId && signForm.sshSigningProfileId && signForm.sshCertProfileId);
 
-    // An empty principal list is the most dangerous value the form can send: OpenSSH treats it as
-    // "valid for every principal". It is only accepted behind an explicit opt-in.
-    const principalsEmpty = signForm.principals.length === 0;
+    // OpenSSH reads an empty principal list as "valid for every principal"; the signer refuses one.
+    const principalsMissing = signForm.principals.length === 0;
 
     // Marks a chip that no allowed principal pattern of the selected cert profile matches.
     const principalPatterns = selectedCertProfile ? parseJsonArray(selectedCertProfile.allowedPrincipalPatterns) : [];
@@ -502,15 +529,16 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
         const matches = principalPatterns.some((p: string) => { try { return new RegExp(p).test(principal); } catch { return false; } });
         return matches ? null : `"${principal}" does not match any allowed principal pattern of the cert profile.`;
     };
-    const principalsMissing = principalsEmpty && !signForm.allowAnyPrincipal;
 
     const handleSign = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!selectedCaKeyId) { showToast('warning', 'Please select a CA key first.'); return; }
+        if (signBlocked) return;
         if (validationErrors.length > 0) { showToast('error', 'Fix validation errors before submitting.'); return; }
-        if (principalsMissing) { showToast('error', signForm.certType === 'user' ? 'Enter at least one principal, or tick "Allow any principal".' : 'Enter at least one hostname, or tick "Allow any principal".'); return; }
+        if (principalsMissing) { showToast('error', signForm.certType === 'user' ? 'Enter at least one principal.' : 'Enter at least one hostname.'); return; }
         setSigning(true);
         setSignResult(null);
+        setSignError(null);
         try {
             const endpoint = signForm.certType === 'user'
                 ? `/api/v1/admin/ssh/ca-keys/${selectedCaKeyId}/certificates/sign-user`
@@ -533,10 +561,10 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
             const result = await apiPost(endpoint, body);
             setSignResult(result);
             setShowSignForm(false);
-            setSignForm({ certType: 'user', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: [] as string[], allowAnyPrincipal: false, validityHours: '' });
+            setSignForm({ certType: 'user', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: [] as string[], validityHours: '' });
             onRefresh();
         } catch (err: any) {
-            showToast('error', err.message || 'Signing failed');
+            setSignError(errorNotice(err, 'Signing failed'));
         } finally {
             setSigning(false);
         }
@@ -642,10 +670,23 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                 >
                     {caKeys.filter(k => k.isEnabled !== false).length === 0 && <option value="">No CA keys available</option>}
                     {caKeys.filter(k => k.isEnabled !== false).map((k: any) => (
-                        <option key={k.id} value={k.id}>{k.name || k.id} ({k.keyType || k.algorithm})</option>
+                        <option key={k.id} value={k.id}>{k.name || k.id} ({k.keyType || k.algorithm}){signBlockedReason(k) ? `, ${sshKeyCustody(k).badge.label.toLowerCase()}` : ''}</option>
                     ))}
                 </select>
             </div>
+
+            {signBlocked && selectedCaKey && (
+                <div role="status" className="bg-warn-soft border border-warn/40 rounded-md px-3 py-2 space-y-1 max-w-4xl">
+                    <p className="text-sm font-semibold text-warn">Signing is unavailable with "{selectedCaKey.name || selectedCaKey.id}"</p>
+                    <p className="text-sm text-ink break-words">{signBlocked}</p>
+                    <p className="text-xs text-ink">
+                        <Link to={`/ssh/ca-keys/${selectedCaKey.id}`} className="text-accent-ink hover:underline">Open the key's page</Link> for what to do. Certificates it has already issued are listed below and can still be revoked.
+                    </p>
+                </div>
+            )}
+            {signerStateUnknown && (
+                <FieldHint tone="warn">The signer could not be asked whether it holds this key. Signing is refused while the signer is locked or out of reach.</FieldHint>
+            )}
 
             {/* Sign Form */}
             {showSignForm && (
@@ -774,28 +815,12 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                                         invalid={principalsMissing || validationErrors.some(e => e.includes('principal') || e.includes('hostname'))}
                                         aria-describedby="ssh-sign-principals-hint"
                                     />
-                                    <FieldHint id="ssh-sign-principals-hint" tone="warn">
-                                        One or more names this certificate authorises. Leave it blank and OpenSSH treats the certificate as valid for every principal; for a user certificate that is a wildcard. For a host certificate these must match the hostname clients actually type.
+                                    <FieldHint id="ssh-sign-principals-hint">
+                                        One or more names this certificate authorises. At least one is required: OpenSSH reads a certificate with none as valid for every principal, and the signer refuses to issue one. For a host certificate these must match the hostname clients actually type.
                                     </FieldHint>
-                                    <label className="mt-2 flex items-start gap-2 text-xs text-ink">
-                                        <input
-                                            type="checkbox"
-                                            checked={signForm.allowAnyPrincipal}
-                                            onChange={(e) => setSignForm({ ...signForm, allowAnyPrincipal: e.target.checked })}
-                                            className="rounded mt-0.5"
-                                        />
-                                        <span>Allow any principal (issue with an empty list)</span>
-                                    </label>
-                                    {signForm.allowAnyPrincipal && (
-                                        <FieldHint tone="warn">
-                                            {signForm.certType === 'user'
-                                                ? 'The certificate will log in as any account on any server that trusts this CA, subject only to the server\'s own AuthorizedPrincipals rules. Use it for break-glass keys, not people.'
-                                                : 'Clients will accept this host certificate for any hostname they connect to, so it no longer proves which server they reached.'}
-                                        </FieldHint>
-                                    )}
                                     {principalsMissing && (
                                         <FieldHint tone="warn">
-                                            Enter at least one {signForm.certType === 'user' ? 'principal' : 'hostname'}, or tick the box above to issue a certificate that is valid for every principal.
+                                            Enter at least one {signForm.certType === 'user' ? 'principal' : 'hostname'}.
                                         </FieldHint>
                                     )}
                                 </div>
@@ -825,17 +850,19 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                         </div>
                     )}
 
+                    <InlineNotice notice={signError} onDismiss={() => setSignError(null)} />
+
                     <div className="flex gap-2">
                         <button
                             type="submit"
-                            disabled={signing || !profilesSelected || validationErrors.length > 0 || principalsMissing}
+                            disabled={signing || !!signBlocked || !profilesSelected || validationErrors.length > 0 || principalsMissing}
                             className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
                         >
                             {signing ? 'Signing...' : 'Sign Key'}
                         </button>
                         <button
                             type="button"
-                            onClick={() => { setShowSignForm(false); setSignResult(null); setValidationErrors([]); setSignForm({ certType: 'user', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: [] as string[], allowAnyPrincipal: false, validityHours: '' }); }}
+                            onClick={() => { setShowSignForm(false); setSignResult(null); setSignError(null); setValidationErrors([]); setSignForm({ certType: 'user', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: [] as string[], validityHours: '' }); }}
                             className="px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover transition-colors"
                         >
                             Cancel
@@ -880,7 +907,7 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
             {/* Certificate List */}
             <DataTable<any>
                 tableId="ssh-certs"
-                toolbarAction={<NewButton label="Sign key" open={showSignForm} disabled={!selectedCaKeyId} onClick={() => { setShowSignForm(!showSignForm); setSignResult(null); }} />}
+                toolbarAction={<NewButton label="Sign key" open={showSignForm} disabled={!selectedCaKeyId || (!!signBlocked && !showSignForm)} onClick={() => { setShowSignForm(!showSignForm); setSignResult(null); setSignError(null); }} />}
                 title="SSH Certificates"
                 rows={certs}
                 rowKey={(c) => c.id || c.serial || c.fingerprint}
@@ -931,6 +958,7 @@ const SshCertificates: React.FC = () => {
     return (
         <div className="p-6 space-y-8">
             <h1 className="text-xl font-semibold text-ink">SSH Certificates</h1>
+            <SshPlaintextNoticeBanner refreshTrigger={refreshTrigger} />
             <SshCaKeys refreshTrigger={refreshTrigger} onRefresh={refresh} />
             <SshCerts refreshTrigger={refreshTrigger} onRefresh={refresh} caKeys={caKeys} />
         </div>

@@ -80,7 +80,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
                 held?.KeyFile,
                 held?.ImportedAt,
                 KrlUrl = $"{baseUrl}/ssh/ca-keys/{k.Id}/krl",
-                PublicKeyUrl = $"{baseUrl}/ssh/ca-keys/{k.Id}",
+                PublicKeyUrl = $"{baseUrl}/ssh/ca-keys/{k.Id}/public-key",
             };
         }));
     }

@@ -80,7 +80,7 @@ const CreateBackupSection: React.FC<{ onBackupCreated: () => void }> = ({ onBack
             </div>
             <p className="text-ink-muted text-sm">
                 Creates a full backup archive containing the application database, audit database,
-                keystores, configuration files, and SSH CA keys.
+                keystores and configuration files. SSH CA keys travel inside the signer's SSH keystore.
             </p>
 
             <div className="bg-ground border border-line rounded p-4 text-sm text-ink">
@@ -90,7 +90,7 @@ const CreateBackupSection: React.FC<{ onBackupCreated: () => void }> = ({ onBack
                     <li>Audit database (all audit logs)</li>
                     <li>Keystores (CA private keys -- encrypted)</li>
                     <li>Configuration files (config.yaml, keystore.yaml)</li>
-                    <li>SSH CA keys (if configured)</li>
+                    <li>SSH CA keys, inside the signer's SSH keystore (ssh-ca.keystore)</li>
                     <li>API TLS certificate (api-tls.pfx)</li>
                 </ul>
             </div>

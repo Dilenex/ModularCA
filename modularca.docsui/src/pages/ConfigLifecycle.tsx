@@ -741,7 +741,7 @@ PUT  /api/v1/admin/config/ldap-auth
                     <tbody className="text-ink">
                         <tr className="border-b border-line">
                             <td className="py-2 pr-4 data-mono">--reset --force --confirm-db-name {'{name}'}</td>
-                            <td className="py-2">Factory reset: drops all tables, deletes keystores and config. Audit DB is NOT dropped (retention by design). Requires explicit DB name confirmation.</td>
+                            <td className="py-2">Factory reset: drops all tables, deletes keystores and config. The keystores include the signer&rsquo;s SSH keystore (ssh-ca.keystore); SSH CA key files left on the node from before 0.4.2 are overwritten and deleted too. Audit DB is NOT dropped (retention by design). Requires explicit DB name confirmation.</td>
                         </tr>
                         <tr className="border-b border-line">
                             <td className="py-2 pr-4 data-mono">--bootstrap</td>
@@ -749,11 +749,15 @@ PUT  /api/v1/admin/config/ldap-auth
                         </tr>
                         <tr className="border-b border-line">
                             <td className="py-2 pr-4 data-mono">--backup [output-path]</td>
-                            <td className="py-2">Create an encrypted backup archive, in Backup.OutputPath (backups/ by default) unless a path inside the install directory is given. The Data Protection key ring and the SSH CA keys go in wrapped by the signer, so run it on the host that holds the keystore and keystore.yaml. The archived config.yaml carries no DB section.</td>
+                            <td className="py-2">Create an encrypted backup archive, in Backup.OutputPath (backups/ by default) unless a path inside the install directory is given. The keystores are exported through the signer, the SSH keystore (ssh-ca.keystore) with them, which is where SSH CA keys travel. The Data Protection key ring goes in wrapped by the signer, and so does any SSH CA key file still awaiting import, never in plaintext; so run it on the host that holds the keystore and keystore.yaml. The archived config.yaml carries no DB section.</td>
                         </tr>
                         <tr className="border-b border-line">
                             <td className="py-2 pr-4 data-mono">--restore {'{archive}'} [--password {'{pwd}'}]</td>
-                            <td className="py-2">Restore from an encrypted backup into the databases this host&rsquo;s own db.yaml names, with its credentials; a host without db.yaml is refused. Interactive password prompt for StoredPassword archives when key file is missing. The live config/ and keystores are first saved to backups/pre-restore-&lt;timestamp&gt;.zip. CRL numbers are raised past anything published since the backup, and the wrapped key ring is unwrapped at the next start, once the restored keystore is unlocked.</td>
+                            <td className="py-2">Restore from an encrypted backup into the databases this host&rsquo;s own db.yaml names, with its credentials; a host without db.yaml is refused. Interactive password prompt for StoredPassword archives when key file is missing. The live config/ and keystores are first saved to backups/pre-restore-&lt;timestamp&gt;.zip. CRL numbers are raised past anything published since the backup, and the wrapped key ring is unwrapped at the next start, once the restored keystore is unlocked. An archive made before 0.4.2 brings back its SSH CA key files instead of an SSH keystore; the next start imports them into the signer (see Upgrading to 0.4.2).</td>
+                        </tr>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">--upgrade-check [--config-dir {'{dir}'}]</td>
+                            <td className="py-2">Report whether this build can upgrade the installed databases, and change nothing. Run it as the service account, never as root; install.sh runs it before it replaces anything. From 0.4.2 it also reports the SSH CA keys that are still files on the node, and the SSH signing profiles whose certificates become narrower (see Upgrading to 0.4.2).</td>
                         </tr>
                         <tr className="border-b border-line">
                             <td className="py-2 pr-4 data-mono">--setup-local</td>
@@ -822,6 +826,148 @@ features:
   enableOcsp: true
   enableAcme: true`}</pre>
                 </div>
+            </section>
+
+            {/* Upgrading to 0.4.2 */}
+            <section className="mb-10">
+                <h2 className="text-2xl font-bold text-ink mb-3">Upgrading to 0.4.2</h2>
+                <p className="text-ink leading-relaxed mb-3">
+                    Release 0.4.2 moves SSH CA keys into the signer. Before it, each SSH CA key was a plaintext file on
+                    the node, under <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">config/ssh-ca-keys</code>, and the node ran
+                    the OpenSSH key tool to sign. From 0.4.2 the signer holds the keys in a third keystore
+                    file, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">keystores/ssh-ca.keystore</code>, and builds and signs
+                    every SSH certificate itself. The node holds no SSH CA key and starts no OpenSSH program. An install with
+                    no SSH CA has nothing to do here.
+                </p>
+
+                <h3 className="text-lg font-semibold text-ink mb-2">Before you upgrade</h3>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li><span className="font-semibold">Upgrade the signer before the node.</span> Where the signer runs as its own unit or on its own host, install 0.4.2 there first. A 0.4.2 node in front of an older signer imports no key and creates no SSH CA: every SSH CA key stays &ldquo;awaiting import&rdquo; with the reason &ldquo;The signer predates the SSH keystore and must be upgraded first&rdquo;, and SSH signing answers 503 until the signer is upgraded. X.509 issuance is not affected.</li>
+                    <li><span className="font-semibold">Run the upgrade check</span> on the host that runs the control role, since that is where the key files are. install.sh runs it for you.</li>
+                    <li><span className="font-semibold">Take a backup, and dump both databases.</span> Keep in mind that this backup, like every one before it, still holds the SSH CA keys as they were.</li>
+                </ul>
+                <div className="bg-sunken rounded p-4 data-mono mb-3">
+                    <pre className="text-ink">{`sudo -u modularca <new build>/ModularCA.API --upgrade-check --config-dir /opt/modularca/config`}</pre>
+                </div>
+                <p className="text-ink leading-relaxed mb-3">
+                    The check has a finding named &ldquo;SSH CA keys&rdquo;:
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li>No SSH CA key is a file on the node: nothing to import.</li>
+                    <li>Every key file is present and holds its SSH CA&apos;s key: the finding says how many keys will be imported into the signer at first start and their files deleted, and that archives made before the upgrade still contain them in plaintext.</li>
+                    <li>A key file of an enabled SSH CA is missing, unreadable, protected by a passphrase or holds another key: the upgrade is <span className="font-semibold">refused</span>, and the finding names each SSH CA, its id and the path the file is expected at. Put the files in place on that host, or disable those SSH CAs, and run the check again. For a disabled SSH CA such a file is mentioned and does not refuse.</li>
+                </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    A second part, &ldquo;SSH signing profiles&rdquo;, is a note and never refuses. It lists the signing
+                    profiles for user certificates whose certificates will be narrower after the upgrade; see Exact
+                    extensions below.
+                </p>
+
+                <h3 className="text-lg font-semibold text-ink mb-2">The import at first start</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    At the first start of 0.4.2 the node with the control role imports each SSH CA key file into the signer,
+                    once the signer is unlocked. No key ceremony is needed: the keys exist already and servers already trust
+                    them. For each key the node:
+                </p>
+                <ol className="list-decimal list-inside space-y-1 text-ink mb-3">
+                    <li>reads the file, which must be an unencrypted OpenSSH private key whose public half is the one the SSH CA publishes;</li>
+                    <li>hands the key to the signer, which stores it in <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">ssh-ca.keystore</code>;</li>
+                    <li>checks that the signer now lists that key for the SSH CA;</li>
+                    <li>records the SSH CA as held by the signer, and records the import;</li>
+                    <li>overwrites the key file with zeros, deletes it and its <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">.pub</code>, removes the directory when that leaves it empty, and writes the audit entry <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">SshCaKeyImported</code>.</li>
+                </ol>
+                <p className="text-ink leading-relaxed mb-3">
+                    Every step can be repeated, so a node that stops part way finishes at its next start. If the signer is
+                    locked or out of reach at start, no file is read; the import runs by itself once the signer is unlocked,
+                    without a restart of the node. Nothing here stops the node from starting.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    A key that was not imported is <span className="font-semibold">awaiting import</span>. The file and the
+                    SSH CA&apos;s record are left exactly as they were, and the SSH CA signs nothing until the key is
+                    imported: signing with it answers 503, &ldquo;SSH CA key awaiting import into the signer&rdquo;. Its
+                    public key and its KRL are still served, and its certificates can still be revoked. The console shows
+                    such a key on the SSH Certificates page, on the key&apos;s own page with the reason, the expected path and
+                    what to do, and on System Health; the readiness payload lists it under
+                    <code className="text-sm bg-sunken px-1.5 py-0.5 rounded"> checks.signer.sshKeys.awaitingImport</code>. The usual
+                    reasons are a missing or unreadable file, a file protected by a passphrase, a file that holds another
+                    key, a locked signer, and a signer that has not been upgraded. Once you have put the file right the node
+                    takes it within a few minutes; there is no fallback that signs with the file.
+                </p>
+
+                <h3 className="text-lg font-semibold text-ink mb-2">The plaintext notice</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    Importing a key does not undo the time it spent in plaintext. The file is overwritten before it is
+                    deleted, and that is all the software can do: on solid-state drives, copy-on-write filesystems,
+                    virtual machine snapshots and filesystem backups an overwrite does not guarantee that the data is gone.
+                    Every backup archive and every pre-restore snapshot made before the import still holds the keys.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    The SSH Certificates page therefore shows a notice on any install that had such keys: which keys were
+                    imported and when, where each file was and whether it has been removed, and the archives and
+                    snapshots in the backup directory that were written before the last import. The same is available
+                    from <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">GET /api/v1/admin/ssh/plaintext-notice</code>. Only the
+                    backup directory is searched: copies you keep elsewhere are yours to find.
+                </p>
+                <div className="border-l-4 border-warn bg-warn-soft p-4 rounded-r mb-3">
+                    <p className="text-ink text-sm">
+                        <span className="font-semibold">Rotation is the only remedy.</span> Nothing can prove that no copy
+                        of a key that was stored in plaintext remains, so the only way to be rid of the exposure is to
+                        stop trusting the key: create a new SSH CA, replace the old public key with the new one in your
+                        servers&apos; <code>TrustedUserCAKeys</code> and your clients&apos; <code>@cert-authority</code> lines,
+                        reissue the certificates, and disable the old SSH CA. It is recommended, and it is your decision.
+                        This release tells you and does not rotate for you; deleting old archives is likewise yours to
+                        decide.
+                    </p>
+                </div>
+
+                <h3 className="text-lg font-semibold text-ink mb-2">Exact extensions</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    A certificate now carries exactly the extensions its profiles and its request name. Before 0.4.2 the
+                    OpenSSH key tool added five permits to every user certificate by default, unless the profile withheld
+                    one with a no-* name: permit-X11-forwarding, permit-agent-forwarding, permit-port-forwarding, permit-pty
+                    and permit-user-rc. None is added now. A signing profile whose default extensions name only permit-pty issued all five
+                    before and issues permit-pty alone afterwards; a profile that names none issues a certificate that
+                    opens no terminal and forwards nothing.
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li>The &ldquo;SSH signing profiles&rdquo; note of the upgrade check lists each affected profile, the permits it names and the ones its certificates will no longer carry. It never refuses the upgrade.</li>
+                    <li>To keep a permit, add it to the signing profile&apos;s default extensions. A cert profile&apos;s required extensions are added to every certificate too.</li>
+                    <li>A request that names its own extensions carries those and the required ones, and nothing by default.</li>
+                    <li>The no-* names (no-pty and the like) put nothing into a certificate. Each only withholds the permit-* of the same name, even where the same list names it.</li>
+                    <li>Certificates issued before the upgrade keep the extensions they have.</li>
+                </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    Three smaller changes come with the signer&apos;s own rules. A certificate needs at least one principal;
+                    one with none is refused. A DSA public key is refused. And a KRL download always answers 200 with a
+                    valid KRL, also when nothing is revoked, where the public route used to answer 204 with no body.
+                </p>
+
+                <h3 className="text-lg font-semibold text-ink mb-2">Backup and restore</h3>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li><span className="font-semibold">A backup now carries <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">ssh-ca.keystore</code>.</span> The signer exports it with its other two keystore files. A new archive never holds a plaintext SSH CA key: a key file that is still awaiting import travels wrapped by the signer.</li>
+                    <li><span className="font-semibold">Restoring an archive made before 0.4.2</span> is another migration. Such an archive has SSH CA key files and no SSH keystore, and its database records the keys as files. The restore puts the files back; if the signer still holds an SSH keystore from after the upgrade, it moves that file aside as <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">ssh-ca.keystore.bak.&lt;timestamp&gt;</code>, so that the keystore and the database agree; where it cannot, the restore prints a warning that says what to do by hand. The next start imports the restored files as described above. Key files that an archive carries wrapped by the signer are unwrapped only at a start with the signer unlocked, so if the signer is locked at that start the import finds them at the start after it.</li>
+                    <li><span className="font-semibold">The SSH keystore and the application database belong together.</span> The restore brings the database first, and refuses an SSH keystore the database has no record of.</li>
+                    <li><span className="font-semibold">A factory reset</span> deletes the SSH keystore with the other keystores, and overwrites and deletes any SSH CA key files left on the node.</li>
+                </ul>
+
+                <h3 className="text-lg font-semibold text-ink mb-2">Break-glass</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    The break-glass keystore tool, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">ModularCA.Keystore.Unlocker</code>,
+                    opens <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">ssh-ca.keystore</code> too, with one difference: it needs
+                    the application database. The signer generated this keystore&apos;s main passphrase and keeps it only in the
+                    application database, wrapped under the secondary passphrase the file shares with
+                    <code className="text-sm bg-sunken px-1.5 py-0.5 rounded"> ca-certs.keystore</code>. Without the application database the
+                    SSH keystore cannot be opened, by this tool or any other, so a backup that holds the SSH keystore is only
+                    as good as the database dump beside it. If you keep secondary passphrases in
+                    <code className="text-sm bg-sunken px-1.5 py-0.5 rounded"> MODULARCA_KEYSTORE_SECONDARY_PASSPHRASE</code>, there is nothing
+                    to add for the SSH keystore.
+                </p>
+
+                <h3 className="text-lg font-semibold text-ink mb-2">Settings and the container image</h3>
+                <ul className="list-disc list-inside space-y-1 text-ink">
+                    <li>The SSH CA settings are gone: the path of the OpenSSH key tool and the key directory, the Settings card that held them, and the <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">ssh-ca</code> section of the configuration API. An <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">SshCa</code> section left in <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">config.yaml</code> is ignored; the node warns about it only when it holds a value you chose.</li>
+                    <li>The container image no longer installs OpenSSH. Nothing in the product starts an OpenSSH program. If your own scripts ran <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">ssh-keygen</code> inside the container, run them elsewhere or add the package to an image of your own.</li>
+                </ul>
             </section>
         </div>
     );
