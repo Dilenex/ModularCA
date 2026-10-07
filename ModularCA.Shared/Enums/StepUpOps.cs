@@ -219,7 +219,7 @@ public static class StepUpOps
     // several sensitive fields at once prompts for step-up exactly once.
     public const string UpdateSpaceSettings = "update-space-settings";
 
-    // Gated in 0.4.0-rc.1.4: mutations that had no step-up while their siblings did.
+    // Gated in 0.4.0: mutations that had no step-up while their siblings did.
     /// <summary>Starting a new epoch of the audit hash chain.</summary>
     public const string RestartAuditChain = "restart-audit-chain";
     /// <summary>Importing, enabling, disabling or deleting a trust anchor.</summary>
