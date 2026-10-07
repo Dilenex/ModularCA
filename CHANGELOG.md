@@ -6,7 +6,164 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
-### Added
+Builds between releases are numbered after the line they belong to: `0.4.1-dev.1.0`,
+`0.4.1-dev.1.1` and so on. They go to test hosts, and are neither tagged nor published. What they
+change is listed here and becomes the release's section.
+
+### 0.4.1-dev.1.7 — 2026-10-07
+
+**Changed**
+
+- The Restart Application card on the Settings page says what a restart is for now: the
+  settings marked Restart, a rotated JWT secret, and a restored backup. It named logging and
+  HTTP, most of which apply without one.
+
+### 0.4.1-dev.1.6 — 2026-10-07
+
+**Changed**
+
+- **Fourteen settings that waited for a restart now apply to the next request**, on the node
+  that saves them. Each was copied once at start by whatever uses it, and is now read when it
+  is used. The Settings page shows them as Live. Other nodes still take a change at their
+  next start.
+  - **IP whitelist switch.** Turning it on with rules that exclude your own address locks you
+    out at once, where it used to wait for a restart.
+  - **mTLS required paths**, where mTLS was on at start (turning mTLS itself on or off, and
+    its trusted CAs, still need a restart). Adding `/api/v1/admin` without a way to present a
+    client certificate refuses the console immediately.
+  - **JWT IP binding.** New tokens already carried the binding at once; it is now also
+    enforced, or stops being enforced, at once.
+  - **Network audit**: on or off, log all requests, and the excluded paths.
+  - **CORS**: on or off, and the allowed origins.
+  - **HSTS, the EST trust anchor refresh interval and RSA signature padding** are read live as
+    well. Nothing in the console changes them on a running node yet, so nothing is seen.
+  - **The scheduler's missed-run policy** was already read on every tick and was only
+    labelled Restart.
+- Eight settings still wait for a restart on purpose:
+  - **The JWT secret, issuer and audience.** Changing any of them live ends every session at
+    once, and on more than one node the nodes would refuse each other's sessions until all
+    had restarted. A rotated JWT secret is still used from each node's next start.
+  - **The five syslog settings.** The syslog sink is built with the logging pipeline.
+- The answers to `PUT /api/v1/admin/config/http`, `/scheduler` and `/ip-whitelist` no longer
+  say a restart is required for what now applies at once.
+
+### 0.4.1-dev.1.5 — 2026-10-06
+
+**Added**
+
+- **The JWT secret can be rotated from the console.** Settings, Security, JWT has a Rotate
+  secret button: the server generates a new secret and stores it wrapped by the signer.
+  Nothing is typed and nothing is shown. Since the secret moved to the database there was no
+  way to replace it but an environment variable.
+  - **The new secret is used from each node's next start.** Until then the node keeps the one
+    it started with, and the card says a new one is waiting. From the restart on, access
+    tokens signed with the old secret are refused, so everyone signed in signs in again.
+  - With more than one node, restart them together: a node on the old secret and one on the
+    new do not accept each other's sessions.
+  - Refused where an environment variable supplies the secret, and when the signer is locked
+    or out of reach. Step-up is required (`rotate-jwt-secret`), and the change is audited as
+    a settings change that names the secret and holds no value.
+  - New endpoint `POST /api/v1/admin/settings/jwt-secret/rotate`.
+    `GET /api/v1/admin/settings` gains `waitingForRestart`.
+
+**Fixed**
+
+- **A node running on a temporary JWT secret stored it at the next settings save.** A start
+  that cannot read the stored secret makes one up for that start (dev.1.3). The first save of
+  any setting from the console then took the made-up secret for a change and, if the signer
+  could be reached by then, stored it over the real one. It is no longer stored; the start
+  log says to rotate the secret if the stored one is lost for good.
+
+### 0.4.1-dev.1.4 — 2026-10-06
+
+**Fixed**
+
+- **On the Settings page, a card's tag and the headings inside it now say what their fields
+  say.** dev.1.3 put a badge on each field and left some of the older labels around them
+  disagreeing with it.
+  - A card's tag is taken from the fields the card shows, where it was taken from every
+    setting of the section. Logging and Certificate Policy read "Live and restart" over fields
+    that are all live.
+  - **Per-Username Rate Limit and the refresh token binding rules were headed Restart and are
+    live**: both are read on each request. The headings follow their fields, and the notes
+    above them no longer say when a change applies.
+  - Login Protection and Token Binding & Lifetime had no tag.
+  - The JWT card said its settings are managed in `config.yaml`. They are in the database, and
+    changed on the host with `--settings`.
+  - A badge inside a field label was set in capitals; beside a switch it was not.
+- **JWT IP Binding showed Off whatever the mode was**, and the card's summary read "JWT IP
+  binding: undefined". The server sends the mode by name and the page read it as a number.
+  The stored mode was never changed by this: saving the group sent back what the server had
+  sent. The field has its badge now (Restart).
+
+### 0.4.1-dev.1.3 — 2026-10-06
+
+**Changed**
+
+- **The secrets the node uses move to the database, wrapped by the signer.** The JWT secret,
+  the LDAP bind password, the mail password and OAuth2 secrets, and the webhook endpoints leave
+  `config.yaml` at the control role's next start. Each is stored as a blob only the signer can
+  open, bound to its own setting. `config.yaml` then holds this host's settings and nothing
+  secret but what belongs to the host (the web TLS and signer-channel passwords).
+  - The copy of `config.yaml` kept at the rewrite no longer holds the moved secrets.
+    **Copies kept by dev.1.0 to dev.1.2 (`config.yaml.pre-settings-*.bak`) and backup archives
+    made before this build still hold them in the clear.** Delete those copies; rotate the
+    secrets if an old archive may have left your hands.
+  - **A node now needs its signer at start to read them.** When the signer is locked or out of
+    reach, the secrets cannot be read: sign-in still works, on a JWT secret made up for that
+    start (everyone is signed out at the next restart, and another node will not accept those
+    sessions), and LDAP sign-in, mail and webhooks wait. The log says which secret could not
+    be read. Supplying a secret through the environment still wins.
+  - When the signer cannot be reached at the move itself, the secrets stay in `config.yaml`,
+    where they keep working, and move at a later start.
+  - **The two single integration API keys stay in `config.yaml`.** Named API keys replace
+    them; the single keys keep working as they are.
+  - `--settings` can clear a secret from the host. Setting one needs the signer, so it is done
+    in the console.
+- **The Settings page says, beside each setting, when a saved change takes effect and where
+  the setting is kept.**
+  - **Live**: at once on this node. Other nodes take it at their next start.
+  - **Restart**: when this node next starts.
+  - **This host**: kept in this host's `config.yaml`, not in the database.
+  - **Environment**: decided by an environment variable; the field cannot be changed.
+
+  A card's tag is now what its settings say, so it cannot disagree with them. Twenty-two
+  settings that were shown, or assumed, to apply at once are marked Restart, because
+  something reads them once at start: CORS, HSTS, the JWT issuer and audience, binding a
+  session to an address, the syslog target, the IP whitelist switch, network audit, the mTLS
+  required paths, the EST trust anchor refresh, RSA signature padding and the scheduler's
+  missed-run policy. New endpoint `GET /api/v1/admin/settings`.
+
+### 0.4.1-dev.1.2 — 2026-10-06
+
+**Fixed**
+
+- **The move no longer stores a default an earlier build wrote.** A `config.yaml` written
+  before the project's repository moved carries the old address as `SourceCode.Url`. Nobody
+  chose it: it was that build's default, and the page already publishes the new address for
+  it. dev.1.0 stored it in the database as if it had been chosen. The move now leaves it out,
+  and the control role's next start clears it where it was stored, with a history entry saying
+  why. An address an operator set for their own fork is stored as before.
+
+### 0.4.1-dev.1.1 — 2026-10-06
+
+**Added**
+
+- **Log tables can be refreshed.** A log shows what had happened when the page was opened, so
+  a new entry did not appear until the page was reloaded. The table header now has a Refresh
+  button and an "Auto 30s" switch, on the Audit Logs page (every tab), the ACME audit section
+  and the audit tables on record pages.
+  - Rows stay on screen while they reload.
+  - Auto-refresh is remembered per table, like its columns. It pauses while rows are ticked,
+    while a row's drawer is open, and while the page is in the background.
+
+### 0.4.1-dev.1.0 — 2026-10-06
+
+Installing this build adds five tables in two migrations (`SettingsStore`, `ApiKeys`) and, at
+the control role's first start, moves the instance-wide settings out of `config.yaml` into the
+database. As for any schema change, going back to 0.4.0 afterwards means restoring a backup.
+
+**Added**
 
 - **Named API keys for the integrations.** The infrastructure API and the cert-manager issuer
   each had one key, typed by an administrator into `config.yaml` and shared by every client,
@@ -25,7 +182,7 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   - Creating and revoking a key need step-up MFA. API: `GET`, `POST` and
     `DELETE /api/v1/admin/api-keys`. A new table, `ApiKeys`.
 
-### Changed
+**Changed**
 
 - **Instance-wide settings are kept in the database.** About 140 settings that are the same
   for the whole instance (ACME, certificate policy, scheduler, mail, LDAP, audit retention,
@@ -66,7 +223,7 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   wrapped before are read as before. A node and a signer run as separate processes have to be
   upgraded together, as for any release.
 
-### Fixed
+**Fixed**
 
 - **ACME: certbot and Caddy can finalize an order.** Both send a certification request with an
   empty subject and the names as subject alternative names only, which RFC 8555 allows. The

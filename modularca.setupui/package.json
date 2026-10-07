@@ -1,6 +1,6 @@
 {
     "name": "modularca-setupui",
-    "version": "0.4.1-dev",
+    "version": "0.4.1-dev.1.7",
     "private": true,
     "type": "module",
     "scripts": {
