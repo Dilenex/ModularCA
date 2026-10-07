@@ -836,8 +836,9 @@ features:
                     the node, under <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">config/ssh-ca-keys</code>, and the node ran
                     the OpenSSH key tool to sign. From 0.4.2 the signer holds the keys in a third keystore
                     file, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">keystores/ssh-ca.keystore</code>, and builds and signs
-                    every SSH certificate itself. The node holds no SSH CA key and starts no OpenSSH program. An install with
-                    no SSH CA has nothing to do here.
+                    every SSH certificate itself. The node holds no SSH CA key and starts no OpenSSH program. The release
+                    also changes what an SSH certificate request may name: the CA writes the name hosts log, and a user
+                    gets only the login names they hold. An install with no SSH CA has nothing to do here.
                 </p>
 
                 <h3 className="text-lg font-semibold text-ink mb-2">Before you upgrade</h3>
@@ -860,7 +861,9 @@ features:
                 <p className="text-ink leading-relaxed mb-3">
                     A second part, &ldquo;SSH signing profiles&rdquo;, is a note and never refuses. It lists the signing
                     profiles for user certificates whose certificates will be narrower after the upgrade; see Exact
-                    extensions below.
+                    extensions below. A third part, &ldquo;SSH login names&rdquo;, is also a note and never refuses. It says
+                    what a request may name from now on, and how many of the live user certificates carry a name other
+                    than the one hosts log for them; see Login names and the name in host logs below.
                 </p>
 
                 <h3 className="text-lg font-semibold text-ink mb-2">The import at first start</h3>
@@ -940,6 +943,28 @@ features:
                     Three smaller changes come with the signer&apos;s own rules. A certificate needs at least one principal;
                     one with none is refused. A DSA public key is refused. And a KRL download always answers 200 with a
                     valid KRL, also when nothing is revoked, where the public route used to answer 204 with no body.
+                </p>
+
+                <h3 className="text-lg font-semibold text-ink mb-2">Login names and the name in host logs</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    Before 0.4.2 a request chose two things it should not have. It chose the certificate&apos;s key id, which is
+                    the name sshd logs with every login, and it chose its principals, the accounts the certificate may log
+                    in as, held back only by the certificate profile&apos;s patterns. Anyone who could request could get a
+                    certificate for root, or for a colleague&apos;s account, under any name. From 0.4.2:
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li><span className="font-semibold">The CA writes the key id.</span> It is the username of the user the certificate is for, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">svc:</code> and the label of a service identity, or the first hostname of a host certificate. A <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">keyId</code> in an API request is refused with 400, unless it is exactly what the CA would write. Scripts and older consoles that send one have to stop sending it.</li>
+                    <li><span className="font-semibold">A self-service request may only name login names the requester holds:</span> their own username, and the names granted to them, or to a group they are in, on the SSH CA key. A request for any other account is refused with 400, naming it. A login name is what OpenSSH calls a principal.</li>
+                    <li><span className="font-semibold">The admin form signs for a user or for a service identity.</span> For a user, the names are that user&apos;s own login names; an administrator grants a name first and cannot add one while signing. For a service identity, with no account, the names are typed and checked against the certificate profile. An API request names exactly one of <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">subjectUserId</code> and <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">serviceLabel</code>, and signing a user certificate this way now asks for step-up MFA.</li>
+                    <li><span className="font-semibold">Every SSH CA key lets everyone log in as their own username</span> after the upgrade, until that is turned off on the key. So a user whose certificates only ever named their own username notices nothing. Every other account has to be granted, on the SSH CA key&apos;s page under Login names, before a certificate for it is next asked for.</li>
+                    <li><span className="font-semibold">Existing certificates are untouched.</span> The upgrade revokes none; each stays valid until it expires. The &ldquo;SSH login names&rdquo; note of the upgrade check reports how many of the live user certificates carry a name other than their key id: those are the ones their holders could not get again as they are. Use the count to plan the grants.</li>
+                    <li><span className="font-semibold">A validity left out now means the most allowed:</span> the smallest limit among the profiles, the SSH CA key and the login names asked for, and never past the end of a grant. It used to mean the signing profile&apos;s maximum, and failed when that was over the certificate profile&apos;s.</li>
+                    <li><span className="font-semibold">Afterwards, a certificate follows its login names.</span> Removing a grant, taking a user out of a group, turning own usernames off on a key, and disabling, renaming or deleting a user revoke the certificates that depended on it. That applies to certificates issued from 0.4.2 on; an older certificate is revoked only when its user is disabled, renamed or deleted, and only where the upgrade could tell whose it was.</li>
+                </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    The self-service SSH Certificates page now has a request form that offers exactly the login names a user
+                    holds, and the admin console can find a certificate from the line a host logged. The Admin UI Guide
+                    describes both, with a recipe for shared accounts.
                 </p>
 
                 <h3 className="text-lg font-semibold text-ink mb-2">Backup and restore</h3>

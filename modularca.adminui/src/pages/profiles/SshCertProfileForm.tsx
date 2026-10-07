@@ -8,20 +8,20 @@ import { ChipListInput } from '@shared/components/ChipListInput';
 import { validateRegex } from '@shared/validators';
 import { type SshCertProfileFormState, effectiveAllowed, matchPrincipal } from './sshCertProfile';
 
-/** Tries a principal against the patterns being edited and shows which of them match. */
+/** Tries a login name or hostname against the patterns being edited and shows which of them match. */
 const PrincipalTester: React.FC<{ patterns: string[] }> = ({ patterns }) => {
     const [principal, setPrincipal] = React.useState('');
     const results = principal ? matchPrincipal(principal, patterns) : [];
     const allowed = patterns.length === 0 || results.some((r) => r.result === 'match');
     return (
         <div className="mt-2 rounded border border-line bg-sunken p-2 space-y-1.5">
-            <label htmlFor="ssh-cp-principal-test" className="block text-xs text-ink-muted">Test a principal</label>
+            <label htmlFor="ssh-cp-principal-test" className="block text-xs text-ink-muted">Test a login name or hostname</label>
             <input id="ssh-cp-principal-test" type="text" value={principal} onChange={(e) => setPrincipal(e.target.value)}
                 className={`${inputClass} font-mono`} placeholder="e.g. alice" autoComplete="off" spellCheck={false} />
             {principal && (
                 <div className="text-xs space-y-0.5" role="status">
                     <p className={allowed ? 'text-ok' : 'text-crit'}>
-                        {patterns.length === 0 ? 'Allowed: with no patterns every principal is allowed.' : allowed ? 'Allowed: at least one pattern matches.' : 'Refused: no pattern matches.'}
+                        {patterns.length === 0 ? 'Inside the limit: with no patterns there is no outer limit.' : allowed ? 'Inside the limit: at least one pattern matches.' : 'Outside the limit: no pattern matches, so a request that names it is refused.'}
                     </p>
                     {results.length > 0 && (
                         <ul className="space-y-0.5">
@@ -81,8 +81,8 @@ export const SshCertProfileForm: React.FC<{
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div><label className={labelClass}>Name</label><input type="text" value={f.name} onChange={(e) => set('name', e.target.value)} className={inputClass} placeholder="e.g. Standard User Cert" /></div>
                 <div><label className={labelClass}>Description</label><input type="text" value={f.description} onChange={(e) => set('description', e.target.value)} className={inputClass} placeholder="Optional" /></div>
-                <div><label className={labelClass}>Max Principals</label><input type="text" inputMode="numeric" value={f.maxPrincipals} onChange={(e) => set('maxPrincipals', e.target.value.replace(/\D/g, ''))} className={inputClass} aria-describedby="ssh-cp-principals-max-hint" />
-                    <FieldHint id="ssh-cp-principals-max-hint">Blank or 0 falls back to 10.</FieldHint>
+                <div><label className={labelClass}>Most login names on a certificate</label><input type="text" inputMode="numeric" value={f.maxPrincipals} onChange={(e) => set('maxPrincipals', e.target.value.replace(/\D/g, ''))} className={inputClass} aria-describedby="ssh-cp-principals-max-hint" />
+                    <FieldHint id="ssh-cp-principals-max-hint">For a host certificate, the most hostnames. Blank or 0 falls back to 10.</FieldHint>
                 </div>
                 <div>
                     <label className={labelClass}>Max Validity (hours)</label>
@@ -91,11 +91,11 @@ export const SshCertProfileForm: React.FC<{
                 </div>
             </div>
             <div>
-                <label htmlFor="ssh-cp-principals" className={labelClass}>Allowed Principal Patterns</label>
+                <label htmlFor="ssh-cp-principals" className={labelClass}>Login name patterns (the outer limit)</label>
                 {/* Commas are legal inside a regex ({0,31}), so they do not separate entries here. */}
                 <ChipListInput id="ssh-cp-principals" value={f.allowedPrincipalPatterns} onChange={(next) => set('allowedPrincipalPatterns', next)}
                     validate={validateRegex} commaSeparates={false} mono placeholder="e.g. ^[a-z_][a-z0-9_-]*$, then Enter" aria-describedby="ssh-cp-principals-hint" />
-                <FieldHint id="ssh-cp-principals-hint">One regular expression per entry. Every requested principal must match at least one pattern. Leave empty to allow any principal; this is a ceiling, so no patterns means unrestricted, not none.</FieldHint>
+                <FieldHint id="ssh-cp-principals-hint">The outer limit on the login names a certificate from this profile may carry, and on the hostnames of a host certificate. One regular expression per entry; every name asked for must match at least one. A pattern grants nothing: who may use which login name is set on the SSH CA key, under Login names. Leave empty for no outer limit; this is a ceiling, so no patterns means unrestricted, not none. A login name is the SSH principal.</FieldHint>
                 <PrincipalTester patterns={f.allowedPrincipalPatterns} />
             </div>
             <FieldHint>{EXACT_EXTENSIONS_HINT}</FieldHint>

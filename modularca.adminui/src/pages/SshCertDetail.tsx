@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { apiGet, apiBlob, apiPostWithMfa } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
@@ -12,11 +12,11 @@ import { DetailPage, DetailSection } from '../components/DetailPage';
 import { actionButton, actionButtonDanger } from '@shared/components/actionButtons';
 import { StepUpOps } from '@shared/generated';
 import { useStepUp } from '../components/StepUpMfaContext';
-
-function formatDate(d: string | null) {
-    if (!d) return '-';
-    return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
+import { LoginNameGrounds } from '../components/SshCertificateParts';
+import {
+    certificateBadge, certificateStatus, dayTimeText, isUserCertificate, issuedByDetail, issuedToDetail, issuedToText, jsonList, sshdKeyType,
+    type SshCertificateView,
+} from './sshLoginNames';
 
 function downloadText(content: string, filename: string) {
     const blob = new Blob([content], { type: 'text/plain' });
@@ -26,19 +26,12 @@ function downloadText(content: string, filename: string) {
     URL.revokeObjectURL(url);
 }
 
-function parseList(val: any): string[] {
-    if (Array.isArray(val)) return val;
-    if (typeof val === 'string') {
-        try { const parsed = JSON.parse(val); if (Array.isArray(parsed)) return parsed; } catch { }
-        return val.split(',').map((s: string) => s.trim()).filter(Boolean);
-    }
-    return [];
-}
-
 /// <summary>
-/// Read-only detail page for a single issued SSH certificate. SSH certs are CA-key-scoped, so the
-/// owning CA key id is carried in the <c>caKey</c> query param for a robust deep-link/refresh. The
-/// page is View-only (Edit disabled); download and revoke live in the action bar.
+/// Read-only detail page for a single issued SSH certificate: who it was issued to and by, the
+/// name hosts log for it, and for a user certificate each login name with why its holder had it.
+/// A <c>used</c> query param, set when the page is opened from a host log line, marks the login
+/// name that line shows. The page is View-only (Edit disabled); download and revoke live in the
+/// action bar.
 /// </summary>
 const SshCertDetail: React.FC = () => {
     const { id } = useParams<{ id: string }>();
@@ -46,9 +39,9 @@ const SshCertDetail: React.FC = () => {
     const { showToast } = useToast();
     const { requireStepUp } = useStepUp();
     const [searchParams] = useSearchParams();
-    const caKey = searchParams.get('caKey') || '';
+    const usedName = searchParams.get('used');
 
-    const [cert, setCert] = useState<any | null>(null);
+    const [cert, setCert] = useState<SshCertificateView | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
     const [refresh, setRefresh] = useState(0);
@@ -56,20 +49,19 @@ const SshCertDetail: React.FC = () => {
     const [revoking, setRevoking] = useState(false);
 
     useEffect(() => {
-        if (!caKey) { setError('Missing CA key reference — open this certificate from the SSH Certificates page.'); setLoading(false); return; }
         let cancelled = false;
         setLoading(true);
         setError(null);
-        apiGet<any>(`/api/v1/admin/ssh/ca-keys/${caKey}/certificates`)
-            .then((data) => {
+        apiGet<SshCertificateView>(`/api/v1/admin/ssh/certificates/${id}`, { toast: false })
+            .then((data) => { if (!cancelled) { setCert(data || null); setLoading(false); } })
+            .catch((err) => {
                 if (cancelled) return;
-                const list = Array.isArray(data) ? data : (data.items || data.certificates || []);
-                setCert(list.find((c: any) => c.id === id) || null);
+                if (err?.problem?.status === 404) setCert(null);
+                else setError(errorNotice(err, 'Failed to load certificate'));
                 setLoading(false);
-            })
-            .catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load certificate')); setLoading(false); } });
+            });
         return () => { cancelled = true; };
-    }, [id, caKey, refresh]);
+    }, [id, refresh]);
 
     const handleDownload = async () => {
         try {
@@ -82,9 +74,10 @@ const SshCertDetail: React.FC = () => {
     };
 
     const doRevoke = async () => {
+        if (!cert) return;
         setRevoking(true);
         try {
-            await apiPostWithMfa(`/api/v1/admin/ssh/ca-keys/${caKey}/certificates/${id}/revoke`, {}, requireStepUp, StepUpOps.RevokeSshCert, id);
+            await apiPostWithMfa(`/api/v1/admin/ssh/ca-keys/${cert.sshCaKeyId}/certificates/${id}/revoke`, {}, requireStepUp, StepUpOps.RevokeSshCert, id);
             showToast('success', 'Certificate revoked');
             setRefresh((r) => r + 1);
         } catch (err: any) {
@@ -104,28 +97,32 @@ const SshCertDetail: React.FC = () => {
     );
     if (!cert) return (
         <div className="p-6 space-y-3">
-            <p className="text-sm text-ink-muted">SSH certificate not found.</p>
+            <p className="text-sm text-ink-muted">SSH certificate not found, or it was issued by an SSH CA you may not view.</p>
             <button onClick={() => navigate('/ssh')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to SSH Certificates</button>
         </div>
     );
 
-    const isUser = (cert.certificateType || cert.type || cert.certType || '').toLowerCase().includes('user');
-    const isRevoked = cert.isRevoked;
-    const principals = parseList(cert.principals);
-    const extensions = parseList(cert.extensions);
-    const title = cert.keyId || cert.identity || `#${cert.serialNumber || cert.serial}`;
+    const isUser = isUserCertificate(cert);
+    const status = certificateStatus(cert, new Date());
+    const names = jsonList(cert.principals);
+    const extensions = jsonList(cert.extensions);
+    const title = `Certificate ${cert.serialNumber}`;
+    const subject = cert.subject;
 
     return (
         <DetailPage
             breadcrumbs={[{ label: 'SSH Certificates', to: '/ssh' }, { label: title }]}
             title={title}
-            status={isRevoked ? <StatusBadge status="revoked" label="Revoked" /> : <Tag label={isUser ? 'User' : 'Host'} />}
-            subtitle={<span className="font-mono">#{cert.serialNumber || cert.serial}</span>}
+            status={<>
+                <StatusBadge {...certificateBadge(status)} />
+                <Tag label={isUser ? 'User certificate' : 'Host certificate'} />
+            </>}
+            subtitle={<>Issued to {issuedToText(cert)}</>}
             backTo="/ssh"
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
                     <button onClick={handleDownload} className={actionButton}>Download Certificate</button>
-                    {!isRevoked && (
+                    {!cert.isRevoked && (
                         <button onClick={() => setConfirmOpen(true)} disabled={revoking}
                             className={actionButtonDanger}>
                             {revoking ? 'Revoking…' : 'Revoke'}
@@ -137,25 +134,38 @@ const SshCertDetail: React.FC = () => {
             {() => (<>
                 <DetailSection title="Certificate">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
-                        <DetailField label="ID" value={cert.id} mono />
-                        <DetailField label="Serial" value={cert.serialNumber || cert.serial} mono />
-                        <DetailField label="Type" value={cert.certificateType || cert.type || cert.certType} />
-                        <DetailField label="Key ID" value={cert.keyId || cert.identity} />
-                        <DetailField label="Principals" value={principals.join(', ')} />
-                        <DetailField label="Valid After" value={formatDate(cert.validAfter || cert.issuedAt)} />
-                        <DetailField label="Valid Before" value={formatDate(cert.validBefore || cert.expiresAt)} />
-                        <DetailField label="CA Key ID" value={cert.sshCaKeyId} mono />
+                        <DetailField label="Issued to" value={subject?.kind === 'user' && subject.userId
+                            ? <><Link to={`/users/${subject.userId}`} className="text-accent-ink hover:underline">{subject.username || cert.keyId}</Link>, a user of this console</>
+                            : issuedToDetail(cert)} />
+                        <DetailField label="Issued by" value={issuedByDetail(cert)} />
+                        <DetailField label="Name in host logs" value={cert.keyId} mono />
+                        <DetailField label="SSH CA" value={<Link to={`/ssh/ca-keys/${cert.sshCaKeyId}`} className="text-accent-ink hover:underline">{cert.sshCaKey?.name || cert.sshCaKeyId}</Link>} />
+                        <DetailField label="Serial" value={String(cert.serialNumber)} mono />
+                        <DetailField label="Valid" value={`${dayTimeText(cert.validAfter)} to ${dayTimeText(cert.validBefore)}`} />
+                        <DetailField label="Key" value={cert.keyFingerprint ? `${sshdKeyType(cert.publicKey)} ${cert.keyFingerprint}` : null} mono />
+                        <DetailField label="SSH CA fingerprint" value={cert.sshCaKey?.fingerprint} mono />
+                        {!isUser && <DetailField label="Hostnames" value={names.join(', ')} />}
                         {extensions.length > 0 && <DetailField label="Extensions" value={extensions.join(', ')} />}
-                        <DetailField label="Revoked" value={isRevoked ? 'Yes' : 'No'} />
-                        <DetailField label="Issued By" value={cert.issuedByUserId || '-'} mono />
-                        <DetailField label="Source IP" value={cert.sourceIp || '-'} />
+                        <DetailField label="ID" value={cert.id} mono />
                     </div>
+                    <p className="mt-2 text-xs text-ink-muted max-w-3xl">
+                        The CA writes the name in host logs: a user's username, svc: and the label of a service identity, or a host certificate's first hostname. Every host records it with each login, whichever account is used.
+                    </p>
                 </DetailSection>
+
+                {isUser && (
+                    <DetailSection title={`Login names, and why ${subject?.kind === 'user' || subject?.kind === 'service' ? issuedToText(cert) : 'the holder'} had each`}>
+                        <p className="mb-3 text-xs text-ink-muted max-w-3xl">
+                            The accounts this certificate may log in as, with the reason each was allowed when the certificate was issued. A login name is the SSH principal.
+                        </p>
+                        <LoginNameGrounds cert={cert} usedName={usedName} linkGroups />
+                    </DetailSection>
+                )}
 
                 <ConfirmModal
                     isOpen={confirmOpen}
                     title="Revoke SSH Certificate"
-                    message="Revoke this SSH certificate? This action cannot be undone."
+                    message="Revoke this SSH certificate? A host refuses it once the host has fetched the SSH CA's revocation list. This action cannot be undone."
                     confirmLabel="Revoke"
                     tone="crit"
                     loading={revoking}

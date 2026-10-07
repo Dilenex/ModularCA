@@ -422,7 +422,7 @@ const SshCertProfilesTab: React.FC = () => {
 
     const columns: DataTableColumn<any>[] = [
         { key: 'name', header: 'Name', defaultWidth: 240, minWidth: 160, truncate: false, exportValue: (p) => p.name, render: (p) => <span className="text-ink font-medium truncate">{p.name}</span> },
-        { key: 'maxPrincipals', header: 'Max Principals', defaultWidth: 130, exportValue: (p) => (p.maxPrincipals ?? ''), render: (p) => <span className="text-xs text-ink-muted">{p.maxPrincipals}</span> },
+        { key: 'maxPrincipals', header: 'Most login names', defaultWidth: 150, exportValue: (p) => (p.maxPrincipals ?? ''), render: (p) => <span className="text-xs text-ink-muted">{p.maxPrincipals}</span> },
         { key: 'validity', header: 'Max Validity', defaultWidth: 120, exportValue: (p) => `${p.maxValidityHours}h`, render: (p) => <span className="text-xs text-ink-muted">{p.maxValidityHours}h</span> },
     ];
 
@@ -434,11 +434,11 @@ const SshCertProfilesTab: React.FC = () => {
         <div className="text-sm">
             <DetailField label="Name" value={p.name} />
             <DetailField label="Description" value={p.description} />
-            <DetailField label="Max Principals" value={String(p.maxPrincipals)} />
+            <DetailField label="Most login names" value={String(p.maxPrincipals)} />
             <DetailField label="Max Validity Hours" value={String(p.maxValidityHours)} />
             <div className="py-1"><span className="text-xs text-ink-muted">Allowed Extensions</span><CeilingList items={p.allowedExtensions} noun="extension" /></div>
             <div className="py-1"><span className="text-xs text-ink-muted">Required Extensions</span><BadgeList items={p.requiredExtensions} /></div>
-            <p className="text-[11px] text-ink-muted pt-3">Open the full page to view principal patterns or edit.</p>
+            <p className="text-[11px] text-ink-muted pt-3">Open the full page to view the login name patterns or edit.</p>
         </div>
     );
 

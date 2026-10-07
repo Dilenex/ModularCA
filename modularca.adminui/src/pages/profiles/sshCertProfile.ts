@@ -95,7 +95,7 @@ export const formToUpdateBody = (f: SshCertProfileFormState): UpdateSshCertProfi
     ...sharedBody(f),
 });
 
-export const PRINCIPAL_PATTERN_REASON = 'Fix the principal patterns marked invalid; each must be a regular expression that compiles.';
+export const PRINCIPAL_PATTERN_REASON = 'Fix the login name patterns marked invalid; each must be a regular expression that compiles.';
 
 /** How one pattern treats a test principal: matched, not matched, or the pattern does not compile. */
 export interface PatternMatch {

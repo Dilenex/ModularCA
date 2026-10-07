@@ -14,12 +14,20 @@ import { NewButton } from '@shared/components/NewButton';
 import { Capabilities, StepUpOps } from '@shared/generated';
 import { useAuth } from '../context/AuthContext';
 import { FieldHint } from '@shared/components/forms';
-import { ChipListInput } from '@shared/components/ChipListInput';
+import { actionButton } from '@shared/components/actionButtons';
+import { copyText } from '@shared/clipboard';
 import { type CeremonyRefusal, readCeremonyRefusal } from './ceremonyRefusal';
 import { CeremonyRefusalNotice } from '../components/CeremonyRefusalNotice';
 import { runWithOneStepUp } from '@shared-auth/api/stepUpBatch';
 import { signBlockedReason, sshKeyCustody, sshSignerState } from './sshKeyCustody';
 import { SshPlaintextNoticeBanner } from '../components/SshPlaintextNotice';
+import { SshSignKeyForm, type SshSignResult } from '../components/SshSignKeyForm';
+import { SshLogLineLookup } from '../components/SshLogLineLookup';
+import { LoginNameGrounds } from '../components/SshCertificateParts';
+import {
+    certificateBadge, certificateStatus, dayTimeText, defaultKeyFile, isUserCertificate, issuedByDetail, issuedByText, issuedToDetail, issuedToText, jsonList,
+    type SshCertificateView,
+} from './sshLoginNames';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -374,34 +382,25 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
     );
 };
 
-/* ─── Helpers ─── */
-function parseJsonArray(val: any): string[] {
-    if (Array.isArray(val)) return val;
-    if (typeof val === 'string') {
-        try { const parsed = JSON.parse(val); if (Array.isArray(parsed)) return parsed; } catch { }
-    }
-    return [];
-}
-
 /* ─── SSH Certificates Section ─── */
+/** Columns renamed with login names, so a stored layout keeps its widths. */
+const RENAMED_CERT_COLUMNS = { keyId: 'issuedTo', principals: 'loginNames' };
+
 const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys: any[] }> = ({ refreshTrigger, onRefresh, caKeys }) => {
     const { showToast } = useToast();
     const { requireStepUp } = useStepUp();
-    const [certs, setCerts] = useState<any[]>([]);
+    const [certs, setCerts] = useState<SshCertificateView[]>([]);
     const [signingProfiles, setSigningProfiles] = useState<any[]>([]);
     const [certProfiles, setCertProfiles] = useState<any[]>([]);
     const [requestProfiles, setRequestProfiles] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
     const [showSignForm, setShowSignForm] = useState(false);
-    const [confirmRevoke, setConfirmRevoke] = useState<any[] | null>(null);
-    const [signForm, setSignForm] = useState({ certType: 'user' as 'user' | 'host', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: [] as string[], validityHours: '' });
-    const [validationErrors, setValidationErrors] = useState<string[]>([]);
-    const [signing, setSigning] = useState(false);
-    const [signResult, setSignResult] = useState<any>(null);
+    const [confirmRevoke, setConfirmRevoke] = useState<SshCertificateView[] | null>(null);
+    const [signResult, setSignResult] = useState<SshSignResult | null>(null);
+    const [copied, setCopied] = useState(false);
     const [revoking, setRevoking] = useState<string | null>(null);
     const [selectedCaKeyId, setSelectedCaKeyId] = useState<string>('');
-    const [signError, setSignError] = useState<NoticeInput | null>(null);
 
     // Auto-select the first enabled CA key the signer can sign with, when there is one.
     useEffect(() => {
@@ -444,132 +443,6 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
         return () => { cancelled = true; };
     }, [refreshTrigger, selectedCaKeyId]);
 
-    // Derive allowed signing/cert profiles from the selected request profile
-    const selectedRequestProfile = requestProfiles.find((p: any) => p.id === signForm.sshRequestProfileId);
-    const allowedSigningIds = new Set(parseJsonArray(selectedRequestProfile?.allowedSshSigningProfileIds));
-    const allowedCertIds = new Set(parseJsonArray(selectedRequestProfile?.allowedSshCertProfileIds));
-
-    // Filter signing profiles by: matches selected CA key AND allowed in request profile AND matches cert type (user/host)
-    const filteredSigningProfiles = signingProfiles.filter((p: any) => {
-        if (p.sshCaKeyId !== selectedCaKeyId) return false;
-        if (allowedSigningIds.size > 0 && !allowedSigningIds.has(p.id)) return false;
-        if (signForm.certType === 'user' && !p.allowUserCerts) return false;
-        if (signForm.certType === 'host' && !p.allowHostCerts) return false;
-        return true;
-    });
-    const filteredCertProfiles = certProfiles.filter((p: any) =>
-        allowedCertIds.size === 0 || allowedCertIds.has(p.id)
-    );
-
-    const selectedSigningProfile = signingProfiles.find((p: any) => p.id === signForm.sshSigningProfileId);
-    const selectedCertProfile = certProfiles.find((p: any) => p.id === signForm.sshCertProfileId);
-
-    // Compute the effective max validity from the strictest of the three profiles
-    const effectiveMaxValidity = Math.min(
-        selectedRequestProfile?.maxValidityHours ?? Infinity,
-        selectedSigningProfile?.maxValidityHours ?? Infinity,
-        selectedCertProfile?.maxValidityHours ?? Infinity,
-    );
-
-    // Auto-select first available when request profile changes
-    useEffect(() => {
-        if (!signForm.sshRequestProfileId) return;
-        const newSigning = filteredSigningProfiles.length > 0 ? filteredSigningProfiles[0].id : '';
-        const newCert = filteredCertProfiles.length > 0 ? filteredCertProfiles[0].id : '';
-        setSignForm(prev => ({
-            ...prev,
-            sshSigningProfileId: filteredSigningProfiles.some((p: any) => p.id === prev.sshSigningProfileId) ? prev.sshSigningProfileId : newSigning,
-            sshCertProfileId: filteredCertProfiles.some((p: any) => p.id === prev.sshCertProfileId) ? prev.sshCertProfileId : newCert,
-        }));
-    }, [signForm.sshRequestProfileId, signForm.certType]);
-
-    // Client-side validation against profile constraints
-    useEffect(() => {
-        if (!showSignForm || !signForm.sshRequestProfileId) { setValidationErrors([]); return; }
-        const errors: string[] = [];
-        const principals = signForm.principals;
-
-        // Validity hours
-        const hours = parseInt(signForm.validityHours);
-        if (signForm.validityHours && hours > 0 && effectiveMaxValidity < Infinity && hours > effectiveMaxValidity) {
-            errors.push(`Validity ${hours}h exceeds maximum allowed ${effectiveMaxValidity}h`);
-        }
-
-        // Principal count (cert profile)
-        if (selectedCertProfile && principals.length > selectedCertProfile.maxPrincipals) {
-            errors.push(`Too many ${signForm.certType === 'user' ? 'principals' : 'hostnames'}: ${principals.length} (max ${selectedCertProfile.maxPrincipals})`);
-        }
-
-        // Principal pattern validation (cert profile)
-        if (selectedCertProfile && principals.length > 0) {
-            const patterns = parseJsonArray(selectedCertProfile.allowedPrincipalPatterns);
-            if (patterns.length > 0) {
-                const regexes = patterns.map((p: string) => { try { return new RegExp(p); } catch { return null; } }).filter(Boolean) as RegExp[];
-                for (const principal of principals) {
-                    if (!regexes.some(rx => rx.test(principal))) {
-                        errors.push(`"${principal}" does not match any allowed principal pattern`);
-                    }
-                }
-            }
-        }
-
-        setValidationErrors(errors);
-    }, [signForm.principals, signForm.validityHours, selectedCertProfile, selectedSigningProfile, selectedRequestProfile, effectiveMaxValidity, showSignForm]);
-
-    // Profile selection is complete when all three are chosen
-    const profilesSelected = !!(signForm.sshRequestProfileId && signForm.sshSigningProfileId && signForm.sshCertProfileId);
-
-    // OpenSSH reads an empty principal list as "valid for every principal"; the signer refuses one.
-    const principalsMissing = signForm.principals.length === 0;
-
-    // Marks a chip that no allowed principal pattern of the selected cert profile matches.
-    const principalPatterns = selectedCertProfile ? parseJsonArray(selectedCertProfile.allowedPrincipalPatterns) : [];
-    const validatePrincipal = (principal: string): string | null => {
-        if (principalPatterns.length === 0) return null;
-        const matches = principalPatterns.some((p: string) => { try { return new RegExp(p).test(principal); } catch { return false; } });
-        return matches ? null : `"${principal}" does not match any allowed principal pattern of the cert profile.`;
-    };
-
-    const handleSign = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!selectedCaKeyId) { showToast('warning', 'Please select a CA key first.'); return; }
-        if (signBlocked) return;
-        if (validationErrors.length > 0) { showToast('error', 'Fix validation errors before submitting.'); return; }
-        if (principalsMissing) { showToast('error', signForm.certType === 'user' ? 'Enter at least one principal.' : 'Enter at least one hostname.'); return; }
-        setSigning(true);
-        setSignResult(null);
-        setSignError(null);
-        try {
-            const endpoint = signForm.certType === 'user'
-                ? `/api/v1/admin/ssh/ca-keys/${selectedCaKeyId}/certificates/sign-user`
-                : `/api/v1/admin/ssh/ca-keys/${selectedCaKeyId}/certificates/sign-host`;
-
-            const body: any = {
-                sshSigningProfileId: signForm.sshSigningProfileId,
-                sshCertProfileId: signForm.sshCertProfileId,
-                publicKey: signForm.publicKey,
-                keyId: signForm.identity,
-                validityHours: parseInt(signForm.validityHours) || undefined,
-            };
-
-            if (signForm.certType === 'user') {
-                body.principals = signForm.principals;
-            } else {
-                body.hostnames = signForm.principals;
-            }
-
-            const result = await apiPost(endpoint, body);
-            setSignResult(result);
-            setShowSignForm(false);
-            setSignForm({ certType: 'user', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: [] as string[], validityHours: '' });
-            onRefresh();
-        } catch (err: any) {
-            setSignError(errorNotice(err, 'Signing failed'));
-        } finally {
-            setSigning(false);
-        }
-    };
-
     // One step-up prompt names every selected certificate; each is then revoked with that token.
     const performBulkRevoke = async () => {
         if (!confirmRevoke) return;
@@ -590,7 +463,7 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
         }
     };
 
-    const handleDownloadCert = async (cert: any) => {
+    const handleDownloadCert = async (cert: SshCertificateView) => {
         try {
             // Route through apiBlob.
             const resp = await apiBlob(`/api/v1/admin/ssh/certificates/${cert.id}/download`);
@@ -601,71 +474,82 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
         }
     };
 
-    const parsePrincipals = (val: any): string[] => {
-        if (Array.isArray(val)) return val;
-        if (typeof val === 'string') {
-            try { const parsed = JSON.parse(val); if (Array.isArray(parsed)) return parsed; } catch { }
-            return val.split(',').map((s: string) => s.trim()).filter(Boolean);
-        }
-        return [];
-    };
+    const statusOf = (c: SshCertificateView) => certificateStatus(c, new Date());
+    const namesOf = (c: SshCertificateView) => jsonList(c.principals).join(', ');
 
-    const parseExtensions = (val: any): string[] => {
-        if (!val) return [];
-        if (Array.isArray(val)) return val;
-        if (typeof val === 'string') {
-            try { const parsed = JSON.parse(val); if (Array.isArray(parsed)) return parsed; } catch { }
-            return [val];
-        }
-        return [];
-    };
-
-    const certIsUser = (c: any) => (c.certificateType || c.type || c.certType || '').toLowerCase().includes('user');
-
-    const columns: DataTableColumn<any>[] = [
+    const columns: DataTableColumn<SshCertificateView>[] = [
         {
             key: 'status', header: 'Status', defaultWidth: 110, truncate: false,
-            exportValue: (c) => (c.isRevoked ? 'Revoked' : (certIsUser(c) ? 'User' : 'Host')),
-            render: (c) => c.isRevoked ? <StatusBadge status="revoked" label="Revoked" /> : <Tag label={certIsUser(c) ? 'User' : 'Host'} />,
+            exportValue: (c) => certificateBadge(statusOf(c)).label,
+            render: (c) => <StatusBadge {...certificateBadge(statusOf(c))} />,
         },
-        { key: 'keyId', header: 'Key ID', defaultWidth: 180, minWidth: 130, truncate: false, exportValue: (c) => c.keyId || c.identity || '', render: (c) => <span className={`text-sm truncate ${c.isRevoked ? 'text-ink-muted line-through' : 'text-ink'}`}>{c.keyId || c.identity}</span> },
-        { key: 'serial', header: 'Serial', defaultWidth: 120, exportValue: (c) => c.serialNumber || c.serial || '', render: (c) => <span className="data-mono text-ink-muted">#{c.serialNumber || c.serial}</span> },
-        { key: 'principals', header: 'Principals', defaultWidth: 200, exportValue: (c) => parsePrincipals(c.principals).join(', '), render: (c) => <span className="text-xs text-ink-muted truncate">{parsePrincipals(c.principals).join(', ')}</span> },
-        { key: 'validBefore', header: 'Expires', defaultWidth: 160, exportValue: (c) => formatDate(c.validBefore || c.expiresAt), render: (c) => <span className="text-xs text-ink-muted">{formatDate(c.validBefore || c.expiresAt)}</span> },
+        { key: 'type', header: 'Type', defaultWidth: 90, truncate: false, exportValue: (c) => (isUserCertificate(c) ? 'User' : 'Host'), render: (c) => <Tag label={isUserCertificate(c) ? 'User' : 'Host'} /> },
+        { key: 'serial', header: 'Serial', defaultWidth: 110, exportValue: (c) => String(c.serialNumber), render: (c) => <span className="data-mono text-ink-muted">{String(c.serialNumber)}</span> },
+        {
+            key: 'issuedTo', header: 'Issued to', defaultWidth: 180, minWidth: 130,
+            headerTitle: 'Who the certificate is for: a user of this console, a service identity (svc: and its label) or a host.',
+            exportValue: (c) => issuedToText(c),
+            render: (c) => c.subject?.kind === 'user' && c.subject.userId
+                ? <Link to={`/users/${c.subject.userId}`} className="text-accent-ink hover:underline">{issuedToText(c)}</Link>
+                : <span className={c.subject?.kind === 'unknown' ? 'text-ink-muted' : 'text-ink'}>{issuedToText(c)}</span>,
+        },
+        {
+            key: 'loginNames', header: 'Login names', defaultWidth: 220,
+            headerTitle: 'The accounts a user certificate may log in as. For a host certificate, its hostnames.',
+            exportValue: namesOf, render: (c) => <span className="data-mono text-ink-muted">{namesOf(c)}</span>,
+        },
+        { key: 'validBefore', header: 'Valid until', defaultWidth: 180, exportValue: (c) => dayTimeText(c.validBefore), render: (c) => <span className="text-xs text-ink-muted tabular-nums">{dayTimeText(c.validBefore)}</span> },
+        { key: 'issuedBy', header: 'Issued by', defaultWidth: 190, headerTitle: 'Who asked for the certificate.', exportValue: (c) => issuedByText(c), render: (c) => <span className="text-ink-muted">{issuedByText(c)}</span> },
     ];
 
-    const bulkActions: DataTableBulkAction<any>[] = [
+    const bulkActions: DataTableBulkAction<SshCertificateView>[] = [
         { label: 'Download', single: true, onClick: (rows) => handleDownloadCert(rows[0]) },
         { label: 'Revoke', variant: 'danger', enabledFor: (c) => !c.isRevoked, onClick: (rows) => setConfirmRevoke(rows) },
     ];
 
-    const certDrawer = (c: any) => {
-        const principals = parsePrincipals(c.principals);
-        const extensions = parseExtensions(c.extensions);
+    const certDrawer = (c: SshCertificateView) => {
+        const extensions = jsonList(c.extensions);
         return (
-            <div className="text-sm">
-                <DetailField label="ID" value={c.id} mono />
-                <DetailField label="Serial" value={c.serialNumber || c.serial} mono />
-                <DetailField label="Type" value={c.certificateType || c.type || c.certType} />
-                <DetailField label="Key ID" value={c.keyId || c.identity} />
-                <DetailField label="Principals" value={principals.join(', ')} />
-                <DetailField label="Valid After" value={formatDate(c.validAfter || c.issuedAt)} />
-                <DetailField label="Valid Before" value={formatDate(c.validBefore || c.expiresAt)} />
-                <DetailField label="CA Key ID" value={c.sshCaKeyId} mono />
-                {extensions.length > 0 && <DetailField label="Extensions" value={extensions.join(', ')} />}
-                <DetailField label="Revoked" value={c.isRevoked ? 'Yes' : 'No'} />
+            <div className="text-sm space-y-3">
+                <div>
+                    <DetailField label="Status" value={<StatusBadge {...certificateBadge(statusOf(c))} />} />
+                    <DetailField label="Issued to" value={issuedToDetail(c)} />
+                    <DetailField label="Issued by" value={issuedByDetail(c)} />
+                    <DetailField label="Name in host logs" value={c.keyId} mono />
+                    <DetailField label="Serial" value={String(c.serialNumber)} mono />
+                    <DetailField label="Valid" value={`${dayTimeText(c.validAfter)} to ${dayTimeText(c.validBefore)}`} />
+                    <DetailField label="SSH CA" value={c.sshCaKey?.name || c.sshCaKeyId} />
+                    {!isUserCertificate(c) && <DetailField label="Hostnames" value={namesOf(c)} />}
+                    {extensions.length > 0 && <DetailField label="Extensions" value={extensions.join(', ')} />}
+                </div>
+                {isUserCertificate(c) && (
+                    <div className="space-y-1.5">
+                        <div className="label-caps">Login names, and why the holder had each</div>
+                        <LoginNameGrounds cert={c} linkGroups />
+                    </div>
+                )}
             </div>
         );
     };
+
+    const copyResult = async () => {
+        if (signResult && await copyText(signResult.signedCertificate)) {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1500);
+        }
+    };
+
+    const keyFile = defaultKeyFile(signResult?.publicKey);
 
     return (
         <div className="space-y-4">
             {/* CA Key Selector */}
             <div className="flex items-center gap-3">
-                <label className="text-sm text-ink-muted font-medium">CA Key:</label>
+                <label htmlFor="ssh-ca-key" className="text-sm text-ink-muted font-medium">CA Key:</label>
                 <select
+                    id="ssh-ca-key"
                     value={selectedCaKeyId}
-                    onChange={(e) => setSelectedCaKeyId(e.target.value)}
+                    onChange={(e) => { setSelectedCaKeyId(e.target.value); setShowSignForm(false); }}
                     className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                 >
                     {caKeys.filter(k => k.isEnabled !== false).length === 0 && <option value="">No CA keys available</option>}
@@ -688,229 +572,64 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                 <FieldHint tone="warn">The signer could not be asked whether it holds this key. Signing is refused while the signer is locked or out of reach.</FieldHint>
             )}
 
-            {/* Sign Form */}
-            {showSignForm && (
-                <form onSubmit={handleSign} className="bg-raised border border-line rounded-lg p-4 space-y-3">
-                    <h3 className="text-sm font-semibold text-ink">
-                        Sign {signForm.certType === 'user' ? 'User' : 'Host'} Key
-                    </h3>
-
-                    {/* Certificate Type */}
-                    <div>
-                        <label className="block text-xs text-ink-muted mb-1">Certificate Type</label>
-                        <select
-                            value={signForm.certType}
-                            onChange={(e) => setSignForm({ ...signForm, certType: e.target.value as 'user' | 'host', sshSigningProfileId: '', sshCertProfileId: '' })}
-                            className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
-                        >
-                            <option value="user">User Certificate</option>
-                            <option value="host">Host Certificate</option>
-                        </select>
-                    </div>
-
-                    {/* Step 1: Profile Selection */}
-                    <div className="space-y-3">
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                            <div>
-                                <label className="block text-xs text-ink-muted mb-1">Request Profile</label>
-                                <select
-                                    required
-                                    value={signForm.sshRequestProfileId}
-                                    onChange={(e) => setSignForm({ ...signForm, sshRequestProfileId: e.target.value, sshSigningProfileId: '', sshCertProfileId: '' })}
-                                    className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
-                                >
-                                    <option value="">Select request profile...</option>
-                                    {requestProfiles.map((p) => (
-                                        <option key={p.id} value={p.id}>{p.name}</option>
-                                    ))}
-                                </select>
-                            </div>
-                            <div>
-                                <label className="block text-xs text-ink-muted mb-1">Signing Profile</label>
-                                <select
-                                    required
-                                    disabled={!signForm.sshRequestProfileId}
-                                    value={signForm.sshSigningProfileId}
-                                    onChange={(e) => setSignForm({ ...signForm, sshSigningProfileId: e.target.value })}
-                                    className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent disabled:opacity-50"
-                                >
-                                    <option value="">Select signing profile...</option>
-                                    {filteredSigningProfiles.map((p) => (
-                                        <option key={p.id} value={p.id}>{p.name}</option>
-                                    ))}
-                                </select>
-                                {signForm.sshRequestProfileId && filteredSigningProfiles.length === 0 && (
-                                    <p className="text-xs text-crit mt-1">No {signForm.certType} signing profiles allowed by this request profile</p>
-                                )}
-                            </div>
-                            <div>
-                                <label className="block text-xs text-ink-muted mb-1">Cert Profile</label>
-                                <select
-                                    required
-                                    disabled={!signForm.sshRequestProfileId}
-                                    value={signForm.sshCertProfileId}
-                                    onChange={(e) => setSignForm({ ...signForm, sshCertProfileId: e.target.value })}
-                                    className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent disabled:opacity-50"
-                                >
-                                    <option value="">Select cert profile...</option>
-                                    {filteredCertProfiles.map((p) => (
-                                        <option key={p.id} value={p.id}>{p.name}</option>
-                                    ))}
-                                </select>
-                                {signForm.sshRequestProfileId && filteredCertProfiles.length === 0 && (
-                                    <p className="text-xs text-crit mt-1">No cert profiles allowed by this request profile</p>
-                                )}
-                            </div>
-                        </div>
-
-                        {/* Profile constraint summary */}
-                        {profilesSelected && (
-                            <div className="p-2 bg-raised border border-line rounded text-xs text-ink-muted flex flex-wrap gap-x-4 gap-y-1">
-                                <span>Max validity: <span className="text-ink font-medium">{effectiveMaxValidity === Infinity ? 'unlimited' : `${effectiveMaxValidity}h`}</span></span>
-                                {selectedCertProfile && <span>Max principals: <span className="text-ink font-medium">{selectedCertProfile.maxPrincipals}</span></span>}
-                                {selectedSigningProfile?.forceCommand && <span>Force command: <span className="text-ink font-medium font-mono">{selectedSigningProfile.forceCommand}</span></span>}
-                                {selectedCertProfile && parseJsonArray(selectedCertProfile.allowedPrincipalPatterns).length > 0 && (
-                                    <span>Principal patterns: <span className="text-ink font-medium font-mono">{parseJsonArray(selectedCertProfile.allowedPrincipalPatterns).join(', ')}</span></span>
-                                )}
-                            </div>
-                        )}
-                    </div>
-
-                    {/* Step 2: Certificate Details (disabled until profiles are selected) */}
-                    <fieldset disabled={!profilesSelected} className={!profilesSelected ? 'opacity-40' : ''}>
-                        <div className="space-y-3">
-                            <div>
-                                <label className="block text-xs text-ink-muted mb-1">Public Key</label>
-                                <textarea
-                                    required
-                                    rows={3}
-                                    placeholder="ssh-ed25519 AAAA..."
-                                    value={signForm.publicKey}
-                                    onChange={(e) => setSignForm({ ...signForm, publicKey: e.target.value })}
-                                    className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink data-mono placeholder-ink-faint focus:outline-none focus:border-accent"
-                                />
-                            </div>
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                <div>
-                                    <label className="block text-xs text-ink-muted mb-1">Identity (Key ID)</label>
-                                    <input
-                                        type="text"
-                                        required
-                                        placeholder={signForm.certType === 'user' ? 'username' : 'hostname'}
-                                        value={signForm.identity}
-                                        onChange={(e) => setSignForm({ ...signForm, identity: e.target.value })}
-                                        className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent"
-                                    />
-                                </div>
-                                <div>
-                                    <label htmlFor="ssh-sign-principals" className="block text-xs text-ink-muted mb-1">
-                                        {signForm.certType === 'user' ? 'Principals' : 'Hostnames'}
-                                    </label>
-                                    <ChipListInput
-                                        id="ssh-sign-principals"
-                                        placeholder={signForm.certType === 'user' ? 'e.g. alice, then Enter' : 'e.g. web01.example.com'}
-                                        value={signForm.principals}
-                                        onChange={(next) => setSignForm({ ...signForm, principals: next })}
-                                        validate={validatePrincipal}
-                                        invalid={principalsMissing || validationErrors.some(e => e.includes('principal') || e.includes('hostname'))}
-                                        aria-describedby="ssh-sign-principals-hint"
-                                    />
-                                    <FieldHint id="ssh-sign-principals-hint">
-                                        One or more names this certificate authorises. At least one is required: OpenSSH reads a certificate with none as valid for every principal, and the signer refuses to issue one. For a host certificate these must match the hostname clients actually type.
-                                    </FieldHint>
-                                    {principalsMissing && (
-                                        <FieldHint tone="warn">
-                                            Enter at least one {signForm.certType === 'user' ? 'principal' : 'hostname'}.
-                                        </FieldHint>
-                                    )}
-                                </div>
-                                <div>
-                                    <label className="block text-xs text-ink-muted mb-1">
-                                        Validity (hours){effectiveMaxValidity < Infinity ? ` (max ${effectiveMaxValidity})` : ''}
-                                    </label>
-                                    <input
-                                        type="text"
-                                        inputMode="numeric"
-                                        placeholder={effectiveMaxValidity < Infinity ? String(effectiveMaxValidity) : '720'}
-                                        value={signForm.validityHours}
-                                        onChange={(e) => setSignForm({ ...signForm, validityHours: e.target.value.replace(/\D/g, '') })}
-                                        className={`w-full px-3 py-2 bg-raised border rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent ${
-                                            validationErrors.some(e => e.includes('Validity')) ? 'border-crit' : 'border-line-strong'
-                                        }`}
-                                    />
-                                </div>
-                            </div>
-                        </div>
-                    </fieldset>
-
-                    {/* Validation errors */}
-                    {validationErrors.length > 0 && (
-                        <div className="p-2 bg-crit-soft border border-crit/40 rounded text-xs text-crit space-y-0.5">
-                            {validationErrors.map((err, i) => <p key={i}>{err}</p>)}
-                        </div>
-                    )}
-
-                    <InlineNotice notice={signError} onDismiss={() => setSignError(null)} />
-
-                    <div className="flex gap-2">
-                        <button
-                            type="submit"
-                            disabled={signing || !!signBlocked || !profilesSelected || validationErrors.length > 0 || principalsMissing}
-                            className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
-                        >
-                            {signing ? 'Signing...' : 'Sign Key'}
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => { setShowSignForm(false); setSignResult(null); setSignError(null); setValidationErrors([]); setSignForm({ certType: 'user', sshRequestProfileId: '', sshSigningProfileId: '', sshCertProfileId: '', publicKey: '', identity: '', principals: [] as string[], validityHours: '' }); }}
-                            className="px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover transition-colors"
-                        >
-                            Cancel
-                        </button>
-                    </div>
-                </form>
+            {showSignForm && selectedCaKey && (
+                <SshSignKeyForm
+                    key={selectedCaKey.id}
+                    caKey={selectedCaKey}
+                    signBlocked={signBlocked}
+                    signingProfiles={signingProfiles}
+                    certProfiles={certProfiles}
+                    requestProfiles={requestProfiles}
+                    onSigned={(result) => { setSignResult(result); setCopied(false); setShowSignForm(false); onRefresh(); }}
+                    onCancel={() => setShowSignForm(false)}
+                />
             )}
 
-            {/* Sign Result */}
             {signResult && (
-                <div className="bg-raised border border-ok/40 rounded-lg p-4 space-y-3">
-                    <div className="flex items-center gap-2">
-                        <span className="text-ok font-semibold text-sm">Certificate Signed Successfully</span>
+                <div className="bg-raised border border-line border-l-4 border-l-ok rounded-lg p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <span className="text-ok font-semibold text-sm">Certificate signed</span>
+                        <button type="button" onClick={() => setSignResult(null)} className="text-xs text-ink-muted hover:text-ink transition-colors">Dismiss</button>
                     </div>
-                    <div className="text-xs text-ink-muted space-y-1">
-                        <p><span className="text-ink">Key ID:</span> {signResult.keyId}</p>
-                        <p><span className="text-ink">Serial:</span> {signResult.serialNumber}</p>
-                        <p><span className="text-ink">Valid:</span> {formatDate(signResult.validAfter)} - {formatDate(signResult.validBefore)}</p>
+                    <div className="max-w-3xl">
+                        <DetailField label="Name in host logs" value={signResult.keyId} mono />
+                        <DetailField label="Serial" value={String(signResult.serialNumber)} mono />
+                        <DetailField label="Valid" value={`${dayTimeText(signResult.validAfter)} to ${dayTimeText(signResult.validBefore)}`} />
                     </div>
                     {signResult.signedCertificate && (
                         <>
                             <textarea
                                 readOnly
                                 rows={3}
+                                aria-label="Signed certificate"
                                 value={signResult.signedCertificate}
                                 className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink data-mono focus:outline-none"
                             />
-                            <button
-                                onClick={() => downloadText(signResult.signedCertificate, `${signResult.keyId}-cert.pub`)}
-                                className="px-3 py-1.5 text-xs bg-ok text-on-accent rounded hover:bg-ok-hover transition-colors"
-                            >
-                                Download Certificate (-cert.pub)
-                            </button>
+                            <div className="flex flex-wrap gap-2">
+                                <button type="button" onClick={copyResult} className={actionButton}>{copied ? 'Copied' : 'Copy'}</button>
+                                <button type="button" onClick={() => downloadText(signResult.signedCertificate, `${keyFile}-cert.pub`)} className={actionButton}>
+                                    Download certificate
+                                </button>
+                            </div>
                         </>
                     )}
-                    <p className="text-xs text-ink-muted">
-                        Save this as <code className="text-accent-ink">~/.ssh/id_ed25519-cert.pub</code> alongside your private key.
+                    <p className="text-xs text-ink-muted max-w-3xl">
+                        It belongs beside the private key it certifies, under that key file's name with <code className="text-accent-ink">-cert.pub</code> added: for a key in <code className="text-accent-ink">~/.ssh/{keyFile}</code>, save it as <code className="text-accent-ink">~/.ssh/{keyFile}-cert.pub</code>.
+                        {signResult.forUser && ` ${signResult.forUser} also finds it under SSH Certificates in their own portal, and can download it there.`}
                     </p>
                 </div>
             )}
 
+            <SshLogLineLookup onFound={(c) => { if (caKeys.some((k) => k.id === c.sshCaKeyId && k.isEnabled !== false)) setSelectedCaKeyId(c.sshCaKeyId); }} />
+
             {/* Certificate List */}
-            <DataTable<any>
+            <DataTable<SshCertificateView>
                 tableId="ssh-certs"
-                toolbarAction={<NewButton label="Sign key" open={showSignForm} disabled={!selectedCaKeyId || (!!signBlocked && !showSignForm)} onClick={() => { setShowSignForm(!showSignForm); setSignResult(null); setSignError(null); }} />}
+                renamedColumns={RENAMED_CERT_COLUMNS}
+                toolbarAction={<NewButton label="Sign key" open={showSignForm} disabled={!selectedCaKeyId || (!!signBlocked && !showSignForm)} onClick={() => { setShowSignForm(!showSignForm); setSignResult(null); }} />}
                 title="SSH Certificates"
                 rows={certs}
-                rowKey={(c) => c.id || c.serial || c.fingerprint}
+                rowKey={(c) => c.id}
                 loading={loading}
                 error={error}
                 empty="No SSH certificates issued"
@@ -919,7 +638,7 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                 bulkActions={bulkActions}
                 exportFileName="ssh-certificates"
                 renderDrawer={certDrawer}
-                drawerTitle={(c) => c.keyId || c.identity || `#${c.serialNumber || c.serial}`}
+                drawerTitle={(c) => `Certificate ${c.serialNumber}`}
                 detailPath={(c) => `/ssh/certs/${c.id}?caKey=${c.sshCaKeyId || selectedCaKeyId}`}
             />
 

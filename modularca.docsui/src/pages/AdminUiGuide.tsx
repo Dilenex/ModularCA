@@ -477,11 +477,11 @@ export default function AdminUiGuide() {
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li>View and manage SSH CA signing keys</li>
-                    <li>Issue SSH user and host certificates</li>
-                    <li>Configure allowed principals and extensions</li>
-                    <li>Set certificate validity periods</li>
+                    <li>Grant login names: who may get a certificate that logs in as which account</li>
+                    <li>Sign a key for a user of the console, for a service identity, or for a host</li>
+                    <li>Set certificate validity periods and extensions</li>
                     <li>Download Key Revocation Lists (KRL)</li>
-                    <li>View and revoke issued SSH certificates</li>
+                    <li>View and revoke issued SSH certificates, and find one from a host log line</li>
                 </ul>
 
                 <h3 className="text-lg font-semibold text-ink mb-2">Where SSH CA keys are held</h3>
@@ -528,7 +528,105 @@ export default function AdminUiGuide() {
                     permit-port-forwarding, permit-pty and permit-user-rc by default. A profile that names
                     only permit-pty now issues a certificate with permit-pty alone. The no-* names put nothing into a
                     certificate; each only withholds the permit-* of the same name. A host certificate carries no extensions.
-                    A certificate needs at least one principal: the signer refuses one with none.
+                    A certificate needs at least one login name, or for a host one hostname: the signer refuses one with none.
+                </p>
+
+                <h3 className="text-lg font-semibold text-ink mb-2">Login names</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    A login name is an account a user certificate may log in as: what OpenSSH calls a principal. It is an
+                    account on the hosts, such as <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">deploy</code>, or a role name
+                    the hosts map to accounts. From 0.4.2 a certificate for a user carries only login names that user
+                    holds on the SSH CA key that signs it, and a request that names anything else is refused. A user holds:
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li>their own username, while the key&apos;s switch &ldquo;Everyone who can request from this CA may log in as their own username&rdquo; is on;</li>
+                    <li>each name granted on the key to them, until the grant ends;</li>
+                    <li>each name granted on the key to a group, while they are a member of it.</li>
+                </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    Each SSH CA key&apos;s page has a Login names section with that switch and the table of grants: the login
+                    name, the user or group it is granted to, the longest certificate that may carry it, when the grant ends,
+                    how many live certificates carry the name under it, and who granted it. Reading it takes the right to view
+                    certificates on the SSH CA; changing it takes the right to manage the SSH CA, and every change asks for
+                    step-up MFA.
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li><span className="font-semibold">The own-username switch</span> is on for every key until it is turned off, and it is saved at once. Turn it off where console usernames are not accounts on the hosts. Turning it off revokes the live certificates that carried their holder&apos;s own username with no grant behind it. Bear in mind that whoever may create or rename a user decides that user&apos;s username, and so one login name on every key that leaves the switch on.</li>
+                    <li><span className="font-semibold">+ Grant</span> takes several login names at once (type one, then Enter), one user or one group, an optional longest certificate in hours, an optional end date and an optional note. A name is 1 to 128 characters: first a letter, a digit or an underscore, then letters, digits and . _ @ + -. Upper and lower case are different names, as they are to sshd. A group must be an instance group, since an SSH CA belongs to the instance; a user must already have a role, a group or a grant on the SSH CA.</li>
+                    <li><span className="font-semibold">A grant with an end</span> is for temporary access. No certificate under it is valid past the end, and a grant that ends within fourteen days is marked in the table. A grant that has ended gives nothing, but it still holds its place: granting the same name to the same user or group again is refused until the old grant is edited or removed. The form says so and offers the edit.</li>
+                    <li><span className="font-semibold">Edit</span> changes the longest certificate, the end and the note. Lowering the limit revokes nothing; moving the end earlier revokes the certificates that would outlive it.</li>
+                    <li><span className="font-semibold">Remove</span> asks first and says how many live certificates carry the name under the grant. They are revoked, unless their holder still has the name another way. The count that was revoked is shown afterwards. Grants are edited and removed one at a time, because each change is confirmed with step-up MFA.</li>
+                </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    A user&apos;s page shows the same from the other side: every login name the user holds on each SSH CA you may
+                    view and where it comes from, and the user&apos;s live SSH certificates with Revoke all. Only a name granted
+                    to the user directly can be edited or removed there; one that comes from a group is changed on the group or
+                    on the SSH CA. Revoke all reports how many certificates were revoked and how many were left because you may
+                    not revoke on their SSH CA. A group&apos;s page lists the login names its members get, per SSH CA.
+                    Disabling, renaming or deleting a user revokes every live SSH certificate issued for them; removing a
+                    member from a group, or deleting the group, revokes the certificates that carried a name only through it.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    An SSH certificate profile&apos;s patterns are the outer limit on login names: a name outside them is refused
+                    whoever asks. They grant nothing. Who may use which name is set on the SSH CA key.
+                </p>
+
+                <h3 className="text-lg font-semibold text-ink mb-2">Signing for a user or a service identity</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    The CA writes the name a certificate carries into host logs (its key id); the Sign key form shows it and
+                    asks for none. Signing a user certificate asks for step-up MFA, because whoever signs decides whose
+                    name a public key is certified under. For a user certificate the form asks who the certificate is for:
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li><span className="font-semibold">A user of this console.</span> Pick the user. Their login names on the chosen SSH CA key are listed to tick, each with where it comes from and its limit; nothing is typed. To give the user another name, grant it on the key first, so the grant is on record. Hosts log the user&apos;s username, and the certificate is listed under that user&apos;s own SSH certificates, not under yours.</li>
+                    <li><span className="font-semibold">A service identity with no account.</span> Give it a label of 1 to 64 letters, digits and . _ -. Hosts log it as <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">svc:label</code>, which no username can equal. Its login names are typed and checked against the certificate profile&apos;s patterns.</li>
+                </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    A host certificate takes hostnames as before, and the CA writes the first one as its name in host logs.
+                    &ldquo;Valid for&rdquo; starts at the most allowed: the smallest limit among the profiles, the SSH CA key and the
+                    ticked login names, and never past the end of a grant. The form names the login name that sets the limit.
+                    The certificate records both who it was issued to and who issued it; the tables and the certificate&apos;s
+                    page show them as Issued to and Issued by. A certificate from before 0.4.2 shows &ldquo;Not recorded&rdquo; and
+                    &ldquo;Issued before login names were recorded&rdquo; where the reason for a name is not known.
+                </p>
+
+                <h3 className="text-lg font-semibold text-ink mb-2">Shared accounts</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    Several people can log in to one account, such as <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">deploy</code>,
+                    without sharing a key. Each person keeps their own key and gets their own certificate; the certificate
+                    carries the shared account as a login name, and the host log names the person:
+                </p>
+                <div className="bg-sunken rounded p-4 data-mono mb-3 overflow-x-auto">
+                    <pre className="text-ink">{`Oct  7 09:58:14 web01 sshd[21877]: Accepted publickey for deploy from 192.0.2.10 port 51122 ssh2: ED25519-CERT SHA256:[key] ID alice (serial 8841) CA ED25519 SHA256:[CA key]`}</pre>
+                </div>
+                <p className="text-ink leading-relaxed mb-3">
+                    The account is after <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">for</code>, the person after
+                    <code className="text-sm bg-sunken px-1.5 py-0.5 rounded"> ID</code>, then the certificate&apos;s serial and the SSH CA
+                    key&apos;s fingerprint. On each host, in <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">sshd_config</code>:
+                </p>
+                <div className="bg-sunken rounded p-4 data-mono mb-3 overflow-x-auto">
+                    <pre className="text-ink">{`TrustedUserCAKeys /etc/ssh/user_ca.pub
+RevokedKeys /etc/ssh/revoked_keys.krl
+# Only for the second way below:
+AuthorizedPrincipalsFile /etc/ssh/auth_principals/%u`}</pre>
+                </div>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li><span className="font-semibold">TrustedUserCAKeys</span> names a file with the SSH CA key&apos;s public key, from Download Public Key on the key&apos;s page.</li>
+                    <li><span className="font-semibold">A host can decide in two ways who gets into an account.</span> The first: the certificate lists the account. Grant the login name <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">deploy</code> to a group, and with no AuthorizedPrincipalsFile sshd lets a certificate into the account deploy when deploy is one of its login names. Every host that trusts the CA then accepts it. The second: the certificate lists a role, and the host maps it. Grant a role name such as <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">deployers</code>, and on each host that should let the role in, list it in the account&apos;s file, here <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/etc/ssh/auth_principals/deploy</code>, one name per line. Each host then decides which roles reach which account. With that file set, an account with no file, or one whose file lists none of the certificate&apos;s login names, lets no certificate in.</li>
+                    <li><span className="font-semibold">RevokedKeys</span> names the SSH CA key&apos;s KRL, which each host has to fetch: the public URL is shown on the key&apos;s page and ends in <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/ssh/ca-keys/&#123;id&#125;/krl</code>. Fetch it over HTTPS on a timer, write it to a temporary file and move it into place, because sshd refuses every public-key login while the file it names cannot be read. A certificate revoked in the console is refused by a host only once that host has the new list, so keep certificates short as well.</li>
+                    <li><span className="font-semibold">sshd logs the login, not the session.</span> The line above is all sshd writes. A session that needs to know which certificate opened it, for example to record the person in a shell audit, sets <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">ExposeAuthInfo yes</code>; sshd then puts the path of a file in the session&apos;s <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">SSH_USER_AUTH</code>, and that file holds the certificate that was used.</li>
+                </ul>
+
+                <h3 className="text-lg font-semibold text-ink mb-2">Finding a certificate from a host log line</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    Above the certificates table is &ldquo;Find by host log line&rdquo;. Paste the line sshd wrote for a login. The
+                    console reads it in your browser and shows what it read: the SSH CA, the serial, the name after ID and the
+                    account that was logged in to. It then looks the certificate up by serial, name and CA fingerprint, on
+                    the SSH CAs you may view. One match is shown at once, with who it was issued to and by and each login
+                    name with why its holder had it; the one the line used is marked. No match, or one on each of several
+                    SSH CAs, is said plainly. A line for a login with a plain public key or a password has no certificate in
+                    it, and the console says so. Where the account in the line is not a login name of the certificate, the
+                    host mapped the certificate to that account itself, with AuthorizedPrincipalsFile.
                 </p>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/admin/ssh/ca-keys<br />
@@ -537,7 +635,19 @@ export default function AdminUiGuide() {
                     POST /api/v1/admin/ssh/ca-keys/&#123;caKeyId&#125;/certificates/sign-user<br />
                     POST /api/v1/admin/ssh/ca-keys/&#123;caKeyId&#125;/certificates/sign-host<br />
                     GET /api/v1/admin/ssh/ca-keys/&#123;caKeyId&#125;/certificates<br />
-                    GET /api/v1/admin/ssh/ca-keys/&#123;id&#125;/krl
+                    GET /api/v1/admin/ssh/ca-keys/&#123;id&#125;/krl<br />
+                    GET /api/v1/admin/ssh/ca-keys/&#123;caKeyId&#125;/login-names<br />
+                    POST /api/v1/admin/ssh/ca-keys/&#123;caKeyId&#125;/login-names<br />
+                    PUT /api/v1/admin/ssh/ca-keys/&#123;caKeyId&#125;/login-names/&#123;grantId&#125;<br />
+                    DELETE /api/v1/admin/ssh/ca-keys/&#123;caKeyId&#125;/login-names/&#123;grantId&#125;<br />
+                    PUT /api/v1/admin/ssh/ca-keys/&#123;caKeyId&#125;/login-names/own-username<br />
+                    GET /api/v1/admin/ssh/ca-keys/&#123;caKeyId&#125;/users/&#123;userId&#125;/login-names<br />
+                    GET /api/v1/admin/ssh/users/&#123;userId&#125;/login-names<br />
+                    GET /api/v1/admin/ssh/groups/&#123;groupId&#125;/login-names<br />
+                    GET /api/v1/admin/ssh/users/&#123;userId&#125;/certificates<br />
+                    POST /api/v1/admin/ssh/users/&#123;userId&#125;/certificates/revoke<br />
+                    GET /api/v1/admin/ssh/certificates/find<br />
+                    GET /api/v1/admin/ssh/certificates/&#123;id&#125;
                 </div>
             </section>
 
@@ -559,7 +669,13 @@ export default function AdminUiGuide() {
                     <li>Reset user passwords</li>
                     <li>View user MFA enrollment status</li>
                     <li>View user certificate and request history</li>
+                    <li>See the SSH login names a user holds and their live SSH certificates, grant a login name, and revoke all of the certificates</li>
                 </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    Disabling, renaming or deleting a user revokes every live SSH certificate issued for them. A rename
+                    revokes them because hosts log the username the certificate was issued under, and that name would no
+                    longer say who logged in. See Login names under SSH Certificates.
+                </p>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/admin/users<br />
                     POST /api/v1/admin/users<br />
@@ -585,6 +701,7 @@ export default function AdminUiGuide() {
                     <li>Manage group members and their role levels</li>
                     <li>View effective permissions for a group</li>
                     <li>Auto-generated groups per CA label</li>
+                    <li>See and grant the SSH login names an instance group gives its members, per SSH CA</li>
                 </ul>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/admin/groups<br />

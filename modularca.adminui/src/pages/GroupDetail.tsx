@@ -14,6 +14,7 @@ import { Capabilities, StepUpOps } from '@shared/generated';
 import { useAuth } from '../context/AuthContext';
 import { inputClass as inputCls, labelClass as labelCls } from '@shared/components/forms';
 import { actionButtonDanger, actionButtonPrimary } from '@shared/components/actionButtons';
+import { SshGroupLoginNames } from '../components/SshLoginNameGrants';
 
 function templateLabel(t: string | null): string { return t || 'Custom'; }
 
@@ -142,7 +143,7 @@ const GroupDetail: React.FC = () => {
         const n = selectedMemberIds.length;
         setConfirm({
             title: 'Remove Members',
-            message: `Remove ${n} member${n === 1 ? '' : 's'} from this group? Privileged users will each require a controlled-user ceremony.`,
+            message: `Remove ${n} member${n === 1 ? '' : 's'} from this group? Privileged users will each require a controlled-user ceremony. A member who leaves loses the SSH login names the group gave, and the live SSH certificates that carried one only through this group are revoked.`,
             action: async () => {
                 const res: any = await apiPostWithMfa(`/api/v1/admin/groups/${id}/members/bulk-remove`, { userIds: selectedMemberIds }, requireStepUp, StepUpOps.RemoveGroupMember, id!);
                 setSelectedMemberIds([]);
@@ -165,7 +166,7 @@ const GroupDetail: React.FC = () => {
         if (!group) return;
         setConfirm({
             title: 'Delete Group',
-            message: `Delete "${group.displayName || group.name}"? This cannot be undone.`,
+            message: `Delete "${group.displayName || group.name}"? The SSH login names granted to it are removed, and the live SSH certificates its members held only through it are revoked. This cannot be undone.`,
             action: async () => { await apiDeleteWithMfa(`/api/v1/admin/groups/${id}`, requireStepUp, StepUpOps.DeleteGroup, id!); navigate('/groups'); },
         });
     };
@@ -296,6 +297,8 @@ const GroupDetail: React.FC = () => {
                     </>)}
                     {mode === 'view' && canEdit && <p className="text-[11px] text-ink-muted mt-2">Switch to Edit to add or remove members.</p>}
                 </DetailSection>
+
+                <SshGroupLoginNames group={{ id: group.id, name: group.name, displayName: group.displayName }} />
 
                 <ConfirmModal
                     isOpen={!!confirm}

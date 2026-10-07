@@ -92,6 +92,8 @@ export interface DataTableProps<Row> {
     autoRefreshSeconds?: number;
     /** Show selection checkboxes + bulk-action toolbar. */
     selectable?: boolean;
+    /** With `selectable`: which rows can be ticked. A row that cannot shows no checkbox and is left out of "select all". */
+    rowSelectable?: (row: Row) => boolean;
     bulkActions?: DataTableBulkAction<Row>[];
     /** Base filename for CSV export (without extension). Defaults to tableId. */
     exportFileName?: string;
@@ -159,7 +161,7 @@ const EMPTY_SET: Set<string> = new Set();
 export function DataTable<Row>({
     tableId, renamedColumns, columns, rows: loadedRows, rowKey, loading, error, empty, title, findable, toolbarAction, onRowClick: onRowOpen,
     onRefresh, autoRefreshSeconds = AUTO_REFRESH_SECONDS,
-    selectable, bulkActions, exportFileName, disableExport, renderExpanded,
+    selectable, rowSelectable, bulkActions, exportFileName, disableExport, renderExpanded,
     renderDrawer, drawerTitle, detailPath,
     selectedKeys, onSelectedKeysChange, totalCount, allMatchingSelected,
     onSelectAllMatching, onClearSelection, onExport, exporting,
@@ -230,7 +232,7 @@ export function DataTable<Row>({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [rows, controlled]);
 
-    const allKeys = useMemo(() => sortedRows.map(rowKey), [sortedRows, rowKey]);
+    const allKeys = useMemo(() => (rowSelectable ? sortedRows.filter(rowSelectable) : sortedRows).map(rowKey), [sortedRows, rowKey, rowSelectable]);
     const allSelected = allKeys.length > 0 && allKeys.every((k) => selected.has(k));
     const someSelected = selected.size > 0 && !allSelected;
     const selectAllRef = useRef<HTMLInputElement>(null);
@@ -553,8 +555,10 @@ export function DataTable<Row>({
                                     )}
                                     {selectable && (
                                         <div className="flex items-center justify-center py-2">
-                                            <input type="checkbox" checked={isSel} onChange={() => toggleRow(k)}
-                                                className="h-3.5 w-3.5 rounded border-line-strong accent-accent" />
+                                            {(!rowSelectable || rowSelectable(r)) && (
+                                                <input type="checkbox" checked={isSel} onChange={() => toggleRow(k)}
+                                                    className="h-3.5 w-3.5 rounded border-line-strong accent-accent" />
+                                            )}
                                         </div>
                                     )}
                                     {visibleCols.map((c) => (

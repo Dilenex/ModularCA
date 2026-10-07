@@ -14,6 +14,7 @@ import { StepUpOps } from '@shared/generated';
 import { actionButton, actionButtonDanger } from '@shared/components/actionButtons';
 import { signBlockedReason, sshKeyCustody } from './sshKeyCustody';
 import { SshPlaintextNoticePanel, useSshPlaintextNotice } from '../components/SshPlaintextNotice';
+import { SshKeyLoginNames } from '../components/SshLoginNameGrants';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -30,10 +31,11 @@ function downloadText(content: string, filename: string) {
 
 
 /// <summary>
-/// Read-only detail page for a single SSH CA key: shows algorithm, validity, public key, where
-/// the private key is held and integration hints, with download / disable actions in the action
-/// bar. A key that was a plaintext file on the node also carries the plaintext notice. SSH CA
-/// keys are not edited in place, so the page is View-only (Edit disabled).
+/// Detail page for a single SSH CA key: shows algorithm, validity, public key, where the private
+/// key is held, its login names and integration hints, with download / disable actions in the
+/// action bar. A key that was a plaintext file on the node also carries the plaintext notice. The
+/// key itself is not edited in place, so the page is View-only (Edit disabled); the Login names
+/// section changes its grants where the reader may manage the SSH CA.
 /// </summary>
 const SshCaKeyDetail: React.FC = () => {
     const { id } = useParams<{ id: string }>();
@@ -175,10 +177,15 @@ const SshCaKeyDetail: React.FC = () => {
                     <SshPlaintextNoticePanel notice={plaintextNotice} currentKeyId={key.id} />
                 )}
 
+                <SshKeyLoginNames caKey={key} />
+
                 <DetailSection title="Integration">
                     <div className="text-xs text-ink-muted space-y-1">
                         {key.isUserCa && (
-                            <p><span className="text-ink font-medium">User CA:</span> Add to <code className="text-accent-ink">TrustedUserCAKeys</code> in sshd_config</p>
+                            <p><span className="text-ink font-medium">User CA:</span> Add to <code className="text-accent-ink">TrustedUserCAKeys</code> in sshd_config. A host lets a certificate in when one of its login names is the account being logged in to, or is listed for that account in <code className="text-accent-ink">AuthorizedPrincipalsFile</code>.</p>
+                        )}
+                        {key.isUserCa && key.krlUrl && (
+                            <p><span className="text-ink font-medium">Revocation:</span> Fetch <code className="text-accent-ink">{key.krlUrl}</code> on each host and name the file in <code className="text-accent-ink">RevokedKeys</code>. A certificate revoked here is refused only once the host has the new list.</p>
                         )}
                         {key.isHostCa && (
                             <p><span className="text-ink font-medium">Host CA:</span> Add to <code className="text-accent-ink">known_hosts</code> with <code className="text-accent-ink">@cert-authority * {key.publicKey?.split(' ').slice(0, 2).join(' ')}...</code></p>

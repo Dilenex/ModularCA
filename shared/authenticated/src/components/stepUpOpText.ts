@@ -10,6 +10,8 @@ const TEXT: Record<string, string> = {
     'restart-audit-chain': "Start a new epoch of the audit hash chain",
     'manage-trust-anchor': "Import, enable, disable or delete a trust anchor",
     'revoke-ssh-cert': "Revoke an SSH certificate",
+    'manage-ssh-login-names': "Change who may log in as which account with an SSH CA",
+    'sign-ssh-user-cert': "Sign an SSH certificate for a user or a service identity",
     'create-enrollment-secret': "Create an enrollment token or shared secret",
     'create-eab-key': "Create an ACME external account binding key",
     'manage-user-badge': "Change another user's access badges",

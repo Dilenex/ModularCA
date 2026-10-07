@@ -12,9 +12,10 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import TemporaryPasswordModal from '../components/TemporaryPasswordModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
-import { StepUpOps } from '@shared/generated';
+import { Capabilities, StepUpOps } from '@shared/generated';
 import { AccessBadgesPanel } from '@shared-auth/components/AccessBadgesPanel';
 import { actionButton, actionButtonDanger, actionButtonPrimary } from '@shared/components/actionButtons';
+import { SshUserLoginNames } from '../components/SshLoginNameGrants';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -26,14 +27,15 @@ function formatDate(d: string | null) {
 /// and guarded account actions (reset password, reset MFA, disable/enable, delete) in the action bar,
 /// each of which opens an approval ceremony instead when the server answers 202. A direct password
 /// reset shows the temporary password once. The page is View/Edit — Edit mode exposes the
-/// add/remove-group controls.
+/// add/remove-group controls. For a reader who may manage users, two SSH sections follow: the
+/// login names the user holds on each SSH CA, and the user's live SSH certificates.
 /// </summary>
 const UserDetail: React.FC = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
     const { showToast } = useToast();
     const { requireStepUp } = useStepUp();
-    const { user: currentUser } = useAuth();
+    const { user: currentUser, canAnywhere } = useAuth();
     const currentUserId = currentUser?.id ?? null;
 
     const [user, setUser] = useState<any | null>(null);
@@ -147,7 +149,7 @@ const UserDetail: React.FC = () => {
         if (isSuperGroup && otherSystemAdminCount === 0) { showToast('warning', 'Cannot disable the super admin account — no other system admins exist. Create another system admin first.'); return; }
         const superWarning = isSuperGroup ? ' WARNING: This is a super admin account. Once disabled, it can ONLY be re-enabled via direct database access.' : '';
         setConfirm({
-            title: 'Disable Account', message: `Disable user "${user.username}"? They will not be able to log in.${superWarning}`, confirmLabel: 'Disable',
+            title: 'Disable Account', message: `Disable user "${user.username}"? They will not be able to log in, and every live SSH certificate issued for them is revoked.${superWarning}`, confirmLabel: 'Disable',
             action: async () => {
                 const res: any = await apiPutWithMfa(`/api/v1/admin/users/${id}`, { isActive: false }, requireStepUp, StepUpOps.UpdateUser, id!);
                 if (!ceremonyStarted(res)) setRefresh((r) => r + 1);
@@ -164,7 +166,7 @@ const UserDetail: React.FC = () => {
     const deleteUser = () => {
         if (isSelf) { showToast('warning', 'You cannot delete your own account.'); return; }
         setConfirm({
-            title: 'Delete User', message: `Permanently delete user "${user.username}"? If they hold an admin / operator / CA-admin tier, this requires a controlled-user ceremony approved by the required quorum.`, confirmLabel: 'Delete User',
+            title: 'Delete User', message: `Permanently delete user "${user.username}"? Every live SSH certificate issued for them is revoked, and the SSH login names granted to them are removed. If they hold an admin / operator / CA-admin tier, this requires a controlled-user ceremony approved by the required quorum.`, confirmLabel: 'Delete User',
             action: async () => {
                 const res: any = await apiDeleteWithMfa(`/api/v1/admin/users/${id}`, requireStepUp, StepUpOps.DeleteUser, id!);
                 if (!ceremonyStarted(res)) { showToast('success', `User "${user.username}" deleted`); navigate('/users'); }
@@ -273,6 +275,8 @@ const UserDetail: React.FC = () => {
                         </div>
                     )}
                 </DetailSection>
+
+                {canAnywhere(Capabilities.UserManage) && <SshUserLoginNames user={{ id: user.id, username: user.username }} />}
 
                 <ConfirmModal
                     isOpen={!!confirm}
