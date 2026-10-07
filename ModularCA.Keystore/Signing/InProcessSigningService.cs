@@ -431,12 +431,26 @@ public sealed class InProcessSigningService : ISigningService
     /// behind the signer; a node in remote mode cannot reproduce it. The blob names the key it
     /// was derived from, so the designation can change without re-wrapping anything.
     /// </remarks>
-    public async Task<byte[]> WrapSecretAsync(SecretKind kind, byte[] secret, SigningContext context, CancellationToken cancellationToken = default)
+    public Task<byte[]> WrapSecretAsync(SecretKind kind, byte[] secret, SigningContext context, CancellationToken cancellationToken = default)
+        => WrapAsync(kind, binding: null, secret, context, cancellationToken);
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// As <see cref="WrapSecretAsync"/>, with the binding in the associated data and in the key
+    /// derivation, so the blob authenticates only as a secret kept in that place.
+    /// </remarks>
+    public Task<byte[]> WrapBoundSecretAsync(SecretKind kind, string binding, byte[] secret, SigningContext context, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(binding);
+        return WrapAsync(kind, binding, secret, context, cancellationToken);
+    }
+
+    private async Task<byte[]> WrapAsync(SecretKind kind, string? binding, byte[] secret, SigningContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(secret);
         ArgumentNullException.ThrowIfNull(context);
 
-        var refusal = JudgeSecretWrap(context, kind, wrapping: true);
+        var refusal = JudgeSecretWrap(context, kind, wrapping: true) ?? JudgeBinding(kind, binding, bound: binding != null);
         byte[]? keyId = null;
         byte[]? material = null;
         byte[]? blob = null;
@@ -446,7 +460,7 @@ public sealed class InProcessSigningService : ISigningService
         {
             try
             {
-                blob = Seal(kind, keyId!, material!, secret);
+                blob = Seal(kind, keyId!, material!, secret, binding);
             }
             finally
             {
@@ -471,7 +485,22 @@ public sealed class InProcessSigningService : ISigningService
     /// kind therefore cannot reach another by asking differently, and because the kind is in the
     /// associated data, a blob relabelled on its way here does not authenticate at all.
     /// </remarks>
-    public async Task<byte[]> UnwrapSecretAsync(byte[] wrapped, SigningContext context, CancellationToken cancellationToken = default)
+    public Task<byte[]> UnwrapSecretAsync(byte[] wrapped, SigningContext context, CancellationToken cancellationToken = default)
+        => UnwrapAsync(wrapped, binding: null, context, cancellationToken);
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The binding the caller names is compared with the one in the blob before anything is
+    /// decrypted, and the one in the blob is authenticated by the decryption. So a blob moved
+    /// from the place it was wrapped for is refused, and so is one whose binding was edited.
+    /// </remarks>
+    public Task<byte[]> UnwrapBoundSecretAsync(byte[] wrapped, string binding, SigningContext context, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(binding);
+        return UnwrapAsync(wrapped, binding, context, cancellationToken);
+    }
+
+    private async Task<byte[]> UnwrapAsync(byte[] wrapped, string? binding, SigningContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(wrapped);
         ArgumentNullException.ThrowIfNull(context);
@@ -485,7 +514,14 @@ public sealed class InProcessSigningService : ISigningService
             throw malformed;
         }
 
-        var refusal = JudgeSecretWrap(context, header.Kind, wrapping: false);
+        var refusal = JudgeSecretWrap(context, header.Kind, wrapping: false) ?? JudgeBinding(header.Kind, binding, bound: binding != null);
+        if (refusal == null && !string.Equals(header.Binding, binding, StringComparison.Ordinal))
+        {
+            refusal = new SigningRefusedException(SigningRefusalReason.IntegrityFailure,
+                header.Binding == null ? $"The wrapped {header.Kind} is not bound to any place, and it was asked for as one that is."
+                : binding == null ? $"The wrapped {header.Kind} is bound to a place, and it was asked for without naming one."
+                : $"The wrapped {header.Kind} was wrapped for another place than the one it was read from.");
+        }
         byte[]? material = null;
         byte[]? secret = null;
         if (refusal == null)
@@ -1085,6 +1121,7 @@ public sealed class InProcessSigningService : ISigningService
             [SigningPurpose.Cmp] = SecretKind.CmpSharedSecret,
             [SigningPurpose.Certificate] = SecretKind.HeldPrivateKey,
             [SigningPurpose.Backup] = SecretKind.BackupConfigSecret,
+            [SigningPurpose.Configuration] = SecretKind.SettingSecret,
         };
 
     /// <summary>
@@ -1101,7 +1138,30 @@ public sealed class InProcessSigningService : ISigningService
             [SigningPurpose.Cmp] = SecretKind.CmpSharedSecret,
             [SigningPurpose.Export] = SecretKind.HeldPrivateKey,
             [SigningPurpose.Restore] = SecretKind.BackupConfigSecret,
+            // The settings store both keeps a secret setting and reads it back to use it.
+            [SigningPurpose.Configuration] = SecretKind.SettingSecret,
         };
+
+    /// <summary>
+    /// Kinds that are always kept in a named place and so are only ever wrapped bound to it. A
+    /// kind that is not here is wrapped without a binding, as it was before bindings existed.
+    /// </summary>
+    private static readonly IReadOnlySet<SecretKind> BoundKinds = new HashSet<SecretKind> { SecretKind.SettingSecret };
+
+    /// <summary>
+    /// Whether <paramref name="kind"/> may be wrapped or unwrapped with, or without, a binding:
+    /// a bound kind needs one, an unbound kind takes none, and a binding has to be well formed.
+    /// </summary>
+    private static SigningRefusedException? JudgeBinding(SecretKind kind, string? binding, bool bound)
+    {
+        if (bound != BoundKinds.Contains(kind))
+            return new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
+                bound ? $"A {kind} is not kept in a named place and is wrapped without a binding."
+                    : $"A {kind} is wrapped for the place it is kept in; none was named.");
+        if (bound && WrappedSecretEnvelope.BindingProblem(binding) is { } problem)
+            return new SigningRefusedException(SigningRefusalReason.OperationUnsupported, problem);
+        return null;
+    }
 
     /// <summary>
     /// The wrap policy: the signer is unlocked, the context names a caller, and the purpose is
@@ -1219,19 +1279,26 @@ public sealed class InProcessSigningService : ISigningService
     /// under it with the blob's header as associated data. The derived key is zeroed before the
     /// blob is returned.
     /// </summary>
-    private static byte[] Seal(SecretKind kind, byte[] keyId, byte[] material, byte[] secret)
+    private static byte[] Seal(SecretKind kind, byte[] keyId, byte[] material, byte[] secret, string? binding)
     {
         var salt = RandomNumberGenerator.GetBytes(WrappedSecretEnvelope.SaltLength);
         var nonce = RandomNumberGenerator.GetBytes(WrappedSecretEnvelope.NonceLength);
-        var aad = WrappedSecretEnvelope.AssociatedData(kind, keyId);
-        var key = HKDF.DeriveKey(HashAlgorithmName.SHA256, material, 32, salt, WrappedSecretEnvelope.DerivationInfo(kind, keyId));
+        var aad = binding == null
+            ? WrappedSecretEnvelope.AssociatedData(kind, keyId)
+            : WrappedSecretEnvelope.AssociatedData(kind, keyId, binding);
+        var info = binding == null
+            ? WrappedSecretEnvelope.DerivationInfo(kind, keyId)
+            : WrappedSecretEnvelope.DerivationInfo(kind, keyId, binding);
+        var key = HKDF.DeriveKey(HashAlgorithmName.SHA256, material, 32, salt, info);
         try
         {
             var ciphertext = new byte[secret.Length];
             var tag = new byte[WrappedSecretEnvelope.TagLength];
             using var gcm = new AesGcm(key, WrappedSecretEnvelope.TagLength);
             gcm.Encrypt(nonce, secret, ciphertext, tag, aad);
-            return WrappedSecretEnvelope.Build(kind, keyId, salt, nonce, ciphertext, tag);
+            return binding == null
+                ? WrappedSecretEnvelope.Build(kind, keyId, salt, nonce, ciphertext, tag)
+                : WrappedSecretEnvelope.Build(kind, keyId, binding, salt, nonce, ciphertext, tag);
         }
         finally
         {
@@ -1247,7 +1314,9 @@ public sealed class InProcessSigningService : ISigningService
     private static byte[] Open(WrappedSecretHeader header, byte[] material)
     {
         var key = HKDF.DeriveKey(HashAlgorithmName.SHA256, material, 32, header.Salt,
-            WrappedSecretEnvelope.DerivationInfo(header.Kind, header.KeyId));
+            header.Binding == null
+                ? WrappedSecretEnvelope.DerivationInfo(header.Kind, header.KeyId)
+                : WrappedSecretEnvelope.DerivationInfo(header.Kind, header.KeyId, header.Binding));
         try
         {
             var secret = new byte[header.Ciphertext.Length];

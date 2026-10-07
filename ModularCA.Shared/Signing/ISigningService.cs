@@ -167,6 +167,36 @@ public interface ISigningService
     Task<byte[]> UnwrapSecretAsync(byte[] wrapped, SigningContext context, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// <see cref="WrapSecretAsync"/> for a secret that is kept in a named place:
+    /// <paramref name="binding"/> names it, and the blob unwraps only for a caller that names the
+    /// same place. A blob copied to another row of the same kind is therefore useless there.
+    /// </summary>
+    /// <param name="kind">What kind of secret this is; the policy is keyed on it and the purpose.</param>
+    /// <param name="binding">Where the blob will be kept, for example <c>setting:JWT_Secret</c>.</param>
+    /// <param name="secret">The bytes to protect. The signer does not interpret them.</param>
+    /// <param name="context">Who is asking and what for.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <returns>A version 2 <see cref="WrappedSecretEnvelope"/>, which carries the binding.</returns>
+    /// <exception cref="SigningRefusedException">As <see cref="WrapSecretAsync"/>, or the binding is empty or too long.</exception>
+    Task<byte[]> WrapBoundSecretAsync(SecretKind kind, string binding, byte[] secret, SigningContext context, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Recovers a secret <see cref="WrapBoundSecretAsync"/> wrapped, for the place
+    /// <paramref name="binding"/> names. The kind and the wrapping key come out of the blob as in
+    /// <see cref="UnwrapSecretAsync"/>; the binding comes from the caller and has to be the one
+    /// the blob was wrapped under.
+    /// </summary>
+    /// <param name="wrapped">The blob as <see cref="WrapBoundSecretAsync"/> returned it.</param>
+    /// <param name="binding">Where the caller read the blob from.</param>
+    /// <param name="context">Who is asking and what for.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <exception cref="SigningRefusedException">
+    /// As <see cref="UnwrapSecretAsync"/>, or the blob carries no binding, or it was wrapped for
+    /// another place.
+    /// </exception>
+    Task<byte[]> UnwrapBoundSecretAsync(byte[] wrapped, string binding, SigningContext context, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Lists the keys the signer holds, with their public halves and what kind of key each is.
     /// A context naming a CA lists that CA's keys only.
     /// </summary>

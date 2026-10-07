@@ -244,6 +244,17 @@ public sealed class RemoteSigningService : ISigningService, IDisposable
 
     /// <inheritdoc />
     public Task<byte[]> WrapSecretAsync(SecretKind kind, byte[] secret, SigningContext context, CancellationToken cancellationToken = default)
+        => WrapAsync(kind, string.Empty, secret, context, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<byte[]> WrapBoundSecretAsync(SecretKind kind, string binding, byte[] secret, SigningContext context, CancellationToken cancellationToken = default)
+    {
+        // An empty binding is how the wire says "none", so it cannot also be a binding.
+        ArgumentException.ThrowIfNullOrEmpty(binding);
+        return WrapAsync(kind, binding, secret, context, cancellationToken);
+    }
+
+    private Task<byte[]> WrapAsync(SecretKind kind, string binding, byte[] secret, SigningContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(secret);
         ArgumentNullException.ThrowIfNull(context);
@@ -254,6 +265,7 @@ public sealed class RemoteSigningService : ISigningService, IDisposable
                 Kind = Wire.WireMapping.ToWire(kind),
                 Secret = ByteString.CopyFrom(secret),
                 Context = Wire.WireMapping.ToWire(context),
+                Binding = binding,
             }, options);
             return response.Wrapped.ToByteArray();
         }, _options.CallTimeout, cancellationToken);
@@ -266,6 +278,16 @@ public sealed class RemoteSigningService : ISigningService, IDisposable
     /// off the wire; nothing keeps it out of the node.
     /// </remarks>
     public Task<byte[]> UnwrapSecretAsync(byte[] wrapped, SigningContext context, CancellationToken cancellationToken = default)
+        => UnwrapAsync(wrapped, string.Empty, context, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<byte[]> UnwrapBoundSecretAsync(byte[] wrapped, string binding, SigningContext context, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(binding);
+        return UnwrapAsync(wrapped, binding, context, cancellationToken);
+    }
+
+    private Task<byte[]> UnwrapAsync(byte[] wrapped, string binding, SigningContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(wrapped);
         ArgumentNullException.ThrowIfNull(context);
@@ -275,6 +297,7 @@ public sealed class RemoteSigningService : ISigningService, IDisposable
             {
                 Wrapped = ByteString.CopyFrom(wrapped),
                 Context = Wire.WireMapping.ToWire(context),
+                Binding = binding,
             }, options);
             return response.Secret.ToByteArray();
         }, _options.CallTimeout, cancellationToken);

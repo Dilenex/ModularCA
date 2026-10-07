@@ -37,4 +37,13 @@ public enum SecretKind
     /// only, so opening one needs the keystore and its passphrases as well as the archive key.
     /// </summary>
     BackupConfigSecret = 4,
+
+    /// <summary>
+    /// The value of a secret setting kept in the settings store: the JWT secret, the LDAP bind
+    /// password, the mail credentials, the webhook endpoints. Wrapped and unwrapped under
+    /// <see cref="SigningPurpose.Configuration"/> only, and always bound to the setting's key
+    /// (<see cref="ISigningService.WrapBoundSecretAsync"/>), so a blob moved to another
+    /// setting's row does not unwrap there.
+    /// </summary>
+    SettingSecret = 5,
 }

@@ -161,6 +161,9 @@ message WrapSecretRequest {
   string kind = 1;
   bytes secret = 2;
   SigningContext context = 3;
+  // Where the blob will be kept, for a secret that is bound to its place. Set, the signer
+  // returns a blob that unwraps only for the same binding; empty, one with no binding.
+  string binding = 4;
 }
 
 message WrapSecretResponse {
@@ -173,6 +176,9 @@ message WrapSecretResponse {
 message UnwrapSecretRequest {
   bytes wrapped = 1;
   SigningContext context = 2;
+  // Where the caller read the blob from. It has to be the binding the blob was wrapped under,
+  // and empty for a blob that has none.
+  string binding = 3;
 }
 
 message UnwrapSecretResponse {

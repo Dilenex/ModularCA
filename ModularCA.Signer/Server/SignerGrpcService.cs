@@ -131,11 +131,11 @@ public sealed class SignerGrpcService : Wire.Signer.SignerBase
     public override Task<WrapSecretResponse> WrapSecret(WrapSecretRequest request, ServerCallContext context)
         => GuardAsync(async () =>
         {
-            var wrapped = await _signer.WrapSecretAsync(
-                WireMapping.ToSecretKind(request.Kind),
-                request.Secret.ToByteArray(),
-                ContextFrom(request.Context, context),
-                context.CancellationToken);
+            var kind = WireMapping.ToSecretKind(request.Kind);
+            var signingContext = ContextFrom(request.Context, context);
+            var wrapped = request.Binding.Length == 0
+                ? await _signer.WrapSecretAsync(kind, request.Secret.ToByteArray(), signingContext, context.CancellationToken)
+                : await _signer.WrapBoundSecretAsync(kind, request.Binding, request.Secret.ToByteArray(), signingContext, context.CancellationToken);
             return new WrapSecretResponse { Wrapped = ByteString.CopyFrom(wrapped) };
         }, "WrapSecret");
 
@@ -143,10 +143,10 @@ public sealed class SignerGrpcService : Wire.Signer.SignerBase
     public override Task<UnwrapSecretResponse> UnwrapSecret(UnwrapSecretRequest request, ServerCallContext context)
         => GuardAsync(async () =>
         {
-            var secret = await _signer.UnwrapSecretAsync(
-                request.Wrapped.ToByteArray(),
-                ContextFrom(request.Context, context),
-                context.CancellationToken);
+            var signingContext = ContextFrom(request.Context, context);
+            var secret = request.Binding.Length == 0
+                ? await _signer.UnwrapSecretAsync(request.Wrapped.ToByteArray(), signingContext, context.CancellationToken)
+                : await _signer.UnwrapBoundSecretAsync(request.Wrapped.ToByteArray(), request.Binding, signingContext, context.CancellationToken);
             return new UnwrapSecretResponse { Secret = ByteString.CopyFrom(secret) };
         }, "UnwrapSecret");
 

@@ -50,4 +50,10 @@ public enum SigningPurpose
     /// a CA certificate; reissuing a responder is an operator's action, not a ceremony.
     /// </summary>
     Infrastructure,
+
+    /// <summary>
+    /// The settings store keeping or reading a secret setting. It wraps and unwraps
+    /// <see cref="SecretKind.SettingSecret"/> and nothing else, and signs nothing.
+    /// </summary>
+    Configuration,
 }
