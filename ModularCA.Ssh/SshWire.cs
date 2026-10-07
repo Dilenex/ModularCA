@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 using System.Text;
 using Org.BouncyCastle.Math;
 
-namespace ModularCA.Shared.Ssh;
+namespace ModularCA.Ssh;
 
 /// <summary>
 /// Writes the SSH wire encoding (RFC 4251 section 5): big-endian integers, length-prefixed

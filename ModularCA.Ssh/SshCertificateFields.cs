@@ -1,4 +1,4 @@
-namespace ModularCA.Shared.Ssh;
+namespace ModularCA.Ssh;
 
 /// <summary>The OpenSSH certificate type field.</summary>
 public enum SshCertificateType : uint

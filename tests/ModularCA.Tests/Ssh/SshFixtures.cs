@@ -1,9 +1,9 @@
 using System.Security.Cryptography;
-using ModularCA.Shared.Ssh;
+using ModularCA.Ssh;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Crypto.Signers;
 
-namespace ModularCA.Tests.Shared.Ssh;
+namespace ModularCA.Tests.Ssh;
 
 /// <summary>
 /// One certificate made by <c>Fixtures/generate.sh</c>, with the inputs it was made from. Only the
@@ -89,7 +89,7 @@ public static class SshFixtures
 
     /// <summary>The full path of a fixture file.</summary>
     public static string PathOf(string name) =>
-        Path.Combine(AppContext.BaseDirectory, "Shared", "Ssh", "Fixtures", name);
+        Path.Combine(AppContext.BaseDirectory, "Ssh", "Fixtures", name);
 
     /// <summary>The text of a fixture file.</summary>
     public static string Text(string name) => File.ReadAllText(PathOf(name));

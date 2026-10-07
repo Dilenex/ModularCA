@@ -1,5 +1,5 @@
 using System.Buffers.Binary;
-using ModularCA.Shared.Ssh;
+using ModularCA.Ssh;
 using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Crypto.Generators;
@@ -9,7 +9,7 @@ using Org.BouncyCastle.Security;
 using Org.BouncyCastle.X509;
 using Xunit;
 
-namespace ModularCA.Tests.Shared.Ssh;
+namespace ModularCA.Tests.Ssh;
 
 /// <summary>
 /// The OpenSSH encoder, parser and KRL writer against certificates and KRLs made by

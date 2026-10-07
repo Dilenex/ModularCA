@@ -1,4 +1,4 @@
-namespace ModularCA.Shared.Ssh;
+namespace ModularCA.Ssh;
 
 /// <summary>
 /// A parsed OpenSSH v01 certificate. Parsing checks structure only: that every field is present

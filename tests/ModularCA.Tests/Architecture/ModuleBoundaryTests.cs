@@ -51,6 +51,10 @@ public class ModuleBoundaryTests
     /// </remarks>
     private static readonly string[] LayerOrder =
     [
+        // The OpenSSH certificate library. It knows nothing of ModularCA and references no
+        // project, so it can be lifted out whole. Shared does not reference it either: the
+        // signing contract speaks of SSH certificates in its own plain types.
+        "ModularCA.Ssh",
         "ModularCA.Shared",
         // The signer's wire: the gRPC contract, the remote client and the signer role's host.
         // It references Shared alone, so the node's client holds no keystore type; the API

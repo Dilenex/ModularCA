@@ -1,4 +1,4 @@
-namespace ModularCA.Shared.Ssh;
+namespace ModularCA.Ssh;
 
 /// <summary>OpenSSH public key type names, and the certificate type each one has.</summary>
 public static class SshKeyTypes

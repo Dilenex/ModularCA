@@ -1,7 +1,7 @@
-using ModularCA.Shared.Ssh;
+using ModularCA.Ssh;
 using Xunit;
 
-namespace ModularCA.Tests.Shared.Ssh;
+namespace ModularCA.Tests.Ssh;
 
 /// <summary>The key-level checks the signer will run before signing an SSH certificate.</summary>
 public class SshCertificateRulesTests

@@ -4,7 +4,7 @@ using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Crypto.Utilities;
 using Org.BouncyCastle.Pkcs;
 
-namespace ModularCA.Shared.Ssh;
+namespace ModularCA.Ssh;
 
 /// <summary>A private key read from an OpenSSH key file, with its public half.</summary>
 /// <param name="PrivateKey">The private key.</param>

@@ -1,4 +1,4 @@
-namespace ModularCA.Shared.Ssh;
+namespace ModularCA.Ssh;
 
 /// <summary>
 /// Builds OpenSSH key revocation lists (<c>PROTOCOL.krl</c>) that revoke certificates by serial.

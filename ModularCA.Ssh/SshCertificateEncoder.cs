@@ -1,6 +1,6 @@
 using System.Security.Cryptography;
 
-namespace ModularCA.Shared.Ssh;
+namespace ModularCA.Ssh;
 
 /// <summary>
 /// Encodes OpenSSH v01 certificates (<c>PROTOCOL.certkeys</c>). Signing is two steps:

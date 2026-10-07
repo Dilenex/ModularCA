@@ -1,7 +1,7 @@
 using System.Net;
 using System.Text;
 
-namespace ModularCA.Shared.Ssh;
+namespace ModularCA.Ssh;
 
 /// <summary>The limits an SSH CA key places on what it signs.</summary>
 /// <param name="AllowUser">Whether the key signs user certificates.</param>

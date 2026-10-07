@@ -1,7 +1,7 @@
-using ModularCA.Shared.Ssh;
+using ModularCA.Ssh;
 using Xunit;
 
-namespace ModularCA.Tests.Shared.Ssh;
+namespace ModularCA.Tests.Ssh;
 
 /// <summary>Parsing subject public keys from authorized_keys lines, which replaces the node's prefix check.</summary>
 public class SshPublicKeyTests

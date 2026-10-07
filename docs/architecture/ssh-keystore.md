@@ -1,7 +1,7 @@
 # SSH keystore
 
 Status: owner decisions recorded 2026-10-05 (see "Decided by the owner"). Stage 1, the wire
-format in `ModularCA.Shared/Ssh`, is built; nothing calls it yet.
+format, is built as its own assembly, `ModularCA.Ssh`; nothing calls it yet.
 
 ## Why
 
@@ -297,9 +297,17 @@ message KeySpec {
 ```
 
 - **`ISigningService.SignSshCertificateAsync(SshCertificateRequest, SigningContext)`** is added in
-  `ModularCA.Shared/Signing`, along with the OpenSSH encoder in `ModularCA.Shared/Ssh`. Both node
-  and signer use the encoder. `Shared` already depends on BouncyCastle, whose OpenSSH utilities
-  cover public-key encoding. Stage 1 checked the private side: BouncyCastle 2.7.0's
+  `ModularCA.Shared/Signing`. The request is plain types, as the gRPC message is (the subject key
+  as its wire blob, strings and integers), because `Shared` references no project: it is what a
+  private module compiles against (`ModuleBoundaryTests.Shared_references_nothing`).
+- **The OpenSSH encoder is `ModularCA.Ssh`, an assembly of its own** (owner decision,
+  2026-10-06). It references no ModularCA project and only BouncyCastle, so it can be lifted
+  out whole and published under its own licence later. The signer's implementation
+  (`ModularCA.Keystore`) and the node (`ModularCA.Core`) reference it directly. It signs
+  through `ISshSigner` (a public key, and "sign these bytes with this algorithm"), which the
+  signer implements over a keystore entry or a token, and `SshCertificateIssuer` checks the
+  rules, builds the certificate, and returns it only when the signature verifies under the CA
+  key. BouncyCastle's OpenSSH utilities cover public-key encoding. Stage 1 checked the private side: BouncyCastle 2.7.0's
   `OpenSshPrivateKeyUtilities` reads unencrypted `openssh-key-v1` Ed25519, ECDSA P-256/P-384/P-521
   and RSA keys as `ssh-keygen` 10.2 writes them. `SshPrivateKeyFile` wraps it, checks the file's
   public key against its private key, and gives the PKCS#8 the import sends.
@@ -543,7 +551,7 @@ guide.
 
 | Stage | Work | Effort |
 |---|---|---|
-| 1 | **Built.** `ModularCA.Shared/Ssh`: certificate encoder and parser, public key encode/decode and authorized_keys parsing, signature blobs per algorithm (DER and raw ECDSA), KRL encoder, `openssh-key-v1` private key reader, and the signer's checks as pure functions (`SshCertificateRules`). Golden tests against fixtures made with `ssh-keygen` 10.2 (`tests/ModularCA.Tests/Shared/Ssh/Fixtures/generate.sh`). No `ssh-keygen` option-set mapping, since profiles are exact. No behaviour change | M |
+| 1 | **Built.** `ModularCA.Ssh` (its own assembly; `ISshSigner` and `SshCertificateIssuer` added 2026-10-06): certificate encoder and parser, public key encode/decode and authorized_keys parsing, signature blobs per algorithm (DER and raw ECDSA), KRL encoder, `openssh-key-v1` private key reader, and the signer's checks as pure functions (`SshCertificateRules`). Golden tests against fixtures made with `ssh-keygen` 10.2 (`tests/ModularCA.Tests/Shared/Ssh/Fixtures/generate.sh`). No `ssh-keygen` option-set mapping, since profiles are exact. No behaviour change | M |
 | 2 | Signer: `ssh-ca.keystore` (create, load, append, pin, secondary alias), `KeyKind.SshCa`, the two purposes, `SignSshCertificate` in process and over gRPC, SSH generate, commit and import, `CreateSshCa` ceremony verification, `SignerAudit.Summary` migration. Contract suite on both bindings, with deliberate breaks: raw `Sign` on an SSH key allowed, empty principals allowed, X.509 key in the SSH file, ceremony check removed | L |
 | 3 | Node cut-over: `SshCaService` over the signer; KRL from the public key; `KeyStorage` column; `ssh-keygen`, `ProcessRunner` use, `SshCaConfig` and `PUT /config/ssh-ca` removed; unlocked-signer filter on the SSH sign routes; endpoints, docs site and console | M |
 | 4 | Migration: startup import, file deletion, `--upgrade-check` finding, readiness row, plaintext notice; backup excludes the directory and carries `ssh-ca.keystore`; restore of old archives; reset | M |
