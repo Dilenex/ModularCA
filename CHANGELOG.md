@@ -6,7 +6,15 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **ACME: certbot and Caddy can finalize an order.** Both send a certification request with an
+  empty subject and the names as subject alternative names only, which RFC 8555 allows. The
+  request profile bootstrap seeds requires a common name, and it was asked about the empty
+  subject, so every finalize from those clients was refused; the client saw only "the
+  certificate order failed". Issuance has always named such a certificate after its first DNS
+  name, and the request profile is now asked about that subject. acme.sh and Traefik send a
+  common name and were not affected. Found by the ACME client matrix on its first complete run.
 
 ## [0.4.0] — 2026-10-06
 

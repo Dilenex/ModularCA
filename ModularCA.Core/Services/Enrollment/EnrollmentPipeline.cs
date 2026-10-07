@@ -147,6 +147,16 @@ public class EnrollmentPipeline : IEnrollmentPipeline
         //    subject, which is why the row below is written from the result and not from the CSR.
         var subject = request.Subject ?? string.Empty;
 
+        // See EnrollmentSubmission.CommonNameIfProfileRequiresOne.
+        if (context.RequestProfileId != null
+            && !string.IsNullOrEmpty(submission.CommonNameIfProfileRequiresOne)
+            && !RequestProfileValidationService.ParseSubjectDn(subject).ContainsKey("CN")
+            && await _requestProfileValidation.RequiresSubjectFieldAsync(context.RequestProfileId.Value, "CN"))
+        {
+            var commonName = $"CN={submission.CommonNameIfProfileRequiresOne}";
+            subject = string.IsNullOrWhiteSpace(subject) ? commonName : $"{commonName}, {subject}";
+        }
+
         // Every component within the limits the certificate will be held to, before the name
         // reaches the ASN.1 library. Since BouncyCastle 2.7.0 an over-long common name is refused
         // when the name is constructed, deep inside issuance, where the exception is a server

@@ -156,6 +156,31 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
+        /// Whether the effective profile requires <paramref name="field"/> in the subject and
+        /// supplies no fixed or default value for it, so a request without the field is refused.
+        /// False when the profile is missing or its subject rules cannot be read.
+        /// </summary>
+        public async Task<bool> RequiresSubjectFieldAsync(Guid requestProfileId, string field)
+        {
+            var profile = await LoadEffectiveAsync(requestProfileId);
+            if (profile == null) return false;
+
+            try
+            {
+                var rules = JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(profile.SubjectDnRules) ?? new();
+                return rules.Any(rule =>
+                    string.Equals(rule.Field, field, StringComparison.OrdinalIgnoreCase)
+                    && RequestProfileRules.IsRequired(rule.Requirement)
+                    && string.IsNullOrEmpty(rule.FixedValue)
+                    && string.IsNullOrEmpty(rule.DefaultValue));
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Validates a subject DN and SANs against the effective request profile: each subject rule's
         /// requirement (compared ignoring case, <see cref="RequestProfileRules"/>), fixed and default
         /// values, pattern and length, then the SAN rules. Returns the subject with fixed and default

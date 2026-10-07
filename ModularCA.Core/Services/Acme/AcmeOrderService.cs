@@ -239,6 +239,7 @@ public class AcmeOrderService(
                     KeySize = parsedCsr.KeySize,
                     SignatureAlgorithm = parsedCsr.SignatureAlgorithm,
                 },
+                CommonNameIfProfileRequiresOne = CommonNameFromSans(parsedCsr.SubjectAlternativeNames),
                 Audit = record => WriteAcmeAuditAsync(record, order, addressedCa),
             };
 
@@ -497,6 +498,25 @@ public class AcmeOrderService(
         return await _db.AcmeOrders.AnyAsync(o => o.ExpiresAt <= now &&
             (o.Status == nameof(AcmeOrderStatus.Pending) || o.Status == nameof(AcmeOrderStatus.Ready)), cancellationToken)
             || await _db.AcmeAuthorizations.AnyAsync(a => a.ExpiresAt <= now && a.Status == nameof(AcmeAuthorizationStatus.Pending), cancellationToken);
+    }
+
+    /// <summary>
+    /// The first DNS name of a certification request, when it can stand as a common name: 64
+    /// characters or fewer (the limit on a common name) and made only of the characters a
+    /// hostname or wildcard uses. Null otherwise. It is the first name and no other because that
+    /// is the name issuance gives a certificate whose request has no subject
+    /// (<c>CertificateBuilderService.ResolveSubjectDn</c>), so what the request profile is asked
+    /// about is what the certificate will carry. The names have already been checked against
+    /// the order (<see cref="ValidateCsrAgainstOrder"/>).
+    /// </summary>
+    internal static string? CommonNameFromSans(IEnumerable<string> subjectAlternativeNames)
+    {
+        var first = subjectAlternativeNames.FirstOrDefault(s => s.StartsWith("dns:", StringComparison.OrdinalIgnoreCase));
+        if (first == null) return null;
+        var value = first[4..].Trim();
+        return value.Length is > 0 and <= 64 && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '*')
+            ? value
+            : null;
     }
 
     /// <summary>

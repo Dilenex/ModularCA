@@ -129,6 +129,23 @@ public sealed record EnrollmentSubmission
     public bool ClampRequestedNotAfterToProfileMax { get; init; }
 
     /// <summary>
+    /// A common name to give the subject when the request carries none and the CA's request
+    /// profile requires one without supplying it. Null leaves a request without a common name
+    /// to the profile, which refuses it.
+    /// </summary>
+    /// <remarks>
+    /// ACME sets it. certbot and Caddy send a certification request with an empty subject and
+    /// the names as subject alternative names only, which RFC 8555 allows. Issuance has always
+    /// named such a certificate after its first DNS name, but the request profile was asked
+    /// about the empty subject first, and the profile bootstrap seeds requires a common name, so
+    /// every order from those clients was refused at finalize. ACME passes that same first DNS
+    /// name, already checked against the order, and the profile is asked about the subject the
+    /// certificate will carry. A profile that does not require a common name is asked what it
+    /// was always asked, and the request row keeps the subject the client sent.
+    /// </remarks>
+    public string? CommonNameIfProfileRequiresOne { get; init; }
+
+    /// <summary>
     /// Extensions the protocol needs stamped on the issued certificate beyond what the profiles
     /// produce — the Windows template information extension is the one that exists. Recorded on
     /// the request row so a certificate issued later, after approval, still carries it.
