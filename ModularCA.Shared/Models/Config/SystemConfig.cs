@@ -263,7 +263,7 @@ namespace ModularCA.Shared.Models.Config
     public class IpWhitelistConfig
     {
         /// <summary>Whether IP whitelisting is enforced. Enabled by default — only private IPs can access protocol endpoints.</summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Enabled { get; set; } = true;
 
         /// <summary>
@@ -289,15 +289,15 @@ namespace ModularCA.Shared.Models.Config
     public class NetworkAuditConfig
     {
         /// <summary>Whether request audit logging is enabled.</summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Enabled { get; set; } = true;
 
         /// <summary>When false, only log protocol/admin endpoints. When true, log everything.</summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool LogAllRequests { get; set; } = false;
 
         /// <summary>Paths to exclude from logging (e.g., health checks, metrics).</summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public List<string> ExcludePaths { get; set; } = new() { "/health", "/metrics" };
     }
 
@@ -438,7 +438,7 @@ namespace ModularCA.Shared.Models.Config
         [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int? PublicPort { get; set; }
 
-        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string CorsOrigins { get; set; } = "";
         /// <summary>
         /// ICF-02: Swagger UI enable flag. Default <c>false</c> — Swagger is not
@@ -459,7 +459,7 @@ namespace ModularCA.Shared.Models.Config
         /// X-CSRF-Token, X-Correlation-Id</c>. <c>AllowCredentials</c> is NEVER
         /// attached to this policy.
         /// </summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool EnableCors { get; set; } = false;
 
         /// <summary>
@@ -518,7 +518,8 @@ namespace ModularCA.Shared.Models.Config
     /// <summary>
     /// Operator-tunable HSTS knobs. These values feed
     /// <see cref="ModularCA.API.Middleware.SecurityHeadersMiddleware"/> and
-    /// ASP.NET Core's <c>UseHsts</c> builder when the HTTPS listener is active.
+    /// <see cref="ModularCA.API.Middleware.HstsHeaderMiddleware"/>, which read them on every
+    /// HTTPS request.
     /// </summary>
     public class HstsConfig
     {
@@ -526,11 +527,11 @@ namespace ModularCA.Shared.Models.Config
         /// <c>max-age</c> in seconds. Default <c>31536000</c> (1 year). Lower to
         /// e.g. <c>86400</c> during certificate rollovers. 0 disables HSTS entirely.
         /// </summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int MaxAgeSeconds { get; set; } = 31536000;
 
         /// <summary>Emit <c>includeSubDomains</c>. Default <c>true</c>.</summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool IncludeSubDomains { get; set; } = true;
 
         /// <summary>
@@ -538,8 +539,21 @@ namespace ModularCA.Shared.Models.Config
         /// <c>true</c> only after the operator has verified they want the
         /// public hostname submitted to the HSTS preload list.
         /// </summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Preload { get; set; } = false;
+
+        /// <summary>
+        /// The <c>Strict-Transport-Security</c> header value these settings give, in the form
+        /// ASP.NET Core's HSTS middleware writes: <c>max-age</c> (never below 0), then
+        /// <c>includeSubDomains</c> and <c>preload</c> when set.
+        /// </summary>
+        public string HeaderValue()
+        {
+            var value = $"max-age={Math.Max(0, MaxAgeSeconds)}";
+            if (IncludeSubDomains) value += "; includeSubDomains";
+            if (Preload) value += "; preload";
+            return value;
+        }
     }
 
     /// <summary>
@@ -562,9 +576,10 @@ namespace ModularCA.Shared.Models.Config
         /// Startup missed-run behaviour. <c>SkipMissed</c> ignores
         /// all past-due cron occurrences. <c>RunOnce</c> (default) runs one catch-up
         /// per job whose <c>NextRunUtc</c> is in the past. <c>RunAll</c> emulates
-        /// the legacy "run every cron-gated job on first boot" behaviour.
+        /// the legacy "run every cron-gated job on first boot" behaviour. Each job reads it
+        /// on the tick it finds no earlier run of its own.
         /// </summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string MissedRunPolicy { get; set; } = "RunOnce";
 
         /// <summary>
@@ -697,7 +712,7 @@ namespace ModularCA.Shared.Models.Config
         /// IP to match exactly on every request. <c>Subnet24</c> allows clients to
         /// move within a /24 (IPv4) or /64 (IPv6) — friendly for mobile NAT reroutes.
         /// </summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public JwtIpBindingMode BindJwtToIp { get; set; } = JwtIpBindingMode.Off;
 
         /// <summary>Whether to reject refresh token usage from a different IP than where it was issued.</summary>
@@ -1105,7 +1120,7 @@ namespace ModularCA.Shared.Models.Config
         /// JWT-authenticated request. Only useful behind a reverse proxy that requires a
         /// client cert on the frontend and forwards the verified cert to this app.
         /// </summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public List<string> RequiredPaths { get; set; } = new();
 
         /// <summary>
@@ -1196,7 +1211,7 @@ namespace ModularCA.Shared.Models.Config
         /// refresh runs off the handshake path, so a stale-but-present set answers the connection
         /// and the next one sees the new anchors.
         /// </remarks>
-        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int TrustAnchorRefreshSeconds { get; set; } = 60;
     }
 
@@ -1567,7 +1582,7 @@ namespace ModularCA.Shared.Models.Config
         /// algorithms are unaffected. When "PSS", BouncyCastle uses SHA-{n}withRSAandMGF1
         /// signers (RSASSA-PSS with MGF1 and matching hash).
         /// </summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string RsaSignaturePadding { get; set; } = "PSS";
 
         /// <summary>

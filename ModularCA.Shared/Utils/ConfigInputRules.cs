@@ -137,4 +137,17 @@ public static class ConfigInputRules
         }
         return null;
     }
+
+    /// <summary>
+    /// The origins a CORS origin list allows, split as startup splits it. None when the list is
+    /// blank, or when any entry breaks the startup rules (<see cref="CorsOriginsError"/> without
+    /// the bare-origin check): a list that would have stopped a start allows nothing.
+    /// </summary>
+    /// <param name="csv">The Http.CorsOrigins value.</param>
+    public static string[] CorsOriginsAllowed(string? csv)
+    {
+        if (string.IsNullOrWhiteSpace(csv) || CorsOriginsError(csv, requireBareOrigin: false) != null)
+            return [];
+        return csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    }
 }

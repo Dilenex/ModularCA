@@ -11,13 +11,14 @@ namespace ModularCA.API.Middleware;
 /// the new <see cref="SecurityConfig.BindJwtToIp"/> tri-state plus a per-token <c>ipm</c>
 /// claim. <c>Off</c> skips enforcement entirely. <c>Exact</c> requires a byte-for-byte
 /// match. <c>Subnet24</c> allows /24 (IPv4) or /64 (IPv6) subnet tolerance so mobile
-/// clients can roam inside a NAT without losing their session.
+/// clients can roam inside a NAT without losing their session. The configured mode is read
+/// on every request, so a saved change applies to the next one.
 /// </summary>
 public class JwtIpBindingMiddleware
 {
     private readonly RequestDelegate _next;
     private readonly IServiceProvider _serviceProvider;
-    private readonly JwtIpBindingMode _configuredMode;
+    private readonly SystemConfig _config;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="JwtIpBindingMiddleware"/> class.
@@ -26,18 +27,19 @@ public class JwtIpBindingMiddleware
     {
         _next = next;
         _serviceProvider = serviceProvider;
-
-        _configuredMode = config.Security.BindJwtToIp;
+        _config = config;
     }
 
     /// <summary>
     /// Checks the authenticated user's JWT for an <c>ip</c> claim and compares it against
     /// the current request's remote IP address at the binding granularity dictated by
-    /// the token's <c>ipm</c> claim (falling back to the server-configured mode).
+    /// the token's <c>ipm</c> claim (falling back to the server-configured mode, as it is
+    /// set when the request arrives).
     /// </summary>
     public async Task InvokeAsync(HttpContext context)
     {
-        if (_configuredMode == JwtIpBindingMode.Off)
+        var configuredMode = _config.Security.BindJwtToIp;
+        if (configuredMode == JwtIpBindingMode.Off)
         {
             await _next(context);
             return;
@@ -57,7 +59,7 @@ public class JwtIpBindingMiddleware
 
                 // Prefer the per-token mode so a token issued as Exact remains Exact
                 // even if the server later switches to Subnet24.
-                var effectiveMode = _configuredMode;
+                var effectiveMode = configuredMode;
                 var ipmClaim = user.FindFirst("ipm")?.Value;
                 if (int.TryParse(ipmClaim, out var parsed) && Enum.IsDefined(typeof(JwtIpBindingMode), parsed))
                     effectiveMode = (JwtIpBindingMode)parsed;

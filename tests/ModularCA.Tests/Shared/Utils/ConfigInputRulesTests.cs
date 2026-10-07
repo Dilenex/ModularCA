@@ -64,6 +64,25 @@ public class ConfigInputRulesTests
         Assert.NotNull(ConfigInputRules.CorsOriginsError("http://app.example.com", requireBareOrigin: false));
     }
 
+    [Fact]
+    public void The_allowed_origins_are_the_list_split_as_startup_splits_it()
+    {
+        Assert.Equal(
+            ["https://app.example.com", "http://localhost:5173"],
+            ConfigInputRules.CorsOriginsAllowed(" https://app.example.com ,, http://localhost:5173 "));
+        Assert.Equal(["https://app.example.com/"], ConfigInputRules.CorsOriginsAllowed("https://app.example.com/"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("  ")]
+    [InlineData("*")]
+    [InlineData("https://app.example.com, *")]
+    [InlineData("https://app.example.com, http://app.example.com")]
+    public void A_blank_list_or_one_startup_would_refuse_allows_no_origin(string? csv)
+        => Assert.Empty(ConfigInputRules.CorsOriginsAllowed(csv));
+
     private static IEnumerable<object[]> SunsetCases(string key)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

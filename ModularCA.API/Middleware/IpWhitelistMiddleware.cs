@@ -32,7 +32,6 @@ public class IpWhitelistMiddleware
     private readonly RequestDelegate _next;
     private readonly SystemConfig _config;
     private readonly IWhitelistService _whitelistService;
-    private readonly bool _enabled;
 
     // Whether this process started without a config.yaml, i.e. a genuinely fresh install where
     // nothing exists yet to protect. Decided once: the file appears only when setup completes,
@@ -41,9 +40,9 @@ public class IpWhitelistMiddleware
     private readonly bool _startedInSetupMode;
 
     /// <summary>
-    /// Constructs the middleware. The master kill switch is captured once
-    /// at startup from <c>config.IpWhitelist.Enabled</c>; flipping it at
-    /// runtime requires a restart (same behavior as before).
+    /// Constructs the middleware. The master kill switch
+    /// (<c>config.IpWhitelist.Enabled</c>) and the exempt paths are read on
+    /// every request, so a saved change applies to the next one.
     /// </summary>
     /// <param name="next">The next delegate in the pipeline.</param>
     /// <param name="config">System configuration for the kill switch and exempt paths.</param>
@@ -53,7 +52,6 @@ public class IpWhitelistMiddleware
         _next = next;
         _config = config;
         _whitelistService = whitelistService;
-        _enabled = config.IpWhitelist.Enabled;
         _startedInSetupMode = !File.Exists(Path.Combine(AppContext.BaseDirectory, "config", "config.yaml"));
     }
 
@@ -65,7 +63,7 @@ public class IpWhitelistMiddleware
     public async Task InvokeAsync(HttpContext context)
     {
         // Master kill switch — whitelist enforcement fully disabled.
-        if (!_enabled)
+        if (!_config.IpWhitelist.Enabled)
         {
             await _next(context);
             return;

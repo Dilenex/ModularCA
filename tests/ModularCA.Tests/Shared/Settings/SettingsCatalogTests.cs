@@ -139,6 +139,32 @@ public class SettingsCatalogTests
     }
 
     /// <summary>
+    /// The console tells the person saving which stored settings wait for a restart. Exactly
+    /// these do: something reads each once at start. One leaves this list in the change that
+    /// makes its reader follow the configuration, and one joins it only on purpose.
+    /// </summary>
+    [Fact]
+    public void The_stored_settings_that_wait_for_a_restart_are_the_ones_listed()
+    {
+        var restart = SettingsCatalog.Definitions
+            .Where(d => d.StoredInDatabase && d.Reload != SettingReload.Live)
+            .Select(d => d.Key);
+
+        Assert.Equal(
+            new[]
+            {
+                // Listeners, SNI names, the WebAuthn relying party and route registration.
+                "Est_AuthSubdomain", "Http_SwaggerEnabled", "Https_PublicDomain", "Https_PublicPort", "Metrics_Path",
+                "Mtls_AuthSubdomain", "Mtls_Enabled", "WebAuthn_Enabled", "WebAuthn_RelyingPartyName",
+                // Bearer validation is built once; a live change would end every session at once.
+                "JWT_Audience", "JWT_Issuer", "JWT_Secret",
+                // The syslog sink is built with the logging pipeline.
+                "Logging_Syslog_AppName", "Logging_Syslog_Facility", "Logging_Syslog_Host", "Logging_Syslog_Port", "Logging_Syslog_Protocol",
+            }.OrderBy(k => k, StringComparer.Ordinal),
+            restart.OrderBy(k => k, StringComparer.Ordinal));
+    }
+
+    /// <summary>
     /// Every setting's built-in default goes to JSON and back unchanged, so each type in the
     /// configuration can be stored: lists, the job timeout dictionary, enums, nullable numbers.
     /// </summary>

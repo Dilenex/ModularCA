@@ -774,8 +774,10 @@ public sealed class SettingsRuntimeTests : IDisposable
             described["Acme_Http01_MaxAddresses"].Source, described["Acme_Http01_MaxAddresses"].Version));
         Assert.Equal(("database", "default"), (described["Tokens_RefreshTokenDays"].Kept, described["Tokens_RefreshTokenDays"].Source));
         Assert.Equal("environment", described["Email_OAuth2ClientId"].Source);
-        // Read once at start, so a change waits for a restart; and this host's own.
-        Assert.Equal("restart", described["IpWhitelist_Enabled"].Applies);
+        // Read on every request, so a change is live; read once at start, so a change waits
+        // for a restart; and this host's own.
+        Assert.Equal("live", described["IpWhitelist_Enabled"].Applies);
+        Assert.Equal("restart", described["Mtls_Enabled"].Applies);
         Assert.Equal(("host", "file"), (described["Https_Port"].Kept, described["Https_Port"].Source));
         Assert.Equal("bootstrap", described["DB_App_Host"].Kept);
         Assert.Equal("signer", described["Hsm_Pin"].Kept);

@@ -13,13 +13,13 @@ namespace ModularCA.API.Middleware;
 /// Writes are enqueued to <see cref="AuditNetworkDrainService"/>
 /// (a bounded channel + batched inserter) instead of a per-request Task.Run, so
 /// under ACME/OCSP fan-out the audit sink never saturates the request hot path.
+/// The <c>NetworkAudit</c> settings are read on every request, so a saved change applies
+/// to the next one.
 /// </summary>
 public class RequestAuditMiddleware
 {
     private readonly RequestDelegate _next;
-    private readonly bool _enabled;
-    private readonly bool _logAll;
-    private readonly List<string> _excludePaths;
+    private readonly SystemConfig _config;
 
     /// <summary>
     /// Protocol/admin path prefixes that are always logged when <c>LogAllRequests</c> is false.
@@ -72,17 +72,17 @@ public class RequestAuditMiddleware
     public RequestAuditMiddleware(RequestDelegate next, SystemConfig config)
     {
         _next = next;
-        _enabled = config.NetworkAudit.Enabled;
-        _logAll = config.NetworkAudit.LogAllRequests;
-        _excludePaths = config.NetworkAudit.ExcludePaths;
+        _config = config;
     }
 
     /// <summary>
     /// Wraps the full request pipeline, measuring response time and logging the outcome.
+    /// Whether the request is logged is decided when it arrives.
     /// </summary>
     public async Task InvokeAsync(HttpContext context)
     {
-        if (!_enabled)
+        var settings = _config.NetworkAudit;
+        if (!settings.Enabled)
         {
             await _next(context);
             return;
@@ -92,7 +92,7 @@ public class RequestAuditMiddleware
         var path = AuditPathRedaction.Redact(context.Request.Path.Value);
 
         // Check if this path should be logged
-        if (!ShouldLog(path))
+        if (!ShouldLog(path, settings))
         {
             await _next(context);
             return;
@@ -177,20 +177,20 @@ public class RequestAuditMiddleware
     }
 
     /// <summary>
-    /// Determines whether a request path should be audit-logged based on configuration.
+    /// Determines whether a request path should be audit-logged under <paramref name="settings"/>.
     /// Excludes paths in the exclude list; when LogAllRequests is false, only monitors protocol paths.
     /// </summary>
-    private bool ShouldLog(string path)
+    private static bool ShouldLog(string path, NetworkAuditConfig settings)
     {
         // Skip excluded paths
-        foreach (var exclude in _excludePaths)
+        foreach (var exclude in settings.ExcludePaths)
         {
             if (path.StartsWith(exclude, StringComparison.OrdinalIgnoreCase))
                 return false;
         }
 
         // If logging all requests, include everything not excluded
-        if (_logAll)
+        if (settings.LogAllRequests)
             return true;
 
         // Otherwise, only log monitored protocol/admin paths

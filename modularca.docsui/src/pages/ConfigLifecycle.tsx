@@ -708,7 +708,7 @@ MODULARCA__HSM__PIN                 -> Hsm.Pin`}</pre>
                 <div className="bg-sunken rounded p-4 data-mono mb-3">
                     <pre className="text-ink">{`GET  /api/v1/admin/config            -- Full config (secrets redacted)
 PUT  /api/v1/admin/config/logging    -- Min level applied immediately via LoggingLevelSwitch
-PUT  /api/v1/admin/config/http       -- Port, CORS, Swagger (restart required)
+PUT  /api/v1/admin/config/http       -- CORS applied immediately; Port, Swagger (restart required)
 PUT  /api/v1/admin/config/security
 PUT  /api/v1/admin/config/scheduler
 PUT  /api/v1/admin/config/security
@@ -719,7 +719,7 @@ PUT  /api/v1/admin/config/ldap-auth
                 </div>
                 <ul className="list-disc list-inside space-y-1 text-ink">
                     <li>Log level changes take effect immediately (no restart) via Serilog LoggingLevelSwitch</li>
-                    <li>HTTP, HTTPS, and scheduler changes require a restart</li>
+                    <li>Listener ports, Swagger, trusted proxies and HTTPS changes require a restart; the Settings page marks each field Live or Restart</li>
                     <li>All config changes are audit-logged with the previous and new values</li>
                     <li>Security-sensitive changes (disabling MFA, reducing lockout thresholds) trigger security alerts</li>
                 </ul>

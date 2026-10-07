@@ -653,11 +653,11 @@ envOverlay.Apply(config);
 // settings have been moved to the database, the settings store and the file after that.
 var settingsPersistence = new ModularCA.Core.Services.Settings.SettingsPersistence(config, envOverlay, configPath);
 
-// CRYPTO-001: apply RSA signature padding mode from CertPolicy config to the
-// central KeyAlgorithmPolicy. This must happen before any certificate or CRL
+// CRYPTO-001: the central KeyAlgorithmPolicy takes the RSA signature padding mode from
+// CertPolicy config each time it signs. This must happen before any certificate or CRL
 // signing code runs. Default is PSS for new deployments; operators can revert
 // to PKCS#1 v1.5 by setting CertPolicy.RsaSignaturePadding = "v15".
-KeyAlgorithmPolicy.UseRsaPss = config.CertPolicy?.RsaSignaturePadding?.Equals("PSS", StringComparison.OrdinalIgnoreCase) ?? true;
+KeyAlgorithmPolicy.FollowRsaPadding(() => config.CertPolicy?.RsaSignaturePadding);
 
 // AUTH-019: warn at startup when LDAP is enabled without TLS
 if (config.LdapAuth.Enabled && !config.LdapAuth.UseSsl)
@@ -1006,7 +1006,6 @@ if (!isSetupMode)
 
         // What was read from the configuration above this point, read again from the settings
         // that are now in force.
-        KeyAlgorithmPolicy.UseRsaPss = config.CertPolicy?.RsaSignaturePadding?.Equals("PSS", StringComparison.OrdinalIgnoreCase) ?? true;
         loggingLevelSwitch.MinimumLevel = config.Logging.MinLevel?.ToLowerInvariant() switch
         {
             "debug" => LogEventLevel.Debug,
@@ -1823,46 +1822,18 @@ builder.Services.AddScoped<TrustAnchorService>();
 // startup. Reject wildcard, reject non-HTTPS origins that aren't explicit
 // localhost, and fail startup loudly if anything slips through — credentials
 // + wildcard CORS is a classic own-goal. The policy also adds method and
-// header restrictions and gates registration on
-// Http.EnableCors so a misset ASPNETCORE_ENVIRONMENT=Development cannot
+// header restrictions and is in force only while
+// Http.EnableCors is on, so a misset ASPNETCORE_ENVIRONMENT=Development cannot
 // enable broad cross-origin access in production.
-var corsOrigins = config.Http.CorsOrigins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 // Same rules PUT /admin/config/http applies at save, minus the bare-origin check, so a config
 // saved before that check existed still starts.
 if (ModularCA.Shared.Utils.ConfigInputRules.CorsOriginsError(config.Http.CorsOrigins, requireBareOrigin: false) is { } corsError)
     throw new InvalidOperationException($"[CORS] {corsError}");
 
-// Wire UseHsts to the same Http.Hsts config that
-// SecurityHeadersMiddleware reads. Both middlewares agree on max-age /
-// includeSubDomains / preload so the browser sees a single, consistent
-// HSTS declaration.
-builder.Services.AddHsts(options =>
-{
-    var hsts = config.Http.Hsts ?? new HstsConfig();
-    options.MaxAge = TimeSpan.FromSeconds(Math.Max(0, hsts.MaxAgeSeconds));
-    options.IncludeSubDomains = hsts.IncludeSubDomains;
-    options.Preload = hsts.Preload;
-});
-
-builder.Services.AddCors(options =>
-{
-    options.AddPolicy("AllowFrontend", corsPolicy =>
-    {
-        // DO NOT add AllowCredentials — the SPA uses Bearer tokens, not cookies,
-        // for API calls. Adding credentials would require narrowing the origin
-        // allow-list further and opens the door to CSRF on credentialed endpoints.
-        corsPolicy.WithOrigins(corsOrigins)
-                  .WithMethods("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS")
-                  .WithHeaders(
-                      "Authorization",
-                      "Content-Type",
-                      "X-Requested-With",
-                      "X-MFA-Token",
-                      "X-CSRF-Token",
-                      "X-Correlation-Id",
-                      "DPoP");
-    });
-});
+// The policy follows Http.EnableCors and Http.CorsOrigins as they are saved.
+var corsPolicies = new ModularCA.API.Middleware.SettingsCorsPolicyProvider(config);
+builder.Services.AddSingleton<Microsoft.AspNetCore.Cors.Infrastructure.ICorsPolicyProvider>(corsPolicies);
+builder.Services.AddCors();
 
 
 // === Kestrel HTTPS configuration with hot-reload support (Web TLS certificate) ===
@@ -2301,7 +2272,7 @@ else
 
                 estTrustAnchors = new ModularCA.Core.Services.Est.EstTrustAnchorCache(
                     () => new ModularCADbContext(estDbOptions),
-                    TimeSpan.FromSeconds(config.Est.TrustAnchorRefreshSeconds),
+                    () => TimeSpan.FromSeconds(config.Est.TrustAnchorRefreshSeconds),
                     message => Log.Warning("[EST] Trust-anchor load problem: {Message}", message));
 
                 var estAnchorCount = estTrustAnchors.LoadNow();
@@ -3177,12 +3148,11 @@ app.UseExceptionHandler(errorApp =>
     });
 });
 
-// Participate in ASP.NET Core's built-in HSTS
-// middleware so the host-level hardening applies when TLS is active. The
+// HSTS where ASP.NET Core's UseHsts set it, so the host-level hardening applies
+// when TLS is active, from Http.Hsts as it is saved rather than as it was at start. The
 // custom SecurityHeadersMiddleware still enforces HSTS for the admin UI
-// headers, but UseHsts also sets header-propagation for non-direct-reply
-// paths. UseHsts is a no-op in Development.
-app.UseHsts();
+// headers, but this one also covers non-direct-reply paths.
+app.UseMiddleware<ModularCA.API.Middleware.HstsHeaderMiddleware>();
 
 if (app.Environment.IsDevelopment() || config.Http.SwaggerEnabled)
 {
@@ -3310,12 +3280,11 @@ app.UseSerilogRequestLogging(opts =>
 
 // CORS is gated on an explicit Http.EnableCors
 // flag, not on ASPNETCORE_ENVIRONMENT. A misset env var no longer flips on
-// cross-origin access in production.
-if (config.Http.EnableCors && corsOrigins.Length > 0)
-{
-    app.UseCors("AllowFrontend");
-    Console.WriteLine($"[CORS] Restricted CORS policy active for origins: {string.Join(", ", corsOrigins)}");
-}
+// cross-origin access in production. The flag and the origins are read per request: while
+// CORS is off the request skips the CORS middleware, as when it was not registered.
+app.UseWhen(_ => corsPolicies.Active, cors => cors.UseCors());
+if (corsPolicies.Active)
+    Console.WriteLine($"[CORS] Restricted CORS policy active for origins: {string.Join(", ", ModularCA.Shared.Utils.ConfigInputRules.CorsOriginsAllowed(config.Http.CorsOrigins))}");
 
 // The console, the setup wizard, the docs and the public portal are the control role's: the
 // SPAs and their static files, the setup redirect, the CSRF cookie the sign-in and wizard

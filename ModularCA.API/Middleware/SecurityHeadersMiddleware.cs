@@ -20,7 +20,8 @@ namespace ModularCA.API.Middleware;
 /// §7.2 requires UAs to ignore HSTS over plain HTTP, so advertising it on the
 /// plain-HTTP PKI listener is pure noise). <c>max-age</c>,
 /// <c>includeSubDomains</c>, and <c>preload</c> are configurable via
-/// <see cref="HstsConfig"/>.
+/// <see cref="HstsConfig"/>, read on every response. <see cref="HstsHeaderMiddleware"/>
+/// runs first and has usually set the same value already.
 /// </para>
 /// <para>
 /// The Content-Security-Policy is the console's: it governs the HTML the control role serves
@@ -115,12 +116,7 @@ public class SecurityHeadersMiddleware
             {
                 var hsts = _config.Http.Hsts ?? new HstsConfig();
                 if (hsts.MaxAgeSeconds > 0)
-                {
-                    var value = $"max-age={hsts.MaxAgeSeconds}";
-                    if (hsts.IncludeSubDomains) value += "; includeSubDomains";
-                    if (hsts.Preload) value += "; preload";
-                    headers.TryAdd("Strict-Transport-Security", value);
-                }
+                    headers.TryAdd("Strict-Transport-Security", hsts.HeaderValue());
             }
 
             headers.TryAdd("Permissions-Policy", "camera=(), microphone=(), geolocation=()");

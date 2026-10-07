@@ -20,7 +20,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
 /// Admin endpoints for viewing and modifying runtime configuration.
 /// Changes are applied to the in-memory config and persisted to config.yaml.
-/// Some changes (logging, HTTPS, scheduler) require a restart to take full effect.
+/// Some changes (log storage, listener ports, HTTPS) require a restart to take full effect.
 /// Every endpoint needs a system administrator, and every write a step-up token
 /// (<see cref="StepUpOps.UpdateConfig"/>): the sections govern authentication, token binding,
 /// network trust, audit, alerting and integration keys, which a system operator must not be able
@@ -213,7 +213,8 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the HTTP configuration (port, CORS, Swagger, trusted proxies).
-    /// Requires a restart to take full effect. CORS origins are checked here with the startup rules
+    /// CORS and the public port apply at once; the port, Swagger and the trusted proxies at the
+    /// next start. CORS origins are checked here with the startup rules
     /// plus a bare-origin check (<see cref="ConfigInputRules.CorsOriginsError"/>), because an origin
     /// startup rejects would otherwise be saved and stop the next start.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
@@ -238,7 +239,7 @@ public class AdminConfigController(
         if (!string.IsNullOrEmpty(update.TrustedProxyCidrs)) _config.Http.TrustedProxyCidrs = update.TrustedProxyCidrs;
         if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("Http", new { update.Port, update.PublicPort, update.CorsOrigins, update.SwaggerEnabled, update.EnableCors, update.TrustedProxyCidrs });
-        return Ok(new { message = "HTTP config updated (restart required)", config = _config.Http });
+        return Ok(new { message = "HTTP config updated. CORS applies now; port, Swagger and trusted proxy changes require restart.", config = _config.Http });
     }
 
     // PUT /config/rate-limiting removed — rate-limit policy now lives in the DB-backed
@@ -268,7 +269,7 @@ public class AdminConfigController(
             update.DefaultJobTimeoutSeconds,
             update.ConsecutiveFailureAlertThreshold
         });
-        return Ok(new { message = "Scheduler config updated (restart required for some changes)", config = _config.Scheduler });
+        return Ok(new { message = "Scheduler config updated", config = _config.Scheduler });
     }
 
     /// <summary>
@@ -530,7 +531,7 @@ public class AdminConfigController(
         if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("IpWhitelist", new { update.Enabled });
         _ = _alertService.RaiseAlertAsync("IpWhitelistChanged", AlertSeverity.Warning, $"IP whitelist configuration updated by {_currentUser.User?.Username}", new { update.Enabled });
-        return Ok(new { message = "IP whitelist config updated (restart required for full effect)", config = _config.IpWhitelist });
+        return Ok(new { message = "IP whitelist config updated", config = _config.IpWhitelist });
     }
 
     /// <summary>
@@ -625,11 +626,11 @@ public class AdminConfigController(
     /// </para>
     /// <para>
     /// <c>RequiredPaths</c> and <c>TrustedCaCertPaths</c> left out of the body (or null) keep their
-    /// current value; an empty list clears them. Clearing <c>RequiredPaths</c> means
-    /// <c>MtlsMiddleware</c> demands a client certificate on no path after the next restart: mTLS
-    /// login on the auth subdomain is unaffected, but no API path is gated on a client certificate
-    /// any more. The audit record carries both lists before and after, and a cleared list raises a
-    /// security alert.
+    /// current value; an empty list clears them. <c>MtlsMiddleware</c> reads <c>RequiredPaths</c>
+    /// on every request, so clearing it means no path demands a client certificate from the next
+    /// request on: mTLS login on the auth subdomain is unaffected, but no API path is gated on a
+    /// client certificate any more. The audit record carries both lists before and after, and a
+    /// cleared list raises a security alert.
     /// </para>
     /// </summary>
     [HttpPut("mtls")]
@@ -699,7 +700,7 @@ public class AdminConfigController(
         if (requiredCleared || trustedCleared)
             _ = _alertService.RaiseAlertAsync("MtlsConfigCleared", AlertSeverity.Warning,
                 requiredCleared
-                    ? $"mTLS Required Paths cleared by {_currentUser.User.Username}: after restart no path requires a client certificate."
+                    ? $"mTLS Required Paths cleared by {_currentUser.User.Username}: no path requires a client certificate any more."
                     : $"mTLS Trusted CA Cert Paths cleared by {_currentUser.User.Username}: anchors now come only from enrolled mTLS signing CAs.",
                 new { RequiredPathsCleared = requiredCleared, TrustedCaCertPathsCleared = trustedCleared, PreviousRequiredPaths = previousRequired, PreviousTrustedCaCertPaths = previousTrusted });
         return Ok(new { message = "mTLS config updated", config = _config.Mtls });

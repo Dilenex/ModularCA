@@ -111,7 +111,9 @@ Some secrets stay in files, because their class decides where they live, not the
 
 "Reload today" describes the host that served the PUT. Other hosts reload nothing until their own
 file is edited and they restart. **Live** means the next call sees the new value. **Component**
-means one component rebuilds itself. **Restart** means the process must restart.
+means one component rebuilds itself. **Restart** means the process must restart. The column is
+the state when this was drawn (2026-10-05); the readers made live since are listed under
+"Making restart items live" in section 3.
 
 | Setting | Class | Read by | Reload today | Reload after |
 |---|---|---|---|---|
@@ -538,6 +540,47 @@ Some items are cheap to make live and worth it:
 - `CertPolicy.RsaSignaturePadding`, replacing the static with a monitor read in `KeyAlgorithmPolicy`.
 - The syslog sink, behind a swappable wrapper.
 
+**Done (2026-10-06), on the `SystemConfig` singleton rather than on monitors.** Each reader below
+reads the configuration at use, so a change is live on the node that saved it, and its
+`[Setting]` says Live. The monitors are still stage 3; these readers already re-read the
+section from the singleton each time, so the stage 2 swap does not strand them.
+
+| Setting | Was kept by | Now read by |
+|---|---|---|
+| `Security.BindJwtToIp` | `JwtIpBindingMiddleware`, in its constructor | the same, per request |
+| `IpWhitelist.Enabled` | `IpWhitelistMiddleware`, in its constructor | the same, per request |
+| `NetworkAudit.Enabled`, `LogAllRequests`, `ExcludePaths` | `RequestAuditMiddleware`, in its constructor (the list by reference, which the endpoint replaces) | the same, per request |
+| `Mtls.RequiredPaths` | `MtlsMiddleware`, in its constructor (by reference) | the same, per request. `Mtls.Enabled` and the anchors stay as they were at start, so the paths are live only where mTLS was on at start. |
+| `Est.TrustAnchorRefreshSeconds` | `EstTrustAnchorCache`, as a fixed interval | the cache asks for the interval on every read and measures it from the last attempt, so a shorter one applies to the snapshot already held |
+| `CertPolicy.RsaSignaturePadding` | the static `KeyAlgorithmPolicy.UseRsaPss`, set twice at startup | `UseRsaPss` asks the setting on every use (`KeyAlgorithmPolicy.FollowRsaPadding`) |
+| `Scheduler.MissedRunPolicy` | nothing: `SingletonCronJob` already read it on the tick. Only the start-up log line read it once. | unchanged; the declaration was wrong |
+| `Http.Hsts.*` | `AddHsts` options, read by `UseHsts` | `HstsHeaderMiddleware`, in the place `UseHsts` had, per request. `SecurityHeadersMiddleware` already read the settings per request. Two writers remain, not the one this list asked for: the early one is what puts the header on a response the ingress proxies, which never reaches the other. Both build it with `HstsConfig.HeaderValue`. |
+| `Http.EnableCors`, `Http.CorsOrigins` | a named policy built by `AddCors`, and `UseCors` registered only when CORS was on at start | `SettingsCorsPolicyProvider` (an `ICorsPolicyProvider`), behind `UseWhen`: while CORS is off or no origin is allowed the request skips the CORS middleware, as when it was not registered. A list that breaks the startup rules allows nothing. |
+
+Left as Restart, with what each needs:
+
+- **`JWT.Secret`.** Bearer validation takes its key once, in `AddJwtBearer`. Making it live is
+  an `IssuerSigningKeyResolver` that returns the current key and, for one access-token
+  lifetime, the previous one. It is also a decision the owner has not made: the rotate action
+  (`SettingsPersistence.RotateJwtSecretAsync`) promises the new secret from the next start and
+  deliberately leaves the one in memory alone. Live on one node while another still signs with
+  the old key splits sessions between them until stage 2 carries the change to every node.
+- **`JWT.Issuer`, `JWT.Audience`.** `ValidIssuer` and `ValidAudience` are fixed in the same
+  options, while `JwtTokenService` already stamps new tokens with the current values. Live
+  validation (an `IssuerValidator` and `AudienceValidator` over the configuration, or clearing
+  the scheme's options cache on a save) refuses every access token issued before the change at
+  once. No endpoint changes them today.
+- **`Logging.Syslog.*`.** The sink is built inside the Serilog pipeline, for one host, port,
+  protocol, app name and facility, and only when the `Syslog.Enabled` flag was on at start.
+  It cannot be re-pointed; it has to be replaced. That does not need the pipeline rebuilt, but
+  it needs the wrapper this list names, and three decisions: what happens to events when the
+  new relay cannot be resolved or reached (keep the old sink, or drop), whether the flag is
+  read live too (otherwise the settings are live only where the sink was on at start), and
+  whether a setting whose reader rebuilds itself is shown as Live or as its own state
+  (`SettingReload.Component` exists and the console shows it as Restart). Nothing on a
+  running node changes these five settings yet (no endpoint, no reload), so there is no path
+  to prove it on.
+
 These stay restart, and are declared so:
 
 - The listeners and ports.
@@ -931,7 +974,7 @@ store and saved to it.
   once the settings are moved, each instance-wide setting is put back to its default and the
   stored values are applied, so the file cannot decide one. A value the file still gives is
   reported in the log. The few settings startup reads before the database is reachable (the
-  log level, RSA padding, the cron checks) are read again afterwards.
+  log level, the cron checks) are read again afterwards.
 - **The save path** (`SettingsPersistence`, called through `ConfigSave` by every settings
   endpoint): the endpoints still change `SystemConfig` in memory; saving then writes whatever
   differs from the store to the store, and the file with host-local settings only.
@@ -960,9 +1003,11 @@ Where this differs from the sections above:
   earlier archives hold it in the clear. The log says that earlier copies and archives still
   hold the moved secrets.
 - **Reload is declared as it is today**, not as designed. The console shows it to the person
-  saving, so `[Setting]` says Restart for the twenty-two settings something reads once at
-  start, and each moves to Live when its reader is made to follow changes (the "Making restart
-  items live" list in section 3).
+  saving, so `[Setting]` says Restart for a setting something reads once at start, and each
+  moves to Live when its reader is made to follow changes. Fourteen of the twenty-two that
+  were to become live have (the "Making restart items live" list in section 3 says how);
+  the JWT secret, issuer and audience and the five syslog settings have not, for the reasons
+  given there. `SettingsCatalogTests` lists the stored settings that still wait for a restart.
 - **Sparse by value, not by presence in the file.** The console has always written the whole
   configuration back, so a key being present in `config.yaml` says nothing about whether
   anyone chose its value. What is stored is what differs from the default.

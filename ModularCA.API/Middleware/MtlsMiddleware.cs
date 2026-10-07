@@ -6,13 +6,15 @@ namespace ModularCA.API.Middleware;
 /// <summary>
 /// Enforces mutual TLS (client certificate) authentication on configured paths.
 /// When enabled, requests to admin API paths must present a valid client certificate
-/// issued by one of the configured trusted CAs.
+/// issued by one of the configured trusted CAs. Whether mTLS is on and which CAs are trusted
+/// are fixed at start, as the listener's handshake is; the required paths are read on every
+/// request, so a saved change to them applies to the next one.
 /// </summary>
 public class MtlsMiddleware
 {
     private readonly RequestDelegate _next;
+    private readonly SystemConfig _config;
     private readonly bool _enabled;
-    private readonly List<string> _requiredPaths;
     private readonly List<X509Certificate2> _trustedCas;
 
     /// <summary>
@@ -24,8 +26,8 @@ public class MtlsMiddleware
     public MtlsMiddleware(RequestDelegate next, SystemConfig config)
     {
         _next = next;
+        _config = config;
         _enabled = config.Mtls.Enabled;
-        _requiredPaths = config.Mtls.RequiredPaths;
         _trustedCas = new();
 
         // Load trusted CA certs from configured paths
@@ -41,9 +43,9 @@ public class MtlsMiddleware
     }
 
     /// <summary>
-    /// Evaluates the incoming request against mTLS policy. If mTLS is enabled and the
-    /// request path matches a configured required path, a valid client certificate must
-    /// be presented. Returns 403 if no certificate is provided or if the certificate
+    /// Evaluates the incoming request against mTLS policy. If mTLS was enabled at start and
+    /// the request path matches a required path as configured now, a valid client certificate
+    /// must be presented. Returns 403 if no certificate is provided or if the certificate
     /// is not trusted.
     /// </summary>
     /// <param name="context">The HTTP context for the current request.</param>
@@ -58,7 +60,7 @@ public class MtlsMiddleware
         var path = context.Request.Path.Value ?? "";
 
         // Only check configured paths
-        if (!_requiredPaths.Any(p => path.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+        if (!_config.Mtls.RequiredPaths.Any(p => path.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
         {
             await _next(context);
             return;

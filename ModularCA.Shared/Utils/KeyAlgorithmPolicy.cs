@@ -20,13 +20,28 @@ namespace ModularCA.Shared.Utils;
 /// </summary>
 public static class KeyAlgorithmPolicy
 {
+    private static volatile Func<string?> _rsaPadding = () => null;
+
     /// <summary>
     /// When <c>true</c>, RSA signature algorithms resolve to RSA-PSS (RSASSA-PSS with MGF1)
-    /// instead of PKCS#1 v1.5. Set once at startup from
-    /// <see cref="ModularCA.Shared.Models.Config.CertPolicyConfig.RsaSignaturePadding"/>.
-    /// Thread-safe: written once during service initialization, read many times after.
+    /// instead of PKCS#1 v1.5. Asked on every use of the padding setting given to
+    /// <see cref="FollowRsaPadding"/>, so a change to it applies to the next signature; PSS
+    /// until a setting is given.
     /// </summary>
-    public static bool UseRsaPss { get; set; } = true;
+    public static bool UseRsaPss => IsPss(_rsaPadding());
+
+    /// <summary>
+    /// Makes <see cref="UseRsaPss"/> follow <paramref name="padding"/>, which returns
+    /// <see cref="ModularCA.Shared.Models.Config.CertPolicyConfig.RsaSignaturePadding"/> as it
+    /// stands when asked. Called once at startup.
+    /// </summary>
+    public static void FollowRsaPadding(Func<string?> padding) => _rsaPadding = padding;
+
+    /// <summary>
+    /// Whether a configured RSA signature padding means PSS: <c>"PSS"</c> in any case, or
+    /// nothing configured. Any other value (<c>"v15"</c>) means PKCS#1 v1.5.
+    /// </summary>
+    public static bool IsPss(string? padding) => padding?.Equals("PSS", StringComparison.OrdinalIgnoreCase) ?? true;
 
     /// <summary>
     /// Returns true if the given key algorithm + size/curve is allowed by the CA policy.
