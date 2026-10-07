@@ -4,10 +4,10 @@ namespace ModularCA.Shared.Signing;
 /// What a caller is asking the signer to do with a key. The signer's policy is keyed on this
 /// together with the kind of key: a CA key signs certificates, CRLs and protocol responses for
 /// its own CA; a delegated OCSP responder key signs OCSP responses only; the TSA key signs
-/// timestamp tokens only. Ceremony, Backup, Export, Bootstrap and Restore name the contexts under
-/// which key generation, import and export are permitted rather than a signature operation.
-/// A signing purpose also fixes the structure that is signed: the signer parses the bytes and
-/// refuses any that are not it (see <see cref="ISigningService.SignAsync"/>).
+/// timestamp tokens only. Ceremony, Backup, Export, Bootstrap, Restore and SshKeyMigration name
+/// the contexts under which key generation, import and export are permitted rather than a
+/// signature operation. A signing purpose also fixes the structure that is signed: the signer
+/// parses the bytes and refuses any that are not it (see <see cref="ISigningService.SignAsync"/>).
 /// </summary>
 public enum SigningPurpose
 {
@@ -56,4 +56,19 @@ public enum SigningPurpose
     /// <see cref="SecretKind.SettingSecret"/> and nothing else, and signs nothing.
     /// </summary>
     Configuration,
+
+    /// <summary>
+    /// Sign an SSH certificate, which the signer builds from its fields (<c>SignSshCertificate</c>,
+    /// <c>ssh-keystore.md</c>). Until that call exists the purpose permits nothing: no raw
+    /// signature, no key management, no export and no secret wrap.
+    /// </summary>
+    SshCertificate,
+
+    /// <summary>
+    /// The one-time move of an SSH CA key from a file on the node into the signer. It permits
+    /// <see cref="ISigningService.ImportKeyAsync"/> of a PKCS#8 key into
+    /// <see cref="KeyRef.SshKeystore"/> for an <c>SshCaKeys</c> row whose storage is
+    /// <c>LegacyFile</c> and whose public key is the key's, and nothing else. It needs no ceremony.
+    /// </summary>
+    SshKeyMigration,
 }

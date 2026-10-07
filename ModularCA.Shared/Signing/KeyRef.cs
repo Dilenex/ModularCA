@@ -6,7 +6,10 @@ namespace ModularCA.Shared.Signing;
 /// and it is the only thing a caller of <see cref="ISigningService"/> ever holds; the key itself
 /// stays with the signer.
 /// </summary>
-/// <param name="CertificateId">The <c>Certificates</c> row id of the certificate whose key this is.</param>
+/// <param name="CertificateId">
+/// The <c>Certificates</c> row id of the certificate whose key this is. An SSH CA key has no
+/// certificate: for a key in <see cref="SshKeystore"/> this is its <c>SshCaKeys</c> row id.
+/// </param>
 /// <param name="Keystore">The keystore file name holding the entry, <see cref="DefaultKeystore"/> unless a key lives elsewhere.</param>
 public sealed record KeyRef(Guid CertificateId, string Keystore = KeyRef.DefaultKeystore)
 {
@@ -17,8 +20,11 @@ public sealed record KeyRef(Guid CertificateId, string Keystore = KeyRef.Default
     public const string TrustKeystore = "ca-trust.keystore";
 
     /// <summary>
-    /// The keystore SSH CA keys will live in (<c>ssh-keystore.md</c>, stage 2). A raw signature
-    /// with a key in it is refused for every purpose.
+    /// The keystore SSH CA keys live in (<c>ssh-keystore.md</c>). The file is what makes a key an
+    /// SSH key: the signer serves a key under this name only when it loaded, committed or
+    /// imported it into this file, and a reference naming this keystore reaches no other key. A
+    /// raw signature with a key in it is refused for every purpose. The file exists only once
+    /// an SSH key has been committed or imported.
     /// </summary>
     public const string SshKeystore = "ssh-ca.keystore";
 

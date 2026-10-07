@@ -27,7 +27,9 @@ service Signer {
   rpc Health (HealthRequest) returns (HealthResponse);
 }
 
-// A reference to a stored key: the certificate id and the keystore name.
+// A reference to a stored key: the certificate id and the keystore name. An SSH CA key has no
+// certificate: in ssh-ca.keystore, certificate_id carries its SshCaKeys row id, here and in
+// CommitKeyRequest and KeyMaterial.
 message KeyRef {
   string certificate_id = 1;
   string keystore = 2;
@@ -76,6 +78,11 @@ message KeySpec {
   string algorithm = 1;
   string size_or_curve = 2;
   optional string label = 3;
+  // What the key is for: empty for a key that will belong to an X.509 certificate, which is
+  // what a client older than this field sends; "ssh" for an SSH CA key, minted in
+  // ssh-ca.keystore. A signer older than this field ignores it and returns a key reference in
+  // ca-certs.keystore, so a client that asked for "ssh" tells by the keystore of the reference.
+  string usage = 4;
 }
 
 message GenerateKeyRequest {

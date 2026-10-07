@@ -34,6 +34,7 @@ public sealed class SignerSeamArchitectureTests
         "ModularCA.Keystore.Hsm.Pkcs11PrivateKeyHandle",
         "ModularCA.Keystore.Signing.ISignerKeyRegistry",
         "ModularCA.Keystore.Signing.MultiCARegistry",
+        "ModularCA.Keystore.Signing.SshKeyBinding",
         "ModularCA.Keystore.Signing.ISignerKeyPersistence",
         "ModularCA.Keystore.Signing.FileKeystorePersistence",
         "ModularCA.Keystore.Utils.StartupKeystoreLoader",
@@ -51,6 +52,9 @@ public sealed class SignerSeamArchitectureTests
         "ExportPrivateKeyDer",
         "GetPrivateKeyFor",
         "LoadHsmSigners",
+        "LoadSshKeys",
+        "GetSshKey",
+        "GetSshKeys",
     };
 
     /// <summary>The BouncyCastle types a key comes as; a keystore-assembly member returning one is a leak.</summary>

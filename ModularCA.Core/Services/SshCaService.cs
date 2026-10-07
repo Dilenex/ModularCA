@@ -149,6 +149,7 @@ public class SshCaService : ISshCaService
             KeySize = sanitizedType == "ed25519" ? null : keySize,
             PublicKey = publicKey.Trim(),
             PrivateKeyPath = keyPath,
+            KeyStorage = SshCaKeyStorage.LegacyFile,
             IsUserCa = isUserCa,
             IsHostCa = isHostCa,
             MaxValidityHours = maxValidityHours,
@@ -307,7 +308,7 @@ public class SshCaService : ISshCaService
             // whitespace, and force-command values are permitted to contain spaces, so a value of
             // "x -O clear" appended a flag of the caller's choosing. The sanitizers still apply;
             // they bound the value, the argument list bounds where it goes.
-            var args = new List<string> { "-s", caKey.PrivateKeyPath, "-I", SanitizeComment(certKeyId) };
+            var args = new List<string> { "-s", caKey.PrivateKeyPath!, "-I", SanitizeComment(certKeyId) };
             if (isHost)
                 args.Add("-h");
             args.AddRange(["-n", principals, "-V", $"+{validityHours}h", "-z", serial.ToString()]);
@@ -466,7 +467,7 @@ public class SshCaService : ISshCaService
 
             var (exitCode, _, stderr) = await ProcessRunner.RunAsync(
                 _config.SshCa.SshKeygenPath,
-                ["-k", "-f", krlFile, "-s", caKey.PrivateKeyPath, serialsFile]);
+                ["-k", "-f", krlFile, "-s", caKey.PrivateKeyPath!, serialsFile]);
 
             if (exitCode != 0)
                 throw new InvalidOperationException($"KRL generation failed: {stderr}");

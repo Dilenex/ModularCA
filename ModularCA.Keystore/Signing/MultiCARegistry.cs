@@ -8,19 +8,29 @@ namespace ModularCA.Keystore.Signing;
 /// private key handles the signer resolves. Supports registration at runtime: a key the signer
 /// commits (an intermediate CA, an infrastructure certificate) and a trust anchor an operator
 /// imports. Callers outside the keystore project see it as <see cref="IKeystoreCertificates"/>
-/// only, which has no key on it.
+/// only, which has no key on it. The SSH CA keys of <c>ssh-ca.keystore</c> are kept in a list of
+/// their own, by the <c>SshCaKeys</c> row each is bound to: they are never among the signers
+/// and never trusted authorities.
 /// </summary>
 public sealed class MultiCARegistry : ISignerKeyRegistry
 {
     private readonly object _lock = new();
     private readonly List<(X509Certificate Certificate, IPrivateKeyHandle Handle)> _signers;
     private readonly List<X509Certificate> _trusted;
+    private readonly List<SshKeyBinding> _sshKeys;
 
-    /// <summary>Creates a registry over the signers and trusted certificates the unlock produced.</summary>
-    public MultiCARegistry(IEnumerable<(X509Certificate Certificate, IPrivateKeyHandle Handle)> signers, IEnumerable<X509Certificate> trusted)
+    /// <summary>
+    /// Creates a registry over the signers and trusted certificates the unlock produced, and the
+    /// SSH CA keys it loaded from <c>ssh-ca.keystore</c> and bound to their rows.
+    /// </summary>
+    public MultiCARegistry(
+        IEnumerable<(X509Certificate Certificate, IPrivateKeyHandle Handle)> signers,
+        IEnumerable<X509Certificate> trusted,
+        IEnumerable<SshKeyBinding>? sshKeys = null)
     {
         _signers = signers.ToList();
         _trusted = trusted.ToList();
+        _sshKeys = sshKeys?.ToList() ?? new List<SshKeyBinding>();
     }
 
     /// <summary>A registry holding nothing, for setup mode and for a node whose keystore did not load.</summary>
@@ -87,6 +97,32 @@ public sealed class MultiCARegistry : ISignerKeyRegistry
         {
             if (!_trusted.Any(t => t.SerialNumber.Equals(cert.SerialNumber)))
                 _trusted.Add(cert);
+        }
+    }
+
+    /// <inheritdoc />
+    public SshKeyBinding? GetSshKey(Guid sshCaKeyId)
+    {
+        lock (_lock) return _sshKeys.FirstOrDefault(k => k.KeyId == sshCaKeyId);
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyList<SshKeyBinding> GetSshKeys()
+    {
+        lock (_lock) return _sshKeys.ToList();
+    }
+
+    /// <inheritdoc />
+    public void RegisterSshKey(SshKeyBinding binding)
+    {
+        ArgumentNullException.ThrowIfNull(binding);
+        lock (_lock)
+        {
+            var bound = _sshKeys.FirstOrDefault(k => k.KeyId == binding.KeyId);
+            if (bound == null)
+                _sshKeys.Add(binding);
+            else if (!bound.PublicKey.Equals(binding.PublicKey))
+                throw new InvalidOperationException($"SSH CA key row {binding.KeyId} is already bound to another key.");
         }
     }
 

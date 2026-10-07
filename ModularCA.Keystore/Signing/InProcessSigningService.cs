@@ -64,8 +64,16 @@ namespace ModularCA.Keystore.Signing;
 /// changes kind, and the cache bounds how long a re-pointed responder certificate is still
 /// believed to be one.
 /// </para>
+/// <para>
+/// An SSH CA key has no certificate and takes none of those paths. A reference that names
+/// <see cref="KeyRef.SshKeystore"/> is handled by the SSH half of this class
+/// (<c>InProcessSigningService.SshKeys.cs</c>), which has its own pending keys, its own registry
+/// entries and its own row, <c>SshCaKeys</c>; a reference that names any other keystore never
+/// reaches an SSH key, and an SSH reference never reaches a certificate's key. The two halves
+/// share the lock state, the ceremony check and the audit, and nothing else.
+/// </para>
 /// </remarks>
-public sealed class InProcessSigningService : ISigningService
+public sealed partial class InProcessSigningService : ISigningService
 {
     private static readonly TimeSpan ClassificationTtl = TimeSpan.FromSeconds(60);
 
@@ -135,7 +143,7 @@ public sealed class InProcessSigningService : ISigningService
 
         var dataHash = SHA256.HashData(data);
         Resolution resolved;
-        if (string.Equals(key.Keystore, KeyRef.SshKeystore, StringComparison.OrdinalIgnoreCase))
+        if (IsSshRef(key))
             resolved = new Resolution(null, null, null, new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
                 $"The key {key} is an SSH CA key; SSH certificates are built and signed by the signer from their fields, never from bytes offered for a raw signature."));
         else
@@ -159,7 +167,8 @@ public sealed class InProcessSigningService : ISigningService
     /// receives an envelope. The envelope is opened here with the key; a PKCS#11 key cannot
     /// open one and is refused as <see cref="SigningRefusalReason.OperationUnsupported"/>, as
     /// the node reported before the signer existed. The audit row carries the hash of the
-    /// enveloped bytes.
+    /// enveloped bytes. A key in <see cref="KeyRef.SshKeystore"/> decrypts nothing, for any
+    /// purpose.
     /// </remarks>
     public async Task<byte[]> DecryptAsync(KeyRef key, byte[] enveloped, SigningContext context, CancellationToken cancellationToken = default)
     {
@@ -168,7 +177,10 @@ public sealed class InProcessSigningService : ISigningService
         ArgumentNullException.ThrowIfNull(context);
 
         var dataHash = SHA256.HashData(enveloped);
-        var (handle, _, _, refusal) = await ResolveAsync(key, context, JudgeDecrypt, RefusePendingDecrypt, cancellationToken);
+        var (handle, _, _, refusal) = IsSshRef(key)
+            ? new Resolution(null, null, null, new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
+                $"The key {key} is an SSH CA key; it decrypts nothing, for any purpose."))
+            : await ResolveAsync(key, context, JudgeDecrypt, RefusePendingDecrypt, cancellationToken);
         if (refusal == null && handle is not SoftwarePrivateKeyHandle)
             refusal = new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
                 $"The key {key} is held by a backend that cannot decrypt; SCEP needs a software CA key.");
@@ -188,18 +200,31 @@ public sealed class InProcessSigningService : ISigningService
     /// written to disk until <see cref="CommitKeyAsync"/>. On-device generation is refused: no
     /// path in the node generates a CA key on a PKCS#11 token today, so a labelled key spec has
     /// nothing to be honoured by. The audit row carries the hash of the public key, which the
-    /// commit row repeats, so the two can be paired.
+    /// commit row repeats, so the two can be paired. A spec whose usage is
+    /// <see cref="KeySpec.SshUsage"/> is an SSH CA key: it is generated under a ceremony context
+    /// at instance scope only, held to a <c>CreateSshCa</c> ceremony or the instance's waiver,
+    /// limited to the SSH algorithms (<see cref="JudgeSshKeySpec"/>, <see cref="JudgeSshKey"/>),
+    /// and held pending apart from every other key, under a reference in
+    /// <see cref="KeyRef.SshKeystore"/>. Any usage but that and <see cref="KeySpec.X509Usage"/>
+    /// is refused.
     /// </remarks>
     public async Task<GeneratedKey> GenerateKeyAsync(KeySpec spec, SigningContext context, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(spec);
         ArgumentNullException.ThrowIfNull(context);
 
+        var usage = spec.Usage ?? KeySpec.X509Usage;
+        var ssh = string.Equals(usage, KeySpec.SshUsage, StringComparison.Ordinal);
         var refusal = JudgeKeyManagement(context);
+        if (refusal == null && !ssh && usage != KeySpec.X509Usage)
+            refusal = new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
+                $"The signer generates keys for X.509 (no usage) or SSH ('{KeySpec.SshUsage}'), not for usage '{usage}'.");
         if (refusal == null && spec.Label != null)
             refusal = new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
                 "The signer generates software keys only; a labelled key would be an on-device (PKCS#11) key, which nothing generates yet.");
-        refusal ??= await JudgeCeremonyAsync(context, cancellationToken);
+        if (refusal == null && ssh)
+            refusal = JudgeSshKeyManagement(context) ?? JudgeSshKeySpec(spec);
+        refusal ??= await JudgeCeremonyAsync(context, cancellationToken, licensing: ssh ? SshKeyCeremonies : X509KeyCeremonies);
         if (refusal != null)
         {
             await RecordAsync("GenerateKey", context, null, null, allowed: false, refusal.Message, null, cancellationToken);
@@ -218,6 +243,9 @@ public sealed class InProcessSigningService : ISigningService
             throw notAllowed;
         }
 
+        if (ssh)
+            return await HoldPendingSshKeyAsync(keyPair, context, cancellationToken);
+
         // Recorded before the key becomes reachable: a signer that fails closed on its audit
         // then holds nothing a caller could name.
         var pending = PendingKey.From(keyPair, context);
@@ -233,7 +261,9 @@ public sealed class InProcessSigningService : ISigningService
     /// import is held to the scope of the CA that owns that certificate: a context stating another
     /// scope is <see cref="SigningRefusalReason.TenantMismatch"/>, and that scope's ceremony policy
     /// applies. The pair is persisted and registered at once, so the key serves the policy for its
-    /// kind from this call on; the wrapped bytes are zeroed once parsed.
+    /// kind from this call on; the wrapped bytes are zeroed once parsed. Material offered to
+    /// <see cref="KeyRef.SshKeystore"/> is an SSH CA key and takes <see cref="ImportSshKeyAsync"/>
+    /// instead, which is the only import <see cref="SigningPurpose.SshKeyMigration"/> permits.
     /// </remarks>
     public async Task<KeyRef> ImportKeyAsync(KeyMaterial material, SigningContext context, CancellationToken cancellationToken = default)
     {
@@ -242,6 +272,8 @@ public sealed class InProcessSigningService : ISigningService
 
         if (string.Equals(material.Format, KeyMaterial.KeystoreFile, StringComparison.OrdinalIgnoreCase))
             return await ImportKeystoreFileAsync(material, context, cancellationToken);
+        if (string.Equals(material.Keystore, KeyRef.SshKeystore, StringComparison.OrdinalIgnoreCase))
+            return await ImportSshKeyAsync(material, context, cancellationToken);
 
         var key = new KeyRef(material.CertificateId);
         var refusal = JudgeKeyManagement(context);
@@ -250,7 +282,7 @@ public sealed class InProcessSigningService : ISigningService
         if (refusal == null && !string.Equals(material.Format, KeyMaterial.Pkcs8, StringComparison.OrdinalIgnoreCase))
             refusal = new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
                 $"Key material in format '{material.Format}' cannot be imported; the signer accepts '{KeyMaterial.Pkcs8}'.");
-        refusal ??= await JudgeCeremonyAsync(context, cancellationToken, material.CertificateId);
+        refusal ??= await JudgeCeremonyAsync(context, cancellationToken, material.CertificateId, X509KeyCeremonies);
 
         AsymmetricKeyParameter? privateKey = null;
         if (refusal == null)
@@ -297,14 +329,24 @@ public sealed class InProcessSigningService : ISigningService
     /// A key generated for a CA is committed only to a certificate that CA owns, and a key
     /// managed under an infrastructure context only to the OCSP responder, TSA or CMP signer
     /// certificate of the CA and scope the context names (<see cref="JudgeCommitOwnerAsync"/>).
+    /// A reference in <see cref="KeyRef.SshKeystore"/> is an SSH CA key and takes
+    /// <see cref="CommitSshKeyAsync"/>, where <paramref name="certificateId"/> is the
+    /// <c>SshCaKeys</c> row id. The two kinds of pending key are held apart, so a key generated
+    /// for X.509 is unknown to the SSH commit and an SSH key is unknown to this one.
     /// </remarks>
     public async Task CommitKeyAsync(KeyRef key, Guid certificateId, SigningContext context, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(context);
 
+        if (IsSshRef(key))
+        {
+            await CommitSshKeyAsync(key, certificateId, context, cancellationToken);
+            return;
+        }
+
         var committed = new KeyRef(certificateId, key.Keystore);
-        var refusal = JudgeKeyManagement(context) ?? await JudgeCeremonyAsync(context, cancellationToken, certificateId);
+        var refusal = JudgeKeyManagement(context) ?? await JudgeCeremonyAsync(context, cancellationToken, certificateId, X509KeyCeremonies);
         PendingKey? pending = null;
         if (refusal == null && !_pending.TryGetValue(key.CertificateId, out pending))
             refusal = new SigningRefusedException(SigningRefusalReason.UnknownKey, $"No generated key awaits commit under {key}.");
@@ -347,7 +389,8 @@ public sealed class InProcessSigningService : ISigningService
     /// with no stored key is refused as <see cref="SigningRefusalReason.UnknownKey"/>, and the
     /// reason says why: since re-download ended, a key the CA generates is delivered once, with
     /// the request that carries it, and is not kept. The audit row carries the hash of the
-    /// wrapped bytes that left.
+    /// wrapped bytes that left. A key in <see cref="KeyRef.SshKeystore"/> never leaves as
+    /// PKCS#12; that keystore leaves only whole, as the other files do under Backup.
     /// </remarks>
     public async Task<byte[]> ExportKeyAsync(KeyRef key, ExportWrap wrap, SigningContext context, CancellationToken cancellationToken = default)
     {
@@ -359,6 +402,9 @@ public sealed class InProcessSigningService : ISigningService
             return await ExportKeystoreFileAsync(key, wrap, context, cancellationToken);
 
         var refusal = JudgeExportContext(context, wrap);
+        if (refusal == null && IsSshRef(key))
+            refusal = new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
+                $"The key {key} is an SSH CA key; it is never exported to a holder, under any purpose.");
         CachedOwner? owner = null;
         if (refusal == null)
         {
@@ -392,12 +438,19 @@ public sealed class InProcessSigningService : ISigningService
     /// <remarks>
     /// A pending key is discarded: it was never written anywhere, so retiring it is the whole
     /// undo of a ceremony that failed after generating it. A committed key cannot be retired in
-    /// this stage; revoking its certificate is what takes it out of service.
+    /// this stage; revoking its certificate is what takes it out of service. A pending SSH CA
+    /// key is discarded the same way, by <see cref="RetireSshKeyAsync"/>.
     /// </remarks>
     public async Task RetireKeyAsync(KeyRef key, SigningContext context, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(context);
+
+        if (IsSshRef(key))
+        {
+            await RetireSshKeyAsync(key, context, cancellationToken);
+            return;
+        }
 
         var refusal = JudgeKeyManagement(context);
         PendingKey? pending = null;
@@ -554,6 +607,12 @@ public sealed class InProcessSigningService : ISigningService
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The keys of certificates a CA row names come first, classified as the row says. The SSH
+    /// CA keys follow, each with kind <see cref="KeyKind.SshCa"/> and a reference in
+    /// <see cref="KeyRef.SshKeystore"/> (<see cref="ListSshKeysAsync"/>): only those whose
+    /// <c>SshCaKeys</c> row still carries the public key the signer holds for it.
+    /// </remarks>
     public async Task<IReadOnlyList<KeyInfo>> ListKeysAsync(SigningContext context, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -575,15 +634,14 @@ public sealed class InProcessSigningService : ISigningService
             if (ca.TsaCertificateId is Guid t) owners[t] = new KeyOwner(KeyKind.Tsa, ca.Id, ca.SpaceId);
             if (ca.CmpSigningCertificateId is Guid m) owners[m] = new KeyOwner(KeyKind.CmpSigner, ca.Id, ca.SpaceId);
         }
-        if (owners.Count == 0)
-            return Array.Empty<KeyInfo>();
-
-        var ids = owners.Keys.ToList();
-        var rows = await db.Certificates.AsNoTracking()
-            .Where(c => ids.Contains(c.CertificateId))
-            .ToListAsync(cancellationToken);
-
         var keys = new List<KeyInfo>();
+        var ids = owners.Keys.ToList();
+        var rows = ids.Count == 0
+            ? new List<CertificateEntity>()
+            : await db.Certificates.AsNoTracking()
+                .Where(c => ids.Contains(c.CertificateId))
+                .ToListAsync(cancellationToken);
+
         foreach (var row in rows)
         {
             var cert = TryParse(row);
@@ -597,6 +655,7 @@ public sealed class InProcessSigningService : ISigningService
                 owner.Kind, owner.CaId, owner.SpaceId,
                 handle is Pkcs11PrivateKeyHandle ? SignerHealth.Pkcs11Backend : SignerHealth.SoftwareBackend));
         }
+        keys.AddRange(await ListSshKeysAsync(db, context, cancellationToken));
         return keys;
     }
 
@@ -978,7 +1037,9 @@ public sealed class InProcessSigningService : ISigningService
     /// The rule every key-management operation shares: generation, import, commit and retire
     /// happen only under a ceremony or infrastructure context, and never while locked.
     /// <see cref="SigningPurpose.Bootstrap"/> manages no key: it would be held to no ceremony, so
-    /// it moves only whole keystore files (<see cref="JudgeKeystoreFile"/>).
+    /// it moves only whole keystore files (<see cref="JudgeKeystoreFile"/>). The one key operation
+    /// outside it is the import of an SSH CA key under <see cref="SigningPurpose.SshKeyMigration"/>,
+    /// which <see cref="ImportSshKeyAsync"/> judges on its own; that purpose is refused here.
     /// </summary>
     private SigningRefusedException? JudgeKeyManagement(SigningContext context)
     {
@@ -991,7 +1052,13 @@ public sealed class InProcessSigningService : ISigningService
     }
 
     /// <summary>The ceremony operation types that manage a CA key; no other ceremony licenses a key operation.</summary>
-    private static readonly HashSet<string> KeyManagementCeremonies = new(StringComparer.Ordinal) { "CreateRootCA", "CreateIntermediateCA" };
+    private static readonly HashSet<string> KeyManagementCeremonies = new(StringComparer.Ordinal) { "CreateRootCA", "CreateIntermediateCA", "CreateSshCa" };
+
+    /// <summary>The ceremonies that license a key of an X.509 CA. A <c>CreateSshCa</c> ceremony is not one.</summary>
+    private static readonly HashSet<string> X509KeyCeremonies = new(StringComparer.Ordinal) { "CreateRootCA", "CreateIntermediateCA" };
+
+    /// <summary>The one ceremony that licenses an SSH CA key. An X.509 CA ceremony does not.</summary>
+    private static readonly HashSet<string> SshKeyCeremonies = new(StringComparer.Ordinal) { "CreateSshCa" };
 
     /// <summary>
     /// Holds a <see cref="SigningPurpose.Ceremony"/> context to a scope, then to the ceremony it
@@ -1004,7 +1071,9 @@ public sealed class InProcessSigningService : ISigningService
     /// scope like any other. A context with no scope from any of these,
     /// or that states a space and the instance at once, is
     /// <see cref="SigningRefusalReason.ContextRequired"/>; a missing space is never the instance.
-    /// A named ceremony must exist, be approved and unexpired, manage a key, name exactly this
+    /// A named ceremony must exist, be approved and unexpired, manage a key, be one of
+    /// <paramref name="licensing"/> (an X.509 CA ceremony licenses no SSH key and
+    /// <c>CreateSshCa</c> no X.509 key), name exactly this
     /// scope (null equals null), and target no other CA than the context names; anything else is
     /// <see cref="SigningRefusalReason.CeremonyNotApproved"/>. With no ceremony named,
     /// <see cref="JudgeCeremonyRequirementAsync"/> applies the scope's policy. Generation,
@@ -1013,8 +1082,9 @@ public sealed class InProcessSigningService : ISigningService
     /// it: its keys never become CA keys, and <see cref="JudgeCommitOwnerAsync"/> holds their
     /// commit to the CA whose delegated certificate they are bound to.
     /// </summary>
-    private async Task<SigningRefusedException?> JudgeCeremonyAsync(SigningContext context, CancellationToken cancellationToken, Guid? boundCertificateId = null)
+    private async Task<SigningRefusedException?> JudgeCeremonyAsync(SigningContext context, CancellationToken cancellationToken, Guid? boundCertificateId = null, HashSet<string>? licensing = null)
     {
+        licensing ??= X509KeyCeremonies;
         if (context.Purpose != SigningPurpose.Ceremony)
             return null;
         if (context.InstanceScope && context.SpaceId != null)
@@ -1078,6 +1148,9 @@ public sealed class InProcessSigningService : ISigningService
         if (!KeyManagementCeremonies.Contains(ceremony.OperationType))
             return new SigningRefusedException(SigningRefusalReason.CeremonyNotApproved,
                 $"Ceremony {ceremonyId} is a {ceremony.OperationType} ceremony, which manages no key.");
+        if (!licensing.Contains(ceremony.OperationType))
+            return new SigningRefusedException(SigningRefusalReason.CeremonyNotApproved,
+                $"Ceremony {ceremonyId} is a {ceremony.OperationType} ceremony; this key operation is licensed only by {string.Join(" or ", licensing.Order(StringComparer.Ordinal))}.");
         if (ceremony.SpaceId != scopeSpace)
             return new SigningRefusedException(SigningRefusalReason.CeremonyNotApproved,
                 $"Ceremony {ceremonyId} was approved for {DescribeScope(ceremony.SpaceId)}, not {DescribeScope(scopeSpace)}.");

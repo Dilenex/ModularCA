@@ -3189,6 +3189,13 @@ namespace ModularCA.Database.Migrations
                     b.Property<int?>("KeySize")
                         .HasColumnType("integer");
 
+                    b.Property<string>("KeyStorage")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("Signer");
+
                     b.Property<string>("KeyType")
                         .IsRequired()
                         .HasMaxLength(20)
@@ -3203,7 +3210,6 @@ namespace ModularCA.Database.Migrations
                         .HasColumnType("character varying(255)");
 
                     b.Property<string>("PrivateKeyPath")
-                        .IsRequired()
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
 

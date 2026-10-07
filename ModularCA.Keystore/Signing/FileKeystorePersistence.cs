@@ -15,12 +15,14 @@ namespace ModularCA.Keystore.Signing;
 /// secondary passphrases the keystore configuration already holds, re-encrypts it with the new
 /// entry, and re-signs it with the system signer whose SPKI is pinned for the file. The system
 /// signer is resolved from the registry here, inside the keystore project, so no caller of the
-/// signer has to hold it.
+/// signer has to hold it. An SSH CA key goes to <c>ssh-ca.keystore</c> alone, which the first
+/// such key creates.
 /// </summary>
 public sealed class FileKeystorePersistence : ISignerKeyPersistence
 {
     private const string CertsKeystore = "ca-certs.keystore";
     private const string TrustKeystore = "ca-trust.keystore";
+    private const string SshKeystore = ModularCA.Shared.Signing.KeyRef.SshKeystore;
 
     private readonly string _keystoresDirectory;
     private readonly string _yamlPath;
@@ -59,6 +61,44 @@ public sealed class FileKeystorePersistence : ISignerKeyPersistence
             KeystoreService.AppendEntries(
                 Path.Combine(_keystoresDirectory, TrustKeystore), _yamlPath, TrustKeystore,
                 new[] { certificateDer }, systemSigner, db);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(systemSignerDer);
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The key goes to <c>ssh-ca.keystore</c> through <see cref="KeystoreService.AppendOrCreateEntries"/>:
+    /// the same format, the same secondary passphrase as <c>ca-certs.keystore</c>, and a
+    /// <c>Keystores</c> row of its own. An existing file is re-signed by the signer its own row
+    /// pins. A file that does not exist yet is created, signed by and pinned to the system
+    /// signer pinned for <c>ca-certs.keystore</c>, whose pin is authenticated first; without
+    /// that pin, or without its key, no SSH keystore is started.
+    /// </remarks>
+    public void AppendSshKey(byte[] privateKeyPkcs8Der)
+    {
+        ArgumentNullException.ThrowIfNull(privateKeyPkcs8Der);
+
+        using var scope = _scopes.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        var pinned = KeystoreService.GetPinnedSignerSpki(db, SshKeystore);
+        if (string.IsNullOrEmpty(pinned))
+        {
+            var secondary = Config.KeystoreYamlLoader.LoadSecondaryPassphrase(_yamlPath, CertsKeystore);
+            pinned = KeystoreService.LoadVerifiedPinnedSpki(db, CertsKeystore, secondary);
+            if (string.IsNullOrEmpty(pinned))
+                throw new InvalidOperationException(
+                    $"'{CertsKeystore}' has no pinned signer, so there is no system signer to pin '{SshKeystore}' to. Backfill the keystore pin first.");
+        }
+
+        var (systemSigner, systemSignerDer, signerSpki) = ResolveSigner(pinned, fallBackToFirst: false);
+        try
+        {
+            KeystoreService.AppendOrCreateEntries(
+                Path.Combine(_keystoresDirectory, SshKeystore), _yamlPath, SshKeystore,
+                new[] { privateKeyPkcs8Der }, systemSigner, signerSpki, db);
         }
         finally
         {
@@ -174,11 +214,23 @@ public sealed class FileKeystorePersistence : ISignerKeyPersistence
     /// </summary>
     private (AsymmetricKeyParameter Signer, byte[] Der) ResolveSystemSigner(ModularCADbContext db)
     {
+        var (signer, der, _) = ResolveSigner(KeystoreService.GetPinnedSignerSpki(db, CertsKeystore), fallBackToFirst: true);
+        return (signer, der);
+    }
+
+    /// <summary>
+    /// The registered signer whose SPKI is <paramref name="pinnedSpki"/>, with its exported key
+    /// and the SPKI SHA-256 of its certificate. With <paramref name="fallBackToFirst"/> a pin
+    /// that is missing or matches nothing falls back to the first registered signer, which is
+    /// what an older keystore with no pin needs; without it that is an
+    /// <see cref="InvalidOperationException"/>.
+    /// </summary>
+    private (AsymmetricKeyParameter Signer, byte[] Der, string SpkiSha256Hex) ResolveSigner(string? pinnedSpki, bool fallBackToFirst)
+    {
         var signers = _registry.GetSigners();
         if (signers.Count < 1)
             throw new InvalidOperationException("Need at least 1 signer in registry for keystore operations");
 
-        var pinnedSpki = KeystoreService.GetPinnedSignerSpki(db, CertsKeystore);
         CertificateAuthorityIdentity? matched = null;
         if (pinnedSpki != null)
         {
@@ -191,6 +243,8 @@ public sealed class FileKeystorePersistence : ISignerKeyPersistence
                 }
             }
         }
+        if (matched == null && !fallBackToFirst)
+            throw new InvalidOperationException("The signer pinned for the keystore is not among the keys the signer holds.");
         matched ??= signers[0];
 
         var handle = _registry.GetPrivateKeyFor(matched.PublicCertificate)
@@ -204,7 +258,7 @@ public sealed class FileKeystorePersistence : ISignerKeyPersistence
             ?? throw new InvalidOperationException("System signer private key DER export returned null");
         try
         {
-            return (PrivateKeyFactory.CreateKey(der), der);
+            return (PrivateKeyFactory.CreateKey(der), der, KeystoreService.ComputeSpkiSha256Hex(matched.PublicCertificate));
         }
         catch
         {

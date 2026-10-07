@@ -48,6 +48,31 @@ internal sealed class TestKeystore : ISignerKeyRegistry
         if (!_trusted.Any(t => t.SerialNumber.Equals(cert.SerialNumber)))
             _trusted.Add(cert);
     }
+
+    private readonly List<SshKeyBinding> _sshKeys = new();
+
+    public SshKeyBinding? GetSshKey(Guid sshCaKeyId)
+    {
+        lock (_sshKeys) return _sshKeys.FirstOrDefault(k => k.KeyId == sshCaKeyId);
+    }
+
+    public IReadOnlyList<SshKeyBinding> GetSshKeys()
+    {
+        lock (_sshKeys) return _sshKeys.ToList();
+    }
+
+    /// <summary>Binds an SSH CA key to its row the way the runtime registry does: a row never changes key.</summary>
+    public void RegisterSshKey(SshKeyBinding binding)
+    {
+        lock (_sshKeys)
+        {
+            var bound = _sshKeys.FirstOrDefault(k => k.KeyId == binding.KeyId);
+            if (bound == null)
+                _sshKeys.Add(binding);
+            else if (!bound.PublicKey.Equals(binding.PublicKey))
+                throw new InvalidOperationException($"SSH CA key row {binding.KeyId} is already bound to another key.");
+        }
+    }
 }
 
 /// <summary>
@@ -79,6 +104,17 @@ internal sealed class InMemorySignerKeyPersistence : ModularCA.Keystore.Signing.
     {
         if (FailWith != null) throw FailWith;
         _appended.Add(((byte[])privateKeyPkcs8Der.Clone(), (byte[])certificateDer.Clone()));
+    }
+
+    private readonly List<byte[]> _sshAppended = new();
+
+    /// <summary>The SSH CA keys appended so far, as PKCS#8, oldest first: what the SSH keystore would hold.</summary>
+    public IReadOnlyList<byte[]> SshAppended => _sshAppended;
+
+    public void AppendSshKey(byte[] privateKeyPkcs8Der)
+    {
+        if (FailWith != null) throw FailWith;
+        _sshAppended.Add((byte[])privateKeyPkcs8Der.Clone());
     }
 
     public IReadOnlyList<string> ListKeystoreFiles() => KeystoreFiles.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList();

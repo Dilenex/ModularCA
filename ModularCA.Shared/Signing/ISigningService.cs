@@ -20,7 +20,27 @@ namespace ModularCA.Shared.Signing;
 /// key and purpose sign and refuses anything else (see <see cref="SignAsync"/>), so a purpose
 /// label constrains what a key signs, not only which key signs;
 /// </item>
-/// <item>an SSH CA key signs nothing through <see cref="SignAsync"/>, for any purpose;</item>
+/// <item>
+/// an SSH CA key, which is every key in <see cref="KeyRef.SshKeystore"/> and no other, signs
+/// nothing through <see cref="SignAsync"/> for any purpose, decrypts nothing, and is never
+/// exported as PKCS#12; while it is generated and not yet committed it signs nothing at all;
+/// </item>
+/// <item>
+/// an SSH CA key is generated, committed and retired only under a ceremony context that states
+/// the instance as its scope, never under an infrastructure context; it is committed only to
+/// an enabled <c>SshCaKeys</c> row that carries its public key, of the enabled SSH CA the
+/// context names;
+/// </item>
+/// <item>
+/// a named ceremony licenses only its own kind of key: <c>CreateRootCA</c> and
+/// <c>CreateIntermediateCA</c> an X.509 CA key, <c>CreateSshCa</c> an SSH CA key;
+/// </item>
+/// <item>
+/// <see cref="SigningPurpose.SshKeyMigration"/> imports a PKCS#8 key into
+/// <see cref="KeyRef.SshKeystore"/> for an <c>SshCaKeys</c> row whose storage is
+/// <c>LegacyFile</c> and which carries the key's public key, without a ceremony, and permits
+/// nothing else; <see cref="SigningPurpose.SshCertificate"/> permits none of the operations here;
+/// </item>
 /// <item>
 /// secrets are wrapped and unwrapped under the purposes listed for their
 /// <see cref="SecretKind"/>: <see cref="SigningPurpose.Cmp"/> both wraps and unwraps a CMP
@@ -77,7 +97,7 @@ public interface ISigningService
 
     /// <summary>
     /// Decrypts a CMS envelope addressed to the key. SCEP is the only protocol that needs this:
-    /// its clients encrypt the request to the CA (RA) certificate.
+    /// its clients encrypt the request to the CA (RA) certificate. An SSH CA key decrypts nothing.
     /// </summary>
     /// <exception cref="SigningRefusedException">The key is unknown, or policy refuses the purpose or CA.</exception>
     Task<byte[]> DecryptAsync(KeyRef key, byte[] enveloped, SigningContext context, CancellationToken cancellationToken = default);
@@ -88,8 +108,12 @@ public interface ISigningService
     /// The key has no certificate yet: it is held pending, signs only under the context that
     /// generated it, and is written nowhere until <see cref="CommitKeyAsync"/> binds it to the
     /// certificate row that carries its public key. <see cref="RetireKeyAsync"/> discards it.
+    /// With <see cref="KeySpec.SshUsage"/> the key is an SSH CA key: Ed25519, ECDSA P-256, P-384
+    /// or P-521, or RSA of at least 2048 bits, generated under a ceremony context at instance
+    /// scope only, returned under a reference in <see cref="KeyRef.SshKeystore"/>, and signing
+    /// nothing until it is committed to its <c>SshCaKeys</c> row.
     /// </summary>
-    /// <exception cref="SigningRefusedException">The context is not a ceremony or infrastructure context, or its scope's ceremony policy refuses it.</exception>
+    /// <exception cref="SigningRefusedException">The context is not a ceremony or infrastructure context, its scope's ceremony policy refuses it, or the spec names a usage or, for an SSH CA key, an algorithm the signer does not generate.</exception>
     Task<GeneratedKey> GenerateKeyAsync(KeySpec spec, SigningContext context, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -99,9 +123,15 @@ public interface ISigningService
     /// format is a whole keystore file from a backup: it is verified against the pinned signer
     /// and replaces the file in place, under a <see cref="SigningPurpose.Restore"/> or
     /// <see cref="SigningPurpose.Bootstrap"/> context, locked or not, since restoring the
-    /// keystore is how a signer comes to hold keys at all.
+    /// keystore is how a signer comes to hold keys at all. PKCS#8 material offered to
+    /// <see cref="KeyRef.SshKeystore"/> is an SSH CA key moving off the node: it is imported
+    /// only under <see cref="SigningPurpose.SshKeyMigration"/>, for the <c>SshCaKeys</c> row
+    /// <see cref="KeyMaterial.CertificateId"/> names, which must have storage <c>LegacyFile</c>
+    /// and carry the key's public key, of the SSH CA the context names at instance scope. That
+    /// import can be repeated: offering the key the signer already holds for the row succeeds
+    /// and writes nothing, and offering another key for a row it holds a key for is refused.
     /// </summary>
-    /// <exception cref="SigningRefusedException">The context is not one the format allows, the format is not accepted, the certificate does not carry the key's public half, or a keystore file does not verify.</exception>
+    /// <exception cref="SigningRefusedException">The context is not one the format or the keystore allows, the format is not accepted, the certificate or SSH CA key row does not carry the key's public half, or a keystore file does not verify.</exception>
     Task<KeyRef> ImportKeyAsync(KeyMaterial material, SigningContext context, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -111,15 +141,22 @@ public interface ISigningService
     /// for its kind, addressed by <c>new KeyRef(certificateId)</c>. The generated reference is
     /// spent. Allowed only under a ceremony or infrastructure context; a key generated for a CA
     /// binds only to a certificate of that CA, and an infrastructure key only to a delegated
-    /// signer certificate of the CA the context names.
+    /// signer certificate of the CA the context names. An SSH CA key, whose reference is in
+    /// <see cref="KeyRef.SshKeystore"/>, has no certificate: <paramref name="certificateId"/> is
+    /// then its <c>SshCaKeys</c> row id, the row must carry the key's public key, be enabled and
+    /// have storage <c>Signer</c>, and its CA must be the enabled SSH CA the context names at
+    /// instance scope. The key is written to the SSH keystore, which the first such commit
+    /// creates, and is addressed from then on by <c>new KeyRef(certificateId, KeyRef.SshKeystore)</c>.
+    /// A key generated for X.509 is never committed to an SSH CA key row, nor an SSH CA key to
+    /// a certificate.
     /// </summary>
-    /// <exception cref="SigningRefusedException">The context is not a ceremony or infrastructure context, no generated key awaits under <paramref name="key"/>, the certificate is missing or is not the key's, or it belongs to another CA or scope.</exception>
+    /// <exception cref="SigningRefusedException">The context is not a ceremony or infrastructure context, no generated key awaits under <paramref name="key"/>, the certificate or SSH CA key row is missing or is not the key's, or it belongs to another CA or scope.</exception>
     Task CommitKeyAsync(KeyRef key, Guid certificateId, SigningContext context, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Exports a key wrapped as <paramref name="wrap"/> says. A single key leaves as PKCS#12 only
     /// when it is an end-entity key and the context is <see cref="SigningPurpose.Export"/>; a CA,
-    /// responder, TSA, CMP or system key never leaves as PKCS#12, and a PKCS#12 request under
+    /// responder, TSA, CMP, SSH CA or system key never leaves as PKCS#12, and a PKCS#12 request under
     /// <see cref="SigningPurpose.Backup"/> is refused as
     /// <see cref="SigningRefusalReason.PurposeNotPermitted"/>. The context must name its caller,
     /// and a PKCS#11 key never leaves its token. A certificate the signer holds no key for is refused
@@ -198,16 +235,19 @@ public interface ISigningService
 
     /// <summary>
     /// Lists the keys the signer holds, with their public halves and what kind of key each is.
-    /// A context naming a CA lists that CA's keys only.
+    /// A context naming a CA lists that CA's keys only. An SSH CA key is listed with kind
+    /// <see cref="KeyKind.SshCa"/> under its <c>SshCaKeys</c> row id in
+    /// <see cref="KeyRef.SshKeystore"/>, as long as that row still carries its public key.
     /// </summary>
     Task<IReadOnlyList<KeyInfo>> ListKeysAsync(SigningContext context, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Retires a key: it is no longer available to sign with. For a generated key that was not
     /// committed this discards it, which is the undo of a ceremony that failed after generating
-    /// it. Allowed only under a ceremony or bootstrap context.
+    /// it. Allowed only under a ceremony or infrastructure context, and for a generated SSH CA
+    /// key only under a ceremony context at instance scope.
     /// </summary>
-    /// <exception cref="SigningRefusedException">The key is unknown, the context is not a ceremony or bootstrap, or the key is committed and cannot be retired.</exception>
+    /// <exception cref="SigningRefusedException">The key is unknown, the context is not a ceremony or infrastructure context, or the key is committed and cannot be retired.</exception>
     Task RetireKeyAsync(KeyRef key, SigningContext context, CancellationToken cancellationToken = default);
 
     /// <summary>

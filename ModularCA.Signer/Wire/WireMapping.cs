@@ -81,19 +81,22 @@ public static class WireMapping
         };
     }
 
-    /// <summary>Maps a key spec to the wire.</summary>
+    /// <summary>Maps a key spec to the wire; the X.509 usage crosses as the empty default.</summary>
     public static KeySpec ToWire(Shared.Signing.KeySpec spec)
     {
-        var wire = new KeySpec { Algorithm = spec.Algorithm, SizeOrCurve = spec.SizeOrCurve };
+        var wire = new KeySpec { Algorithm = spec.Algorithm, SizeOrCurve = spec.SizeOrCurve, Usage = spec.Usage ?? Shared.Signing.KeySpec.X509Usage };
         if (spec.Label != null) wire.Label = spec.Label;
         return wire;
     }
 
-    /// <summary>Reads a key spec from the wire.</summary>
+    /// <summary>
+    /// Reads a key spec from the wire. A client older than the usage field omits it, which
+    /// reads as the X.509 usage; the signer refuses any usage it does not know.
+    /// </summary>
     public static Shared.Signing.KeySpec FromWire(KeySpec? spec)
     {
         if (spec == null) throw new ArgumentException("The key spec is missing.", "spec");
-        return new Shared.Signing.KeySpec(spec.Algorithm, spec.SizeOrCurve, spec.HasLabel ? spec.Label : null);
+        return new Shared.Signing.KeySpec(spec.Algorithm, spec.SizeOrCurve, spec.HasLabel ? spec.Label : null, spec.Usage);
     }
 
     /// <summary>Maps key material to the wire.</summary>

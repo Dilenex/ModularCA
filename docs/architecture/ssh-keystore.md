@@ -1,7 +1,13 @@
 # SSH keystore
 
 Status: owner decisions recorded 2026-10-05 (see "Decided by the owner"). Stage 1, the wire
-format, is built as its own assembly, `ModularCA.Ssh`; nothing calls it yet.
+format, is built as its own assembly, `ModularCA.Ssh`. The first part of stage 2 is built: the
+signer has the SSH keystore and the key lifecycle (generate, commit, the migration import, list,
+retire). Nothing signs an SSH certificate through the signer yet, and the node still uses
+`ssh-keygen` and its key files.
+
+Release: 0.4.2 (owner, 2026-10-06). 0.4.1 is the settings release; the signer journal and verified
+approvals in `signer-hardening.md` follow this, from 0.4.3.
 
 ## Why
 
@@ -551,8 +557,8 @@ guide.
 
 | Stage | Work | Effort |
 |---|---|---|
-| 1 | **Built.** `ModularCA.Ssh` (its own assembly; `ISshSigner` and `SshCertificateIssuer` added 2026-10-06): certificate encoder and parser, public key encode/decode and authorized_keys parsing, signature blobs per algorithm (DER and raw ECDSA), KRL encoder, `openssh-key-v1` private key reader, and the signer's checks as pure functions (`SshCertificateRules`). Golden tests against fixtures made with `ssh-keygen` 10.2 (`tests/ModularCA.Tests/Shared/Ssh/Fixtures/generate.sh`). No `ssh-keygen` option-set mapping, since profiles are exact. No behaviour change | M |
-| 2 | Signer: `ssh-ca.keystore` (create, load, append, pin, secondary alias), `KeyKind.SshCa`, the two purposes, `SignSshCertificate` in process and over gRPC, SSH generate, commit and import, `CreateSshCa` ceremony verification, `SignerAudit.Summary` migration. Contract suite on both bindings, with deliberate breaks: raw `Sign` on an SSH key allowed, empty principals allowed, X.509 key in the SSH file, ceremony check removed | L |
+| 1 | **Built.** `ModularCA.Ssh` (its own assembly; `ISshSigner` and `SshCertificateIssuer` added 2026-10-06): certificate encoder and parser, public key encode/decode and authorized_keys parsing, signature blobs per algorithm (DER and raw ECDSA), KRL encoder, `openssh-key-v1` private key reader, and the signer's checks as pure functions (`SshCertificateRules`). Golden tests against fixtures made with `ssh-keygen` 10.2 (`tests/ModularCA.Tests/Ssh/Fixtures/generate.sh`). No `ssh-keygen` option-set mapping, since profiles are exact. No behaviour change | M |
+| 2 | Signer: `ssh-ca.keystore` (create, load, append, pin, secondary alias), `KeyKind.SshCa`, the two purposes, `SignSshCertificate` in process and over gRPC, SSH generate, commit and import, `CreateSshCa` ceremony verification, `SignerAudit.Summary` migration. Contract suite on both bindings, with deliberate breaks: raw `Sign` on an SSH key allowed, empty principals allowed, X.509 key in the SSH file, ceremony check removed. **Part 1 built (2026-10-07):** the keystore file and its `Keystores` row, created by the first commit or import and loaded at unlock; `KeySpec.usage` (`ssh`) on the contract and the wire; SSH generate, commit, retire and list; the `SshKeyMigration` import, repeatable; `CreateSshCa` verified at the signer, with an X.509 CA ceremony licensing no SSH key and the reverse; `SigningPurpose.SshCertificate` and `SshKeyMigration`; and the `SshCaKeys.KeyStorage` column with its migration (`SshKeyStorage`), brought forward from stage 3 because the import is judged on it. Contract tests on both bindings, checked against deliberate breaks of the ceremony licence, the row binding, the storage and enabled checks, the pin requirement and the raw-signature refusal. **Not built:** `SignSshCertificate`, its messages, and `SignerAudit.Summary` | L |
 | 3 | Node cut-over: `SshCaService` over the signer; KRL from the public key; `KeyStorage` column; `ssh-keygen`, `ProcessRunner` use, `SshCaConfig` and `PUT /config/ssh-ca` removed; unlocked-signer filter on the SSH sign routes; endpoints, docs site and console | M |
 | 4 | Migration: startup import, file deletion, `--upgrade-check` finding, readiness row, plaintext notice; backup excludes the directory and carries `ssh-ca.keystore`; restore of old archives; reset | M |
 | 5 | Live proof on ca4 with the signer as its own unit: sshd accepts user and host certificates for all three key types; a KRL revokes; backup and restore round trip; migration from a 0.4.0 install with plaintext keys; the container image issues an SSH certificate | S |
@@ -560,6 +566,30 @@ guide.
 
 Stages 1 to 5 are the release, **L** overall. Stage 1 can start at once, since it touches nothing
 shared.
+
+### Carried from stage 2 into stages 3 and 4
+
+Part 1 of stage 2 left these for the stages that first make an `ssh-ca.keystore` on a real
+install. None is reachable before stage 3, since nothing in the node generates or imports an SSH
+key through the signer yet.
+
+- **Reset.** It deletes `ssh-ca-*` and not `ssh-ca.keystore`. A file with no `Keystores` row
+  leaves the signer locked at the next start, so reset must remove the file with the rows.
+- **A crash while the first SSH key is written** can leave the file without its row, or the
+  reverse, with the same result. The unlock message says which, and that the file is moved aside
+  or restored; stage 4 documents it in the operator guide.
+- **Restore.** A whole `ssh-ca.keystore` restored where no `Keystores` row exists for it is
+  verified as the other files are with no pin, and is then refused at unlock. Restore must bring
+  the row first, as it does for the other two.
+- **Backup.** `KeyRef.BackupKeystores` names two files; stage 4 adds the third.
+- **Older signer, newer node.** A signer that predates `KeySpec.usage` ignores it and returns a
+  pending key in `ca-certs.keystore`. The node checks the keystore of the returned reference and
+  retires the key when it is not `ssh-ca.keystore`.
+- **`ListKeys` consumers** (`CaCreationService`, `OcspResponderService`, `TimestampService`)
+  match by id alone. They skip keys of kind `SshCa`.
+- **The break-glass unlocker** has not been checked against `ssh-ca.keystore`.
+- **One approved `CreateSshCa` ceremony** is not held to a key count, and a pending SSH key does
+  not expire. Both are as X.509 is today, and belong to verified approvals in 0.4.3.
 
 ## Decided by the owner (2026-10-05)
 

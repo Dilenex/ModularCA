@@ -76,6 +76,12 @@ public class PostgresUpgradeHarnessTests
     /// <summary>The 0.4.0 migration that binds each ACME account to a CA, without its timestamp.</summary>
     public const string BindAcmeAccountsToCa = "BindAcmeAccountsToCa";
 
+    /// <summary>The 0.4.1 migration that adds named API keys, the one before <see cref="SshKeyStorage"/>, without its timestamp.</summary>
+    public const string ApiKeys = "ApiKeys";
+
+    /// <summary>The 0.4.2 migration that records where each SSH CA key is held, without its timestamp.</summary>
+    public const string SshKeyStorage = "SshKeyStorage";
+
     private const string ServerVariable = "MODULARCA_TEST_PG";
     private const string RehearsalVariable = "MODULARCA_TEST_PG_REHEARSAL";
     private const string RehearsalAuditVariable = "MODULARCA_TEST_PG_REHEARSAL_AUDIT";
@@ -1284,6 +1290,58 @@ public class PostgresUpgradeHarnessTests
             Assert.Equal(RootCa.ToString(), await BoundTo(LabelLessAccount));
             Assert.Equal(RootCa.ToString(), await BoundTo(BlankLabelAccount));
             Assert.Equal(6, await ScalarAsync(app, "SELECT count(*) FROM \"AcmeAccounts\""));
+
+            await MigrateToLatestAsync(app, "application");
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await DropDatabaseAsync(server, appName);
+        }
+    }
+
+    /// <summary>
+    /// The <c>SshKeyStorage</c> backfill, seeded at the stage before it: an SSH CA key row that
+    /// has a key file path becomes <c>LegacyFile</c>, so its key waits for the import into the
+    /// signer; a row with an empty path is left at the column default, <c>Signer</c>. Afterwards
+    /// the path may be null, and a row written without a storage gets <c>Signer</c>.
+    /// </summary>
+    [RequiresEnvironmentFact(ServerVariable)]
+    public async Task The_ssh_key_storage_backfill_marks_rows_with_a_key_file_as_legacy_files()
+    {
+        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+        await CreateDatabaseAsync(server, appName);
+        try
+        {
+            await using var app = CreateApp(WithDatabase(server, appName));
+            await MigrateThroughAsync(app, ApiKeys);
+
+            var ca = Guid.NewGuid();
+            var withFile = Guid.NewGuid();
+            var withoutFile = Guid.NewGuid();
+            var added = Guid.NewGuid();
+            const string columns = "\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"PrivateKeyPath\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"IsEnabled\",\"CreatedAt\"";
+            await ExecAsync(app,
+                "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"SpaceId\",\"IsDeleted\") "
+                + $"VALUES ('{ca}','Ops SSH','ops-ssh',false,'SSH',true,'Software',true,NULL,false); "
+                + $"INSERT INTO \"SshCaKeys\" ({columns}) "
+                + $"VALUES ('{withFile}','Ops SSH','ed25519','ssh-ed25519 AAAA','config/ssh-ca-keys/{withFile}','{ca}',true,false,24,true,now()), "
+                + $"('{withoutFile}','Ops SSH empty','ed25519','ssh-ed25519 AAAA','','{ca}',true,false,24,false,now());");
+
+            await MigrateThroughAsync(app, SshKeyStorage);
+
+            async Task<string> Storage(Guid key) => await TextAsync(app, $"SELECT \"KeyStorage\" FROM \"SshCaKeys\" WHERE \"Id\" = '{key}'");
+            Assert.Equal("LegacyFile", await Storage(withFile));
+            Assert.Equal("Signer", await Storage(withoutFile));
+            Assert.Equal($"config/ssh-ca-keys/{withFile}", await TextAsync(app, $"SELECT \"PrivateKeyPath\" FROM \"SshCaKeys\" WHERE \"Id\" = '{withFile}'"));
+
+            await ExecAsync(app,
+                $"INSERT INTO \"SshCaKeys\" ({columns}) "
+                + $"VALUES ('{added}','Ops SSH new','ed25519','ssh-ed25519 AAAA',NULL,'{ca}',true,false,24,true,now());");
+            Assert.Equal("Signer", await Storage(added));
+            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshCaKeys\" WHERE \"PrivateKeyPath\" IS NULL"));
+            Assert.Equal(3, await ScalarAsync(app, "SELECT count(*) FROM \"SshCaKeys\""));
 
             await MigrateToLatestAsync(app, "application");
         }

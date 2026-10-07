@@ -18,8 +18,9 @@ namespace ModularCA.Tests.Signer;
 /// table row by row, the audit row every decision leaves, the health report, and signatures
 /// that verify under the key's public half. Written against the interface so the remote
 /// implementation runs the same suite by binding <see cref="CreateSignerAsync"/> to itself.
+/// The SSH keystore's part of the contract is in <c>SigningServiceContractTests.Ssh.cs</c>.
 /// </summary>
-public abstract class SigningServiceContractTests
+public abstract partial class SigningServiceContractTests
 {
     private const string Caller = "contract-test";
 

@@ -190,6 +190,37 @@ public sealed class RemoteSignerWireTests
         await client.RetireKeyAsync(generated.Key, SigningContext.ForScope("new-node", SigningPurpose.Ceremony, null));
     }
 
+    /// <summary>
+    /// The key usage is a field older peers do not have. An older node omits it, which reads as
+    /// the X.509 usage; and a newer node asking for an X.509 key sends byte for byte what an
+    /// older node sends, so an older signer sees nothing new in anything it already serves. The
+    /// two SSH purposes cross by name, and a purpose a signer does not know is bad input, not a
+    /// guess.
+    /// </summary>
+    [Fact]
+    public void The_key_usage_and_the_ssh_purposes_cross_the_wire_and_an_omitted_usage_is_x509()
+    {
+        var fromAnOlderNode = new ModularCA.Signer.Wire.KeySpec { Algorithm = "ECDSA", SizeOrCurve = "P-256" }.ToByteArray();
+        Assert.Equal(KeySpec.X509Usage, ModularCA.Signer.Wire.WireMapping.FromWire(ModularCA.Signer.Wire.KeySpec.Parser.ParseFrom(fromAnOlderNode)).Usage);
+        Assert.Equal(fromAnOlderNode, ModularCA.Signer.Wire.WireMapping.ToWire(new KeySpec("ECDSA", "P-256")).ToByteArray());
+
+        var ssh = new KeySpec("Ed25519", "", Usage: KeySpec.SshUsage);
+        var crossed = ModularCA.Signer.Wire.WireMapping.FromWire(
+            ModularCA.Signer.Wire.KeySpec.Parser.ParseFrom(ModularCA.Signer.Wire.WireMapping.ToWire(ssh).ToByteArray()));
+        Assert.Equal(ssh, crossed);
+
+        var caId = Guid.NewGuid();
+        foreach (var purpose in new[] { SigningPurpose.SshCertificate, SigningPurpose.SshKeyMigration })
+        {
+            var context = SigningContext.ForScope("node", purpose, null, caId);
+            var back = ModularCA.Signer.Wire.WireMapping.FromWire(
+                ModularCA.Signer.Wire.SigningContext.Parser.ParseFrom(ModularCA.Signer.Wire.WireMapping.ToWire(context).ToByteArray()));
+            Assert.Equal(context, back);
+        }
+        Assert.Throws<ArgumentException>(() => ModularCA.Signer.Wire.WireMapping.FromWire(
+            new ModularCA.Signer.Wire.SigningContext { Caller = "node", Purpose = "APurposeThisSignerPredates" }));
+    }
+
     [Fact]
     public async Task The_health_route_answers_on_the_same_listener_to_the_pinned_client_only()
     {

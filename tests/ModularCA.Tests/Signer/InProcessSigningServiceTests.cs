@@ -16,7 +16,7 @@ namespace ModularCA.Tests.Signer;
 /// </summary>
 public sealed class InProcessSigningServiceTests : SigningServiceContractTests
 {
-    internal override Task<ISigningService> CreateSignerAsync(SignerTestWorld world) => Task.FromResult<ISigningService>(Create(world, unlocked: true));
+    internal override Task<ISigningService> CreateSignerAsync(SignerTestWorld world) => Task.FromResult(world.CreateInProcessSigner());
 
     protected override string ExpectedBackend => SignerHealth.SoftwareBackend;
 
@@ -157,6 +157,72 @@ public sealed class InProcessSigningServiceTests : SigningServiceContractTests
     {
         using var db = world.OpenDb();
         return Task.FromResult(db.Certificates.Single(c => c.CertificateId == certificateId).RawCertificate);
+    }
+
+    [Fact]
+    public async Task A_locked_signer_manages_no_ssh_keys()
+    {
+        var world = SignerTestWorld.Create();
+        var signer = Create(world, unlocked: false);
+        var instance = new SigningContext("contract-test", SigningPurpose.Ceremony, null, null) { InstanceScope = true };
+        var sshRef = new KeyRef(Guid.NewGuid(), KeyRef.SshKeystore);
+        var pkcs8 = Org.BouncyCastle.Pkcs.PrivateKeyInfoFactory.CreatePrivateKeyInfo(
+            ModularCA.Shared.Utils.KeyAlgorithmPolicy.GenerateKeyPair("Ed25519", "").Private).GetDerEncoded();
+
+        async Task Locked(Func<Task> operation)
+        {
+            var ex = await Assert.ThrowsAsync<SigningRefusedException>(operation);
+            Assert.Equal(SigningRefusalReason.SignerLocked, ex.Reason);
+        }
+        await Locked(() => signer.GenerateKeyAsync(new KeySpec("Ed25519", "", Usage: KeySpec.SshUsage), instance));
+        await Locked(() => signer.CommitKeyAsync(sshRef, Guid.NewGuid(), instance));
+        await Locked(() => signer.RetireKeyAsync(sshRef, instance));
+        await Locked(() => signer.ImportKeyAsync(new KeyMaterial(pkcs8, KeyMaterial.Pkcs8, Guid.NewGuid(), KeyRef.SshKeystore),
+            instance with { Purpose = SigningPurpose.SshKeyMigration }));
+        await Locked(() => signer.ExportKeyAsync(sshRef, new ExportWrap(ExportWrap.Pkcs12, "pw"), instance with { Purpose = SigningPurpose.Export }));
+        Assert.Empty(await signer.ListKeysAsync(instance));
+        Assert.Empty(world.Persistence.SshAppended);
+    }
+
+    [Fact]
+    public async Task An_ssh_commit_that_cannot_persist_propagates_and_leaves_the_key_pending()
+    {
+        var world = SignerTestWorld.Create();
+        var signer = Create(world, unlocked: true);
+        var instance = new SigningContext("contract-test", SigningPurpose.Ceremony, null, null) { InstanceScope = true };
+        var caId = Guid.NewGuid();
+        var keyId = Guid.NewGuid();
+        using (var db = world.OpenDb())
+        {
+            db.SecurityPolicies.Add(new ModularCA.Shared.Entities.SecurityPolicyEntity { RequireKeyCeremony = false });
+            await db.SaveChangesAsync();
+        }
+        var generated = await signer.GenerateKeyAsync(new KeySpec("Ed25519", "", Usage: KeySpec.SshUsage), instance);
+        using (var db = world.OpenDb())
+        {
+            db.CertificateAuthorities.Add(new ModularCA.Shared.Entities.CertificateAuthorityEntity
+            {
+                Id = caId, Name = "ssh-unwritable", Label = "ssh-unwritable", Type = "SSH", IsSshCa = true, SpaceId = null,
+            });
+            db.SshCaKeys.Add(new ModularCA.Shared.Entities.SshCaKeyEntity
+            {
+                Id = keyId, Name = "ssh-unwritable", CertificateAuthorityId = caId,
+                PublicKey = ModularCA.Ssh.SshPublicKey.FromKeyParameter(PublicKeyFactory.CreateKey(generated.PublicKeyDer)).ToAuthorizedKey(),
+            });
+            await db.SaveChangesAsync();
+        }
+        var forCa = instance with { CaId = caId };
+        world.Persistence.FailWith = new IOException("keystore file locked");
+
+        await Assert.ThrowsAsync<IOException>(() => signer.CommitKeyAsync(generated.Key, keyId, forCa));
+
+        // Not written and not bound; still pending, so it commits once the file can be written.
+        Assert.Empty(world.Persistence.SshAppended);
+        Assert.DoesNotContain(await signer.ListKeysAsync(forCa), k => k.Kind == KeyKind.SshCa);
+        world.Persistence.FailWith = null;
+        await signer.CommitKeyAsync(generated.Key, keyId, forCa);
+        Assert.Single(world.Persistence.SshAppended);
+        Assert.Contains(await signer.ListKeysAsync(forCa), k => k.Kind == KeyKind.SshCa && k.Key.CertificateId == keyId);
     }
 
     [Fact]

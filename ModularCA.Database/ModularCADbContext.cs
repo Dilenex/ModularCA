@@ -839,6 +839,10 @@ public class ModularCADbContext : DbContext
                   .OnDelete(DeleteBehavior.SetNull);
         });
 
+        // SSH CA keys: a row that names no storage is a key the signer holds.
+        modelBuilder.Entity<SshCaKeyEntity>()
+            .Property(e => e.KeyStorage).HasDefaultValue(SshCaKeyStorage.Signer);
+
         // SSH Signing Profiles
         modelBuilder.Entity<SshSigningProfileEntity>(entity =>
         {

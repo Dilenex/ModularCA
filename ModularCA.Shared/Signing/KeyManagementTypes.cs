@@ -26,22 +26,37 @@ public enum KeyKind
     EndEntity,
 
     /// <summary>
-    /// The key of an SSH certificate authority, held in <see cref="KeyRef.SshKeystore"/>. It signs
-    /// nothing through <see cref="ISigningService.SignAsync"/>, for any purpose: an SSH certificate
-    /// is built and signed by the signer from its fields (<c>SignSshCertificate</c>, stage 2 of
-    /// <c>ssh-keystore.md</c>), never from bytes the node supplies.
+    /// The key of an SSH certificate authority, held in <see cref="KeyRef.SshKeystore"/>: every
+    /// key in that keystore is of this kind and no other key is. It signs nothing through
+    /// <see cref="ISigningService.SignAsync"/>, for any purpose: an SSH certificate is built and
+    /// signed by the signer from its fields (<c>SignSshCertificate</c>, stage 2 of
+    /// <c>ssh-keystore.md</c>), never from bytes the node supplies. It decrypts nothing and is
+    /// never exported as PKCS#12.
     /// </summary>
     SshCa,
 }
 
 /// <summary>
-/// What a caller asks the signer to generate: the algorithm and size or curve, and an optional
-/// label for backends that name their objects, such as PKCS#11 tokens.
+/// What a caller asks the signer to generate: the algorithm and size or curve, an optional
+/// label for backends that name their objects, such as PKCS#11 tokens, and what the key is for.
 /// </summary>
 /// <param name="Algorithm">The key algorithm: <c>RSA</c>, <c>ECDSA</c>, <c>Ed25519</c>, <c>ML-DSA</c> and so on.</param>
 /// <param name="SizeOrCurve">The RSA modulus size or the named curve, as the key policy already spells them.</param>
 /// <param name="Label">A label for the key object on a backend that has one, or null.</param>
-public sealed record KeySpec(string Algorithm, string SizeOrCurve, string? Label = null);
+/// <param name="Usage">
+/// What the key is for: <see cref="X509Usage"/> (empty, the default) for a key that will belong
+/// to an X.509 certificate, <see cref="SshUsage"/> for an SSH CA key, which is minted in
+/// <see cref="KeyRef.SshKeystore"/> and may only be Ed25519, ECDSA P-256, P-384 or P-521, or
+/// RSA of at least 2048 bits. Any other value is refused.
+/// </param>
+public sealed record KeySpec(string Algorithm, string SizeOrCurve, string? Label = null, string Usage = KeySpec.X509Usage)
+{
+    /// <summary>The usage of a key that will belong to an X.509 certificate.</summary>
+    public const string X509Usage = "";
+
+    /// <summary>The usage of an SSH CA key.</summary>
+    public const string SshUsage = "ssh";
+}
 
 /// <summary>
 /// A key the signer just generated: the reference the caller keeps, and the DER-encoded
@@ -57,8 +72,16 @@ public sealed record GeneratedKey(KeyRef Key, byte[] PublicKeyDer);
 /// </summary>
 /// <param name="Wrapped">The wrapped key bytes. The signer zeroes them once it has parsed them.</param>
 /// <param name="Format">The wrapping format, for the signer to recognise how to unwrap: <see cref="Pkcs8"/> for one key, <see cref="KeystoreFile"/> for a whole keystore file.</param>
-/// <param name="CertificateId">The certificate the key belongs to; its row must exist and carry the key's public half. Empty for a keystore file.</param>
-/// <param name="Keystore">The keystore the material belongs to; the file name for <see cref="KeystoreFile"/>.</param>
+/// <param name="CertificateId">
+/// The certificate the key belongs to; its row must exist and carry the key's public half. For a
+/// key offered to <see cref="KeyRef.SshKeystore"/>, the <c>SshCaKeys</c> row it belongs to.
+/// Empty for a keystore file.
+/// </param>
+/// <param name="Keystore">
+/// The keystore the material belongs to; the file name for <see cref="KeystoreFile"/>. A PKCS#8
+/// key offered to <see cref="KeyRef.SshKeystore"/> is an SSH CA key and is held to the SSH
+/// import rules.
+/// </param>
 public sealed record KeyMaterial(byte[] Wrapped, string Format, Guid CertificateId, string Keystore = KeyRef.DefaultKeystore)
 {
     /// <summary>DER-encoded PKCS#8 PrivateKeyInfo, in the clear; the in-process wrapping.</summary>
@@ -106,9 +129,9 @@ public sealed record ExportWrap(string Format, string Password, IReadOnlyList<by
 /// One key the signer holds, as <see cref="ISigningService.ListKeysAsync"/> reports it: the
 /// reference, its public half, what kind of key it is and where it lives.
 /// </summary>
-/// <param name="Key">The reference callers use to sign with it.</param>
+/// <param name="Key">The reference callers use to sign with it; for an SSH CA key, its <c>SshCaKeys</c> row id in <see cref="KeyRef.SshKeystore"/>.</param>
 /// <param name="PublicKeyDer">The public half, DER-encoded SubjectPublicKeyInfo.</param>
-/// <param name="Kind">What the database says the key is for.</param>
+/// <param name="Kind">What the database says the key is for; <see cref="KeyKind.SshCa"/> for a key held in <see cref="KeyRef.SshKeystore"/>.</param>
 /// <param name="CaId">The <c>CertificateAuthorities</c> row that owns the key, when one does.</param>
 /// <param name="SpaceId">The space the owning CA belongs to, when one does.</param>
 /// <param name="Backend">Where the key lives: <see cref="SignerHealth.SoftwareBackend"/> or <see cref="SignerHealth.Pkcs11Backend"/>.</param>

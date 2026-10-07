@@ -3,8 +3,9 @@ namespace ModularCA.Keystore.Signing;
 /// <summary>
 /// Where the signer writes a key it has committed: the private key and the certificate it now
 /// belongs to, as a pair, since the keystore pairs keys with certificates by public key when it
-/// loads. The file-backed implementation appends to the keystore files through the existing
-/// append path; a test implementation keeps the pairs in memory.
+/// loads. An SSH CA key has no certificate and is written alone, to a keystore of its own. The
+/// file-backed implementation appends to the keystore files through the existing append path;
+/// a test implementation keeps what it is given in memory.
 /// </summary>
 /// <remarks>
 /// The persistence is also the only thing that reads or replaces a keystore file whole, which
@@ -20,6 +21,13 @@ public interface ISignerKeyPersistence
     /// between the two leaves a key that pairs with nothing and is never loaded.
     /// </summary>
     void Append(byte[] privateKeyPkcs8Der, byte[] certificateDer);
+
+    /// <summary>
+    /// Persists an SSH CA key durably in <c>ssh-ca.keystore</c> and nowhere else: the key has no
+    /// certificate, and nothing is written to the trust keystore. The first key creates the
+    /// keystore; an install that never commits or imports an SSH key never has one.
+    /// </summary>
+    void AppendSshKey(byte[] privateKeyPkcs8Der);
 
     /// <summary>
     /// The names of the keystore files the persistence holds, for a backup to walk.

@@ -89,15 +89,9 @@ internal sealed class HostedSigner : IAsyncDisposable
     public static Task<HostedSigner> StartAsync(SignerTestWorld world, ISignerAuditSink? audit = null, int port = 0, string? pinnedClientSpki = null)
         => StartAsync(InProcessOver(world, audit), port, pinnedClientSpki);
 
-    /// <summary>The signer the signer role would run over a test world.</summary>
-    public static InProcessSigningService InProcessOver(SignerTestWorld world, ISignerAuditSink? audit = null) => new(
-        world.Keystore,
-        world.Scopes,
-        audit ?? new DatabaseSignerAuditSink(world.Scopes),
-        world.Persistence,
-        NullLogger<InProcessSigningService>.Instance,
-        unlocked: true,
-        failClosedOnAuditFailure: true);
+    /// <summary>The signer the signer role would run over a test world: over its keystore files when it has them.</summary>
+    public static ISigningService InProcessOver(SignerTestWorld world, ISignerAuditSink? audit = null)
+        => world.CreateInProcessSigner(audit, failClosedOnAuditFailure: true);
 
     /// <summary>Opens a client to this signer as the test node, or as whoever <paramref name="clientCertificate"/> is, trusting the pin given.</summary>
     public RemoteSigningService Connect(X509Certificate2? clientCertificate = null, string? pinnedServerSpki = null)
@@ -140,13 +134,14 @@ public sealed class RemoteSignerCollection
 /// <summary>
 /// The hosted signers of a remote contract class, one per test world, kept for the class: the
 /// suite asks for a signer many times over the same world, and a Kestrel host per call would be
-/// the slowest thing in the suite. The shared world and its signer are built before the first
+/// the slowest thing in the suite. A world that restarted is another world and gets a signer of
+/// its own. The shared world and its signer are built before the first
 /// test runs, so no test pays for them inside its call deadline; another world's signer is
 /// started asynchronously on first use. All of them stop with the class.
 /// </summary>
 public sealed class RemoteSignerFixture : IAsyncLifetime
 {
-    private readonly ConcurrentDictionary<string, Task<(HostedSigner Host, RemoteSigningService Client)>> _byWorld = new();
+    private readonly ConcurrentDictionary<Guid, Task<(HostedSigner Host, RemoteSigningService Client)>> _byWorld = new();
 
     /// <summary>The world the class's read-only tests share.</summary>
     internal SignerTestWorld SharedWorld { get; private set; } = null!;
@@ -160,7 +155,7 @@ public sealed class RemoteSignerFixture : IAsyncLifetime
 
     /// <summary>The remote client bound to the signer hosted over <paramref name="world"/>.</summary>
     internal async Task<RemoteSigningService> ForAsync(SignerTestWorld world)
-        => (await _byWorld.GetOrAdd(world.DatabaseName, _ => StartAsync(world))).Client;
+        => (await _byWorld.GetOrAdd(world.Instance, _ => StartAsync(world))).Client;
 
     private static async Task<(HostedSigner Host, RemoteSigningService Client)> StartAsync(SignerTestWorld world)
     {
