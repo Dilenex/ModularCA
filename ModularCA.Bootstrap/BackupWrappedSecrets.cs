@@ -8,8 +8,10 @@ namespace ModularCA.Bootstrap;
 /// <summary>
 /// The configuration directories a backup carries only wrapped by the signer: the Data
 /// Protection key ring, which with the database dump opens every DP-protected column (TOTP
-/// secrets, held end-entity keys, Kerberos realm keys, LDAP publisher passwords), and the SSH CA
-/// private keys, which are written unencrypted. Each directory travels as one
+/// secrets, held end-entity keys, Kerberos realm keys, LDAP publisher passwords), and the
+/// directories of SSH CA private keys that are still unencrypted files on the node, awaiting
+/// their import into the signer; once imported they travel in the signer's SSH keystore and
+/// those directories are gone. Each directory travels as one
 /// <see cref="SecretKind.BackupConfigSecret"/> blob under <c>secrets/</c> in the archive, so
 /// opening it needs the keystore and its secondary passphrase as well as the archive key.
 /// </summary>
@@ -48,24 +50,114 @@ public static class BackupWrappedSecrets
     }
 
     /// <summary>
+    /// The directory SSH CA key files were written to unless the retired key path setting named
+    /// another, relative to <c>config/</c>. It always travels wrapped.
+    /// </summary>
+    public const string DefaultSshKeyDirectory = "ssh-ca-keys";
+
+    /// <summary>How an unencrypted or encrypted OpenSSH private key file begins.</summary>
+    private static readonly byte[] OpenSshPrivateKeyHeader = "-----BEGIN OPENSSH PRIVATE KEY-----"u8.ToArray();
+
+    /// <summary>
     /// The directories under <paramref name="configDir"/> that travel wrapped, relative to it
-    /// with forward slashes: the Data Protection key ring, and the SSH CA key directory when it
-    /// lies inside <c>config/</c>. Directories that do not exist are included; callers skip them.
+    /// with forward slashes: the Data Protection key ring, the default SSH CA key directory, and
+    /// every other directory inside <c>config/</c> that holds an SSH CA key file. Where those
+    /// are comes from the database, never from configuration: <paramref name="legacyKeyFiles"/>
+    /// are the key file paths of the SSH CA key rows that are still files on the node, and of
+    /// imported keys whose file has not been removed yet. A directory inside another target is
+    /// left out, since the outer one carries it. Directories that do not exist are included;
+    /// callers skip them. A key file directly in <c>config/</c> is not covered here, since
+    /// <c>config/</c> itself is no target: see <see cref="LooseLegacyKeyFiles"/>.
     /// </summary>
     /// <param name="configDir">The <c>config/</c> directory.</param>
-    /// <param name="sshKeyStoragePath">The configured SSH CA key path, relative to the application directory, or null for the default.</param>
-    public static IReadOnlyList<string> Targets(string configDir, string? sshKeyStoragePath)
+    /// <param name="legacyKeyFiles">The key file paths the rows give, absolute or relative to the application directory; null for none.</param>
+    public static IReadOnlyList<string> Targets(string configDir, IEnumerable<string>? legacyKeyFiles)
     {
-        var targets = new List<string> { DataProtectionDirectory };
-        var baseDir = Path.GetDirectoryName(Path.GetFullPath(configDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))!;
-        var sshDir = Path.GetFullPath(Path.Combine(baseDir, string.IsNullOrWhiteSpace(sshKeyStoragePath) ? "config/ssh-ca-keys" : sshKeyStoragePath));
-        if (BackupRestore.PathIsContainedIn(sshDir, configDir))
+        var targets = new List<string> { DataProtectionDirectory, DefaultSshKeyDirectory };
+        foreach (var (directory, _) in LegacyKeyFilesInside(configDir, legacyKeyFiles))
         {
-            var relative = Path.GetRelativePath(configDir, sshDir).Replace('\\', '/');
-            if (relative != "." && !targets.Contains(relative, StringComparer.Ordinal))
-                targets.Add(relative);
+            if (directory != "." && !targets.Contains(directory, StringComparer.Ordinal))
+                targets.Add(directory);
         }
-        return targets;
+        return targets.Where(t => !targets.Any(outer => outer != t && t.StartsWith(outer + "/", StringComparison.Ordinal))).ToList();
+    }
+
+    /// <summary>
+    /// The SSH CA key files that lie directly in <paramref name="configDir"/>, each with its
+    /// <c>.pub</c>, as file names. No directory can stand for them, so they cannot travel
+    /// wrapped; the config copy leaves these files out, and the backup says so.
+    /// </summary>
+    /// <param name="configDir">The <c>config/</c> directory.</param>
+    /// <param name="legacyKeyFiles">As for <see cref="Targets"/>.</param>
+    public static IReadOnlyList<string> LooseLegacyKeyFiles(string configDir, IEnumerable<string>? legacyKeyFiles)
+        => LegacyKeyFilesInside(configDir, legacyKeyFiles)
+            .Where(f => f.Directory == ".")
+            .SelectMany(f => new[] { f.FileName, f.FileName + ".pub" })
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>
+    /// The key files among <paramref name="legacyKeyFiles"/> that lie inside
+    /// <paramref name="configDir"/>: the directory of each relative to it with forward slashes
+    /// (<c>.</c> for <c>config/</c> itself), and its file name. A relative path is relative to
+    /// the application directory, the parent of <c>config/</c>, as the service that wrote it
+    /// resolved it. A path this system cannot form, or one outside <c>config/</c>, which no
+    /// backup copies, is passed over.
+    /// </summary>
+    private static List<(string Directory, string FileName)> LegacyKeyFilesInside(string configDir, IEnumerable<string>? legacyKeyFiles)
+    {
+        var inside = new List<(string, string)>();
+        var baseDir = Path.GetDirectoryName(Path.GetFullPath(configDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))!;
+        foreach (var keyFile in legacyKeyFiles ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(keyFile))
+                continue;
+            string full;
+            try
+            {
+                full = Path.GetFullPath(Path.IsPathRooted(keyFile) ? keyFile : Path.Combine(baseDir, keyFile));
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                continue;
+            }
+            var directory = Path.GetDirectoryName(full);
+            if (directory == null || !BackupRestore.PathIsContainedIn(directory, configDir))
+                continue;
+            inside.Add((Path.GetRelativePath(configDir, directory).Replace('\\', '/'), Path.GetFileName(full)));
+        }
+        return inside;
+    }
+
+    /// <summary>
+    /// The directories of an extracted archive's <c>config/</c> that hold an OpenSSH private key
+    /// file, relative to it with forward slashes (<c>.</c> for <c>config/</c> itself), found by
+    /// how such a file begins. An archive's own rows name paths on the host it was taken on, so
+    /// here the files are recognised by content, wherever they lie.
+    /// </summary>
+    /// <param name="archiveConfigDir">The extracted archive's <c>config/</c> directory.</param>
+    public static IReadOnlyList<string> PlaintextSshKeyDirectoriesIn(string archiveConfigDir)
+    {
+        var directories = new SortedSet<string>(StringComparer.Ordinal);
+        if (!Directory.Exists(archiveConfigDir))
+            return [];
+        var header = new byte[OpenSshPrivateKeyHeader.Length];
+        foreach (var file in Directory.EnumerateFiles(archiveConfigDir, "*", SearchOption.AllDirectories))
+        {
+            try
+            {
+                using var stream = File.OpenRead(file);
+                if (stream.Length < header.Length || stream.ReadAtLeast(header, header.Length, throwOnEndOfStream: false) < header.Length)
+                    continue;
+                if (header.AsSpan().SequenceEqual(OpenSshPrivateKeyHeader))
+                    directories.Add(Path.GetRelativePath(archiveConfigDir, Path.GetDirectoryName(file)!).Replace('\\', '/'));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // A file that cannot be opened is restored, or not, by the copy that follows.
+            }
+        }
+        return directories.ToList();
     }
 
     /// <summary>

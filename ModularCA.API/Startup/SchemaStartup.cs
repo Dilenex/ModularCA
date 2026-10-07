@@ -279,15 +279,23 @@ public static partial class SchemaStartup
     /// not exist, as on a host checked after another one already upgraded the database
     /// (<see cref="FoldedScopeFindingAsync"/>), read-only.
     /// </para>
+    /// <para>
+    /// With <paramref name="installDirectory"/> it also reports the SSH CA keys that are still
+    /// files on the node (<see cref="SshUpgradeAsync"/>): how many the first start will import
+    /// into the signer, or a refusal naming each enabled SSH CA whose key file is missing or is
+    /// not its key on this host. It then notes, without refusing, the SSH signing profiles
+    /// whose certificates carry fewer extensions now that none is added by default.
+    /// </para>
     /// </summary>
     /// <param name="targets">The databases the control role checks, the application database first.</param>
     /// <param name="config">The migration time budgets the dry run runs under.</param>
     /// <param name="output">Where the report goes; the console when null.</param>
     /// <param name="scopes">The integration keys whose <c>SpaceId</c> is set, by config key name; none when null.</param>
+    /// <param name="installDirectory">The installed application directory, the parent of the config directory checked; null to leave the SSH CA keys out.</param>
     /// <param name="ct">Cancellation token.</param>
     public static async Task<int> UpgradeCheckAsync(
         IReadOnlyList<SchemaTarget> targets, SchemaConfig? config, TextWriter? output = null,
-        IReadOnlyList<(string Key, string Value)>? scopes = null, CancellationToken ct = default)
+        IReadOnlyList<(string Key, string Value)>? scopes = null, string? installDirectory = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(targets);
         config ??= new SchemaConfig();
@@ -307,6 +315,17 @@ public static partial class SchemaStartup
         {
             output.WriteLine("configuration: integration key scopes");
             Report(output, await FoldedScopeFindingAsync(application.Target, scopes, ct), findings);
+        }
+        if (installDirectory != null && application is { State.Presence: DatabasePresence.Managed or DatabasePresence.Unmanaged })
+        {
+            output.WriteLine($"{ModularCA.Core.Services.SshUpgradeCheck.KeysFindingName}: key files on this host, under {installDirectory}");
+            var ssh = await SshUpgradeAsync(application.Target, installDirectory, ct);
+            Report(output, ssh.Keys, findings);
+            if (ssh.ProfilesNote != null)
+            {
+                output.WriteLine("SSH signing profiles");
+                output.WriteLine("  note: " + ssh.ProfilesNote.ReplaceLineEndings(Environment.NewLine + "    "));
+            }
         }
         output.WriteLine(UpgradeCheckVerdict(findings));
         return UpgradeCheckExitCode(findings.Select(f => f.Readiness));

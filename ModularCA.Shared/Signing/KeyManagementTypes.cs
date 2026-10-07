@@ -71,7 +71,7 @@ public sealed record GeneratedKey(KeyRef Key, byte[] PublicKeyDer);
 /// in the clear once the signer is remote.
 /// </summary>
 /// <param name="Wrapped">The wrapped key bytes. The signer zeroes them once it has parsed them.</param>
-/// <param name="Format">The wrapping format, for the signer to recognise how to unwrap: <see cref="Pkcs8"/> for one key, <see cref="KeystoreFile"/> for a whole keystore file.</param>
+/// <param name="Format">The wrapping format, for the signer to recognise how to unwrap: <see cref="Pkcs8"/> for one key, <see cref="KeystoreFile"/> for a whole keystore file, <see cref="KeystoreFileAbsent"/> for the statement that there is none.</param>
 /// <param name="CertificateId">
 /// The certificate the key belongs to; its row must exist and carry the key's public half. For a
 /// key offered to <see cref="KeyRef.SshKeystore"/>, the <c>SshCaKeys</c> row it belongs to.
@@ -95,6 +95,17 @@ public sealed record KeyMaterial(byte[] Wrapped, string Format, Guid Certificate
     /// one in place.
     /// </summary>
     public const string KeystoreFile = "keystore-file";
+
+    /// <summary>
+    /// The statement that the state being restored has no keystore file of this name; it carries
+    /// no bytes. A restore offers it for <see cref="KeyRef.SshKeystore"/> when its archive holds
+    /// none, and the signer then moves a file it keeps under that name aside, as
+    /// <c>name.bak.&lt;timestamp&gt;</c>, provided the database has no <c>Keystores</c> row for
+    /// it. Such a file cannot be unlocked, and left in place it would leave the signer locked at
+    /// its next start. Allowed under <see cref="SigningPurpose.Restore"/> only, and for no other
+    /// keystore.
+    /// </summary>
+    public const string KeystoreFileAbsent = "keystore-file-absent";
 }
 
 /// <summary>

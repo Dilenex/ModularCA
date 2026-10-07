@@ -108,6 +108,8 @@ public class ModularCADbContext : DbContext
     public DbSet<EnrollmentTokenEntity> EnrollmentTokens { get; set; }
     public DbSet<CtLogEntity> CtLogs { get; set; }
     public DbSet<SshCaKeyEntity> SshCaKeys { get; set; }
+    /// <summary>The SSH CA keys that were plaintext files on the node and have been imported into the signer.</summary>
+    public DbSet<SshKeyImportEntity> SshKeyImports { get; set; }
     public DbSet<SshCertificateEntity> SshCertificates { get; set; }
     public DbSet<SshSigningProfileEntity> SshSigningProfiles { get; set; }
     public DbSet<SshCertProfileEntity> SshCertProfiles { get; set; }

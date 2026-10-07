@@ -27,7 +27,8 @@ flags. `install.sh` sets them explicitly (the `.deb`'s `postinst` sets the same)
   signer runs the same binaries as the node.
 - **The service account owns only the runtime directories**, the four the service writes:
   `config/` (`0700`; configuration, credentials, the web TLS certificate, the data-protection keys
-  in `config/dp-keys/`, SSH CA keys, backup keys), `keystores/` (`0700`; the CA private keys),
+  in `config/dp-keys/`, backup keys), `keystores/` (`0700`; the CA private keys, and the SSH CA
+  keys in `ssh-ca.keystore`),
   `logs/` (`0750`) and `backups/` (`0700`; scheduled backups and the audit archive). The unit's
   `ReadWritePaths=` names the same four, and everything else under `/opt/modularca` is read-only
   to the service.
@@ -43,7 +44,7 @@ flags. `install.sh` sets them explicitly (the `.deb`'s `postinst` sets the same)
 - `/usr/share/modularca/sql/adopt-ownership.sql` → `root:root 0644`. It is run as the PostgreSQL
   superuser, so it must not live where the service account can rewrite it.
 
-If you point `Backup.OutputPath`, `AuditRetention.ArchivePath`, `SshCa.KeyStoragePath` or
+If you point `Backup.OutputPath`, `AuditRetention.ArchivePath` or
 `Logging.FilePath` at a directory outside these four, create it owned by `modularca` and add it to
 `ReadWritePaths=` in a drop-in (`/etc/systemd/system/modularca.service.d/paths.conf`). `install.sh`
 warns about any top-level entry in `/opt/modularca` that `modularca` owns and the build does not
@@ -1238,6 +1239,18 @@ It verifies the keystore's file signature and each entry's signature against the
 CA, then prints the entries as PEM. `--insecure-no-verify` skips the database-backed checks for
 the case where the database is what you have lost; it is also required before the tool will
 write decrypted keys to disk.
+
+The SSH CA keys are in a third file, `keystores/ssh-ca.keystore`, which exists only on an install
+that has an SSH CA. The tool opens it the same way, with one difference: it asks for no main
+passphrase. The signer generated that passphrase, and it is kept only in the application database
+(the file's `Keystores` row), wrapped under the secondary passphrase the file shares with
+`ca-certs.keystore`. Without the application database this file cannot be opened, by this tool or
+any other, so a backup that holds the SSH keystore is only as good as the database dump beside it.
+
+`ssh-ca.keystore` and its `Keystores` row exist together. A restore keeps them together: an archive
+without an SSH keystore moves the live file aside as `ssh-ca.keystore.bak.<timestamp>`, and a reset
+deletes it. If the signer ever reports the file without its row (a database restored by other
+means than `--restore`), it stays locked and says so; move the file aside and start it again.
 
 ### A locked account no one can unlock
 

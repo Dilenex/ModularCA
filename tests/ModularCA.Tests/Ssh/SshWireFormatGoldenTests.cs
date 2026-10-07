@@ -292,7 +292,52 @@ public class SshWireFormatGoldenTests
         var blob = Convert.FromBase64String(string.Concat(body[1..^1]));
         var encrypted = Replace(blob, new SshWriter().String("none").String("none").ToArray(),
             new SshWriter().String("aes256-ctr").String("bcrypt").ToArray());
-        Assert.Throws<FormatException>(() => SshPrivateKeyFile.ReadBlob(encrypted));
+        // A key under a passphrase is refused as a format error of a type of its own, so a caller can say what to do about it.
+        Assert.IsAssignableFrom<FormatException>(Assert.Throws<SshPrivateKeyEncryptedException>(() => SshPrivateKeyFile.ReadBlob(encrypted)));
+        var armoured = "-----BEGIN OPENSSH PRIVATE KEY-----\n" + Convert.ToBase64String(encrypted) + "\n-----END OPENSSH PRIVATE KEY-----\n";
+        Assert.Throws<SshPrivateKeyEncryptedException>(() => SshPrivateKeyFile.Read(armoured));
+        Assert.Throws<SshPrivateKeyEncryptedException>(() => SshPrivateKeyFile.ReadFile(System.Text.Encoding.ASCII.GetBytes(armoured)));
+    }
+
+    /// <summary>
+    /// The import reads a key file as bytes, so the key never passes through a string. It reads
+    /// what the text reader reads, and refuses what it refuses.
+    /// </summary>
+    [Theory]
+    [InlineData("ed25519")]
+    [InlineData("p256")]
+    [InlineData("p384")]
+    [InlineData("p521")]
+    [InlineData("rsa")]
+    public void A_key_file_read_as_bytes_is_the_key_its_text_reads_as(string ca)
+    {
+        var bytes = File.ReadAllBytes(SshFixtures.PathOf($"ca-{ca}.testkey"));
+        var before = (byte[])bytes.Clone();
+
+        var key = SshPrivateKeyFile.ReadFile(bytes);
+
+        Assert.Equal(SshFixtures.CaPublic(ca), key.PublicKey);
+        Assert.Equal(SshFixtures.CaPrivate(ca).ToPkcs8(), key.ToPkcs8());
+        Assert.Equal(before, bytes);
+        // Windows line endings, and blank lines around the armour, are the same file.
+        var crlf = System.Text.Encoding.ASCII.GetBytes("\r\n" + SshFixtures.Text($"ca-{ca}.testkey").ReplaceLineEndings("\r\n") + "\r\n\r\n");
+        Assert.Equal(key.PublicKey, SshPrivateKeyFile.ReadFile(crlf).PublicKey);
+    }
+
+    [Fact]
+    public void Bytes_that_are_not_a_key_file_are_refused_as_the_text_reader_refuses_them()
+    {
+        Assert.Throws<FormatException>(() => SshPrivateKeyFile.ReadFile([]));
+        Assert.Throws<FormatException>(() => SshPrivateKeyFile.ReadFile([0x00, 0xFF, 0xFE, 0x80]));
+        Assert.Throws<FormatException>(() => SshPrivateKeyFile.ReadFile(new byte[4096]));
+        Assert.Throws<FormatException>(() => SshPrivateKeyFile.ReadFile(File.ReadAllBytes(SshFixtures.PathOf("ca-ed25519.pub"))));
+        Assert.Throws<FormatException>(() => SshPrivateKeyFile.ReadFile("-----BEGIN OPENSSH PRIVATE KEY-----\n!!not base64!!\n-----END OPENSSH PRIVATE KEY-----\n"u8));
+        Assert.Throws<FormatException>(() => SshPrivateKeyFile.ReadFile("-----BEGIN OPENSSH PRIVATE KEY-----\nbm90IGEga2V5\n-----END OPENSSH PRIVATE KEY-----\n"u8));
+        Assert.Throws<FormatException>(() => SshPrivateKeyFile.ReadFile("-----BEGIN OPENSSH PRIVATE KEY-----"u8));
+        // A truncated key: the armour is whole, the key inside is not.
+        var lines = SshFixtures.Text("ca-ed25519.testkey").Trim().Split('\n');
+        var truncated = string.Join("\n", lines[..3].Append(lines[^1]));
+        Assert.Throws<FormatException>(() => SshPrivateKeyFile.ReadFile(System.Text.Encoding.ASCII.GetBytes(truncated)));
     }
 
     internal static AsymmetricCipherKeyPair Generate(string kind)

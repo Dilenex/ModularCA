@@ -1126,11 +1126,21 @@ public abstract partial class SigningServiceContractTests
     [Fact]
     public async Task What_a_backup_exported_restores_byte_for_byte()
     {
+        // A backup carries three keystore files: the two every install has, and the SSH keystore of an install with an SSH CA.
+        Assert.Equal(new[] { KeyRef.DefaultKeystore, KeyRef.TrustKeystore, KeyRef.SshKeystore }, KeyRef.BackupKeystores);
+        var backup = new SigningContext(Caller, SigningPurpose.Backup, null, null);
+
+        // A signer that keeps no SSH keystore has none to give, and says so with the refusal a backup skips a file on.
+        var without = await CreateSignerAsync(WorldWithKeystoreFiles());
+        await RefusedAsync(SigningRefusalReason.UnknownKey,
+            () => without.ExportKeyAsync(KeyRef.ForKeystore(KeyRef.SshKeystore), ExportWrap.ForKeystoreFile(), backup), "export an SSH keystore that is not kept");
+
         var source = WorldWithKeystoreFiles();
+        source.Persistence.KeystoreFiles[KeyRef.SshKeystore] = Encoding.ASCII.GetBytes("ssh-ca.keystore bytes as the persistence keeps them");
         var exported = new List<(string Name, byte[] Bytes)>();
         var sourceSigner = await CreateSignerAsync(source);
         foreach (var name in KeyRef.BackupKeystores)
-            exported.Add((name, await sourceSigner.ExportKeyAsync(KeyRef.ForKeystore(name), ExportWrap.ForKeystoreFile(), new SigningContext(Caller, SigningPurpose.Backup, null, null))));
+            exported.Add((name, await sourceSigner.ExportKeyAsync(KeyRef.ForKeystore(name), ExportWrap.ForKeystoreFile(), backup)));
 
         var target = SignerTestWorld.Create();
         var signer = await CreateSignerAsync(target);

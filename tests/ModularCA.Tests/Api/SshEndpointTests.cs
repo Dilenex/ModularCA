@@ -72,9 +72,10 @@ public sealed class SshEndpointTests
 
     private static IDistributedCache NewCache() => new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions()));
 
-    private static object AdminController(SshNode node, ISshCaService service, IDistributedCache? cache = null)
+    private static object AdminController(SshNode node, ISshCaService service, IDistributedCache? cache = null,
+        ISigningService? signer = null, SshKeyImportState? imports = null)
         => New(Admin, node.Actor.UserId!.Value, service, new CurrentUserStub(node.Actor.UserId!.Value), node.Db, new SystemConfig(),
-            new KeyCeremonyService(node.Db, new RecordingAuditService()), cache ?? NewCache());
+            new KeyCeremonyService(node.Db, new RecordingAuditService()), cache ?? NewCache(), signer ?? node.Relay, imports ?? new SshKeyImportState());
 
     private static object PublicController(ISshCaService service) => New(Public, Guid.NewGuid(), service, new SystemConfig());
 

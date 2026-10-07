@@ -85,6 +85,9 @@ public class PostgresUpgradeHarnessTests
     /// <summary>The 0.4.2 migration that adds the summary of an SSH certificate decision to the signer's audit, without its timestamp.</summary>
     public const string SignerAuditSummary = "SignerAuditSummary";
 
+    /// <summary>The 0.4.2 migration that adds the record of each SSH CA key imported from a file, without its timestamp.</summary>
+    public const string SshKeyImports = "SshKeyImports";
+
     private const string ServerVariable = "MODULARCA_TEST_PG";
     private const string RehearsalVariable = "MODULARCA_TEST_PG_REHEARSAL";
     private const string RehearsalAuditVariable = "MODULARCA_TEST_PG_REHEARSAL_AUDIT";
@@ -1421,6 +1424,165 @@ public class PostgresUpgradeHarnessTests
         {
             NpgsqlConnection.ClearAllPools();
             await DropDatabaseAsync(server, appName);
+        }
+    }
+
+    /// <summary>
+    /// The <c>SshKeyImports</c> table, seeded at the stage before it: it is added empty, the SSH
+    /// CA key rows are untouched, it takes one record per key and no second one, and a record
+    /// outlives its key row, since the notice it is read for is about the past.
+    /// </summary>
+    [RequiresEnvironmentFact(ServerVariable)]
+    public async Task The_ssh_key_imports_table_is_added_empty_and_holds_one_record_per_key()
+    {
+        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+        await CreateDatabaseAsync(server, appName);
+        try
+        {
+            await using var app = CreateApp(WithDatabase(server, appName));
+            await MigrateThroughAsync(app, SignerAuditSummary);
+            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM information_schema.tables WHERE table_name = 'SshKeyImports'"));
+
+            var ca = Guid.NewGuid();
+            var key = Guid.NewGuid();
+            await ExecAsync(app,
+                "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"SpaceId\",\"IsDeleted\") "
+                + $"VALUES ('{ca}','Ops SSH','ops-ssh',false,'SSH',true,'Software',true,NULL,false); "
+                + "INSERT INTO \"SshCaKeys\" (\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"PrivateKeyPath\",\"KeyStorage\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"IsEnabled\",\"CreatedAt\") "
+                + $"VALUES ('{key}','Ops SSH','ed25519','ssh-ed25519 AAAA','config/ssh-ca-keys/{key}','LegacyFile','{ca}',true,false,24,true,now());");
+
+            await MigrateThroughAsync(app, SshKeyImports);
+
+            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"SshKeyImports\""));
+            Assert.Equal("LegacyFile", await TextAsync(app, $"SELECT \"KeyStorage\" FROM \"SshCaKeys\" WHERE \"Id\" = '{key}'"));
+            Assert.Equal($"config/ssh-ca-keys/{key}", await TextAsync(app, $"SELECT \"PrivateKeyPath\" FROM \"SshCaKeys\" WHERE \"Id\" = '{key}'"));
+
+            const string columns = "\"SshCaKeyId\",\"Name\",\"Fingerprint\",\"FilePath\",\"ImportedAt\"";
+            await ExecAsync(app, $"INSERT INTO \"SshKeyImports\" ({columns}) VALUES ('{key}','Ops SSH','SHA256:abc','/opt/modularca/config/ssh-ca-keys/{key}',now());");
+            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshKeyImports\" WHERE \"FileRemovedAt\" IS NULL AND \"AuditedAt\" IS NULL"));
+            await Assert.ThrowsAsync<PostgresException>(() => ExecAsync(app,
+                $"INSERT INTO \"SshKeyImports\" ({columns}) VALUES ('{key}','Ops SSH again','SHA256:abc','/elsewhere',now());"));
+            Assert.Equal(1024, await ScalarAsync(app,
+                "SELECT character_maximum_length FROM information_schema.columns WHERE table_name = 'SshKeyImports' AND column_name = 'FilePath'"));
+
+            // No foreign key: the record stays when its key row goes.
+            await ExecAsync(app, $"DELETE FROM \"SshCaKeys\" WHERE \"Id\" = '{key}';");
+            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshKeyImports\""));
+
+            await MigrateToLatestAsync(app, "application");
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await DropDatabaseAsync(server, appName);
+        }
+    }
+
+    /// <summary>
+    /// The SSH part of <c>--upgrade-check</c> against a database from before the SSH keystore:
+    /// every key file there and holding its key is clean, with the count; a file that is gone
+    /// refuses the upgrade, naming the SSH CA, its row and the path, until the file is back or
+    /// the SSH CA is disabled; and the user signing profiles whose certificates will carry fewer
+    /// permits are noted without refusing anything. Nothing is applied and no file is touched.
+    /// </summary>
+    [RequiresEnvironmentFact(ServerVariable)]
+    public async Task The_upgrade_check_reports_the_ssh_ca_key_files_and_the_signing_profiles_that_relied_on_default_extensions()
+    {
+        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+        var install = Path.Combine(Path.GetTempPath(), $"mca-upgrade-ssh-{Guid.NewGuid():N}");
+        await CreateDatabaseAsync(server, appName);
+        try
+        {
+            var connection = WithDatabase(server, appName);
+            await using var app = CreateApp(connection);
+            await MigrateThroughAsync(app, ApiKeys);
+            var targets = new[] { ("application", DatabaseKind.Application, Instance(connection)) };
+            async Task<(int Exit, string Report)> CheckAsync()
+            {
+                var output = new StringWriter();
+                var exit = await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output, installDirectory: install);
+                return (exit, output.ToString());
+            }
+
+            // No SSH CA at all.
+            var (exit, report) = await CheckAsync();
+            Assert.Equal(0, exit);
+            Assert.Contains("SSH CA keys: key files on this host", report);
+            Assert.Contains("ok: no SSH CA key is a file on a node; nothing to import.", report);
+            Assert.DoesNotContain("SSH signing profiles", report);
+
+            // One SSH CA with its key file where its row says, relative as an older install could record it, and two user profiles.
+            var ca = Guid.NewGuid();
+            var key = Guid.NewGuid();
+            var keys = Path.Combine(install, "config", "ssh-ca-keys");
+            Directory.CreateDirectory(keys);
+            var keyFile = Path.Combine(keys, key.ToString());
+            File.Copy(ModularCA.Tests.Ssh.SshFixtures.PathOf("ca-ed25519.testkey"), keyFile);
+            var publicKey = ModularCA.Tests.Ssh.SshFixtures.Text("ca-ed25519.pub").Trim();
+            var narrow = Guid.NewGuid();
+            var complete = Guid.NewGuid();
+            const string profileColumns = "\"Id\",\"Name\",\"SshCaKeyId\",\"MaxValidityHours\",\"AllowUserCerts\",\"AllowHostCerts\",\"SourceAddressRestrictions\",\"DefaultExtensions\",\"CreatedAt\"";
+            await ExecAsync(app,
+                "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"SpaceId\",\"IsDeleted\") "
+                + $"VALUES ('{ca}','Ops SSH','ops-ssh',false,'SSH',true,'Software',true,NULL,false); "
+                + "INSERT INTO \"SshCaKeys\" (\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"PrivateKeyPath\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"IsEnabled\",\"CreatedAt\") "
+                + $"VALUES ('{key}','Ops SSH','ed25519','{publicKey}','config/ssh-ca-keys/{key}','{ca}',true,false,24,true,now()); "
+                + $"INSERT INTO \"SshSigningProfiles\" ({profileColumns}) VALUES "
+                + $"('{narrow}','Ops SSH - User Signing','{key}',24,true,false,'[]','[\"permit-pty\"]',now()), "
+                + $"('{complete}','Ops SSH - Everything','{key}',24,true,false,'[]','[\"permit-X11-forwarding\",\"permit-agent-forwarding\",\"permit-port-forwarding\",\"permit-pty\",\"permit-user-rc\"]',now());");
+
+            (exit, report) = await CheckAsync();
+            Assert.Equal(0, exit);
+            Assert.Contains("ok: 1 SSH CA key(s) will be imported into the signer at first start and their files deleted; "
+                + "archives made before this upgrade still contain them in plaintext", report);
+            Assert.Contains("SSH signing profiles", report);
+            Assert.Contains("note: 1 SSH signing profile(s) for user certificates relied on the extensions", report);
+            Assert.Contains($"'Ops SSH - User Signing' ({narrow}): names permit-pty; certificates from it will no longer carry "
+                + "permit-X11-forwarding, permit-agent-forwarding, permit-port-forwarding, permit-user-rc", report);
+            Assert.DoesNotContain("Ops SSH - Everything", report);
+            Assert.DoesNotContain("REFUSED", report);
+            Assert.Contains("UPGRADE CHECK: PASS", report);
+
+            // The key file is gone: the upgrade is refused, by name, row and path, and the note is still only a note.
+            var bytes = File.ReadAllBytes(keyFile);
+            File.Delete(keyFile);
+            (exit, report) = await CheckAsync();
+            Assert.Equal(3, exit);
+            Assert.Contains("REFUSED: 1 SSH CA key file(s) are missing or do not hold their SSH CA's key.", report);
+            Assert.Contains($"'Ops SSH' ({key}), expected at {keyFile}", report);
+            Assert.Contains("run this check on that host", report);
+            Assert.Contains("UPGRADE CHECK: REFUSED (SSH CA keys: 1 key file(s) missing or not matching). Nothing was changed.", report);
+
+            // Disabling the SSH CA is the other way out.
+            await ExecAsync(app, $"UPDATE \"SshCaKeys\" SET \"IsEnabled\" = false WHERE \"Id\" = '{key}'; UPDATE \"CertificateAuthorities\" SET \"IsEnabled\" = false WHERE \"Id\" = '{ca}';");
+            (exit, report) = await CheckAsync();
+            Assert.Equal(0, exit);
+            Assert.Contains("1 disabled SSH CA key(s) have no usable key file and stay as they are", report);
+
+            // Nothing was applied, and the check read the key file without changing it.
+            await ExecAsync(app, $"UPDATE \"SshCaKeys\" SET \"IsEnabled\" = true WHERE \"Id\" = '{key}'; UPDATE \"CertificateAuthorities\" SET \"IsEnabled\" = true WHERE \"Id\" = '{ca}';");
+            File.WriteAllBytes(keyFile, bytes);
+            (exit, _) = await CheckAsync();
+            Assert.Equal(0, exit);
+            Assert.Equal(bytes, File.ReadAllBytes(keyFile));
+            Assert.Equal(0, await ScalarAsync(app,
+                "SELECT count(*) FROM information_schema.columns WHERE table_name = 'SshCaKeys' AND column_name = 'KeyStorage'"));
+
+            // After the upgrade the same check still finds the key awaiting its import, and words the note for a change that has happened.
+            await MigrateToLatestAsync(app, "application");
+            (exit, report) = await CheckAsync();
+            Assert.Equal(0, exit);
+            Assert.Contains("ok: 1 SSH CA key(s) will be imported into the signer at first start", report);
+            Assert.Contains("name fewer permits than every user certificate carried by default", report);
+            Assert.DoesNotContain("will be narrower than before", report);
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await DropDatabaseAsync(server, appName);
+            try { Directory.Delete(install, true); } catch (IOException) { }
         }
     }
 

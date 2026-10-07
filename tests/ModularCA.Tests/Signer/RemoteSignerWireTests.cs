@@ -371,6 +371,111 @@ public sealed class RemoteSignerWireTests
     }
 
     /// <summary>
+    /// A signer from before the SSH keystore, as the import of a key file meets one: it has the
+    /// import call, and cannot read a context whose purpose it has never heard of, which its
+    /// wire mapping answers as bad input before the signer is reached.
+    /// </summary>
+    public class SignerBeforeTheMigrationPurpose : DispatchProxy
+    {
+        private ISigningService _inner = null!;
+
+        /// <summary>An older signer over <paramref name="inner"/>.</summary>
+        public static ISigningService Over(ISigningService inner)
+        {
+            var proxy = Create<ISigningService, SignerBeforeTheMigrationPurpose>();
+            ((SignerBeforeTheMigrationPurpose)(object)proxy)._inner = inner;
+            return proxy;
+        }
+
+        /// <inheritdoc />
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+            => args?.OfType<SigningContext>().Any(c => c.Purpose == SigningPurpose.SshKeyMigration) == true
+                ? throw new ArgumentException("'SshKeyMigration' is not a signing purpose.", "context.purpose")
+                : targetMethod!.Invoke(_inner, args);
+    }
+
+    [Fact]
+    public async Task A_signer_that_predates_the_ssh_keystore_leaves_every_key_file_as_it_is_and_is_named_as_one_to_upgrade_first()
+    {
+        var world = SignerTestWorld.Create();
+        var install = Path.Combine(Path.GetTempPath(), $"mca-older-signer-{Guid.NewGuid():N}");
+        var keys = Path.Combine(install, "config", "ssh-ca-keys");
+        Directory.CreateDirectory(keys);
+        try
+        {
+            // Two SSH CAs of an install from before the SSH keystore, with their key files.
+            var rows = new List<SshCaKeyEntity>();
+            using (var db = world.OpenDb())
+            {
+                foreach (var fixture in new[] { "ed25519", "p256" })
+                {
+                    var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = $"old {fixture}", Label = $"old-{fixture}", Type = "SSH", IsSshCa = true, IsEnabled = true };
+                    var row = new SshCaKeyEntity
+                    {
+                        Id = Guid.NewGuid(), Name = $"old {fixture}", KeyType = fixture, CertificateAuthorityId = ca.Id,
+                        PublicKey = ModularCA.Tests.Ssh.SshFixtures.Text($"ca-{fixture}.pub").Trim(), KeyStorage = SshCaKeyStorage.LegacyFile,
+                        IsUserCa = true, MaxValidityHours = 24,
+                    };
+                    row.PrivateKeyPath = Path.Combine(keys, row.Id.ToString());
+                    File.Copy(ModularCA.Tests.Ssh.SshFixtures.PathOf($"ca-{fixture}.testkey"), row.PrivateKeyPath);
+                    db.CertificateAuthorities.Add(ca);
+                    db.SshCaKeys.Add(row);
+                    rows.Add(row);
+                }
+                db.SaveChanges();
+            }
+            var files = rows.ToDictionary(r => r.Id, r => File.ReadAllBytes(r.PrivateKeyPath!));
+
+            await using var older = await HostedSigner.StartAsync(SignerBeforeTheMigrationPurpose.Over(HostedSigner.InProcessOver(world)));
+            using var client = older.Connect();
+
+            // The call itself: bad input on the wire, a refusal that says what to do at the node.
+            var migration = SigningContext.ForCa("wire-test", SigningPurpose.SshKeyMigration, rows[0].CertificateAuthorityId, null);
+            var ex = await Assert.ThrowsAsync<SigningRefusedException>(() => client.ImportKeyAsync(
+                new KeyMaterial(ModularCA.Tests.Ssh.SshFixtures.CaPrivate("ed25519").ToPkcs8(), KeyMaterial.Pkcs8, rows[0].Id, KeyRef.SshKeystore), migration));
+            Assert.Equal(SigningRefusalReason.OperationUnsupported, ex.Reason);
+            Assert.Contains("predates the SSH keystore", ex.Message);
+            Assert.Contains("Upgrade the signer first", ex.Message);
+            // It is the import of an SSH key that is translated, nothing else: other bad input stays what it is.
+            await Assert.ThrowsAsync<RpcException>(() => client.ListKeysAsync(migration));
+
+            // The import pass over that signer: nothing is switched, nothing is removed, and the reason says to upgrade the signer.
+            var state = new ModularCA.Core.Services.SshKeyImportState();
+            var report = await new ModularCA.Core.Services.SshKeyFileImport(world.OpenDb(), client, new ModularCA.Tests.Core.Services.SshAuditLog(), state,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<ModularCA.Core.Services.SshKeyFileImport>.Instance, install).RunAsync();
+
+            Assert.Empty(report.Imported);
+            Assert.Equal(2, report.Awaiting.Count);
+            Assert.All(report.Awaiting, a =>
+            {
+                Assert.Equal(ModularCA.Core.Services.SshKeyImportReasons.SignerUpgradeRequired, a.Code);
+                Assert.Contains(ModularCA.Shared.Errors.SshCaKeyUnavailableException.SignerPredatesSshKeystore, a.Detail);
+            });
+            using (var db = world.OpenDb())
+            {
+                Assert.All(db.SshCaKeys.ToList(), r => Assert.Equal(SshCaKeyStorage.LegacyFile, r.KeyStorage));
+                Assert.All(db.SshCaKeys.ToList(), r => Assert.False(string.IsNullOrEmpty(r.PrivateKeyPath)));
+                Assert.Empty(db.SshKeyImports.ToList());
+            }
+            Assert.All(rows, r => Assert.Equal(files[r.Id], File.ReadAllBytes(r.PrivateKeyPath!)));
+            Assert.Empty(world.Persistence.SshAppended);
+
+            // The signer is upgraded; the same node imports both with its next pass.
+            await using var current = await HostedSigner.StartAsync(world);
+            using var upgraded = current.Connect();
+            var done = await new ModularCA.Core.Services.SshKeyFileImport(world.OpenDb(), upgraded, new ModularCA.Tests.Core.Services.SshAuditLog(), state,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<ModularCA.Core.Services.SshKeyFileImport>.Instance, install).RunAsync();
+            Assert.Equal(2, done.Imported.Count);
+            Assert.All(rows, r => Assert.False(File.Exists(r.PrivateKeyPath!)));
+            Assert.Equal(2, world.Persistence.SshAppended.Count);
+        }
+        finally
+        {
+            try { Directory.Delete(install, true); } catch (IOException) { }
+        }
+    }
+
+    /// <summary>
     /// What the mapping above rests on, asked of the real listener: a call the signer does not
     /// have is answered UNIMPLEMENTED by the framework, with no refusal trailer, and never
     /// reaches the signer.

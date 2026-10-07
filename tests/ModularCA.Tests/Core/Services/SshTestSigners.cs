@@ -95,7 +95,25 @@ internal sealed class RelayingSigner(ISigningService inner) : ISigningService
 
     public Task<byte[]> SignAsync(KeyRef key, SignatureAlgorithm algorithm, byte[] data, SigningContext context, CancellationToken cancellationToken = default) => inner.SignAsync(key, algorithm, data, context, cancellationToken);
     public Task<byte[]> DecryptAsync(KeyRef key, byte[] enveloped, SigningContext context, CancellationToken cancellationToken = default) => inner.DecryptAsync(key, enveloped, context, cancellationToken);
-    public Task<KeyRef> ImportKeyAsync(KeyMaterial material, SigningContext context, CancellationToken cancellationToken = default) => inner.ImportKeyAsync(material, context, cancellationToken);
+    /// <summary>Runs in place of the import; it may throw, or answer with another reference.</summary>
+    public Func<KeyMaterial, SigningContext, Task<KeyRef>>? OnImport { get; set; }
+
+    /// <summary>Runs after the signer behind has taken an import and before the node hears of it; it may throw.</summary>
+    public Action<KeyRef>? AfterImport { get; set; }
+
+    /// <summary>The imports the node asked for: the row, the keystore, the format, the size of the material and the context.</summary>
+    public List<(Guid RowId, string Keystore, string Format, int Length, SigningContext Context)> Imported { get; } = [];
+
+    public async Task<KeyRef> ImportKeyAsync(KeyMaterial material, SigningContext context, CancellationToken cancellationToken = default)
+    {
+        Imported.Add((material.CertificateId, material.Keystore, material.Format, material.Wrapped.Length, context));
+        if (OnImport != null)
+            return await OnImport(material, context);
+        var held = await inner.ImportKeyAsync(material, context, cancellationToken);
+        AfterImport?.Invoke(held);
+        return held;
+    }
+
     public Task<byte[]> ExportKeyAsync(KeyRef key, ExportWrap wrap, SigningContext context, CancellationToken cancellationToken = default) => inner.ExportKeyAsync(key, wrap, context, cancellationToken);
     public Task<byte[]> WrapSecretAsync(SecretKind kind, byte[] secret, SigningContext context, CancellationToken cancellationToken = default) => inner.WrapSecretAsync(kind, secret, context, cancellationToken);
     public Task<byte[]> UnwrapSecretAsync(byte[] wrapped, SigningContext context, CancellationToken cancellationToken = default) => inner.UnwrapSecretAsync(wrapped, context, cancellationToken);

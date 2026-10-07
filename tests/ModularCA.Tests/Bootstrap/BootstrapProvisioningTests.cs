@@ -95,12 +95,87 @@ public class BootstrapProvisioningTests
         var drop = reset.IndexOf("DROP TABLE IF EXISTS", StringComparison.Ordinal);
         var commit = reset.IndexOf("tx.Commit()", StringComparison.Ordinal);
         var keystores = reset.IndexOf("DeleteArtifacts(certPath, trustPath)", StringComparison.Ordinal);
-        var sshKeys = reset.IndexOf("\"ssh-ca-*\"", StringComparison.Ordinal);
+        var sshKeyRows = reset.IndexOf("BackupRestore.LegacySshKeyFilesAsync(appConnStr)", StringComparison.Ordinal);
+        var sshKeyFiles = reset.IndexOf("DeleteLegacySshKeyFiles(configDir, legacySshKeyFiles)", StringComparison.Ordinal);
         Assert.True(probe > 0 && probe < drop, "The ownership check must come before the drops.");
         Assert.True(drop < commit && commit < keystores, "The drops must be committed before the keystores are deleted.");
-        Assert.True(keystores < sshKeys);
+        Assert.True(probe < sshKeyRows && sshKeyRows < drop, "Where SSH CA key files lie is read from the rows before the tables are dropped.");
+        Assert.True(keystores < sshKeyFiles, "The SSH CA key files go after the keystores.");
         Assert.Contains("SchemaOwnership.RepairCommand(DatabaseKind.Application", reset[probe..drop]);
         Assert.Equal(1, reset.Split("DeleteArtifacts(").Length - 1);
+        // The reset once deleted keystores/ssh-ca-*, a pattern that matched neither the SSH
+        // keystore nor any key file. The SSH keystore now goes with the other two.
+        Assert.DoesNotContain("\"ssh-ca-*\"", source);
+        var deleteArtifacts = source[source.IndexOf("public static void DeleteArtifacts(", StringComparison.Ordinal)..];
+        Assert.Contains("KeyRef.SshKeystore", deleteArtifacts[..deleteArtifacts.IndexOf("internal static void DeleteLegacySshKeyFiles(", StringComparison.Ordinal)]);
+    }
+
+    /// <summary>
+    /// What a reset, and a bootstrap over an older install, delete of the keystores: all three
+    /// files. An SSH keystore left behind would have no <c>Keystores</c> row in the new database,
+    /// and the signer does not unlock with one in that state.
+    /// </summary>
+    [Fact]
+    public void Deleting_the_keystores_deletes_the_ssh_keystore_with_the_other_two()
+    {
+        var keystores = Path.Combine(Path.GetTempPath(), $"mca-reset-keystores-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(keystores);
+        try
+        {
+            string[] deleted = ["ca-certs.keystore", "ca-trust.keystore", "ssh-ca.keystore", "ssh-ca.keystore.creating"];
+            foreach (var name in deleted.Append("unrelated.txt"))
+                File.WriteAllText(Path.Combine(keystores, name), "x");
+
+            BootstrapModularCA.DeleteArtifacts(Path.Combine(keystores, "ca-certs.keystore"), Path.Combine(keystores, "ca-trust.keystore"));
+
+            Assert.Equal(new[] { "unrelated.txt" }, Directory.GetFiles(keystores).Select(Path.GetFileName));
+
+            // With nothing there it has nothing to do, and says so without failing.
+            BootstrapModularCA.DeleteArtifacts(Path.Combine(keystores, "ca-certs.keystore"), Path.Combine(keystores, "ca-trust.keystore"));
+        }
+        finally
+        {
+            Directory.Delete(keystores, true);
+        }
+    }
+
+    /// <summary>
+    /// A reset removes the SSH CA key files it would otherwise leave on the host in plaintext:
+    /// the default key directory whole, and the key files a row named elsewhere, each with its
+    /// .pub. A row cannot point the reset at a file that is not a key file.
+    /// </summary>
+    [Fact]
+    public void A_factory_reset_removes_the_plaintext_ssh_ca_key_files_and_nothing_else()
+    {
+        var app = Path.Combine(Path.GetTempPath(), $"mca-reset-ssh-{Guid.NewGuid():N}");
+        var config = Path.Combine(app, "config");
+        try
+        {
+            const string key = "-----BEGIN OPENSSH PRIVATE KEY-----\nnot-a-real-key\n-----END OPENSSH PRIVATE KEY-----\n";
+            Directory.CreateDirectory(Path.Combine(config, "ssh-ca-keys"));
+            Directory.CreateDirectory(Path.Combine(config, "custom"));
+            Directory.CreateDirectory(Path.Combine(config, "shared"));
+            File.WriteAllText(Path.Combine(config, "ssh-ca-keys", "a"), key);
+            File.WriteAllText(Path.Combine(config, "ssh-ca-keys", "a.pub"), "ssh-ed25519 AAAA a");
+            File.WriteAllText(Path.Combine(config, "custom", "b"), key);
+            File.WriteAllText(Path.Combine(config, "custom", "b.pub"), "ssh-ed25519 AAAA b");
+            File.WriteAllText(Path.Combine(config, "shared", "c"), key);
+            File.WriteAllText(Path.Combine(config, "shared", "kept.txt"), "kept");
+            File.WriteAllText(Path.Combine(config, "config.yaml"), "JWT: {}\n");
+
+            BootstrapModularCA.DeleteLegacySshKeyFiles(config,
+                [Path.Combine(config, "custom", "b"), "config/shared/c", "config/config.yaml", "config/gone", ""]);
+
+            Assert.False(Directory.Exists(Path.Combine(config, "ssh-ca-keys")));
+            Assert.False(Directory.Exists(Path.Combine(config, "custom")), "A key directory left empty is removed.");
+            Assert.False(File.Exists(Path.Combine(config, "shared", "c")));
+            Assert.Equal("kept", File.ReadAllText(Path.Combine(config, "shared", "kept.txt")));
+            Assert.Equal("JWT: {}\n", File.ReadAllText(Path.Combine(config, "config.yaml")));
+        }
+        finally
+        {
+            Directory.Delete(app, true);
+        }
     }
 
     [Theory]

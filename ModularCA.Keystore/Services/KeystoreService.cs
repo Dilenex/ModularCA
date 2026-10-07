@@ -250,21 +250,30 @@ public class KeystoreService : IDisposable
     /// throws: <see cref="FileNotFoundException"/> for a row with no file,
     /// <see cref="InvalidOperationException"/> for a file with no row. The file postdates SPKI
     /// pins, so it gets no legacy allowance: a row with no pin, or a pin with no MAC, is a
-    /// <see cref="SecurityException"/>.
+    /// <see cref="SecurityException"/>. A creation that stopped between writing its row and
+    /// putting its file in place is finished first (<see cref="CompleteInterruptedCreation"/>).
     /// </summary>
     internal static List<CertKey> LoadSshKeys(string keystorePath, string yamlPath, ModularCADbContext db)
     {
         const string keystoreName = ModularCA.Shared.Signing.KeyRef.SshKeystore;
-        var hasFile = File.Exists(keystorePath);
         var hasRow = db.Keystores.AsNoTracking().Any(k => k.Name == keystoreName);
+        CompleteInterruptedCreation(keystorePath, hasRow);
+        var hasFile = File.Exists(keystorePath);
         if (!hasFile && !hasRow)
             return new List<CertKey>();
         if (!hasFile)
             throw new FileNotFoundException(
-                $"The database records the keystore '{keystoreName}', but the file is missing. Its SSH CA keys cannot be loaded; restore the file.", keystorePath);
+                $"The database records the keystore '{keystoreName}', but its file is missing, so the SSH CA keys in it cannot be loaded and the "
+                + "signer stays locked. Put the file back in the signer's keystore directory, from the newest backup archive (keystores/"
+                + $"{keystoreName}) or from a '{keystoreName}.bak.<timestamp>' beside it. If the file is lost for good, disable the SSH CAs "
+                + $"whose keys it held and delete the Keystores row named '{keystoreName}'; the signer then starts without an SSH keystore.", keystorePath);
         if (!hasRow)
             throw new InvalidOperationException(
-                $"'{keystorePath}' exists, but the database has no Keystores row for '{keystoreName}', so it cannot be decrypted or verified. Restore the database it belongs to, or move the file aside.");
+                $"'{keystorePath}' exists, but the database has no Keystores row for '{keystoreName}', so it cannot be decrypted or verified and "
+                + "the signer stays locked while it is there. This is what a database from before the first SSH CA key leaves when it is "
+                + "restored without the product's restore, which moves the file aside itself. If the database is the one you mean to run, "
+                + $"move the file aside (for example to '{keystoreName}.bak.<date>') and start again: SSH CA keys that are still files on the "
+                + "node are imported again, and an SSH CA whose key was only in that file signs nothing. Otherwise restore the database the file belongs to.");
 
         try
         {
@@ -1252,11 +1261,13 @@ public class KeystoreService : IDisposable
         {
             try
             {
-                var hasFile = File.Exists(keystorePath);
                 var hasRow = db.Keystores.AsNoTracking().Any(k => k.Name == keystoreName);
+                CompleteInterruptedCreation(keystorePath, hasRow);
+                var hasFile = File.Exists(keystorePath);
                 if (hasFile && !hasRow)
                     throw new InvalidOperationException(
-                        $"'{keystorePath}' exists, but the database has no Keystores row for '{keystoreName}', so it cannot be read or extended. Nothing was written.");
+                        $"'{keystorePath}' exists, but the database has no Keystores row for '{keystoreName}', so it cannot be read or extended. "
+                        + "Move the file aside if the database is the one you mean to run, or restore the database the file belongs to. Nothing was written.");
                 if (!hasFile && hasRow)
                     throw new InvalidOperationException(
                         $"The database records the keystore '{keystoreName}', but '{keystorePath}' is missing. Restore the file; a new one is not started over keys that are gone. Nothing was written.");
@@ -1288,6 +1299,14 @@ public class KeystoreService : IDisposable
     /// pins it, and the file is removed again if the row cannot be written, so a failure leaves
     /// neither.
     /// </summary>
+    /// <remarks>
+    /// The file is written beside its place, as <c>name.creating</c>, and takes its name only
+    /// once the row is in the database. A process that stops before the row is written leaves
+    /// a staged file nothing loads and the next creation replaces; one that stops after it
+    /// leaves a row and a staged file, which the next load or write puts in place
+    /// (<see cref="CompleteInterruptedCreation"/>). At no point is there a keystore file under
+    /// its own name without its row, which is the state that keeps the signer locked.
+    /// </remarks>
     private static KeystoreSaveResult CreateKeystoreInner(
         string keystorePath,
         string yamlPath,
@@ -1299,9 +1318,13 @@ public class KeystoreService : IDisposable
     {
         var secondary = KeystoreYamlLoader.LoadSecondaryPassphrase(yamlPath, keystoreName);
         var mainBytes = GenerateMainPassphrase();
+        var finalPath = keystorePath;
+        keystorePath = finalPath + CreatingSuffix;
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(keystorePath))!);
+            if (File.Exists(keystorePath))
+                File.Delete(keystorePath);
             using var service = new KeystoreService(keystorePath, (byte[])mainBytes.Clone(), secondary, signer);
             try
             {
@@ -1355,9 +1378,12 @@ public class KeystoreService : IDisposable
             }
             catch
             {
-                try { File.Delete(keystorePath); } catch { /* reported by the next write, which refuses a file with no row */ }
+                try { File.Delete(keystorePath); } catch { /* a staged file with no row is replaced by the next creation */ }
                 throw;
             }
+
+            // The row is written: from here a stop is finished by the next load or write.
+            File.Move(keystorePath, finalPath);
 
             EmitKeystoreAudit(AuditActionType.KeystoreInitialized, keystoreName, success: true,
                 detail: $"entries={payloads.Count} format=v{KeystoreFileWriter.CurrentFormatVersion}");
@@ -1367,6 +1393,28 @@ public class KeystoreService : IDisposable
         {
             CryptographicOperations.ZeroMemory(mainBytes);
         }
+    }
+
+    /// <summary>What a keystore file is named while it is being created, after its own name.</summary>
+    public const string CreatingSuffix = ".creating";
+
+    /// <summary>
+    /// Finishes the creation of a keystore that stopped between writing its <c>Keystores</c> row
+    /// and giving its file its name: with the row there, no file under the name and the staged
+    /// file beside it, the staged file takes the name. It is then loaded like any other, so it
+    /// is verified against the row's pin and opened with the row's passphrase before any key in
+    /// it is used. In every other state nothing is touched: a staged file with no row was never
+    /// recorded, cannot be opened, and is replaced by the next creation.
+    /// </summary>
+    /// <param name="keystorePath">The keystore file's own path.</param>
+    /// <param name="hasRow">Whether the database has a <c>Keystores</c> row for the keystore.</param>
+    internal static void CompleteInterruptedCreation(string keystorePath, bool hasRow)
+    {
+        var staged = keystorePath + CreatingSuffix;
+        if (!hasRow || File.Exists(keystorePath) || !File.Exists(staged))
+            return;
+        File.Move(staged, keystorePath);
+        Console.WriteLine($"[KEYSTORE] The creation of '{Path.GetFileName(keystorePath)}' had stopped after its database row was written; its file was put in place.");
     }
 
     /// <summary>

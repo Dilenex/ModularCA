@@ -189,10 +189,32 @@ public sealed class RemoteSigningService : ISigningService, IDisposable
     }
 
     /// <inheritdoc />
-    public Task<KeyRef> ImportKeyAsync(KeyMaterial material, SigningContext context, CancellationToken cancellationToken = default)
+    /// <remarks>
+    /// <see cref="SigningPurpose.SshKeyMigration"/> was added with the SSH keystore. A signer
+    /// that predates it cannot read a context that names it and answers gRPC
+    /// <see cref="StatusCode.InvalidArgument"/>; for the import of an SSH CA key that comes back
+    /// as a refusal, <see cref="SigningRefusalReason.OperationUnsupported"/>, whose message says
+    /// the signer predates the SSH keystore and is upgraded first.
+    /// </remarks>
+    public async Task<KeyRef> ImportKeyAsync(KeyMaterial material, SigningContext context, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(material);
         ArgumentNullException.ThrowIfNull(context);
+        try
+        {
+            return await ImportAsync(material, context, cancellationToken);
+        }
+        catch (RpcException ex) when (ex.StatusCode is StatusCode.InvalidArgument or StatusCode.Unimplemented
+                                      && context.Purpose == SigningPurpose.SshKeyMigration)
+        {
+            throw new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
+                $"The signer at {_options.Endpoint} predates the SSH keystore: it does not take the import of an SSH CA key ({ex.Status.Detail}). Upgrade the signer first, then the node.");
+        }
+    }
+
+    /// <summary>The import call itself, with the node's copy of a bare key zeroed once the signer has answered.</summary>
+    private Task<KeyRef> ImportAsync(KeyMaterial material, SigningContext context, CancellationToken cancellationToken)
+    {
         return CallAsync(async options =>
         {
             var response = await _client.ImportKeyAsync(new Wire.ImportKeyRequest

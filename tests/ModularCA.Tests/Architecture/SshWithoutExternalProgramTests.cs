@@ -8,7 +8,9 @@ namespace ModularCA.Tests.Architecture;
 /// process (<c>docs/architecture/ssh-keystore.md</c>, stage 3). It runs no program for any of it
 /// and has no setting that names one. This reads the source of <c>ModularCA.Core</c> and
 /// <c>ModularCA.API</c> to hold that: neither names <c>ssh-keygen</c> or its retired setting
-/// anywhere, and no SSH source file of theirs starts a process.
+/// anywhere, and no SSH source file of theirs starts a process. Nor does any of them read a key
+/// file, with one exception by name: the import of stage 4, which moves the key files of an
+/// older install into the signer and removes them.
 /// </summary>
 public class SshWithoutExternalProgramTests
 {
@@ -87,13 +89,35 @@ public class SshWithoutExternalProgramTests
         Assert.True(found.Count == 0, "SSH code starts no process:\n" + string.Join("\n", found));
     }
 
+    /// <summary>
+    /// The one SSH source that reads key files, and the only one that may: the one-time import of
+    /// the plaintext key files of before into the signer (stage 4, "The import"). It has to read
+    /// each file to hand its key to the signer, and to overwrite and delete it afterwards.
+    /// Everything else that needs to know about a key file (the upgrade check, the readiness
+    /// page, the admin key list, the factory reset) asks this file.
+    /// </summary>
+    private const string TheImport = "ModularCA.Core/Services/SshKeyFileImport.cs";
+
+    /// <summary>What reads, writes or removes a file or a directory.</summary>
+    private static readonly Regex TouchesFiles = new(
+        @"\bFile\.(Read|Write|Delete|Open|Exists|SetUnixFileMode)|\bDirectory\.(Create|Delete)|Path\.GetTemp", RegexOptions.Compiled);
+
     [Fact]
-    public void No_ssh_source_reads_a_key_file_or_a_key_directory()
+    public void No_ssh_source_reads_a_key_file_or_a_key_directory_except_the_import()
     {
-        var found = Hits(Sources(IsSshSource), ReadsAKeyFile);
+        var sources = Sources(s => IsSshSource(s) && s != TheImport).ToList();
+        var found = Hits(sources, ReadsAKeyFile);
 
         Assert.True(found.Count == 0, "SSH code reads no key file:\n" + string.Join("\n", found));
-        Assert.DoesNotContain(Sources(IsSshSource), s => Regex.IsMatch(s.Text, @"\bFile\.(Read|Write|Delete|Open|Exists|SetUnixFileMode)|\bDirectory\.(Create|Delete)|Path\.GetTemp"));
+        Assert.DoesNotContain(sources, s => TouchesFiles.IsMatch(s.Text));
+
+        // The exception is that one file by name, and it is the import: were it gone, or no
+        // longer reading key files, the carve-out would be excusing nothing.
+        var import = Assert.Single(Sources(s => s == TheImport));
+        Assert.Matches(ReadsAKeyFile, import.Text);
+        Assert.Matches(TouchesFiles, import.Text);
+        Assert.Contains("SigningPurpose.SshKeyMigration", import.Text);
+        Assert.Empty(Hits([import], StartsAProcess));
     }
 
     [Fact]

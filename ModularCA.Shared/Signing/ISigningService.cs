@@ -182,8 +182,14 @@ public interface ISigningService
     /// and carry the key's public key, of the SSH CA the context names at instance scope. That
     /// import can be repeated: offering the key the signer already holds for the row succeeds
     /// and writes nothing, and offering another key for a row it holds a key for is refused.
+    /// A whole <see cref="KeyRef.SshKeystore"/> file is restored only into a database that has
+    /// its <c>Keystores</c> row, which carries the pin it is verified against. Material in the
+    /// <see cref="KeyMaterial.KeystoreFileAbsent"/> format carries no bytes and says that the
+    /// state a restore brings has no SSH keystore: under <see cref="SigningPurpose.Restore"/>,
+    /// and only while the database has no <c>Keystores</c> row for it, a file the signer still
+    /// keeps under that name is moved aside so that it cannot keep the signer locked.
     /// </summary>
-    /// <exception cref="SigningRefusedException">The context is not one the format or the keystore allows, the format is not accepted, the certificate or SSH CA key row does not carry the key's public half, or a keystore file does not verify.</exception>
+    /// <exception cref="SigningRefusedException">The context is not one the format or the keystore allows, the format is not accepted, the certificate or SSH CA key row does not carry the key's public half, a keystore file does not verify, or a keystore declared absent has its row or is not the SSH keystore.</exception>
     Task<KeyRef> ImportKeyAsync(KeyMaterial material, SigningContext context, CancellationToken cancellationToken = default);
 
     /// <summary>

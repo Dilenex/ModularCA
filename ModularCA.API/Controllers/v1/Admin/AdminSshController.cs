@@ -25,7 +25,8 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [Route("api/v1/admin/ssh")]
 [Authorize]
 [NodeRole(ProcessRole.Control)]
-public class AdminSshController(ISshCaService sshCaService, ICurrentUserService currentUser, ModularCADbContext db, ModularCA.Shared.Models.Config.SystemConfig config, IKeyCeremonyService ceremonySvc, IDistributedCache cache) : ControllerBase
+public class AdminSshController(ISshCaService sshCaService, ICurrentUserService currentUser, ModularCADbContext db, ModularCA.Shared.Models.Config.SystemConfig config, IKeyCeremonyService ceremonySvc, IDistributedCache cache,
+    ModularCA.Shared.Signing.ISigningService signer, SshKeyImportState sshImports) : ControllerBase
 {
     /// <summary>Who is asking, as the SSH service records it in the audit and on a certificate row.</summary>
     private SshCaActor Actor() => new(currentUser.User?.Id, currentUser.User?.Username, HttpContext.Connection.RemoteIpAddress?.ToString());
@@ -36,6 +37,16 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// download URL and where each private key is held (<c>keyStorage</c>: <c>signer</c>,
     /// <c>legacyFile</c> for a key file still awaiting its import into the signer, or <c>pkcs11</c>).
     /// </summary>
+    /// <remarks>
+    /// Each key also says what the signer and its row come to (<see cref="SshKeyCustody"/>):
+    /// <c>signerState</c> is <c>held</c>, <c>awaitingImport</c> (still a key file on the node),
+    /// <c>notHeld</c> (its row gives the key to the signer, which lists none) or <c>unknown</c>
+    /// (the signer is locked or did not answer). For a key that is not held,
+    /// <c>signerStateCode</c> is the reason as a code and <c>signerStateReason</c> the reason
+    /// for an operator, with the path looked at and what the signer answered; <c>keyFile</c> is
+    /// where the key file is expected. <c>importedAt</c> is set on a key that was a plaintext
+    /// file on the node and has been imported.
+    /// </remarks>
     [HttpGet("ca-keys")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetCaKeys()
@@ -52,14 +63,54 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
             .Select(c => new { c.Id, c.SpaceId })
             .ToDictionaryAsync(c => c.Id, c => c.SpaceId);
         keys = keys.Where(k => caSpaces.TryGetValue(k.CertificateAuthorityId, out var t) && fence.Allows(t)).ToList();
-        return Ok(keys.Select(k => new
+        var custody = keys.Count == 0
+            ? new Dictionary<Guid, SshKeyCustodyEntry>()
+            : (await SshKeyCustody.ReadAsync(db, signer, sshImports, HttpContext.RequestAborted)).Keys.ToDictionary(c => c.Id);
+        return Ok(keys.Select(k =>
         {
-            k.Id, k.Name, k.KeyType, k.KeySize, k.PublicKey, k.IsUserCa, k.IsHostCa,
-            k.MaxValidityHours, k.IsEnabled, k.CreatedAt,
-            KeyStorage = JsonNamingPolicy.CamelCase.ConvertName(k.KeyStorage),
-            KrlUrl = $"{baseUrl}/ssh/ca-keys/{k.Id}/krl",
-            PublicKeyUrl = $"{baseUrl}/ssh/ca-keys/{k.Id}",
+            var held = custody.GetValueOrDefault(k.Id);
+            return new
+            {
+                k.Id, k.Name, k.KeyType, k.KeySize, k.PublicKey, k.IsUserCa, k.IsHostCa,
+                k.MaxValidityHours, k.IsEnabled, k.CreatedAt,
+                KeyStorage = JsonNamingPolicy.CamelCase.ConvertName(k.KeyStorage),
+                SignerState = held?.State ?? SshKeyCustody.Unknown,
+                SignerStateCode = held?.ReasonCode,
+                SignerStateReason = held?.Detail,
+                held?.KeyFile,
+                held?.ImportedAt,
+                KrlUrl = $"{baseUrl}/ssh/ca-keys/{k.Id}/krl",
+                PublicKeyUrl = $"{baseUrl}/ssh/ca-keys/{k.Id}",
+            };
         }));
+    }
+
+    /// <summary>
+    /// The notice that this install kept SSH CA keys in plaintext before the signer held them:
+    /// whether it applies, which keys were imported and when, where each file was and whether
+    /// it has been removed, how many keys still await import, the backup archives and
+    /// pre-restore snapshots in the backup directory written before the last import, and the
+    /// text for the operator. SSH CAs are instance CAs, so a caller without instance scope
+    /// gets 404.
+    /// </summary>
+    [HttpGet("plaintext-notice")]
+    [Authorize(Policy = "CaOperator")]
+    public async Task<IActionResult> GetPlaintextNotice()
+    {
+        if (!SpaceFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRevoke).Allows(null))
+            return NotFound();
+        var backupDirectory = ModularCA.Bootstrap.BackupRestore.ResolveBackupDirectory(AppContext.BaseDirectory, config.Backup?.OutputPath);
+        var notice = await SshPlaintextNotices.ReadAsync(db, backupDirectory, HttpContext.RequestAborted);
+        return Ok(new
+        {
+            notice.Applies,
+            notice.AwaitingImport,
+            notice.FirstImportedAt,
+            notice.LastImportedAt,
+            notice.Message,
+            Keys = notice.Imported.Select(k => new { k.Id, k.Name, k.Fingerprint, k.ImportedAt, KeyFile = k.File, KeyFileRemoved = k.FileRemoved }),
+            EarlierArchives = notice.EarlierArchives.Select(a => new { a.Name, a.WrittenAt }),
+        });
     }
 
     /// <summary>

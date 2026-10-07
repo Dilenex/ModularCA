@@ -133,7 +133,10 @@ public sealed class FileKeystorePersistence : ISignerKeyPersistence
     /// the live file moved to <c>name.bak.&lt;timestamp&gt;</c> and the verified file moved into
     /// place. A verification failure deletes the staged file and leaves the live one untouched.
     /// When the secondary passphrase cannot be resolved the pin is read without its MAC and the
-    /// gap is said aloud, as the restore did before the signer owned this step.
+    /// gap is said aloud, as the restore did before the signer owned this step. The SSH keystore
+    /// has no allowance for a missing pin: offered where the database has no pinned signer for
+    /// it, which is a database without its <c>Keystores</c> row, it is refused with a
+    /// <see cref="System.Security.SecurityException"/> and nothing is replaced.
     /// </remarks>
     public void ImportKeystoreFile(string name, byte[] bytes)
     {
@@ -150,11 +153,15 @@ public sealed class FileKeystorePersistence : ISignerKeyPersistence
             {
                 var db = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
                 var pinned = ResolvePinnedSpki(db, name);
+                if (string.IsNullOrEmpty(pinned) && string.Equals(name, SshKeystore, StringComparison.Ordinal))
+                    throw new System.Security.SecurityException(
+                        $"The database has no Keystores row with a pinned signer for '{name}', and this keystore is never without one. "
+                        + "Restore the application database the file belongs to first. Nothing was replaced.");
                 KeystoreService.VerifyKeystoreFileSignature(stagedPath, db, pinned);
             }
 
             if (File.Exists(livePath))
-                File.Move(livePath, $"{livePath}.bak.{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}");
+                File.Move(livePath, BackupPathFor(livePath));
             File.Move(stagedPath, livePath);
         }
         finally
@@ -162,6 +169,20 @@ public sealed class FileKeystorePersistence : ISignerKeyPersistence
             try { if (File.Exists(stagedPath)) File.Delete(stagedPath); } catch { /* the staged file is not the live one */ }
         }
     }
+
+    /// <inheritdoc />
+    public string? MoveKeystoreFileAside(string name)
+    {
+        var livePath = PathFor(name);
+        if (!File.Exists(livePath))
+            return null;
+        var aside = BackupPathFor(livePath);
+        File.Move(livePath, aside);
+        return Path.GetFileName(aside);
+    }
+
+    /// <summary>The name a keystore file is kept under once another has taken its place, or none has.</summary>
+    private static string BackupPathFor(string livePath) => $"{livePath}.bak.{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}";
 
     /// <summary>
     /// The pin a restored file is verified against. Authenticated through its MAC when the

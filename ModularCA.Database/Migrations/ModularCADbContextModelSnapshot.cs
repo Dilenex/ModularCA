@@ -3390,6 +3390,41 @@ namespace ModularCA.Database.Migrations
                         });
                 });
 
+            modelBuilder.Entity("ModularCA.Shared.Entities.SshKeyImportEntity", b =>
+                {
+                    b.Property<Guid>("SshCaKeyId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("AuditedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FilePath")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
+                    b.Property<DateTime?>("FileRemovedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Fingerprint")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTime>("ImportedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.HasKey("SshCaKeyId");
+
+                    b.ToTable("SshKeyImports");
+                });
+
             modelBuilder.Entity("ModularCA.Shared.Entities.SshRequestProfileEntity", b =>
                 {
                     b.Property<Guid>("Id")

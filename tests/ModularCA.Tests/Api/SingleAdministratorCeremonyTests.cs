@@ -104,7 +104,7 @@ public sealed class SingleAdministratorCeremonyTests
     private static object SshController(SingleAdminWorld w, Guid actor, IDistributedCache cache)
         => New(w, Ns + "AdminSshController", actor,
             null, new CurrentUserStub(actor), w.Db, new SystemConfig(),
-            new KeyCeremonyService(w.Db, new RecordingAuditService()), cache);
+            new KeyCeremonyService(w.Db, new RecordingAuditService()), cache, null, null);
 
     private static object CeremonyController(SingleAdminWorld w, Guid actor, IDistributedCache cache)
     {

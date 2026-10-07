@@ -46,7 +46,17 @@ public interface ISignerKeyPersistence
     /// file beside it so the operator can go back. Throws
     /// <see cref="System.Security.SecurityException"/>, <see cref="System.Security.Cryptography.CryptographicException"/>
     /// or <see cref="InvalidDataException"/> when the bytes do not verify, in which case nothing
-    /// in place has changed.
+    /// in place has changed. The SSH keystore is never without a pinned signer: a file offered
+    /// for it where the database has no pin for it is a
+    /// <see cref="System.Security.SecurityException"/> too, so its <c>Keystores</c> row has to be
+    /// in the database before the file.
     /// </summary>
     void ImportKeystoreFile(string name, byte[] bytes);
+
+    /// <summary>
+    /// Moves the keystore file <paramref name="name"/> aside, to <c>name.bak.&lt;timestamp&gt;</c>
+    /// beside it, so that nothing loads it and nothing is lost. Returns the name it was moved
+    /// to, or null when there was no such file.
+    /// </summary>
+    string? MoveKeystoreFileAside(string name);
 }

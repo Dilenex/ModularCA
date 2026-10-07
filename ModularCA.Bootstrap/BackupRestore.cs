@@ -51,6 +51,15 @@ internal static class BackupSecretDenylist
 /// verifies the signature against the pin before anything in place changes. Nothing here reads
 /// a keystore file or touches key material. The archive layout is unchanged: the files sit
 /// under <c>keystores/</c> by name, so an archive from before the signer restores the same way.
+/// <para>
+/// SSH CA keys travel in the signer's SSH keystore, <c>ssh-ca.keystore</c>, the third of those
+/// files, which an install without an SSH CA does not have. A key that is still a plaintext
+/// file on the node, awaiting its import into the signer, travels wrapped by the signer with
+/// its directory, wherever under <c>config/</c> the key rows say that directory is, and never
+/// in the config copy. A restore of an archive with no SSH keystore has the signer move a
+/// live one aside (<see cref="ReconcileAbsentSshKeystoreAsync"/>), and the key files it
+/// brings back are imported at the next start.
+/// </para>
 /// </remarks>
 public static class BackupRestore
 {
@@ -176,9 +185,25 @@ public static class BackupRestore
             }
             Console.WriteLine($" ✓ ({exported.Count} file(s))");
 
-            // 3. The Data Protection key ring and the SSH CA keys travel wrapped by the signer,
-            // never in the clear: with the database dump the ring opens every DP-protected column.
-            var wrappedTargets = BackupWrappedSecrets.Targets(configDir, null);
+            // 3. The Data Protection key ring travels wrapped by the signer, never in the clear:
+            // with the database dump it opens every DP-protected column. So does every SSH CA
+            // key that is still a file on this node. Where those files are is read from the key
+            // rows, since no setting names their directory any more; a backup that cannot read
+            // them is not written, because it could not tell which files to keep out.
+            IReadOnlyList<string> legacyKeyFiles;
+            try
+            {
+                legacyKeyFiles = await LegacySshKeyFilesAsync(AppConnectionString(config));
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ The SSH CA key rows could not be read ({ex.GetType().Name}: {ex.Message}).");
+                Console.WriteLine("   A backup is not written without knowing where SSH CA key files lie: they are never copied");
+                Console.WriteLine("   into an archive in the clear.");
+                return 1;
+            }
+            var wrappedTargets = BackupWrappedSecrets.Targets(configDir, legacyKeyFiles);
+            var looseKeyFiles = BackupWrappedSecrets.LooseLegacyKeyFiles(configDir, legacyKeyFiles);
             Console.Write("  Wrapping configuration secrets...");
             IReadOnlyList<string> wrapped;
             try
@@ -203,7 +228,13 @@ public static class BackupRestore
             // directories are left out because their wrapped copies are already in the archive.
             var backupConfig = Path.Combine(backupDir, "config");
             Console.Write("  Copying config...");
-            CopyDirectoryFiltered(configDir, backupConfig, wrappedTargets, out var skippedDenied);
+            CopyDirectoryFiltered(configDir, backupConfig, wrappedTargets, out var skippedDenied, looseKeyFiles);
+            if (looseKeyFiles.Count > 0)
+            {
+                Console.WriteLine();
+                Console.WriteLine($"  ⚠ SSH CA key file(s) lie directly in config/ and are left out of the archive: {string.Join(", ", looseKeyFiles)}.");
+                Console.WriteLine("    They await their import into the signer; once imported, the keys travel in the signer's SSH keystore.");
+            }
             // A config.yaml saved by an earlier build can carry the db.yaml credentials under DB:.
             var archivedConfigYaml = Path.Combine(backupConfig, "config.yaml");
             if (File.Exists(archivedConfigYaml))
@@ -758,14 +789,18 @@ public static class BackupRestore
             // An archive from before the key ring travelled wrapped carries it, and the SSH CA
             // keys, in the clear under config/. It still restores: dropping the ring would leave
             // every DP-protected column unreadable. The operator is told to replace the archive.
+            // The archive's SSH CA key files are found by what they are, not by where a row or a
+            // setting says they lie: its rows name paths on the host it was taken on.
             var archiveConfigDir = Path.Combine(restoreDir, "config");
-            var plaintextSecrets = BackupWrappedSecrets.PlaintextTargetsIn(archiveConfigDir,
-                BackupWrappedSecrets.Targets(archiveConfigDir, null));
+            var plaintextSecrets = BackupWrappedSecrets.PlaintextTargetsIn(archiveConfigDir, BackupWrappedSecrets.Targets(archiveConfigDir, null))
+                .Union(BackupWrappedSecrets.PlaintextSshKeyDirectoriesIn(archiveConfigDir).Select(d => d == "." ? "SSH CA key files in config/" : d), StringComparer.Ordinal)
+                .ToList();
             if (plaintextSecrets.Count > 0)
             {
                 Console.WriteLine($"⚠  This archive carries {string.Join(", ", plaintextSecrets)} in plaintext (taken before these travelled wrapped).");
                 Console.WriteLine("   They are restored as before. Take a new backup once the restore is done and destroy this archive:");
-                Console.WriteLine("   anyone holding it and its key can read every TOTP secret, held key and stored credential.");
+                Console.WriteLine("   anyone holding it and its key can read every TOTP secret, held key and stored credential, and every");
+                Console.WriteLine("   SSH CA key it carries. The next start imports restored SSH CA key files into the signer and deletes them.");
             }
 
             // The signer the keystore files go back through, over the database the archive is
@@ -886,6 +921,16 @@ public static class BackupRestore
                     Console.WriteLine("     Pre-restore keystore state restored where possible; the restore is aborted.");
                     return 1;
                 }
+            }
+
+            // An archive from before the SSH keystore, or from an install with no SSH CA, has no
+            // ssh-ca.keystore and no Keystores row for one. A live file would then have no row.
+            // Only a signer that kept one is asked; the pre-restore snapshot holds that file too.
+            if (liveKeystores.Any(k => k.Name == KeyRef.SshKeystore))
+            {
+                var sshKeystoreLine = await ReconcileAbsentSshKeystoreAsync(signer, restoreDir);
+                if (sshKeystoreLine != null)
+                    Console.WriteLine(sshKeystoreLine);
             }
 
             // 3. Restore config
@@ -1615,17 +1660,21 @@ public static class BackupRestore
     /// <param name="destination">Destination directory (created if missing).</param>
     /// <param name="excludedDirectories">Directories, relative to <paramref name="source"/> with forward slashes, left out whole.</param>
     /// <param name="skipped">Receives the list of denied file names that were skipped (relative paths).</param>
-    internal static void CopyDirectoryFiltered(string source, string destination, IEnumerable<string> excludedDirectories, out List<string> skipped)
+    /// <param name="excludedRootFiles">Names of files directly in <paramref name="source"/> that are left out: SSH CA key files that lie in no directory of their own.</param>
+    internal static void CopyDirectoryFiltered(string source, string destination, IEnumerable<string> excludedDirectories, out List<string> skipped,
+        IEnumerable<string>? excludedRootFiles = null)
     {
         skipped = new List<string>();
         var excluded = new HashSet<string>(excludedDirectories.Select(d => d.Replace('\\', '/').Trim('/')), StringComparer.Ordinal);
-        CopyDirectoryFilteredImpl(source, destination, source, excluded, skipped);
+        var excludedFiles = new HashSet<string>(excludedRootFiles ?? [], StringComparer.Ordinal);
+        CopyDirectoryFilteredImpl(source, destination, source, excluded, excludedFiles, skipped);
     }
 
     /// <summary>The recursion behind <see cref="CopyDirectoryFiltered"/>.</summary>
-    private static void CopyDirectoryFilteredImpl(string source, string destination, string root, HashSet<string> excluded, List<string> skipped)
+    private static void CopyDirectoryFilteredImpl(string source, string destination, string root, HashSet<string> excluded, HashSet<string> excludedRootFiles, List<string> skipped)
     {
         Directory.CreateDirectory(destination);
+        var atRoot = string.Equals(Path.GetFullPath(source), Path.GetFullPath(root), StringComparison.Ordinal);
         foreach (var file in Directory.GetFiles(source))
         {
             var fileName = Path.GetFileName(file);
@@ -1634,6 +1683,8 @@ public static class BackupRestore
                 skipped.Add(Path.GetRelativePath(root, file));
                 continue;
             }
+            if (atRoot && excludedRootFiles.Contains(fileName))
+                continue;
             File.Copy(file, Path.Combine(destination, fileName), true);
         }
         foreach (var dir in Directory.GetDirectories(source))
@@ -1641,7 +1692,83 @@ public static class BackupRestore
             if (excluded.Contains(Path.GetRelativePath(root, dir).Replace('\\', '/')))
                 continue;
             var dirName = Path.GetFileName(dir);
-            CopyDirectoryFilteredImpl(dir, Path.Combine(destination, dirName), root, excluded, skipped);
+            CopyDirectoryFilteredImpl(dir, Path.Combine(destination, dirName), root, excluded, excludedRootFiles, skipped);
+        }
+    }
+
+    /// <summary>
+    /// The key file paths of the SSH CA keys that are, or may still be, plaintext files on the
+    /// node, as the application database records them: the path of every key row that has one
+    /// (a row has a path exactly while its key awaits its import into the signer), and the path
+    /// of every imported key whose file has not been removed yet. A database without the SSH
+    /// tables has none. This is where a backup learns which directories hold SSH CA key files;
+    /// it throws what the driver throws when the rows cannot be read.
+    /// </summary>
+    /// <param name="appConnectionString">The application database.</param>
+    internal static async Task<IReadOnlyList<string>> LegacySshKeyFilesAsync(string appConnectionString)
+    {
+        var files = new List<string>();
+        await using var conn = new NpgsqlConnection(appConnectionString);
+        await conn.OpenAsync();
+
+        bool hasKeys, hasImports;
+        await using (var probe = new NpgsqlCommand(
+            """SELECT to_regclass('"SshCaKeys"') IS NOT NULL, to_regclass('"SshKeyImports"') IS NOT NULL""", conn))
+        await using (var reader = await probe.ExecuteReaderAsync())
+        {
+            await reader.ReadAsync();
+            hasKeys = reader.GetBoolean(0);
+            hasImports = reader.GetBoolean(1);
+        }
+
+        if (hasKeys)
+        {
+            await using var cmd = new NpgsqlCommand(
+                """SELECT "PrivateKeyPath" FROM "SshCaKeys" WHERE "PrivateKeyPath" IS NOT NULL AND "PrivateKeyPath" <> '' """, conn);
+            await using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+                files.Add(reader.GetString(0));
+        }
+        if (hasImports)
+        {
+            await using var cmd = new NpgsqlCommand(
+                """SELECT "FilePath" FROM "SshKeyImports" WHERE "FileRemovedAt" IS NULL""", conn);
+            await using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+                files.Add(reader.GetString(0));
+        }
+        return files;
+    }
+
+    /// <summary>
+    /// Makes the signer's SSH keystore agree with a restored state that has none: when the
+    /// extracted archive in <paramref name="restoreDir"/> carries no <c>ssh-ca.keystore</c>, the
+    /// signer is told so (<see cref="KeyMaterial.KeystoreFileAbsent"/>) and moves a file it still
+    /// keeps under that name aside, as <c>ssh-ca.keystore.bak.&lt;timestamp&gt;</c>. The restored
+    /// database has no <c>Keystores</c> row for it, and a file without its row leaves the signer
+    /// locked at the next start. With the file out of the way, the next start imports the SSH CA
+    /// key files the archive brought back. Returns the line to print, or null when the archive
+    /// carries the keystore and nothing was asked of the signer. A signer that refuses, because it
+    /// predates this or because the restored database does have a row for the keystore, is
+    /// reported in that line and does not fail the restore.
+    /// </summary>
+    /// <param name="signer">The signer the keystore files go back through.</param>
+    /// <param name="restoreDir">The directory the archive was extracted into.</param>
+    internal static async Task<string?> ReconcileAbsentSshKeystoreAsync(ISigningService signer, string restoreDir)
+    {
+        if (File.Exists(Path.Combine(restoreDir, "keystores", KeyRef.SshKeystore)))
+            return null;
+        var restoreContext = new SigningContext(RestoreCaller, SigningPurpose.Restore, null, null);
+        try
+        {
+            await signer.ImportKeyAsync(new KeyMaterial(Array.Empty<byte>(), KeyMaterial.KeystoreFileAbsent, Guid.Empty, KeyRef.SshKeystore), restoreContext);
+            return $"  ✓ The archive carries no {KeyRef.SshKeystore}; the signer's own was moved aside as {KeyRef.SshKeystore}.bak.<timestamp>.";
+        }
+        catch (Exception ex)
+        {
+            return $"  ⚠ The archive carries no {KeyRef.SshKeystore}, and the signer did not move a live one aside ({ex.Message})." + Environment.NewLine
+                + $"    If the signer's keystore directory holds a {KeyRef.SshKeystore}, move it aside by hand before the next start: with no" + Environment.NewLine
+                + "    Keystores row for it in the restored database, it would leave the signer locked.";
         }
     }
 
@@ -1726,8 +1853,8 @@ public static class BackupRestore
     /// <summary>
     /// Exports every keystore file a backup carries through the signer under the backup wrap,
     /// by name. A keystore the signer does not keep is skipped, since a node that has never
-    /// been bootstrapped has none; any other refusal propagates, because a backup that silently
-    /// lacks its keystores is worse than none.
+    /// been bootstrapped has none and an install with no SSH CA has no SSH keystore; any other
+    /// refusal propagates, because a backup that silently lacks its keystores is worse than none.
     /// </summary>
     private static async Task<IReadOnlyList<(string Name, byte[] Bytes)>> ExportKeystoresAsync(ISigningService signer, string caller)
     {

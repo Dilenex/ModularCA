@@ -69,6 +69,11 @@ public static class AuditActionType
     // SSH CA
     /// <summary>An SSH CA was created and its key committed to the signer, or the attempt failed.</summary>
     public const string SshCaKeyCreated = "SshCaKeyCreated";
+    /// <summary>
+    /// An SSH CA key that was a plaintext file on the node was imported into the signer; the
+    /// details name the key, its fingerprint and the file. Written once per key.
+    /// </summary>
+    public const string SshCaKeyImported = "SshCaKeyImported";
     public const string SshCertIssued = "SshCertIssued";
     public const string SshCertRevoked = "SshCertRevoked";
     public const string SshCaKeyDisabled = "SshCaKeyDisabled";

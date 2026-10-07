@@ -708,7 +708,7 @@ public sealed class ScopedAuthorizationTests
         var cache = NewCache();
         var controller = New(Ns + "AdminSshController", w.Operator,
             null, new CurrentUserStub(w.Operator), w.Db, new SystemConfig(),
-            new KeyCeremonyService(w.Db, new RecordingAuditService()), cache);
+            new KeyCeremonyService(w.Db, new RecordingAuditService()), cache, null, null);
         object Request(Guid? spaceId) => Body("GenerateSshCaKeyRequest", ("Name", "ops ssh"), ("SpaceId", spaceId));
 
         var bad = Assert.IsType<BadRequestObjectResult>(await Call(controller, "GenerateCaKey", Request(w.SpaceA), StepUp(cache, w.Operator, StepUpOps.CreateSshCa)));

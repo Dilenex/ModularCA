@@ -6,8 +6,10 @@ keystore, the key lifecycle (generate, commit, the migration import, list, retir
 `SignSshCertificate`, in process and over gRPC, with its audit summary. Stage 3 is built
 (2026-10-07): the node creates SSH CA keys and signs SSH certificates through the signer and
 builds KRLs in process; it runs no `ssh-keygen`, and `SshCa.*` and `PUT /config/ssh-ca` are gone.
-A key made before this, still a file on the node, signs nothing until stage 4 imports it: nothing
-imports it yet, and its file and row are left as they are.
+Stage 4 is built (2026-10-07), backend only: the control role imports the key files of an older
+install into the signer and removes them, backup, restore and reset know `ssh-ca.keystore`, and
+`--upgrade-check`, the readiness page and the admin API say what is awaiting import and why; see
+"Stage 4 as built". The console and docs-site pages of stages 3 and 4, and stage 5, are not built.
 
 Release: 0.4.2 (owner, 2026-10-06). 0.4.1 is the settings release; the signer journal and verified
 approvals in `signer-hardening.md` follow this, from 0.4.3.
@@ -567,7 +569,7 @@ guide.
 | 1 | **Built.** `ModularCA.Ssh` (its own assembly; `ISshSigner` and `SshCertificateIssuer` added 2026-10-06): certificate encoder and parser, public key encode/decode and authorized_keys parsing, signature blobs per algorithm (DER and raw ECDSA), KRL encoder, `openssh-key-v1` private key reader, and the signer's checks as pure functions (`SshCertificateRules`). Golden tests against fixtures made with `ssh-keygen` 10.2 (`tests/ModularCA.Tests/Ssh/Fixtures/generate.sh`). No `ssh-keygen` option-set mapping, since profiles are exact. No behaviour change | M |
 | 2 | Signer: `ssh-ca.keystore` (create, load, append, pin, secondary alias), `KeyKind.SshCa`, the two purposes, `SignSshCertificate` in process and over gRPC, SSH generate, commit and import, `CreateSshCa` ceremony verification, `SignerAudit.Summary` migration. Contract suite on both bindings, with deliberate breaks: raw `Sign` on an SSH key allowed, empty principals allowed, X.509 key in the SSH file, ceremony check removed. **Part 1 built (2026-10-07):** the keystore file and its `Keystores` row, created by the first commit or import and loaded at unlock; `KeySpec.usage` (`ssh`) on the contract and the wire; SSH generate, commit, retire and list; the `SshKeyMigration` import, repeatable; `CreateSshCa` verified at the signer, with an X.509 CA ceremony licensing no SSH key and the reverse; `SigningPurpose.SshCertificate` and `SshKeyMigration`; and the `SshCaKeys.KeyStorage` column with its migration (`SshKeyStorage`), brought forward from stage 3 because the import is judged on it. Contract tests on both bindings, checked against deliberate breaks of the ceremony licence, the row binding, the storage and enabled checks, the pin requirement and the raw-signature refusal. **Part 2 built (2026-10-07):** `ISigningService.SignSshCertificateAsync` over a plain request (`SshCertificateRequest`), in process and over gRPC (`rpc SignSshCertificate`; a signer that predates it answers `Unimplemented`, which the client reports as a refusal saying the signer predates the SSH keystore). The `SshCaKeys` row is read at every use and must still carry the bound key's public key, have storage `Signer` and be enabled, under an enabled, undeleted SSH CA of the instance that the context names; the type and the maximum validity come from the row, and every other rule from `SshCertificateRules` through `SshCertificateIssuer`, which verifies the signature before anything is returned. Software keys only. One `SignSsh` audit row per call, with the certificate's SHA-256 when one was issued and `SignerAudit.Summary` (migration `SignerAuditSummary`). `SshCertificateRules` gained a separate clock-skew allowance for the past and the future (`SshClockSkew`), and its duplicate-principal refusal no longer names the principal. Contract tests on both bindings, checked against deliberate breaks of the purpose, scope, row public key, row enabled, CA enabled, certificate type, maximum validity, clock skew, empty principals and verify-after-sign checks. **Stage 2 is complete**; nothing in the node calls it until stage 3 | L |
 | 3 | Node cut-over: `SshCaService` over the signer; KRL from the public key; `KeyStorage` column; `ssh-keygen`, `ProcessRunner` use, `SshCaConfig` and `PUT /config/ssh-ca` removed; unlocked-signer filter on the SSH sign routes; endpoints, docs site and console. **Built (2026-10-07) except the console and docs-site pages**; see "Stage 3 as built" | M |
-| 4 | Migration: startup import, file deletion, `--upgrade-check` finding, readiness row, plaintext notice; backup excludes the directory and carries `ssh-ca.keystore`; restore of old archives; reset | M |
+| 4 | Migration: startup import, file deletion, `--upgrade-check` finding, readiness row, plaintext notice; backup excludes the directory and carries `ssh-ca.keystore`; restore of old archives; reset. **Built (2026-10-07) except the console and docs-site pages**; see "Stage 4 as built" | M |
 | 5 | Live proof on ca4 with the signer as its own unit: sshd accepts user and host certificates for all three key types; a KRL revokes; backup and restore round trip; migration from a 0.4.0 install with plaintext keys; the container image issues an SSH certificate | S |
 | 6 | Optional: PKCS#11 adoption for SSH keys; `ImportSshCa` ceremony | M |
 
@@ -617,12 +619,118 @@ shared.
   `config/ssh-ca-keys`. An install whose `SshCa.KeyStoragePath` named another directory inside
   `config/` would have its key files copied into an archive unwrapped. Stage 4 finds the
   directories from the `PrivateKeyPath` of `LegacyFile` rows instead, and must land before any
-  build of this branch is installed.
+  build of this branch is installed. Stage 4 has landed: see "Backup" under "Stage 4 as built".
 - **Not built.** The storage column and generation-form text (`SshCertificates.tsx`), the key
   detail fields and the plaintext notice (`SshCaKeyDetail.tsx`), the backup text
   (`BackupRestore.tsx`), the readiness row, and the docs-site pages (`admin/ssh.ts`,
   `admin/ca-and-certs/key-ceremonies.ts`, the public and self-service SSH endpoints, the UI
   guides).
+
+### Stage 4 as built
+
+- **The import** (`SshKeyFileImport`, the one source in the node that reads or removes an SSH key
+  file; `SshWithoutExternalProgramTests` excuses it by name). It runs in the control role at
+  start, after the unwrap of a restore's pending secrets and beside the other startup repairs,
+  and takes every `LegacyFile` row, enabled or not, by name. The file must be an unencrypted
+  `openssh-key-v1` key whose public half is the row's; it is read as bytes, never as a string,
+  and offered as PKCS#8 under `SshKeyMigration` naming the SSH CA at instance scope. The signer's
+  list must then show a key of kind `SshCa` under the row's id with that public key. Only then
+  is the row switched and the file removed.
+- **Where the file is.** The path on the row as it stands; a relative one is relative to the
+  application directory, as the old service resolved its key directory. Failing that, a file of
+  the same name under `config/ssh-ca-keys` of this install, which is where a restore onto
+  another host puts the files of an archive whose rows still name the old host's path.
+- **The transaction, and the record that differs from "The import".** The audit is another
+  database, so "one transaction with the audit row" cannot be had. One transaction in the
+  application database sets `KeyStorage = Signer`, clears `PrivateKeyPath` and writes a row of
+  the new table `SshKeyImports` (migration `SshKeyImports`): key id, name, fingerprint, the full
+  path of the file, when it was imported, and two marks, file removed and audited, both empty.
+  After it commits the file is overwritten with zeros over its length, flushed to disk and
+  deleted, its `.pub` deleted when it holds the row's key, the directory removed when that
+  leaves it empty, and the audit entry `SshCaKeyImported` written; each sets its mark.
+- **Repeating.** A stop after the signer took the key leaves the row as it was: the next pass
+  offers the key again and the signer answers that it holds it. A stop after the transaction
+  leaves a file the row no longer names: the record names it, and the next pass removes it and
+  writes the audit entry still owed, whatever the signer's state, since neither needs the
+  signer. A file found there that is no longer the key, and is not the zeros of an overwrite
+  that lost its delete, is left alone. A stop between the audit entry and its mark writes the
+  entry a second time: at least once, not exactly once.
+- **What does not import.** A missing, unreadable, encrypted, foreign or mismatching file, a row
+  whose public key cannot be read, and a key type or size the signer holds none of, each leave
+  the row, its path and the file as they are, with a reason code and a sentence for the
+  operator, and the next key is tried. Nothing here fails the start.
+- **The signer's state.** Locked or unreachable: no file is read, every key waits, and the pass
+  runs again once the signer reports unlocked. An answer of `OperationUnsupported` leaves that
+  key with "the signer predates the SSH keystore and must be upgraded first"; two such answers
+  with no key taken stop the pass, so an old signer is sent at most two keys. A reference that
+  is not in `ssh-ca.keystore` stops it at once. Against a signer of an older build the remote
+  client turns the bad-input answer to the unknown purpose into that refusal
+  (`RemoteSigningService.ImportKeyAsync`).
+- **Without a restart.** Nothing in the node subscribed to the signer's state before, and no
+  other startup repair waits for an unlock. `SshKeyImportRetryService` polls, as the whitelist
+  re-warm does: every 15 seconds it reads what the last pass left and, while keys wait on the
+  signer, asks the signer for its state; keys left for a reason an operator acts on are looked
+  at again every five minutes. It ends once nothing is left.
+- **Readiness.** The signer's entry of `/health/ready` gains `sshKeys`: `total`, `held`,
+  `awaitingImport` and `notHeld` (each `id`, `name`, `reasonCode`, `reason`) and `unknown`.
+  `notHeld` is a row whose storage is `Signer` while the unlocked signer lists no key for it:
+  the window "Stage 3 as built" names. The route is not anonymous (it needs `SystemAuditor`)
+  and, as for the rest of its payload, carries no path and nothing the signer or the system
+  said: the reason is a fixed sentence per code. A key that is not held never makes the entry
+  unhealthy. The reasons are those of the last pass in this process, so a node without the
+  control role shows the keys with "not attempted".
+- **Admin API.** `GET /api/v1/admin/ssh/ca-keys` gains, per key, `signerState` (`held`,
+  `awaitingImport`, `notHeld`, `unknown`), `signerStateCode`, `signerStateReason` (the whole
+  reason, with the path and what the signer answered), `keyFile` and `importedAt`.
+  `GET /api/v1/admin/ssh/plaintext-notice` is new: `applies`, `awaitingImport`, `keys` (`id`,
+  `name`, `fingerprint`, `importedAt`, `keyFile`, `keyFileRemoved`), `firstImportedAt`,
+  `lastImportedAt`, `earlierArchives` (the `*.enc` and `*.zip` files in the backup directory
+  written before the last import) and `message`. Both need instance scope.
+- **The plaintext notice** is read from `SshKeyImports`, not from the audit: it has to outlive
+  the files, audit retention and a wiped audit database, and it travels with a backup.
+- **Upgrade check.** The "SSH CA keys" finding reads the rows that name a key file in SQL that
+  runs on both sides of the SSH migrations, and looks for the files under the installed
+  application directory (the parent of `--config-dir`). A missing or mismatching file refuses
+  only for an enabled SSH CA, because disabling is the remedy the refusal offers; for a
+  disabled one it is mentioned. A second line, a note that never refuses, lists the user
+  signing profiles from which a certificate lacks one of the five former default permits,
+  computed with the option mapping the service signs with, and counting what every SSH cert
+  profile requires as carried.
+- **Backup.** `KeyRef.BackupKeystores` carries `ssh-ca.keystore`. The key directories that
+  travel wrapped come from the database: the paths of rows that still have one, and of import
+  records whose file is not yet removed, plus `config/ssh-ca-keys`. A backup that cannot read
+  those rows is not written. A key file directly in `config/` has no directory to wrap and is
+  left out of the archive, with a warning. The pre-restore snapshot is unchanged.
+- **Restore.** The database comes first, so the keystore's `Keystores` row is there when its
+  file is offered, and the persistence now refuses an `ssh-ca.keystore` for which the database
+  has no pin instead of verifying it against any CA. When the archive carries none and the
+  signer kept one, the restore says so through the import call
+  (`KeyMaterial.KeystoreFileAbsent`, no bytes, `Restore` only, the SSH keystore only) and the
+  signer moves the file aside as `.bak.<timestamp>`, but only while the database has no row for
+  it. A signer that refuses, or predates this, is a warning with what to do by hand. The
+  archive's plaintext key files are recognised by how they begin, since its rows name another
+  host's paths.
+- **Reset and bootstrap.** Deleting the keystores deletes `ssh-ca.keystore` with the other two,
+  in the reset, the command-line bootstrap and the wizard; its row goes with the tables. The
+  reset also overwrites and deletes `config/ssh-ca-keys` and the key files rows named elsewhere,
+  read before the tables are dropped; a file outside the default directory is touched only when
+  it begins as an OpenSSH private key.
+- **A first key write that stops half way** no longer leaves the file without its row. The file
+  is written as `ssh-ca.keystore.creating` and takes its name only after the row is in the
+  database. A stop before the row leaves a staged file nothing loads and the next creation
+  replaces. A stop after it is finished by the next unlock or the next write, which moves the
+  staged file into place; it is then verified against the row's pin like any other. A file
+  under its own name without its row can still be made by hand or by a database restored by
+  other means; the unlock message now says to move it aside.
+- **The break-glass unlocker** could not open `ssh-ca.keystore`: it asks for the main
+  passphrase, and this keystore's is generated by the signer and kept only in its `Keystores`
+  row. It now reads it from the row for this keystore. Without the application database the
+  file cannot be opened at all, which the deploy guide says.
+- **The image** no longer installs `openssh-client`. Nothing in it starts an OpenSSH program:
+  the product starts `pg_dump`, `pg_restore` and, in the migration tool, `runuser`.
+- **Not built.** The console pages and the docs-site pages for any of this. A restore's wrapped
+  key directory is unwrapped only at a start, so with the signer locked at that start the
+  import finds the files only after the next one.
 
 ### Carried from stage 2 into stages 3 and 4
 
@@ -630,15 +738,23 @@ Part 1 of stage 2 left these for the stages that first make an `ssh-ca.keystore`
 install. None is reachable before stage 3, since nothing in the node generates or imports an SSH
 key through the signer yet.
 
-- **Reset.** It deletes `ssh-ca-*` and not `ssh-ca.keystore`. A file with no `Keystores` row
-  leaves the signer locked at the next start, so reset must remove the file with the rows.
-- **A crash while the first SSH key is written** can leave the file without its row, or the
+- ~~**Reset.** It deletes `ssh-ca-*` and not `ssh-ca.keystore`. A file with no `Keystores` row
+  leaves the signer locked at the next start, so reset must remove the file with the rows.~~
+  Closed in stage 4: reset, the command-line bootstrap and the wizard delete the file with the
+  other two, and reset removes the legacy key files.
+- ~~**A crash while the first SSH key is written** can leave the file without its row, or the
   reverse, with the same result. The unlock message says which, and that the file is moved aside
-  or restored; stage 4 documents it in the operator guide.
-- **Restore.** A whole `ssh-ca.keystore` restored where no `Keystores` row exists for it is
+  or restored; stage 4 documents it in the operator guide.~~ Closed in stage 4 by repair, not by
+  message alone: the file takes its name only after its row is written, and a creation that
+  stopped in between is finished by the next unlock or write. The message for a file without
+  its row, which a crash can no longer produce, says to move it aside; the deploy guide has it.
+- ~~**Restore.** A whole `ssh-ca.keystore` restored where no `Keystores` row exists for it is
   verified as the other files are with no pin, and is then refused at unlock. Restore must bring
-  the row first, as it does for the other two.
-- **Backup.** `KeyRef.BackupKeystores` names two files; stage 4 adds the third.
+  the row first, as it does for the other two.~~ Closed in stage 4: the database is restored
+  before the keystores, and an `ssh-ca.keystore` offered where the database has no pin for it is
+  refused, nothing landing.
+- ~~**Backup.** `KeyRef.BackupKeystores` names two files; stage 4 adds the third.~~ Closed in
+  stage 4.
 - ~~**Older signer, newer node.** A signer that predates `KeySpec.usage` ignores it and returns a
   pending key in `ca-certs.keystore`. The node checks the keystore of the returned reference and
   retires the key when it is not `ssh-ca.keystore`.~~ Closed in stage 3
@@ -648,7 +764,9 @@ key through the signer yet.
   match by id alone. They skip keys of kind `SshCa`.~~ Closed in stage 3: those three, and
   `ScepService` and `CmpService`, which matched the same way, look a key up through
   `X509SignerKeys`, which passes over a key of kind `SshCa` or in `ssh-ca.keystore`.
-- **The break-glass unlocker** has not been checked against `ssh-ca.keystore`.
+- ~~**The break-glass unlocker** has not been checked against `ssh-ca.keystore`.~~ Checked and
+  fixed in stage 4: it could not open the file, and now reads the main passphrase from the
+  keystore's row.
 - **One approved `CreateSshCa` ceremony** is not held to a key count, and a pending SSH key does
   not expire. Both are as X.509 is today, and belong to verified approvals in 0.4.3.
 

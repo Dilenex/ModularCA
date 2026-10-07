@@ -21,6 +21,7 @@ public class ModularCAHealthCheck : IHealthCheck
     private readonly ModularCA.Shared.Signing.ISigningService _signer;
     private readonly ApiCertificateProvider _apiCertProvider;
     private readonly SystemConfig _config;
+    private readonly SshKeyImportState? _sshImports;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ModularCAHealthCheck"/> class.
@@ -31,14 +32,17 @@ public class ModularCAHealthCheck : IHealthCheck
     /// <param name="apiCertProvider">Provider for the current Web TLS certificate.</param>
     /// <param name="config">The system configuration.</param>
     /// <param name="auditDb">The optional audit database context.</param>
+    /// <param name="sshImports">What the last import of SSH CA key files in this process left, for the reasons shown beside keys awaiting import.</param>
     public ModularCAHealthCheck(
         ModularCADbContext db,
         IKeystoreCertificates keystore,
         ModularCA.Shared.Signing.ISigningService signer,
         ApiCertificateProvider apiCertProvider,
         SystemConfig config,
-        AuditDbContext? auditDb = null)
+        AuditDbContext? auditDb = null,
+        SshKeyImportState? sshImports = null)
     {
+        _sshImports = sshImports;
         _db = db;
         _auditDb = auditDb;
         _keystore = keystore;
@@ -162,13 +166,30 @@ public class ModularCAHealthCheck : IHealthCheck
     /// usable key, so nothing can be issued: the node is not ready, and the readiness endpoint
     /// says so with the signer's report rather than an inference from the registry.
     /// </summary>
+    /// <remarks>
+    /// The entry also carries <c>sshKeys</c>: how many SSH CA keys there are and how many the
+    /// signer holds, the keys still awaiting their import into the signer with the reason for
+    /// each, and the keys a row gives to the signer which the signer does not list
+    /// (<see cref="SshKeyCustody"/>). An SSH CA key that is not held never makes the entry
+    /// unhealthy: SSH is not a reason to take a node that issues X.509 out of service. As for
+    /// the rest of this payload, no path and no message from the signer or the system is in it.
+    /// </remarks>
     private async Task<(string Status, object Result)> CheckSignerAsync(CancellationToken ct)
     {
         try
         {
             var health = await _signer.HealthAsync(ct);
             var status = health.Unlocked ? "healthy" : "unhealthy";
-            return (status, new { status, unlocked = health.Unlocked, keyCount = health.KeyCount, backend = health.Backend });
+            SshKeyReadiness? sshKeys = null;
+            try
+            {
+                sshKeys = (await SshKeyCustody.ReadAsync(_db, _signer, _sshImports, ct)).ToReadiness();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Serilog.Log.Warning("Health check: the SSH CA keys could not be read ({Error})", ex.GetType().Name);
+            }
+            return (status, new { status, unlocked = health.Unlocked, keyCount = health.KeyCount, backend = health.Backend, sshKeys });
         }
         catch (Exception ex)
         {

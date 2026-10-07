@@ -1766,6 +1766,13 @@ builder.Services.AddScoped<ICertificateExportService, CertificateExportService>(
 builder.Services.AddScoped<IHeldKeyService, HeldKeyService>();
 builder.Services.AddScoped<ITimestampService, TimestampService>();
 builder.Services.AddScoped<ISshCaService, SshCaService>();
+// SSH CA keys that are still plaintext files on the node are imported into the signer by the
+// control role: once at start, after the restore's wrapped secrets are unwrapped, and again in
+// the background for as long as a key is left, so a signer unlocked later needs no restart.
+builder.Services.AddSingleton<ModularCA.Core.Services.SshKeyImportState>();
+builder.Services.AddScoped<ModularCA.Core.Services.SshKeyFileImport>();
+if (!isSetupMode && controlActive)
+    builder.Services.AddHostedService<ModularCA.API.Services.SshKeyImportRetryService>();
 builder.Services.AddScoped<ILdapGroupProvider>(sp => sp.GetRequiredService<ModularCA.Auth.Services.ILdapAuthService>() as ILdapGroupProvider
     ?? throw new InvalidOperationException("LdapAuthService must implement ILdapGroupProvider"));
 builder.Services.AddScoped<ILdapGroupSyncService, LdapGroupSyncService>();
@@ -2769,6 +2776,36 @@ if (!isSetupMode && activeRoles.HasAnyNodeRole)
 if (!isSetupMode && !controlActive)
 {
     Console.WriteLine("[STARTUP] Migrations and startup repairs are the control role's; this process applies none.");
+}
+
+// SSH CA keys made before the signer held them are plaintext files on this host. Import them
+// into the signer and remove the files. It comes after the unwrap above, which is what puts the
+// key files of a restored older archive back. A key that cannot be imported stays as it is,
+// with its reason on the readiness page; it stops neither the other keys nor the start.
+if (!isSetupMode && controlActive)
+{
+    try
+    {
+        using var sshImportScope = app.Services.CreateScope();
+        var sshImport = await sshImportScope.ServiceProvider.GetRequiredService<ModularCA.Core.Services.SshKeyFileImport>().RunAsync();
+        if (sshImport.Imported.Count > 0)
+        {
+            Console.WriteLine($"[STARTUP] {sshImport.Imported.Count} SSH CA key(s) imported into the signer; their key files were overwritten and deleted.");
+            Console.WriteLine("[STARTUP] NOTICE: " + ModularCA.Core.Services.SshPlaintextNotices.Text);
+        }
+        if (sshImport.Awaiting.Count > 0)
+        {
+            Console.WriteLine($"[STARTUP] WARNING: {sshImport.Awaiting.Count} SSH CA key(s) are still key files on this node and sign nothing until imported:");
+            foreach (var awaitingKey in sshImport.Awaiting)
+                Console.WriteLine($"[STARTUP]   '{awaitingKey.Name}' ({awaitingKey.KeyId}): {awaitingKey.Detail}");
+        }
+        if (sshImport.FilesPending > 0)
+            Console.WriteLine($"[STARTUP] WARNING: {sshImport.FilesPending} imported SSH CA key file(s) could not be removed yet; see the log.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[STARTUP] SSH key import skipped; it runs again in the background. {ex.GetType().Name}: {ex.Message}");
+    }
 }
 
 if (!isSetupMode && controlActive && !string.IsNullOrWhiteSpace(config.LdapAuth.GroupToRoleMappings))

@@ -125,6 +125,7 @@ public sealed class SpaceFenceGuardTests
         ["AdminSigningProfileController.GetById"] = "SpaceFence.Allows on the issuing CA",
         ["AdminSshController.DownloadCertificate"] = "SpaceFence.Allows on the SSH CA",
         ["AdminSshController.GetCaKeys"] = "SpaceFence.Allows on the SSH CA",
+        ["AdminSshController.GetPlaintextNotice"] = "SpaceFence.Allows(null): SSH CAs are instance CAs, so instance scope (cert.revoke), else 404",
         ["AdminSshProfileController.GetCertProfile"] = "instance-wide SSH cert-profile catalog with no space binding; writes are system-admin only",
         ["AdminSshProfileController.GetCertProfiles"] = "instance-wide SSH cert-profile catalog with no space binding; writes are system-admin only",
         ["AdminSshProfileController.GetRequestProfile"] = "IsRequestProfileAccessibleAsync: SpaceFence.Allows",

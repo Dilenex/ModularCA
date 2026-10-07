@@ -117,7 +117,8 @@ internal sealed class InMemorySignerKeyPersistence : ModularCA.Keystore.Signing.
         _sshAppended.Add((byte[])privateKeyPkcs8Der.Clone());
     }
 
-    public IReadOnlyList<string> ListKeystoreFiles() => KeystoreFiles.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList();
+    public IReadOnlyList<string> ListKeystoreFiles()
+        => KeystoreFiles.Keys.Where(k => k.EndsWith(".keystore", StringComparison.Ordinal)).OrderBy(k => k, StringComparer.Ordinal).ToList();
 
     public byte[] ReadKeystoreFile(string name)
         => KeystoreFiles.TryGetValue(name, out var bytes) ? (byte[])bytes.Clone() : throw new FileNotFoundException(name);
@@ -127,6 +128,19 @@ internal sealed class InMemorySignerKeyPersistence : ModularCA.Keystore.Signing.
         if (!Verifies(name, bytes))
             throw new System.Security.SecurityException($"Keystore file '{name}' does not verify.");
         KeystoreFiles[name] = (byte[])bytes.Clone();
+    }
+
+    /// <summary>The keystore files moved aside so far: the name each had, and the name it was kept under.</summary>
+    public List<(string Name, string MovedTo)> MovedAside { get; } = new();
+
+    public string? MoveKeystoreFileAside(string name)
+    {
+        if (!KeystoreFiles.Remove(name, out var bytes))
+            return null;
+        var aside = $"{name}.bak.{MovedAside.Count + 1}";
+        KeystoreFiles[aside] = bytes;
+        MovedAside.Add((name, aside));
+        return aside;
     }
 }
 

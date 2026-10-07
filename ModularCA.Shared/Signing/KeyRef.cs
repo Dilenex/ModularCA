@@ -28,8 +28,12 @@ public sealed record KeyRef(Guid CertificateId, string Keystore = KeyRef.Default
     /// </summary>
     public const string SshKeystore = "ssh-ca.keystore";
 
-    /// <summary>The keystore files a backup carries, in the order a backup writes them.</summary>
-    public static readonly IReadOnlyList<string> BackupKeystores = new[] { DefaultKeystore, TrustKeystore };
+    /// <summary>
+    /// The keystore files a backup carries, in the order a backup writes them. A signer that
+    /// keeps no <see cref="SshKeystore"/>, which is every install without an SSH CA, has none to
+    /// carry, and the backup goes without it.
+    /// </summary>
+    public static readonly IReadOnlyList<string> BackupKeystores = new[] { DefaultKeystore, TrustKeystore, SshKeystore };
 
     /// <summary>
     /// A reference to a whole keystore file rather than one key in it: <see cref="CertificateId"/>

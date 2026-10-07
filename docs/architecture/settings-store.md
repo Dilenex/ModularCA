@@ -95,15 +95,21 @@ Counts, by leaf property, with each list element type counted once:
 |---|---|---|
 | a. Bootstrap | 15 | DB, Schema |
 | b. Signer-local | 11 | Hsm, Signer (signer side) |
-| c. Host-local | 47 | Roles, Signer (node side), Ingress, Redis, SshCa, PolicySync, Https, Http, Logging, Security, Mtls, Backup, Audit |
+| c. Host-local | 47 | Roles, Signer (node side), Ingress, Redis, SshCa (removed in 0.4.2), PolicySync, Https, Http, Logging, Security, Mtls, Backup, Audit |
 | d. Instance-wide | 142 | 28 sections |
 | e. Secret | 8 | JWT, LdapAuth, Email, Webhook, IntegrationApi, CertManager |
 | **Total** | **223** | 37 sections |
 
-Nine sections stay in files entirely: DB, Schema, Roles, Hsm, Signer, Ingress, Redis, SshCa and
+Eight sections stay in files entirely: DB, Schema, Roles, Hsm, Signer, Ingress, Redis and
 PolicySync. Twenty-eight have instance-wide content. Seven of those (Security, Logging, Http,
 Https, Mtls, Backup, Audit) also keep some host-local properties in the file under the same
 section name, so the API keeps its section shape.
+
+The table counts the `SshCa` section as it was drawn: two host-local properties,
+`SshKeygenPath` and `KeyStoragePath`. 0.4.2 removed the section with the SSH keystore
+(`ssh-keystore.md`): the signer builds SSH certificates itself and holds the keys, so there is no
+program to name and no key directory to configure. Without it the counts are 45 host-local
+properties, 221 in all, in 36 sections. A leftover `SshCa` section in a `config.yaml` is ignored.
 
 Some secrets stay in files, because their class decides where they live, not their secrecy:
 `DB.*.Password` (a), `Https.CertificatePassword` and `Signer.ClientCertificatePassword` (c), and
@@ -181,7 +187,7 @@ the state when this was drawn (2026-10-05); the readers made live since are list
 | `CertManager.Enabled`, `DefaultCertProfileId`, `DefaultSigningProfileId`, `SpaceId` | d | `CertManagerApiKeyFilter`, `CertManagerController`, `IntegrationScopeCheck` | live (the console says restart) | live |
 | `CertManager.ApiKey` | e, hashed | `CertManagerApiKeyFilter` | live | live |
 | `PolicySync.Enabled`, `PolicyDirectory`, `SyncOnStartup` | c | startup sync, `AdminPolicySyncController` | startup | startup; removed from the admin API |
-| `SshCa.SshKeygenPath`, `KeyStoragePath` | c | `SshCaService`, `BackupRestore` | live | live; removed from the admin API |
+| `SshCa.SshKeygenPath`, `KeyStoragePath` | c | none since 0.4.2: both settings were removed with the SSH keystore (`ssh-keystore.md`) | none | none |
 | `SourceCode.Url`, `License` | d | `PublicInfoController` | live | live |
 | `Audit.Retention.Enabled`, `GeneralRetentionDays`, `NetworkRetentionDays`, `ArchiveBeforeDelete`, `Schedule`, `DeleteBatchSize` | d | `AuditRetentionJob`, registry | live | live |
 | `Audit.Retention.ArchivePath` | c | `AuditRetentionJob` | live | live |
@@ -211,11 +217,13 @@ host-local key in it holds the default.
 - **Network position is host-local.** `TrustedProxyCidrs`, `ForwardedHeaderHopLimit` and
   `BehindReverseProxy` describe what sits in front of *this* host. A different value on the
   ingress host and on a node is correct, not drift.
-- **Paths are host-local, and two of them leave the API.** `SshCa.SshKeygenPath` lets a holder of
-  config rights choose the binary the node executes. `ssh-keystore.md` found that and called it
-  code execution one step removed. `PolicySync.PolicyDirectory` lets them point the server at a
-  directory of YAML that rewrites profiles. Both become host-local and read-only in the console,
-  so changing them needs the host.
+- **Paths are host-local, and one of them leaves the API.** `PolicySync.PolicyDirectory` lets a
+  holder of config rights point the server at a directory of YAML that rewrites profiles. It
+  becomes host-local and read-only in the console, so changing it needs the host. A second such
+  path, `SshCa.SshKeygenPath`, let them choose the binary the node executed; `ssh-keystore.md`
+  found that and called it code execution one step removed. It was to leave the API the same
+  way, and 0.4.2 removed it altogether, with `SshCa.KeyStoragePath`: the node runs no program
+  for SSH and holds no SSH key file.
 - **`Backup.EncryptionMode` is host-local.** It names which key file on this host encrypts
   archives (`backup.key` or `backup-password.key`). Those files are host-local and deny-listed from
   archives, so the mode goes with them.
@@ -797,7 +805,7 @@ Before the import, against a file-only install:
 Settings: config.yaml moves to the database at the control role's first start.
   23 sections, 7 secrets (2 from the environment, not imported).
   Kept in this host's config.yaml: Https.Port, Https.ListenAddress, ... (19 keys)
-  Leaving the admin API: SshCa.SshKeygenPath, PolicySync.PolicyDirectory
+  Leaving the admin API: PolicySync.PolicyDirectory
   Section fingerprints (compare across hosts): Email 3f2a..., Security 9c1d..., ...
 ```
 
@@ -862,7 +870,8 @@ store. They gain:
 - 202 with a ceremony id when the change needs approval;
 - 409 for a conflict or an environment-sourced key.
 
-`PUT /config/ssh-ca` and `PUT /config/policy-sync` answer 410 and point at the host file. The
+`PUT /config/policy-sync` answers 410 and points at the host file. `PUT /config/ssh-ca` was to do
+the same; 0.4.2 removed the route with the settings it set (`ssh-keystore.md`). The
 messages that say "restart required" are generated from the reload attributes, which fixes the
 integration API and cert-manager cards, whose changes are in fact live.
 

@@ -266,6 +266,8 @@ public sealed partial class InProcessSigningService : ISigningService
     /// kind from this call on; the wrapped bytes are zeroed once parsed. Material offered to
     /// <see cref="KeyRef.SshKeystore"/> is an SSH CA key and takes <see cref="ImportSshKeyAsync"/>
     /// instead, which is the only import <see cref="SigningPurpose.SshKeyMigration"/> permits.
+    /// Material in the <see cref="KeyMaterial.KeystoreFileAbsent"/> format is a restore saying
+    /// that the restored state has no SSH keystore, and takes <see cref="MoveAbsentKeystoreAsideAsync"/>.
     /// </remarks>
     public async Task<KeyRef> ImportKeyAsync(KeyMaterial material, SigningContext context, CancellationToken cancellationToken = default)
     {
@@ -274,6 +276,8 @@ public sealed partial class InProcessSigningService : ISigningService
 
         if (string.Equals(material.Format, KeyMaterial.KeystoreFile, StringComparison.OrdinalIgnoreCase))
             return await ImportKeystoreFileAsync(material, context, cancellationToken);
+        if (string.Equals(material.Format, KeyMaterial.KeystoreFileAbsent, StringComparison.OrdinalIgnoreCase))
+            return await MoveAbsentKeystoreAsideAsync(material, context, cancellationToken);
         if (string.Equals(material.Keystore, KeyRef.SshKeystore, StringComparison.OrdinalIgnoreCase))
             return await ImportSshKeyAsync(material, context, cancellationToken);
 
@@ -1493,6 +1497,65 @@ public sealed partial class InProcessSigningService : ISigningService
         _owners.Clear();
         await RecordAsync("ImportKey", context, key, null, allowed: true, reason: null, dataHash, cancellationToken);
         _logger.LogInformation("Signer: keystore file {Keystore} restored; its keys serve after the next unlock.", material.Keystore);
+        return key;
+    }
+
+    /// <summary>
+    /// The other half of a restore: the state restored has no SSH keystore
+    /// (<see cref="KeyMaterial.KeystoreFileAbsent"/>), so a file the signer still keeps under
+    /// that name is moved aside as <c>name.bak.&lt;timestamp&gt;</c>. Allowed under Restore only,
+    /// to a named caller, for <see cref="KeyRef.SshKeystore"/> only, with no bytes, and only
+    /// while the database has no <c>Keystores</c> row for it: such a file cannot be unlocked,
+    /// and would leave the signer locked at its next start. A keystore the database knows is
+    /// never moved aside this way. With no file there is nothing to do, and that is allowed
+    /// too. Locked or not, as the restore of a file is.
+    /// </summary>
+    private async Task<KeyRef> MoveAbsentKeystoreAsideAsync(KeyMaterial material, SigningContext context, CancellationToken cancellationToken)
+    {
+        var key = KeyRef.ForKeystore(material.Keystore);
+        var refusal = JudgeKeystoreFile(context, key, material.Format, KeyMaterial.KeystoreFileAbsent, SigningPurpose.Restore);
+        if (refusal == null && material.CertificateId != Guid.Empty)
+            refusal = new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
+                "A keystore is declared absent whole; the declaration names a keystore, not a certificate.");
+        if (refusal == null && !string.Equals(material.Keystore, KeyRef.SshKeystore, StringComparison.Ordinal))
+            refusal = new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
+                $"Only {KeyRef.SshKeystore} can be declared absent by a restore; '{material.Keystore}' is never moved aside this way.");
+        if (refusal == null && material.Wrapped.Length != 0)
+            refusal = new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
+                "A keystore declared absent carries no bytes.");
+        if (refusal == null)
+        {
+            using var scope = _scopes.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+            if (await db.Keystores.AsNoTracking().AnyAsync(k => k.Name == KeyRef.SshKeystore, cancellationToken))
+                refusal = new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
+                    $"The database has a Keystores row for {KeyRef.SshKeystore}; a keystore the database knows is not moved aside. Restore its file instead.");
+        }
+
+        string? movedTo = null;
+        if (refusal == null)
+        {
+            try
+            {
+                movedTo = _persistence.MoveKeystoreFileAside(material.Keystore);
+            }
+            catch (ArgumentException ex)
+            {
+                refusal = new SigningRefusedException(SigningRefusalReason.ContextRequired, ex.Message);
+            }
+        }
+        if (refusal != null)
+        {
+            await RecordAsync("ImportKey", context, key, null, allowed: false, refusal.Message, null, cancellationToken);
+            throw refusal;
+        }
+
+        await RecordAsync("ImportKey", context, key, null, allowed: true,
+            movedTo == null ? "Declared absent by a restore; the signer kept no such file." : $"Declared absent by a restore; the file was moved aside as {movedTo}.",
+            null, cancellationToken);
+        if (movedTo != null)
+            _logger.LogWarning("Signer: {Keystore} is not part of the restored state and has no Keystores row; it was moved aside as {MovedTo}. "
+                + "Its keys are served until this signer restarts.", material.Keystore, movedTo);
         return key;
     }
 
