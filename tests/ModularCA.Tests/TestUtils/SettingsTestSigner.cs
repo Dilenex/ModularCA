@@ -65,6 +65,7 @@ internal sealed class SettingsTestSigner : ISigningService
 
     public Task<SignerHealth> HealthAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
     public Task<byte[]> SignAsync(KeyRef key, SignatureAlgorithm algorithm, byte[] data, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+    public Task<byte[]> SignSshCertificateAsync(SshCertificateRequest request, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     public Task<byte[]> DecryptAsync(KeyRef key, byte[] enveloped, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     public Task<GeneratedKey> GenerateKeyAsync(KeySpec spec, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     public Task<KeyRef> ImportKeyAsync(KeyMaterial material, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();

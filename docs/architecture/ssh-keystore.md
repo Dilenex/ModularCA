@@ -1,10 +1,10 @@
 # SSH keystore
 
 Status: owner decisions recorded 2026-10-05 (see "Decided by the owner"). Stage 1, the wire
-format, is built as its own assembly, `ModularCA.Ssh`. The first part of stage 2 is built: the
-signer has the SSH keystore and the key lifecycle (generate, commit, the migration import, list,
-retire). Nothing signs an SSH certificate through the signer yet, and the node still uses
-`ssh-keygen` and its key files.
+format, is built as its own assembly, `ModularCA.Ssh`. Stage 2 is built: the signer has the SSH
+keystore, the key lifecycle (generate, commit, the migration import, list, retire) and
+`SignSshCertificate`, in process and over gRPC, with its audit summary. Nothing in the node calls
+it yet: until stage 3 the node still uses `ssh-keygen` and its key files.
 
 Release: 0.4.2 (owner, 2026-10-06). 0.4.1 is the settings release; the signer journal and verified
 approvals in `signer-hardening.md` follow this, from 0.4.3.
@@ -155,9 +155,13 @@ X.509, and refuses unless all of these hold:
 - the context names that CA and the instance scope;
 - the type is permitted by `IsUserCa` / `IsHostCa`;
 - `valid_before - valid_after` is no more than `MaxValidityHours`, and `valid_after` is not more
-  than five minutes in the past or in the future;
+  than ten minutes in the past or five minutes in the future (as built; the past bound waits on
+  open question 1);
 - there is at least one principal, and none is empty or longer than 256 bytes;
 - the serial is non-zero;
+- the key id is no longer than 256 bytes and has no control character, since every server the
+  certificate is shown to logs it;
+- the row's storage is `Signer`: a `LegacyFile` row is still waiting for its import;
 - critical options are only `force-command`, `source-address` and `verify-required`; extensions
   are only the known `permit-*` names and `no-touch-required`; a host certificate carries
   neither; names are unique and sorted as `PROTOCOL.certkeys` requires;
@@ -558,7 +562,7 @@ guide.
 | Stage | Work | Effort |
 |---|---|---|
 | 1 | **Built.** `ModularCA.Ssh` (its own assembly; `ISshSigner` and `SshCertificateIssuer` added 2026-10-06): certificate encoder and parser, public key encode/decode and authorized_keys parsing, signature blobs per algorithm (DER and raw ECDSA), KRL encoder, `openssh-key-v1` private key reader, and the signer's checks as pure functions (`SshCertificateRules`). Golden tests against fixtures made with `ssh-keygen` 10.2 (`tests/ModularCA.Tests/Ssh/Fixtures/generate.sh`). No `ssh-keygen` option-set mapping, since profiles are exact. No behaviour change | M |
-| 2 | Signer: `ssh-ca.keystore` (create, load, append, pin, secondary alias), `KeyKind.SshCa`, the two purposes, `SignSshCertificate` in process and over gRPC, SSH generate, commit and import, `CreateSshCa` ceremony verification, `SignerAudit.Summary` migration. Contract suite on both bindings, with deliberate breaks: raw `Sign` on an SSH key allowed, empty principals allowed, X.509 key in the SSH file, ceremony check removed. **Part 1 built (2026-10-07):** the keystore file and its `Keystores` row, created by the first commit or import and loaded at unlock; `KeySpec.usage` (`ssh`) on the contract and the wire; SSH generate, commit, retire and list; the `SshKeyMigration` import, repeatable; `CreateSshCa` verified at the signer, with an X.509 CA ceremony licensing no SSH key and the reverse; `SigningPurpose.SshCertificate` and `SshKeyMigration`; and the `SshCaKeys.KeyStorage` column with its migration (`SshKeyStorage`), brought forward from stage 3 because the import is judged on it. Contract tests on both bindings, checked against deliberate breaks of the ceremony licence, the row binding, the storage and enabled checks, the pin requirement and the raw-signature refusal. **Not built:** `SignSshCertificate`, its messages, and `SignerAudit.Summary` | L |
+| 2 | Signer: `ssh-ca.keystore` (create, load, append, pin, secondary alias), `KeyKind.SshCa`, the two purposes, `SignSshCertificate` in process and over gRPC, SSH generate, commit and import, `CreateSshCa` ceremony verification, `SignerAudit.Summary` migration. Contract suite on both bindings, with deliberate breaks: raw `Sign` on an SSH key allowed, empty principals allowed, X.509 key in the SSH file, ceremony check removed. **Part 1 built (2026-10-07):** the keystore file and its `Keystores` row, created by the first commit or import and loaded at unlock; `KeySpec.usage` (`ssh`) on the contract and the wire; SSH generate, commit, retire and list; the `SshKeyMigration` import, repeatable; `CreateSshCa` verified at the signer, with an X.509 CA ceremony licensing no SSH key and the reverse; `SigningPurpose.SshCertificate` and `SshKeyMigration`; and the `SshCaKeys.KeyStorage` column with its migration (`SshKeyStorage`), brought forward from stage 3 because the import is judged on it. Contract tests on both bindings, checked against deliberate breaks of the ceremony licence, the row binding, the storage and enabled checks, the pin requirement and the raw-signature refusal. **Part 2 built (2026-10-07):** `ISigningService.SignSshCertificateAsync` over a plain request (`SshCertificateRequest`), in process and over gRPC (`rpc SignSshCertificate`; a signer that predates it answers `Unimplemented`, which the client reports as a refusal saying the signer predates the SSH keystore). The `SshCaKeys` row is read at every use and must still carry the bound key's public key, have storage `Signer` and be enabled, under an enabled, undeleted SSH CA of the instance that the context names; the type and the maximum validity come from the row, and every other rule from `SshCertificateRules` through `SshCertificateIssuer`, which verifies the signature before anything is returned. Software keys only. One `SignSsh` audit row per call, with the certificate's SHA-256 when one was issued and `SignerAudit.Summary` (migration `SignerAuditSummary`). `SshCertificateRules` gained a separate clock-skew allowance for the past and the future (`SshClockSkew`), and its duplicate-principal refusal no longer names the principal. Contract tests on both bindings, checked against deliberate breaks of the purpose, scope, row public key, row enabled, CA enabled, certificate type, maximum validity, clock skew, empty principals and verify-after-sign checks. **Stage 2 is complete**; nothing in the node calls it until stage 3 | L |
 | 3 | Node cut-over: `SshCaService` over the signer; KRL from the public key; `KeyStorage` column; `ssh-keygen`, `ProcessRunner` use, `SshCaConfig` and `PUT /config/ssh-ca` removed; unlocked-signer filter on the SSH sign routes; endpoints, docs site and console | M |
 | 4 | Migration: startup import, file deletion, `--upgrade-check` finding, readiness row, plaintext notice; backup excludes the directory and carries `ssh-ca.keystore`; restore of old archives; reset | M |
 | 5 | Live proof on ca4 with the signer as its own unit: sshd accepts user and host certificates for all three key types; a KRL revokes; backup and restore round trip; migration from a 0.4.0 install with plaintext keys; the container image issues an SSH certificate | S |
@@ -609,10 +613,16 @@ key through the signer yet.
 ## Open questions for the owner
 
 1. **`valid_after` backdating**: five minutes for clock skew, or none, matching `ssh-keygen`?
-   Stage 1 does not force this. Note for stage 2: the signer refuses a `valid_after` more than its
-   skew allowance from its own clock (`SshCertificateRules.CheckValidity`, default five minutes,
-   a parameter). If the node backdates by five minutes, the allowance must be wider than five
-   minutes, or any node clock running behind the signer's is refused.
+   Still open. What the signer does meanwhile (stage 2): it refuses a `valid_after` more than
+   **ten minutes before** its own clock or more than **five minutes after** it. That is one
+   constant, `SshValidAfterAllowance` in `InProcessSigningService.SshCertificates.cs`, marked as
+   this open decision, and it changes with the answer. The past bound is wider than the five
+   minutes "What the signer enforces" gives so that a node which backdates by five minutes and
+   runs up to five minutes behind the signer is still served; the future bound is not widened,
+   since nothing asks for a certificate that is not valid yet. `SshCertificateRules` takes the two
+   bounds separately for this (`SshClockSkew`); its own default stays five minutes both ways. If
+   the answer is "no backdating", the past bound can come down to the five minutes of clock skew
+   alone; if the node backdates by more than five minutes, it has to go up by as much.
 2. **Empty KRL**: keep today's 204 / JSON message, or always return a valid KRL with no entries,
    which an `sshd` `RevokedKeys` fetcher can install without special-casing? Stage 1 does not force
    this: `SshKrl.Encode` with no serials writes the header-only KRL, byte for byte what

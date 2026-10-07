@@ -70,7 +70,9 @@ namespace ModularCA.Keystore.Signing;
 /// (<c>InProcessSigningService.SshKeys.cs</c>), which has its own pending keys, its own registry
 /// entries and its own row, <c>SshCaKeys</c>; a reference that names any other keystore never
 /// reaches an SSH key, and an SSH reference never reaches a certificate's key. The two halves
-/// share the lock state, the ceremony check and the audit, and nothing else.
+/// share the lock state, the ceremony check and the audit, and nothing else. What an SSH CA key
+/// signs is in <c>InProcessSigningService.SshCertificates.cs</c>: a certificate the signer
+/// builds from fields, never bytes.
 /// </para>
 /// </remarks>
 public sealed partial class InProcessSigningService : ISigningService
@@ -1829,13 +1831,14 @@ public sealed partial class InProcessSigningService : ISigningService
     /// already stopped the caller before it got here. The signer role runs fail-closed instead:
     /// its record is the only one, so a decision it cannot write is refused as
     /// <see cref="SigningRefusalReason.AuditUnavailable"/> before any result leaves it, and the
-    /// signature, key or file the operation produced is dropped with it.
+    /// signature, key or file the operation produced is dropped with it. <paramref name="summary"/>
+    /// is what an SSH certificate decision was asked to certify, and null for every other operation.
     /// </summary>
     private async Task RecordAsync(string operation, SigningContext context, KeyRef? key, SignatureAlgorithm? algorithm,
         bool allowed, string? reason, byte[]? dataHash, CancellationToken cancellationToken,
-        SecretKind? secretKind = null, string? wrappingKeyId = null)
+        SecretKind? secretKind = null, string? wrappingKeyId = null, string? summary = null)
     {
-        var decision = new SignerDecision(DateTime.UtcNow, operation, context, key, algorithm, allowed, reason, dataHash, secretKind, wrappingKeyId);
+        var decision = new SignerDecision(DateTime.UtcNow, operation, context, key, algorithm, allowed, reason, dataHash, secretKind, wrappingKeyId, summary);
         try
         {
             await _audit.RecordAsync(decision, cancellationToken);

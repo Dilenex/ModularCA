@@ -32,7 +32,8 @@ namespace ModularCA.Keystore.Signing;
 /// naming the SSH keystore is resolved only there. A row that points at the public key of an
 /// X.509 key therefore finds no key, and the database can only choose among the keys the file
 /// already holds. The binding is checked on load, on commit and on import, and again whenever a
-/// key is listed: a row that no longer carries the key's public half does not get the key.
+/// key is listed or asked to sign: a row that no longer carries the key's public half does not
+/// get the key.
 /// </para>
 /// <para>
 /// A generated key is pending until committed, as an X.509 key is, but in a map of its own
@@ -417,7 +418,9 @@ public sealed partial class InProcessSigningService
 
     /// <summary>
     /// Reads an <c>SshCaKeys</c> row and what the signer needs of its CA, soft-deleted or not.
-    /// Null when there is no such row. Never cached: a row is read each time a key is bound to it.
+    /// Null when there is no such row. Never cached: a row is read each time a key is bound to
+    /// it and each time the key signs, so a row that is disabled or rewritten stops the key at
+    /// the next call.
     /// </summary>
     private async Task<SshRow?> ReadSshRowAsync(Guid sshCaKeyId, CancellationToken cancellationToken)
     {
@@ -425,7 +428,7 @@ public sealed partial class InProcessSigningService
         var db = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
         var row = await db.SshCaKeys.AsNoTracking()
             .Where(k => k.Id == sshCaKeyId)
-            .Select(k => new { k.Id, k.PublicKey, k.KeyStorage, k.IsEnabled, k.CertificateAuthorityId })
+            .Select(k => new { k.Id, k.PublicKey, k.KeyStorage, k.IsEnabled, k.CertificateAuthorityId, k.IsUserCa, k.IsHostCa, k.MaxValidityHours })
             .FirstOrDefaultAsync(cancellationToken);
         if (row == null)
             return null;
@@ -434,7 +437,8 @@ public sealed partial class InProcessSigningService
             .Select(c => new { c.IsSshCa, c.IsEnabled, c.IsDeleted, c.SpaceId })
             .FirstOrDefaultAsync(cancellationToken);
         return new SshRow(row.Id, SshRowKey.Parse(row.PublicKey), row.KeyStorage, row.IsEnabled, row.CertificateAuthorityId,
-            ca != null, ca?.IsSshCa ?? false, ca?.IsEnabled ?? false, ca?.IsDeleted ?? false, ca?.SpaceId);
+            ca != null, ca?.IsSshCa ?? false, ca?.IsEnabled ?? false, ca?.IsDeleted ?? false, ca?.SpaceId,
+            row.IsUserCa, row.IsHostCa, row.MaxValidityHours);
     }
 
     /// <summary>
@@ -460,9 +464,13 @@ public sealed partial class InProcessSigningService
         _logger.LogInformation("Signer: SSH CA key committed for SSH CA key row {SshCaKeyId} ({Fingerprint}).", binding.KeyId, binding.PublicKey.Fingerprint);
     }
 
-    /// <summary>An <c>SshCaKeys</c> row as the signer reads it, with the state of its CA.</summary>
+    /// <summary>
+    /// An <c>SshCaKeys</c> row as the signer reads it, with the state of its CA and the limits
+    /// the row places on what its key signs: the certificate types and the longest validity.
+    /// </summary>
     private sealed record SshRow(Guid Id, SshPublicKey? PublicKey, string KeyStorage, bool IsEnabled, Guid CaId,
-        bool CaExists, bool CaIsSshCa, bool CaIsEnabled, bool CaIsDeleted, Guid? CaSpaceId);
+        bool CaExists, bool CaIsSshCa, bool CaIsEnabled, bool CaIsDeleted, Guid? CaSpaceId,
+        bool IsUserCa, bool IsHostCa, int MaxValidityHours);
 
     /// <summary>
     /// An SSH CA key generated but not yet committed: the reference the signer minted for it in

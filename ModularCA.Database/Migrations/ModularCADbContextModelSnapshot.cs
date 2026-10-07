@@ -2994,6 +2994,10 @@ namespace ModularCA.Database.Migrations
                     b.Property<Guid?>("SpaceId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("Summary")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
                     b.Property<string>("WrappingKeyId")
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");

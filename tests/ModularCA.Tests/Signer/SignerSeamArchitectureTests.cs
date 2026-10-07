@@ -35,6 +35,7 @@ public sealed class SignerSeamArchitectureTests
         "ModularCA.Keystore.Signing.ISignerKeyRegistry",
         "ModularCA.Keystore.Signing.MultiCARegistry",
         "ModularCA.Keystore.Signing.SshKeyBinding",
+        "ModularCA.Keystore.Signing.SshHandleSigner",
         "ModularCA.Keystore.Signing.ISignerKeyPersistence",
         "ModularCA.Keystore.Signing.FileKeystorePersistence",
         "ModularCA.Keystore.Utils.StartupKeystoreLoader",

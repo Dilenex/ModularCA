@@ -133,6 +133,33 @@ internal sealed class SignerTestWorld
     /// <summary>Opens a context over the world's database, for seeding and for reading the audit back.</summary>
     public ModularCADbContext OpenDb() => InMemoryDbContextFactory.Create(DatabaseName);
 
+    /// <summary>
+    /// Seeds an enabled SSH CA of the instance with its key row, and binds a fresh Ed25519
+    /// software key to the row in <see cref="Keystore"/> as a commit would have. For the tests
+    /// whose signer cannot commit a key itself: one that is locked, or cannot write its audit.
+    /// </summary>
+    public (Guid CaId, KeyRef Key, ModularCA.Ssh.SshPublicKey PublicKey) SeedBoundSshKey()
+    {
+        var pair = KeyAlgorithmPolicy.GenerateKeyPair("Ed25519", "");
+        var publicKey = ModularCA.Ssh.SshPublicKey.FromKeyParameter(pair.Public);
+        var caId = Guid.NewGuid();
+        var keyId = Guid.NewGuid();
+        using (var db = OpenDb())
+        {
+            db.CertificateAuthorities.Add(new CertificateAuthorityEntity
+            {
+                Id = caId, Name = $"ssh-{caId:N}", Label = $"ssh-{caId:N}", Type = "SSH", IsSshCa = true, SpaceId = null,
+            });
+            db.SshCaKeys.Add(new SshCaKeyEntity
+            {
+                Id = keyId, Name = $"ssh-{keyId:N}", CertificateAuthorityId = caId, PublicKey = publicKey.ToAuthorizedKey(),
+            });
+            db.SaveChanges();
+        }
+        Keystore.RegisterSshKey(new ModularCA.Keystore.Signing.SshKeyBinding(keyId, publicKey, new ModularCA.Keystore.Adapters.SoftwarePrivateKeyHandle(pair.Private)));
+        return (caId, new KeyRef(keyId, KeyRef.SshKeystore), publicKey);
+    }
+
     /// <summary>Builds the material, seeds the rows and returns the world.</summary>
     public static SignerTestWorld Create()
     {

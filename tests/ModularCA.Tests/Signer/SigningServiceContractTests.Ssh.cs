@@ -719,7 +719,8 @@ public abstract partial class SigningServiceContractTests
 
     /// <summary>
     /// The two SSH purposes permit nothing but what they are for: the migration purpose only the
-    /// import above, and the certificate purpose, until <c>SignSshCertificate</c> exists, nothing.
+    /// import above, and the certificate purpose only <c>SignSshCertificate</c>, whose own tests
+    /// are in <c>SigningServiceContractTests.SshCertificates.cs</c>. Neither permits the other's.
     /// </summary>
     [Theory]
     [InlineData(SigningPurpose.SshKeyMigration)]
@@ -769,6 +770,9 @@ public abstract partial class SigningServiceContractTests
             await RefusedAsync(SigningRefusalReason.PurposeNotPermitted,
                 () => signer.ImportKeyAsync(new KeyMaterial(Pkcs8(KeyAlgorithmPolicy.GenerateKeyPair("Ed25519", "").Private), KeyMaterial.Pkcs8, sshRow, KeyRef.SshKeystore), InstanceContext(purpose, sshCa)),
                 "import an SSH key under SshCertificate");
+        else
+            await RefusedAsync(SigningRefusalReason.PurposeNotPermitted,
+                () => signer.SignSshCertificateAsync(UserRequest(sshRef), InstanceContext(purpose, sshCa)), "sign an SSH certificate under SshKeyMigration");
 
         var rows = (await ReadAuditAsync(world)).Skip(before).ToList();
         Assert.All(rows, r => Assert.Equal(SignerAuditEntity.RefusedOutcome, r.Outcome));

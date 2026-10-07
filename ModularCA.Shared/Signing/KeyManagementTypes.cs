@@ -29,9 +29,9 @@ public enum KeyKind
     /// The key of an SSH certificate authority, held in <see cref="KeyRef.SshKeystore"/>: every
     /// key in that keystore is of this kind and no other key is. It signs nothing through
     /// <see cref="ISigningService.SignAsync"/>, for any purpose: an SSH certificate is built and
-    /// signed by the signer from its fields (<c>SignSshCertificate</c>, stage 2 of
-    /// <c>ssh-keystore.md</c>), never from bytes the node supplies. It decrypts nothing and is
-    /// never exported as PKCS#12.
+    /// signed by the signer from its fields (<see cref="ISigningService.SignSshCertificateAsync"/>,
+    /// stage 2 of <c>ssh-keystore.md</c>), never from bytes the node supplies. It decrypts
+    /// nothing and is never exported as PKCS#12.
     /// </summary>
     SshCa,
 }

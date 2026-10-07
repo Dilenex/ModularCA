@@ -30,15 +30,31 @@ public static class SshCertificateIssuer
     /// <param name="cancellationToken">Cancels the call.</param>
     /// <exception cref="SshCertificateRefusedException">The fields break a rule. Nothing was signed.</exception>
     /// <exception cref="SshSigningFailedException">The signer's answer does not verify under its own public key.</exception>
-    public static async ValueTask<SshCertificate> IssueAsync(SshCertificateFields fields, ISshSigner signer, SshCaLimits limits,
+    public static ValueTask<SshCertificate> IssueAsync(SshCertificateFields fields, ISshSigner signer, SshCaLimits limits,
         DateTimeOffset now, TimeSpan? maxClockSkew = null, CancellationToken cancellationToken = default)
+        => IssueAsync(fields, signer, limits, now, SshClockSkew.Symmetric(maxClockSkew ?? SshCertificateRules.DefaultClockSkew), cancellationToken);
+
+    /// <summary>
+    /// Issues a certificate for <paramref name="fields"/>, signed by <paramref name="signer"/>, with
+    /// an allowance for <c>valid_after</c> that differs between the past and the future.
+    /// </summary>
+    /// <param name="fields">What the certificate says.</param>
+    /// <param name="signer">The CA key.</param>
+    /// <param name="limits">What that CA key is allowed to sign.</param>
+    /// <param name="now">The issuer's clock, which <c>valid_after</c> is held to.</param>
+    /// <param name="clockSkew">How far <c>valid_after</c> may be before and after <paramref name="now"/>.</param>
+    /// <param name="cancellationToken">Cancels the call.</param>
+    /// <exception cref="SshCertificateRefusedException">The fields break a rule. Nothing was signed.</exception>
+    /// <exception cref="SshSigningFailedException">The signer's answer does not verify under its own public key.</exception>
+    public static async ValueTask<SshCertificate> IssueAsync(SshCertificateFields fields, ISshSigner signer, SshCaLimits limits,
+        DateTimeOffset now, SshClockSkew clockSkew, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(fields);
         ArgumentNullException.ThrowIfNull(signer);
         ArgumentNullException.ThrowIfNull(limits);
 
         var caKey = signer.PublicKey;
-        if (SshCertificateRules.Check(fields, caKey, limits, now, maxClockSkew) is { } refusal)
+        if (SshCertificateRules.Check(fields, caKey, limits, now, clockSkew) is { } refusal)
             throw new SshCertificateRefusedException(refusal);
 
         var algorithm = SshSignatureAlgorithms.ForKeyType(caKey.KeyType);

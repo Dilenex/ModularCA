@@ -58,9 +58,10 @@ public enum SigningPurpose
     Configuration,
 
     /// <summary>
-    /// Sign an SSH certificate, which the signer builds from its fields (<c>SignSshCertificate</c>,
-    /// <c>ssh-keystore.md</c>). Until that call exists the purpose permits nothing: no raw
-    /// signature, no key management, no export and no secret wrap.
+    /// Sign an SSH certificate, which the signer builds from its fields
+    /// (<see cref="ISigningService.SignSshCertificateAsync"/>, <c>ssh-keystore.md</c>). The
+    /// purpose permits that call and nothing else: no raw signature, no decryption, no key
+    /// management, no export and no secret wrap.
     /// </summary>
     SshCertificate,
 

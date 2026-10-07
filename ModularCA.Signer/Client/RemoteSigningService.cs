@@ -126,6 +126,35 @@ public sealed class RemoteSigningService : ISigningService, IDisposable
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The call was added with the SSH keystore. A signer that predates it has no such method
+    /// and answers gRPC <see cref="StatusCode.Unimplemented"/>; that comes back as a refusal,
+    /// <see cref="SigningRefusalReason.OperationUnsupported"/>, whose message says the signer
+    /// predates the SSH keystore and is upgraded first. It is not reported as unavailable: the
+    /// signer answered, and retrying will not help.
+    /// </remarks>
+    public async Task<byte[]> SignSshCertificateAsync(SshCertificateRequest request, SigningContext context, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(context);
+        if (request.Key == null)
+            throw new ArgumentException("The request names no key.", nameof(request));
+        try
+        {
+            return await CallAsync(async options =>
+            {
+                var response = await _client.SignSshCertificateAsync(Wire.WireMapping.ToWire(request, context), options);
+                return response.Certificate.ToByteArray();
+            }, _options.CallTimeout, cancellationToken);
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.Unimplemented)
+        {
+            throw new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
+                $"The signer at {_options.Endpoint} predates the SSH keystore: it has no call that signs an SSH certificate. Upgrade the signer first, then the node.");
+        }
+    }
+
+    /// <inheritdoc />
     public Task<byte[]> DecryptAsync(KeyRef key, byte[] enveloped, SigningContext context, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(key);

@@ -39,7 +39,21 @@ namespace ModularCA.Shared.Signing;
 /// <see cref="SigningPurpose.SshKeyMigration"/> imports a PKCS#8 key into
 /// <see cref="KeyRef.SshKeystore"/> for an <c>SshCaKeys</c> row whose storage is
 /// <c>LegacyFile</c> and which carries the key's public key, without a ceremony, and permits
-/// nothing else; <see cref="SigningPurpose.SshCertificate"/> permits none of the operations here;
+/// nothing else;
+/// </item>
+/// <item>
+/// <see cref="SigningPurpose.SshCertificate"/> permits <see cref="SignSshCertificateAsync"/> and
+/// nothing else, and that call is permitted under no other purpose. An SSH CA key signs an
+/// SSH certificate the signer builds from the request's fields, and only that: for the SSH CA
+/// the context names at instance scope, while its <c>SshCaKeys</c> row still carries its public
+/// key, has storage <c>Signer</c> and is enabled, and its CA is an enabled, undeleted SSH CA
+/// of the instance; of a type the row permits (<c>IsUserCa</c>, <c>IsHostCa</c>); valid for no
+/// longer than the row's <c>MaxValidityHours</c>, from a start close to the signer's own
+/// clock; with at least one principal, a non-zero serial, only the known critical options and
+/// extensions (none on a host certificate), and a subject key that is Ed25519, ECDSA P-256,
+/// P-384 or P-521, or RSA of at least 2048 bits, and is not the CA's own key. The nonce, the
+/// signature key and the signature algorithm are the signer's, and the certificate is
+/// returned only once its signature verifies under the CA public key;
 /// </item>
 /// <item>
 /// secrets are wrapped and unwrapped under the purposes listed for their
@@ -94,6 +108,44 @@ public interface ISigningService
     /// </remarks>
     /// <exception cref="SigningRefusedException">The key is unknown, policy refuses the purpose or CA, or the data is not what the purpose signs.</exception>
     Task<byte[]> SignAsync(KeyRef key, SignatureAlgorithm algorithm, byte[] data, SigningContext context, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Builds an OpenSSH certificate from <paramref name="request"/>, signs it with the SSH CA
+    /// key the request names and returns the whole certificate blob; the caller renders
+    /// <c>type base64 comment</c> from it. This is the only way an SSH CA key signs anything: the
+    /// signer never takes bytes to sign with one, so what it signs is always a certificate it
+    /// built and checked itself.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The context must have purpose <see cref="SigningPurpose.SshCertificate"/>, name the SSH CA
+    /// the key belongs to and state the instance as its scope. The key must be bound to its
+    /// <c>SshCaKeys</c> row in <see cref="KeyRef.SshKeystore"/>, and the row is read on every
+    /// call: it must still carry the key's public key, have storage <c>Signer</c> and be
+    /// enabled, and its CA must be an enabled, undeleted SSH CA with no space. The row's
+    /// <c>IsUserCa</c>, <c>IsHostCa</c> and <c>MaxValidityHours</c> bound the certificate, and
+    /// the remaining rules (principals, serial, options, subject key, the start of validity
+    /// against the signer's clock) are the signer's own. A key held on a PKCS#11 token is
+    /// refused as <see cref="SigningRefusalReason.OperationUnsupported"/> until SSH keys on
+    /// tokens are built.
+    /// </para>
+    /// <para>
+    /// The signer makes the nonce, writes the CA public key as the signature key and chooses the
+    /// signature algorithm from that key (RSA signs <c>rsa-sha2-512</c>); the request has no
+    /// field for any of them. The certificate is returned only once its signature verifies
+    /// under the CA public key. Fields that are malformed or break a rule are refused as
+    /// <see cref="SigningRefusalReason.UntypedData"/>, and a signature that does not verify as
+    /// <see cref="SigningRefusalReason.IntegrityFailure"/>. Every call, allowed or refused, is
+    /// audited with the certificate's type, serial, key id, validity and the number of its
+    /// principals, never their names, and an issued certificate with its SHA-256.
+    /// </para>
+    /// </remarks>
+    /// <param name="request">The SSH CA key and the certificate's fields.</param>
+    /// <param name="context">Who is asking: purpose <see cref="SigningPurpose.SshCertificate"/>, the SSH CA, instance scope.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <returns>The certificate blob, as OpenSSH encodes it.</returns>
+    /// <exception cref="SigningRefusedException">The key is unknown or not usable, policy refuses the context, the fields break a rule, or the signer in use predates this call.</exception>
+    Task<byte[]> SignSshCertificateAsync(SshCertificateRequest request, SigningContext context, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Decrypts a CMS envelope addressed to the key. SCEP is the only protocol that needs this:

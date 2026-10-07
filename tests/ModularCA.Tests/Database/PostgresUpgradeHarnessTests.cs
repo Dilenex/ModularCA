@@ -82,6 +82,9 @@ public class PostgresUpgradeHarnessTests
     /// <summary>The 0.4.2 migration that records where each SSH CA key is held, without its timestamp.</summary>
     public const string SshKeyStorage = "SshKeyStorage";
 
+    /// <summary>The 0.4.2 migration that adds the summary of an SSH certificate decision to the signer's audit, without its timestamp.</summary>
+    public const string SignerAuditSummary = "SignerAuditSummary";
+
     private const string ServerVariable = "MODULARCA_TEST_PG";
     private const string RehearsalVariable = "MODULARCA_TEST_PG_REHEARSAL";
     private const string RehearsalAuditVariable = "MODULARCA_TEST_PG_REHEARSAL_AUDIT";
@@ -1342,6 +1345,75 @@ public class PostgresUpgradeHarnessTests
             Assert.Equal("Signer", await Storage(added));
             Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshCaKeys\" WHERE \"PrivateKeyPath\" IS NULL"));
             Assert.Equal(3, await ScalarAsync(app, "SELECT count(*) FROM \"SshCaKeys\""));
+
+            await MigrateToLatestAsync(app, "application");
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await DropDatabaseAsync(server, appName);
+        }
+    }
+
+    /// <summary>
+    /// The <c>SignerAuditSummary</c> column, seeded at the stage before it: the signer's audit
+    /// rows written before the column keep every value they had and have no summary; the column
+    /// takes a summary of the longest length the signer writes, and no longer; and a row of an
+    /// operation that has none is still written without one.
+    /// </summary>
+    [RequiresEnvironmentFact(ServerVariable)]
+    public async Task The_signer_audit_summary_column_is_added_empty_and_old_rows_are_unchanged()
+    {
+        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+        await CreateDatabaseAsync(server, appName);
+        try
+        {
+            await using var app = CreateApp(WithDatabase(server, appName));
+            await MigrateThroughAsync(app, SshKeyStorage);
+            Assert.Equal(0, await ScalarAsync(app,
+                "SELECT count(*) FROM information_schema.columns WHERE table_name = 'SignerAudit' AND column_name = 'Summary'"));
+
+            var signed = Guid.NewGuid();
+            var refused = Guid.NewGuid();
+            var ca = Guid.NewGuid();
+            var key = Guid.NewGuid();
+            var hash = new string('a', 64);
+            await ExecAsync(app,
+                "INSERT INTO \"SignerAudit\" (\"Id\",\"At\",\"Operation\",\"Caller\",\"Purpose\",\"KeyCertificateId\",\"Keystore\",\"CaId\",\"SpaceId\",\"EffectiveScope\",\"Algorithm\",\"Outcome\",\"Reason\",\"DataHash\") "
+                + $"VALUES ('{signed}','2026-10-01T12:00:00Z','Sign','control','Certificate','{key}','ca-certs.keystore','{ca}',NULL,'instance','SHA256withRSA','allowed',NULL,'{hash}'), "
+                + $"('{refused}','2026-10-01T12:00:01Z','CommitKey','control','Ceremony','{key}','ssh-ca.keystore','{ca}',NULL,'instance',NULL,'refused','No SSH CA key row exists.',NULL);");
+            const string everyOldColumn = "\"Id\"::text || '|' || to_char(\"At\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS') || '|' || \"Operation\" || '|' || \"Caller\" || '|' || \"Purpose\" || '|' || "
+                + "\"KeyCertificateId\"::text || '|' || \"Keystore\" || '|' || \"CaId\"::text || '|' || coalesce(\"SpaceId\"::text,'-') || '|' || \"EffectiveScope\" || '|' || "
+                + "coalesce(\"Algorithm\",'-') || '|' || \"Outcome\" || '|' || coalesce(\"Reason\",'-') || '|' || coalesce(\"DataHash\",'-')";
+            async Task<string> Row(Guid id) => await TextAsync(app, $"SELECT {everyOldColumn} FROM \"SignerAudit\" WHERE \"Id\" = '{id}'");
+            var signedBefore = await Row(signed);
+            var refusedBefore = await Row(refused);
+
+            await MigrateThroughAsync(app, SignerAuditSummary);
+
+            Assert.Equal(signedBefore, await Row(signed));
+            Assert.Equal(refusedBefore, await Row(refused));
+            Assert.Equal(2, await ScalarAsync(app, "SELECT count(*) FROM \"SignerAudit\" WHERE \"Summary\" IS NULL"));
+            Assert.Equal("YES", await TextAsync(app,
+                "SELECT is_nullable FROM information_schema.columns WHERE table_name = 'SignerAudit' AND column_name = 'Summary'"));
+            Assert.Equal(ModularCA.Shared.Entities.SignerAuditEntity.SummaryMaxLength, await ScalarAsync(app,
+                "SELECT character_maximum_length FROM information_schema.columns WHERE table_name = 'SignerAudit' AND column_name = 'Summary'"));
+
+            // A row with the longest summary the column holds goes in, one character more does
+            // not, and a row of an operation with no summary is written as before.
+            var longest = new string('x', ModularCA.Shared.Entities.SignerAuditEntity.SummaryMaxLength);
+            var withSummary = Guid.NewGuid();
+            const string newColumns = "\"Id\",\"At\",\"Operation\",\"Caller\",\"Purpose\",\"Keystore\",\"Outcome\",\"Summary\"";
+            await ExecAsync(app,
+                $"INSERT INTO \"SignerAudit\" ({newColumns}) VALUES ('{withSummary}',now(),'SignSsh','control','SshCertificate','ssh-ca.keystore','allowed','{longest}');");
+            Assert.Equal(longest, await TextAsync(app, $"SELECT \"Summary\" FROM \"SignerAudit\" WHERE \"Id\" = '{withSummary}'"));
+            await Assert.ThrowsAsync<PostgresException>(() => ExecAsync(app,
+                $"INSERT INTO \"SignerAudit\" ({newColumns}) VALUES ('{Guid.NewGuid()}',now(),'SignSsh','control','SshCertificate','ssh-ca.keystore','allowed','{longest}x');"));
+            await ExecAsync(app,
+                $"INSERT INTO \"SignerAudit\" (\"Id\",\"At\",\"Operation\",\"Caller\",\"Purpose\",\"Outcome\") VALUES ('{Guid.NewGuid()}',now(),'Sign','control','Crl','allowed');");
+            Assert.Equal(3, await ScalarAsync(app, "SELECT count(*) FROM \"SignerAudit\" WHERE \"Summary\" IS NULL"));
+            Assert.Equal(4, await ScalarAsync(app, "SELECT count(*) FROM \"SignerAudit\""));
 
             await MigrateToLatestAsync(app, "application");
         }

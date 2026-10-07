@@ -225,6 +225,135 @@ public sealed class InProcessSigningServiceTests : SigningServiceContractTests
         Assert.Contains(await signer.ListKeysAsync(forCa), k => k.Kind == KeyKind.SshCa && k.Key.CertificateId == keyId);
     }
 
+    /// <summary>A user certificate for one principal, valid for an hour from now, that every rule allows.</summary>
+    private static SshCertificateRequest SshRequest(KeyRef key)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var subject = ModularCA.Ssh.SshPublicKey.FromKeyParameter(ModularCA.Shared.Utils.KeyAlgorithmPolicy.GenerateKeyPair("Ed25519", "").Public).Blob;
+        return new SshCertificateRequest(key, subject, SshCertificateRequest.UserType, 1, "in-process", new[] { "alice-principal" }, now, now + 3600);
+    }
+
+    private static SigningContext SshSigning(Guid caId)
+        => new("contract-test", SigningPurpose.SshCertificate, null, caId) { InstanceScope = true };
+
+    [Fact]
+    public async Task A_locked_signer_signs_no_ssh_certificate()
+    {
+        var world = SignerTestWorld.Create();
+        var (caId, key, _) = world.SeedBoundSshKey();
+        var signer = Create(world, unlocked: false);
+
+        var ex = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.SignSshCertificateAsync(SshRequest(key), SshSigning(caId)));
+
+        Assert.Equal(SigningRefusalReason.SignerLocked, ex.Reason);
+        var row = Assert.Single(await ReadAuditAsync(world));
+        Assert.Equal("SignSsh", row.Operation);
+        Assert.Equal("refused", row.Outcome);
+        Assert.Equal(KeyRef.SshKeystore, row.Keystore);
+        Assert.NotNull(row.Summary);
+        Assert.Null(row.DataHash);
+    }
+
+    /// <summary>
+    /// The wire has no null, so a member of the request left null is read as empty here too, and
+    /// the two bindings refuse and allow the same requests. Only the request itself, its key
+    /// reference and the context have to be there.
+    /// </summary>
+    [Fact]
+    public async Task A_member_of_an_ssh_certificate_request_left_null_is_read_as_empty()
+    {
+        var world = SignerTestWorld.Create();
+        var (caId, key, publicKey) = world.SeedBoundSshKey();
+        var signer = Create(world, unlocked: true);
+        var context = SshSigning(caId);
+        var request = SshRequest(key);
+
+        await Assert.ThrowsAsync<ArgumentNullException>(() => signer.SignSshCertificateAsync(null!, context));
+        await Assert.ThrowsAsync<ArgumentNullException>(() => signer.SignSshCertificateAsync(request, null!));
+        await Assert.ThrowsAsync<ArgumentException>(() => signer.SignSshCertificateAsync(request with { Key = null! }, context));
+        Assert.Empty(await ReadAuditAsync(world));
+
+        foreach (var missing in new[] { request with { SubjectPublicKey = null! }, request with { CertType = null! }, request with { Principals = null! }, request with { Principals = new string[] { null! } } })
+        {
+            var ex = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.SignSshCertificateAsync(missing, context));
+            Assert.Equal(SigningRefusalReason.UntypedData, ex.Reason);
+        }
+
+        var bare = request with { KeyId = null!, CriticalOptions = null, Extensions = new SshCertificateOption[] { new("permit-pty", null!) } };
+        var certificate = ModularCA.Ssh.SshCertificate.Parse(await signer.SignSshCertificateAsync(bare, context));
+        Assert.True(certificate.VerifySignature());
+        Assert.Equal(publicKey, certificate.SignatureKey);
+        Assert.Equal(string.Empty, certificate.Fields.KeyId);
+        Assert.Empty(certificate.Fields.CriticalOptions);
+        Assert.Equal("permit-pty", Assert.Single(certificate.Fields.Extensions).Name);
+
+        var rows = await ReadAuditAsync(world);
+        Assert.Equal(5, rows.Count);
+        Assert.All(rows, r => Assert.NotNull(r.Summary));
+    }
+
+    /// <summary>
+    /// A .NET string can hold half of a surrogate pair, which is not text and has no place in a
+    /// certificate. In process, where no wire has already replaced it, the signer refuses it and
+    /// still writes a summary that is valid JSON.
+    /// </summary>
+    [Fact]
+    public async Task Text_that_cannot_be_encoded_is_refused_and_still_summarised()
+    {
+        var world = SignerTestWorld.Create();
+        var (caId, key, _) = world.SeedBoundSshKey();
+        var signer = Create(world, unlocked: true);
+        var request = SshRequest(key);
+
+        foreach (var unencodable in new[] { request with { KeyId = "kid\uD83D" }, request with { Principals = new[] { "alice-principal\uDE00" } } })
+        {
+            var ex = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.SignSshCertificateAsync(unencodable, SshSigning(caId)));
+            Assert.Equal(SigningRefusalReason.UntypedData, ex.Reason);
+            Assert.Contains("cannot be encoded", ex.Message);
+        }
+
+        var rows = await ReadAuditAsync(world);
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, r => Assert.Equal("refused", r.Outcome));
+        using var summary = System.Text.Json.JsonDocument.Parse(rows.Single(r => r.Summary!.Contains("FFFD")).Summary!);
+        Assert.Equal("kid�", summary.RootElement.GetProperty("key_id").GetString());
+    }
+
+    /// <summary>An audit sink whose database is gone: it counts what it was asked to record and records none of it.</summary>
+    private sealed class UnwritableAuditSink : ISignerAuditSink
+    {
+        public List<SignerDecision> Asked { get; } = new();
+
+        public Task RecordAsync(SignerDecision decision, CancellationToken cancellationToken = default)
+        {
+            Asked.Add(decision);
+            throw new InvalidOperationException("The signer audit table cannot be written.");
+        }
+    }
+
+    /// <summary>
+    /// The signer role fails closed on its audit. An SSH certificate is recorded before it is
+    /// returned, so one that cannot be recorded is not handed out, although it was signed.
+    /// </summary>
+    [Fact]
+    public async Task An_ssh_certificate_the_signer_role_cannot_record_is_not_handed_out()
+    {
+        var world = SignerTestWorld.Create();
+        var (caId, key, _) = world.SeedBoundSshKey();
+        var audit = new UnwritableAuditSink();
+        var signer = new InProcessSigningService(world.Keystore, world.Scopes, audit, world.Persistence,
+            NullLogger<InProcessSigningService>.Instance, unlocked: true, failClosedOnAuditFailure: true);
+
+        var ex = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.SignSshCertificateAsync(SshRequest(key), SshSigning(caId)));
+
+        Assert.Equal(SigningRefusalReason.AuditUnavailable, ex.Reason);
+        var asked = Assert.Single(audit.Asked);
+        Assert.Equal("SignSsh", asked.Operation);
+        Assert.True(asked.Allowed);
+        Assert.NotNull(asked.DataHash);
+        Assert.NotNull(asked.Summary);
+    }
+
     [Fact]
     public async Task The_signature_factory_lets_a_generator_sign_a_certificate_the_ca_key_verifies()
     {

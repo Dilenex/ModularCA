@@ -10,6 +10,20 @@ namespace ModularCA.Ssh;
 public sealed record SshCaLimits(bool AllowUser, bool AllowHost, TimeSpan MaxValidity);
 
 /// <summary>
+/// How far a certificate's <c>valid_after</c> may sit from the signer's clock, each way. The two
+/// directions are separate because they are different risks: a start in the past is what a caller
+/// asks for when it backdates for clock skew, and a start in the future is a certificate that is
+/// not valid yet when it is handed out. A negative allowance is read as none.
+/// </summary>
+/// <param name="Past">How long before the signer's clock <c>valid_after</c> may be.</param>
+/// <param name="Future">How long after the signer's clock <c>valid_after</c> may be.</param>
+public readonly record struct SshClockSkew(TimeSpan Past, TimeSpan Future)
+{
+    /// <summary>The same allowance both ways.</summary>
+    public static SshClockSkew Symmetric(TimeSpan either) => new(either, either);
+}
+
+/// <summary>
 /// The key-level checks an SSH certificate must pass before it is signed. Each check returns a
 /// refusal reason, or null when the certificate passes. These are pure functions for the signer to
 /// call; profile policy (principal patterns, allowed extensions, approvals) stays in the node.
@@ -21,6 +35,9 @@ public static class SshCertificateRules
 
     /// <summary>The longest principal accepted, in UTF-8 bytes.</summary>
     public const int MaxPrincipalBytes = 256;
+
+    /// <summary>The longest key id accepted, in UTF-8 bytes.</summary>
+    public const int MaxKeyIdBytes = 256;
 
     /// <summary>The smallest RSA subject key accepted.</summary>
     public const int MinRsaBits = 2048;
@@ -51,13 +68,27 @@ public static class SshCertificateRules
     /// <param name="maxClockSkew">How far <c>valid_after</c> may be from <paramref name="now"/>; <see cref="DefaultClockSkew"/> when null.</param>
     public static string? Check(SshCertificateFields fields, SshPublicKey caKey, SshCaLimits limits,
         DateTimeOffset now, TimeSpan? maxClockSkew = null)
+        => Check(fields, caKey, limits, now, SshClockSkew.Symmetric(maxClockSkew ?? DefaultClockSkew));
+
+    /// <summary>
+    /// Runs every check below, returning the first refusal, with an allowance for
+    /// <c>valid_after</c> that differs between the past and the future.
+    /// </summary>
+    /// <param name="fields">The certificate to be signed.</param>
+    /// <param name="caKey">The public key of the CA that would sign it.</param>
+    /// <param name="limits">That CA key's limits.</param>
+    /// <param name="now">The signer's clock.</param>
+    /// <param name="clockSkew">How far <c>valid_after</c> may be before and after <paramref name="now"/>.</param>
+    public static string? Check(SshCertificateFields fields, SshPublicKey caKey, SshCaLimits limits,
+        DateTimeOffset now, SshClockSkew clockSkew)
     {
         ArgumentNullException.ThrowIfNull(fields);
         ArgumentNullException.ThrowIfNull(limits);
         return CheckType(fields.Type, limits)
             ?? CheckSerial(fields.Serial)
+            ?? CheckKeyId(fields.KeyId)
             ?? CheckPrincipals(fields.Principals)
-            ?? CheckValidity(fields.ValidAfter, fields.ValidBefore, now, limits.MaxValidity, maxClockSkew)
+            ?? CheckValidity(fields.ValidAfter, fields.ValidBefore, now, limits.MaxValidity, clockSkew)
             ?? CheckOptions(fields.Type, fields.CriticalOptions, fields.Extensions)
             ?? CheckSubjectKey(fields.SubjectKey, caKey);
     }
@@ -76,9 +107,26 @@ public static class SshCertificateRules
     public static string? CheckSerial(ulong serial) => serial == 0 ? "The serial must not be zero." : null;
 
     /// <summary>
+    /// Refuses a key id longer than <see cref="MaxKeyIdBytes"/> or containing a control character.
+    /// The key id is free text that every server the certificate is shown to writes to its log.
+    /// An empty key id passes, as OpenSSH accepts one.
+    /// </summary>
+    public static string? CheckKeyId(string? keyId)
+    {
+        if (string.IsNullOrEmpty(keyId))
+            return null;
+        if (System.Text.Encoding.UTF8.GetByteCount(keyId) > MaxKeyIdBytes)
+            return $"The key id is longer than {MaxKeyIdBytes} bytes.";
+        if (keyId.Any(char.IsControl))
+            return "The key id contains a control character.";
+        return null;
+    }
+
+    /// <summary>
     /// Refuses an empty principal list, which OpenSSH reads as "any user" or "any host", and any
     /// principal that is empty, longer than <see cref="MaxPrincipalBytes"/>, repeated or contains a
-    /// control character.
+    /// control character. No refusal names a principal, so a refusal can be logged where a list
+    /// of principals must not build up.
     /// </summary>
     public static string? CheckPrincipals(IReadOnlyList<string>? principals)
     {
@@ -96,7 +144,7 @@ public static class SshCertificateRules
             if (principal.Any(char.IsControl))
                 return "A principal contains a control character.";
             if (!seen.Add(principal))
-                return $"Principal '{principal}' appears twice.";
+                return "A principal appears twice.";
         }
         return null;
     }
@@ -107,19 +155,31 @@ public static class SshCertificateRules
     /// </summary>
     public static string? CheckValidity(ulong validAfter, ulong validBefore, DateTimeOffset now,
         TimeSpan maxValidity, TimeSpan? maxClockSkew = null)
+        => CheckValidity(validAfter, validBefore, now, maxValidity, SshClockSkew.Symmetric(maxClockSkew ?? DefaultClockSkew));
+
+    /// <summary>
+    /// Refuses a window that is empty or inverted, longer than <paramref name="maxValidity"/>, or
+    /// that starts more than <see cref="SshClockSkew.Past"/> before or more than
+    /// <see cref="SshClockSkew.Future"/> after <paramref name="now"/>. A maximum validity or an
+    /// allowance that is not positive is read as zero, so it permits nothing rather than everything.
+    /// </summary>
+    public static string? CheckValidity(ulong validAfter, ulong validBefore, DateTimeOffset now,
+        TimeSpan maxValidity, SshClockSkew clockSkew)
     {
-        var skew = (ulong)(maxClockSkew ?? DefaultClockSkew).TotalSeconds;
         var nowSeconds = (ulong)Math.Max(0, now.ToUnixTimeSeconds());
         if (validBefore <= validAfter)
             return "The certificate's validity window is empty.";
-        if (validBefore - validAfter > (ulong)maxValidity.TotalSeconds)
-            return $"The validity window exceeds this SSH CA key's maximum of {maxValidity.TotalHours:0.##} hours.";
-        if (validAfter > nowSeconds && validAfter - nowSeconds > skew)
+        if (validBefore - validAfter > WholeSeconds(maxValidity))
+            return $"The validity window exceeds this SSH CA key's maximum of {Math.Max(0, maxValidity.TotalHours):0.##} hours.";
+        if (validAfter > nowSeconds && validAfter - nowSeconds > WholeSeconds(clockSkew.Future))
             return "The certificate starts too far in the future.";
-        if (validAfter < nowSeconds && nowSeconds - validAfter > skew)
+        if (validAfter < nowSeconds && nowSeconds - validAfter > WholeSeconds(clockSkew.Past))
             return "The certificate starts too far in the past.";
         return null;
     }
+
+    /// <summary>A span in whole seconds, with a span that is not positive read as zero rather than cast.</summary>
+    private static ulong WholeSeconds(TimeSpan span) => span <= TimeSpan.Zero ? 0 : (ulong)span.TotalSeconds;
 
     /// <summary>
     /// Refuses unknown, repeated or malformed options. A user certificate may carry the options in

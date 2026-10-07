@@ -100,6 +100,29 @@ public class SshCertificateIssuerTests
         Assert.Equal(0, signer.Calls);
     }
 
+    /// <summary>The issuer holds <c>valid_after</c> to the allowance it is given, each way on its own.</summary>
+    [Fact]
+    public async Task The_issuer_holds_the_start_to_a_clock_skew_allowance_for_each_direction()
+    {
+        var signer = new RecordingSigner(new SshKeySigner(SshFixtures.CaPrivate("ed25519")));
+        var skew = new SshClockSkew(Past: TimeSpan.FromMinutes(10), Future: TimeSpan.FromMinutes(5));
+        SshCertificateFields StartingAt(TimeSpan offset) => Fields() with { ValidAfter = (ulong)Now.Add(offset).ToUnixTimeSeconds() };
+
+        var backdated = await SshCertificateIssuer.IssueAsync(StartingAt(TimeSpan.FromMinutes(-10)), signer, Limits, Now, skew);
+        Assert.True(backdated.VerifySignature());
+        Assert.True((await SshCertificateIssuer.IssueAsync(StartingAt(TimeSpan.FromMinutes(5)), signer, Limits, Now, skew)).VerifySignature());
+        Assert.Equal(2, signer.Calls);
+
+        await Assert.ThrowsAsync<SshCertificateRefusedException>(async () =>
+            await SshCertificateIssuer.IssueAsync(StartingAt(TimeSpan.FromSeconds(-601)), signer, Limits, Now, skew));
+        await Assert.ThrowsAsync<SshCertificateRefusedException>(async () =>
+            await SshCertificateIssuer.IssueAsync(StartingAt(TimeSpan.FromSeconds(301)), signer, Limits, Now, skew));
+        // Without an allowance of its own the default holds, both ways.
+        await Assert.ThrowsAsync<SshCertificateRefusedException>(async () =>
+            await SshCertificateIssuer.IssueAsync(StartingAt(TimeSpan.FromMinutes(-10)), signer, Limits, Now));
+        Assert.Equal(2, signer.Calls);
+    }
+
     [Fact]
     public async Task A_signature_that_is_not_the_CA_keys_does_not_become_a_certificate()
     {

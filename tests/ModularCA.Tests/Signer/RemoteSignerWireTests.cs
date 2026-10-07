@@ -1,14 +1,19 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Net.Security;
+using System.Reflection;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Google.Protobuf;
+using Grpc.Core;
+using Grpc.Net.Client;
 using ModularCA.Keystore.Signing;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Signing;
 using ModularCA.Signer.Identity;
+using ModularCA.Ssh;
 using Xunit;
+using Wire = ModularCA.Signer.Wire;
 
 namespace ModularCA.Tests.Signer;
 
@@ -219,6 +224,253 @@ public sealed class RemoteSignerWireTests
         }
         Assert.Throws<ArgumentException>(() => ModularCA.Signer.Wire.WireMapping.FromWire(
             new ModularCA.Signer.Wire.SigningContext { Caller = "node", Purpose = "APurposeThisSignerPredates" }));
+    }
+
+    // ---- SignSshCertificate ---------------------------------------------------------------------
+
+    /// <summary>A user certificate for one principal, valid for an hour from now, that every rule allows.</summary>
+    private static SshCertificateRequest SshRequest(KeyRef key)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var subject = SshPublicKey.FromKeyParameter(ModularCA.Shared.Utils.KeyAlgorithmPolicy.GenerateKeyPair("Ed25519", "").Public).Blob;
+        return new SshCertificateRequest(key, subject, SshCertificateRequest.UserType, 77, "wire-test-key-id", new[] { "wire-principal" }, now, now + 3600,
+            new[] { new SshCertificateOption("force-command", "/usr/bin/true") }, new[] { new SshCertificateOption("permit-pty") });
+    }
+
+    private static SigningContext SshContext(Guid caId) => SigningContext.ForCa("wire-test", SigningPurpose.SshCertificate, caId, null);
+
+    /// <summary>A gRPC channel to the hosted signer as the test node, for calls <see cref="ModularCA.Signer.Client.RemoteSigningService"/> would never make.</summary>
+    private static GrpcChannel RawChannel(HostedSigner host)
+    {
+        var identity = RemoteSignerIdentity.Instance;
+        return GrpcChannel.ForAddress(host.Endpoint, new GrpcChannelOptions
+        {
+            DisposeHttpClient = true,
+            HttpHandler = new SocketsHttpHandler
+            {
+                SslOptions = new SslClientAuthenticationOptions
+                {
+                    ClientCertificates = new X509CertificateCollection { identity.Client },
+                    LocalCertificateSelectionCallback = (_, _, _, _, _) => identity.Client,
+                    RemoteCertificateValidationCallback = (_, cert, _, _) => cert is X509Certificate2 x && SpkiPin.Matches(x, identity.ServerPin),
+                },
+            },
+        });
+    }
+
+    private static CallOptions RawOptions() => new(deadline: DateTime.UtcNow.AddSeconds(60));
+
+    /// <summary>
+    /// The request crosses as the design's message gives it, field for field, and the message
+    /// has no field for what is the signer's to choose: the nonce, the signature key and the
+    /// signature algorithm.
+    /// </summary>
+    [Fact]
+    public void An_ssh_certificate_request_crosses_the_wire_field_for_field()
+    {
+        var key = new KeyRef(Guid.NewGuid(), KeyRef.SshKeystore);
+        var request = new SshCertificateRequest(key, new byte[] { 0, 1, 2, 255 }, SshCertificateRequest.HostType, ulong.MaxValue, "key id \"quoted\" 鍵",
+            new[] { "first", "second", "" }, long.MinValue, long.MaxValue,
+            new[] { new SshCertificateOption("force-command", "/bin/true"), new SshCertificateOption("verify-required") },
+            new[] { new SshCertificateOption("permit-pty") });
+        var context = SigningContext.ForScope("node", SigningPurpose.SshCertificate, null, Guid.NewGuid());
+
+        var wire = Wire.SignSshCertificateRequest.Parser.ParseFrom(Wire.WireMapping.ToWire(request, context).ToByteArray());
+        var back = Wire.WireMapping.FromWire(wire);
+
+        Assert.Equal(request.Key, back.Key);
+        Assert.Equal(request.SubjectPublicKey, back.SubjectPublicKey);
+        Assert.Equal(request.CertType, back.CertType);
+        Assert.Equal(request.Serial, back.Serial);
+        Assert.Equal(request.KeyId, back.KeyId);
+        Assert.Equal(request.Principals, back.Principals);
+        Assert.Equal(request.ValidAfter, back.ValidAfter);
+        Assert.Equal(request.ValidBefore, back.ValidBefore);
+        Assert.Equal(request.CriticalOptions, back.CriticalOptions);
+        Assert.Equal(request.Extensions, back.Extensions);
+        Assert.Equal(context, Wire.WireMapping.FromWire(wire.Context));
+
+        Assert.Equal(
+            new[]
+            {
+                (1, "key"), (2, "subject_public_key"), (3, "cert_type"), (4, "serial"), (5, "key_id"), (6, "principals"),
+                (7, "valid_after"), (8, "valid_before"), (9, "critical_options"), (10, "extensions"), (11, "context"),
+            },
+            Wire.SignSshCertificateRequest.Descriptor.Fields.InFieldNumberOrder().Select(f => (f.FieldNumber, f.Name)));
+        Assert.Equal(new[] { (1, "certificate") }, Wire.SignSshCertificateResponse.Descriptor.Fields.InFieldNumberOrder().Select(f => (f.FieldNumber, f.Name)));
+
+        // The wire has no null: a member left null crosses as empty.
+        var bare = Wire.WireMapping.FromWire(Wire.SignSshCertificateRequest.Parser.ParseFrom(
+            Wire.WireMapping.ToWire(new SshCertificateRequest(key, null!, null!, 1, null!, null!, 0, 0), context).ToByteArray()));
+        Assert.Empty(bare.SubjectPublicKey);
+        Assert.Equal(string.Empty, bare.CertType);
+        Assert.Equal(string.Empty, bare.KeyId);
+        Assert.Empty(bare.Principals);
+        Assert.Empty(bare.CriticalOptions!);
+        Assert.Empty(bare.Extensions!);
+
+        // A request that names no key, or names one that is no id, is bad input.
+        Assert.Throws<ArgumentException>(() => Wire.WireMapping.FromWire((Wire.SignSshCertificateRequest?)null));
+        Assert.Throws<ArgumentException>(() => Wire.WireMapping.FromWire(new Wire.SignSshCertificateRequest { CertType = SshCertificateRequest.UserType }));
+        Assert.Throws<ArgumentException>(() => Wire.WireMapping.FromWire(
+            new Wire.SignSshCertificateRequest { Key = new Wire.KeyRef { CertificateId = "not-an-id", Keystore = KeyRef.SshKeystore } }));
+        // A reference that names no keystore is a key of the certificate keystore, never of the SSH keystore.
+        Assert.Equal(KeyRef.DefaultKeystore, Wire.WireMapping.FromWire(
+            new Wire.SignSshCertificateRequest { Key = new Wire.KeyRef { CertificateId = Guid.NewGuid().ToString("D") } }).Key.Keystore);
+    }
+
+    /// <summary>
+    /// A signer from before the SSH keystore, as the node sees one: every call it has is served
+    /// by the signer behind it, and the call it lacks is answered UNIMPLEMENTED, as a gRPC
+    /// server answers a method it does not have.
+    /// </summary>
+    public class OlderSigner : DispatchProxy
+    {
+        private ISigningService _inner = null!;
+
+        /// <summary>An older signer over <paramref name="inner"/>.</summary>
+        public static ISigningService Over(ISigningService inner)
+        {
+            var proxy = Create<ISigningService, OlderSigner>();
+            ((OlderSigner)(object)proxy)._inner = inner;
+            return proxy;
+        }
+
+        /// <inheritdoc />
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+            => targetMethod!.Name == nameof(ISigningService.SignSshCertificateAsync)
+                ? throw new RpcException(new Status(StatusCode.Unimplemented, "Method is unimplemented."))
+                : targetMethod.Invoke(_inner, args);
+    }
+
+    [Fact]
+    public async Task A_signer_that_predates_the_ssh_keystore_is_reported_as_one_to_upgrade_first()
+    {
+        var world = SignerTestWorld.Create();
+        var (caId, key, publicKey) = world.SeedBoundSshKey();
+        await using var older = await HostedSigner.StartAsync(OlderSigner.Over(HostedSigner.InProcessOver(world)));
+        using var client = older.Connect();
+
+        var ex = await Assert.ThrowsAsync<SigningRefusedException>(() => client.SignSshCertificateAsync(SshRequest(key), SshContext(caId)));
+
+        Assert.Equal(SigningRefusalReason.OperationUnsupported, ex.Reason);
+        Assert.Contains("predates the SSH keystore", ex.Message);
+        Assert.Contains("Upgrade the signer first", ex.Message);
+        // The older signer decided nothing, so it recorded nothing.
+        Assert.Equal(0, AuditRows(world));
+        // It answered, so it is not taken for a signer that is down: its other calls are served.
+        Assert.True((await client.HealthAsync()).Unlocked);
+        Assert.NotEmpty(await SignCaRsaAsync(client, world));
+
+        // The same node in front of a current signer over the same keys is served.
+        await using var current = await HostedSigner.StartAsync(world);
+        using var upgraded = current.Connect();
+        var certificate = SshCertificate.Parse(await upgraded.SignSshCertificateAsync(SshRequest(key), SshContext(caId)));
+        Assert.True(certificate.VerifySignature());
+        Assert.Equal(publicKey, certificate.SignatureKey);
+    }
+
+    /// <summary>
+    /// What the mapping above rests on, asked of the real listener: a call the signer does not
+    /// have is answered UNIMPLEMENTED by the framework, with no refusal trailer, and never
+    /// reaches the signer.
+    /// </summary>
+    [Fact]
+    public async Task A_call_the_signer_does_not_have_is_answered_unimplemented_by_the_listener()
+    {
+        var world = SignerTestWorld.Create();
+        await using var host = await HostedSigner.StartAsync(world);
+        using var channel = RawChannel(host);
+        var unknown = new Method<Wire.SignSshCertificateRequest, Wire.SignSshCertificateResponse>(
+            MethodType.Unary, "modularca.signer.v1.Signer", "ACallThisSignerPredates",
+            Marshallers.Create(m => m.ToByteArray(), Wire.SignSshCertificateRequest.Parser.ParseFrom),
+            Marshallers.Create(m => m.ToByteArray(), Wire.SignSshCertificateResponse.Parser.ParseFrom));
+
+        var ex = await Assert.ThrowsAsync<RpcException>(async () =>
+            await channel.CreateCallInvoker().AsyncUnaryCall(unknown, null, RawOptions(), new Wire.SignSshCertificateRequest()));
+
+        Assert.Equal(StatusCode.Unimplemented, ex.StatusCode);
+        Assert.Null(ex.Trailers.GetValue(Wire.WireMapping.RefusalReasonTrailer));
+        Assert.Equal(0, AuditRows(world));
+    }
+
+    /// <summary>
+    /// What a peer that is not <see cref="ModularCA.Signer.Client.RemoteSigningService"/> could
+    /// send. A request the signer cannot attribute (no key reference, no context, an id or a
+    /// purpose that is not one) is bad input, InvalidArgument, as for every call, and is not
+    /// audited because it never reaches the signer. A request it can attribute but that is not a
+    /// certificate reaches the signer, which refuses it and records the refusal.
+    /// </summary>
+    [Fact]
+    public async Task A_malformed_ssh_certificate_request_is_bad_input_or_a_recorded_refusal_and_never_an_unhandled_failure()
+    {
+        var world = SignerTestWorld.Create();
+        var (caId, key, publicKey) = world.SeedBoundSshKey();
+        await using var host = await HostedSigner.StartAsync(world);
+        using var channel = RawChannel(host);
+        var raw = new Wire.Signer.SignerClient(channel);
+        var good = Wire.WireMapping.ToWire(SshRequest(key), SshContext(caId));
+        Wire.SignSshCertificateRequest With(Action<Wire.SignSshCertificateRequest> change)
+        {
+            var copy = good.Clone();
+            change(copy);
+            return copy;
+        }
+
+        var unattributable = new (string What, Wire.SignSshCertificateRequest Request)[]
+        {
+            ("an empty message", new Wire.SignSshCertificateRequest()),
+            ("no key reference", With(r => r.Key = null)),
+            ("a key id that is not an id", With(r => r.Key.CertificateId = "not-an-id")),
+            ("an empty key id", With(r => r.Key.CertificateId = "")),
+            ("no context", With(r => r.Context = null)),
+            ("a purpose the signer does not know", With(r => r.Context.Purpose = "APurposeThisSignerPredates")),
+            ("a CA id that is not an id", With(r => r.Context.CaId = "not-an-id")),
+        };
+        foreach (var (what, request) in unattributable)
+        {
+            var ex = await Assert.ThrowsAsync<RpcException>(async () => await raw.SignSshCertificateAsync(request, RawOptions()));
+            Assert.True(StatusCode.InvalidArgument == ex.StatusCode, $"{what}: {ex.StatusCode} ({ex.Status.Detail})");
+            Assert.Null(ex.Trailers.GetValue(Wire.WireMapping.RefusalReasonTrailer));
+        }
+        Assert.Equal(0, AuditRows(world));
+
+        var refused = new (string What, SigningRefusalReason Reason, Wire.SignSshCertificateRequest Request)[]
+        {
+            ("a type that is neither", SigningRefusalReason.UntypedData, With(r => r.CertType = "superuser")),
+            ("no type", SigningRefusalReason.UntypedData, With(r => r.CertType = "")),
+            ("a subject key that is no blob", SigningRefusalReason.UntypedData, With(r => r.SubjectPublicKey = ByteString.CopyFrom(1, 2, 3))),
+            ("no subject key", SigningRefusalReason.UntypedData, With(r => r.SubjectPublicKey = ByteString.Empty)),
+            ("a start before the epoch", SigningRefusalReason.UntypedData, With(r => r.ValidAfter = -1)),
+            ("no principals", SigningRefusalReason.UntypedData, With(r => r.Principals.Clear())),
+            ("a reference that names no keystore", SigningRefusalReason.PurposeNotPermitted, With(r => r.Key.Keystore = "")),
+            ("a context that does not state the instance", SigningRefusalReason.ContextRequired, With(r => r.Context.InstanceScope = false)),
+        };
+        foreach (var (what, reason, request) in refused)
+        {
+            var ex = await Assert.ThrowsAsync<RpcException>(async () => await raw.SignSshCertificateAsync(request, RawOptions()));
+            Assert.True(StatusCode.PermissionDenied == ex.StatusCode, $"{what}: {ex.StatusCode} ({ex.Status.Detail})");
+            Assert.Equal(reason.ToString(), ex.Trailers.GetValue(Wire.WireMapping.RefusalReasonTrailer));
+        }
+        using (var db = world.OpenDb())
+        {
+            var rows = db.SignerAudit.ToList();
+            Assert.Equal(refused.Length, rows.Count);
+            Assert.All(rows, row =>
+            {
+                Assert.Equal("SignSsh", row.Operation);
+                Assert.Equal(SignerAuditEntity.RefusedOutcome, row.Outcome);
+                Assert.NotNull(row.Summary);
+                Assert.DoesNotContain("wire-principal", row.Summary);
+                Assert.Equal(RemoteSignerIdentity.Instance.ClientPin, row.PeerIdentity);
+            });
+        }
+
+        // The message it was all made from is a certificate, and is served.
+        var response = await raw.SignSshCertificateAsync(good, RawOptions());
+        var certificate = SshCertificate.Parse(response.Certificate.ToByteArray());
+        Assert.True(certificate.VerifySignature());
+        Assert.Equal(publicKey, certificate.SignatureKey);
     }
 
     [Fact]

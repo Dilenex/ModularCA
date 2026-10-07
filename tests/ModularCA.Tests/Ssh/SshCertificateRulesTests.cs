@@ -36,6 +36,16 @@ public class SshCertificateRulesTests
     }
 
     [Fact]
+    public void A_key_id_that_is_too_long_or_carries_a_control_character_is_refused()
+    {
+        Assert.Null(Check(Valid() with { KeyId = "" }));
+        Assert.Null(Check(Valid() with { KeyId = new string('k', SshCertificateRules.MaxKeyIdBytes) }));
+        Assert.Contains("key id", Check(Valid() with { KeyId = new string('k', SshCertificateRules.MaxKeyIdBytes + 1) }));
+        Assert.Contains("key id", Check(Valid() with { KeyId = new string('é', SshCertificateRules.MaxKeyIdBytes / 2 + 1) }));
+        Assert.Contains("key id", Check(Valid() with { KeyId = "alice\nAccepted publickey for root" }));
+    }
+
+    [Fact]
     public void An_empty_principal_list_is_refused()
     {
         Assert.Contains("principal", Check(Valid() with { Principals = [] }));
@@ -57,6 +67,28 @@ public class SshCertificateRulesTests
         Assert.NotNull(Check(Valid() with { Principals = [new string('é', 129)] }));
         Assert.NotNull(Check(Valid() with { Principals = Enumerable.Range(0, 257).Select(i => $"u{i}").ToList() }));
         Assert.NotNull(Check(Valid() with { Principals = ["alice", "alice"] }));
+    }
+
+    /// <summary>
+    /// The signer records every refusal, and its record must not gather user names: whatever is
+    /// wrong with a principal, the refusal does not repeat it.
+    /// </summary>
+    [Fact]
+    public void No_principal_refusal_names_the_principal()
+    {
+        var refusals = new[]
+        {
+            Check(Valid() with { Principals = ["zebedee", "zebedee"] }),
+            Check(Valid() with { Principals = ["zebedee\n"] }),
+            Check(Valid() with { Principals = ["zebedee" + new string('z', 256)] }),
+            Check(Valid() with { Principals = ["zebedee", ""] }),
+        };
+
+        Assert.All(refusals, refusal =>
+        {
+            Assert.NotNull(refusal);
+            Assert.DoesNotContain("zebedee", refusal);
+        });
     }
 
     [Fact]
@@ -97,6 +129,56 @@ public class SshCertificateRulesTests
 
         Assert.NotNull(SshCertificateRules.Check(backdated, SshFixtures.CaPublic("p256"), Limits, Now));
         Assert.Null(SshCertificateRules.Check(backdated, SshFixtures.CaPublic("p256"), Limits, Now, TimeSpan.FromMinutes(10)));
+    }
+
+    /// <summary>
+    /// A start in the past and a start in the future have an allowance each: widening one does
+    /// not widen the other, and each bound is exact to the second.
+    /// </summary>
+    [Fact]
+    public void The_clock_skew_allowance_differs_between_the_past_and_the_future()
+    {
+        var start = (ulong)Now.ToUnixTimeSeconds();
+        var skew = new SshClockSkew(Past: TimeSpan.FromMinutes(10), Future: TimeSpan.FromMinutes(5));
+        string? At(ulong validAfter, SshClockSkew allowance) => SshCertificateRules.CheckValidity(validAfter, start + 3600, Now, Limits.MaxValidity, allowance);
+
+        Assert.Null(At(start, skew));
+        Assert.Null(At(start - 600, skew));
+        Assert.Contains("past", At(start - 601, skew));
+        Assert.Null(At(start + 300, skew));
+        Assert.Contains("future", At(start + 301, skew));
+
+        // The other way round, to show neither bound is the larger of the two.
+        var reversed = new SshClockSkew(Past: TimeSpan.FromMinutes(5), Future: TimeSpan.FromMinutes(10));
+        Assert.Contains("past", At(start - 301, reversed));
+        Assert.Null(At(start + 600, reversed));
+        Assert.Contains("future", At(start + 601, reversed));
+
+        // The whole check takes the same allowance, and the symmetric form is both bounds at once.
+        var backdated = Valid() with { ValidAfter = start - 600, ValidBefore = start + 3600 };
+        var postdated = Valid() with { ValidAfter = start + 600, ValidBefore = start + 3600 };
+        Assert.Null(SshCertificateRules.Check(backdated, SshFixtures.CaPublic("p256"), Limits, Now, skew));
+        Assert.NotNull(SshCertificateRules.Check(postdated, SshFixtures.CaPublic("p256"), Limits, Now, skew));
+        Assert.Equal(new SshClockSkew(TimeSpan.FromMinutes(7), TimeSpan.FromMinutes(7)), SshClockSkew.Symmetric(TimeSpan.FromMinutes(7)));
+    }
+
+    /// <summary>
+    /// An allowance or a maximum validity that is zero or negative permits nothing: it is never
+    /// cast into a large unsigned number that would permit everything.
+    /// </summary>
+    [Fact]
+    public void An_allowance_or_a_maximum_that_is_not_positive_permits_nothing()
+    {
+        var start = (ulong)Now.ToUnixTimeSeconds();
+        foreach (var none in new[] { TimeSpan.Zero, TimeSpan.FromMinutes(-5), TimeSpan.MinValue })
+        {
+            var skew = new SshClockSkew(none, none);
+            Assert.Null(SshCertificateRules.CheckValidity(start, start + 3600, Now, Limits.MaxValidity, skew));
+            Assert.Contains("past", SshCertificateRules.CheckValidity(start - 1, start + 3600, Now, Limits.MaxValidity, skew));
+            Assert.Contains("future", SshCertificateRules.CheckValidity(start + 1, start + 3600, Now, Limits.MaxValidity, skew));
+            Assert.Contains("maximum", SshCertificateRules.CheckValidity(start, start + 1, Now, none, SshClockSkew.Symmetric(TimeSpan.FromMinutes(5))));
+        }
+        Assert.Null(SshCertificateRules.CheckValidity(start, start + 3600, Now, TimeSpan.MaxValue, SshClockSkew.Symmetric(TimeSpan.FromMinutes(5))));
     }
 
     public static IEnumerable<object[]> BadUserOptions() => new (SshOption[] Critical, SshOption[] Extensions)[]

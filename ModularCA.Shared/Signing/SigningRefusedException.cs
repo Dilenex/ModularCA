@@ -32,7 +32,8 @@ public enum SigningRefusalReason
 
     /// <summary>
     /// Policy would allow it, but the key's backend or state cannot perform the operation: a
-    /// PKCS#11 key cannot decrypt, a committed key cannot be retired, an import format is unknown.
+    /// PKCS#11 key cannot decrypt, a committed key cannot be retired, an import format is unknown,
+    /// an SSH CA key's row or CA is disabled, or the signer predates the call altogether.
     /// </summary>
     OperationUnsupported,
 
@@ -46,7 +47,8 @@ public enum SigningRefusalReason
     /// The material offered did not verify: a keystore file whose signature is not the pinned
     /// signer's, or whose pin the signer could not authenticate, or a wrapped secret that does
     /// not authenticate under the key its header names. Nothing was written and nothing was
-    /// returned.
+    /// returned. Also the reason when the signature an SSH CA key made over a certificate does
+    /// not verify under that key's public half: the certificate is not handed out.
     /// </summary>
     IntegrityFailure,
 
@@ -82,7 +84,11 @@ public enum SigningRefusalReason
     /// The bytes offered for signature are not the structure the purpose signs: a certificate
     /// purpose signs a DER v3 TBSCertificate, a CRL purpose a TBSCertList, an OCSP purpose a
     /// ResponseData, and so on. Bytes that do not parse, parse as something else, are not DER,
-    /// or carry trailing data are refused before any key is used.
+    /// or carry trailing data are refused before any key is used. For
+    /// <see cref="ISigningService.SignSshCertificateAsync"/>, where the signer builds the
+    /// structure itself, this is the reason for fields it builds no certificate from: a
+    /// certificate type, subject key or validity that does not parse, and any field that breaks
+    /// one of the SSH CA key's rules (type, validity, principals, serial, options, subject key).
     /// </summary>
     UntypedData,
 

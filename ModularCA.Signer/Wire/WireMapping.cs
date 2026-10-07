@@ -163,6 +163,64 @@ public static class WireMapping
             info.Backend);
     }
 
+    /// <summary>
+    /// Maps an SSH certificate request and its context to the wire. The wire has no null, so a
+    /// member left null crosses as empty, which is also how the in-process signer reads it.
+    /// </summary>
+    public static SignSshCertificateRequest ToWire(Shared.Signing.SshCertificateRequest request, Shared.Signing.SigningContext context)
+    {
+        var wire = new SignSshCertificateRequest
+        {
+            Key = ToWire(request.Key),
+            SubjectPublicKey = ByteString.CopyFrom(request.SubjectPublicKey ?? Array.Empty<byte>()),
+            CertType = request.CertType ?? string.Empty,
+            Serial = request.Serial,
+            KeyId = request.KeyId ?? string.Empty,
+            ValidAfter = request.ValidAfter,
+            ValidBefore = request.ValidBefore,
+            Context = ToWire(context),
+        };
+        foreach (var principal in request.Principals ?? Array.Empty<string>())
+            wire.Principals.Add(principal ?? string.Empty);
+        foreach (var option in request.CriticalOptions ?? Array.Empty<Shared.Signing.SshCertificateOption>())
+            wire.CriticalOptions.Add(ToWire(option));
+        foreach (var option in request.Extensions ?? Array.Empty<Shared.Signing.SshCertificateOption>())
+            wire.Extensions.Add(ToWire(option));
+        return wire;
+    }
+
+    /// <summary>
+    /// Reads an SSH certificate request from the wire; its context is read apart, as for every
+    /// call. A missing key reference, or one whose id is not a GUID, is an argument error. What
+    /// the fields say is not judged here: a certificate type, a subject key or a time that makes
+    /// no certificate reaches the signer, which refuses it and records that it did.
+    /// </summary>
+    public static Shared.Signing.SshCertificateRequest FromWire(SignSshCertificateRequest? request)
+    {
+        if (request == null) throw new ArgumentException("The SSH certificate request is missing.", "request");
+        return new Shared.Signing.SshCertificateRequest(
+            FromWire(request.Key),
+            request.SubjectPublicKey.ToByteArray(),
+            request.CertType,
+            request.Serial,
+            request.KeyId,
+            request.Principals.ToList(),
+            request.ValidAfter,
+            request.ValidBefore,
+            request.CriticalOptions.Select(FromWire).ToList(),
+            request.Extensions.Select(FromWire).ToList());
+    }
+
+    /// <summary>Maps a critical option or extension to the wire; a missing one, name or value is empty.</summary>
+    public static SshOption ToWire(Shared.Signing.SshCertificateOption? option) => new()
+    {
+        Name = option?.Name ?? string.Empty,
+        Value = option?.Value ?? string.Empty,
+    };
+
+    /// <summary>Reads a critical option or extension from the wire.</summary>
+    public static Shared.Signing.SshCertificateOption FromWire(SshOption option) => new(option.Name, option.Value);
+
     /// <summary>Renders a secret kind for the wire: the enum member's name, as purposes cross.</summary>
     public static string ToWire(SecretKind kind) => kind.ToString();
 

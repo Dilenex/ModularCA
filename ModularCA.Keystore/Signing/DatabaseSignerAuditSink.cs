@@ -51,6 +51,9 @@ public sealed class DatabaseSignerAuditSink : ISignerAuditSink
         DataHash = decision.DataHash == null ? null : Convert.ToHexStringLower(decision.DataHash),
         SecretKind = decision.SecretKind?.ToString(),
         WrappingKeyId = decision.WrappingKeyId,
+        // Built to fit by SshAuditSummary; a summary that would not fit is dropped rather than cut,
+        // since half a JSON object reads as something it is not.
+        Summary = decision.Summary is { Length: <= SignerAuditEntity.SummaryMaxLength } summary ? summary : null,
     };
 
     private static string Truncate(string value, int max) => value.Length <= max ? value : value[..max];
