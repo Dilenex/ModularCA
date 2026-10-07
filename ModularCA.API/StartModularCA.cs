@@ -1191,6 +1191,7 @@ builder.Services.AddScoped<ICaResolverService, CaResolverService>();
 
 // cert-manager integration API key filter
 builder.Services.AddScoped<ModularCA.API.Filters.CertManagerApiKeyFilter>();
+builder.Services.AddScoped<ModularCA.Core.Services.IApiKeyService, ModularCA.Core.Services.ApiKeyService>();
 
 // CA creation at runtime (root + intermediate)
 builder.Services.AddScoped<CaCreationService>();

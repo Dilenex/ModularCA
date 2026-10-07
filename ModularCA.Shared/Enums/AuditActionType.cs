@@ -99,6 +99,10 @@ public static class AuditActionType
     public const string ConfigUpdateAborted = "ConfigUpdateAborted";
     public const string ApplicationRestarted = "ApplicationRestarted";
 
+    // Integration API keys
+    public const string ApiKeyCreated = "ApiKeyCreated";
+    public const string ApiKeyRevoked = "ApiKeyRevoked";
+
     // Profile management
     public const string CertProfileCreated = "CertProfileCreated";
     public const string CertProfileUpdated = "CertProfileUpdated";

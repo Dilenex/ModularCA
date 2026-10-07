@@ -6,6 +6,25 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### Added
+
+- **Named API keys for the integrations.** The infrastructure API and the cert-manager issuer
+  each had one key, typed by an administrator into `config.yaml` and shared by every client,
+  so replacing it broke all of them at once. Each client can now hold its own.
+  - **Generated, shown once, stored as a hash.** A key is created under Settings, Integrations,
+    in the integration's card. It is 256 random bits starting `mca_`, shown once, and only its
+    SHA-256 is kept, so nobody can read it back, from the console or the database.
+  - **Revoked one at a time.** A revoked key stops working at once and stays listed. The table
+    shows each key's name, last four characters, status, scope, expiry and when it was last
+    used.
+  - **Scoped and time-limited if you want.** A key can be limited to one space's CAs or to the
+    instance's, and can expire. Its scope narrows the integration's and never widens it.
+  - **The old key keeps working.** The single key in the integration's settings is accepted
+    beside the named ones, so nothing changes for a client until you give it a key of its own.
+  - cert-manager audit records name the key that was used, as `cert-manager:<name>`.
+  - Creating and revoking a key need step-up MFA. API: `GET`, `POST` and
+    `DELETE /api/v1/admin/api-keys`. A new table, `ApiKeys`.
+
 ### Changed
 
 - **Groundwork for settings in the database.** Instance-wide settings are moving from

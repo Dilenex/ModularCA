@@ -24,6 +24,7 @@ import {
     DEPRECATED_ALGORITHM_SUGGESTIONS, POLICY_SIGNATURE_ALGORITHMS, certExpiryNotificationBody, warningDaysFromConfig,
 } from './settingsLists';
 import { LdapMappingsEditor, SunsetRulesEditor } from './SettingsTables';
+import { ApiKeysPanel } from '../components/ApiKeysPanel';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -1471,13 +1472,16 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     <ConfigToggle label="Enabled" checked={config.certManager?.enabled ?? false} onChange={(v) => update('certManager', 'enabled', v)}
                                         hint="Opens /api/v1/integration/cert-manager/sign to any caller presenting the API key; that caller can obtain certificates without a human approval." />
                                     <ConfigInput label="API Key" value={config.certManager?.apiKey} onChange={(v) => update('certManager', 'apiKey', v)} type="password"
-                                        hint="Shared secret cert-manager sends in X-API-Key. Use a long random value; anyone holding it can request certificates." />
+                                        hint="The one key every client shares, sent in X-API-Key. Named keys below are the better choice: each cluster gets its own, and one can be revoked alone. This key keeps working beside them." />
                                     <ConfigInput label="Default Cert Profile ID" value={config.certManager?.defaultCertProfileId} onChange={(v) => update('certManager', 'defaultCertProfileId', v)}
                                         hint="Certificate profile applied when a signing request names none." />
                                     <ConfigInput label="Default Signing Profile ID" value={config.certManager?.defaultSigningProfileId} onChange={(v) => update('certManager', 'defaultSigningProfileId', v)}
                                         hint="Decides which CA signs when the request names no signing profile." />
                                 </div>
                                 <SaveButton saving={saving === 'certManager'} onClick={() => saveSection('cert-manager', config.certManager, 'certManager')} />
+                                <div className="pt-4 border-t border-line">
+                                    <ApiKeysPanel integration="cert-manager" />
+                                </div>
                             </div>
                         )}
                     </div>
@@ -1492,9 +1496,12 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                     <ConfigToggle label="Enabled" checked={config.integrationApi?.enabled ?? false} onChange={(v) => update('integrationApi', 'enabled', v)}
                                         hint="Opens the infrastructure-as-code endpoints (Terraform, Ansible) to any caller presenting the API key." />
                                     <ConfigInput label="API Key" value={config.integrationApi?.apiKey} onChange={(v) => update('integrationApi', 'apiKey', v)} type="password"
-                                        hint="Shared secret sent in X-API-Key. Use a long random value and rotate it if it leaks." />
+                                        hint="The one key every client shares, sent in X-API-Key. Named keys below are the better choice: each tool gets its own, and one can be revoked alone. This key keeps working beside them." />
                                 </div>
                                 <SaveButton saving={saving === 'integrationApi'} onClick={() => saveSection('integration-api', config.integrationApi, 'integrationApi')} />
+                                <div className="pt-4 border-t border-line">
+                                    <ApiKeysPanel integration="integration" />
+                                </div>
                             </div>
                         )}
                     </div>

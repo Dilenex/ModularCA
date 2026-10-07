@@ -92,6 +92,9 @@ public class ModularCADbContext : DbContext
     // change them via the admin API without a restart).
     public DbSet<SecurityPolicyEntity> SecurityPolicies { get; set; }
 
+    /// <summary>The named API keys of the integrations, each as the hash of a key shown once.</summary>
+    public DbSet<ApiKeyEntity> ApiKeys { get; set; }
+
     /// <summary>The instance-wide settings that have been set, one row each. See <c>docs/architecture/settings-store.md</c>.</summary>
     public DbSet<SettingEntity> Settings { get; set; }
     /// <summary>The secret settings that have been set, each wrapped by the signer or hashed.</summary>
@@ -343,6 +346,12 @@ public class ModularCADbContext : DbContext
         modelBuilder.Entity<OIDOptionEntity>().HasIndex(o => o.OID).IsUnique();
 
         modelBuilder.Entity<FeatureFlagEntity>().HasIndex(f => f.Name).IsUnique();
+
+        modelBuilder.Entity<ApiKeyEntity>(entity =>
+        {
+            entity.HasIndex(k => k.KeyHash).IsUnique();
+            entity.HasIndex(k => k.Integration);
+        });
 
         modelBuilder.Entity<SettingHistoryEntity>(entity =>
         {

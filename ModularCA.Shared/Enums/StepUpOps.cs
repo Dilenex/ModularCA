@@ -247,6 +247,11 @@ public static class StepUpOps
     /// <summary>Rejecting a certificate request.</summary>
     public const string RejectRequest = "reject-request";
 
+    /// <summary>Creating an API key for an integration.</summary>
+    public const string CreateApiKey = "create-api-key";
+    /// <summary>Revoking an integration's API key.</summary>
+    public const string RevokeApiKey = "revoke-api-key";
+
     /// <summary>
     /// The canonical allow-list consulted by <c>IssueStepUpTokenAsync</c>. Any operation
     /// string not present here is rejected at issuance time with
@@ -289,6 +294,7 @@ public static class StepUpOps
         UpdateCaServiceUrl, DeleteCaServiceUrl,
         UpdateFeatureFlag,
         DeleteEabKey,
+        CreateApiKey, RevokeApiKey,
         CreateSshProfile, UpdateSshProfile, DeleteSshProfile,
         TotpSetup, TotpVerifySetup, TotpRemove,
         WebAuthnRegister, WebAuthnDelete,
