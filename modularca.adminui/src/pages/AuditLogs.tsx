@@ -220,6 +220,9 @@ const AuditLogs: React.FC = () => {
             });
     }, []);
 
+    // Raised by the table's Refresh button and its auto-refresh: the same load, asked for again.
+    const [refreshTick, setRefreshTick] = useState(0);
+
     useEffect(() => {
         let cancelled = false;
         setLoading(true);
@@ -260,7 +263,7 @@ const AuditLogs: React.FC = () => {
             });
 
         return () => { cancelled = true; };
-    }, [activeTab, page, pageSize, dateFrom, dateTo, filterCaId, filterActionType, q.user, q.sort, caQuery]);
+    }, [activeTab, page, pageSize, dateFrom, dateTo, filterCaId, filterActionType, q.user, q.sort, caQuery, refreshTick]);
 
     const handleTabChange = (tab: Tab) => setQ({ tab, sort: QUERY_DEFAULTS.sort });
 
@@ -359,6 +362,7 @@ const AuditLogs: React.FC = () => {
                 columns={columns}
                 selectable
                 exportFileName={`audit-${activeTab.toLowerCase()}`}
+                onRefresh={() => setRefreshTick((t) => t + 1)}
                 renderDrawer={(l) => <AuditDrawer log={l} tab={activeTab} />}
                 drawerTitle={(l) => l.actionType || l.operation || l.messageType || (l.requestPath ? `${l.httpMethod} ${l.requestPath}` : 'Audit entry')}
                 detailPath={(l) => `/audit/${activeTab.toLowerCase()}/${l.id}`}

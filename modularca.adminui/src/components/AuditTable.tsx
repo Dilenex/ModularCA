@@ -21,6 +21,7 @@ const AuditTable: React.FC<{
     const [page, setPage] = useState(1);
     const [totalPages, setTotalPages] = useState(1);
     const [totalCount, setTotalCount] = useState(0);
+    const [refreshTick, setRefreshTick] = useState(0);
 
     useEffect(() => {
         let cancelled = false;
@@ -39,7 +40,7 @@ const AuditTable: React.FC<{
             })
             .catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load audit entries')); setLoading(false); } });
         return () => { cancelled = true; };
-    }, [tab, target.type, target.id, page, pageSize]);
+    }, [tab, target.type, target.id, page, pageSize, refreshTick]);
 
     return (
         <DataTable<any>
@@ -49,6 +50,7 @@ const AuditTable: React.FC<{
             loading={loading}
             error={error}
             empty="No audit entries for this record"
+            onRefresh={() => setRefreshTick((t) => t + 1)}
             columns={buildColumns(tab)}
             disableExport
             renderDrawer={(l) => <AuditDrawer log={l} />}
