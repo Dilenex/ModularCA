@@ -13,6 +13,7 @@ import type { CertificateLifecycleSummaryModel } from '@shared/generated';
 import { Link } from 'react-router-dom';
 import { OCSP_REFUSED_CONSEQUENCE, ocspRows, ocspStatus, type CaOcspRow } from './ocspReadiness';
 import { sshKeyReadiness } from './sshKeyCustody';
+import { sshCaKeyPath } from './sshPlaces';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -176,12 +177,12 @@ const HealthCheckCard: React.FC = () => {
                             )}
                             {sshKeys?.awaitingImport.map((k) => (
                                 <div key={k.id} className="text-warn">
-                                    Awaiting import: <Link to={`/ssh/ca-keys/${k.id}`} className="font-semibold hover:underline">{k.name}</Link>. {k.reason}
+                                    Awaiting import: <Link to={sshCaKeyPath(k.id)} className="font-semibold hover:underline">{k.name}</Link>. {k.reason}
                                 </div>
                             ))}
                             {sshKeys?.notHeld.map((k) => (
                                 <div key={k.id} className="text-crit">
-                                    Not held: <Link to={`/ssh/ca-keys/${k.id}`} className="font-semibold hover:underline">{k.name}</Link>. {k.reason}
+                                    Not held: <Link to={sshCaKeyPath(k.id)} className="font-semibold hover:underline">{k.name}</Link>. {k.reason}
                                 </div>
                             ))}
                         </div>

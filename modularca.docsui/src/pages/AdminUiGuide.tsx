@@ -66,7 +66,7 @@ export default function AdminUiGuide() {
                     <strong>Certificates:</strong> All Certificates, Request Certificate, Pending Requests,
                         Search, Cert Inventory, Vulnerabilities, Compliance, Expiry Calendar<br />
                     <strong>CA Management:</strong> Authorities, Profiles, Templates, CRL Management,
-                        Trust Anchors, Key Ceremonies, SSH CA, Protocol Config<br />
+                        Trust Anchors, Key Ceremonies, Protocol Config<br />
                     <strong>Access &amp; Identity:</strong> Users, Groups, Roles, Enrollment, ACME<br />
                     <strong>Administration:</strong> Spaces, Settings, Audit Logs, Notifications, Quotas,
                         Whitelists, Backup &amp; Restore, Web TLS Certificate
@@ -162,9 +162,16 @@ export default function AdminUiGuide() {
                     <li>Certificate detail view with parsed X.509 extensions: AIA, CDP, Basic Constraints, Key Usage, Extended Key Usage, SANs, Subject Key Identifier, Authority Key Identifier, and Certificate Policies</li>
                     <li>View subject, fingerprints, validity dates, and serial number</li>
                 </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    The page has two tabs, X.509 and SSH, for whoever can use both. The SSH tab
+                    (<code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/admin/certificates?tab=SSH</code>) lists the SSH
+                    certificates of every SSH CA key you may view, with the key as a column and as a filter, and has download,
+                    revoke and &ldquo;Find by host log line&rdquo;. It is shown to whoever may view certificates on an SSH CA. See SSH below.
+                </p>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/admin/certificates<br />
                     GET /api/v1/admin/certificates/&#123;serial&#125;<br />
+                    GET /api/v1/admin/ssh/certificates<br />
                     GET /api/v1/admin/ssh/certificates/&#123;id&#125;/download<br />
                     POST /api/v1/admin/certificates/&#123;certId&#125;/revoke
                 </div>
@@ -189,6 +196,12 @@ export default function AdminUiGuide() {
                     <li>Set custom validity period within profile limits</li>
                     <li>Preview effective certificate extensions before signing</li>
                 </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    The page has two tabs, X.509 and SSH, for whoever can use both. The SSH tab
+                    (<code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/admin/certificates/request?tab=SSH</code>) signs an
+                    SSH key for a user of the console, a service identity or a host. It is shown to whoever may sign on at
+                    least one SSH CA. See &ldquo;Signing for a user, a service identity or a host&rdquo; under SSH below.
+                </p>
                 <h3 className="text-lg font-semibold text-ink mb-2">Post-Quantum Cryptography</h3>
                 <p className="text-ink leading-relaxed mb-3">
                     The key algorithm dropdown now includes NIST post-quantum signature algorithms alongside
@@ -296,6 +309,12 @@ export default function AdminUiGuide() {
                     <li>Enable/disable CAs</li>
                     <li>Configure CA-specific settings</li>
                 </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    The page has two tabs, X.509 and SSH, for whoever can use both. The SSH tab
+                    (<code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/admin/authorities/manage?tab=SSH</code>) lists the SSH
+                    CA keys and has the form for a new one. It is shown to whoever may list the SSH CA keys or generate one.
+                    See SSH below.
+                </p>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/admin/authorities<br />
                     POST /api/v1/admin/authorities/create-root<br />
@@ -466,14 +485,28 @@ export default function AdminUiGuide() {
                 </div>
             </section>
 
-            {/* SSH Certificates */}
+            {/* SSH */}
             <section className="mb-10">
-                <h2 className="text-2xl font-bold text-ink mb-3">SSH Certificates</h2>
+                <h2 className="text-2xl font-bold text-ink mb-3">SSH</h2>
                 <div className="bg-sunken rounded p-4 data-mono mb-3">
-                    Route: /admin/ssh
+                    Routes: /admin/authorities/manage?tab=SSH, /admin/authorities/ssh/&#123;id&#125;,
+                    /admin/certificates?tab=SSH, /admin/certificates/ssh/&#123;id&#125;, /admin/certificates/request?tab=SSH
+                    (the old /admin/ssh paths redirect here until 0.5)
                 </div>
                 <p className="text-ink leading-relaxed mb-3">
                     Manage SSH CA keys and SSH certificate issuance. Supports both user and host certificate types.
+                    SSH has no menu entry of its own. Each part is an SSH tab on the page for the same thing in X.509:
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li><span className="font-semibold">Authorities, SSH tab:</span> the SSH CA keys, the form for a new key, and the plaintext notice. A key&apos;s own page, with its review date, storage, login names and revocation list, is under Authorities at <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/admin/authorities/ssh/&#123;id&#125;</code></li>
+                    <li><span className="font-semibold">All Certificates, SSH tab:</span> the SSH certificates of every SSH CA key you may view, download and revoke, and &ldquo;Find by host log line&rdquo;. A certificate&apos;s own page is under Certificates at <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/admin/certificates/ssh/&#123;id&#125;</code></li>
+                    <li><span className="font-semibold">Request Certificate, SSH tab:</span> Sign key, for a user, a service identity or a host</li>
+                    <li><span className="font-semibold">Profiles:</span> the SSH Signing, SSH Cert and SSH Request tabs, as before</li>
+                </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    A tab is shown only to whoever can use it, and a page opens for whoever can use one of its tabs.
+                    SSH CAs belong to the instance, not to a space: while the console&apos;s scope is set to a space, or to a
+                    CA of a space, each SSH tab says so and shows nothing else.
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li>View and manage SSH CA signing keys</li>
@@ -518,6 +551,15 @@ export default function AdminUiGuide() {
                     get these defaults.
                 </p>
                 <p className="text-ink leading-relaxed mb-3">
+                    <span className="font-semibold">The type of a profile.</span> An SSH request profile and an SSH certificate profile each have a
+                    Certificate type: User, Host or Either. A User profile is offered and accepted only for user certificates,
+                    a Host profile only for host certificates, and an Either profile for both. A profile of the other type is
+                    refused when a key is signed, with a message that says so. The five profiles a new install is seeded
+                    with carry their type. On an upgrade the type is set on those five where they still have their seeded
+                    names, and every other existing profile is Either, which is how it worked before. Set the type on your
+                    own profiles under Profiles, so that a form for a user certificate no longer offers a host profile.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
                     <span className="font-semibold">The review date.</span> An SSH CA key does not expire. Each key has a Review by date: two years after it was
                     created for a key that signs user certificates, five years for a host-only key. Nothing stops working on
                     that date. The key keeps signing, its certificates stay valid and its revocation list is still served. From
@@ -545,7 +587,7 @@ export default function AdminUiGuide() {
                     <li><span className="font-semibold">Unknown:</span> the signer is locked or did not answer, so it could not be asked</li>
                 </ul>
                 <p className="text-ink leading-relaxed mb-3">
-                    Sign key is disabled, with the reason beside it, while the selected SSH CA key is awaiting import or not held.
+                    The Sign key form does not sign, and gives the reason, while the selected SSH CA key is awaiting import or not held.
                     Certificates such a key has issued can still be revoked, and its KRL is still served. When signing or
                     creating a key is refused, the form shows the server&apos;s own reason: for example that the signer is locked,
                     that the signer must be upgraded first, or which rule of the certificate the signer refused.
@@ -553,8 +595,8 @@ export default function AdminUiGuide() {
 
                 <h3 className="text-lg font-semibold text-ink mb-2">The plaintext notice</h3>
                 <p className="text-ink leading-relaxed mb-3">
-                    An install that had SSH CAs before 0.4.2 kept their private keys as plaintext files on the node. The page
-                    then shows a warning: the keys that were imported into the signer and when, where each file was and whether
+                    An install that had SSH CAs before 0.4.2 kept their private keys as plaintext files on the node. The SSH
+                    tab of Authorities then shows a warning: the keys that were imported into the signer and when, where each file was and whether
                     it has been removed, and the backup archives and pre-restore snapshots in the backup directory that were
                     written before the last import and may still hold the keys. Rotating an SSH CA, which is a new SSH CA and
                     new trust lines on the servers, is the only remedy; this release tells you and leaves the decision to you.
@@ -617,18 +659,22 @@ export default function AdminUiGuide() {
                     whoever asks. They grant nothing. Who may use which name is set on the SSH CA key.
                 </p>
 
-                <h3 className="text-lg font-semibold text-ink mb-2">Signing for a user or a service identity</h3>
+                <h3 className="text-lg font-semibold text-ink mb-2">Signing for a user, a service identity or a host</h3>
                 <p className="text-ink leading-relaxed mb-3">
-                    The CA writes the name a certificate carries into host logs (its key id); the Sign key form shows it and
+                    Sign key is the SSH tab of Request Certificate. Choose the SSH CA key to sign with, then answer the
+                    form&apos;s first question, who the certificate is for. Only the request and certificate profiles of the
+                    matching type, and those of type Either, are then offered.
+                    The CA writes the name a certificate carries into host logs (its key id); the form shows it and
                     asks for none. Signing a user or a host certificate asks for step-up MFA, because whoever signs decides whose
-                    name, or which host, a public key is certified as. For a user certificate the form asks who the certificate is for:
+                    name, or which host, a public key is certified as. The certificate is for one of:
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
-                    <li><span className="font-semibold">A user of this console.</span> Pick the user. Their login names on the chosen SSH CA key are listed to tick, each with where it comes from and its limit; nothing is typed. To give the user another name, grant it on the key first, so the grant is on record. The user must be allowed to request from the SSH CA themselves; for one who is not, the form says so and signs nothing. Hosts log the user&apos;s username, and the certificate is listed under that user&apos;s own SSH certificates, not under yours.</li>
+                    <li><span className="font-semibold">A user of this console.</span> Pick the user. Their login names on the chosen SSH CA key are listed to tick, each with where it comes from and its limit; nothing is typed. To give the user another name, grant it on the key first, so the grant is on record. The user must be allowed to request from the SSH CA themselves; for one who is not, the form says so and signs nothing. Hosts log the user&apos;s username, and the certificate is listed for that user, on the SSH tab of My Certificates in their own portal, not for you.</li>
                     <li><span className="font-semibold">A service identity with no account.</span> Give it a label of 1 to 64 letters, digits and . _ -. Hosts log it as <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">svc:label</code>, which no username can equal. Its login names are typed and checked against the certificate profile&apos;s patterns.</li>
+                    <li><span className="font-semibold">A host.</span> A host certificate, which a server presents to the clients that connect to it. It takes the server&apos;s hostnames.</li>
                 </ul>
                 <p className="text-ink leading-relaxed mb-3">
-                    A host certificate takes hostnames as before, and the CA writes the first one as its name in host logs.
+                    For a host the CA writes the first hostname as the certificate&apos;s name in host logs.
                     &ldquo;Valid for&rdquo; starts at the most allowed: the smallest limit among the profiles, the SSH CA key and the
                     ticked login names, and never past the end of a grant. The form names the login name that sets the limit.
                     The certificate records both who it was issued to and who issued it; the tables and the certificate&apos;s
@@ -708,7 +754,7 @@ sshd -t && systemctl reload ssh`}</pre>
 
                 <h3 className="text-lg font-semibold text-ink mb-2">Finding a certificate from a host log line</h3>
                 <p className="text-ink leading-relaxed mb-3">
-                    Above the certificates table is &ldquo;Find by host log line&rdquo;. Paste the line sshd wrote for a login. The
+                    On the SSH tab of All Certificates, above the table, is &ldquo;Find by host log line&rdquo;. Paste the line sshd wrote for a login. The
                     console reads it in your browser and shows what it read: the SSH CA, the serial, the name after ID and the
                     account that was logged in to. It then looks the certificate up by serial, name and CA fingerprint, on
                     the SSH CAs you may view. One match is shown at once, with who it was issued to and by and each login
@@ -724,6 +770,7 @@ sshd -t && systemctl reload ssh`}</pre>
                     GET /api/v1/admin/ssh/plaintext-notice<br />
                     POST /api/v1/admin/ssh/ca-keys/&#123;caKeyId&#125;/certificates/sign-user<br />
                     POST /api/v1/admin/ssh/ca-keys/&#123;caKeyId&#125;/certificates/sign-host<br />
+                    GET /api/v1/admin/ssh/certificates<br />
                     GET /api/v1/admin/ssh/ca-keys/&#123;caKeyId&#125;/certificates<br />
                     GET /api/v1/admin/ssh/ca-keys/&#123;id&#125;/krl<br />
                     GET /api/v1/admin/ssh/ca-keys/&#123;caKeyId&#125;/login-names<br />
@@ -765,7 +812,7 @@ sshd -t && systemctl reload ssh`}</pre>
                     Disabling, renaming or deleting a user revokes every live SSH certificate issued for them. A rename
                     revokes them because hosts log the username the certificate was issued under, and that name would no
                     longer say who logged in. Taking away a user&apos;s right to request from an SSH CA revokes their
-                    certificates on it. See Login names under SSH Certificates.
+                    certificates on it. See Login names under SSH.
                 </p>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/admin/users<br />

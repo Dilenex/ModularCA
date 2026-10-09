@@ -747,9 +747,18 @@ public class SshCaService : ISshCaService
         var query = _db.SshCertificates.AsNoTracking().AsQueryable();
         if (caKeyId.HasValue)
             query = query.Where(c => c.SshCaKeyId == caKeyId.Value);
-        // sort: createdAt (default, newest first), keyId, validBefore.
-        var parsedSort = ListSort.Parse(sort, "createdAt", "keyId", "validBefore");
-        IOrderedQueryable<SshCertificateEntity> ordered = parsedSort switch
+        return await Ordered(query, sort)
+            .Skip((page - 1) * pageSize).Take(pageSize)
+            .ToListAsync();
+    }
+
+    /// <summary>
+    /// Orders certificate rows as the certificate lists do: by <c>createdAt</c> (the default,
+    /// newest first), <c>keyId</c> or <c>validBefore</c>, descending with a leading <c>-</c>.
+    /// An unknown field is the default.
+    /// </summary>
+    internal static IOrderedQueryable<SshCertificateEntity> Ordered(IQueryable<SshCertificateEntity> query, string? sort)
+        => ListSort.Parse(sort, "createdAt", "keyId", "validBefore") switch
         {
             ("keyId", false) => query.OrderBy(c => c.KeyId),
             ("keyId", true) => query.OrderByDescending(c => c.KeyId),
@@ -758,10 +767,6 @@ public class SshCaService : ISshCaService
             ("createdAt", false) => query.OrderBy(c => c.CreatedAt),
             _ => query.OrderByDescending(c => c.CreatedAt),
         };
-        return await ordered
-            .Skip((page - 1) * pageSize).Take(pageSize)
-            .ToListAsync();
-    }
 
     /// <summary>
     /// Revokes an SSH certificate, optionally constrained to the CA key that issued it, records

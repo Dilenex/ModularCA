@@ -20,6 +20,7 @@ import { useEkuCatalog } from '../hooks/useOidCatalog';
 import { NewProfileButton } from './profiles/NewProfileButton';
 import { PROFILE_TABS as TABS, type ProfileTab as Tab } from './profiles/profileRoutes';
 import { periodRangeText, periodText } from '@shared/periodText';
+import { profileTypeLabel } from './sshProfileType';
 
 /* ─── Certificate Profiles Tab ─── */
 const CertProfilesTab: React.FC = () => {
@@ -422,6 +423,7 @@ const SshCertProfilesTab: React.FC = () => {
 
     const columns: DataTableColumn<any>[] = [
         { key: 'name', header: 'Name', defaultWidth: 240, minWidth: 160, truncate: false, exportValue: (p) => p.name, render: (p) => <span className="text-ink font-medium truncate">{p.name}</span> },
+        { key: 'certificateType', header: 'Type', defaultWidth: 100, truncate: false, headerTitle: 'The certificate type the profile is for: user, host, or either.', exportValue: (p) => profileTypeLabel(p.certificateType), render: (p) => <Tag label={profileTypeLabel(p.certificateType)} /> },
         { key: 'maxPrincipals', header: 'Most login names', defaultWidth: 150, exportValue: (p) => (p.maxPrincipals ?? ''), render: (p) => <span className="text-xs text-ink-muted">{p.maxPrincipals}</span> },
         { key: 'validity', header: 'Max Validity', defaultWidth: 120, exportValue: (p) => `${p.maxValidityHours}h`, render: (p) => <span className="text-xs text-ink-muted">{p.maxValidityHours}h</span> },
     ];
@@ -434,6 +436,7 @@ const SshCertProfilesTab: React.FC = () => {
         <div className="text-sm">
             <DetailField label="Name" value={p.name} />
             <DetailField label="Description" value={p.description} />
+            <DetailField label="Certificate type" value={profileTypeLabel(p.certificateType)} />
             <DetailField label="Most login names" value={String(p.maxPrincipals)} />
             <DetailField label="Max Validity Hours" value={String(p.maxValidityHours)} />
             <div className="py-1"><span className="text-xs text-ink-muted">Allowed Extensions</span><CeilingList items={p.allowedExtensions} noun="extension" /></div>
@@ -534,6 +537,7 @@ const SshRequestProfilesTab: React.FC = () => {
 
     const columns: DataTableColumn<any>[] = [
         { key: 'name', header: 'Name', defaultWidth: 220, minWidth: 150, truncate: false, exportValue: (p) => p.name, render: (p) => <span className="text-ink font-medium truncate">{p.name}</span> },
+        { key: 'certificateType', header: 'Type', defaultWidth: 100, truncate: false, headerTitle: 'The certificate type the profile is for: user, host, or either.', exportValue: (p) => profileTypeLabel(p.certificateType), render: (p) => <Tag label={profileTypeLabel(p.certificateType)} /> },
         { key: 'approval', header: 'Approval', defaultWidth: 110, truncate: false, exportValue: (p) => (p.requireApproval ? 'Required' : 'Auto'), render: (p) => <Tag label={p.requireApproval ? 'Required' : 'Auto'} /> },
         { key: 'caScope', header: 'CA Scope', defaultWidth: 170, exportValue: (p) => (p.certificateAuthorityId ? caName(p.certificateAuthorityId) : 'Any CA'), render: (p) => <span className="text-xs text-ink-muted truncate">{p.certificateAuthorityId ? caName(p.certificateAuthorityId) : 'Any CA'}</span> },
         { key: 'validity', header: 'Max Validity', defaultWidth: 120, exportValue: (p) => `${p.maxValidityHours}h`, render: (p) => <span className="text-xs text-ink-muted">{p.maxValidityHours}h</span> },
@@ -553,6 +557,7 @@ const SshRequestProfilesTab: React.FC = () => {
                 <DetailField label="Name" value={p.name} />
                 <DetailField label="Description" value={p.description} />
                 <DetailField label="CA Scope" value={p.certificateAuthorityId ? caName(p.certificateAuthorityId) : 'Any CA'} />
+                <DetailField label="Certificate type" value={profileTypeLabel(p.certificateType)} />
                 <DetailField label="Require Approval" value={p.requireApproval ? 'Yes' : 'No'} />
                 <DetailField label="Max Validity Hours" value={String(p.maxValidityHours)} />
                 <DetailField label="Allowed Signing Profiles" value={sps.length ? sps.join(', ') : 'Any'} />

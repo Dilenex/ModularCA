@@ -7,7 +7,8 @@ import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
-import { NewButton } from '@shared/components/NewButton';
+import { Link } from 'react-router-dom';
+import { SELF_SSH_CERTIFICATES_PATH } from '../sshPlaces';
 import { FieldHint, inputClass, inputClassNarrow, labelClass } from '@shared/components/forms';
 import { actionButton, actionButtonPrimary } from '@shared/components/actionButtons';
 import { copyText } from '@shared/clipboard';
@@ -122,7 +123,6 @@ const RequestForm: React.FC<{
             <div className="bg-raised border border-line rounded-lg p-4 space-y-3">
                 <h3 className="text-sm font-semibold text-ink">Request a certificate</h3>
                 <p className="text-sm text-ink max-w-3xl">There is no SSH CA you may request a certificate from. An administrator gives you the right to request on an SSH CA.</p>
-                <button type="button" onClick={onCancel} className={actionButton}>Close</button>
             </div>
         );
     }
@@ -236,28 +236,91 @@ const RequestForm: React.FC<{
 
             <div className="flex gap-2">
                 <button type="submit" disabled={busy || !ready} className={actionButtonPrimary}>{busy ? 'Requesting…' : 'Request certificate'}</button>
-                <button type="button" onClick={onCancel} className={actionButton}>Cancel</button>
+                <button type="button" onClick={onCancel} className={actionButton}>Clear</button>
             </div>
         </form>
     );
 };
 
 /// <summary>
-/// The self-service SSH Certificates page: the certificates issued for the reader, whoever asked
-/// for them, and a form to request one. A new certificate is shown once with copy and download
-/// and where to save it, and stays downloadable from the list.
+/// The SSH tab of the self-service Request Certificate page: the form to request an SSH
+/// certificate. A new certificate is shown once with copy and download and where to save it,
+/// and stays downloadable from the SSH tab of My Certificates.
 /// </summary>
-const MySshCertificates: React.FC = () => {
-    const { showToast } = useToast();
-    const [certificates, setCertificates] = useState<SshCertificateView[]>([]);
+export const MySshRequestTab: React.FC = () => {
     const [options, setOptions] = useState<SshRequestOptions | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
-    const [endpointUnavailable, setEndpointUnavailable] = useState(false);
     const [refresh, setRefresh] = useState(0);
-    const [showForm, setShowForm] = useState(false);
     const [signed, setSigned] = useState<SignedCertificate | null>(null);
     const [copied, setCopied] = useState(false);
+    /** Bumped after each certificate, so the form starts empty for the next one. */
+    const [formRound, setFormRound] = useState(0);
+
+    useEffect(() => {
+        let cancelled = false;
+        apiGet<SshRequestOptions>('/api/v1/user/ssh/request-options', { toast: false })
+            .then((data) => { if (!cancelled) { setOptions(data && Array.isArray(data.caKeys) ? data : null); setError(null); } })
+            .catch((err) => { if (!cancelled) { setOptions(null); setError(errorNotice(err, 'The request form could not be loaded.')); } })
+            .finally(() => { if (!cancelled) setLoading(false); });
+        return () => { cancelled = true; };
+    }, [refresh]);
+
+    const copySigned = async () => {
+        if (signed && await copyText(signed.signedCertificate)) {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1500);
+        }
+    };
+
+    const keyFile = defaultKeyFile(signed?.publicKey);
+
+    return (
+        <div className="space-y-4 sm:space-y-6">
+            {signed && (
+                <div className="bg-raised border border-line border-l-4 border-l-ok rounded-lg p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <span className="text-ok font-semibold text-sm">Your certificate is ready</span>
+                        <button type="button" onClick={() => setSigned(null)} className="text-xs text-ink-muted hover:text-ink transition-colors">Dismiss</button>
+                    </div>
+                    <div className="max-w-3xl">
+                        <DetailField label="Serial" value={String(signed.serialNumber)} mono />
+                        <DetailField label="Login names" value={jsonList(signed.principals).join(', ')} mono />
+                        <DetailField label="Valid until" value={dayTimeText(signed.validBefore)} />
+                    </div>
+                    <textarea readOnly rows={3} aria-label="Your certificate" value={signed.signedCertificate}
+                        className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink data-mono focus:outline-none" />
+                    <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={copySigned} className={actionButton}>{copied ? 'Copied' : 'Copy'}</button>
+                        <button type="button" onClick={() => downloadText(signed.signedCertificate, `${keyFile}-cert.pub`)} className={actionButton}>Download certificate</button>
+                    </div>
+                    <p className="text-xs text-ink-muted max-w-3xl">
+                        Save it as <code className="text-accent-ink">~/.ssh/{keyFile}-cert.pub</code>, beside the private key <code className="text-accent-ink">~/.ssh/{keyFile}</code>. If your key file has another name, use that name with <code className="text-accent-ink">-cert.pub</code> added. ssh then presents the certificate by itself. It stays under <Link to={SELF_SSH_CERTIFICATES_PATH} className="text-accent-ink hover:underline">My Certificates, on the SSH tab</Link>, where it can be downloaded again; a download from that list is named after you, so rename it the same way.
+                    </p>
+                </div>
+            )}
+
+            {loading && <p className="text-sm text-ink-muted">Loading…</p>}
+            <InlineNotice notice={error} />
+            {options && (
+                <RequestForm key={formRound} options={options}
+                    onSigned={(result) => { setSigned(result); setCopied(false); setFormRound((r) => r + 1); setRefresh((r) => r + 1); }}
+                    onCancel={() => setFormRound((r) => r + 1)} />
+            )}
+        </div>
+    );
+};
+
+/// <summary>
+/// The SSH tab of the self-service My Certificates page: the SSH certificates issued for the
+/// reader, whoever asked for them, each downloadable.
+/// </summary>
+export const MySshCertificatesTab: React.FC = () => {
+    const { showToast } = useToast();
+    const [certificates, setCertificates] = useState<SshCertificateView[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<NoticeInput | null>(null);
+    const [endpointUnavailable, setEndpointUnavailable] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -273,15 +336,7 @@ const MySshCertificates: React.FC = () => {
             })
             .finally(() => { if (!cancelled) setLoading(false); });
         return () => { cancelled = true; };
-    }, [refresh]);
-
-    useEffect(() => {
-        let cancelled = false;
-        apiGet<SshRequestOptions>('/api/v1/user/ssh/request-options', { toast: false })
-            .then((data) => { if (!cancelled) setOptions(data && Array.isArray(data.caKeys) ? data : null); })
-            .catch(() => { if (!cancelled) setOptions(null); });
-        return () => { cancelled = true; };
-    }, [refresh]);
+    }, []);
 
     const handleDownload = async (cert: SshCertificateView) => {
         try {
@@ -289,13 +344,6 @@ const MySshCertificates: React.FC = () => {
             downloadText(await resp.text(), `${cert.keyId || cert.id}-cert.pub`);
         } catch (err: any) {
             showToast('error', err.message || 'Download failed');
-        }
-    };
-
-    const copySigned = async () => {
-        if (signed && await copyText(signed.signedCertificate)) {
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 1500);
         }
     };
 
@@ -347,63 +395,23 @@ const MySshCertificates: React.FC = () => {
         </div>
     );
 
-    const keyFile = defaultKeyFile(signed?.publicKey);
-
-    return (
-        <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-xl font-semibold text-ink">SSH Certificates</h1>
-
-            {showForm && options && (
-                <RequestForm options={options}
-                    onSigned={(result) => { setSigned(result); setCopied(false); setShowForm(false); setRefresh((r) => r + 1); }}
-                    onCancel={() => setShowForm(false)} />
-            )}
-
-            {signed && (
-                <div className="bg-raised border border-line border-l-4 border-l-ok rounded-lg p-4 space-y-3">
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <span className="text-ok font-semibold text-sm">Your certificate is ready</span>
-                        <button type="button" onClick={() => setSigned(null)} className="text-xs text-ink-muted hover:text-ink transition-colors">Dismiss</button>
-                    </div>
-                    <div className="max-w-3xl">
-                        <DetailField label="Serial" value={String(signed.serialNumber)} mono />
-                        <DetailField label="Login names" value={jsonList(signed.principals).join(', ')} mono />
-                        <DetailField label="Valid until" value={dayTimeText(signed.validBefore)} />
-                    </div>
-                    <textarea readOnly rows={3} aria-label="Your certificate" value={signed.signedCertificate}
-                        className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink data-mono focus:outline-none" />
-                    <div className="flex flex-wrap gap-2">
-                        <button type="button" onClick={copySigned} className={actionButton}>{copied ? 'Copied' : 'Copy'}</button>
-                        <button type="button" onClick={() => downloadText(signed.signedCertificate, `${keyFile}-cert.pub`)} className={actionButton}>Download certificate</button>
-                    </div>
-                    <p className="text-xs text-ink-muted max-w-3xl">
-                        Save it as <code className="text-accent-ink">~/.ssh/{keyFile}-cert.pub</code>, beside the private key <code className="text-accent-ink">~/.ssh/{keyFile}</code>. If your key file has another name, use that name with <code className="text-accent-ink">-cert.pub</code> added. ssh then presents the certificate by itself. It stays in the list below, where it can be downloaded again; a download from the list is named after you, so rename it the same way.
-                    </p>
-                </div>
-            )}
-
-            {endpointUnavailable ? (
-                <div className="bg-raised border border-line rounded-lg p-8 text-center">
-                    <p className="text-ink-muted">SSH certificates will appear here once issued.</p>
-                </div>
-            ) : (
-                <DataTable<SshCertificateView>
-                    tableId="my-ssh-certificates"
-                    renamedColumns={RENAMED_COLUMNS}
-                    title="SSH Certificates"
-                    toolbarAction={options ? <NewButton label="Request" what="certificate" open={showForm} onClick={() => { setShowForm(!showForm); setSigned(null); }} /> : undefined}
-                    rows={certificates}
-                    rowKey={(c) => c.id}
-                    loading={loading}
-                    error={error}
-                    empty="No SSH certificate has been issued for you yet."
-                    columns={columns}
-                    exportFileName="my-ssh-certificates"
-                    renderExpanded={renderExpanded}
-                />
-            )}
+    return endpointUnavailable ? (
+        <div className="bg-raised border border-line rounded-lg p-8 text-center">
+            <p className="text-ink-muted">SSH certificates will appear here once issued.</p>
         </div>
+    ) : (
+        <DataTable<SshCertificateView>
+            tableId="my-ssh-certificates"
+            renamedColumns={RENAMED_COLUMNS}
+            title="SSH Certificates"
+            rows={certificates}
+            rowKey={(c) => c.id}
+            loading={loading}
+            error={error}
+            empty="No SSH certificate has been issued for you yet."
+            columns={columns}
+            exportFileName="my-ssh-certificates"
+            renderExpanded={renderExpanded}
+        />
     );
 };
-
-export default MySshCertificates;

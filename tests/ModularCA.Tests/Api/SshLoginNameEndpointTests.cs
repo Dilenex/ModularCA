@@ -596,6 +596,218 @@ public sealed class SshLoginNameEndpointTests
         Assert.Empty(Json(await Call(NamesController(w.Node, w.Node.AddUser("nobody")), "FindCertificates", (long?)certificate.SerialNumber, null, null)).EnumerateArray());
     }
 
+    // ---- The certificate list across keys ----------------------------------------------------
+
+    /// <summary>
+    /// <c>GET /api/v1/admin/ssh/certificates</c> lists the certificates of every SSH CA key the
+    /// caller holds cert.view on, inside the caller's fence, with the paging, sort and answer
+    /// shape of the per-key list and the key as a filter. It never answers for a key the caller
+    /// may not view: such a key named in <c>caKeyId</c> gives an empty list, as an unknown one does.
+    /// </summary>
+    [Fact]
+    public async Task The_certificate_list_across_keys_answers_only_for_the_keys_the_caller_may_view()
+    {
+        using var w = new World();
+        var lab = await w.Node.CreateCaAsync("Lab SSH");
+        var admin = AdminController(w.Node, w.Operator);
+        await Call(admin, "SignUserKey", w.Ca.Id, w.AdminRequest(w.Alice.Id, null, null, "alice"));
+        await Call(admin, "SignUserKey", w.Ca.Id, w.AdminRequest(null, "ci", null, "root"));
+        await Call(admin, "SignHostKey", w.Ca.Id, w.HostRequest(null, "web01.example.com"));
+        var onLab = await w.Node.Service.SignUserKeyAsync(lab.Id, SshNode.SubjectKey(), SshNode.Ci, ["root"], 1, null);
+        // The operator administers Fleet SSH and holds nothing on Lab SSH.
+        var names = NamesController(w.Node, w.Operator);
+
+        static async Task<List<JsonElement>> List(object controller, int page = 1, int pageSize = 50, string? sort = null, Guid? caKeyId = null)
+            => Json(await Call(controller, "GetCertificates", page, pageSize, sort, caKeyId)).EnumerateArray().ToList();
+        static string[] KeyIds(List<JsonElement> rows) => rows.Select(c => c.GetProperty("keyId").GetString()!).ToArray();
+
+        var fleet = await List(names, sort: "keyId");
+        Assert.Equal(new[] { "alice user", "svc:ci service", "web01.example.com host" },
+            fleet.Select(c => $"{c.GetProperty("keyId").GetString()} {c.GetProperty("subject").GetProperty("kind").GetString()}").ToArray());
+        Assert.All(fleet, c => Assert.Equal(w.Ca.Id, c.GetProperty("sshCaKey").GetProperty("id").GetGuid()));
+        Assert.All(fleet, c => Assert.Equal("Fleet SSH", c.GetProperty("sshCaKey").GetProperty("name").GetString()));
+
+        // The answer is the per-key list's, row for row.
+        var perKey = Json(await Call(admin, "GetCertificates", w.Ca.Id, 1, 50, "keyId")).EnumerateArray().ToList();
+        Assert.Equal(perKey.Select(c => c.GetRawText()).ToArray(), fleet.Select(c => c.GetRawText()).ToArray());
+
+        // The key as a filter; a key the caller may not view, or one that does not exist, lists nothing.
+        Assert.Equal(3, (await List(names, caKeyId: w.Ca.Id)).Count);
+        Assert.Empty(await List(names, caKeyId: lab.Id));
+        Assert.Empty(await List(names, caKeyId: Guid.NewGuid()));
+        Assert.DoesNotContain(onLab.Id, (await List(names)).Select(c => c.GetProperty("id").GetGuid()));
+
+        // Paging and sort, as on the per-key list. A page below 1 is the first; a page size below 1 is one row.
+        Assert.Equal(new[] { "alice", "svc:ci" }, KeyIds(await List(names, 1, 2, "keyId")));
+        Assert.Equal(new[] { "web01.example.com" }, KeyIds(await List(names, 2, 2, "keyId")));
+        Assert.Empty(await List(names, 3, 2, "keyId"));
+        Assert.Equal(new[] { "alice", "svc:ci" }, KeyIds(await List(names, 0, 2, "keyId")));
+        Assert.Equal(new[] { "alice" }, KeyIds(await List(names, 1, 0, "keyId")));
+        Assert.Equal(new[] { "web01.example.com", "svc:ci", "alice" }, KeyIds(await List(names, sort: "-keyId")));
+        Assert.Equal(3, (await List(names, pageSize: 100_000)).Count);
+        Assert.Empty(await List(names, page: int.MaxValue, pageSize: 200));
+        Assert.Equal(200, ISshLoginNameService.MaxCertificatePageSize);
+
+        // A caller who views only Lab SSH is listed only what is there, whatever key is named.
+        var auditor = NamesController(w.Node, w.Node.AddUser("lab-auditor", w.Node.GroupOf(lab, "auditor").Id));
+        Assert.Equal(onLab.Id, (await List(auditor)).Single().GetProperty("id").GetGuid());
+        Assert.Equal("Lab SSH", (await List(auditor)).Single().GetProperty("sshCaKey").GetProperty("name").GetString());
+        Assert.Empty(await List(auditor, caKeyId: w.Ca.Id));
+
+        // A caller who views both is listed both.
+        var both = NamesController(w.Node, w.Node.AddUser("auditor", w.Node.GroupOf(lab, "auditor").Id, w.Node.GroupOf(w.Ca, "auditor").Id));
+        Assert.Equal(4, (await List(both)).Count);
+        Assert.Equal(onLab.Id, (await List(both, caKeyId: lab.Id)).Single().GetProperty("id").GetGuid());
+
+        // cert.view is the right asked: a requester of Fleet SSH holds it there, and nobody else is listed anything.
+        Assert.Equal(3, (await List(NamesController(w.Node, w.Alice))).Count);
+        Assert.Empty(await List(NamesController(w.Node, w.Node.AddUser("nobody"))));
+
+        // Outside the caller's fence nothing is listed.
+        Assert.Empty(await List(NamesController(w.Node, w.Operator, instanceScope: false)));
+        Assert.Empty(await List(NamesController(w.Node, w.Operator, instanceScope: false), caKeyId: w.Ca.Id));
+    }
+
+    // ---- The certificate type of a profile ---------------------------------------------------
+
+    /// <summary>
+    /// A request profile or certificate profile whose type is set is refused, with a 400 that
+    /// says so, for a certificate of the other type: on the self-service route and on both admin
+    /// sign routes. A profile of the matching type, and one with no type, sign as before.
+    /// </summary>
+    [Fact]
+    public async Task A_profile_of_the_other_certificate_type_is_refused_on_the_three_sign_routes_and_one_with_no_type_serves_either()
+    {
+        using var w = new World();
+        var self = SelfController(w.Node, w.Alice);
+        var admin = AdminController(w.Node, w.Operator);
+        void SetTypes(string? request, string? certificate)
+        {
+            w.Node.Db.SshRequestProfiles.Single(p => p.Id == w.RequestProfile).CertificateType = request;
+            w.Node.Db.SshCertProfiles.Single(p => p.Id == w.CertProfile).CertificateType = certificate;
+            w.Node.Db.SaveChanges();
+        }
+        Task<IActionResult> Self() => Call(self, "SignUserKey", w.SelfRequest(1, null, "alice"));
+        Task<IActionResult> ForUser() => Call(admin, "SignUserKey", w.Ca.Id, w.AdminRequest(w.Alice.Id, null, null, "alice"));
+        Task<IActionResult> ForService() => Call(admin, "SignUserKey", w.Ca.Id, w.AdminRequest(null, "ci", null, "root"));
+        Task<IActionResult> ForHost() => Call(admin, "SignHostKey", w.Ca.Id, w.HostRequest(null, "web01.example.com"));
+
+        SetTypes("host", null);
+        Assert.Equal("SSH request profile 'self-service' is for host certificates and cannot be used for a user certificate.", Error(await Self()));
+
+        SetTypes(null, "host");
+        const string hostOnly = "SSH certificate profile 'any account' is for host certificates and cannot be used for a user certificate.";
+        Assert.Equal(hostOnly, Error(await Self()));
+        Assert.Equal(hostOnly, Error(await ForUser()));
+        Assert.Equal(hostOnly, Error(await ForService()));
+        Assert.Empty(w.Node.Relay.SshSigned);
+        Json(await ForHost());
+
+        SetTypes(null, "user");
+        Assert.Equal("SSH certificate profile 'any account' is for user certificates and cannot be used for a host certificate.", Error(await ForHost()));
+        Assert.Single(w.Node.Relay.SshSigned);
+
+        SetTypes("user", "user");
+        Json(await Self());
+        Json(await ForUser());
+        Json(await ForService());
+
+        SetTypes(null, null);
+        Json(await Self());
+        Json(await ForUser());
+        Json(await ForHost());
+        Assert.Equal(7, w.Node.Relay.SshSigned.Count);
+
+        Assert.True(ModularCA.Shared.Utils.SshProfileCertificateType.Allows(null, "host"));
+        Assert.True(ModularCA.Shared.Utils.SshProfileCertificateType.Allows("host", "host"));
+        Assert.False(ModularCA.Shared.Utils.SshProfileCertificateType.Allows("user", "host"));
+        Assert.Null(ModularCA.Shared.Utils.SshProfileCertificateType.Stored("either"));
+        Assert.Equal("user", ModularCA.Shared.Utils.SshProfileCertificateType.Stored("user"));
+    }
+
+    /// <summary>
+    /// The request options offer the request profiles and certificate profiles of type
+    /// <c>user</c> and those with no type, and never one of type <c>host</c>.
+    /// </summary>
+    [Fact]
+    public async Task The_request_options_offer_only_profiles_for_user_certificates_or_for_either()
+    {
+        using var w = new World();
+        var self = SelfController(w.Node, w.Alice);
+        w.Node.Db.SshCertProfiles.Add(new SshCertProfileEntity { Name = "hosts only", AllowedPrincipalPatterns = "[]", CertificateType = "host" });
+        w.Node.Db.SshCertProfiles.Add(new SshCertProfileEntity { Name = "users only", AllowedPrincipalPatterns = "[]", CertificateType = "user" });
+        // Both allow every signing profile and every certificate profile.
+        w.Node.Db.SshRequestProfiles.Add(new SshRequestProfileEntity { Name = "host requests", CertificateAuthorityId = w.Ca.CertificateAuthorityId, CertificateType = "host" });
+        w.Node.Db.SshRequestProfiles.Add(new SshRequestProfileEntity { Name = "user requests", CertificateAuthorityId = w.Ca.CertificateAuthorityId, CertificateType = "user" });
+        w.Node.Db.SaveChanges();
+
+        async Task<string[]> Offered() => Json(await Call(self, "GetRequestOptions")).GetProperty("caKeys").EnumerateArray().Single().GetProperty("profiles").EnumerateArray()
+            .Select(c => $"{c.GetProperty("requestProfileName").GetString()} / {c.GetProperty("certProfileName").GetString()}").OrderBy(s => s, StringComparer.Ordinal).ToArray();
+
+        Assert.Equal(new[] { "self-service / any account", "user requests / any account", "user requests / users only" }, await Offered());
+
+        // The untyped request profile becomes a host one, and is no longer offered.
+        w.Node.Db.SshRequestProfiles.Single(p => p.Id == w.RequestProfile).CertificateType = "host";
+        w.Node.Db.SaveChanges();
+        Assert.Equal(new[] { "user requests / any account", "user requests / users only" }, await Offered());
+    }
+
+    /// <summary>The SSH profile controller for <paramref name="caller"/>, as a system administrator, whom the certificate profile catalog asks for.</summary>
+    private static object ProfilesController(SshNode node, UserEntity caller)
+    {
+        var controller = New(Ns + "Admin.AdminSshProfileController", caller, true, node.Db, new RecordingAuditService(), new CurrentUserStub(caller), Auth(node));
+        var context = (ControllerContext)controller.GetType().GetProperty("ControllerContext", BindingFlags.Instance | BindingFlags.Public)!.GetValue(controller)!;
+        context.HttpContext.Items["IsSystemAdmin"] = true;
+        return controller;
+    }
+
+    /// <summary>
+    /// The profile routes take <c>certificateType</c> as <c>user</c>, <c>host</c> or
+    /// <c>either</c>, answer it as <c>user</c>, <c>host</c> or null, leave it alone on an update
+    /// that does not send it, and refuse any other value with 400.
+    /// </summary>
+    [Theory]
+    [InlineData("Cert")]
+    [InlineData("Request")]
+    public async Task The_profile_routes_take_keep_and_clear_the_certificate_type(string kind)
+    {
+        using var w = new World();
+        var profiles = ProfilesController(w.Node, w.Operator);
+        // A request profile is bound to the SSH CA, so a caller who is not instance-wide may read it back.
+        object Create(string name, string? type) => kind == "Request"
+            ? Body("Admin.CreateSshRequestProfileRequest", ("Name", name), ("CertificateType", type), ("CertificateAuthorityId", (Guid?)w.Ca.CertificateAuthorityId))
+            : Body("Admin.CreateSshCertProfileRequest", ("Name", name), ("CertificateType", type));
+        object Update(string? type) => Body($"Admin.UpdateSsh{kind}ProfileRequest", ("CertificateType", type));
+        async Task<string?> TypeOf(Guid id) => Json(await Call(profiles, $"Get{kind}Profile", id)).GetProperty("certificateType").GetString();
+        async Task<Guid> Created(string name, string? type) => Json(await Call(profiles, $"Create{kind}Profile", Create(name, type))).GetProperty("id").GetGuid();
+        const string refusal = "certificateType must be \"user\", \"host\" or \"either\".";
+
+        var host = await Created("typed host", "host");
+        Assert.Equal("host", await TypeOf(host));
+        Assert.Equal("user", await TypeOf(await Created("typed user", "user")));
+        Assert.Null(await TypeOf(await Created("typed either", "either")));
+        Assert.Null(await TypeOf(await Created("untyped", null)));
+        Assert.Equal(refusal, Error(await Call(profiles, $"Create{kind}Profile", Create("typed wrongly", "both"))));
+        Assert.Equal(refusal, Error(await Call(profiles, $"Create{kind}Profile", Create("typed in capitals", "User"))));
+
+        var listed = Json(await Call(profiles, $"Get{kind}Profiles")).EnumerateArray().ToDictionary(p => p.GetProperty("name").GetString()!, p => p.GetProperty("certificateType").GetString());
+        Assert.Equal("host", listed["typed host"]);
+        Assert.Equal("user", listed["typed user"]);
+        Assert.Null(listed["typed either"]);
+        Assert.Null(listed["untyped"]);
+        Assert.DoesNotContain("typed wrongly", listed.Keys);
+        Assert.DoesNotContain("typed in capitals", listed.Keys);
+
+        Assert.IsType<OkObjectResult>(await Call(profiles, $"Update{kind}Profile", host, Update(null)));
+        Assert.Equal("host", await TypeOf(host));
+        Assert.Equal(refusal, Error(await Call(profiles, $"Update{kind}Profile", host, Update("hosts"))));
+        Assert.Equal("host", await TypeOf(host));
+        Assert.IsType<OkObjectResult>(await Call(profiles, $"Update{kind}Profile", host, Update("user")));
+        Assert.Equal("user", await TypeOf(host));
+        Assert.IsType<OkObjectResult>(await Call(profiles, $"Update{kind}Profile", host, Update("either")));
+        Assert.Null(await TypeOf(host));
+    }
+
     // ---- Membership changes made in the group controller -------------------------------------
 
     [Fact]
@@ -794,6 +1006,7 @@ public sealed class SshLoginNameEndpointTests
         Assert.Equal(("CaAuditor", null, null, "GET", "groups/{groupId:guid}/login-names"), RightsOf(Names, "GetGroupLoginNames"));
         Assert.Equal((null, Capabilities.UserManage, null, "GET", "users/{userId:guid}/certificates"), RightsOf(Names, "GetUserCertificates"));
         Assert.Equal((null, Capabilities.UserManage, StepUpOps.RevokeSshCert, "POST", "users/{userId:guid}/certificates/revoke"), RightsOf(Names, "RevokeUserCertificates"));
+        Assert.Equal(("CaAuditor", null, null, "GET", "certificates"), RightsOf(Names, "GetCertificates"));
         Assert.Equal(("CaAuditor", null, null, "GET", "certificates/find"), RightsOf(Names, "FindCertificates"));
         Assert.Equal(("CaAuditor", null, null, "GET", "certificates/{id:guid}"), RightsOf(Names, "GetCertificate"));
         Assert.Equal(("CaUser", null, null, "GET", "request-options"), RightsOf(Self, "GetRequestOptions"));

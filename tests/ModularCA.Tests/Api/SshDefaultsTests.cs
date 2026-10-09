@@ -232,6 +232,10 @@ public sealed class SshDefaultsTests
 
     // ---- C. The seeded profiles --------------------------------------------------------------
 
+    /// <summary>
+    /// The three certificate profiles and two request profiles a new install is seeded with,
+    /// value by value, each with its certificate type: <c>user</c> or <c>host</c>.
+    /// </summary>
     [Fact]
     public void A_new_install_is_seeded_with_the_decided_ssh_profiles()
     {
@@ -273,6 +277,13 @@ public sealed class SshDefaultsTests
         Assert.Equal(new[] { standard.Id }, JsonSerializer.Deserialize<List<Guid>>(requestProfiles[1].AllowedSshCertProfileIds));
         Assert.Equal(new[] { host.Id }, JsonSerializer.Deserialize<List<Guid>>(requestProfiles[0].AllowedSshCertProfileIds));
         Assert.All(requestProfiles, p => Assert.DoesNotContain(forwarding.Id.ToString(), p.AllowedSshCertProfileIds));
+
+        // Each carries its certificate type, so a form for a user certificate offers no host profile.
+        Assert.Equal("user", standard.CertificateType);
+        Assert.Equal("user", forwarding.CertificateType);
+        Assert.Equal("host", host.CertificateType);
+        Assert.Equal("host", requestProfiles[0].CertificateType);
+        Assert.Equal("user", requestProfiles[1].CertificateType);
 
         // No signing profile is seeded: those are created with each key.
         Assert.Empty(db.SshSigningProfiles);

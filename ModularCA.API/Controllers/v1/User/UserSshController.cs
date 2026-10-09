@@ -63,7 +63,8 @@ public class UserSshController(
     /// SSH CA key the caller holds cert.request on, the profile combinations that can be
     /// submitted (a request profile that requires no approval, its signing profiles that point
     /// at the key and allow user certificates, its certificate profiles) and the login names the
-    /// caller holds, each with where it comes from, its limit in hours and its end. A held name
+    /// caller holds, each with where it comes from, its limit in hours and its end. A request
+    /// profile or certificate profile whose type is <c>host</c> is left out. A held name
     /// that a certificate profile's patterns do not allow is listed with that combination as
     /// unavailable.
     /// </summary>
@@ -85,6 +86,8 @@ public class UserSshController(
     /// the SSH CA key (400 naming the one that is not), and at least one is required.
     /// Requires an SshRequestProfileId to derive signing and cert profiles from the
     /// request profile's allowed lists; validates that approval is not required.
+    /// A request profile or certificate profile whose type is <c>host</c> is refused (400
+    /// saying so); one with no type serves either (<see cref="SshProfileCertificateType"/>).
     /// The cert profile's AllowedPrincipalPatterns are matched via <see cref="ProfileRegex"/> so a
     /// caller-supplied principal cannot trigger catastrophic backtracking in an operator-authored
     /// pattern (bounded match timeout), and a pattern that times out or does not compile is treated
@@ -118,6 +121,9 @@ public class UserSshController(
             .FirstOrDefaultAsync(p => p.Id == request.SshRequestProfileId);
         if (reqProfile == null)
             return BadRequest(new { error = "SSH request profile not found" });
+
+        if (SshProfileCertificateType.Refusal("request profile", reqProfile.Name, reqProfile.CertificateType, SshProfileCertificateType.User) is { } requestTypeRefusal)
+            return BadRequest(new { error = requestTypeRefusal });
 
         if (reqProfile.RequireApproval)
             return BadRequest(new { error = "This request profile requires approval; use the approval workflow instead" });
@@ -217,6 +223,8 @@ public class UserSshController(
             .FirstOrDefaultAsync(p => p.Id == certProfileId);
         if (certProfile == null)
             return BadRequest(new { error = "SSH cert profile not found" });
+        if (SshProfileCertificateType.Refusal("certificate profile", certProfile.Name, certProfile.CertificateType, SshProfileCertificateType.User) is { } certTypeRefusal)
+            return BadRequest(new { error = certTypeRefusal });
 
         if (request.Principals.Count > certProfile.MaxPrincipals)
             return BadRequest(new { error = $"Too many principals; cert profile allows max {certProfile.MaxPrincipals}" });

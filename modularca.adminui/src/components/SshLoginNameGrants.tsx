@@ -21,6 +21,7 @@ import {
     issuedByText, jsonList, loginNameError, longestCertificateText, removeGrantQuestion, revokeAllSentence, revokedSentence,
     type GrantTerms, type SshCertificateView, type SshLoginNameGrant, type SshLoginNameGrantList, type SshUserLoginName,
 } from '../pages/sshLoginNames';
+import { sshCaKeyPath, sshCertificatePath } from '../pages/sshPlaces';
 
 const STEP_UP_CANCELLED = 'Step-up MFA cancelled';
 
@@ -603,7 +604,7 @@ export const SshUserLoginNames: React.FC<{ user: { id: string; username: string 
     };
 
     const nameColumns: DataTableColumn<SshUserLoginName>[] = useMemo(() => [
-        { key: 'sshCa', header: 'SSH CA', defaultWidth: 180, sortable: true, exportValue: (r) => r.sshCaKey.name, render: (r) => <Link to={`/ssh/ca-keys/${r.sshCaKey.id}`} className="text-accent-ink hover:underline">{r.sshCaKey.name}</Link> },
+        { key: 'sshCa', header: 'SSH CA', defaultWidth: 180, sortable: true, exportValue: (r) => r.sshCaKey.name, render: (r) => <Link to={sshCaKeyPath(r.sshCaKey.id)} className="text-accent-ink hover:underline">{r.sshCaKey.name}</Link> },
         { key: 'loginName', header: 'Login name', defaultWidth: 150, sortable: true, exportValue: (r) => r.loginName, render: (r) => <span className="data-mono">{r.loginName}</span> },
         {
             key: 'source', header: 'Comes from', defaultWidth: 300, truncate: false,
@@ -637,7 +638,7 @@ export const SshUserLoginNames: React.FC<{ user: { id: string; username: string 
     ];
 
     const certColumns: DataTableColumn<SshCertificateView>[] = useMemo(() => [
-        { key: 'serial', header: 'Serial', defaultWidth: 120, exportValue: (c) => String(c.serialNumber), render: (c) => <Link to={`/ssh/certs/${c.id}?caKey=${c.sshCaKeyId}`} className="data-mono text-accent-ink hover:underline">{String(c.serialNumber)}</Link> },
+        { key: 'serial', header: 'Serial', defaultWidth: 120, exportValue: (c) => String(c.serialNumber), render: (c) => <Link to={sshCertificatePath(c)} className="data-mono text-accent-ink hover:underline">{String(c.serialNumber)}</Link> },
         { key: 'sshCa', header: 'SSH CA', defaultWidth: 180, exportValue: (c) => c.sshCaKey?.name || '', render: (c) => <span>{c.sshCaKey?.name || '-'}</span> },
         { key: 'loginNames', header: 'Login names', defaultWidth: 240, exportValue: (c) => jsonList(c.principals).join(', '), render: (c) => <span className="data-mono">{jsonList(c.principals).join(', ')}</span> },
         { key: 'validBefore', header: 'Valid until', defaultWidth: 200, exportValue: (c) => dayTimeText(c.validBefore), render: (c) => <span className="tabular-nums">{dayTimeText(c.validBefore)}</span> },
@@ -759,7 +760,7 @@ export const SshGroupLoginNames: React.FC<{ group: { id: string; name: string; d
     const canGrant = canAnywhere(Capabilities.CaManage) && isInstance !== false;
 
     const columns: DataTableColumn<SshLoginNameGrant>[] = useMemo(() => [
-        { key: 'sshCa', header: 'SSH CA', defaultWidth: 180, sortable: true, exportValue: (g) => g.sshCaKey.name, render: (g) => <Link to={`/ssh/ca-keys/${g.sshCaKey.id}`} className="text-accent-ink hover:underline">{g.sshCaKey.name}</Link> },
+        { key: 'sshCa', header: 'SSH CA', defaultWidth: 180, sortable: true, exportValue: (g) => g.sshCaKey.name, render: (g) => <Link to={sshCaKeyPath(g.sshCaKey.id)} className="text-accent-ink hover:underline">{g.sshCaKey.name}</Link> },
         { key: 'loginName', header: 'Login name', defaultWidth: 160, sortable: true, exportValue: (g) => g.loginName, render: (g) => <span className="data-mono">{g.loginName}</span> },
         {
             key: 'longest', header: 'Longest certificate', defaultWidth: 160, exportValue: (g) => longestCertificateText(g.maxValidityHours),

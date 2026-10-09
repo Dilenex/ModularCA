@@ -25,9 +25,14 @@ import { SshSignKeyForm, type SshSignResult } from '../components/SshSignKeyForm
 import { SshLogLineLookup } from '../components/SshLogLineLookup';
 import { LoginNameGrounds } from '../components/SshCertificateParts';
 import {
-    certificateBadge, certificateStatus, dayText, dayTimeText, defaultKeyFile, isUserCertificate, issuedByDetail, issuedByText, issuedToDetail, issuedToText, jsonList,
-    type SshCertificateView,
+    canOnSshCa, certificateBadge, certificateStatus, dayText, dayTimeText, defaultKeyFile, isUserCertificate, issuedByDetail, issuedByText, issuedToDetail, issuedToText, jsonList,
+    sshKeyChoices,
+    type SshCaKeyRef, type SshCertificateView,
 } from './sshLoginNames';
+import { FilterBar, FilterField, filterControlClass } from '@shared/components/FilterBar';
+import { SshScopeSentence } from '../components/KindTabs';
+import type { Scope } from '../scope';
+import { SSH_CA_KEYS_PATH, sshCaKeyPath, sshCertificatePath, sshScopeSentence } from './sshPlaces';
 import {
     REVIEW_DATE_ACTS_ON_NOTHING, SSH_CA_MAX_VALIDITY_HOURS, WHY_ONE_TYPE, emptySshCaKeyForm, hoursProblem, hoursText, sshCaKeyBody, sshCaKeyReview, withHours, withKind,
     type SshCaKeyForm,
@@ -368,7 +373,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
                 exportFileName="ssh-ca-keys"
                 renderDrawer={caKeyDrawer}
                 drawerTitle={(k) => k.name || 'Unnamed'}
-                detailPath={(k) => `/ssh/ca-keys/${k.id}`}
+                detailPath={(k) => sshCaKeyPath(k.id)}
             />
 
             <ConfirmModal
@@ -401,77 +406,82 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
 /** Columns renamed with login names, so a stored layout keeps its widths. */
 const RENAMED_CERT_COLUMNS = { keyId: 'issuedTo', principals: 'loginNames' };
 
-const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys: any[] }> = ({ refreshTrigger, onRefresh, caKeys }) => {
+/** Rows asked for at a time; the list route answers a page and no total. */
+const CERTIFICATE_PAGE_SIZE = 50;
+
+/// <summary>
+/// The SSH tab of All Certificates: the SSH certificates of every SSH CA key the reader may view,
+/// a page at a time, with the key as a column and as a filter, finding a certificate from a host
+/// log line, and download and revoke for the certificates of the keys the reader may revoke on.
+/// </summary>
+const SshCertificateList: React.FC = () => {
     const { showToast } = useToast();
     const { requireStepUp } = useStepUp();
+    const { capabilities } = useAuth();
     const [certs, setCerts] = useState<SshCertificateView[]>([]);
-    const [signingProfiles, setSigningProfiles] = useState<any[]>([]);
-    const [certProfiles, setCertProfiles] = useState<any[]>([]);
-    const [requestProfiles, setRequestProfiles] = useState<any[]>([]);
+    /** The keys the key list answered; null while it has not, and for a reader it refuses. */
+    const [listedKeys, setListedKeys] = useState<SshCaKeyRef[] | null>(null);
+    const [seenKeys, setSeenKeys] = useState<SshCaKeyRef[]>([]);
+    const [keyFilter, setKeyFilter] = useState('');
+    const [page, setPage] = useState(1);
+    const [refreshTrigger, setRefreshTrigger] = useState(0);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
-    const [showSignForm, setShowSignForm] = useState(false);
     const [confirmRevoke, setConfirmRevoke] = useState<SshCertificateView[] | null>(null);
-    const [signResult, setSignResult] = useState<SshSignResult | null>(null);
-    const [copied, setCopied] = useState(false);
     const [revoking, setRevoking] = useState<string | null>(null);
-    const [selectedCaKeyId, setSelectedCaKeyId] = useState<string>('');
 
-    // Auto-select the first enabled CA key the signer can sign with, when there is one.
+    const mayRevokeOn = (c: SshCertificateView) => canOnSshCa(capabilities, c.sshCaKey, Capabilities.CertRevoke);
+    const keyChoices = sshKeyChoices(listedKeys, seenKeys);
+
+    // The key list needs cert.revoke; a reader with cert.view alone filters by the keys of the rows seen.
     useEffect(() => {
-        if (caKeys.length > 0 && !selectedCaKeyId) {
-            const enabled = caKeys.filter((k) => k.isEnabled !== false);
-            setSelectedCaKeyId((enabled.find((k) => !signBlockedReason(k)) ?? enabled[0] ?? caKeys[0]).id);
-        }
-    }, [caKeys]);
-
-    const selectedCaKey = caKeys.find((k) => k.id === selectedCaKeyId);
-    const signBlocked = selectedCaKey ? signBlockedReason(selectedCaKey) : null;
-    const signerStateUnknown = !!selectedCaKey && sshSignerState(selectedCaKey) === 'unknown';
+        let cancelled = false;
+        apiGet<any>('/api/v1/admin/ssh/ca-keys', { toast: false })
+            .then((data) => {
+                if (cancelled) return;
+                const list: any[] = Array.isArray(data) ? data : (data?.items || data?.keys || []);
+                setListedKeys(list.map((k) => ({ id: k.id, name: k.isEnabled === false ? `${k.name || k.id} (disabled)` : (k.name || k.id), certificateAuthorityId: k.certificateAuthorityId })));
+            })
+            .catch(() => { if (!cancelled) setListedKeys(null); });
+        return () => { cancelled = true; };
+    }, []);
 
     useEffect(() => {
-        if (!selectedCaKeyId) { setLoading(false); return; }
         let cancelled = false;
         setLoading(true);
         setError(null);
-
-        Promise.all([
-            apiGet<any>(`/api/v1/admin/ssh/ca-keys/${selectedCaKeyId}/certificates`),
-            apiGet<any>('/api/v1/admin/ssh/profiles/signing'),
-            apiGet<any>('/api/v1/admin/ssh/profiles/cert'),
-            apiGet<any>('/api/v1/admin/ssh/profiles/request'),
-        ]).then(([certData, signingData, certProfData, reqProfData]) => {
+        const query = new URLSearchParams({ page: String(page), pageSize: String(CERTIFICATE_PAGE_SIZE) });
+        if (keyFilter) query.set('caKeyId', keyFilter);
+        apiGet<SshCertificateView[]>(`/api/v1/admin/ssh/certificates?${query}`)
+            .then((data) => {
                 if (cancelled) return;
-                setCerts(Array.isArray(certData) ? certData : (certData.items || certData.certificates || []));
-                setSigningProfiles(Array.isArray(signingData) ? signingData : []);
-                setCertProfiles(Array.isArray(certProfData) ? certProfData : []);
-                setRequestProfiles(Array.isArray(reqProfData) ? reqProfData : []);
+                const rows = Array.isArray(data) ? data : [];
+                setCerts(rows);
+                setSeenKeys((seen) => sshKeyChoices(null, [...seen, ...rows.flatMap((c) => (c.sshCaKey ? [c.sshCaKey] : []))]));
                 setLoading(false);
             })
             .catch((err) => {
                 if (!cancelled) {
-                    setError(errorNotice(err, 'Failed to load SSH data'));
+                    setError(errorNotice(err, 'Failed to load SSH certificates'));
                     setLoading(false);
                 }
             });
-
         return () => { cancelled = true; };
-    }, [refreshTrigger, selectedCaKeyId]);
+    }, [refreshTrigger, keyFilter, page]);
 
-    // One step-up prompt names every selected certificate; each is then revoked with that token.
+    // One step-up prompt names every selected certificate; each is then revoked with that token, on its own SSH CA key.
     const performBulkRevoke = async () => {
         if (!confirmRevoke) return;
-        if (!selectedCaKeyId) { showToast('warning', 'Please select a CA key first.'); setConfirmRevoke(null); return; }
         setRevoking('bulk');
         let ok = 0, failed = 0;
         try {
             const result = await runWithOneStepUp(confirmRevoke.filter((c) => !c.isRevoked), (c) => String(c.id), requireStepUp, StepUpOps.RevokeSshCert,
-                (c, headers) => apiPost(`/api/v1/admin/ssh/ca-keys/${selectedCaKeyId}/certificates/${c.id}/revoke`, {}, { toast: false, headers }));
+                (c, headers) => apiPost(`/api/v1/admin/ssh/ca-keys/${c.sshCaKeyId}/certificates/${c.id}/revoke`, {}, { toast: false, headers }));
             ok = result.ok;
             failed = result.failures.length;
             if (ok) showToast('success', `Revoked ${ok} certificate${ok !== 1 ? 's' : ''}.`);
             if (failed) showToast('error', `${failed} failed to revoke.`);
-            onRefresh();
+            setRefreshTrigger((t) => t + 1);
         } finally {
             setRevoking(null);
             setConfirmRevoke(null);
@@ -501,6 +511,11 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
         { key: 'type', header: 'Type', defaultWidth: 90, truncate: false, exportValue: (c) => (isUserCertificate(c) ? 'User' : 'Host'), render: (c) => <Tag label={isUserCertificate(c) ? 'User' : 'Host'} /> },
         { key: 'serial', header: 'Serial', defaultWidth: 110, exportValue: (c) => String(c.serialNumber), render: (c) => <span className="data-mono text-ink-muted">{String(c.serialNumber)}</span> },
         {
+            key: 'sshCa', header: 'SSH CA', defaultWidth: 170, minWidth: 120,
+            headerTitle: 'The SSH CA key that signed the certificate.',
+            exportValue: (c) => c.sshCaKey?.name || c.sshCaKeyId, render: (c) => <span className="text-ink">{c.sshCaKey?.name || c.sshCaKeyId}</span>,
+        },
+        {
             key: 'issuedTo', header: 'Issued to', defaultWidth: 180, minWidth: 130,
             headerTitle: 'Who the certificate is for: a user of this console, a service identity (svc: and its label) or a host.',
             exportValue: (c) => issuedToText(c),
@@ -517,9 +532,10 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
         { key: 'issuedBy', header: 'Issued by', defaultWidth: 190, headerTitle: 'Who asked for the certificate.', exportValue: (c) => issuedByText(c), render: (c) => <span className="text-ink-muted">{issuedByText(c)}</span> },
     ];
 
+    // Download and revoke need cert.revoke on the certificate's own SSH CA, as their routes do.
     const bulkActions: DataTableBulkAction<SshCertificateView>[] = [
-        { label: 'Download', single: true, onClick: (rows) => handleDownloadCert(rows[0]) },
-        { label: 'Revoke', variant: 'danger', enabledFor: (c) => !c.isRevoked, onClick: (rows) => setConfirmRevoke(rows) },
+        { label: 'Download', single: true, enabledFor: mayRevokeOn, onClick: (rows) => handleDownloadCert(rows[0]) },
+        { label: 'Revoke', variant: 'danger', enabledFor: (c) => !c.isRevoked && mayRevokeOn(c), onClick: (rows) => setConfirmRevoke(rows) },
     ];
 
     const certDrawer = (c: SshCertificateView) => {
@@ -547,6 +563,113 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
         );
     };
 
+    return (
+        <div className="space-y-4">
+            <SshLogLineLookup />
+
+            <FilterBar>
+                <FilterField label="SSH CA">
+                    <select id="ssh-cert-key" aria-label="SSH CA" value={keyFilter} onChange={(e) => { setKeyFilter(e.target.value); setPage(1); }} className={filterControlClass}>
+                        <option value="">Every SSH CA you may view</option>
+                        {keyChoices.map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
+                    </select>
+                </FilterField>
+            </FilterBar>
+
+            {/* Certificate List */}
+            <DataTable<SshCertificateView>
+                tableId="ssh-certs"
+                renamedColumns={RENAMED_CERT_COLUMNS}
+                title="SSH Certificates"
+                rows={certs}
+                rowKey={(c) => c.id}
+                loading={loading}
+                error={error}
+                empty={page > 1 ? 'No more SSH certificates' : 'No SSH certificates issued'}
+                columns={columns}
+                selectable
+                bulkActions={bulkActions}
+                exportFileName="ssh-certificates"
+                renderDrawer={certDrawer}
+                drawerTitle={(c) => `Certificate ${c.serialNumber}`}
+                detailPath={(c) => sshCertificatePath(c)}
+                page={page}
+                pageSize={CERTIFICATE_PAGE_SIZE}
+                onPageChange={setPage}
+            />
+
+            <ConfirmModal
+                isOpen={!!confirmRevoke}
+                title="Revoke SSH Certificates"
+                message={confirmRevoke ? (() => {
+                    const n = confirmRevoke.filter((c) => !c.isRevoked).length;
+                    return `Revoke ${n} certificate${n !== 1 ? 's' : ''}? This cannot be undone.`;
+                })() : ''}
+                confirmLabel="Revoke"
+                tone="crit"
+                loading={revoking === 'bulk'}
+                onConfirm={performBulkRevoke}
+                onCancel={() => setConfirmRevoke(null)}
+            />
+        </div>
+    );
+};
+
+/* ─── Sign key ─── */
+/// <summary>
+/// The SSH tab of Request Certificate: the SSH CA key to sign with, the Sign key form, and the
+/// signed certificate once, with copy and download and where to save it.
+/// </summary>
+const SshSign: React.FC = () => {
+    const [caKeys, setCaKeys] = useState<any[]>([]);
+    const [signingProfiles, setSigningProfiles] = useState<any[]>([]);
+    const [certProfiles, setCertProfiles] = useState<any[]>([]);
+    const [requestProfiles, setRequestProfiles] = useState<any[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<NoticeInput | null>(null);
+    const [selectedCaKeyId, setSelectedCaKeyId] = useState<string>('');
+    const [signResult, setSignResult] = useState<SshSignResult | null>(null);
+    const [copied, setCopied] = useState(false);
+    /** Bumped after each signature, so the form starts empty for the next one. */
+    const [formRound, setFormRound] = useState(0);
+
+    useEffect(() => {
+        let cancelled = false;
+        Promise.all([
+            apiGet<any>('/api/v1/admin/ssh/ca-keys'),
+            apiGet<any>('/api/v1/admin/ssh/profiles/signing'),
+            apiGet<any>('/api/v1/admin/ssh/profiles/cert'),
+            apiGet<any>('/api/v1/admin/ssh/profiles/request'),
+        ]).then(([keyData, signingData, certProfData, reqProfData]) => {
+                if (cancelled) return;
+                setCaKeys(Array.isArray(keyData) ? keyData : (keyData.items || keyData.keys || []));
+                setSigningProfiles(Array.isArray(signingData) ? signingData : []);
+                setCertProfiles(Array.isArray(certProfData) ? certProfData : []);
+                setRequestProfiles(Array.isArray(reqProfData) ? reqProfData : []);
+                setLoading(false);
+            })
+            .catch((err) => {
+                if (!cancelled) {
+                    setError(errorNotice(err, 'Failed to load SSH data'));
+                    setLoading(false);
+                }
+            });
+        return () => { cancelled = true; };
+    }, []);
+
+    const enabledKeys = caKeys.filter((k) => k.isEnabled !== false);
+
+    // Auto-select the first enabled CA key the signer can sign with, when there is one.
+    useEffect(() => {
+        if (enabledKeys.length > 0 && !selectedCaKeyId) {
+            setSelectedCaKeyId((enabledKeys.find((k) => !signBlockedReason(k)) ?? enabledKeys[0]).id);
+        }
+    }, [caKeys]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const selectedCaKey = enabledKeys.find((k) => k.id === selectedCaKeyId);
+    const signBlocked = selectedCaKey ? signBlockedReason(selectedCaKey) : null;
+    const signerStateUnknown = !!selectedCaKey && sshSignerState(selectedCaKey) === 'unknown';
+
     const copyResult = async () => {
         if (signResult && await copyText(signResult.signedCertificate)) {
             setCopied(true);
@@ -556,6 +679,9 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
 
     const keyFile = defaultKeyFile(signResult?.publicKey);
 
+    if (loading) return <p className="text-sm text-ink-muted">Loading…</p>;
+    if (error) return <InlineNotice notice={error} />;
+
     return (
         <div className="space-y-4">
             {/* CA Key Selector */}
@@ -564,40 +690,33 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                 <select
                     id="ssh-ca-key"
                     value={selectedCaKeyId}
-                    onChange={(e) => { setSelectedCaKeyId(e.target.value); setShowSignForm(false); }}
+                    onChange={(e) => { setSelectedCaKeyId(e.target.value); setSignResult(null); }}
                     className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                 >
-                    {caKeys.filter(k => k.isEnabled !== false).length === 0 && <option value="">No CA keys available</option>}
-                    {caKeys.filter(k => k.isEnabled !== false).map((k: any) => (
+                    {enabledKeys.length === 0 && <option value="">No CA keys available</option>}
+                    {enabledKeys.map((k: any) => (
                         <option key={k.id} value={k.id}>{k.name || k.id} ({k.keyType || k.algorithm}){signBlockedReason(k) ? `, ${sshKeyCustody(k).badge.label.toLowerCase()}` : ''}</option>
                     ))}
                 </select>
             </div>
+
+            {enabledKeys.length === 0 && (
+                <p className="text-sm text-ink max-w-3xl">
+                    There is no enabled SSH CA key to sign with. SSH CA keys are generated on <Link to={SSH_CA_KEYS_PATH} className="text-accent-ink hover:underline">Authorities, on the SSH tab</Link>.
+                </p>
+            )}
 
             {signBlocked && selectedCaKey && (
                 <div role="status" className="bg-warn-soft border border-warn/40 rounded-md px-3 py-2 space-y-1 max-w-4xl">
                     <p className="text-sm font-semibold text-warn">Signing is unavailable with "{selectedCaKey.name || selectedCaKey.id}"</p>
                     <p className="text-sm text-ink break-words">{signBlocked}</p>
                     <p className="text-xs text-ink">
-                        <Link to={`/ssh/ca-keys/${selectedCaKey.id}`} className="text-accent-ink hover:underline">Open the key's page</Link> for what to do. Certificates it has already issued are listed below and can still be revoked.
+                        <Link to={sshCaKeyPath(selectedCaKey.id)} className="text-accent-ink hover:underline">Open the key's page</Link> for what to do. Certificates it has already issued are listed under All Certificates, on the SSH tab, and can still be revoked.
                     </p>
                 </div>
             )}
             {signerStateUnknown && (
                 <FieldHint tone="warn">The signer could not be asked whether it holds this key. Signing is refused while the signer is locked or out of reach.</FieldHint>
-            )}
-
-            {showSignForm && selectedCaKey && (
-                <SshSignKeyForm
-                    key={selectedCaKey.id}
-                    caKey={selectedCaKey}
-                    signBlocked={signBlocked}
-                    signingProfiles={signingProfiles}
-                    certProfiles={certProfiles}
-                    requestProfiles={requestProfiles}
-                    onSigned={(result) => { setSignResult(result); setCopied(false); setShowSignForm(false); onRefresh(); }}
-                    onCancel={() => setShowSignForm(false)}
-                />
             )}
 
             {signResult && (
@@ -625,78 +744,68 @@ const SshCerts: React.FC<{ refreshTrigger: number; onRefresh: () => void; caKeys
                                 <button type="button" onClick={() => downloadText(signResult.signedCertificate, `${keyFile}-cert.pub`)} className={actionButton}>
                                     Download certificate
                                 </button>
+                                <Link to={sshCertificatePath({ id: signResult.id, sshCaKeyId: selectedCaKeyId })} className={actionButton}>Open the certificate's page</Link>
                             </div>
                         </>
                     )}
                     <p className="text-xs text-ink-muted max-w-3xl">
                         It belongs beside the private key it certifies, under that key file's name with <code className="text-accent-ink">-cert.pub</code> added: for a key in <code className="text-accent-ink">~/.ssh/{keyFile}</code>, save it as <code className="text-accent-ink">~/.ssh/{keyFile}-cert.pub</code>.
-                        {signResult.forUser && ` ${signResult.forUser} also finds it under SSH Certificates in their own portal, and can download it there.`}
+                        {signResult.forUser && ` ${signResult.forUser} also finds it under My Certificates, on the SSH tab, in their own portal, and can download it there.`}
                     </p>
                 </div>
             )}
 
-            <SshLogLineLookup onFound={(c) => { if (caKeys.some((k) => k.id === c.sshCaKeyId && k.isEnabled !== false)) setSelectedCaKeyId(c.sshCaKeyId); }} />
-
-            {/* Certificate List */}
-            <DataTable<SshCertificateView>
-                tableId="ssh-certs"
-                renamedColumns={RENAMED_CERT_COLUMNS}
-                toolbarAction={<NewButton label="Sign key" open={showSignForm} disabled={!selectedCaKeyId || (!!signBlocked && !showSignForm)} onClick={() => { setShowSignForm(!showSignForm); setSignResult(null); }} />}
-                title="SSH Certificates"
-                rows={certs}
-                rowKey={(c) => c.id}
-                loading={loading}
-                error={error}
-                empty="No SSH certificates issued"
-                columns={columns}
-                selectable
-                bulkActions={bulkActions}
-                exportFileName="ssh-certificates"
-                renderDrawer={certDrawer}
-                drawerTitle={(c) => `Certificate ${c.serialNumber}`}
-                detailPath={(c) => `/ssh/certs/${c.id}?caKey=${c.sshCaKeyId || selectedCaKeyId}`}
-            />
-
-            <ConfirmModal
-                isOpen={!!confirmRevoke}
-                title="Revoke SSH Certificates"
-                message={confirmRevoke ? (() => {
-                    const n = confirmRevoke.filter((c) => !c.isRevoked).length;
-                    return `Revoke ${n} certificate${n !== 1 ? 's' : ''}? This cannot be undone.`;
-                })() : ''}
-                confirmLabel="Revoke"
-                tone="crit"
-                loading={revoking === 'bulk'}
-                onConfirm={performBulkRevoke}
-                onCancel={() => setConfirmRevoke(null)}
-            />
+            {selectedCaKey && (
+                <SshSignKeyForm
+                    key={`${selectedCaKey.id}:${formRound}`}
+                    caKey={selectedCaKey}
+                    signBlocked={signBlocked}
+                    signingProfiles={signingProfiles}
+                    certProfiles={certProfiles}
+                    requestProfiles={requestProfiles}
+                    onSigned={(result) => { setSignResult(result); setCopied(false); setFormRound((r) => r + 1); }}
+                    onCancel={() => setFormRound((r) => r + 1)}
+                />
+            )}
         </div>
     );
 };
 
-/* ─── SSH Certificates Page ─── */
-const SshCertificates: React.FC = () => {
+/* ─── The SSH tabs ─── */
+/// <summary>
+/// The SSH tab of Authorities: the SSH CA keys, the form for a new one, and the notice that keys
+/// were plaintext files on the node. SSH CAs belong to the instance, so under a scope confined
+/// to a space the tab says so and shows nothing else.
+/// </summary>
+/// <remarks>The scope is an input so that the tab can list a space's SSH CAs once an SSH CA can be assigned to spaces.</remarks>
+export const SshCaKeysTab: React.FC<{ scope: Scope }> = ({ scope }) => {
     const [refreshTrigger, setRefreshTrigger] = useState(0);
-    const [caKeys, setCaKeys] = useState<any[]>([]);
-    const refresh = () => setRefreshTrigger((t) => t + 1);
-
-    // Load CA keys for the certificate section's CA key selector
-    useEffect(() => {
-        apiGet<any>('/api/v1/admin/ssh/ca-keys')
-            .then((data) => {
-                setCaKeys(Array.isArray(data) ? data : (data.items || data.keys || []));
-            })
-            .catch(() => {});
-    }, [refreshTrigger]);
-
+    const sentence = sshScopeSentence(scope);
+    if (sentence) return <SshScopeSentence text={sentence} />;
     return (
-        <div className="p-6 space-y-8">
-            <h1 className="text-xl font-semibold text-ink">SSH Certificates</h1>
+        <div className="space-y-4 sm:space-y-6">
             <SshPlaintextNoticeBanner refreshTrigger={refreshTrigger} />
-            <SshCaKeys refreshTrigger={refreshTrigger} onRefresh={refresh} />
-            <SshCerts refreshTrigger={refreshTrigger} onRefresh={refresh} caKeys={caKeys} />
+            <SshCaKeys refreshTrigger={refreshTrigger} onRefresh={() => setRefreshTrigger((t) => t + 1)} />
         </div>
     );
 };
 
-export default SshCertificates;
+/// <summary>
+/// The SSH tab of All Certificates. Under a scope confined to a space it says that SSH CAs belong
+/// to the instance and shows nothing else.
+/// </summary>
+/// <remarks>The scope is an input so that the tab can list a space's SSH certificates once an SSH CA can be assigned to spaces.</remarks>
+export const SshCertificatesTab: React.FC<{ scope: Scope }> = ({ scope }) => {
+    const sentence = sshScopeSentence(scope);
+    return sentence ? <SshScopeSentence text={sentence} /> : <SshCertificateList />;
+};
+
+/// <summary>
+/// The SSH tab of Request Certificate. Under a scope confined to a space it says that SSH CAs
+/// belong to the instance and shows nothing else.
+/// </summary>
+/// <remarks>The scope is an input so that the tab can offer a space's SSH CAs once an SSH CA can be assigned to spaces.</remarks>
+export const SshSignTab: React.FC<{ scope: Scope }> = ({ scope }) => {
+    const sentence = sshScopeSentence(scope);
+    return sentence ? <SshScopeSentence text={sentence} /> : <SshSign />;
+};

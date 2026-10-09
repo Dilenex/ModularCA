@@ -895,7 +895,7 @@ features:
                     SSH CA&apos;s record are left exactly as they were, and the SSH CA signs nothing until the key is
                     imported: signing with it answers 503, &ldquo;SSH CA key awaiting import into the signer&rdquo;. Its
                     public key and its KRL are still served, and its certificates can still be revoked. The console shows
-                    such a key on the SSH Certificates page, on the key&apos;s own page with the reason, the expected path and
+                    such a key on the SSH tab of Authorities, on the key&apos;s own page with the reason, the expected path and
                     what to do, and on System Health; the readiness payload lists it under
                     <code className="text-sm bg-sunken px-1.5 py-0.5 rounded"> checks.signer.sshKeys.awaitingImport</code>. The usual
                     reasons are a missing or unreadable file, a file protected by a passphrase, a file that holds another
@@ -911,7 +911,7 @@ features:
                     Every backup archive and every pre-restore snapshot made before the import still holds the keys.
                 </p>
                 <p className="text-ink leading-relaxed mb-3">
-                    The SSH Certificates page therefore shows a notice on any install that had such keys: which keys were
+                    The SSH tab of Authorities therefore shows a notice on any install that had such keys: which keys were
                     imported and when, where each file was and whether it has been removed, and the archives and
                     snapshots in the backup directory that were written before the last import. The same is available
                     from <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">GET /api/v1/admin/ssh/plaintext-notice</code>. Only the
@@ -972,10 +972,17 @@ features:
                     <li><span className="font-semibold">Afterwards, a certificate follows its login names.</span> Removing a grant, taking a user out of a group, turning own usernames off on a key, and disabling, renaming or deleting a user revoke the certificates that depended on it. So does taking away the right to request: a user who may no longer request from an SSH CA loses every live certificate they have on it, whether the right went with a group, a role, a capability or a change to a role. That applies to certificates issued from 0.4.2 on; an older certificate is revoked only when its user is disabled, renamed or deleted or may no longer request, and only where the upgrade could tell whose it was. A sweep, the <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">SshLoginNameSweep</code> job, runs every 15 minutes and revokes what such a change should have revoked and did not, because the node stopped first. It also revokes the live certificates of a user who is disabled now, or who may not request from the SSH CA now, so a user who was already disabled before the upgrade, or had already lost the right, loses theirs at the first sweep after it.</li>
                 </ul>
                 <p className="text-ink leading-relaxed mb-3">
-                    The self-service SSH Certificates page now has a request form that offers exactly the login names a user
+                    The self-service portal now has an SSH request form that offers exactly the login names a user
                     holds, and the admin console can find a certificate from the line a host logged. The Admin UI Guide
                     describes both, with a recipe for shared accounts.
                 </p>
+
+                <h3 className="text-lg font-semibold text-ink mb-2">SSH moved into tabs, and profiles have a type</h3>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li><span className="font-semibold">SSH has no menu entry of its own.</span> In the administration console the SSH CA keys are the SSH tab of Authorities, the SSH certificates the SSH tab of All Certificates, and Sign key the SSH tab of Request Certificate. In self-service the request form is the SSH tab of Request Certificate and the list the SSH tab of My Certificates. A tab is shown only to whoever can use it. The old addresses (<code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/admin/ssh</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/admin/ssh/ca-keys/&#123;id&#125;</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/admin/ssh/certs/&#123;id&#125;</code> and <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/user/ssh</code>) redirect to the new ones until 0.5.</li>
+                    <li><span className="font-semibold">The SSH certificate list covers every key.</span> It lists the certificates of every SSH CA key you may view, with the key as a column and as a filter, through <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">GET /api/v1/admin/ssh/certificates</code>. The list of one key is kept.</li>
+                    <li><span className="font-semibold">SSH request and certificate profiles have a type:</span> user, host, or either. The upgrade sets it on the five profiles a new install is seeded with, where they still have their seeded names: <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">SSH User Cert - Standard</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">SSH User Cert - Forwarding</code> and <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">SSH User Request - Default</code> become user; <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">SSH Host Cert - Standard</code> and <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">SSH Host Request - Default</code> become host. Every other profile, a renamed one included, stays either and works as it did. A profile whose type is set is refused, with 400, for a certificate of the other type, and the self-service form no longer offers a host profile. A script that signs a user key through the seeded host request or host certificate profile, or a host key through a seeded user certificate profile, is refused after the upgrade: use a profile of the right type, or set the profile to either.</li>
+                </ul>
 
                 <h3 className="text-lg font-semibold text-ink mb-2">Backup and restore</h3>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">

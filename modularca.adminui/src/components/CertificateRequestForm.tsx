@@ -86,6 +86,8 @@ export interface CertificateRequestFormProps {
     endpoints: CertificateRequestEndpoints;
     /** Where "View requests" on the success panel takes the requester. */
     requestsPath: string;
+    /** The form is a tab of a page that draws the heading and the padding itself. */
+    embedded?: boolean;
 }
 
 interface SanEntry {
@@ -318,7 +320,7 @@ function statusText(status: string) {
 
 // --- Component ---
 
-export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ mode, endpoints, requestsPath }) => {
+export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ mode, endpoints, requestsPath, embedded }) => {
     // What the user API leaves out; see the header comment for the reason behind each.
     const showCertProfilePicker = mode === 'admin' && !!endpoints.certProfiles;
     const showValidityWindow = mode === 'admin';
@@ -819,8 +821,8 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
     const stepNumber = (parsedCsr || tab === 'generate') ? 4 : 3;
 
     return (
-        <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-xl font-semibold text-ink">Request Certificate</h1>
+        <div className={embedded ? 'space-y-4 sm:space-y-6' : 'p-3 sm:p-6 space-y-4 sm:space-y-6'}>
+            {!embedded && <h1 className="text-xl font-semibold text-ink">Request Certificate</h1>}
 
             {/* Step 1: CSR Input Card */}
             <div className={CARD}>

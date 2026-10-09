@@ -391,9 +391,25 @@ public interface ISshLoginNameService
     Task<IReadOnlyList<SshCertificateView>> DescribeAsync(IReadOnlyList<SshCertificateEntity> certificates, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// One page of the certificates on <paramref name="caKeyIds"/> and on no other key, described
+    /// as <see cref="DescribeAsync"/> does. Sorted by <c>createdAt</c> (the default, newest
+    /// first), <c>keyId</c> or <c>validBefore</c>, descending with a leading <c>-</c>.
+    /// </summary>
+    /// <param name="caKeyIds">The SSH CA keys to list; none gives an empty page.</param>
+    /// <param name="page">The 1-based page; below 1 is read as 1.</param>
+    /// <param name="pageSize">Rows per page, held between 1 and <see cref="MaxCertificatePageSize"/>.</param>
+    /// <param name="sort">The sort, as above; null or unknown is the default.</param>
+    Task<IReadOnlyList<SshCertificateView>> CertificatesAsync(IReadOnlyCollection<Guid> caKeyIds, int page, int pageSize, string? sort,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>The most rows one page of <see cref="CertificatesAsync"/> holds.</summary>
+    public const int MaxCertificatePageSize = 200;
+
+    /// <summary>
     /// What the self-service request form needs for a user: per SSH CA key of
     /// <paramref name="requestableCaIds"/> that signs user certificates, the usable profile
-    /// combinations and the login names the user holds.
+    /// combinations and the login names the user holds. A request profile or certificate
+    /// profile whose type is <c>host</c> is left out; one with no type is offered.
     /// </summary>
     Task<SshRequestOptions> RequestOptionsAsync(Guid userId, IReadOnlyCollection<Guid> requestableCaIds, CancellationToken cancellationToken = default);
 

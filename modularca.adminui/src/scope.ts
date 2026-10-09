@@ -1,4 +1,4 @@
-import { can, canAnywhere, canInSpace, canOnCaInSpace, canSpaceWide, consoleCas, spacesOf, type EffectiveCapabilities } from './authz';
+import { can, canAnywhere, canInSpace, canOnCaInSpace, canSpaceWide, canUseSshTab, consoleCas, spacesOf, type EffectiveCapabilities } from './authz';
 import type { Gate } from './gates';
 
 /**
@@ -166,10 +166,12 @@ export function sameScope(a: Scope, b: Scope): boolean {
  * An unscoped gate is checked at system scope, a scoped one on the selected CA. Across a space or
  * all CAs a scoped gate needs the capability on a CA there or at system scope, since the CA-scoped
  * list endpoints refuse a route naming no CA otherwise; a `spaceWide` gate also admits a
- * space-wide grant over a space with no CA yet.
+ * space-wide grant over a space with no CA yet. A gate with an `ssh` tab also admits, under any
+ * console scope, whoever can use that tab.
  */
 export function gateAllows(caps: EffectiveCapabilities, gate: Gate | undefined, scope: Scope): boolean {
     if (!gate) return true;
+    if (gate.ssh && scope.kind !== 'mine' && canUseSshTab(caps, gate.ssh)) return true;
     const capability = gate.requires;
     if (!gate.scoped) return can(caps, capability);
     switch (scope.kind) {

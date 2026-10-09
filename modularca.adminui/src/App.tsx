@@ -14,9 +14,10 @@ import { ScrollToTop } from '@shared/components/ScrollToTop';
 import TitleManager from './components/TitleManager';
 import { PORTAL, BASENAME, LOGIN_PATH } from './portal';
 import { ScopeProvider } from './context/ScopeContext';
-import { legacySpacePath } from './legacyPaths';
+import { legacySelfSshPath, legacySpacePath, legacySshPath } from './legacyPaths';
 import { profileDetailRoute, profileNewRoute } from './pages/profiles/profileRoutes';
-import { SYSTEM_ADMIN, SYSTEM_OPERATOR, CA_MANAGE, CA_MANAGE_SPACE, CA_AUDIT, GROUP_MANAGE, USER_MANAGE, TOKEN_MANAGE, CERT_VIEW, CERT_REQUEST } from './gates';
+import { SELF_SSH_CERTIFICATES_PATH, SSH_CA_KEY_ROUTE, SSH_CERTIFICATES_PATH, SSH_CERTIFICATE_ROUTE } from './pages/sshPlaces';
+import { SYSTEM_ADMIN, SYSTEM_OPERATOR, CA_MANAGE, CA_MANAGE_SPACE, CA_AUDIT, GROUP_MANAGE, USER_MANAGE, TOKEN_MANAGE, CERT_VIEW, AUTHORITIES, CERTIFICATES, CERTIFICATE_REQUEST } from './gates';
 
 // Auth pages — eagerly loaded (entry points, must render immediately)
 import LoginPage from './pages/Login';
@@ -48,7 +49,6 @@ const SshSigningProfileDetail = React.lazy(() => import('./pages/SshSigningProfi
 const SshCertProfileDetail = React.lazy(() => import('./pages/SshCertProfileDetail'));
 const SshRequestProfileDetail = React.lazy(() => import('./pages/SshRequestProfileDetail'));
 const AcmeManagement = React.lazy(() => import('./pages/AcmeManagement'));
-const SshCertificates = React.lazy(() => import('./pages/SshCertificates'));
 const SshCaKeyDetail = React.lazy(() => import('./pages/SshCaKeyDetail'));
 const SshCertDetail = React.lazy(() => import('./pages/SshCertDetail'));
 const Users = React.lazy(() => import('./pages/Users'));
@@ -88,7 +88,6 @@ const SelfDashboard = React.lazy(() => import('./pages/self/Dashboard'));
 const SelfRequestCertificate = React.lazy(() => import('./pages/self/RequestCertificate'));
 const SelfMyCertificates = React.lazy(() => import('./pages/self/MyCertificates'));
 const SelfCertificateRequests = React.lazy(() => import('./pages/self/CertificateRequests'));
-const SelfMySshCertificates = React.lazy(() => import('./pages/self/MySshCertificates'));
 const SelfCaInformation = React.lazy(() => import('./pages/self/CaInformation'));
 
 // Page gates come from gates.ts, shared with the sidebar in Layout.tsx, so a hidden link and
@@ -105,6 +104,21 @@ const LdapCaRedirect: React.FC = () => {
 const LegacySpaceRedirect: React.FC = () => {
     const { pathname, search } = useLocation();
     return <Navigate to={legacySpacePath(pathname, search) ?? '/spaces'} replace />;
+};
+
+/**
+ * `/ssh`, `/ssh/ca-keys/:id` and `/ssh/certs/:id`, the SSH CA page folded into tabs in 0.4.2,
+ * keep their id and query string.
+ */
+const LegacySshRedirect: React.FC = () => {
+    const { pathname, search } = useLocation();
+    return <Navigate to={legacySshPath(pathname, search) ?? SSH_CERTIFICATES_PATH} replace />;
+};
+
+/** Self-service `/ssh`, folded into the SSH tab of My Certificates in 0.4.2, keeps its query string. */
+const LegacySelfSshRedirect: React.FC = () => {
+    const { pathname, search } = useLocation();
+    return <Navigate to={legacySelfSshPath(pathname, search) ?? SELF_SSH_CERTIFICATES_PATH} replace />;
 };
 
 const PageLoader = () => (
@@ -159,7 +173,8 @@ const UserRoutes: React.FC = () => (
         <Route path="/request" element={<SelfRequestCertificate />} />
         <Route path="/certificates" element={<SelfMyCertificates />} />
         <Route path="/requests" element={<SelfCertificateRequests />} />
-        <Route path="/ssh" element={<SelfMySshCertificates />} />
+        {/* SSH moved into tabs in 0.4.2; remove this redirect in 0.5. */}
+        <Route path="/ssh" element={<LegacySelfSshRedirect />} />
         <Route path="/authorities" element={<SelfCaInformation />} />
         <Route path="/account" element={<AccountDetail />} />
         {/* Security is a tab inside the account page; keep the old path working. */}
@@ -203,18 +218,23 @@ const App: React.FC = () => {
                                                             <Route path="/health" element={<ProtectedRoute {...SYSTEM_ADMIN}><SystemHealth /></ProtectedRoute>} />
 
                                                             {/* Certificates */}
-                                                            <Route path="/certificates" element={<ProtectedRoute {...CERT_VIEW}><Certificates /></ProtectedRoute>} />
-                                                            <Route path="/certificates/request" element={<ProtectedRoute {...CERT_REQUEST}><IssueCertificate /></ProtectedRoute>} />
+                                                            {/* All Certificates and Request Certificate carry an SSH tab, so each also admits who can use that tab. */}
+                                                            <Route path="/certificates" element={<ProtectedRoute {...CERTIFICATES}><Certificates /></ProtectedRoute>} />
+                                                            <Route path="/certificates/request" element={<ProtectedRoute {...CERTIFICATE_REQUEST}><IssueCertificate /></ProtectedRoute>} />
                                                             {/* Certificate Search merged into the Certificates page (advanced filters). */}
                                                             <Route path="/certificates/search" element={<Navigate to="/certificates" replace />} />
                                                             <Route path="/certificates/expiry" element={<ProtectedRoute {...CERT_VIEW}><ExpiryCalendar /></ProtectedRoute>} />
                                                             <Route path="/certificates/requests" element={<ProtectedRoute {...CERT_VIEW}><CertificateRequests /></ProtectedRoute>} />
                                                             <Route path="/certificates/requests/:id" element={<ProtectedRoute {...CERT_VIEW}><CertificateRequestDetail /></ProtectedRoute>} />
+                                                            {/* An SSH certificate's page has no gate of its own: its API answers 404 for an SSH CA the reader may not view. */}
+                                                            <Route path={SSH_CERTIFICATE_ROUTE} element={<SshCertDetail />} />
                                                             <Route path="/certificates/:serial" element={<ProtectedRoute {...CERT_VIEW}><CertificateDetail /></ProtectedRoute>} />
 
                                                             {/* CA Management */}
-                                                            <Route path="/authorities/manage" element={<ProtectedRoute {...CA_MANAGE_SPACE}><CaManagement /></ProtectedRoute>} />
+                                                            <Route path="/authorities/manage" element={<ProtectedRoute {...AUTHORITIES}><CaManagement /></ProtectedRoute>} />
                                                             <Route path="/authorities/manage/:id" element={<ProtectedRoute {...CA_MANAGE}><CaDetail /></ProtectedRoute>} />
+                                                            {/* An SSH CA key's page has no gate of its own, so it stays reachable to a reader who cannot open Authorities. */}
+                                                            <Route path={SSH_CA_KEY_ROUTE} element={<SshCaKeyDetail />} />
                                                             <Route path="/authorities/protocols" element={<ProtectedRoute {...CA_MANAGE}><ProtocolConfig /></ProtectedRoute>} />
                                                             <Route path="/authorities/windows" element={<ProtectedRoute {...CA_MANAGE}><MsaeSetup /></ProtectedRoute>} />
                                                             <Route path="/authorities/windows/:id" element={<ProtectedRoute {...CA_MANAGE}><MsaeSetup /></ProtectedRoute>} />
@@ -246,9 +266,10 @@ const App: React.FC = () => {
 
                                                             {/* Protocols */}
                                                             <Route path="/acme" element={<ProtectedRoute {...CA_MANAGE}><AcmeManagement /></ProtectedRoute>} />
-                                                            <Route path="/ssh" element={<ProtectedRoute {...CERT_VIEW}><SshCertificates /></ProtectedRoute>} />
-                                                            <Route path="/ssh/ca-keys/:id" element={<SshCaKeyDetail />} />
-                                                            <Route path="/ssh/certs/:id" element={<SshCertDetail />} />
+                                                            {/* The SSH CA page moved into tabs in 0.4.2; remove these redirects in 0.5. */}
+                                                            <Route path="/ssh" element={<LegacySshRedirect />} />
+                                                            <Route path="/ssh/ca-keys/:id" element={<LegacySshRedirect />} />
+                                                            <Route path="/ssh/certs/:id" element={<LegacySshRedirect />} />
 
                                                             {/* Access Control */}
                                                             <Route path="/users" element={<ProtectedRoute {...USER_MANAGE}><Users /></ProtectedRoute>} />

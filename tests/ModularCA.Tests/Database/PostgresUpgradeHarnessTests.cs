@@ -97,6 +97,9 @@ public class PostgresUpgradeHarnessTests
     /// <summary>The 0.4.2 migration that adds the advisory review date of an SSH CA key, without its timestamp.</summary>
     public const string SshCaKeyReviewBy = "SshCaKeyReviewBy";
 
+    /// <summary>The 0.4.2 migration that adds the certificate type of an SSH request profile and an SSH certificate profile, without its timestamp.</summary>
+    public const string SshProfileCertificateType = "SshProfileCertificateType";
+
     private const string ServerVariable = "MODULARCA_TEST_PG";
     private const string RehearsalVariable = "MODULARCA_TEST_PG_REHEARSAL";
     private const string RehearsalAuditVariable = "MODULARCA_TEST_PG_REHEARSAL_AUDIT";
@@ -1650,7 +1653,7 @@ public class PostgresUpgradeHarnessTests
     /// key. A key whose date is then already past, and a disabled key, get theirs all the same
     /// and are otherwise untouched: no other column of a key changes, and no signing profile,
     /// certificate profile, request profile or certificate row is edited, here or by any later
-    /// migration.
+    /// migration, beyond the certificate type <c>SshProfileCertificateType</c> adds to a profile.
     /// </summary>
     [RequiresEnvironmentFact(ServerVariable)]
     public async Task The_ssh_ca_key_review_date_is_set_from_each_key_s_creation_and_no_profile_or_other_column_changes()
@@ -1705,7 +1708,9 @@ public class PostgresUpgradeHarnessTests
                 + "coalesce(\"PrivateKeyPath\",'-') || '|' || \"KeyStorage\" || '|' || \"CertificateAuthorityId\"::text || '|' || \"IsUserCa\"::text || '|' || \"IsHostCa\"::text || '|' || "
                 + "\"MaxValidityHours\"::text || '|' || \"AllowOwnUsername\"::text || '|' || \"IsEnabled\"::text || '|' || to_char(\"CreatedAt\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US')";
             async Task<string> Keys() => await TextAsync(app, $"SELECT string_agg({everyOldKeyColumn}, E'\\n' ORDER BY \"Id\") FROM \"SshCaKeys\"");
-            async Task<string> Rows(string table) => await TextAsync(app, $"SELECT string_agg(t::text, E'\\n' ORDER BY t.\"Id\") FROM \"{table}\" t");
+            // Every column but the profile type, which SshProfileCertificateType adds later and sets on the profiles a new install seeds.
+            async Task<string> Rows(string table) => await TextAsync(app,
+                $"SELECT string_agg((to_jsonb(t) - 'CertificateType')::text, E'\\n' ORDER BY t.\"Id\") FROM \"{table}\" t");
             var keysBefore = await Keys();
             var signingBefore = await Rows("SshSigningProfiles");
             var certProfilesBefore = await Rows("SshCertProfiles");
@@ -1743,7 +1748,8 @@ public class PostgresUpgradeHarnessTests
 
             await MigrateToLatestAsync(app, "application");
 
-            // No migration edits a profile row: the profiles of an existing install stay as seeded before.
+            // No migration edits what a profile allows: the profiles of an existing install stay as seeded before,
+            // and gain only the certificate type their seeded names stand for.
             Assert.Equal(keysBefore, await Keys());
             Assert.Equal(signingBefore, await Rows("SshSigningProfiles"));
             Assert.Equal(certProfilesBefore, await Rows("SshCertProfiles"));
@@ -1760,6 +1766,110 @@ public class PostgresUpgradeHarnessTests
         {
             NpgsqlConnection.ClearAllPools();
             await DropDatabaseAsync(server, appName);
+        }
+    }
+
+    /// <summary>
+    /// The <c>SshProfileCertificateType</c> columns and their backfill, seeded at the stage before
+    /// them. The three certificate profiles and two request profiles a new install seeds get
+    /// their type, found by their exact names: <c>user</c> for the user profiles, <c>host</c> for
+    /// the host profiles. Every other profile stays without one, a name that only resembles a
+    /// seeded one and a seeded name in another letter case included, and no other column of any
+    /// profile changes.
+    /// </summary>
+    [RequiresEnvironmentFact(ServerVariable)]
+    public async Task The_ssh_profile_certificate_type_is_set_on_the_seeded_names_only_and_every_other_profile_stays_without_one()
+    {
+        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+        const string typesOf = "SELECT string_agg(\"Name\"::text || '=' || coalesce(\"CertificateType\", 'none'), E'\\n' ORDER BY \"Name\"::text COLLATE \"C\") FROM \"{0}\"";
+        const string columnCount = "SELECT count(*) FROM information_schema.columns WHERE table_name = '{0}' AND column_name = 'CertificateType'";
+
+        static string Seed(string[] certProfiles, string[] requestProfiles)
+        {
+            var sql = new System.Text.StringBuilder();
+            foreach (var name in certProfiles)
+                sql.Append("INSERT INTO \"SshCertProfiles\" (\"Id\",\"Name\",\"AllowedPrincipalPatterns\",\"MaxPrincipals\",\"AllowedExtensions\",\"RequiredExtensions\",\"MaxValidityHours\",\"CreatedAt\") "
+                    + $"VALUES ('{Guid.NewGuid()}','{name}','[]',5,'[\"permit-pty\"]','[]',24,'2026-03-01T08:15:30Z'); ");
+            foreach (var name in requestProfiles)
+                sql.Append("INSERT INTO \"SshRequestProfiles\" (\"Id\",\"Name\",\"AllowedSshSigningProfileIds\",\"AllowedSshCertProfileIds\",\"RequireApproval\",\"MaxValidityHours\",\"CreatedAt\") "
+                    + $"VALUES ('{Guid.NewGuid()}','{name}','[]','[]',false,24,'2026-03-01T08:15:30Z'); ");
+            return sql.ToString();
+        }
+
+        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+        await CreateDatabaseAsync(server, appName);
+        try
+        {
+            await using var app = CreateApp(WithDatabase(server, appName));
+            await MigrateThroughAsync(app, SshCaKeyReviewBy);
+            Assert.Equal(0, await ScalarAsync(app, string.Format(columnCount, "SshCertProfiles")));
+            Assert.Equal(0, await ScalarAsync(app, string.Format(columnCount, "SshRequestProfiles")));
+
+            await ExecAsync(app, Seed(
+                ["SSH User Cert - Standard", "SSH User Cert - Forwarding", "SSH Host Cert - Standard", "Ops users", "SSH User Cert - Standard 2", "SSH Host Cert"],
+                ["SSH User Request - Default", "SSH Host Request - Default", "Developers", "SSH Host Request - Default (copy)"]));
+            async Task<string> Rows(string table) => await TextAsync(app,
+                $"SELECT string_agg((to_jsonb(t) - 'CertificateType')::text, E'\\n' ORDER BY t.\"Id\") FROM \"{table}\" t");
+            var certProfilesBefore = await Rows("SshCertProfiles");
+            var requestProfilesBefore = await Rows("SshRequestProfiles");
+
+            await MigrateThroughAsync(app, SshProfileCertificateType);
+
+            foreach (var table in new[] { "SshCertProfiles", "SshRequestProfiles" })
+            {
+                Assert.Equal("YES", await TextAsync(app, $"SELECT is_nullable FROM information_schema.columns WHERE table_name = '{table}' AND column_name = 'CertificateType'"));
+                Assert.Equal("character varying", await TextAsync(app, $"SELECT data_type FROM information_schema.columns WHERE table_name = '{table}' AND column_name = 'CertificateType'"));
+                Assert.Equal(10, await ScalarAsync(app, $"SELECT character_maximum_length FROM information_schema.columns WHERE table_name = '{table}' AND column_name = 'CertificateType'"));
+            }
+
+            Assert.Equal(
+                "Ops users=none\nSSH Host Cert=none\nSSH Host Cert - Standard=host\nSSH User Cert - Forwarding=user\nSSH User Cert - Standard=user\nSSH User Cert - Standard 2=none",
+                await TextAsync(app, string.Format(typesOf, "SshCertProfiles")));
+            Assert.Equal(
+                "Developers=none\nSSH Host Request - Default=host\nSSH Host Request - Default (copy)=none\nSSH User Request - Default=user",
+                await TextAsync(app, string.Format(typesOf, "SshRequestProfiles")));
+
+            // Nothing else about a profile changed, here or in any later migration.
+            Assert.Equal(certProfilesBefore, await Rows("SshCertProfiles"));
+            Assert.Equal(requestProfilesBefore, await Rows("SshRequestProfiles"));
+            await MigrateToLatestAsync(app, "application");
+            Assert.Equal(certProfilesBefore, await Rows("SshCertProfiles"));
+            Assert.Equal(requestProfilesBefore, await Rows("SshRequestProfiles"));
+            Assert.Equal(3, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertProfiles\" WHERE \"CertificateType\" IS NOT NULL"));
+            Assert.Equal(2, await ScalarAsync(app, "SELECT count(*) FROM \"SshRequestProfiles\" WHERE \"CertificateType\" IS NOT NULL"));
+
+            // The column takes either type and takes none.
+            await ExecAsync(app, "UPDATE \"SshCertProfiles\" SET \"CertificateType\" = 'host' WHERE \"Name\" = 'Ops users'; "
+                + "UPDATE \"SshRequestProfiles\" SET \"CertificateType\" = NULL WHERE \"Name\" = 'SSH User Request - Default';");
+            Assert.Equal(4, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertProfiles\" WHERE \"CertificateType\" IS NOT NULL"));
+            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshRequestProfiles\" WHERE \"CertificateType\" IS NOT NULL"));
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await DropDatabaseAsync(server, appName);
+        }
+
+        // The names are matched exactly: a seeded name in another letter case is another profile, and gets no type.
+        var otherCase = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+        await CreateDatabaseAsync(server, otherCase);
+        try
+        {
+            await using var app = CreateApp(WithDatabase(server, otherCase));
+            await MigrateThroughAsync(app, SshCaKeyReviewBy);
+            await ExecAsync(app, Seed(
+                ["ssh user cert - standard", "SSH USER CERT - FORWARDING", "Ssh Host Cert - Standard"],
+                ["ssh user request - default", "SSH HOST REQUEST - DEFAULT"]));
+
+            await MigrateToLatestAsync(app, "application");
+
+            Assert.Equal(3, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertProfiles\" WHERE \"CertificateType\" IS NULL"));
+            Assert.Equal(2, await ScalarAsync(app, "SELECT count(*) FROM \"SshRequestProfiles\" WHERE \"CertificateType\" IS NULL"));
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await DropDatabaseAsync(server, otherCase);
         }
     }
 

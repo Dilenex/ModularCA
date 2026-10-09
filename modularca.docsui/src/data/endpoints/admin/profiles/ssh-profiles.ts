@@ -66,7 +66,7 @@ export const adminSshProfiles: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Array of SSH certificate profiles.',
+        responseDescription: 'Array of SSH certificate profiles. Each carries certificateType: user, host, or null for a profile that serves either.',
     },
     {
         method: 'GET',
@@ -89,7 +89,7 @@ export const adminSshProfiles: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Created SSH certificate profile.',
-        notes: 'allowedExtensions is a ceiling on the extensions a request may name; empty means unrestricted. requiredExtensions are added to every certificate. A certificate carries exactly the extensions its profiles and request name, and none by default. A no-* name adds nothing and withholds the matching permit-*, so a required no-pty keeps permit-pty out of every certificate.',
+        notes: 'allowedExtensions is a ceiling on the extensions a request may name; empty means unrestricted. requiredExtensions are added to every certificate. A certificate carries exactly the extensions its profiles and request name, and none by default. A no-* name adds nothing and withholds the matching permit-*, so a required no-pty keeps permit-pty out of every certificate. certificateType is user, host or either; omitted, either. Any other value is 400. A profile of type user is refused by the sign routes for a host certificate, and one of type host for a user certificate; one that serves either is accepted for both.',
     },
     {
         method: 'PUT',
@@ -101,6 +101,7 @@ export const adminSshProfiles: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Updated SSH certificate profile.',
+        notes: 'Every member is optional and an omitted one is left as it is. certificateType, when sent, is user, host, or either, which clears the type; any other value is 400.',
     },
     {
         method: 'DELETE',
@@ -122,7 +123,7 @@ export const adminSshProfiles: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Array of SSH request profiles.',
+        responseDescription: 'Array of SSH request profiles. Each carries certificateType: user, host, or null for a profile that serves either.',
     },
     {
         method: 'GET',
@@ -145,6 +146,7 @@ export const adminSshProfiles: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Created SSH request profile.',
+        notes: 'certificateType is user, host or either; omitted, either. Any other value is 400. The self-service request options and the self-service sign route take a request profile only when its type is user or it has none; the administration console offers a request profile only for a certificate of its type.',
     },
     {
         method: 'PUT',
@@ -156,6 +158,7 @@ export const adminSshProfiles: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Updated SSH request profile.',
+        notes: 'Every member is optional and an omitted one is left as it is. certificateType, when sent, is user, host, or either, which clears the type; any other value is 400.',
     },
     {
         method: 'DELETE',

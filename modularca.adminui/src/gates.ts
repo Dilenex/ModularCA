@@ -1,4 +1,5 @@
 import { Capabilities, type Capability } from '@shared/generated';
+import type { SshTabPlace } from './authz';
 
 /**
  * What a page or a sidebar entry requires of the caller.
@@ -20,6 +21,12 @@ export interface Gate {
      * only a page that works before the space has a CA sets this.
      */
     spaceWide?: boolean;
+    /**
+     * For a page that carries an SSH tab beside its X.509 one: the SSH tab whose users are also
+     * admitted (see `canUseSshTab` in authz.ts). SSH CAs belong to the instance, so this half of
+     * the gate does not follow the scope. The page then shows each tab only to who can use it.
+     */
+    ssh?: SshTabPlace;
 }
 
 /** Installation-wide administration: settings, backup, spaces, roles, schedules, TLS. */
@@ -54,3 +61,12 @@ export const USER_MANAGE: Gate = { requires: Capabilities.UserManage };
 
 /** Managing enrollment credentials within the scope. */
 export const TOKEN_MANAGE: Gate = { requires: Capabilities.TokenManage, scoped: true };
+
+/** The Authorities page: the X.509 authorities for `CA_MANAGE_SPACE`, the SSH CA keys for who may list or generate them. */
+export const AUTHORITIES: Gate = { ...CA_MANAGE_SPACE, ssh: 'keys' };
+
+/** The All Certificates page: the X.509 certificates for `CERT_VIEW`, the SSH certificates for who may view them on an SSH CA. */
+export const CERTIFICATES: Gate = { ...CERT_VIEW, ssh: 'certificates' };
+
+/** The Request Certificate page: an X.509 request for `CERT_REQUEST`, signing an SSH key for who may sign on an SSH CA. */
+export const CERTIFICATE_REQUEST: Gate = { ...CERT_REQUEST, ssh: 'sign' };

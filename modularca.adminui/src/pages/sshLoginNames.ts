@@ -587,6 +587,19 @@ export function defaultKeyFile(publicKeyLine: string | null | undefined): string
     }
 }
 
+/* ── the key filter of the certificate list ──────────────────────────────── */
+
+/**
+ * The SSH CA keys the certificate list can be narrowed to, by name. `listed` is what the key list
+ * answered and is used as it is; a reader the key list refuses (it needs cert.revoke) passes
+ * null and gets the keys of the certificates seen so far, each once.
+ */
+export function sshKeyChoices(listed: SshCaKeyRef[] | null, seen: SshCaKeyRef[]): SshCaKeyRef[] {
+    const byId = new Map<string, SshCaKeyRef>();
+    for (const key of listed ?? seen) if (key?.id && !byId.has(key.id)) byId.set(key.id, key);
+    return [...byId.values()].sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
+}
+
 /* ── rights ──────────────────────────────────────────────────────────────── */
 
 /**

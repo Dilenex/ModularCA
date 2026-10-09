@@ -8,7 +8,10 @@ import { apiGet, apiPostWithMfa } from '../api/client';
 import { useScope } from '../context/ScopeContext';
 import { scopeLabel } from '../scope';
 import { useAuth } from '../context/AuthContext';
-import { can, canAtSpace, consoleCas, spacesOf } from '../authz';
+import { can, canAtSpace, canUseSshTab, consoleCas, spacesOf } from '../authz';
+import { CA_MANAGE_SPACE } from '../gates';
+import { KindTabStrip, useKindTabs } from '../components/KindTabs';
+import { SshCaKeysTab } from './SshCertificates';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
@@ -61,7 +64,8 @@ const CaDrawer: React.FC<{ ca: any }> = ({ ca }) => {
     );
 };
 
-const CaManagement: React.FC = () => {
+/** The X.509 tab of Authorities: the certificate authorities and the form for a new one. */
+const X509Authorities: React.FC = () => {
     const { requireStepUp } = useStepUp();
     const { showToast } = useToast();
 
@@ -326,9 +330,7 @@ const CaManagement: React.FC = () => {
     ];
 
     return (
-        <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-xl font-semibold text-ink">CA Management</h1>
-
+        <div className="space-y-4 sm:space-y-6">
             {canCreateCa && createExpanded && (
             <div className="bg-raised border border-line rounded-lg overflow-hidden">
                 <div className="px-4 py-3 flex items-center justify-between gap-2 bg-sunken">
@@ -556,6 +558,25 @@ const CaManagement: React.FC = () => {
                 detailPath={(ca) => `/authorities/manage/${encodeURIComponent(caKey(ca))}`}
             />
 
+        </div>
+    );
+};
+
+/**
+ * The Authorities page: the X.509 certificate authorities, and on its SSH tab the SSH CA keys.
+ * Each tab is shown only to who can use it: the X.509 tab to who may manage a CA in the scope,
+ * the SSH tab to who may list the SSH CA keys or generate one.
+ */
+const CaManagement: React.FC = () => {
+    const { scope, allows } = useScope();
+    const { capabilities } = useAuth();
+    const { tabs, active, setActive } = useKindTabs({ x509: allows(CA_MANAGE_SPACE), ssh: canUseSshTab(capabilities, 'keys') });
+    return (
+        <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
+            <h1 className="text-xl font-semibold text-ink">CA Management</h1>
+            <KindTabStrip tabs={tabs} active={active} onChange={setActive} />
+            {active === 'X.509' && <X509Authorities />}
+            {active === 'SSH' && <SshCaKeysTab scope={scope} />}
         </div>
     );
 };

@@ -38,6 +38,13 @@ public class SshCertProfileEntity
     /// <summary>Maximum validity duration in hours allowed by this cert profile.</summary>
     public int MaxValidityHours { get; set; } = 720;
 
+    /// <summary>
+    /// The certificate type the profile is for: <c>user</c>, <c>host</c>, or null for either
+    /// (<see cref="ModularCA.Shared.Utils.SshProfileCertificateType"/>).
+    /// </summary>
+    [MaxLength(10)]
+    public string? CertificateType { get; set; }
+
     /// <summary>UTC timestamp when this profile was created.</summary>
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }

@@ -21,6 +21,7 @@ import { useAuth } from '../context/AuthContext';
 import { FieldHint, inputClassNarrow, labelClass } from '@shared/components/forms';
 import { actionButtonPrimary } from '@shared/components/actionButtons';
 import { canOnSshCa, dayText } from './sshLoginNames';
+import { SSH_CA_KEYS_PATH } from './sshPlaces';
 import {
     REVIEW_DATE_ACTS_ON_NOTHING, SSH_CA_REVIEW_YEARS, hoursText, reviewByProblem, reviewByToSend, reviewDateFieldValue, sshCaKeyReview,
 } from './sshCaDefaults';
@@ -111,7 +112,7 @@ const SshCaKeyReviewSection: React.FC<{ caKey: any; onMoved: () => void }> = ({ 
 };
 
 /// <summary>
-/// Detail page for a single SSH CA key: shows algorithm, validity, public key, its advisory review
+/// Detail page for a single SSH CA key, under Authorities: shows algorithm, validity, public key, its advisory review
 /// date, where the private key is held, its login names, its revocation list (the KRL's URL,
 /// version and last revocation, and the commands that set a host up to fetch it) and integration
 /// hints, with download / disable actions in the action bar. A key that was a plaintext file on
@@ -174,7 +175,7 @@ const SshCaKeyDetail: React.FC = () => {
                 setRefresh((r) => r + 1);
             } else {
                 showToast('success', 'CA key disabled successfully.');
-                navigate('/ssh');
+                navigate(SSH_CA_KEYS_PATH);
             }
         } catch (err: any) {
             if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to disable CA key');
@@ -189,7 +190,7 @@ const SshCaKeyDetail: React.FC = () => {
     if (!key) return (
         <div className="p-6 space-y-3">
             <p className="text-sm text-ink-muted">SSH CA key not found.</p>
-            <button onClick={() => navigate('/ssh')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to SSH Certificates</button>
+            <button onClick={() => navigate(SSH_CA_KEYS_PATH)} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to Authorities</button>
         </div>
     );
 
@@ -203,7 +204,7 @@ const SshCaKeyDetail: React.FC = () => {
 
     return (
         <DetailPage
-            breadcrumbs={[{ label: 'SSH Certificates', to: '/ssh' }, { label: key.name || 'Unnamed' }]}
+            breadcrumbs={[{ label: 'Authorities', to: SSH_CA_KEYS_PATH }, { label: key.name || 'Unnamed' }]}
             title={key.name || 'Unnamed'}
             status={<>
                 {enabled ? <Tag label="CA Key" /> : <StatusBadge status="revoked" label="Disabled" />}
@@ -211,7 +212,7 @@ const SshCaKeyDetail: React.FC = () => {
                 {reviewBadge && <StatusBadge status={reviewBadge.status} label={reviewBadge.label} />}
             </>}
             subtitle={algorithm}
-            backTo="/ssh"
+            backTo={SSH_CA_KEYS_PATH}
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
                     <button onClick={handleDownloadPublicKey} className={actionButton}>Download Public Key (.pub)</button>
@@ -251,7 +252,7 @@ const SshCaKeyDetail: React.FC = () => {
                         <DetailField label="Expected key file" value={custody.keyFile} mono />
                         <DetailField label="What to do" value={custody.remedy} />
                         {signBlocked && (
-                            <DetailField label="Signing" value="Unavailable with this key. The Sign key action on the SSH Certificates page is disabled for it. Certificates it has already issued can still be revoked, and its KRL is still served." />
+                            <DetailField label="Signing" value="Unavailable with this key. The Sign key form on the SSH tab of Request Certificate does not sign with it. Certificates it has already issued can still be revoked, and its KRL is still served." />
                         )}
                         {key.importedAt && (
                             <DetailField label="Imported" value={`${formatDate(key.importedAt)}, from a plaintext key file on the node`} />

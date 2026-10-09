@@ -13,7 +13,9 @@ offered one key for both user and host certificates, turned agent forwarding on 
 spread one lifetime over four places with four numbers. This is the default setup as a whole.
 
 Only what is created from now on changes. An install that already has SSH profiles keeps every
-profile row it has, and every existing key keeps its limits.
+profile row it has, and every existing key keeps its limits. One thing is added to existing
+rows, on 2026-10-09: the certificate type of the profiles that still have their seeded names
+(see "The type of a profile").
 
 ## The one-place rule
 
@@ -62,15 +64,15 @@ reads the C# file to check.
 ## The profiles seeded on a new install
 
 `BootstrapProfileSeeder.SeedDefaultSshProfiles` runs only when no SSH certificate profile exists.
-No migration edits a profile row.
+No migration edits what a profile allows; one adds its certificate type (below).
 
-| Profile | Lifetime | What it holds |
-|---|---|---|
-| `SSH User Cert - Standard` | 24 h | Any valid login name, at most 3. Allows `permit-pty` and `permit-user-rc` |
-| `SSH User Cert - Forwarding` | 24 h | As Standard, with all five `permit-*` extensions allowed and `permit-port-forwarding` and `permit-agent-forwarding` required |
-| `SSH Host Cert - Standard` | 8760 h | Hostname patterns, at most 10. Unchanged |
-| `SSH User Request - Default` | **12 h** | Over Standard only. No approval |
-| `SSH Host Request - Default` | 8760 h | Over the host profile. Unchanged |
+| Profile | Type | Lifetime | What it holds |
+|---|---|---|---|
+| `SSH User Cert - Standard` | user | 24 h | Any valid login name, at most 3. Allows `permit-pty` and `permit-user-rc` |
+| `SSH User Cert - Forwarding` | user | 24 h | As Standard, with all five `permit-*` extensions allowed and `permit-port-forwarding` and `permit-agent-forwarding` required |
+| `SSH Host Cert - Standard` | host | 8760 h | Hostname patterns, at most 10. Unchanged |
+| `SSH User Request - Default` | user | **12 h** | Over Standard only. No approval |
+| `SSH Host Request - Default` | host | 8760 h | Over the host profile. Unchanged |
 
 - **The principal pattern is the login name grammar.** `SshLoginNameRules.Pattern` is the regular
   expression for what `SshLoginNameRules.IsValid` accepts, and the seeder writes that. The pattern
@@ -86,6 +88,37 @@ No migration edits a profile row.
   administrator adds it to a request profile where forwarding is wanted; a person who then
   chooses it gets a certificate with both forwarding extensions and, from the signing profile's
   default, a terminal.
+
+## The type of a profile
+
+Decided by the owner on 2026-10-09, after the self-service request form on the test host offered
+and pre-selected the host request profile: request and certificate profiles had no type.
+
+- **The columns.** `SshRequestProfiles.CertificateType` and `SshCertProfiles.CertificateType`:
+  `user`, `host`, or null for either. A signing profile already says which types it signs
+  (`AllowUserCerts`, `AllowHostCerts`), so it gets no column.
+- **Existing installs.** Migration `20261009074406_SshProfileCertificateType` adds the columns
+  and sets the type only on the five profiles in the table above, found by their exact names,
+  letter case included. Every other profile stays null, a renamed seeded one included, which
+  changes nothing about how it works. No other column of any row changes.
+- **New installs.** The seeder writes the type on the five it seeds.
+- **Enforced.** A profile whose type is set is refused for a certificate of the other type,
+  with a 400 that names the profile and both types
+  (`SshProfileCertificateType.Refusal`): the request profile and the certificate profile on
+  `POST /api/v1/user/ssh/sign-user`, and the certificate profile on both admin sign routes,
+  which take no request profile. A profile with no type is accepted for both.
+- **Offered.** `GET /api/v1/user/ssh/request-options` leaves out request profiles and certificate
+  profiles of type `host`. The admin Sign key form asks first whether the certificate is for a
+  user, a service identity or a host, and offers only the request and certificate profiles of
+  that type or of none.
+- **The API.** The profile routes answer `certificateType` as `user`, `host` or null. Create and
+  update take `user`, `host` or `either`; an update that omits it leaves it alone, since the
+  update bodies are patches and null cannot mean "clear". Any other value is 400.
+- **The console.** The two profile forms have a Certificate type field: User, Host, Either. The
+  SSH Cert and SSH Request tabs of Profiles show it as a column.
+- **What an upgrade can break.** A script that signs a user key through the seeded host request
+  or host certificate profile, or a host key through a seeded user certificate profile, is
+  refused after the upgrade. That use was the bug.
 
 ## The review date
 
@@ -148,3 +181,8 @@ date that reminds.
 - `StepUpGuardTests`: the route is open on purpose, with its reason.
 - `sshCaDefaults.test.ts`: the form's type and pre-filled hours, the body it sends, when a key is
   shown as due, and that the console's numbers are the server's.
+- The type of a profile: `SshDefaultsTests` (the seeded types),
+  `SshLoginNameEndpointTests` (the refusal on the three sign routes, the request options, and the
+  profile routes taking, keeping and clearing the type),
+  `PostgresUpgradeHarnessTests.The_ssh_profile_certificate_type_is_set_on_the_seeded_names_only_and_every_other_profile_stays_without_one`,
+  and `sshTabs.test.ts` and `sshProfileForms.test.ts` for what the forms offer and send.

@@ -16,6 +16,7 @@ import { SshRequestProfileForm } from './profiles/SshRequestProfileForm';
 import { emptyForm, formFromProfile, formToCreateBody, formToUpdateBody, validate } from './profiles/sshRequestProfile';
 import { PROFILE_TYPES, profileDetailPath } from './profiles/profileRoutes';
 import { actionButtonDanger } from '@shared/components/actionButtons';
+import { profileTypeLabel } from './sshProfileType';
 
 const SSH_REQUEST_TAB = PROFILE_TYPES['ssh-request'].listPath;
 
@@ -159,6 +160,7 @@ const SshRequestProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false 
                     <DetailField label="CA Scope" value={p.certificateAuthorityId ? caName(p.certificateAuthorityId) : 'Any CA'} />
                     <DetailField label="Require Approval" value={p.requireApproval ? 'Yes' : 'No'} />
                     <DetailField label="Max Validity Hours" value={String(p.maxValidityHours)} />
+                    <DetailField label="Certificate type" value={profileTypeLabel(p.certificateType)} />
                     <div className="py-1">
                         <span className="text-xs text-ink-muted">Allowed Signing Profiles</span>
                         <div className="flex flex-wrap gap-1 mt-1">

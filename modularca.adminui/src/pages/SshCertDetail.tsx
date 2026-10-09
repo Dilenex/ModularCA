@@ -17,6 +17,7 @@ import {
     certificateBadge, certificateStatus, dayTimeText, isUserCertificate, issuedByDetail, issuedToDetail, issuedToText, jsonList, sshdKeyType,
     type SshCertificateView,
 } from './sshLoginNames';
+import { SSH_CERTIFICATES_PATH, sshCaKeyPath } from './sshPlaces';
 
 function downloadText(content: string, filename: string) {
     const blob = new Blob([content], { type: 'text/plain' });
@@ -27,7 +28,7 @@ function downloadText(content: string, filename: string) {
 }
 
 /// <summary>
-/// Read-only detail page for a single issued SSH certificate: who it was issued to and by, the
+/// Read-only detail page for a single issued SSH certificate, under Certificates: who it was issued to and by, the
 /// name hosts log for it, and for a user certificate each login name with why its holder had it.
 /// A <c>used</c> query param, set when the page is opened from a host log line, marks the login
 /// name that line shows. The page is View-only (Edit disabled); download and revoke live in the
@@ -92,13 +93,13 @@ const SshCertDetail: React.FC = () => {
     if (error) return (
         <div className="p-6 space-y-3">
             <InlineNotice notice={error} variant="line" />
-            <button onClick={() => navigate('/ssh')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to SSH Certificates</button>
+            <button onClick={() => navigate(SSH_CERTIFICATES_PATH)} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to SSH certificates</button>
         </div>
     );
     if (!cert) return (
         <div className="p-6 space-y-3">
             <p className="text-sm text-ink-muted">SSH certificate not found, or it was issued by an SSH CA you may not view.</p>
-            <button onClick={() => navigate('/ssh')} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to SSH Certificates</button>
+            <button onClick={() => navigate(SSH_CERTIFICATES_PATH)} className="px-3 py-1.5 text-sm bg-sunken rounded">Back to SSH certificates</button>
         </div>
     );
 
@@ -111,14 +112,14 @@ const SshCertDetail: React.FC = () => {
 
     return (
         <DetailPage
-            breadcrumbs={[{ label: 'SSH Certificates', to: '/ssh' }, { label: title }]}
+            breadcrumbs={[{ label: 'All Certificates', to: SSH_CERTIFICATES_PATH }, { label: title }]}
             title={title}
             status={<>
                 <StatusBadge {...certificateBadge(status)} />
                 <Tag label={isUser ? 'User certificate' : 'Host certificate'} />
             </>}
             subtitle={<>Issued to {issuedToText(cert)}</>}
-            backTo="/ssh"
+            backTo={SSH_CERTIFICATES_PATH}
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
                     <button onClick={handleDownload} className={actionButton}>Download Certificate</button>
@@ -139,7 +140,7 @@ const SshCertDetail: React.FC = () => {
                             : issuedToDetail(cert)} />
                         <DetailField label="Issued by" value={issuedByDetail(cert)} />
                         <DetailField label="Name in host logs" value={cert.keyId} mono />
-                        <DetailField label="SSH CA" value={<Link to={`/ssh/ca-keys/${cert.sshCaKeyId}`} className="text-accent-ink hover:underline">{cert.sshCaKey?.name || cert.sshCaKeyId}</Link>} />
+                        <DetailField label="SSH CA" value={<Link to={sshCaKeyPath(cert.sshCaKeyId)} className="text-accent-ink hover:underline">{cert.sshCaKey?.name || cert.sshCaKeyId}</Link>} />
                         <DetailField label="Serial" value={String(cert.serialNumber)} mono />
                         <DetailField label="Valid" value={`${dayTimeText(cert.validAfter)} to ${dayTimeText(cert.validBefore)}`} />
                         {cert.isRevoked && <DetailField label="Revoked" value={cert.revokedAt ? dayTimeText(cert.revokedAt) : 'Yes. The time was not recorded.'} />}

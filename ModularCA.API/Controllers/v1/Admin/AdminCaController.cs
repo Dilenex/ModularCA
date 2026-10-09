@@ -54,7 +54,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         {
             var query = _db.CertificateAuthorities
                 .Include(ca => ca.Certificate)
-                .Where(ca => !ca.IsSshCa) // SSH CAs are managed separately via /admin/ssh
+                .Where(ca => !ca.IsSshCa) // SSH CAs are managed separately via /api/v1/admin/ssh
                 .AsNoTracking()
                 .AsQueryable();
 
@@ -222,7 +222,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                 .Include(ca => ca.Certificate)
                 .Include(ca => ca.Space)
                 .AsNoTracking()
-                .Where(ca => !ca.IsSshCa) // SSH CAs are managed separately via /admin/ssh — keep them out of the X.509 hierarchy
+                .Where(ca => !ca.IsSshCa) // SSH CAs are managed separately via /api/v1/admin/ssh — keep them out of the X.509 hierarchy
                 .AsQueryable();
 
             var fence = SpaceFence.From(HttpContext, Capabilities.CertView);

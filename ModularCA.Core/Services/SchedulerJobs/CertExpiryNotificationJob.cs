@@ -179,7 +179,7 @@ public class CertExpiryNotificationJob : SingletonCronJob
                 await _notifications.NotifyAsync(SshCaKeyReviewDueEvent,
                     $"The SSH CA key '{key.Name}' ({signs} certificates) {when} {key.ReviewBy:yyyy-MM-dd} UTC.\n\n"
                     + "This is a reminder only. The key keeps signing, its certificates stay valid and its revocation list is still served.\n\n"
-                    + "Decide whether the key should still be in use, then move the review date on the key's page in the console (SSH Certificates, the key, Review by).");
+                    + "Decide whether the key should still be in use, then move the review date on the key's page in the console (Authorities, the SSH tab, the key, Review by).");
                 sent++;
             }
             catch (Exception ex)

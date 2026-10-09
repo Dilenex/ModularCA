@@ -15,6 +15,7 @@ import { SshCertProfileForm } from './profiles/SshCertProfileForm';
 import { emptyForm, formFromProfile, formToCreateBody, formToUpdateBody, validate } from './profiles/sshCertProfile';
 import { PROFILE_TYPES, profileDetailPath } from './profiles/profileRoutes';
 import { actionButtonDanger } from '@shared/components/actionButtons';
+import { profileTypeLabel } from './sshProfileType';
 
 const SSH_CERT_TAB = PROFILE_TYPES['ssh-cert'].listPath;
 
@@ -140,6 +141,7 @@ const SshCertProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) 
                     <DetailField label="Description" value={p.description} />
                     <DetailField label="Most login names" value={String(p.maxPrincipals)} />
                     <DetailField label="Max Validity Hours" value={String(p.maxValidityHours)} />
+                    <DetailField label="Certificate type" value={profileTypeLabel(p.certificateType)} />
                     <div className="py-1"><span className="text-xs text-ink-muted">Login name patterns (the outer limit; who may use which name is set on the SSH CA key)</span><CeilingList items={p.allowedPrincipalPatterns} noun="login name" /></div>
                     <div className="py-1"><span className="text-xs text-ink-muted">Allowed Extensions</span><CeilingList items={p.allowedExtensions} noun="extension" /></div>
                     <div className="py-1"><span className="text-xs text-ink-muted">Required Extensions</span><BadgeList items={p.requiredExtensions} /></div>

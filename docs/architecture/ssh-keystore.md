@@ -437,7 +437,7 @@ The keys were also in plaintext:
 - in every backup archive made so far, under the backup key that sits on the same host;
 - in every `pre-restore-*.zip`, which is unencrypted.
 
-The upgrade output and the SSH CA page therefore carry one notice: these keys were stored in
+The upgrade output and the console, on the SSH tab of Authorities, therefore carry one notice: these keys were stored in
 plaintext before this version, and archives and snapshots made before the upgrade still contain
 them. Rotating an SSH CA (a new CA and new trust lines on the servers) is the only remedy, and it
 is the operator's call. The notice recommends it and names the archive and snapshot files it can

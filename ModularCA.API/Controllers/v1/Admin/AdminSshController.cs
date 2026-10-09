@@ -287,6 +287,8 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// (<c>sign-ssh-cert</c>, issued for the key id).
     /// Requires both an SSH signing profile and cert profile for validation.
     /// The CA key is identified by the route parameter; the signing profile must reference the same key.
+    /// A certificate profile whose type is <c>host</c> is refused (400 saying so); one with no
+    /// type serves either (<see cref="SshProfileCertificateType"/>).
     /// A validity over a profile's maximum, or over what a login name asked for allows, is 400;
     /// with none asked the certificate lasts as long as the profiles, the key and the login
     /// names allow.
@@ -349,6 +351,8 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
             .FirstOrDefaultAsync(p => p.Id == request.SshCertProfileId);
         if (certProfile == null)
             return BadRequest(new { error = "SSH cert profile not found" });
+        if (SshProfileCertificateType.Refusal("certificate profile", certProfile.Name, certProfile.CertificateType, SshProfileCertificateType.User) is { } typeRefusal)
+            return BadRequest(new { error = typeRefusal });
 
         var validationError = ValidateCertProfile(certProfile, request.Principals, extensions, validityHours);
         if (validationError != null)
@@ -384,6 +388,8 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// unless it is exactly that.
     /// Requires both an SSH signing profile and cert profile for validation.
     /// The CA key is identified by the route parameter; the signing profile must reference the same key.
+    /// A certificate profile whose type is <c>user</c> is refused (400 saying so); one with no
+    /// type serves either (<see cref="SshProfileCertificateType"/>).
     /// With no validity asked the certificate lasts as long as the profiles and the key allow.
     /// A host certificate lets its holder answer as that host, so the route asks step-up MFA
     /// (<c>sign-ssh-cert</c>, issued for the key id), as signing a user key does.
@@ -423,6 +429,8 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
             .FirstOrDefaultAsync(p => p.Id == request.SshCertProfileId);
         if (certProfile == null)
             return BadRequest(new { error = "SSH cert profile not found" });
+        if (SshProfileCertificateType.Refusal("certificate profile", certProfile.Name, certProfile.CertificateType, SshProfileCertificateType.Host) is { } typeRefusal)
+            return BadRequest(new { error = typeRefusal });
 
         var validationError = ValidateCertProfile(certProfile, request.Hostnames, null, validityHours);
         if (validationError != null)

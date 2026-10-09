@@ -18,6 +18,8 @@ type Props = {
     scoped?: boolean;
     /** Whether a space-wide grant over a space with no CA yet also admits (see `Gate.spaceWide`). */
     spaceWide?: boolean;
+    /** The page's SSH tab, whose users are also admitted whatever the scope (see `Gate.ssh`). */
+    ssh?: Gate['ssh'];
 };
 
 const StatusPanel: React.FC<{ title: string; message: string; action?: React.ReactNode }> = ({ title, message, action }) => (
@@ -45,7 +47,7 @@ const ForbiddenPanel: React.FC<{ message: string }> = ({ message }) => (
     />
 );
 
-const ProtectedRoute: React.FC<Props> = ({ children, requires, scoped, spaceWide }) => {
+const ProtectedRoute: React.FC<Props> = ({ children, requires, scoped, spaceWide, ssh }) => {
     const { user, loading, error, refresh } = useAuth();
     const { allows, scope } = useScope();
 
@@ -79,11 +81,12 @@ const ProtectedRoute: React.FC<Props> = ({ children, requires, scoped, spaceWide
                 />
             );
         }
-        if (!allows({ requires, scoped, spaceWide })) {
+        if (!allows({ requires, scoped, spaceWide, ssh })) {
             const where = scoped
                 ? (scope.kind === 'ca' ? ` on ${scope.label}` : ' on a CA in the selected scope')
                 : ' at system scope';
-            return <ForbiddenPanel message={`This page requires the ${requires} capability${where}.`} />;
+            const orSsh = ssh ? ' Its SSH tab needs a right on an SSH CA.' : '';
+            return <ForbiddenPanel message={`This page requires the ${requires} capability${where}.${orSsh}`} />;
         }
     }
 

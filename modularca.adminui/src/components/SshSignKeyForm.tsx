@@ -15,6 +15,8 @@ import {
     defaultValidity, jsonList, serviceKeyId, serviceLabelError, validityLimit, validityLimitText, validityProblem,
     type SshHeldLoginName,
 } from '../pages/sshLoginNames';
+import { certificateTypeFor, defaultSignFor, profilesForCertificateType, type SshSignFor } from '../pages/sshProfileType';
+import { sshCaKeyPath } from '../pages/sshPlaces';
 
 /** What the Sign key form hands back: the API's answer and who the certificate is for. */
 export interface SshSignResult {
@@ -30,15 +32,14 @@ export interface SshSignResult {
     publicKey: string;
 }
 
-type Subject = 'user' | 'service';
-
 const STEP_UP_CANCELLED = 'Step-up MFA cancelled';
 
 /// <summary>
-/// The Sign key form of the SSH Certificates page. A user certificate is for a user of this
-/// console, whose login names are offered as a tick list, or for a service identity with a
-/// label and typed login names. A host certificate takes hostnames. The CA writes the name
-/// hosts log, so the form shows it and asks for none. Signing asks step-up MFA.
+/// The Sign key form, on the SSH tab of Request Certificate. It asks first who the certificate
+/// is for: a user of this console, whose login names are offered as a tick list, a service
+/// identity with a label and typed login names, or a host, which takes hostnames. Only the
+/// request and certificate profiles of the matching type, or of no type, are then offered. The
+/// CA writes the name hosts log, so the form shows it and asks for none. Signing asks step-up MFA.
 /// </summary>
 export const SshSignKeyForm: React.FC<{
     caKey: { id: string; name: string; isUserCa?: boolean; isHostCa?: boolean; maxValidityHours?: number };
@@ -51,11 +52,12 @@ export const SshSignKeyForm: React.FC<{
 }> = ({ caKey, signBlocked, signingProfiles, certProfiles, requestProfiles, onSigned, onCancel }) => {
     const { user: me } = useAuth();
     const { requireStepUp } = useStepUp();
-    const [certType, setCertType] = useState<'user' | 'host'>(caKey.isUserCa === false && caKey.isHostCa ? 'host' : 'user');
+    const [signFor, setSignFor] = useState<SshSignFor>(defaultSignFor(caKey));
+    const certType = certificateTypeFor(signFor);
+    const subject = signFor === 'service' ? 'service' : 'user';
     const [requestProfileId, setRequestProfileId] = useState('');
     const [signingProfileId, setSigningProfileId] = useState('');
     const [certProfileId, setCertProfileId] = useState('');
-    const [subject, setSubject] = useState<Subject>('user');
     const [users, setUsers] = useState<any[]>([]);
     const [subjectUserId, setSubjectUserId] = useState('');
     const [serviceLabel, setServiceLabel] = useState('');
@@ -105,13 +107,27 @@ export const SshSignKeyForm: React.FC<{
         return () => { cancelled = true; };
     }, [forUser, subjectUserId, caKey.id]);
 
-    const requestProfile = requestProfiles.find((p) => p.id === requestProfileId);
+    // A profile whose type is the other one is refused by the sign routes, so it is not offered.
+    const requestChoices = profilesForCertificateType(requestProfiles, certType);
+    const requestProfile = requestChoices.find((p) => p.id === requestProfileId);
     const allowedSigning = useMemo(() => new Set(jsonList(requestProfile?.allowedSshSigningProfileIds)), [requestProfile]);
     const allowedCert = useMemo(() => new Set(jsonList(requestProfile?.allowedSshCertProfileIds)), [requestProfile]);
     const signingChoices = signingProfiles.filter((p) => p.sshCaKeyId === caKey.id
         && (allowedSigning.size === 0 || allowedSigning.has(p.id))
         && (certType === 'user' ? p.allowUserCerts : p.allowHostCerts));
-    const certChoices = certProfiles.filter((p) => allowedCert.size === 0 || allowedCert.has(p.id));
+    const certChoices = profilesForCertificateType(certProfiles, certType).filter((p) => allowedCert.size === 0 || allowedCert.has(p.id));
+
+    /** Answers who the certificate is for. A change of certificate type starts the profiles over. */
+    const chooseSignFor = (next: SshSignFor) => {
+        if (certificateTypeFor(next) !== certType) {
+            setRequestProfileId('');
+            setSigningProfileId('');
+            setCertProfileId('');
+            setTyped([]);
+        }
+        setSignFor(next);
+        setValidity(null);
+    };
     const signingProfile = signingChoices.find((p) => p.id === signingProfileId);
     const certProfile = certChoices.find((p) => p.id === certProfileId);
 
@@ -185,30 +201,75 @@ export const SshSignKeyForm: React.FC<{
         }
     };
 
-    const card = (kind: Subject) => `max-w-3xl border rounded bg-raised p-3 space-y-2 ${subject === kind ? 'border-accent' : 'border-line'}`;
+    const card = (kind: SshSignFor) => `max-w-3xl border rounded bg-raised p-3 space-y-2 ${signFor === kind ? 'border-accent' : 'border-line'}`;
     const limitText = forUser ? validityLimitText(limit) : null;
 
     return (
         <form onSubmit={submit} className="bg-raised border border-line rounded-lg p-4 space-y-4">
             <h3 className="text-sm font-semibold text-ink">Sign a {certType === 'user' ? 'user' : 'host'} key</h3>
 
-            <div className="max-w-xs">
-                <label htmlFor="ssh-sign-type" className={labelClass}>Certificate type</label>
-                <select id="ssh-sign-type" value={certType} className={inputClass}
-                    onChange={(e) => { setCertType(e.target.value as 'user' | 'host'); setSigningProfileId(''); setCertProfileId(''); setTyped([]); setValidity(null); }}>
-                    <option value="user">User certificate</option>
-                    <option value="host">Host certificate</option>
-                </select>
+            <div className="space-y-2" role="radiogroup" aria-labelledby="ssh-sign-for">
+                <span id="ssh-sign-for" className={labelClass}>This certificate is for</span>
+                <div className={card('user')}>
+                    <label htmlFor="ssh-sign-for-user" className="flex items-center gap-2 text-sm font-medium text-ink">
+                        <input id="ssh-sign-for-user" type="radio" name="ssh-sign-for" checked={signFor === 'user'} onChange={() => chooseSignFor('user')} className="h-4 w-4 accent-accent" />
+                        A user of this console
+                    </label>
+                    {signFor === 'user' && (
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pl-6">
+                            <select aria-label="User" value={subjectUserId} onChange={(e) => setSubjectUserId(e.target.value)} className={`${inputClassNarrow} min-w-[14rem]`}>
+                                <option value="">Choose a user…</option>
+                                {users.map((u) => <option key={u.id} value={u.id}>{u.username}</option>)}
+                            </select>
+                            {subjectUser && (
+                                <span className="text-xs text-ink-muted">
+                                    Named <span className="font-mono text-ink">{subjectUser.username}</span> in host logs. The certificate appears under {subjectUser.username}'s own certificates, on the SSH tab of My Certificates.
+                                </span>
+                            )}
+                        </div>
+                    )}
+                </div>
+                <div className={card('service')}>
+                    <label htmlFor="ssh-sign-for-service" className="flex items-center gap-2 text-sm font-medium text-ink">
+                        <input id="ssh-sign-for-service" type="radio" name="ssh-sign-for" checked={signFor === 'service'} onChange={() => chooseSignFor('service')} className="h-4 w-4 accent-accent" />
+                        A service identity with no account
+                    </label>
+                    <p className="pl-6 text-xs text-ink-muted">
+                        You give it a label, and hosts log it as <span className="font-mono">svc:label</span>, which no username can equal. Its login names are typed and checked against the certificate profile.
+                    </p>
+                    {signFor === 'service' && (
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pl-6">
+                            <input aria-label="Label" type="text" value={serviceLabel} onChange={(e) => setServiceLabel(e.target.value.trim())}
+                                placeholder="e.g. backup-runner" autoComplete="off" spellCheck={false} className={`${inputClassNarrow} font-mono min-w-[14rem]`} />
+                            <span className="text-xs text-ink-muted">
+                                {serviceLabel && !serviceLabelError(serviceLabel)
+                                    ? <>Named <span className="font-mono text-ink">{serviceKeyId(serviceLabel)}</span> in host logs.</>
+                                    : 'A label is 1 to 64 letters, digits and . _ -'}
+                            </span>
+                        </div>
+                    )}
+                </div>
+                <div className={card('host')}>
+                    <label htmlFor="ssh-sign-for-host" className="flex items-center gap-2 text-sm font-medium text-ink">
+                        <input id="ssh-sign-for-host" type="radio" name="ssh-sign-for" checked={signFor === 'host'} onChange={() => chooseSignFor('host')} className="h-4 w-4 accent-accent" />
+                        A host
+                    </label>
+                    <p className="pl-6 text-xs text-ink-muted">
+                        A host certificate, which a server presents to the clients that connect to it. It carries the server's hostnames.
+                    </p>
+                </div>
+                <FieldHint>Only the request and certificate profiles for a {certType} certificate, and those that serve either type, are offered below.</FieldHint>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div>
                     <label htmlFor="ssh-sign-request" className={labelClass}>Request profile</label>
-                    <select id="ssh-sign-request" required value={requestProfileId} className={inputClass}
+                    <select id="ssh-sign-request" required value={requestProfile ? requestProfileId : ''} className={inputClass}
                         onChange={(e) => { setRequestProfileId(e.target.value); setSigningProfileId(''); setCertProfileId(''); }}>
                         <option value="">Select request profile...</option>
-                        {requestProfiles.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                        {requestChoices.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                     </select>
+                    {requestChoices.length === 0 && <FieldHint tone="warn">There is no request profile for {certType} certificates. One is set up under Profiles, on the SSH Request tab.</FieldHint>}
                 </div>
                 <div>
                     <label htmlFor="ssh-sign-signing" className={labelClass}>Signing profile</label>
@@ -242,51 +303,6 @@ export const SshSignKeyForm: React.FC<{
             )}
 
             <fieldset disabled={!profilesChosen} className={`space-y-4 min-w-0 ${profilesChosen ? '' : 'opacity-40'}`}>
-                {certType === 'user' && (
-                    <div className="space-y-2" role="radiogroup" aria-labelledby="ssh-sign-for">
-                        <span id="ssh-sign-for" className={labelClass}>This certificate is for</span>
-                        <div className={card('user')}>
-                            <label htmlFor="ssh-sign-for-user" className="flex items-center gap-2 text-sm font-medium text-ink">
-                                <input id="ssh-sign-for-user" type="radio" name="ssh-sign-for" checked={subject === 'user'} onChange={() => { setSubject('user'); setValidity(null); }} className="h-4 w-4 accent-accent" />
-                                A user of this console
-                            </label>
-                            {subject === 'user' && (
-                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pl-6">
-                                    <select aria-label="User" value={subjectUserId} onChange={(e) => setSubjectUserId(e.target.value)} className={`${inputClassNarrow} min-w-[14rem]`}>
-                                        <option value="">Choose a user…</option>
-                                        {users.map((u) => <option key={u.id} value={u.id}>{u.username}</option>)}
-                                    </select>
-                                    {subjectUser && (
-                                        <span className="text-xs text-ink-muted">
-                                            Named <span className="font-mono text-ink">{subjectUser.username}</span> in host logs. The certificate appears under {subjectUser.username}'s own SSH certificates.
-                                        </span>
-                                    )}
-                                </div>
-                            )}
-                        </div>
-                        <div className={card('service')}>
-                            <label htmlFor="ssh-sign-for-service" className="flex items-center gap-2 text-sm font-medium text-ink">
-                                <input id="ssh-sign-for-service" type="radio" name="ssh-sign-for" checked={subject === 'service'} onChange={() => { setSubject('service'); setValidity(null); }} className="h-4 w-4 accent-accent" />
-                                A service identity with no account
-                            </label>
-                            <p className="pl-6 text-xs text-ink-muted">
-                                You give it a label, and hosts log it as <span className="font-mono">svc:label</span>, which no username can equal. Its login names are typed and checked against the certificate profile.
-                            </p>
-                            {subject === 'service' && (
-                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pl-6">
-                                    <input aria-label="Label" type="text" value={serviceLabel} onChange={(e) => setServiceLabel(e.target.value.trim())}
-                                        placeholder="e.g. backup-runner" autoComplete="off" spellCheck={false} className={`${inputClassNarrow} font-mono min-w-[14rem]`} />
-                                    <span className="text-xs text-ink-muted">
-                                        {serviceLabel && !serviceLabelError(serviceLabel)
-                                            ? <>Named <span className="font-mono text-ink">{serviceKeyId(serviceLabel)}</span> in host logs.</>
-                                            : 'A label is 1 to 64 letters, digits and . _ -'}
-                                    </span>
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                )}
-
                 <div className="max-w-3xl">
                     <label htmlFor="ssh-sign-key" className={labelClass}>Public key</label>
                     <textarea id="ssh-sign-key" required rows={3} placeholder="ssh-ed25519 AAAA..." value={publicKey} onChange={(e) => setPublicKey(e.target.value)}
@@ -314,7 +330,7 @@ export const SshSignKeyForm: React.FC<{
                         )}
                         {subjectUserId && (
                             <FieldHint>
-                                Only {subjectUser?.username ?? 'the user'}'s login names are offered, and nothing can be typed. To give {subjectUser?.username ?? 'the user'} another, <Link to={`/ssh/ca-keys/${caKey.id}`} className="text-accent-ink hover:underline">grant it on this CA</Link> first, so the grant is on record. A login name is the SSH principal: the account the certificate may log in as.
+                                Only {subjectUser?.username ?? 'the user'}'s login names are offered, and nothing can be typed. To give {subjectUser?.username ?? 'the user'} another, <Link to={sshCaKeyPath(caKey.id)} className="text-accent-ink hover:underline">grant it on this CA</Link> first, so the grant is on record. A login name is the SSH principal: the account the certificate may log in as.
                             </FieldHint>
                         )}
                     </div>
@@ -366,7 +382,7 @@ export const SshSignKeyForm: React.FC<{
 
             <div className="flex gap-2">
                 <button type="submit" disabled={signing || !ready} className={actionButtonPrimary}>{signing ? 'Signing…' : 'Sign'}</button>
-                <button type="button" onClick={onCancel} className={actionButton}>Cancel</button>
+                <button type="button" onClick={onCancel} className={actionButton}>Clear</button>
             </div>
         </form>
     );

@@ -13,9 +13,9 @@ import {
     certificateBadge, certificateStatus, dayTimeText, findQuery, isUserCertificate, issuedByDetail, issuedToDetail, issuedToText, logLineProblem, parseSshdLogLine, sshdKeyType,
     type SshCertificateView,
 } from '../pages/sshLoginNames';
+import { sshCaKeyPath, sshCertificatePath } from '../pages/sshPlaces';
 
-const certPath = (cert: SshCertificateView, usedName: string | null) =>
-    `/ssh/certs/${cert.id}?caKey=${cert.sshCaKeyId}${usedName ? `&used=${encodeURIComponent(usedName)}` : ''}`;
+const certPath = (cert: SshCertificateView, usedName: string | null) => sshCertificatePath(cert, usedName);
 
 /// <summary>
 /// Finds a certificate from the line a host's sshd wrote for a login. The line is read here, in
@@ -24,7 +24,7 @@ const certPath = (cert: SshCertificateView, usedName: string | null) =>
 /// are both said.
 /// </summary>
 export const SshLogLineLookup: React.FC<{
-    /** Called with the single certificate a line matches, so the page can show its SSH CA. */
+    /** Called with the single certificate a line matches. */
     onFound?: (cert: SshCertificateView) => void;
 }> = ({ onFound }) => {
     const [text, setText] = useState('');
@@ -134,7 +134,7 @@ export const SshLogLineLookup: React.FC<{
                                 : issuedToDetail(only)} />
                             <DetailField label="Issued by" value={issuedByDetail(only)} />
                             <DetailField label="Name in host logs" value={only.keyId} mono />
-                            <DetailField label="SSH CA" value={<Link to={`/ssh/ca-keys/${only.sshCaKeyId}`} className="text-accent-ink hover:underline">{only.sshCaKey?.name || only.sshCaKeyId}</Link>} />
+                            <DetailField label="SSH CA" value={<Link to={sshCaKeyPath(only.sshCaKeyId)} className="text-accent-ink hover:underline">{only.sshCaKey?.name || only.sshCaKeyId}</Link>} />
                             <DetailField label="Valid" value={`${dayTimeText(only.validAfter)} to ${dayTimeText(only.validBefore)}`} />
                             <DetailField label="Key" value={only.keyFingerprint ? `${sshdKeyType(only.publicKey)} ${only.keyFingerprint}` : null} mono />
                         </div>

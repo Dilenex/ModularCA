@@ -583,8 +583,8 @@ export function DataTable<Row>({
             {paged && (
                 <div className="px-3 py-2 border-t border-line flex items-center justify-between gap-3 flex-wrap text-xs text-ink-muted">
                     <span>
-                        {totalCount != null ? `${totalCount} row${totalCount === 1 ? '' : 's'}` : ''}
-                        {totalPages != null ? ` · page ${page} of ${totalPages}` : ` · page ${page}`}
+                        {totalCount != null ? `${totalCount} row${totalCount === 1 ? '' : 's'} · ` : ''}
+                        {totalPages != null ? `page ${page} of ${totalPages}` : `page ${page}`}
                     </span>
                     <span className="flex items-center gap-2">
                         {pageSizeOptions && onPageSizeChange && pageSize != null && (

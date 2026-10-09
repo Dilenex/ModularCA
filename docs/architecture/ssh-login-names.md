@@ -329,6 +329,7 @@ problem-details body with the sentence in `detail`, as the signer's refusals alr
 | `GET /api/v1/admin/ssh/groups/{groupId}/login-names` | `cert.view` | the grants to the group, per key the caller may view |
 | `GET /api/v1/admin/ssh/users/{userId}/certificates?live=true` | `user.manage` | the certificates issued for the user, on keys the caller may view |
 | `POST /api/v1/admin/ssh/users/{userId}/certificates/revoke` | `user.manage`, step-up | revokes the live ones on keys the caller holds `cert.revoke` on; answers `revoked` and `leftForRights` |
+| `GET /api/v1/admin/ssh/certificates?page=&pageSize=&sort=&caKeyId=` | `cert.view` | one page of the certificates on every key the caller may view; `caKeyId` narrows it to one key (added 2026-10-09, see "Where it is in the console") |
 | `GET /api/v1/admin/ssh/certificates/find?serial=&caFingerprint=&keyId=` | `cert.view` | the certificates with that serial, on keys the caller may view |
 | `GET /api/v1/admin/ssh/certificates/{id}` | `cert.view` | one certificate |
 
@@ -345,6 +346,14 @@ problem-details body with the sentence in `detail`, as the signer's refusals alr
   grant.
 - `find` takes the three values a host logs. The console reads the log line; the server does not.
   `caFingerprint` is the `SHA256:...` form, with or without the prefix.
+- The list across keys has the paging (`page` from 1, `pageSize` 50 by default and 200 at most),
+  the sort (`createdAt`, `keyId`, `validBefore`, a leading `-` for descending) and the answer of
+  the per-key list, `GET .../ca-keys/{caKeyId}/certificates`, which is kept. The answer is an
+  array with no total: a page shorter than `pageSize` is the last. It lists only the keys of
+  the CAs the caller holds `cert.view` on, inside the fence, so a `caKeyId` the caller may not
+  view, or one that does not exist, gives an empty list. The per-key list asks `cert.revoke`;
+  this one asks `cert.view`, as `find` and the detail do, and a requester of an SSH CA holds
+  `cert.view` on it.
 
 ### Self-service (`UserSshController`)
 
@@ -355,7 +364,9 @@ problem-details body with the sentence in `detail`, as the signer's refusals alr
   none, a signing profile it allows that points at the key and allows user certificates, and a
   certificate profile it allows; an empty allowed list means any. Each combination carries the
   smallest of its limits and the key's, `maxPrincipals`, and `unavailableLoginNames`: the held
-  names its certificate profile's patterns do not allow.
+  names its certificate profile's patterns do not allow. A request profile or certificate
+  profile of type `host` is left out, and the sign route refuses one with 400; see "The type of
+  a profile" in `ssh-defaults.md`.
 - `GET /api/v1/user/ssh/certificates` now lists the certificates issued **for** the caller,
   whoever asked, and the older ones the caller asked for that record no subject. A certificate an
   administrator signs for a user appears in that user's list and not in the administrator's.
@@ -363,7 +374,8 @@ problem-details body with the sentence in `detail`, as the signer's refusals alr
 
 ### What a certificate says
 
-The self-service list, the admin list (`GET .../ca-keys/{caKeyId}/certificates`), the detail, the
+The self-service list, the admin lists (`GET .../ca-keys/{caKeyId}/certificates` for one key and
+`GET /api/v1/admin/ssh/certificates` across keys), the detail, the
 user's certificates and `find` describe a certificate the same way
 (`SshLoginNameService.DescribeAsync`). The row's own members keep their names, and `principals`
 is still a JSON array inside a string. Added:
@@ -378,6 +390,49 @@ is still a JSON array inside a string. Added:
 - `loginNameGrounds`: the stored array, or null.
 - `sshCaKey` (`id`, `name`, `fingerprint`, `certificateAuthorityId`), `keyFingerprint`, `status` (`active`, `expired`,
   `revoked`) and `subjectUserId`.
+
+## Where it is in the console
+
+Decided by the owner on 2026-10-09. SSH had a menu entry and a page of its own in both consoles
+("SSH CA" under CA Management, and an "SSH" group in self-service). Both are removed, and each
+piece is a tab on the page people already use for the same thing in X.509, as the Profiles page
+already carries the three SSH profile types.
+
+| Piece | Where | Address |
+|---|---|---|
+| The SSH CA keys, the form for a new key, the plaintext notice | Authorities, SSH tab | `/admin/authorities/manage?tab=SSH` |
+| One key: review date, storage, login names, revocation list | under Authorities | `/admin/authorities/ssh/{id}` |
+| The SSH certificates, download and revoke, find by host log line | All Certificates, SSH tab | `/admin/certificates?tab=SSH` |
+| One certificate | under Certificates | `/admin/certificates/ssh/{id}` |
+| Sign key | Request Certificate, SSH tab | `/admin/certificates/request?tab=SSH` |
+| The self-service request form | Request Certificate, SSH tab | `/user/request?tab=SSH` |
+| The list of one's own SSH certificates | My Certificates, SSH tab | `/user/certificates?tab=SSH` |
+
+- **The tabs** are `X.509` and `SSH`, with the strip of the Profiles page and the tab carried in
+  the address the same way (`?tab=`). X.509 is the default.
+- **A tab is shown only to who can use it**, and a page opens for who can use one of its tabs
+  (`Gate.ssh`, `canUseSshTab`). No right changed: each piece asks what its routes ask. The key
+  list and Sign key ask `cert.revoke` at system scope or on an SSH CA; the key tab also admits a
+  holder of system-scoped `ca.manage`, who may generate a key. The certificate list asks
+  `cert.view` at system scope or on an SSH CA, and its Download and Revoke are enabled per row
+  for who holds `cert.revoke` on that row's SSH CA. The self-service tabs ask `cert.request` at
+  system scope or on an SSH CA. A reader with no SSH tab sees the page without a tab strip.
+- **The pages of one key and of one certificate have no gate of their own**, as before. A key's
+  page stays reachable to whoever could read it, whether or not they can open Authorities.
+- **The certificate list is across keys.** It was one key at a time, chosen from a drop-down. It
+  is now every key the reader may view, with the key as a column and as a filter, through
+  `GET /api/v1/admin/ssh/certificates`. A reader the key list refuses (it asks `cert.revoke`)
+  filters by the keys of the rows seen so far.
+- **The scope.** SSH CAs belong to the instance. While the console's scope is a space, or a CA
+  of a space, each SSH tab says so in a sentence and shows nothing else
+  (`sshScopeSentence`). The scope is an input of each tab's component, so the tab can list a
+  space's SSH CAs once an SSH CA can be assigned to spaces; none of that is built.
+- **Old addresses redirect** until 0.5, as the 0.4.0 renames do (`legacyPaths.ts`): `/admin/ssh`
+  to the SSH tab of All Certificates, `/admin/ssh/ca-keys/{id}` and `/admin/ssh/certs/{id}` to
+  the two pages above, and `/user/ssh` to the SSH tab of My Certificates, query string kept.
+- **Sign key asks first who the certificate is for**: a user of the console, a service identity
+  or a host. Only the request and certificate profiles of that type, or of none, are then
+  offered.
 
 ## Audit
 

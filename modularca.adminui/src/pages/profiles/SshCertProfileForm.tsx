@@ -7,6 +7,7 @@ import { type ProfileFormMode, sshRequiredNotAllowed } from './profileFormCore';
 import { ChipListInput } from '@shared/components/ChipListInput';
 import { validateRegex } from '@shared/validators';
 import { type SshCertProfileFormState, effectiveAllowed, matchPrincipal } from './sshCertProfile';
+import { SSH_PROFILE_TYPE_HINT, SSH_PROFILE_TYPE_OPTIONS, type SshProfileTypeChoice } from '../sshProfileType';
 
 /** Tries a login name or hostname against the patterns being edited and shows which of them match. */
 const PrincipalTester: React.FC<{ patterns: string[] }> = ({ patterns }) => {
@@ -88,6 +89,13 @@ export const SshCertProfileForm: React.FC<{
                     <label className={labelClass}>Max Validity (hours)</label>
                     <input type="text" inputMode="numeric" value={f.maxValidityHours} onChange={(e) => set('maxValidityHours', e.target.value.replace(/\D/g, ''))} className={inputClass} aria-describedby="ssh-cp-validity-hint" />
                     <FieldHint id="ssh-cp-validity-hint">Whole hours, not an ISO 8601 duration: 720 is thirty days. Blank or 0 falls back to 720. A request asking for longer is refused.</FieldHint>
+                </div>
+                <div>
+                    <label htmlFor="ssh-cp-type" className={labelClass}>Certificate type</label>
+                    <select id="ssh-cp-type" value={f.certificateType} onChange={(e) => set('certificateType', e.target.value as SshProfileTypeChoice)} className={inputClass} aria-describedby="ssh-cp-type-hint">
+                        {SSH_PROFILE_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    </select>
+                    <FieldHint id="ssh-cp-type-hint">{SSH_PROFILE_TYPE_HINT}</FieldHint>
                 </div>
             </div>
             <div>

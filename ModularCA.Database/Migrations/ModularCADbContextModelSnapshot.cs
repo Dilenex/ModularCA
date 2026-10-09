@@ -3250,6 +3250,10 @@ namespace ModularCA.Database.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("CertificateType")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -3525,6 +3529,10 @@ namespace ModularCA.Database.Migrations
 
                     b.Property<Guid?>("CertificateAuthorityId")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("CertificateType")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");

@@ -8,6 +8,7 @@ import {
     SSH_PLAINTEXT_ARCHIVE_LIMIT, SSH_PLAINTEXT_NOTICE_PREF, plaintextNoticeDismissed, plaintextNoticeVersion,
     type SshPlaintextNotice, type SshPlaintextNoticePrefs,
 } from '../pages/sshKeyCustody';
+import { sshCaKeyPath } from '../pages/sshPlaces';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -78,7 +79,7 @@ export const SshPlaintextNoticePanel: React.FC<{
                                         <td className={cell}>
                                             {k.id === currentKeyId
                                                 ? <span className="font-semibold">{k.name} (this key)</span>
-                                                : <Link to={`/ssh/ca-keys/${k.id}`} className="text-accent-ink hover:underline">{k.name}</Link>}
+                                                : <Link to={sshCaKeyPath(k.id)} className="text-accent-ink hover:underline">{k.name}</Link>}
                                         </td>
                                         <td className={`${cell} data-mono break-all`}>{k.fingerprint}</td>
                                         <td className={`${cell} whitespace-nowrap`}>{formatDate(k.importedAt)}</td>
@@ -150,7 +151,7 @@ export const SshPlaintextNoticePanel: React.FC<{
 };
 
 /// <summary>
-/// The plaintext notice on the SSH page: shown while it applies, until this user dismisses it.
+/// The plaintext notice on the SSH tab of Authorities: shown while it applies, until this user dismisses it.
 /// A dismissed notice leaves one line from which it can be opened again, and comes back by
 /// itself when what it says changes.
 /// </summary>

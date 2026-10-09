@@ -1189,7 +1189,9 @@ public static class BootstrapProfileSeeder
     /// extensions and requires agent and port forwarding. One host certificate profile of 8760
     /// hours. A user request profile of 12 hours over Standard only, and a host request profile
     /// of 8760 hours. Forwarding is attached to no request profile: an administrator adds it
-    /// where forwarding is wanted. Signing profiles are created with each SSH CA key.
+    /// where forwarding is wanted. Signing profiles are created with each SSH CA key. Each of
+    /// the five carries its certificate type (<see cref="SshProfileCertificateType"/>): the user
+    /// profiles <c>user</c>, the host profiles <c>host</c>.
     /// </remarks>
     public static void SeedDefaultSshProfiles(ModularCADbContext db)
     {
@@ -1211,6 +1213,7 @@ public static class BootstrapProfileSeeder
             AllowedExtensions = "[\"permit-pty\",\"permit-user-rc\"]",
             RequiredExtensions = "[]",
             MaxValidityHours = 24,
+            CertificateType = SshProfileCertificateType.User,
         };
         db.SshCertProfiles.Add(userCertProfile);
 
@@ -1223,6 +1226,7 @@ public static class BootstrapProfileSeeder
             AllowedExtensions = "[\"permit-pty\",\"permit-agent-forwarding\",\"permit-port-forwarding\",\"permit-X11-forwarding\",\"permit-user-rc\"]",
             RequiredExtensions = "[\"permit-port-forwarding\",\"permit-agent-forwarding\"]",
             MaxValidityHours = 24,
+            CertificateType = SshProfileCertificateType.User,
         });
 
         var hostCertProfile = new SshCertProfileEntity
@@ -1234,6 +1238,7 @@ public static class BootstrapProfileSeeder
             AllowedExtensions = "[]",
             RequiredExtensions = "[]",
             MaxValidityHours = 8760,
+            CertificateType = SshProfileCertificateType.Host,
         };
         db.SshCertProfiles.Add(hostCertProfile);
 
@@ -1243,6 +1248,7 @@ public static class BootstrapProfileSeeder
             Description = "Default request profile for SSH user certificates. No approval required.",
             RequireApproval = false,
             MaxValidityHours = 12,
+            CertificateType = SshProfileCertificateType.User,
         };
         db.SshRequestProfiles.Add(userRequestProfile);
 
@@ -1252,6 +1258,7 @@ public static class BootstrapProfileSeeder
             Description = "Default request profile for SSH host certificates. No approval required.",
             RequireApproval = false,
             MaxValidityHours = 8760, // 1 year
+            CertificateType = SshProfileCertificateType.Host,
         };
         db.SshRequestProfiles.Add(hostRequestProfile);
         db.SaveChanges();

@@ -128,6 +128,7 @@ public sealed class SpaceFenceGuardTests
         ["AdminSshController.GetPlaintextNotice"] = "SpaceFence.Allows(null): SSH CAs are instance CAs, so instance scope (cert.revoke), else 404",
         ["AdminSshLoginNameController.FindCertificates"] = "KeysWithAsync: GetAccessibleCaIdsAsync(cert.view), then SpaceFence.Allows on each SSH CA",
         ["AdminSshLoginNameController.GetCertificate"] = "KeysWithAsync: GetAccessibleCaIdsAsync(cert.view), then SpaceFence.Allows on the SSH CA, else 404",
+        ["AdminSshLoginNameController.GetCertificates"] = "KeysWithAsync: GetAccessibleCaIdsAsync(cert.view), then SpaceFence.Allows on each SSH CA; a caKeyId outside them lists nothing",
         ["AdminSshLoginNameController.GetGroupLoginNames"] = "SpaceFence.Allows on the group (cert.view), else 404; grants only of KeysWithAsync(cert.view)",
         ["AdminSshLoginNameController.GetUserCertificates"] = "VisibleUserAsync: SpaceFence.Allows over the user's scopes (user.manage), else 404; certificates only of KeysWithAsync(cert.view)",
         ["AdminSshLoginNameController.GetUserLoginNames"] = "VisibleUserAsync: SpaceFence.Allows over the user's scopes (user.manage), else 404; names only of KeysWithAsync(cert.view)",

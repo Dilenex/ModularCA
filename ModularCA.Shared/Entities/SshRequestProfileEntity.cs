@@ -38,6 +38,13 @@ public class SshRequestProfileEntity
     /// <summary>Optional CA association for group-based access scoping.</summary>
     public Guid? CertificateAuthorityId { get; set; }
 
+    /// <summary>
+    /// The certificate type the profile is for: <c>user</c>, <c>host</c>, or null for either
+    /// (<see cref="ModularCA.Shared.Utils.SshProfileCertificateType"/>).
+    /// </summary>
+    [MaxLength(10)]
+    public string? CertificateType { get; set; }
+
     /// <summary>UTC timestamp when this profile was created.</summary>
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }

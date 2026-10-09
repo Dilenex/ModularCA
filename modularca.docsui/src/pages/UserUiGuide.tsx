@@ -8,8 +8,9 @@ export default function UserUiGuide() {
                 The User UI is served at <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/user</code> and
                 provides a self-service portal for end users to request, manage, and download their certificates.
                 All routes require authentication with step-up MFA support (TOTP and WebAuthn) for
-                sensitive operations. The sidebar navigation is organized into 5 sections: Overview,
-                Certificates, SSH, CA Information, and My Account.
+                sensitive operations. The sidebar navigation is organized into 4 sections: Overview,
+                Certificates, CA Information, and My Account. SSH certificates are a tab on the two
+                Certificates pages.
             </p>
 
             {/* Dashboard */}
@@ -136,10 +137,13 @@ export default function UserUiGuide() {
             <section className="mb-10">
                 <h2 className="text-2xl font-bold text-ink mb-3">SSH Certificates</h2>
                 <div className="bg-sunken rounded p-4 data-mono mb-3">
-                    Route: /user/ssh
+                    Routes: /user/request?tab=SSH, /user/certificates?tab=SSH (the old /user/ssh path redirects to the second until 0.5)
                 </div>
                 <p className="text-ink leading-relaxed mb-3">
-                    Request, view and download your SSH certificates for server access.
+                    Request, view and download your SSH certificates for server access. SSH has no menu entry of its
+                    own: the request form is the SSH tab of Request Certificate, and the list of your SSH certificates
+                    is the SSH tab of My Certificates. Both tabs are shown to you when you may request from an SSH CA;
+                    without that right the two pages show no tabs.
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li>Request a certificate for your own public key</li>
@@ -149,7 +153,7 @@ export default function UserUiGuide() {
 
                 <h3 className="text-lg font-semibold text-ink mb-2">Requesting a certificate</h3>
                 <p className="text-ink leading-relaxed mb-3">
-                    &ldquo;+ Request&rdquo; opens the form. It asks for three things:
+                    The form is on the SSH tab of Request Certificate; Request New on the SSH tab of My Certificates opens it. It asks for three things:
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li><span className="font-semibold">Your public key:</span> the contents of the .pub file of the key you use, for example <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">~/.ssh/id_ed25519.pub</code>. The private key never leaves your machine.</li>
@@ -158,7 +162,8 @@ export default function UserUiGuide() {
                 </ul>
                 <p className="text-ink leading-relaxed mb-3">
                     The SSH CA is asked for only when you may request from more than one, and a profile only when there is
-                    a real choice. &ldquo;Your name in host logs&rdquo; is your username. The CA writes it into the certificate and it
+                    a real choice. Only profiles for user certificates, and profiles that serve either type, are offered:
+                    a profile for host certificates is never one of the choices. &ldquo;Your name in host logs&rdquo; is your username. The CA writes it into the certificate and it
                     cannot be changed: every host records it with each login, whichever account you use. The form shows the
                     line a host will write, for example when alice logs in as root:
                 </p>
@@ -175,8 +180,8 @@ export default function UserUiGuide() {
                     under the key file&apos;s name with <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">-cert.pub</code> added:
                     for <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">~/.ssh/id_ed25519</code> that is
                     <code className="text-sm bg-sunken px-1.5 py-0.5 rounded"> ~/.ssh/id_ed25519-cert.pub</code>. ssh then presents it by
-                    itself. The certificate also appears in the list, where it can be downloaded again. A certificate an
-                    administrator signs for you appears in your list too.
+                    itself. The certificate also appears on the SSH tab of My Certificates, where it can be downloaded again. A certificate an
+                    administrator signs for you appears there too.
                 </p>
                 <p className="text-ink leading-relaxed mb-3">
                     If you hold no login name on an SSH CA, the form says so: an administrator of the SSH CA has to grant

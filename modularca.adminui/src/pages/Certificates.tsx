@@ -18,6 +18,11 @@ import { FieldHint } from '@shared/components/forms';
 import { FilterBar, FilterField, filterControlClass } from '@shared/components/FilterBar';
 import { Link } from 'react-router-dom';
 import { capitalize, expiryPhrase, expiryState, isoDay, lifecycleTone, toneTextClass } from './certLifecycle';
+import { KindTabStrip, useKindTabs } from '../components/KindTabs';
+import { useAuth } from '../context/AuthContext';
+import { canUseSshTab } from '../authz';
+import { CERT_VIEW } from '../gates';
+import { SshCertificatesTab } from './SshCertificates';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -118,7 +123,8 @@ const QUERY_DEFAULTS: TableQueryValues = {
 };
 const PAGE_SIZES = [20, 50, 100];
 
-const Certificates: React.FC = () => {
+/** The X.509 tab of All Certificates: the certificate list with its filters, saved views and bulk revoke. */
+const X509Certificates: React.FC = () => {
     const { showToast } = useToast();
     const { requireStepUp } = useStepUp();
     // Page, sort and every filter live in the URL (see useTableQuery), so a filtered view is a
@@ -383,9 +389,7 @@ const Certificates: React.FC = () => {
     };
 
     return (
-        <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-xl font-semibold text-ink">Certificates</h1>
-
+        <div className="space-y-4 sm:space-y-6">
             {/* Search and filters */}
             <FilterBar>
                 <FilterField label="Search" grow>
@@ -524,6 +528,25 @@ const Certificates: React.FC = () => {
                 </div>
             )}
 
+        </div>
+    );
+};
+
+/**
+ * The All Certificates page: the X.509 certificates, and on its SSH tab the SSH certificates.
+ * Each tab is shown only to who can use it: the X.509 tab to who may view certificates in the
+ * scope, the SSH tab to who may view them on an SSH CA.
+ */
+const Certificates: React.FC = () => {
+    const { scope, allows } = useScope();
+    const { capabilities } = useAuth();
+    const { tabs, active, setActive } = useKindTabs({ x509: allows(CERT_VIEW), ssh: canUseSshTab(capabilities, 'certificates') });
+    return (
+        <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
+            <h1 className="text-xl font-semibold text-ink">Certificates</h1>
+            <KindTabStrip tabs={tabs} active={active} onChange={setActive} />
+            {active === 'X.509' && <X509Certificates />}
+            {active === 'SSH' && <SshCertificatesTab scope={scope} />}
         </div>
     );
 };

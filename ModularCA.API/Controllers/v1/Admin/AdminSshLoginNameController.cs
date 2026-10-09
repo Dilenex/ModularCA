@@ -14,7 +14,8 @@ namespace ModularCA.API.Controllers.v1.Admin;
 
 /// <summary>
 /// Admin endpoints for SSH login names: the grants of an SSH CA key, what a user or a group
-/// holds, a user's certificates, and finding a certificate from what a host logged. Every route
+/// holds, a user's certificates, the certificate list across keys, and finding a certificate
+/// from what a host logged. Every route
 /// is fenced by the SSH CA key's certificate authority and its space: a route that names a key
 /// answers 404 when the key is outside the caller's <see cref="SpaceFence"/>, and a route that
 /// names none answers only for the keys the caller holds the capability on. Changing grants
@@ -268,6 +269,30 @@ public class AdminSshLoginNameController(ISshLoginNameService loginNames, ICurre
             return NotFound();
         var result = await loginNames.RevokeCertificatesOfUserAsync(userId, await KeysWithAsync(Capabilities.CertRevoke), Actor(), HttpContext.RequestAborted);
         return Ok(new { revoked = result.Revoked, leftForRights = result.LeftForRights });
+    }
+
+    // ---- Listing certificates ----------------------------------------------------------------
+
+    /// <summary>
+    /// Lists the issued SSH certificates of every SSH CA key the caller holds cert.view on, inside
+    /// the caller's <see cref="SpaceFence"/>, a page at a time, each described as the per-key list
+    /// describes it and carrying its key (<c>sshCaKey</c>). <c>page</c> (from 1), <c>pageSize</c>
+    /// (default 50, at most <see cref="ISshLoginNameService.MaxCertificatePageSize"/>) and
+    /// <c>sort</c> (<c>createdAt</c>, <c>keyId</c>, <c>validBefore</c>, descending with a leading
+    /// <c>-</c>) are those of the per-key list. <c>caKeyId</c> narrows the list to one key; a key
+    /// the caller may not view, or one that does not exist, gives an empty list, so the route
+    /// never answers for such a key.
+    /// </summary>
+    [HttpGet("certificates")]
+    [Authorize(Policy = "CaAuditor")]
+    public async Task<IActionResult> GetCertificates([FromQuery] int page = 1, [FromQuery] int pageSize = 50, [FromQuery] string? sort = null,
+        [FromQuery] Guid? caKeyId = null)
+    {
+        await currentUser.EnsureLoadedAsync();
+        var keys = await KeysWithAsync(Capabilities.CertView);
+        if (caKeyId is Guid one)
+            keys = keys.Where(k => k == one).ToList();
+        return Ok(await loginNames.CertificatesAsync(keys, page, pageSize, sort, HttpContext.RequestAborted));
     }
 
     // ---- Finding a certificate ---------------------------------------------------------------

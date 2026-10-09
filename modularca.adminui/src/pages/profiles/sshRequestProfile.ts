@@ -1,5 +1,6 @@
 import { type ProfileFormMode, NAME_REQUIRED_REASON, parseJsonArray, textOrNull } from './profileFormCore';
 import { hoursOrDefault } from './sshSigningProfile';
+import { type SshProfileTypeChoice, profileTypeChoice } from '../sshProfileType';
 
 /**
  * Form model for an SSH request profile, shared by /profiles/ssh-request/new and
@@ -19,6 +20,8 @@ export interface CreateSshRequestProfileBody {
     requireApproval: boolean | null;
     maxValidityHours: number | null;
     certificateAuthorityId: string | null;
+    /** `user`, `host` or `either`; the server stores `either` as no type. */
+    certificateType: SshProfileTypeChoice | null;
 }
 
 /** Mirrors UpdateSshRequestProfileRequest in AdminSshProfileController.cs (every member optional). */
@@ -30,6 +33,8 @@ export interface UpdateSshRequestProfileBody {
     requireApproval: boolean | null;
     maxValidityHours: number | null;
     certificateAuthorityId: string | null;
+    /** `either` clears the type; null would leave it unchanged, so the form always sends one of the three. */
+    certificateType: SshProfileTypeChoice | null;
 }
 
 export interface SshRequestProfileFormState {
@@ -42,6 +47,8 @@ export interface SshRequestProfileFormState {
     certificateAuthorityId: string;
     /** The CA the stored profile is bound to ('' when unbound or new); never sent. */
     boundCertificateAuthorityId: string;
+    /** The certificate type the profile is for; `either` for a stored profile with none. */
+    certificateType: SshProfileTypeChoice;
 }
 
 /** The form for a new SSH request profile; the defaults are the server's create defaults. */
@@ -50,6 +57,7 @@ export const emptyForm = (): SshRequestProfileFormState => ({
     allowedSshSigningProfileIds: [], allowedSshCertProfileIds: [],
     requireApproval: false, maxValidityHours: '720',
     certificateAuthorityId: '', boundCertificateAuthorityId: '',
+    certificateType: 'either',
 });
 
 /** Seeds the form from a stored profile. */
@@ -62,6 +70,7 @@ export const formFromProfile = (p: any): SshRequestProfileFormState => ({
     maxValidityHours: String(p?.maxValidityHours ?? 720),
     certificateAuthorityId: p?.certificateAuthorityId || '',
     boundCertificateAuthorityId: p?.certificateAuthorityId || '',
+    certificateType: profileTypeChoice(p?.certificateType),
 });
 
 export const formToCreateBody = (f: SshRequestProfileFormState): CreateSshRequestProfileBody => ({
@@ -72,6 +81,7 @@ export const formToCreateBody = (f: SshRequestProfileFormState): CreateSshReques
     requireApproval: f.requireApproval,
     maxValidityHours: hoursOrDefault(f.maxValidityHours),
     certificateAuthorityId: textOrNull(f.certificateAuthorityId),
+    certificateType: f.certificateType,
 });
 
 export const formToUpdateBody = (f: SshRequestProfileFormState): UpdateSshRequestProfileBody => ({
@@ -82,6 +92,7 @@ export const formToUpdateBody = (f: SshRequestProfileFormState): UpdateSshReques
     requireApproval: f.requireApproval,
     maxValidityHours: hoursOrDefault(f.maxValidityHours),
     certificateAuthorityId: textOrNull(f.certificateAuthorityId),
+    certificateType: f.certificateType,
 });
 
 /** True when an edit would unbind a CA-bound profile, which the update endpoint cannot do. */

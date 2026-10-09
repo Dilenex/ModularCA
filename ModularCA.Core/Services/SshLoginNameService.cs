@@ -534,6 +534,25 @@ public sealed class SshLoginNameService : ISshLoginNameService
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<SshCertificateView>> CertificatesAsync(IReadOnlyCollection<Guid> caKeyIds, int page, int pageSize, string? sort,
+        CancellationToken cancellationToken = default)
+    {
+        var ids = caKeyIds.ToList();
+        if (ids.Count == 0)
+            return [];
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, ISshLoginNameService.MaxCertificatePageSize);
+        var skip = (long)(page - 1) * pageSize;
+        if (skip > int.MaxValue)
+            return [];
+        var rows = await SshCaService.Ordered(_db.SshCertificates.AsNoTracking().Where(c => ids.Contains(c.SshCaKeyId)), sort)
+            .ThenBy(c => c.Id)
+            .Skip((int)skip).Take(pageSize)
+            .ToListAsync(cancellationToken);
+        return await DescribeAsync(rows, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<SshCertificateView>> DescribeAsync(IReadOnlyList<SshCertificateEntity> certificates, CancellationToken cancellationToken = default)
     {
         if (certificates.Count == 0)
@@ -624,8 +643,12 @@ public sealed class SshLoginNameService : ISshLoginNameService
         var signingProfiles = await _db.SshSigningProfiles.AsNoTracking()
             .Where(p => p.AllowUserCerts && p.SshCaKeyId != null && keyIds.Contains(p.SshCaKeyId.Value))
             .OrderBy(p => p.Name).ToListAsync(cancellationToken);
-        var certProfiles = await _db.SshCertProfiles.AsNoTracking().OrderBy(p => p.Name).ToListAsync(cancellationToken);
-        var requestProfiles = await _db.SshRequestProfiles.AsNoTracking().Where(p => !p.RequireApproval).OrderBy(p => p.Name).ToListAsync(cancellationToken);
+        var certProfiles = await _db.SshCertProfiles.AsNoTracking()
+            .Where(p => p.CertificateType == null || p.CertificateType == SshProfileCertificateType.User)
+            .OrderBy(p => p.Name).ToListAsync(cancellationToken);
+        var requestProfiles = await _db.SshRequestProfiles.AsNoTracking()
+            .Where(p => !p.RequireApproval && (p.CertificateType == null || p.CertificateType == SshProfileCertificateType.User))
+            .OrderBy(p => p.Name).ToListAsync(cancellationToken);
 
         var now = DateTime.UtcNow;
         var options = new List<SshRequestKeyOptions>();
