@@ -424,6 +424,131 @@ public sealed class SshEndpointTests
         Assert.Equal(0, signer.Calls);
     }
 
+    /// <summary>Counts the calls a controller makes on the SSH CA service, by method name, and passes each on.</summary>
+    public class CountingSshCaService : DispatchProxy
+    {
+        /// <summary>The service the calls go to.</summary>
+        public ISshCaService Inner { get; set; } = null!;
+
+        /// <summary>How often each method was called.</summary>
+        public Dictionary<string, int> Calls { get; } = new();
+
+        /// <inheritdoc />
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+        {
+            Calls[targetMethod!.Name] = Calls.GetValueOrDefault(targetMethod.Name) + 1;
+            return targetMethod.Invoke(Inner, args);
+        }
+    }
+
+    /// <summary>One KRL request on a fresh controller: the answer and the headers it set.</summary>
+    private static async Task<(IActionResult Result, IHeaderDictionary Headers)> KrlRequest(Func<object> route, Guid id, string? ifNoneMatch)
+    {
+        var controller = route();
+        if (ifNoneMatch != null)
+            HttpOf(controller).Request.Headers.IfNoneMatch = ifNoneMatch;
+        return (await Call(controller, "DownloadKrl", id), HttpOf(controller).Response.Headers);
+    }
+
+    /// <summary>
+    /// What makes the list cheap to poll: both routes send a strong ETag and
+    /// <c>Cache-Control: no-cache</c>, and a request that names the current ETag is answered 304
+    /// with no body and without the list being built. The ETag changes with a revocation and
+    /// with nothing else.
+    /// </summary>
+    [Fact]
+    public async Task Both_krl_routes_send_a_strong_etag_and_answer_304_to_a_request_that_names_it()
+    {
+        using var node = new SshNode();
+        var ca = await node.CreateCaAsync();
+        var cert = await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null, node.Actor);
+        var service = node.ServiceOver(new UnaskedSigner());
+        var counted = DispatchProxy.Create<ISshCaService, CountingSshCaService>();
+        var counting = (CountingSshCaService)(object)counted;
+        counting.Inner = service;
+        Func<object>[] routes = [() => AdminController(node, counted), () => PublicController(counted)];
+        int Built() => counting.Calls.GetValueOrDefault(nameof(ISshCaService.BuildKrlAsync));
+
+        async Task<string> AssertConditionalAsync(Func<object> route)
+        {
+            var (first, headers) = await KrlRequest(route, ca.Id, null);
+            var list = Assert.IsType<FileContentResult>(first).FileContents;
+            var etag = headers.ETag.ToString();
+            Assert.Matches("^\"[0-9a-f]{32}\"$", etag);
+            Assert.Equal("no-cache", headers.CacheControl.ToString());
+            Assert.Equal((await service.GetKrlStateAsync(ca.Id)).ETag, etag);
+
+            var built = Built();
+            foreach (var asked in new[] { etag, $"W/{etag}", $"\"an-older-list\", {etag}", "*" })
+            {
+                var (answer, answered) = await KrlRequest(route, ca.Id, asked);
+                Assert.Equal(304, Assert.IsType<StatusCodeResult>(answer).StatusCode);
+                Assert.Equal(etag, answered.ETag.ToString());
+                Assert.Equal("no-cache", answered.CacheControl.ToString());
+            }
+            Assert.Equal(built, Built());
+
+            foreach (var asked in new[] { "\"an-older-list\"", "not an entity tag", etag.Trim('"') })
+            {
+                var (answer, answered) = await KrlRequest(route, ca.Id, asked);
+                Assert.Equal(list, Assert.IsType<FileContentResult>(answer).FileContents);
+                Assert.Equal(etag, answered.ETag.ToString());
+            }
+            return etag;
+        }
+
+        var before = new List<string>();
+        foreach (var route in routes)
+            before.Add(await AssertConditionalAsync(route));
+        Assert.Equal(before[0], before[1]);
+
+        Assert.True(await service.RevokeCertificateAsync(cert.Id, ca.Id, node.Actor));
+
+        foreach (var route in routes)
+        {
+            var (stale, headers) = await KrlRequest(route, ca.Id, before[0]);
+            Assert.True(Assert.IsType<FileContentResult>(stale).FileContents.Length > 44);
+            Assert.NotEqual(before[0], headers.ETag.ToString());
+            Assert.Equal(headers.ETag.ToString(), await AssertConditionalAsync(route));
+        }
+
+        // A key that does not exist is answered as before, with or without the header, and names no ETag.
+        var (missing, missingHeaders) = await KrlRequest(routes[1], Guid.NewGuid(), before[0]);
+        Assert.IsType<NotFoundResult>(missing);
+        Assert.Empty(missingHeaders.ETag.ToString());
+        Assert.IsType<BadRequestObjectResult>((await KrlRequest(routes[0], Guid.NewGuid(), before[0])).Result);
+        Assert.IsType<BadRequestObjectResult>((await KrlRequest(routes[0], Guid.NewGuid(), null)).Result);
+    }
+
+    [Fact]
+    public async Task The_admin_key_list_says_what_each_key_s_krl_is_and_the_public_list_does_not()
+    {
+        using var node = new SshNode();
+        var ca = await node.CreateCaAsync();
+        var cert = await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null, node.Actor);
+
+        async Task<JsonElement> KeyAsync()
+            => JsonDocument.Parse(Json(await Call(AdminController(node, node.Service), "GetCaKeys"))).RootElement.EnumerateArray()
+                .Single(k => k.GetProperty("Id").GetGuid() == ca.Id);
+
+        var nothingRevoked = await KeyAsync();
+        Assert.Equal(0UL, nothingRevoked.GetProperty("KrlVersion").GetUInt64());
+        Assert.Equal(0, nothingRevoked.GetProperty("KrlRevokedCertificates").GetInt32());
+        Assert.Equal(JsonValueKind.Null, nothingRevoked.GetProperty("KrlLastRevokedAt").ValueKind);
+
+        var before = DateTime.UtcNow.AddSeconds(-1);
+        Assert.True(await node.Service.RevokeCertificateAsync(cert.Id, ca.Id, node.Actor));
+
+        var oneRevoked = await KeyAsync();
+        Assert.Equal(1UL, oneRevoked.GetProperty("KrlVersion").GetUInt64());
+        Assert.Equal(1, oneRevoked.GetProperty("KrlRevokedCertificates").GetInt32());
+        Assert.InRange(oneRevoked.GetProperty("KrlLastRevokedAt").GetDateTime().ToUniversalTime(), before, DateTime.UtcNow.AddSeconds(1));
+
+        var publicList = Json(await Call(PublicController(node.Service), "ListCaKeys"));
+        Assert.DoesNotContain("KrlVersion", publicList, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Revoked", publicList, StringComparison.OrdinalIgnoreCase);
+    }
+
     // ---- Removed -----------------------------------------------------------------------------
 
     [Fact]

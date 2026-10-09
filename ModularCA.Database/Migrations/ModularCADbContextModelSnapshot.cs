@@ -3319,6 +3319,9 @@ namespace ModularCA.Database.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<DateTime?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<long>("SerialNumber")
                         .HasColumnType("bigint");
 
@@ -3347,6 +3350,9 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("SshCaKeyId");
 
                     b.HasIndex("SubjectUserId");
+
+                    b.HasIndex("SshCaKeyId", "RevokedAt")
+                        .HasFilter("\"IsRevoked\"");
 
                     b.ToTable("SshCertificates");
                 });

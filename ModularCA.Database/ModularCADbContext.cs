@@ -849,10 +849,14 @@ public class ModularCADbContext : DbContext
         modelBuilder.Entity<SshCaKeyEntity>()
             .Property(e => e.AllowOwnUsername).HasDefaultValue(true);
 
-        // SSH certificates: the subject goes null when its user is deleted; the row stays.
+        // SSH certificates: the subject goes null when its user is deleted; the row stays. The
+        // partial index is what a KRL's version and newest revocation are read from on every poll;
+        // the index on the key alone is named so that the partial one does not stand in for it.
         modelBuilder.Entity<SshCertificateEntity>(entity =>
         {
             entity.HasIndex(e => e.SubjectUserId);
+            entity.HasIndex(e => e.SshCaKeyId);
+            entity.HasIndex(e => new { e.SshCaKeyId, e.RevokedAt }).HasFilter("\"IsRevoked\"");
             entity.HasOne<UserEntity>()
                   .WithMany()
                   .HasForeignKey(e => e.SubjectUserId)

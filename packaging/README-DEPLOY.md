@@ -14,6 +14,7 @@ Self-contained `linux-x64` build. No .NET runtime is required on the target.
 | `config/*.example` | Templates. `install.sh` copies them in only on a first install and never over a real config. |
 | `deploy/` | systemd units, per-role unit drop-ins (`dropins/`), plus nginx and nftables templates. `install.sh` installs both units in `/etc/systemd/system/` (`modularca-signer.service` is not enabled); the rest are examples to apply by hand from the extracted archive. |
 | `share/sql/adopt-ownership.sql` | The one-time schema-ownership repair for installs made before 0.4.0, run as the PostgreSQL superuser. `install.sh` installs it root-owned to `/usr/share/modularca/sql/`, never into `/opt/modularca`. |
+| `share/ssh-krl/` | The KRL fetcher for SSH servers: `modularca-krl-fetch.sh`, its systemd service and timer, and an example of its settings. Nothing here runs on the CA. `install.sh` installs it root-owned to `/usr/share/modularca/ssh-krl/`; see "SSH servers: fetching the revocation list". |
 
 ## Permissions are set by the installer, not the archive
 
@@ -43,6 +44,9 @@ flags. `install.sh` sets them explicitly (the `.deb`'s `postinst` sets the same)
   `ReadWritePaths=`.
 - `/usr/share/modularca/sql/adopt-ownership.sql` → `root:root 0644`. It is run as the PostgreSQL
   superuser, so it must not live where the service account can rewrite it.
+- `/usr/share/modularca/ssh-krl/` → `root:root`, the script `0755` and the rest `0644`. It is
+  copied from here to SSH servers and run there as root, so the service account must not be able
+  to rewrite it either.
 
 If you point `Backup.OutputPath`, `AuditRetention.ArchivePath` or
 `Logging.FilePath` at a directory outside these four, create it owned by `modularca` and add it to
@@ -1228,6 +1232,69 @@ the process that hosts control and enrollment, so those names must stay on that 
 upstream for them, and the ingress running in the same process as control), or that
 process must be reached directly. `X-Forwarded-For`, `-Proto` and `-Host` are added on the
 way to a node; `Authorization: Negotiate` and `WWW-Authenticate` pass through untouched.
+
+## SSH servers: fetching the revocation list
+
+A certificate revoked at the CA is refused by an SSH server only once that server has the SSH CA
+key's new key revocation list (KRL). `sshd` reads the list from the file `RevokedKeys` names, and
+nothing in OpenSSH fetches it. The fetcher in `/usr/share/modularca/ssh-krl/` (the tarball's
+`share/ssh-krl/`) does, once a minute. It runs on each SSH server, not on the CA.
+
+| File | Goes on the server as |
+|---|---|
+| `modularca-krl-fetch.sh` | `/usr/local/sbin/modularca-krl-fetch`, mode `0755` |
+| `modularca-krl-fetch.service`, `modularca-krl-fetch.timer` | `/etc/systemd/system/` |
+| `modularca-krl-fetch.env.example` | `/etc/default/modularca-krl-fetch`, with the key's KRL URL |
+
+The server needs `curl`, `ssh-keygen` from OpenSSH 8.0 or later, and coreutils. Copy the four files
+to it (for example `scp /usr/share/modularca/ssh-krl/* root@server:/root/ssh-krl/`), then, on the
+server, in this order:
+
+    cd /root/ssh-krl
+    install -m 0755 modularca-krl-fetch.sh /usr/local/sbin/modularca-krl-fetch
+    install -m 0644 modularca-krl-fetch.service modularca-krl-fetch.timer /etc/systemd/system/
+    install -m 0644 modularca-krl-fetch.env.example /etc/default/modularca-krl-fetch
+    # set MODULARCA_KRL_URL in /etc/default/modularca-krl-fetch: the KRL URL on the key's console page
+    systemctl daemon-reload
+    systemctl start modularca-krl-fetch.service      # the first fetch; it must succeed
+    ssh-keygen -Q -l -f /etc/ssh/revoked_keys.krl    # prints the list's version
+    systemctl enable --now modularca-krl-fetch.timer
+    # only now, in /etc/ssh/sshd_config:  RevokedKeys /etc/ssh/revoked_keys.krl
+    sshd -t && systemctl reload ssh                  # the unit is named sshd on some distributions
+
+**Fetch first, then name the file.** `sshd` refuses every public-key login while the file
+`RevokedKeys` names is missing or cannot be read, so the list has to be in place before
+`sshd_config` names it. Keep a session open while you reload.
+
+What the fetcher does, and will not do:
+
+- It sends the ETag of the installed list, and the CA answers `304 Not Modified` while nothing was
+  revoked. A minute's poll of an unchanged list costs the CA one small query.
+- A new list is downloaded to a temporary file beside the destination. An empty answer is refused,
+  and so is anything `ssh-keygen -Q -l` does not read as a KRL. Only then is the file given mode
+  `0644` and renamed over the installed one.
+- On any failure the installed file is not removed, truncated or replaced, the script exits
+  non-zero and the unit is left failed: `systemctl --failed`, `journalctl -u modularca-krl-fetch`.
+  The timer tries again the next minute. A server that cannot reach the CA keeps the last list it
+  fetched, so revocations made meanwhile do not reach it; watch for the failed unit.
+- It refuses a list whose version is lower than the installed one's, since that is normally an
+  older list. **After the CA's database is restored from a backup** the version can legitimately
+  be lower (it is the number of revoked certificates, and the restored database may hold fewer).
+  Run it once on each server with `--allow-lower-version`, or with
+  `MODULARCA_KRL_ALLOW_LOWER_VERSION=1` in the settings file for one run. Know what that drops:
+  the restored list does not name the certificates revoked after the backup was taken. One that
+  was issued before the backup can be revoked again at the CA. One issued after it is unknown to
+  the restored CA and stays valid until it expires. Until the lower version is allowed the
+  server keeps its old list, and learns of no revocation made since the restore.
+- The URL must be `https`. A KRL is not signed, so TLS is all that protects it. When the server's
+  trust store does not hold the issuer of the CA's web certificate, name a PEM bundle in
+  `MODULARCA_KRL_CACERT`.
+- `sshd` reads the file at each login, so a new list needs no reload.
+
+`RevokedKeys` takes one file, so one server follows one SSH CA key's list this way. The unit may
+write only under `/etc/ssh` (`ProtectSystem=strict`); another destination needs its directory in
+`ReadWritePaths=`, in a drop-in. The script has no systemd dependency of its own: on a host
+without systemd, run it from cron with the same variables or with `--url`, `--dest` and `--cacert`.
 
 ## Break-glass
 

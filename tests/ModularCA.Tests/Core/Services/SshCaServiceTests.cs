@@ -767,9 +767,163 @@ public class SshCaServiceTests
         Assert.True(SshCaService.ServeKrlWithNoEntries);
         Assert.Empty(krl.Sections);
         Assert.Equal(0UL, krl.Version);
-        Assert.InRange(krl.Generated, DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddMinutes(1));
+        Assert.Equal(WholeSeconds(legacy.CreatedAt), krl.Generated);
         Assert.Equal(0, signer.Calls);
         Assert.Empty(node.Audit.Entries);
+    }
+
+    /// <summary>A time as a KRL carries it: UTC, in whole seconds.</summary>
+    private static DateTimeOffset WholeSeconds(DateTime utc)
+        => DateTimeOffset.FromUnixTimeSeconds(new DateTimeOffset(DateTime.SpecifyKind(utc, DateTimeKind.Utc)).ToUnixTimeSeconds());
+
+    /// <summary>Marks a certificate revoked as a row from before <c>RevokedAt</c> is: revoked, with no time.</summary>
+    private static void RevokeWithNoTime(SshNode node, SshCertificateEntity certificate)
+    {
+        using var db = node.Reopen();
+        var row = db.SshCertificates.Single(c => c.Id == certificate.Id);
+        db.Entry(row).Property(c => c.IsRevoked).CurrentValue = true;
+        db.SaveChanges();
+    }
+
+    /// <summary>Sets the time a revoked certificate was revoked at, so a test can tell it from the time of a fetch.</summary>
+    private static void SetRevokedAt(SshNode node, SshCertificateEntity certificate, DateTime at)
+    {
+        using var db = node.Reopen();
+        var row = db.SshCertificates.Single(c => c.Id == certificate.Id);
+        Assert.True(row.IsRevoked);
+        db.Entry(row).Property(c => c.RevokedAt).CurrentValue = at;
+        db.SaveChanges();
+    }
+
+    /// <summary>
+    /// A host polls the list every minute, so a fetch must not change it: the bytes and the ETag
+    /// stay what they are through any number of fetches, a new certificate and a second request
+    /// to revoke one already revoked, and change with each revocation.
+    /// </summary>
+    [Fact]
+    public async Task A_krl_is_the_same_bytes_with_the_same_etag_until_a_certificate_is_revoked()
+    {
+        using var node = new SshNode();
+        var ca = await node.CreateCaAsync();
+        var certs = new List<SshCertificateEntity>();
+        for (var i = 0; i < 3; i++)
+            certs.Add(await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, [$"user{i}"], 1, null, node.Actor));
+        var service = node.ServiceOver(new UnaskedSigner());
+
+        var empty = await service.BuildKrlAsync(ca.Id);
+        Assert.Equal(empty.Bytes, await service.GenerateKrlAsync(ca.Id));
+        Assert.Equal(empty.State, (await service.BuildKrlAsync(ca.Id)).State);
+        Assert.Equal(empty.State, await service.GetKrlStateAsync(ca.Id));
+        Assert.Matches("^\"[0-9a-f]{32}\"$", empty.State!.ETag);
+
+        Assert.True(await service.RevokeCertificateAsync(certs[0].Id, ca.Id, node.Actor));
+        var one = await service.BuildKrlAsync(ca.Id);
+        Assert.NotEqual(empty.Bytes, one.Bytes);
+        Assert.NotEqual(empty.State.ETag, one.State!.ETag);
+        Assert.Equal(1UL, one.State.Version);
+        Assert.Equal(one.State, await service.GetKrlStateAsync(ca.Id));
+
+        // Nothing below revokes anything: another fetch, a new certificate, the same revocation asked again.
+        await Task.Delay(1100);
+        await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["later"], 1, null, node.Actor);
+        Assert.True(await service.RevokeCertificateAsync(certs[0].Id, ca.Id, node.Actor));
+        var again = await service.BuildKrlAsync(ca.Id);
+        Assert.Equal(one.Bytes, again.Bytes);
+        Assert.Equal(one.State, again.State);
+        Assert.Equal(one.State, await service.GetKrlStateAsync(ca.Id));
+
+        Assert.True(await service.RevokeCertificateAsync(certs[1].Id, ca.Id, node.Actor));
+        var two = await service.BuildKrlAsync(ca.Id);
+        Assert.NotEqual(one.Bytes, two.Bytes);
+        Assert.NotEqual(one.State.ETag, two.State!.ETag);
+        Assert.Equal(2UL, two.State.Version);
+        Assert.Equal(two.State, await service.GetKrlStateAsync(ca.Id));
+    }
+
+    /// <summary>
+    /// The generation time a KRL carries is the newest revocation known, in whole seconds. With
+    /// none known, which is nothing revoked or only certificates revoked before the time was
+    /// recorded, it is when the SSH CA key was created. It is never the time of the fetch.
+    /// </summary>
+    [Fact]
+    public async Task A_krl_is_dated_by_the_newest_revocation_known_and_never_by_the_fetch()
+    {
+        using var node = new SshNode();
+        var ca = await node.CreateCaAsync();
+        ca.CreatedAt = new DateTime(2026, 9, 1, 6, 0, 0, 400, DateTimeKind.Utc);
+        node.Db.SaveChanges();
+        var certs = new List<SshCertificateEntity>();
+        for (var i = 0; i < 3; i++)
+            certs.Add(await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, [$"user{i}"], 1, null, node.Actor));
+        var service = node.ServiceOver(new UnaskedSigner());
+        var created = new DateTimeOffset(2026, 9, 1, 6, 0, 0, TimeSpan.Zero);
+
+        var nothing = await service.BuildKrlAsync(ca.Id);
+        Assert.Equal(created, ReadKrl(nothing.Bytes).Generated);
+        Assert.Equal(created.UtcDateTime, nothing.State!.GeneratedAt);
+        Assert.Null(nothing.State.LastRevokedAt);
+        Assert.Equal(0, nothing.State.RevokedCertificates);
+
+        RevokeWithNoTime(node, certs[0]);
+        var untimed = await service.BuildKrlAsync(ca.Id);
+        Assert.Equal(created, ReadKrl(untimed.Bytes).Generated);
+        Assert.Equal(1UL, ReadKrl(untimed.Bytes).Version);
+        Assert.Null(untimed.State!.LastRevokedAt);
+        Assert.Equal(1, untimed.State.RevokedCertificates);
+        Assert.NotEqual(nothing.State.ETag, untimed.State.ETag);
+
+        var newest = new DateTime(2026, 10, 1, 8, 30, 15, 750, DateTimeKind.Utc);
+        Assert.True(await service.RevokeCertificateAsync(certs[1].Id, ca.Id, node.Actor));
+        SetRevokedAt(node, certs[1], newest);
+        Assert.True(await service.RevokeCertificateAsync(certs[2].Id, ca.Id, node.Actor));
+        SetRevokedAt(node, certs[2], newest.AddDays(-2));
+
+        var timed = await service.BuildKrlAsync(ca.Id);
+        Assert.Equal(new DateTimeOffset(2026, 10, 1, 8, 30, 15, TimeSpan.Zero), ReadKrl(timed.Bytes).Generated);
+        Assert.Equal(3UL, ReadKrl(timed.Bytes).Version);
+        Assert.Equal(newest, timed.State!.LastRevokedAt);
+        Assert.Equal(DateTimeKind.Utc, timed.State.LastRevokedAt!.Value.Kind);
+        Assert.Equal(timed.State, await service.GetKrlStateAsync(ca.Id));
+        Assert.Equal(SshCaService.KrlGeneratedAt(newest, ca.CreatedAt), ReadKrl(timed.Bytes).Generated);
+    }
+
+    /// <summary>
+    /// The state the console and the conditional fetch read comes from one query per call, for
+    /// one key or many, and is the state the built list has. Two keys never share an ETag.
+    /// </summary>
+    [Fact]
+    public async Task The_krl_state_is_read_without_building_the_list_and_is_the_state_of_the_built_list()
+    {
+        using var node = new SshNode();
+        var fleet = await node.CreateCaAsync("Fleet SSH");
+        var lab = await node.CreateCaAsync("Lab SSH");
+        fleet.CreatedAt = lab.CreatedAt = new DateTime(2026, 9, 1, 6, 0, 0, DateTimeKind.Utc);
+        var unreadable = node.SeedLegacyCa("Broken SSH");
+        unreadable.PublicKey = "not a public key";
+        node.Db.SaveChanges();
+        var revoked = await node.Service.SignUserKeyAsync(fleet.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null, node.Actor);
+        await node.Service.SignUserKeyAsync(lab.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null, node.Actor);
+        var service = node.ServiceOver(new UnaskedSigner());
+        Assert.True(await service.RevokeCertificateAsync(revoked.Id, fleet.Id, node.Actor));
+
+        var states = await service.GetKrlStatesAsync([fleet.Id, lab.Id, unreadable.Id, Guid.NewGuid(), fleet.Id]);
+
+        Assert.Equal(new[] { fleet.Id, lab.Id }.OrderBy(id => id), states.Keys.OrderBy(id => id));
+        Assert.Equal((await service.BuildKrlAsync(fleet.Id)).State, states[fleet.Id]);
+        Assert.Equal((await service.BuildKrlAsync(lab.Id)).State, states[lab.Id]);
+        Assert.Equal(1, states[fleet.Id].RevokedCertificates);
+        Assert.Equal(0, states[lab.Id].RevokedCertificates);
+        Assert.Empty(await service.GetKrlStatesAsync([]));
+
+        // The same version and the same time under another key is another list.
+        Assert.NotEqual(SshCaService.KrlETagOf(KeyOf(fleet), 0, DateTimeOffset.UnixEpoch), SshCaService.KrlETagOf(KeyOf(lab), 0, DateTimeOffset.UnixEpoch));
+        Assert.Equal(SshCaService.KrlETagOf(KeyOf(fleet), 4, DateTimeOffset.UnixEpoch), SshCaService.KrlETagOf(KeyOf(fleet), 4, DateTimeOffset.UnixEpoch));
+        Assert.NotEqual(SshCaService.KrlETagOf(KeyOf(fleet), 4, DateTimeOffset.UnixEpoch), SshCaService.KrlETagOf(KeyOf(fleet), 5, DateTimeOffset.UnixEpoch));
+        Assert.NotEqual(SshCaService.KrlETagOf(KeyOf(fleet), 4, DateTimeOffset.UnixEpoch), SshCaService.KrlETagOf(KeyOf(fleet), 4, DateTimeOffset.UnixEpoch.AddSeconds(1)));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.GetKrlStateAsync(unreadable.Id));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.BuildKrlAsync(unreadable.Id));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.GetKrlStateAsync(Guid.NewGuid()));
     }
 
     [Fact]

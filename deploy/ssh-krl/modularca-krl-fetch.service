@@ -1,0 +1,38 @@
+# Fetches the key revocation list (KRL) of a ModularCA SSH CA key and installs it as the file
+# sshd's RevokedKeys names. Started by modularca-krl-fetch.timer; a failed fetch leaves the
+# installed list as it is and leaves this unit failed, where `systemctl --failed` shows it.
+#
+# This unit belongs on each SSH server, not on the CA. Install:
+#   /usr/local/sbin/modularca-krl-fetch          the script (modularca-krl-fetch.sh), mode 0755
+#   /etc/systemd/system/modularca-krl-fetch.service and .timer
+#   /etc/default/modularca-krl-fetch             the settings (modularca-krl-fetch.env.example)
+#
+# First run, in this order: start this unit once and see it succeed, then name the file in
+# sshd_config (RevokedKeys /etc/ssh/revoked_keys.krl), check with `sshd -t`, then reload sshd.
+# sshd refuses every public-key login while the file RevokedKeys names is missing.
+
+[Unit]
+Description=Fetch the SSH key revocation list from ModularCA
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/default/modularca-krl-fetch
+ExecStart=/usr/local/sbin/modularca-krl-fetch
+TimeoutStartSec=120
+
+# The script writes only beside the installed list. A destination outside /etc/ssh needs its
+# directory named here, in a drop-in: /etc/systemd/system/modularca-krl-fetch.service.d/*.conf
+ProtectSystem=strict
+ReadWritePaths=/etc/ssh
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true

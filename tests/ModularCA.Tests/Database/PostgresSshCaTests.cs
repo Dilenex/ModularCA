@@ -72,6 +72,78 @@ public class PostgresSshCaTests
                 service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey(), ["host2.example.com"], 1, Actor));
         });
 
+    /// <summary>
+    /// KRL delivery (<c>docs/architecture/ssh-krl-delivery.md</c>) on PostgreSQL, where the
+    /// state is one query with two sub-selects over the partial index and a time is stored in
+    /// microseconds: a revocation records when, the state read without building the list is the
+    /// state of the built list, from this context and from another, the bytes do not change
+    /// between revocations, and a row revoked with no time dates nothing.
+    /// </summary>
+    [RequiresEnvironmentFact(ServerVariable)]
+    public Task A_krl_s_state_is_read_without_building_it_and_its_bytes_change_only_with_a_revocation() =>
+        OnPostgresAsync(async (open, service, relay) =>
+        {
+            var ca = await service.GenerateKeyPairAsync("Fleet SSH", "ed25519", true, true, 48, actor: Actor);
+            var lab = await service.GenerateKeyPairAsync("Lab SSH", "ecdsa", true, false, 48, 256, actor: Actor);
+            var untimed = await service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 2, null, Actor);
+            var timed = await service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["bob"], 2, null, Actor);
+            var host = await service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey(), ["host1.example.com"], 2, Actor);
+            await service.SignUserKeyAsync(lab.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 2, null, Actor);
+            SshCaService Other() => SshServices.Ca(open(), relay, new SshAuditLog());
+            await using var db = open();
+            var created = (await db.SshCaKeys.AsNoTracking().SingleAsync(k => k.Id == ca.Id)).CreatedAt;
+
+            var empty = await service.BuildKrlAsync(ca.Id);
+            Assert.Equal(empty.State, await service.GetKrlStateAsync(ca.Id));
+            Assert.Equal(empty.State, await Other().GetKrlStateAsync(ca.Id));
+            Assert.Equal(0UL, empty.State!.Version);
+            Assert.Null(empty.State.LastRevokedAt);
+            Assert.Equal(SshCaService.KrlGeneratedAt(null, created).UtcDateTime, empty.State.GeneratedAt);
+
+            // A certificate revoked before the column: revoked, and no time.
+            await PostgresUpgradeHarnessTests.ExecAsync(db, $"UPDATE \"SshCertificates\" SET \"IsRevoked\" = true WHERE \"Id\" = '{untimed.Id}'");
+            var noTime = await service.BuildKrlAsync(ca.Id);
+            Assert.Equal(1UL, noTime.State!.Version);
+            Assert.Null(noTime.State.LastRevokedAt);
+            Assert.Equal(empty.State.GeneratedAt, noTime.State.GeneratedAt);
+            Assert.NotEqual(empty.State.ETag, noTime.State.ETag);
+            Assert.Equal(noTime.State, await service.GetKrlStateAsync(ca.Id));
+
+            var before = DateTime.UtcNow.AddSeconds(-1);
+            Assert.True(await service.RevokeCertificateAsync(timed.Id, ca.Id, Actor));
+            var stored = (await db.SshCertificates.AsNoTracking().SingleAsync(c => c.Id == timed.Id)).RevokedAt;
+            Assert.InRange(Assert.NotNull(stored), before, DateTime.UtcNow.AddSeconds(1));
+
+            var one = await service.BuildKrlAsync(ca.Id);
+            Assert.Equal(2UL, one.State!.Version);
+            Assert.Equal(stored, one.State.LastRevokedAt);
+            Assert.Equal(SshCaService.KrlGeneratedAt(stored, created).UtcDateTime, one.State.GeneratedAt);
+            Assert.Equal(one.State, await service.GetKrlStateAsync(ca.Id));
+            Assert.Equal(one.State, await Other().GetKrlStateAsync(ca.Id));
+            Assert.Equal(one.Bytes, (await Other().BuildKrlAsync(ca.Id)).Bytes);
+            Assert.Equal(one.Bytes, await service.GenerateKrlAsync(ca.Id));
+
+            // Asked again, the revocation keeps its time, so the list keeps its bytes.
+            Assert.True(await Other().RevokeCertificateAsync(timed.Id, ca.Id, Actor));
+            Assert.Equal(stored, (await db.SshCertificates.AsNoTracking().SingleAsync(c => c.Id == timed.Id)).RevokedAt);
+            Assert.Equal(one.Bytes, (await Other().BuildKrlAsync(ca.Id)).Bytes);
+
+            var states = await service.GetKrlStatesAsync([ca.Id, lab.Id, Guid.NewGuid()]);
+            Assert.Equal(2, states.Count);
+            Assert.Equal(one.State, states[ca.Id]);
+            Assert.Equal(0UL, states[lab.Id].Version);
+            Assert.NotEqual(states[ca.Id].ETag, states[lab.Id].ETag);
+
+            // Disabling the key revokes what is left at one time, which becomes the newest.
+            await Other().DisableAsync(ca.Id, Actor);
+            var hostRevokedAt = (await db.SshCertificates.AsNoTracking().SingleAsync(c => c.Id == host.Id)).RevokedAt;
+            var all = await service.GetKrlStateAsync(ca.Id);
+            Assert.Equal(3UL, all.Version);
+            Assert.Equal(hostRevokedAt, all.LastRevokedAt);
+            Assert.Equal(1, await db.SshCertificates.CountAsync(c => c.SshCaKeyId == ca.Id && c.IsRevoked && c.RevokedAt == null));
+            Assert.Equal(all, (await service.BuildKrlAsync(ca.Id)).State);
+        });
+
     [RequiresEnvironmentFact(ServerVariable)]
     public Task A_commit_the_signer_refuses_removes_every_row_it_was_written_for() =>
         OnPostgresAsync(async (open, service, relay) =>

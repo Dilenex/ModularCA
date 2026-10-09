@@ -72,6 +72,10 @@
 *.service text eol=lf
 deploy/*.conf text eol=lf
 
+# The KRL fetcher's files are copied to SSH servers as they are: a timer systemd parses, and an
+# environment file where a trailing CR would become part of the URL.
+deploy/ssh-krl/* text eol=lf
+
 # Debian maintainer scripts. These have NO extension, so the *.sh rule above does not reach them,
 # and they are the worst place for a CRLF to survive: dpkg runs them from inside the package,
 # after unpacking, and a CRLF shebang aborts the install with "bad interpreter: /bin/sh^M",

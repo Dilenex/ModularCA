@@ -123,6 +123,35 @@ contents:
       owner: root
       group: root
 
+  # The KRL fetcher for SSH servers: a script, its systemd service and timer, and its settings.
+  # None of it runs on the CA and none of it is enabled here; an administrator copies it from this
+  # directory to each server. Listed one by one because the script needs its executable bit, which
+  # a Windows build cannot carry in the tree.
+  - src: ${SHAREDIR}/ssh-krl/modularca-krl-fetch.sh
+    dst: /usr/share/modularca/ssh-krl/modularca-krl-fetch.sh
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+  - src: ${SHAREDIR}/ssh-krl/modularca-krl-fetch.service
+    dst: /usr/share/modularca/ssh-krl/modularca-krl-fetch.service
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+  - src: ${SHAREDIR}/ssh-krl/modularca-krl-fetch.timer
+    dst: /usr/share/modularca/ssh-krl/modularca-krl-fetch.timer
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+  - src: ${SHAREDIR}/ssh-krl/modularca-krl-fetch.env.example
+    dst: /usr/share/modularca/ssh-krl/modularca-krl-fetch.env.example
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
   # systemd unit under /lib, not /etc. /etc/systemd/system belongs to the administrator; a package
   # that writes there fights the operator's own overrides and cannot be cleanly upgraded. Local
   # changes belong in /etc/systemd/system/modularca.service.d/*.conf drop-ins.

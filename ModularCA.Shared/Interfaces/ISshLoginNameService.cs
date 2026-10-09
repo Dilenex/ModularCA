@@ -196,6 +196,8 @@ public sealed record SshCertificateView
     public string? Extensions { get; init; }
     /// <summary>Whether it is revoked.</summary>
     public bool IsRevoked { get; init; }
+    /// <summary>When it was revoked, UTC; null while it is not, and for one revoked before the time was recorded.</summary>
+    public DateTime? RevokedAt { get; init; }
     /// <summary>Who asked for it.</summary>
     public Guid? IssuedByUserId { get; init; }
     /// <summary>The address the request came from.</summary>

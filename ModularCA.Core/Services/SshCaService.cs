@@ -398,8 +398,9 @@ public class SshCaService : ISshCaService
     }
 
     /// <summary>
-    /// Disables an SSH CA key and its CA, and revokes all active certificates issued by it. No
-    /// key is touched: the signer refuses to sign for a disabled row, and the key stays where it is.
+    /// Disables an SSH CA key and its CA, and revokes all active certificates issued by it, all
+    /// at one recorded time. No key is touched: the signer refuses to sign for a disabled row,
+    /// and the key stays where it is.
     /// </summary>
     public async Task DisableAsync(Guid caKeyId, SshCaActor? actor = null, Guid? ceremonyId = null)
     {
@@ -416,8 +417,9 @@ public class SshCaService : ISshCaService
             .Where(c => c.SshCaKeyId == caKeyId && !c.IsRevoked)
             .ToListAsync();
 
+        var now = DateTime.UtcNow;
         foreach (var cert in activeCerts)
-            cert.IsRevoked = true;
+            cert.Revoke(now);
 
         await _db.SaveChangesAsync();
 
@@ -726,8 +728,9 @@ public class SshCaService : ISshCaService
     }
 
     /// <summary>
-    /// Revokes an SSH certificate, optionally constrained to the CA key that issued it, and
-    /// writes the audit entry when it did.
+    /// Revokes an SSH certificate, optionally constrained to the CA key that issued it, records
+    /// when (<see cref="SshCertificateEntity.Revoke"/>), and writes the audit entry when it did.
+    /// A certificate that is already revoked keeps the time it has.
     /// </summary>
     /// <param name="certId">The certificate to revoke.</param>
     /// <param name="requiredCaKeyId">
@@ -746,7 +749,7 @@ public class SshCaService : ISshCaService
         var cert = await _db.SshCertificates.FindAsync(certId);
         if (cert == null) return false;
         if (requiredCaKeyId.HasValue && cert.SshCaKeyId != requiredCaKeyId.Value) return false;
-        cert.IsRevoked = true;
+        cert.Revoke(DateTime.UtcNow);
         await _db.SaveChangesAsync();
 
         await _audit.LogAsync(AuditActionType.SshCertRevoked, actor?.UserId, actor?.Username,
@@ -774,33 +777,126 @@ public class SshCaService : ISshCaService
     /// the public route is anonymous and asked by every server on a timer, and what changes a
     /// KRL, a revocation, has its own entry.
     /// </remarks>
-    public async Task<byte[]> GenerateKrlAsync(Guid caKeyId)
+    public async Task<byte[]> GenerateKrlAsync(Guid caKeyId) => (await BuildKrlAsync(caKeyId)).Bytes;
+
+    /// <summary>
+    /// Builds the KRL of an SSH CA key together with what it says about itself. The bytes are
+    /// the same on every call until a certificate of the key is revoked: the version is the
+    /// number of revoked certificates and the generation time is that of the newest revocation
+    /// (<see cref="KrlGeneratedAt"/>), never the time of the call. The ETag is computed from
+    /// the rows this KRL was built from, so it never names bytes other than these.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">There is no such key, or its public key cannot be read.</exception>
+    public async Task<SshKrlFile> BuildKrlAsync(Guid caKeyId)
     {
         var caKey = await _db.SshCaKeys.AsNoTracking().FirstOrDefaultAsync(k => k.Id == caKeyId)
             ?? throw new InvalidOperationException("SSH CA key not found");
 
-        var revokedSerials = await _db.SshCertificates.AsNoTracking()
+        var revoked = await _db.SshCertificates.AsNoTracking()
             .Where(c => c.SshCaKeyId == caKeyId && c.IsRevoked)
-            .Select(c => c.SerialNumber)
+            .Select(c => new { c.SerialNumber, c.RevokedAt })
             .ToListAsync();
 
-        if (revokedSerials.Count == 0 && !ServeKrlWithNoEntries)
-            return Array.Empty<byte>();
+        if (revoked.Count == 0 && !ServeKrlWithNoEntries)
+            return new SshKrlFile(Array.Empty<byte>(), null);
 
         var caPublicKey = TryParseCaKey(caKey.PublicKey)
-            ?? throw new InvalidOperationException("The public key of the SSH CA key cannot be read, so no KRL can be built for it.");
+            ?? throw new InvalidOperationException(KrlKeyUnreadable);
 
-        return SshKrl.Encode(caPublicKey, revokedSerials.Select(s => unchecked((ulong)s)), KrlVersionOf(revokedSerials.Count), DateTimeOffset.UtcNow);
+        var state = KrlStateOf(caKey.Id, caPublicKey, caKey.CreatedAt, revoked.Count, revoked.Max(c => c.RevokedAt));
+        var bytes = SshKrl.Encode(caPublicKey, revoked.Select(c => unchecked((ulong)c.SerialNumber)), state.Version,
+            new DateTimeOffset(state.GeneratedAt));
+        return new SshKrlFile(bytes, state);
+    }
+
+    /// <summary>
+    /// What the KRL of an SSH CA key says about itself now, read without building it: one query
+    /// for the key, the number of its revoked certificates and the newest revocation time.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">There is no such key, or its public key cannot be read.</exception>
+    public async Task<SshKrlState> GetKrlStateAsync(Guid caKeyId)
+    {
+        var rows = await KrlRowsAsync(_db.SshCaKeys.Where(k => k.Id == caKeyId));
+        if (rows.Count == 0)
+            throw new InvalidOperationException("SSH CA key not found");
+        return rows[0].State ?? throw new InvalidOperationException(KrlKeyUnreadable);
+    }
+
+    /// <summary>
+    /// The KRL state of each of <paramref name="caKeyIds"/>, in one query. A key that does not
+    /// exist, or whose public key cannot be read, is left out.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<Guid, SshKrlState>> GetKrlStatesAsync(IReadOnlyCollection<Guid> caKeyIds)
+    {
+        var ids = caKeyIds.Distinct().ToList();
+        if (ids.Count == 0)
+            return new Dictionary<Guid, SshKrlState>();
+        return (await KrlRowsAsync(_db.SshCaKeys.Where(k => ids.Contains(k.Id))))
+            .Where(r => r.State != null)
+            .ToDictionary(r => r.Id, r => r.State!);
+    }
+
+    /// <summary>What both KRL reads say of a key row whose public key cannot be parsed.</summary>
+    private const string KrlKeyUnreadable ="The public key of the SSH CA key cannot be read, so no KRL can be built for it.";
+
+    /// <summary>Reads, for each of <paramref name="keys"/>, what its KRL state is computed from; the state is null for an unreadable public key.</summary>
+    private async Task<List<(Guid Id, SshKrlState? State)>> KrlRowsAsync(IQueryable<SshCaKeyEntity> keys)
+    {
+        var rows = await keys.AsNoTracking()
+            .Select(k => new
+            {
+                k.Id,
+                k.PublicKey,
+                k.CreatedAt,
+                Revoked = _db.SshCertificates.Count(c => c.SshCaKeyId == k.Id && c.IsRevoked),
+                LastRevokedAt = _db.SshCertificates.Where(c => c.SshCaKeyId == k.Id && c.IsRevoked).Max(c => c.RevokedAt),
+            })
+            .ToListAsync();
+        return rows
+            .Select(r => (r.Id, TryParseCaKey(r.PublicKey) is { } key ? KrlStateOf(r.Id, key, r.CreatedAt, r.Revoked, r.LastRevokedAt) : null))
+            .ToList();
+    }
+
+    /// <summary>The state of a KRL of <paramref name="caKey"/> with <paramref name="revokedCertificates"/> entries, the newest revoked at <paramref name="lastRevokedAt"/>.</summary>
+    private static SshKrlState KrlStateOf(Guid caKeyId, SshPublicKey caKey, DateTime keyCreatedAt, int revokedCertificates, DateTime? lastRevokedAt)
+    {
+        var version = KrlVersionOf(revokedCertificates);
+        var newest = lastRevokedAt is { } at ? DateTime.SpecifyKind(at, DateTimeKind.Utc) : (DateTime?)null;
+        var generatedAt = KrlGeneratedAt(newest, keyCreatedAt);
+        return new SshKrlState(caKeyId, version, revokedCertificates, generatedAt.UtcDateTime, newest, KrlETagOf(caKey, version, generatedAt));
     }
 
     /// <summary>
     /// The <c>krl_version</c> of a KRL listing <paramref name="revokedCertificates"/> serials:
     /// their number. It is zero for an empty list and goes up by one with each revocation, and
-    /// it never goes down, since a revocation is never undone and a certificate row is never
-    /// deleted. The design gives the time of the newest revocation instead; no row records when
-    /// a certificate was revoked, so that needs a column this stage does not add.
+    /// it never goes down in operation, since a revocation is never undone and a certificate
+    /// row is never deleted. Restoring an older database is the one thing that lowers it.
     /// </summary>
     internal static ulong KrlVersionOf(int revokedCertificates) => (ulong)Math.Max(0, revokedCertificates);
+
+    /// <summary>
+    /// The generation time a KRL carries, in whole seconds: the time of the newest revocation
+    /// known. With none known (nothing revoked, or only certificates revoked before the time
+    /// was recorded) it is when the SSH CA key was created, which never changes. It is never
+    /// the time of the request, so the same list is the same bytes.
+    /// </summary>
+    internal static DateTimeOffset KrlGeneratedAt(DateTime? lastRevokedAt, DateTime keyCreatedAt)
+    {
+        var at = new DateTimeOffset(DateTime.SpecifyKind(lastRevokedAt ?? keyCreatedAt, DateTimeKind.Utc));
+        return DateTimeOffset.FromUnixTimeSeconds(Math.Max(0, at.ToUnixTimeSeconds()));
+    }
+
+    /// <summary>
+    /// The strong ETag of a KRL: a hash of its header (version and generation time) and the CA
+    /// public key, in quotes. A revocation raises the version, so the ETag changes exactly when
+    /// the bytes do, and it needs no serial to compute.
+    /// </summary>
+    internal static string KrlETagOf(SshPublicKey caKey, ulong version, DateTimeOffset generatedAt)
+    {
+        var header = SshKrl.Encode(caKey, [], version, generatedAt);
+        var hash = SHA256.HashData([.. header, .. caKey.Blob]);
+        return $"\"{Convert.ToHexStringLower(hash.AsSpan(0, 16))}\"";
+    }
 
     /// <summary>
     /// Writes the audit entry of an operation that failed, without letting a failure to write it

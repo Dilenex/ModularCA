@@ -616,9 +616,52 @@ AuthorizedPrincipalsFile /etc/ssh/auth_principals/%u`}</pre>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li><span className="font-semibold">TrustedUserCAKeys</span> names a file with the SSH CA key&apos;s public key, from Download Public Key on the key&apos;s page.</li>
                     <li><span className="font-semibold">A host can decide in two ways who gets into an account.</span> The first: the certificate lists the account. Grant the login name <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">deploy</code> to a group, and with no AuthorizedPrincipalsFile sshd lets a certificate into the account deploy when deploy is one of its login names. Every host that trusts the CA then accepts it. The second: the certificate lists a role, and the host maps it. Grant a role name such as <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">deployers</code>, and on each host that should let the role in, list it in the account&apos;s file, here <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/etc/ssh/auth_principals/deploy</code>, one name per line. Each host then decides which roles reach which account. With that file set, an account with no file, or one whose file lists none of the certificate&apos;s login names, lets no certificate in.</li>
-                    <li><span className="font-semibold">RevokedKeys</span> names the SSH CA key&apos;s KRL, which each host has to fetch: the public URL is shown on the key&apos;s page and ends in <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/ssh/ca-keys/&#123;id&#125;/krl</code>. Fetch it over HTTPS on a timer, write it to a temporary file and move it into place, because sshd refuses every public-key login while the file it names cannot be read. A certificate revoked in the console is refused by a host only once that host has the new list, so keep certificates short as well.</li>
+                    <li><span className="font-semibold">RevokedKeys</span> names the SSH CA key&apos;s KRL, which each host has to fetch: the public URL is shown on the key&apos;s page and ends in <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/ssh/ca-keys/&#123;id&#125;/krl</code>. sshd refuses every public-key login while the file it names cannot be read, so add this line only after the first fetch has succeeded. &ldquo;Getting the revocation list to hosts&rdquo; below has the fetcher and the order. A certificate revoked in the console is refused by a host only once that host has the new list, so keep certificates short as well.</li>
                     <li><span className="font-semibold">sshd logs the login, not the session.</span> The line above is all sshd writes. A session that needs to know which certificate opened it, for example to record the person in a shell audit, sets <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">ExposeAuthInfo yes</code>; sshd then puts the path of a file in the session&apos;s <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">SSH_USER_AUTH</code>, and that file holds the certificate that was used.</li>
                 </ul>
+
+                <h3 className="text-lg font-semibold text-ink mb-2">Getting the revocation list to hosts</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    The CA revokes a certificate at once, but a host learns of it only when it next fetches the SSH CA
+                    key&apos;s KRL, and OpenSSH does not fetch it. ModularCA ships a fetcher for the hosts: a shell script
+                    with a systemd service and a timer that runs it once a minute. Its four files are on the CA host in
+                    <code className="text-sm bg-sunken px-1.5 py-0.5 rounded"> /usr/share/modularca/ssh-krl</code> (in the release
+                    archive, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">share/ssh-krl</code>). A host needs curl,
+                    ssh-keygen from OpenSSH 8.0 or later, and coreutils.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    Each SSH CA key&apos;s page has a Revocation list (KRL) section: the KRL URL, the list&apos;s version, when
+                    a certificate of the key was last revoked, and &ldquo;Set up a host&rdquo; with these commands filled in for
+                    the key. Copy the four files to the host and run them there as root, in this order:
+                </p>
+                <div className="bg-sunken rounded p-4 data-mono mb-3 overflow-x-auto">
+                    <pre className="text-ink">{`install -m 0755 modularca-krl-fetch.sh /usr/local/sbin/modularca-krl-fetch
+install -m 0644 modularca-krl-fetch.service modularca-krl-fetch.timer /etc/systemd/system/
+printf 'MODULARCA_KRL_URL=%s\\n' 'https://ca.example.com/ssh/ca-keys/{id}/krl' > /etc/default/modularca-krl-fetch
+systemctl daemon-reload
+
+# The first fetch. It must succeed before sshd is told about the file.
+systemctl start modularca-krl-fetch.service
+ssh-keygen -Q -l -f /etc/ssh/revoked_keys.krl
+systemctl enable --now modularca-krl-fetch.timer
+
+# Only now, add this line to /etc/ssh/sshd_config:
+#   RevokedKeys /etc/ssh/revoked_keys.krl
+# then check the configuration and reload sshd (the unit is named sshd on some distributions).
+sshd -t && systemctl reload ssh`}</pre>
+                </div>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li><span className="font-semibold">The order matters.</span> Run the fetcher once, then point RevokedKeys at the file, then reload sshd. Named before it exists, the file locks every public-key login out of the host. Keep a session open while you reload.</li>
+                    <li><span className="font-semibold">A poll is cheap.</span> The list is the same bytes, with the same version, until a certificate of the key is revoked. The fetcher sends the ETag of the list it has, and the CA answers 304 Not Modified without building the list. sshd reads the file at each login, so a new list needs no reload.</li>
+                    <li><span className="font-semibold">A failed fetch changes nothing on the host.</span> A new list is downloaded beside the installed one, refused when it is empty or when ssh-keygen does not read it as a KRL, and only then renamed over the installed file with mode 0644. On any failure the installed file is left as it is and the unit is left failed: <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">systemctl --failed</code> shows it, and the timer tries again the next minute. A host that cannot reach the CA keeps its last list and misses the revocations made since, so watch for the failed unit.</li>
+                    <li><span className="font-semibold">A lower version is refused.</span> The version is the number of revoked certificates of the key, so it only goes up. A list with a lower version than the installed one is normally an older list, and the fetcher refuses it. It is legitimate after the CA&apos;s database was restored from a backup: run the fetcher once on each host with <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">--allow-lower-version</code>. The restored list no longer names the certificates revoked after the backup was taken. One issued before the backup can be revoked again; one issued after it is unknown to the restored CA and stays valid until it expires.</li>
+                    <li><span className="font-semibold">HTTPS only.</span> A KRL is not signed, so TLS is what protects it; the fetcher refuses any other URL. When the host does not trust the issuer of the CA&apos;s web certificate, name a PEM bundle in <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">MODULARCA_KRL_CACERT</code> in <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/etc/default/modularca-krl-fetch</code>.</li>
+                    <li><span className="font-semibold">One list per host.</span> RevokedKeys takes one file, so a host follows the list of one SSH CA key this way. The unit may write only under /etc/ssh; another destination (<code className="text-sm bg-sunken px-1.5 py-0.5 rounded">MODULARCA_KRL_DEST</code>) needs its directory in <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">ReadWritePaths=</code>, in a drop-in of the unit.</li>
+                </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    A certificate&apos;s page shows when it was revoked. A certificate revoked before 0.4.2 has no time: it is
+                    in the list, and it does not date it.
+                </p>
 
                 <h3 className="text-lg font-semibold text-ink mb-2">Finding a certificate from a host log line</h3>
                 <p className="text-ink leading-relaxed mb-3">

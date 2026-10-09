@@ -563,6 +563,7 @@ public sealed class SshLoginNameService : ISshLoginNameService
                 SignedCertificate = c.SignedCertificate,
                 Extensions = c.Extensions,
                 IsRevoked = c.IsRevoked,
+                RevokedAt = c.RevokedAt,
                 IssuedByUserId = c.IssuedByUserId,
                 SourceIp = c.SourceIp,
                 CreatedAt = c.CreatedAt,
@@ -853,16 +854,18 @@ public sealed class SshLoginNameService : ISshLoginNameService
     }
 
     /// <summary>
-    /// Marks certificates revoked, saves, and writes the audit entry of each with why: the reason,
-    /// and the login name its subject no longer holds when that is why.
+    /// Marks certificates revoked at one recorded time (<see cref="SshCertificateEntity.Revoke"/>),
+    /// saves, and writes the audit entry of each with why: the reason, and the login name its
+    /// subject no longer holds when that is why.
     /// </summary>
     private async Task<int> RevokeAsync(IReadOnlyList<(SshCertificateEntity Certificate, string? LoginName)> certificates, string reason, SshCaActor? actor,
         CancellationToken cancellationToken)
     {
         if (certificates.Count == 0)
             return 0;
+        var now = DateTime.UtcNow;
         foreach (var (certificate, _) in certificates)
-            certificate.IsRevoked = true;
+            certificate.Revoke(now);
         await _db.SaveChangesAsync(cancellationToken);
 
         var keyIds = certificates.Select(c => c.Certificate.SshCaKeyId).Distinct().ToList();

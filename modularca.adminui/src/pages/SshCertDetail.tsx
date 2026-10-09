@@ -142,6 +142,7 @@ const SshCertDetail: React.FC = () => {
                         <DetailField label="SSH CA" value={<Link to={`/ssh/ca-keys/${cert.sshCaKeyId}`} className="text-accent-ink hover:underline">{cert.sshCaKey?.name || cert.sshCaKeyId}</Link>} />
                         <DetailField label="Serial" value={String(cert.serialNumber)} mono />
                         <DetailField label="Valid" value={`${dayTimeText(cert.validAfter)} to ${dayTimeText(cert.validBefore)}`} />
+                        {cert.isRevoked && <DetailField label="Revoked" value={cert.revokedAt ? dayTimeText(cert.revokedAt) : 'Yes. The time was not recorded.'} />}
                         <DetailField label="Key" value={cert.keyFingerprint ? `${sshdKeyType(cert.publicKey)} ${cert.keyFingerprint}` : null} mono />
                         <DetailField label="SSH CA fingerprint" value={cert.sshCaKey?.fingerprint} mono />
                         {!isUser && <DetailField label="Hostnames" value={names.join(', ')} />}

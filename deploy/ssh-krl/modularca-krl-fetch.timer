@@ -1,0 +1,18 @@
+# Runs modularca-krl-fetch.service once a minute, and shortly after boot. A certificate revoked
+# at the CA is refused by this host once the next run has installed the new list, so the
+# interval is how long a revoked certificate can still log in here.
+#
+# The delay spreads the hosts of a fleet over the minute. An unchanged list costs the CA one
+# small query and a 304 answer.
+
+[Unit]
+Description=Fetch the SSH key revocation list from ModularCA every minute
+
+[Timer]
+OnBootSec=15s
+OnCalendar=*:*:00
+AccuracySec=1s
+RandomizedDelaySec=30s
+
+[Install]
+WantedBy=timers.target

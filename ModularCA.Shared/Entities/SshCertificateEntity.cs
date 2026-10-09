@@ -34,7 +34,31 @@ public class SshCertificateEntity
 
     public string? Extensions { get; set; }
 
-    public bool IsRevoked { get; set; } = false;
+    /// <summary>
+    /// Whether the certificate is revoked. Set only by <see cref="Revoke"/>, so that no code can
+    /// revoke a certificate without recording when.
+    /// </summary>
+    public bool IsRevoked { get; private set; }
+
+    /// <summary>
+    /// When the certificate was revoked, in UTC. Null while it is not revoked, and on a row
+    /// revoked before this column existed: that time is not known.
+    /// </summary>
+    public DateTime? RevokedAt { get; private set; }
+
+    /// <summary>
+    /// Marks the certificate revoked at <paramref name="at"/>, read as UTC. A revocation is never
+    /// undone and its time never changes: on a certificate that is already revoked this changes
+    /// nothing and returns false.
+    /// </summary>
+    public bool Revoke(DateTime at)
+    {
+        if (IsRevoked)
+            return false;
+        IsRevoked = true;
+        RevokedAt = at.Kind == DateTimeKind.Local ? at.ToUniversalTime() : DateTime.SpecifyKind(at, DateTimeKind.Utc);
+        return true;
+    }
 
     /// <summary>Who asked for the certificate.</summary>
     public Guid? IssuedByUserId { get; set; }

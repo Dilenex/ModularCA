@@ -52,7 +52,9 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// <c>signerStateCode</c> is the reason as a code and <c>signerStateReason</c> the reason
     /// for an operator, with the path looked at and what the signer answered; <c>keyFile</c> is
     /// where the key file is expected. <c>importedAt</c> is set on a key that was a plaintext
-    /// file on the node and has been imported.
+    /// file on the node and has been imported. Each key also says what its KRL is now:
+    /// <c>krlVersion</c>, <c>krlRevokedCertificates</c> and <c>krlLastRevokedAt</c>, the time of
+    /// the newest revocation, null when nothing is revoked or the time was not recorded.
     /// </remarks>
     [HttpGet("ca-keys")]
     [Authorize(Policy = "CaOperator")]
@@ -73,9 +75,11 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         var custody = keys.Count == 0
             ? new Dictionary<Guid, SshKeyCustodyEntry>()
             : (await SshKeyCustody.ReadAsync(db, signer, sshImports, HttpContext.RequestAborted)).Keys.ToDictionary(c => c.Id);
+        var krls = await sshCaService.GetKrlStatesAsync(keys.Select(k => k.Id).ToList());
         return Ok(keys.Select(k =>
         {
             var held = custody.GetValueOrDefault(k.Id);
+            var krl = krls.GetValueOrDefault(k.Id);
             return new
             {
                 k.Id, k.Name, k.CertificateAuthorityId, k.KeyType, k.KeySize, k.PublicKey, k.IsUserCa, k.IsHostCa,
@@ -87,6 +91,9 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
                 held?.KeyFile,
                 held?.ImportedAt,
                 KrlUrl = $"{baseUrl}/ssh/ca-keys/{k.Id}/krl",
+                KrlVersion = krl?.Version,
+                KrlRevokedCertificates = krl?.RevokedCertificates,
+                KrlLastRevokedAt = krl?.LastRevokedAt,
                 PublicKeyUrl = $"{baseUrl}/ssh/ca-keys/{k.Id}/public-key",
             };
         }));
@@ -497,6 +504,10 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// public key and its revoked serials. With nothing revoked it is a KRL with no entries; the
     /// JSON message below is answered only when
     /// <see cref="ModularCA.Core.Services.SshCaService.ServeKrlWithNoEntries"/> is turned off.
+    /// As on the public route, the bytes are the same until a certificate of the key is
+    /// revoked, the answer carries a strong <c>ETag</c>, and a request whose
+    /// <c>If-None-Match</c> names it is answered 304
+    /// (<see cref="ModularCA.API.Controllers.v1.Public.SshKrlHttp"/>).
     /// </summary>
     [HttpGet("ca-keys/{id:guid}/krl")]
     [Authorize(Policy = "CaOperator")]
@@ -504,11 +515,8 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     {
         try
         {
-            var krlBytes = await sshCaService.GenerateKrlAsync(id);
-            if (krlBytes.Length == 0)
-                return Ok(new { message = "No revoked certificates; KRL is empty." });
-
-            return File(krlBytes, "application/octet-stream", "revoked_keys.krl");
+            return await ModularCA.API.Controllers.v1.Public.SshKrlHttp.ServeAsync(this, sshCaService, id,
+                () => Ok(new { message = "No revoked certificates; KRL is empty." }));
         }
         catch (InvalidOperationException ex)
         {

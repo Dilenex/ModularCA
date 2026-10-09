@@ -85,21 +85,80 @@ public class PublicSshController(ISshCaService sshCaService, ModularCA.Shared.Mo
     /// RevokedKeys pointing to a copy fetched from this endpoint. With nothing revoked it is a
     /// KRL with no entries; the 204 below is answered only when
     /// <see cref="ModularCA.Core.Services.SshCaService.ServeKrlWithNoEntries"/> is turned off.
+    /// The bytes are the same until a certificate of the key is revoked. The answer carries a
+    /// strong <c>ETag</c> and <c>Cache-Control: no-cache</c>, and a request whose
+    /// <c>If-None-Match</c> names the current ETag is answered 304 without building the list
+    /// (<see cref="SshKrlHttp"/>), so a host can poll it often.
     /// </summary>
     [HttpGet("ca-keys/{id:guid}/krl")]
     public async Task<IActionResult> DownloadKrl(Guid id)
     {
         try
         {
-            var krlBytes = await sshCaService.GenerateKrlAsync(id);
-            if (krlBytes.Length == 0)
-                return NoContent();
-
-            return File(krlBytes, "application/octet-stream", "revoked_keys.krl");
+            return await SshKrlHttp.ServeAsync(this, sshCaService, id, NoContent);
         }
         catch (InvalidOperationException)
         {
             return NotFound();
         }
+    }
+}
+
+/// <summary>
+/// How both KRL routes answer: the list with a strong <c>ETag</c> and
+/// <c>Cache-Control: no-cache</c>, or 304 for a request that already has it.
+/// </summary>
+internal static class SshKrlHttp
+{
+    /// <summary>The <c>Cache-Control</c> of every KRL answer: it may be kept, and must be checked with the server before each use.</summary>
+    public const string CacheControl = "no-cache";
+
+    /// <summary>
+    /// Answers a KRL request. When the request carries <c>If-None-Match</c>, the list's state is
+    /// read first, without building it, and a match is 304 with the ETag. Otherwise the list is
+    /// built and sent with the ETag computed from the rows it was built from.
+    /// </summary>
+    /// <param name="nothingServed">The answer when no list is served for a key with nothing revoked.</param>
+    /// <exception cref="InvalidOperationException">There is no such key, or its public key cannot be read.</exception>
+    public static async Task<IActionResult> ServeAsync(ControllerBase controller, ISshCaService service, Guid id, Func<IActionResult> nothingServed)
+    {
+        var ifNoneMatch = controller.Request.Headers.IfNoneMatch;
+        if (ifNoneMatch.Count > 0)
+        {
+            var state = await service.GetKrlStateAsync(id);
+            var served = ModularCA.Core.Services.SshCaService.ServeKrlWithNoEntries || state.RevokedCertificates > 0;
+            if (served && Matches(ifNoneMatch, state.ETag))
+            {
+                SetHeaders(controller.Response, state.ETag);
+                return controller.StatusCode(StatusCodes.Status304NotModified);
+            }
+        }
+
+        var krl = await service.BuildKrlAsync(id);
+        if (krl.State == null)
+            return nothingServed();
+
+        SetHeaders(controller.Response, krl.State.ETag);
+        return controller.File(krl.Bytes, "application/octet-stream", "revoked_keys.krl");
+    }
+
+    /// <summary>
+    /// Whether an <c>If-None-Match</c> value names <paramref name="etag"/>: <c>*</c>, or a list
+    /// with the same opaque tag. The comparison is the weak one RFC 9110 gives this header, so
+    /// a proxy that turned the tag into a weak one still gets its 304.
+    /// </summary>
+    public static bool Matches(Microsoft.Extensions.Primitives.StringValues ifNoneMatch, string etag)
+    {
+        if (!Microsoft.Net.Http.Headers.EntityTagHeaderValue.TryParse(etag, out var current)
+            || !Microsoft.Net.Http.Headers.EntityTagHeaderValue.TryParseList(ifNoneMatch, out var asked))
+            return false;
+        return asked.Any(tag => tag.Equals(Microsoft.Net.Http.Headers.EntityTagHeaderValue.Any) || tag.Compare(current, useStrongComparison: false));
+    }
+
+    /// <summary>Sets the two headers every KRL answer carries, the 304 included.</summary>
+    private static void SetHeaders(HttpResponse response, string etag)
+    {
+        response.Headers.ETag = etag;
+        response.Headers.CacheControl = CacheControl;
     }
 }

@@ -86,6 +86,8 @@ export interface SshCertificateView {
     signedCertificate?: string;
     extensions?: string | string[] | null;
     isRevoked: boolean;
+    /** When it was revoked; null while it is not, and for one revoked before the time was kept. */
+    revokedAt?: string | null;
     createdAt?: string;
     status?: string;
     sshCaKey?: SshCaKeyRef | null;

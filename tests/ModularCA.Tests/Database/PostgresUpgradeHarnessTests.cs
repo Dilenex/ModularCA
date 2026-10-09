@@ -91,6 +91,9 @@ public class PostgresUpgradeHarnessTests
     /// <summary>The 0.4.2 migration that adds SSH login name grants and who a certificate is for, without its timestamp.</summary>
     public const string SshLoginNames = "SshLoginNames";
 
+    /// <summary>The 0.4.2 migration that adds when an SSH certificate was revoked, without its timestamp.</summary>
+    public const string SshCertificateRevokedAt = "SshCertificateRevokedAt";
+
     private const string ServerVariable = "MODULARCA_TEST_PG";
     private const string RehearsalVariable = "MODULARCA_TEST_PG_REHEARSAL";
     private const string RehearsalAuditVariable = "MODULARCA_TEST_PG_REHEARSAL_AUDIT";
@@ -1550,6 +1553,83 @@ public class PostgresUpgradeHarnessTests
             // Deleting the user leaves the certificates, with no subject.
             await ExecAsync(app, $"UPDATE \"SshCertificates\" SET \"IssuedByUserId\" = NULL; DELETE FROM \"Users\" WHERE \"Id\" = '{alice}';");
             Assert.Equal(6, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertificates\" WHERE \"SubjectUserId\" IS NULL"));
+
+            await MigrateToLatestAsync(app, "application");
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await DropDatabaseAsync(server, appName);
+        }
+    }
+
+    /// <summary>
+    /// The <c>SshCertificateRevokedAt</c> column, seeded at the stage before it. It is added
+    /// empty and may stay empty: a certificate that was already revoked stays revoked and gets
+    /// no time, since none was recorded, and no other column of any row changes. The partial
+    /// index a KRL's state is read from covers the revoked rows only, and the index on the key
+    /// alone is still there. Afterwards a row takes a time.
+    /// </summary>
+    [RequiresEnvironmentFact(ServerVariable)]
+    public async Task The_ssh_certificate_revoked_at_column_is_added_empty_and_a_revoked_row_keeps_no_time()
+    {
+        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+        await CreateDatabaseAsync(server, appName);
+        try
+        {
+            await using var app = CreateApp(WithDatabase(server, appName));
+            await MigrateThroughAsync(app, SshLoginNames);
+            Assert.Equal(0, await ScalarAsync(app,
+                "SELECT count(*) FROM information_schema.columns WHERE table_name = 'SshCertificates' AND column_name = 'RevokedAt'"));
+
+            var ca = Guid.NewGuid();
+            var key = Guid.NewGuid();
+            var live = Guid.NewGuid();
+            var revoked = Guid.NewGuid();
+            var expiredAndRevoked = Guid.NewGuid();
+            const string certificateColumns = "\"Id\",\"SshCaKeyId\",\"CertificateType\",\"KeyId\",\"SerialNumber\",\"Principals\",\"ValidAfter\",\"ValidBefore\","
+                + "\"PublicKey\",\"SignedCertificate\",\"IsRevoked\",\"CreatedAt\"";
+            string Certificate(Guid id, int serial, bool isRevoked, string validBefore)
+                => $"('{id}','{key}','user','alice',{serial},'[\"alice\"]','2026-10-01T12:00:00Z',{validBefore},'ssh-ed25519 AAAA','ssh-ed25519-cert-v01@openssh.com AAAA',"
+                    + $"{(isRevoked ? "true" : "false")},'2026-10-01T12:00:00Z')";
+            await ExecAsync(app,
+                "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"SpaceId\",\"IsDeleted\") "
+                + $"VALUES ('{ca}','Ops SSH','ops-ssh',false,'SSH',true,'Software',true,NULL,false); "
+                + "INSERT INTO \"SshCaKeys\" (\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"KeyStorage\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"IsEnabled\",\"CreatedAt\") "
+                + $"VALUES ('{key}','Ops SSH','ed25519','ssh-ed25519 AAAA','Signer','{ca}',true,true,24,true,now()); "
+                + $"INSERT INTO \"SshCertificates\" ({certificateColumns}) VALUES "
+                + Certificate(live, 1, false, "now() + interval '1 day'") + ", "
+                + Certificate(revoked, 2, true, "now() + interval '1 day'") + ", "
+                + Certificate(expiredAndRevoked, 3, true, "'2026-10-02T12:00:00Z'") + ";");
+            const string everyOldColumn = "\"Id\"::text || '|' || \"SshCaKeyId\"::text || '|' || \"CertificateType\" || '|' || \"KeyId\" || '|' || \"SerialNumber\"::text || '|' || "
+                + "\"Principals\" || '|' || to_char(\"ValidAfter\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US') || '|' || "
+                + "to_char(\"ValidBefore\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US') || '|' || \"PublicKey\" || '|' || \"SignedCertificate\" || '|' || "
+                + "\"IsRevoked\"::text || '|' || coalesce(\"SubjectUserId\"::text,'-') || '|' || coalesce(\"LoginNameGrounds\",'-') || '|' || "
+                + "to_char(\"CreatedAt\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US')";
+            async Task<string> Row(Guid id) => await TextAsync(app, $"SELECT {everyOldColumn} FROM \"SshCertificates\" WHERE \"Id\" = '{id}'");
+            var before = new[] { await Row(live), await Row(revoked), await Row(expiredAndRevoked) };
+
+            await MigrateThroughAsync(app, SshCertificateRevokedAt);
+
+            Assert.Equal(before, new[] { await Row(live), await Row(revoked), await Row(expiredAndRevoked) });
+            Assert.Equal("YES", await TextAsync(app,
+                "SELECT is_nullable FROM information_schema.columns WHERE table_name = 'SshCertificates' AND column_name = 'RevokedAt'"));
+            Assert.Equal("timestamp with time zone", await TextAsync(app,
+                "SELECT data_type FROM information_schema.columns WHERE table_name = 'SshCertificates' AND column_name = 'RevokedAt'"));
+            Assert.Equal(3, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertificates\" WHERE \"RevokedAt\" IS NULL"));
+            Assert.Equal(2, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertificates\" WHERE \"IsRevoked\""));
+
+            var partial = await TextAsync(app, "SELECT indexdef FROM pg_indexes WHERE indexname = 'IX_SshCertificates_SshCaKeyId_RevokedAt'");
+            Assert.Contains("(\"SshCaKeyId\", \"RevokedAt\")", partial);
+            Assert.Contains("WHERE \"IsRevoked\"", partial);
+            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM pg_indexes WHERE indexname = 'IX_SshCertificates_SshCaKeyId'"));
+
+            // From here on a revocation has a time, and the newest of a key is what its KRL is dated by.
+            await ExecAsync(app, $"UPDATE \"SshCertificates\" SET \"IsRevoked\" = true, \"RevokedAt\" = '2026-10-08T09:30:00Z' WHERE \"Id\" = '{live}';");
+            Assert.Equal("2026-10-08T09:30:00", await TextAsync(app,
+                $"SELECT to_char(max(\"RevokedAt\") AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS') FROM \"SshCertificates\" WHERE \"SshCaKeyId\" = '{key}' AND \"IsRevoked\""));
+            Assert.Equal(3, await ScalarAsync(app, $"SELECT count(*) FROM \"SshCertificates\" WHERE \"SshCaKeyId\" = '{key}' AND \"IsRevoked\""));
 
             await MigrateToLatestAsync(app, "application");
         }

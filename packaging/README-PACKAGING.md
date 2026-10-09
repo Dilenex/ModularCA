@@ -49,6 +49,14 @@ symlinks into it. The exception is `/usr/share/modularca`: the schema-ownership 
 script that runs it, which run as the PostgreSQL superuser and as root, so they stay root-owned
 and outside `/opt/modularca`, where the service account owns the runtime directories.
 
+`/usr/share/modularca/ssh-krl/` is there for the same reason. It holds the KRL fetcher for SSH
+servers (`modularca-krl-fetch.sh`, its systemd service and timer, and an example of its settings),
+whose source is `deploy/ssh-krl/`. Nothing in it runs on the CA and the package enables none of
+it: an administrator copies it to each SSH server, where it runs as root. `build-linux-dist.sh`
+stages it under `share/ssh-krl/` and refuses a file with a carriage return; `install.sh` and
+`nfpm.yaml` install the same four files. "SSH servers: fetching the revocation list" in
+`README-DEPLOY.md` is the operator's page.
+
 Inside `/opt/modularca` the program files are root's: dpkg writes them `root:root`, and `postinst`
 gives back to root any directory of the package an older `postinst` had given to the service
 account. The service account owns only the runtime directories, `config/`, `keystores/`, `logs/`

@@ -386,7 +386,9 @@ message KeySpec {
   serial list. It is built in process from `SshCaKeys.PublicKey`, with no signer and no private
   key. `ssh-keygen -k` does not sign KRLs either, so the bytes carry the same assurance as today.
   `krl_version` becomes the time of the newest revocation, so it increases. The validation role
-  stops spawning a process per anonymous request.
+  stops spawning a process per anonymous request. As built, the version is the number of revoked
+  certificates and the newest revocation is the list's generation time; see
+  `ssh-krl-delivery.md`.
 - **Disable**: unchanged. The row and CA are disabled and certificates revoked. The signer refuses
   to sign for a disabled row. The key stays in the file, as a disabled X.509 CA's key does.
 
@@ -609,7 +611,9 @@ shared.
   the signer gave it. The three sign routes carry the unlocked-signer filter.
 - **KRL.** Built in process by `SshKrl.Encode` from the row's public key and the revoked serials,
   for a `LegacyFile` row and on a validation-only host too. `krl_version` is the number of
-  revoked certificates (open question 5).
+  revoked certificates (open question 5). Since 2026-10-08 the list is the same bytes until a
+  certificate is revoked, both routes answer a conditional fetch, and a fetcher for SSH servers
+  is shipped: `ssh-krl-delivery.md`.
 - **Audit.** The entries of create (`SshCaKeyCreated`, new), sign, revoke and disable are written
   by the service, once. The self-service sign route, which wrote none, now has one. A refused
   create or sign has a failure entry that carries a principal count, never names. A KRL download
@@ -835,3 +839,8 @@ key through the signer yet.
    with each revocation, and never less, since a revocation is not undone and a certificate row
    is not deleted. Is the count enough, or is a
    `SshCertificates.RevokedAt` column wanted, with its migration, to give the time?
+   As built (2026-10-08, `ssh-krl-delivery.md`): both. `RevokedAt` was added with its migration,
+   and the newest one is the list's generation time. The version stays the count: nothing found
+   lowers it in operation, and a count changes with every revocation, where two revocations in
+   one second would share a time. Restoring an older database lowers it; the fetcher for SSH
+   servers refuses a lower version until it is told to allow it.

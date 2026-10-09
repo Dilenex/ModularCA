@@ -190,7 +190,8 @@ works through them per subject and key.
  It looks at what is held now, not at the grounds stored with the
 certificate, so a name that is still held another way keeps its certificate. Each revocation
 writes `SshCertRevoked` with the reason and the login name that was lost. A revoked certificate
-is in the key's KRL.
+is in the key's KRL, and its row records when it was revoked (`RevokedAt`). A host refuses it
+once the host has fetched that list; `ssh-krl-delivery.md` is how the list gets there.
 
 Rows from before this have no grounds, so the names are not judged for them; service identities'
 and host certificates are left alone altogether. Lowering a grant's `MaxValidityHours` revokes
