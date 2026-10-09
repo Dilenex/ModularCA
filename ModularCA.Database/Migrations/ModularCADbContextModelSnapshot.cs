@@ -3226,6 +3226,9 @@ namespace ModularCA.Database.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<DateTime?>("ReviewBy")
+                        .HasColumnType("timestamp with time zone");
+
                     b.HasKey("Id");
 
                     b.HasIndex("CertificateAuthorityId");

@@ -135,6 +135,8 @@ The same rule holds for the subject of an admin sign request.
 - **Self-service** (`POST /api/v1/user/ssh/sign-user`): the subject is the caller. Every principal
   must be held, or the answer is 400 naming the first one that is not. At least one is required.
   The certificate profile's patterns, `MaxPrincipals` and the other profile checks still apply.
+  On a new install the seeded user profile's pattern is the login name grammar itself
+  (`SshLoginNameRules.Pattern`), so it refuses no name a grant allows; see `ssh-defaults.md`.
 - **Admin, for a user** (`subjectUserId`): the user must exist, be active and have a footing in
   the SSH CA's scope; the three cases get one sentence. The user must also hold `cert.request`
   on the SSH CA, and one who does not is refused with a sentence of its own, since the operator

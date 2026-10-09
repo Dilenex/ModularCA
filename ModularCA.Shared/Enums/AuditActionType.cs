@@ -85,6 +85,8 @@ public static class AuditActionType
     public const string SshLoginNameGrantRemoved = "SshLoginNameGrantRemoved";
     /// <summary>Whether everyone may log in as their own username was changed on an SSH CA key.</summary>
     public const string SshOwnUsernameChanged = "SshOwnUsernameChanged";
+    /// <summary>The advisory review date of an SSH CA key was moved; the details name the key, the new date and the one before.</summary>
+    public const string SshCaKeyReviewDateChanged = "SshCaKeyReviewDateChanged";
 
     // Scheduled jobs
     public const string TlsCertificateRenewed = "TlsCertificateRenewed";

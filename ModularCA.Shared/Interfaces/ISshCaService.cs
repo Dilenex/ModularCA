@@ -63,7 +63,9 @@ public interface ISshCaService
 {
     /// <summary>
     /// Creates an SSH CA: the signer generates the key, the CA, its groups, its key row and its
-    /// default signing profiles are written, and the key is committed to the row.
+    /// default signing profiles are written, and the key is committed to the row. Each signing
+    /// profile takes <paramref name="maxValidityHours"/>, the key's own maximum, and the key row
+    /// an advisory review date.
     /// </summary>
     /// <param name="ceremonyId">The approved <c>CreateSshCa</c> ceremony this executes, when the instance requires one.</param>
     /// <param name="actor">Who asked, for the audit entry.</param>
@@ -77,6 +79,16 @@ public interface ISshCaService
     /// <param name="actor">Who asked, for the audit entry.</param>
     /// <param name="ceremonyId">The <c>DeleteSshCa</c> ceremony this executes, when there is one.</param>
     Task DisableAsync(Guid caKeyId, SshCaActor? actor = null, Guid? ceremonyId = null);
+
+    /// <summary>
+    /// Moves the advisory review date of an SSH CA key and writes the audit entry. The date
+    /// reminds and never acts: nothing else about the key changes.
+    /// </summary>
+    /// <param name="reviewBy">The new date, UTC: in the future and at most ten years ahead.</param>
+    /// <param name="actor">Who asked, for the audit entry.</param>
+    /// <returns>The key with its new date, or null when there is no such key.</returns>
+    /// <exception cref="ModularCA.Shared.Errors.RequestValidationException">The date is not in the future, or is too far ahead.</exception>
+    Task<SshCaKeyEntity?> SetReviewByAsync(Guid caKeyId, DateTime reviewBy, SshCaActor? actor = null);
 
     /// <summary>
     /// Signs a user certificate for <paramref name="publicKey"/> through the signer. The CA

@@ -484,6 +484,49 @@ export default function AdminUiGuide() {
                     <li>View and revoke issued SSH certificates, and find one from a host log line</li>
                 </ul>
 
+                <h3 className="text-lg font-semibold text-ink mb-2">Recommended setup</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    Create two SSH CA keys: one of type user and one of type host. The form asks for one type and creates a
+                    key that signs that type only. The two public keys go to different places: servers trust the user CA
+                    key, clients trust the host CA key. They need different lifetimes, and a leaked host CA key then cannot
+                    mint logins. The API still accepts a key that signs both, for keys and scripts that already do.
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li><span className="font-semibold">User certificates:</span> 12 hours by default and 24 hours at most. A new user key&apos;s longest certificate is pre-filled as 24 hours, and the seeded user request profile allows 12</li>
+                    <li><span className="font-semibold">A sensitive login name</span> such as <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">root</code>: grant it with a longest certificate of 1 hour. See Login names below</li>
+                    <li><span className="font-semibold">Host certificates:</span> 1 year. A new host key&apos;s longest certificate is pre-filled as 8760 hours. Each host certificate is signed by hand, so a year keeps that work reasonable. An expired host certificate does not lock anyone out: clients ask about the host key again, as they do for a host with no certificate</li>
+                </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    A certificate&apos;s lifetime is the smallest of what the SSH CA key, the three profiles and the login name
+                    grants allow. Set it in one place:
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li><span className="font-semibold">The SSH CA key</span> holds the hard ceiling. Nothing can issue a longer certificate from it</li>
+                    <li><span className="font-semibold">The request profile</span> holds the everyday number, and decides which signing and certificate profiles a person may ask through and whether a request needs approval. Change this one to change how long people&apos;s certificates last</li>
+                    <li><span className="font-semibold">The signing profile</span> names the SSH CA key and the extensions a certificate gets when the request asks for none. It is created with the key, at the key&apos;s ceiling. Leave its lifetime there</li>
+                    <li><span className="font-semibold">The certificate profile</span> limits the login names or hostnames and the extensions a certificate may carry. Leave its lifetime at the ceiling too</li>
+                </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    A new install is seeded with two user certificate profiles. <span className="font-semibold">SSH User Cert - Standard</span> takes
+                    any valid login name, at most three, and allows a terminal (permit-pty) and permit-user-rc; a request
+                    through it that asks for agent, port or X11 forwarding is refused. <span className="font-semibold">SSH User Cert - Forwarding</span> is
+                    the same with agent and port forwarding on every certificate. It is seeded but attached to no request
+                    profile: add it to a request profile&apos;s certificate profiles for the people who need forwarding. Agent
+                    forwarding lets a compromised server use the holder&apos;s access to other servers, which is why it is not the
+                    default, and why the signing profile created with a user key now gives a terminal and nothing else.
+                    An install that already had SSH profiles keeps them exactly as they are; only new installs and new keys
+                    get these defaults.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    <span className="font-semibold">The review date.</span> An SSH CA key does not expire. Each key has a Review by date: two years after it was
+                    created for a key that signs user certificates, five years for a host-only key. Nothing stops working on
+                    that date. The key keeps signing, its certificates stay valid and its revocation list is still served. From
+                    90 days before the date, and after it, the key list and the key&apos;s page mark the key as due for review, and
+                    the administrators are told once by the daily expiry notification, where e-mail is set up. Decide whether
+                    the key should still be in use, then move the date in the Review section of the key&apos;s page. Moving it
+                    takes the right to manage the SSH CA and is audited.
+                </p>
+
                 <h3 className="text-lg font-semibold text-ink mb-2">Where SSH CA keys are held</h3>
                 <p className="text-ink leading-relaxed mb-3">
                     From 0.4.2 the signer holds every SSH CA key, in its SSH keystore
@@ -677,6 +720,7 @@ sshd -t && systemctl reload ssh`}</pre>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/admin/ssh/ca-keys<br />
                     POST /api/v1/admin/ssh/ca-keys<br />
+                    PUT /api/v1/admin/ssh/ca-keys/&#123;caKeyId&#125;/review-by<br />
                     GET /api/v1/admin/ssh/plaintext-notice<br />
                     POST /api/v1/admin/ssh/ca-keys/&#123;caKeyId&#125;/certificates/sign-user<br />
                     POST /api/v1/admin/ssh/ca-keys/&#123;caKeyId&#125;/certificates/sign-host<br />

@@ -63,6 +63,15 @@ public class SshCaKeyEntity
 
     public bool IsEnabled { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    /// <summary>
+    /// When an administrator is reminded to review this key, in UTC. An SSH CA key does not
+    /// expire and nothing rotates it; this date is advisory. Nothing is disabled, refused or
+    /// revoked because of it: signing, KRLs and every check behave the same before and after.
+    /// Set at creation (<c>SshCaKeyDefaults.ReviewBy</c>) and moved by an administrator. Null
+    /// only on a row no date was ever set for.
+    /// </summary>
+    public DateTime? ReviewBy { get; set; }
 }
 
 /// <summary>The values of <see cref="SshCaKeyEntity.KeyStorage"/>.</summary>

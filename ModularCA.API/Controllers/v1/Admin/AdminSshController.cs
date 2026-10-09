@@ -55,6 +55,8 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// file on the node and has been imported. Each key also says what its KRL is now:
     /// <c>krlVersion</c>, <c>krlRevokedCertificates</c> and <c>krlLastRevokedAt</c>, the time of
     /// the newest revocation, null when nothing is revoked or the time was not recorded.
+    /// <c>reviewBy</c> is the key's advisory review date, UTC: a reminder that changes nothing
+    /// about what the key signs.
     /// </remarks>
     [HttpGet("ca-keys")]
     [Authorize(Policy = "CaOperator")]
@@ -83,7 +85,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
             return new
             {
                 k.Id, k.Name, k.CertificateAuthorityId, k.KeyType, k.KeySize, k.PublicKey, k.IsUserCa, k.IsHostCa,
-                k.MaxValidityHours, k.IsEnabled, k.CreatedAt,
+                k.MaxValidityHours, k.IsEnabled, k.CreatedAt, k.ReviewBy,
                 KeyStorage = JsonNamingPolicy.CamelCase.ConvertName(k.KeyStorage),
                 SignerState = held?.State ?? SshKeyCustody.Unknown,
                 SignerStateCode = held?.ReasonCode,
@@ -134,6 +136,9 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// checked first, ceremony or not: a control character in the name or key type, or an invalid
     /// or reserved label, is 400; a label or name another CA has (or takes while this one is saved)
     /// is 409. A signer that is locked, or cannot hold SSH CA keys, is 503 with the reason.
+    /// Both <c>isUserCa</c> and <c>isHostCa</c> are accepted, so a key may sign both types. When
+    /// <c>maxValidityHours</c> is omitted it is 24 for a key that signs user certificates and
+    /// 8760 for a host-only key (<see cref="SshCaKeyDefaults"/>).
     /// </summary>
     [HttpPost("ca-keys")]
     [Authorize(Policy = "SystemOperator")]
@@ -173,6 +178,10 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         // ceremony requirement is the instance's. Keying the gate off request.SpaceId once allowed
         // an SSH CA to be created directly, bypassing the ceremony, whenever the request omitted a
         // ceremony-requiring space.
+        var isUserCa = request.IsUserCa ?? true;
+        var isHostCa = request.IsHostCa ?? false;
+        var maxValidityHours = request.MaxValidityHours ?? SshCaKeyDefaults.MaxValidityHours(isUserCa, isHostCa);
+
         var sshPolicy = await new EffectivePolicyResolver(db).ResolveAsync(null);
         if (sshPolicy.RequireKeyCeremony)
         {
@@ -181,9 +190,9 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
                 Name = request.Name,
                 KeyType = request.KeyType ?? "ed25519",
                 KeySize = request.KeySize,
-                IsUserCa = request.IsUserCa ?? true,
-                IsHostCa = request.IsHostCa ?? false,
-                MaxValidityHours = request.MaxValidityHours ?? 24,
+                IsUserCa = isUserCa,
+                IsHostCa = isHostCa,
+                MaxValidityHours = maxValidityHours,
                 SpaceId = null
             };
             var ceremony = await ceremonySvc.InitiateAsync(
@@ -201,9 +210,9 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         {
             var key = await sshCaService.GenerateKeyPairAsync(
                 request.Name, request.KeyType ?? "ed25519",
-                request.IsUserCa ?? true, request.IsHostCa ?? false,
-                request.MaxValidityHours ?? 24, request.KeySize, actor: Actor());
-            return Ok(new { key.Id, key.Name, key.KeyType, key.KeySize, key.PublicKey, key.CreatedAt });
+                isUserCa, isHostCa,
+                maxValidityHours, request.KeySize, actor: Actor());
+            return Ok(new { key.Id, key.Name, key.KeyType, key.KeySize, key.PublicKey, key.CreatedAt, key.MaxValidityHours, key.ReviewBy });
         }
         catch (ModularCA.Shared.Errors.ResourceConflictException ex)
         {
@@ -220,6 +229,38 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         {
             return RequireUnlockedSignerAttribute.Unavailable(HttpContext, ex.Message, ex.RetryMayHelp);
         }
+    }
+
+    /// <summary>
+    /// Moves the advisory review date of an SSH CA key. The date must be in the future and at
+    /// most ten years ahead, otherwise 400. Needs ca.manage on the key's CA; a key that does not
+    /// exist or lies outside the caller's <see cref="SpaceFence"/> is 404. Answers the key's id
+    /// and the new <c>reviewBy</c>, and the service writes the audit entry.
+    /// </summary>
+    /// <remarks>
+    /// No step-up MFA: the date reminds an administrator and decides nothing. No certificate is
+    /// signed, refused or revoked because of it, and no limit of the key changes
+    /// (<c>StepUpGuardTests</c> names this route with that reason).
+    /// </remarks>
+    [HttpPut("ca-keys/{caKeyId:guid}/review-by")]
+    [Authorize(Policy = "CaAdmin")]
+    public async Task<IActionResult> SetReviewBy(Guid caKeyId, [FromBody] SetSshCaKeyReviewByRequest request)
+    {
+        await currentUser.EnsureLoadedAsync();
+        if (request.ReviewBy is not { } reviewBy)
+            return BadRequest(new { error = "Say when the key is to be reviewed: { \"reviewBy\": \"2028-10-08T00:00:00Z\" }." });
+        if (SshCaKeyDefaults.ReviewByError(reviewBy, DateTime.UtcNow) is { } problem)
+            return BadRequest(new { error = problem });
+
+        var caSpace = await db.SshCaKeys.AsNoTracking()
+            .Where(k => k.Id == caKeyId)
+            .Select(k => new { k.CertificateAuthority.SpaceId })
+            .FirstOrDefaultAsync();
+        if (caSpace == null || !SpaceFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CaManage).Allows(caSpace.SpaceId))
+            return NotFound();
+
+        var key = await sshCaService.SetReviewByAsync(caKeyId, reviewBy, Actor());
+        return key == null ? NotFound() : Ok(new { key.Id, key.ReviewBy });
     }
 
     /// <summary>
@@ -611,6 +652,13 @@ public class GenerateSshCaKeyRequest
     /// instance's key-ceremony requirement decides whether a ceremony is initiated.
     /// </summary>
     public Guid? SpaceId { get; set; }
+}
+
+/// <summary>Request model for moving the advisory review date of an SSH CA key.</summary>
+public class SetSshCaKeyReviewByRequest
+{
+    /// <summary>When the key is to be reviewed, UTC: in the future and at most ten years ahead.</summary>
+    public DateTime? ReviewBy { get; set; }
 }
 
 /// <summary>

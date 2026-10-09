@@ -7,6 +7,7 @@ using ModularCA.Shared.Enums;
 using ModularCA.Shared.Errors;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Signing;
+using ModularCA.Shared.Utils;
 using ModularCA.Ssh;
 using Org.BouncyCastle.Security;
 using System.Security.Cryptography;
@@ -90,7 +91,9 @@ public class SshCaService : ISshCaService
     /// Creates an SSH CA whose key the signer generates and holds. The SSH CA and its groups are
     /// instance rows, with no space. Its label, derived from <paramref name="name"/>, must be
     /// valid and not reserved, and its label and name unused by any CA of the instance,
-    /// soft-deleted ones included; otherwise nothing is generated.
+    /// soft-deleted ones included; otherwise nothing is generated. The key's advisory review
+    /// date is set two years ahead for a key that signs user certificates and five for a
+    /// host-only key (<see cref="SshCaKeyDefaults"/>), and is in the audit entry.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -132,7 +135,7 @@ public class SshCaService : ISshCaService
                 new
                 {
                     entity.Name, entity.KeyType, entity.KeySize, Fingerprint = FingerprintOf(entity.PublicKey),
-                    entity.IsUserCa, entity.IsHostCa, entity.MaxValidityHours, entity.KeyStorage, CeremonyId = ceremonyId,
+                    entity.IsUserCa, entity.IsHostCa, entity.MaxValidityHours, entity.ReviewBy, entity.KeyStorage, CeremonyId = ceremonyId,
                 },
                 actor?.SourceIp, certificateAuthorityId: entity.CertificateAuthorityId);
             _logger.LogInformation("SSH CA key created in the signer: {Name} ({KeyType}), ID={Id}", entity.Name, entity.KeyType, entity.Id);
@@ -148,7 +151,8 @@ public class SshCaService : ISshCaService
 
     /// <summary>
     /// The steps of <see cref="GenerateKeyPairAsync"/> between the checks on the name and the
-    /// audit entry: generate, write the rows, commit the key.
+    /// audit entry: generate, write the rows, commit the key. The key row takes its advisory
+    /// review date from <see cref="SshCaKeyDefaults.ReviewBy"/>.
     /// </summary>
     private async Task<SshCaKeyEntity> CreateAsync(string name, string caLabel, SshCaAlgorithm algorithm,
         bool isUserCa, bool isHostCa, int maxValidityHours, Guid? ceremonyId)
@@ -209,6 +213,7 @@ public class SshCaService : ISshCaService
             MaxValidityHours = maxValidityHours,
             CertificateAuthorityId = caEntity.Id,
         };
+        entity.ReviewBy = SshCaKeyDefaults.ReviewBy(entity.CreatedAt, isUserCa, isHostCa);
 
         await using var tx = await _db.Database.BeginTransactionAsync();
         try
@@ -256,7 +261,10 @@ public class SshCaService : ISshCaService
     /// <summary>
     /// Writes the rows of a new SSH CA inside the caller's transaction: the instance CA row, its
     /// four authorization groups with their built-in roles, the key row and the default signing
-    /// profiles for the certificate types the key signs.
+    /// profiles for the certificate types the key signs. Each signing profile takes the key's
+    /// own maximum validity: the key holds the ceiling and a request profile the everyday
+    /// number. The user profile's default extensions are
+    /// <see cref="SshCaKeyDefaults.UserSigningDefaultExtensions"/>, which permit no forwarding.
     /// </summary>
     private async Task WriteRowsAsync(CertificateAuthorityEntity caEntity, SshCaKeyEntity entity)
     {
@@ -314,8 +322,8 @@ public class SshCaService : ISshCaService
                 SshCaKeyId = entity.Id,
                 AllowUserCerts = true,
                 AllowHostCerts = false,
-                MaxValidityHours = Math.Min(entity.MaxValidityHours, 24),
-                DefaultExtensions = "[\"permit-pty\",\"permit-agent-forwarding\",\"permit-port-forwarding\"]",
+                MaxValidityHours = entity.MaxValidityHours,
+                DefaultExtensions = JsonSerializer.Serialize(SshCaKeyDefaults.UserSigningDefaultExtensions),
                 SourceAddressRestrictions = "[]",
             });
         }
@@ -427,6 +435,34 @@ public class SshCaService : ISshCaService
             "SshCaKey", caKeyId.ToString(),
             new { key.Name, RevokedCertificates = activeCerts.Count, CeremonyId = ceremonyId }, actor?.SourceIp);
         _logger.LogWarning("SSH CA key '{Name}' disabled. {Count} certificate(s) revoked.", key.Name, activeCerts.Count);
+    }
+
+    /// <summary>
+    /// Moves the advisory review date of an SSH CA key (<see cref="SshCaKeyEntity.ReviewBy"/>)
+    /// and writes the audit entry. The date must be in the future and at most
+    /// <see cref="SshCaKeyDefaults.MaxReviewYearsAhead"/> years ahead. Only that column changes:
+    /// the key, its limits, its certificates and its KRL are as they were.
+    /// </summary>
+    /// <returns>The key with its new date, or null when there is no such key.</returns>
+    /// <exception cref="InvalidRequestException">The date is not in the future, or is too far ahead.</exception>
+    public async Task<SshCaKeyEntity?> SetReviewByAsync(Guid caKeyId, DateTime reviewBy, SshCaActor? actor = null)
+    {
+        if (SshCaKeyDefaults.ReviewByError(reviewBy, DateTime.UtcNow) is { } problem)
+            throw new InvalidRequestException(problem);
+
+        var key = await _db.SshCaKeys.FindAsync(caKeyId);
+        if (key == null)
+            return null;
+
+        var was = key.ReviewBy;
+        key.ReviewBy = reviewBy.Kind == DateTimeKind.Local ? reviewBy.ToUniversalTime() : DateTime.SpecifyKind(reviewBy, DateTimeKind.Utc);
+        await _db.SaveChangesAsync();
+
+        await _audit.LogAsync(AuditActionType.SshCaKeyReviewDateChanged, actor?.UserId, actor?.Username ?? "system",
+            "SshCaKey", caKeyId.ToString(),
+            new { SshCaKeyName = key.Name, key.ReviewBy, Was = was },
+            actor?.SourceIp, certificateAuthorityId: key.CertificateAuthorityId);
+        return key;
     }
 
     /// <summary>

@@ -94,6 +94,9 @@ public class PostgresUpgradeHarnessTests
     /// <summary>The 0.4.2 migration that adds when an SSH certificate was revoked, without its timestamp.</summary>
     public const string SshCertificateRevokedAt = "SshCertificateRevokedAt";
 
+    /// <summary>The 0.4.2 migration that adds the advisory review date of an SSH CA key, without its timestamp.</summary>
+    public const string SshCaKeyReviewBy = "SshCaKeyReviewBy";
+
     private const string ServerVariable = "MODULARCA_TEST_PG";
     private const string RehearsalVariable = "MODULARCA_TEST_PG_REHEARSAL";
     private const string RehearsalAuditVariable = "MODULARCA_TEST_PG_REHEARSAL_AUDIT";
@@ -1632,6 +1635,126 @@ public class PostgresUpgradeHarnessTests
             Assert.Equal(3, await ScalarAsync(app, $"SELECT count(*) FROM \"SshCertificates\" WHERE \"SshCaKeyId\" = '{key}' AND \"IsRevoked\""));
 
             await MigrateToLatestAsync(app, "application");
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await DropDatabaseAsync(server, appName);
+        }
+    }
+
+    /// <summary>
+    /// The <c>SshCaKeyReviewBy</c> column and its backfill, seeded at the stage before it. Every
+    /// existing key gets a review date counted from when it was created: two years for a key
+    /// that signs user certificates, alone or with host certificates, and five for a host-only
+    /// key. A key whose date is then already past, and a disabled key, get theirs all the same
+    /// and are otherwise untouched: no other column of a key changes, and no signing profile,
+    /// certificate profile, request profile or certificate row is edited, here or by any later
+    /// migration.
+    /// </summary>
+    [RequiresEnvironmentFact(ServerVariable)]
+    public async Task The_ssh_ca_key_review_date_is_set_from_each_key_s_creation_and_no_profile_or_other_column_changes()
+    {
+        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+        await CreateDatabaseAsync(server, appName);
+        try
+        {
+            await using var app = CreateApp(WithDatabase(server, appName));
+            await MigrateThroughAsync(app, SshCertificateRevokedAt);
+            Assert.Equal(0, await ScalarAsync(app,
+                "SELECT count(*) FROM information_schema.columns WHERE table_name = 'SshCaKeys' AND column_name = 'ReviewBy'"));
+
+            var userKey = Guid.NewGuid();
+            var bothKey = Guid.NewGuid();
+            var hostKey = Guid.NewGuid();
+            var oldKey = Guid.NewGuid();
+            var disabledKey = Guid.NewGuid();
+            var leapKey = Guid.NewGuid();
+            var signingProfile = Guid.NewGuid();
+            var certProfile = Guid.NewGuid();
+            var requestProfile = Guid.NewGuid();
+            var certificate = Guid.NewGuid();
+            var sql = new System.Text.StringBuilder();
+            void Key(Guid id, string name, bool user, bool host, int hours, bool enabled, string createdAt)
+            {
+                var ca = Guid.NewGuid();
+                sql.Append("INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"SpaceId\",\"IsDeleted\") "
+                    + $"VALUES ('{ca}','{name}','{name.ToLowerInvariant().Replace(' ', '-')}',false,'SSH',{(enabled ? "true" : "false")},'Software',true,NULL,false); "
+                    + "INSERT INTO \"SshCaKeys\" (\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"KeyStorage\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"AllowOwnUsername\",\"IsEnabled\",\"CreatedAt\") "
+                    + $"VALUES ('{id}','{name}','ed25519','ssh-ed25519 AAAA','Signer','{ca}',{(user ? "true" : "false")},{(host ? "true" : "false")},{hours},true,{(enabled ? "true" : "false")},'{createdAt}'); ");
+            }
+            Key(userKey, "Users SSH", user: true, host: false, 720, enabled: true, "2026-03-01T08:15:30.123456Z");
+            Key(bothKey, "Both SSH", user: true, host: true, 720, enabled: true, "2026-03-01T08:15:30Z");
+            Key(hostKey, "Hosts SSH", user: false, host: true, 8760, enabled: true, "2026-03-01T08:15:30Z");
+            Key(oldKey, "Old SSH", user: true, host: false, 24, enabled: true, "2021-06-30T23:30:00Z");
+            Key(disabledKey, "Disabled SSH", user: true, host: false, 24, enabled: false, "2025-01-01T00:00:00Z");
+            Key(leapKey, "Leap SSH", user: true, host: false, 24, enabled: true, "2024-02-29T23:30:00Z");
+            sql.Append("INSERT INTO \"SshSigningProfiles\" (\"Id\",\"Name\",\"SshCaKeyId\",\"MaxValidityHours\",\"AllowUserCerts\",\"AllowHostCerts\",\"SourceAddressRestrictions\",\"DefaultExtensions\",\"CreatedAt\") "
+                + $"VALUES ('{signingProfile}','Users SSH - User Signing','{userKey}',24,true,false,'[]','[\"permit-pty\",\"permit-agent-forwarding\",\"permit-port-forwarding\"]','2026-03-01T08:15:30Z'); "
+                + "INSERT INTO \"SshCertProfiles\" (\"Id\",\"Name\",\"AllowedPrincipalPatterns\",\"MaxPrincipals\",\"AllowedExtensions\",\"RequiredExtensions\",\"MaxValidityHours\",\"CreatedAt\") "
+                + $"VALUES ('{certProfile}','SSH User Cert - Standard','[\"^[a-z_][a-z0-9_-]{{0,31}}$\"]',5,"
+                + "'[\"permit-pty\",\"permit-agent-forwarding\",\"permit-port-forwarding\",\"permit-X11-forwarding\",\"permit-user-rc\"]','[]',24,'2026-03-01T08:15:30Z'); "
+                + "INSERT INTO \"SshRequestProfiles\" (\"Id\",\"Name\",\"AllowedSshSigningProfileIds\",\"AllowedSshCertProfileIds\",\"RequireApproval\",\"MaxValidityHours\",\"CreatedAt\") "
+                + $"VALUES ('{requestProfile}','SSH User Request - Default','[]','[\"{certProfile}\"]',false,24,'2026-03-01T08:15:30Z'); "
+                + "INSERT INTO \"SshCertificates\" (\"Id\",\"SshCaKeyId\",\"CertificateType\",\"KeyId\",\"SerialNumber\",\"Principals\",\"ValidAfter\",\"ValidBefore\",\"PublicKey\",\"SignedCertificate\",\"IsRevoked\",\"CreatedAt\") "
+                + $"VALUES ('{certificate}','{oldKey}','user','alice',1,'[\"alice\"]',now(),now() + interval '1 day','ssh-ed25519 AAAA','ssh-ed25519-cert-v01@openssh.com AAAA',false,now());");
+            await ExecAsync(app, sql.ToString());
+
+            const string everyOldKeyColumn = "\"Id\"::text || '|' || \"Name\" || '|' || \"KeyType\" || '|' || coalesce(\"KeySize\"::text,'-') || '|' || \"PublicKey\" || '|' || "
+                + "coalesce(\"PrivateKeyPath\",'-') || '|' || \"KeyStorage\" || '|' || \"CertificateAuthorityId\"::text || '|' || \"IsUserCa\"::text || '|' || \"IsHostCa\"::text || '|' || "
+                + "\"MaxValidityHours\"::text || '|' || \"AllowOwnUsername\"::text || '|' || \"IsEnabled\"::text || '|' || to_char(\"CreatedAt\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US')";
+            async Task<string> Keys() => await TextAsync(app, $"SELECT string_agg({everyOldKeyColumn}, E'\\n' ORDER BY \"Id\") FROM \"SshCaKeys\"");
+            async Task<string> Rows(string table) => await TextAsync(app, $"SELECT string_agg(t::text, E'\\n' ORDER BY t.\"Id\") FROM \"{table}\" t");
+            var keysBefore = await Keys();
+            var signingBefore = await Rows("SshSigningProfiles");
+            var certProfilesBefore = await Rows("SshCertProfiles");
+            var requestProfilesBefore = await Rows("SshRequestProfiles");
+            var certificatesBefore = await Rows("SshCertificates");
+
+            await MigrateThroughAsync(app, SshCaKeyReviewBy);
+
+            Assert.Equal("YES", await TextAsync(app,
+                "SELECT is_nullable FROM information_schema.columns WHERE table_name = 'SshCaKeys' AND column_name = 'ReviewBy'"));
+            Assert.Equal("timestamp with time zone", await TextAsync(app,
+                "SELECT data_type FROM information_schema.columns WHERE table_name = 'SshCaKeys' AND column_name = 'ReviewBy'"));
+            async Task<string> ReviewBy(Guid key) => await TextAsync(app,
+                $"SELECT to_char(\"ReviewBy\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US') FROM \"SshCaKeys\" WHERE \"Id\" = '{key}'");
+            Assert.Equal("2028-03-01T08:15:30.123456", await ReviewBy(userKey));
+            Assert.Equal("2028-03-01T08:15:30.000000", await ReviewBy(bothKey));
+            Assert.Equal("2031-03-01T08:15:30.000000", await ReviewBy(hostKey));
+            Assert.Equal("2023-06-30T23:30:00.000000", await ReviewBy(oldKey));
+            Assert.Equal("2027-01-01T00:00:00.000000", await ReviewBy(disabledKey));
+            Assert.Equal("2026-02-28T23:30:00.000000", await ReviewBy(leapKey));
+            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"SshCaKeys\" WHERE \"ReviewBy\" IS NULL"));
+
+            // The same rule as a key created from now on is given.
+            Assert.Equal(new DateTime(2028, 3, 1, 8, 15, 30, DateTimeKind.Utc),
+                ModularCA.Shared.Utils.SshCaKeyDefaults.ReviewBy(new DateTime(2026, 3, 1, 8, 15, 30, DateTimeKind.Utc), isUserCa: true, isHostCa: true));
+            Assert.Equal(new DateTime(2031, 3, 1, 8, 15, 30, DateTimeKind.Utc),
+                ModularCA.Shared.Utils.SshCaKeyDefaults.ReviewBy(new DateTime(2026, 3, 1, 8, 15, 30, DateTimeKind.Utc), isUserCa: false, isHostCa: true));
+            Assert.Equal(new DateTime(2026, 2, 28, 23, 30, 0, DateTimeKind.Utc),
+                ModularCA.Shared.Utils.SshCaKeyDefaults.ReviewBy(new DateTime(2024, 2, 29, 23, 30, 0, DateTimeKind.Utc), isUserCa: true, isHostCa: false));
+
+            // A key long past its date is as enabled as it was, and its certificate as live.
+            Assert.Equal(keysBefore, await Keys());
+            Assert.Equal(1, await ScalarAsync(app, $"SELECT count(*) FROM \"SshCaKeys\" WHERE \"Id\" = '{oldKey}' AND \"IsEnabled\" AND \"ReviewBy\" < now()"));
+            Assert.Equal(1, await ScalarAsync(app, $"SELECT count(*) FROM \"SshCertificates\" WHERE \"Id\" = '{certificate}' AND NOT \"IsRevoked\""));
+
+            await MigrateToLatestAsync(app, "application");
+
+            // No migration edits a profile row: the profiles of an existing install stay as seeded before.
+            Assert.Equal(keysBefore, await Keys());
+            Assert.Equal(signingBefore, await Rows("SshSigningProfiles"));
+            Assert.Equal(certProfilesBefore, await Rows("SshCertProfiles"));
+            Assert.Equal(requestProfilesBefore, await Rows("SshRequestProfiles"));
+            Assert.Equal(certificatesBefore, await Rows("SshCertificates"));
+            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertProfiles\""));
+
+            // The column takes a date and takes none.
+            await ExecAsync(app, $"UPDATE \"SshCaKeys\" SET \"ReviewBy\" = '2030-01-01T00:00:00Z' WHERE \"Id\" = '{userKey}'; UPDATE \"SshCaKeys\" SET \"ReviewBy\" = NULL WHERE \"Id\" = '{hostKey}';");
+            Assert.Equal("2030-01-01T00:00:00.000000", await ReviewBy(userKey));
+            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshCaKeys\" WHERE \"ReviewBy\" IS NULL"));
         }
         finally
         {

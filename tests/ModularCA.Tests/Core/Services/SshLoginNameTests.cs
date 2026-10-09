@@ -1393,7 +1393,9 @@ public class SshLoginNameTests
         Assert.True(key.AllowOwnUsername);
         Assert.Equal(new[] { "alice own 720", "deploy group 24", "root user 8" }, key.LoginNames.Select(n => $"{n.Name} {n.Source} {n.MaxValidityHours}").ToArray());
         Assert.Equal("web-ops", key.LoginNames.Single(n => n.Name == "deploy").GroupName);
-        Assert.Equal(new[] { "self-service/any account 12 5 []", "self-service/no root 24 3 [root]" },
+        // The key's own signing profile is at the key's maximum (720), so the request profile's 48 is the limit of the second combination.
+        Assert.Equal(720, signing.MaxValidityHours);
+        Assert.Equal(new[] { "self-service/any account 12 5 []", "self-service/no root 48 3 [root]" },
             key.Profiles.Select(p => $"{p.RequestProfileName}/{p.CertProfileName} {p.MaxValidityHours} {p.MaxPrincipals} [{string.Join(",", p.UnavailableLoginNames)}]").ToArray());
         Assert.All(key.Profiles, p => Assert.Equal(signing.Id, p.SigningProfileId));
         Assert.Empty((await node.LoginNames.RequestOptionsAsync(alice.Id, [])).CaKeys);

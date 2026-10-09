@@ -1443,7 +1443,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigToggle label="Enabled" checked={config.certExpiryNotification?.enabled ?? false} path="certExpiryNotification.enabled" onChange={(v) => update('certExpiryNotification', 'enabled', v)}
-                                        hint="The CertExpiryNotification job emails and webhooks a warning as certificates approach expiry. Needs Email or Webhook configured under Integrations to reach anyone." />
+                                        hint="The CertExpiryNotification job emails and webhooks a warning as certificates approach expiry. The same job reminds once, 90 days ahead, of each SSH CA key due for review. Needs Email or Webhook configured under Integrations to reach anyone." />
                                     <ConfigChips label="Warning Days" value={warningDays} path="certExpiryNotification.warningDaysBeforeExpiry" onChange={(v) => update('certExpiryNotification', 'warningDaysBeforeExpiry', v)}
                                         validate={validateWarningDay} numeric sort="desc" placeholder="e.g. 30"
                                         hint="Days before expiry, from 1 to 3650. A notice is sent once as a certificate crosses each mark; the order does not matter. Empty means no notices are sent." />

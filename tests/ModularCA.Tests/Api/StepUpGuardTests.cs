@@ -50,6 +50,7 @@ public class StepUpGuardTests
         ["AdminLdapController.SyncUser"] = "re-reads the directory; grants nothing the directory does not",
         ["AdminNotificationController.UpdatePreference"] = "who is told about an event",
         ["AdminQuotaController.UpdateQuota"] = "a group's issuance quota",
+        ["AdminSshController.SetReviewBy"] = "moves an SSH CA key's advisory review date: a reminder that signs, refuses and revokes nothing (owner, 2026-10-08)",
     };
 
     /// <summary>Admin mutations with neither the step-up filter nor a step-up check in their body, as Controller.Action → route.</summary>

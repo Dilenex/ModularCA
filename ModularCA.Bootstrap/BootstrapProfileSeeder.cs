@@ -1166,11 +1166,31 @@ public static class BootstrapProfileSeeder
         }
     }
 
+    /// <summary>The name of the seeded user certificate profile that permits no forwarding.</summary>
+    public const string SshUserCertStandardName = "SSH User Cert - Standard";
+
+    /// <summary>The name of the seeded user certificate profile that adds agent and port forwarding.</summary>
+    public const string SshUserCertForwardingName = "SSH User Cert - Forwarding";
+
+    /// <summary>The name of the seeded request profile for user certificates.</summary>
+    public const string SshUserRequestDefaultName = "SSH User Request - Default";
+
     /// <summary>
-    /// Seeds default SSH CA profiles (signing, cert, and request profiles) if none exist.
-    /// Creates one user signing profile, one host signing profile, one cert profile for each type,
-    /// and a default request profile.
+    /// Seeds the default SSH certificate and request profiles on an install that has no SSH
+    /// certificate profile; an install that has one is left exactly as it is. The lifetimes
+    /// follow one rule (<c>docs/architecture/ssh-defaults.md</c>): the key holds the hard
+    /// ceiling, the request profile the everyday number, and the signing and certificate
+    /// profiles in between are left at the ceiling.
     /// </summary>
+    /// <remarks>
+    /// Two user certificate profiles of 24 hours, both taking any valid login name
+    /// (<see cref="SshLoginNameRules.Pattern"/>) and at most three: Standard allows
+    /// <c>permit-pty</c> and <c>permit-user-rc</c>; Forwarding allows the five <c>permit-*</c>
+    /// extensions and requires agent and port forwarding. One host certificate profile of 8760
+    /// hours. A user request profile of 12 hours over Standard only, and a host request profile
+    /// of 8760 hours. Forwarding is attached to no request profile: an administrator adds it
+    /// where forwarding is wanted. Signing profiles are created with each SSH CA key.
+    /// </remarks>
     public static void SeedDefaultSshProfiles(ModularCADbContext db)
     {
         if (db.SshCertProfiles.Any())
@@ -1179,18 +1199,31 @@ public static class BootstrapProfileSeeder
             return;
         }
 
-        // SSH Cert Profiles (signing profiles are auto-created when SSH CA keys are generated)
+        var readable = new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+        var loginNames = JsonSerializer.Serialize(new[] { SshLoginNameRules.Pattern }, readable);
+
         var userCertProfile = new SshCertProfileEntity
         {
-            Name = "SSH User Cert - Standard",
-            Description = "Standard user certificate profile. Allows common principals, standard extensions.",
-            AllowedPrincipalPatterns = "[\"^[a-z_][a-z0-9_-]{0,31}$\"]", // POSIX username pattern
-            MaxPrincipals = 5,
-            AllowedExtensions = "[\"permit-pty\",\"permit-agent-forwarding\",\"permit-port-forwarding\",\"permit-X11-forwarding\",\"permit-user-rc\"]",
+            Name = SshUserCertStandardName,
+            Description = "Standard user certificate profile. Any valid login name, a terminal, no forwarding.",
+            AllowedPrincipalPatterns = loginNames,
+            MaxPrincipals = 3,
+            AllowedExtensions = "[\"permit-pty\",\"permit-user-rc\"]",
             RequiredExtensions = "[]",
             MaxValidityHours = 24,
         };
         db.SshCertProfiles.Add(userCertProfile);
+
+        db.SshCertProfiles.Add(new SshCertProfileEntity
+        {
+            Name = SshUserCertForwardingName,
+            Description = "As Standard, with agent and port forwarding on every certificate. Not attached to a request profile: add it where forwarding is wanted.",
+            AllowedPrincipalPatterns = loginNames,
+            MaxPrincipals = 3,
+            AllowedExtensions = "[\"permit-pty\",\"permit-agent-forwarding\",\"permit-port-forwarding\",\"permit-X11-forwarding\",\"permit-user-rc\"]",
+            RequiredExtensions = "[\"permit-port-forwarding\",\"permit-agent-forwarding\"]",
+            MaxValidityHours = 24,
+        });
 
         var hostCertProfile = new SshCertProfileEntity
         {
@@ -1204,13 +1237,12 @@ public static class BootstrapProfileSeeder
         };
         db.SshCertProfiles.Add(hostCertProfile);
 
-        // SSH Request Profiles
         var userRequestProfile = new SshRequestProfileEntity
         {
-            Name = "SSH User Request - Default",
+            Name = SshUserRequestDefaultName,
             Description = "Default request profile for SSH user certificates. No approval required.",
             RequireApproval = false,
-            MaxValidityHours = 24,
+            MaxValidityHours = 12,
         };
         db.SshRequestProfiles.Add(userRequestProfile);
 
@@ -1224,12 +1256,11 @@ public static class BootstrapProfileSeeder
         db.SshRequestProfiles.Add(hostRequestProfile);
         db.SaveChanges();
 
-        // Set allowed cert profile IDs (signing profiles are created when SSH CA keys are generated)
         userRequestProfile.AllowedSshCertProfileIds = JsonSerializer.Serialize(new[] { userCertProfile.Id });
         hostRequestProfile.AllowedSshCertProfileIds = JsonSerializer.Serialize(new[] { hostCertProfile.Id });
         db.SaveChanges();
 
-        Console.WriteLine("✓ Default SSH CA profiles seeded (2 cert, 2 request). Signing profiles are created with SSH CA keys.");
+        Console.WriteLine("✓ Default SSH CA profiles seeded (3 cert, 2 request). Signing profiles are created with SSH CA keys.");
     }
 
     /// <summary>

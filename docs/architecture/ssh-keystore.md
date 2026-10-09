@@ -12,7 +12,8 @@ install into the signer and removes them, backup, restore and reset know `ssh-ca
 "Stage 4 as built". The console and docs-site pages of stages 3 and 4, and stage 5, are not built.
 Since then the CA writes every certificate's key id and a user certificate carries only login
 names its subject holds; that is in `ssh-login-names.md`, and where it differs from "Stage 3 as
-built" below, it is what is built.
+built" below, it is what is built. What a new key and its signing profiles default to, what a new
+install is seeded with, and the advisory review date of a key are in `ssh-defaults.md`.
 
 Release: 0.4.2 (owner, 2026-10-06). 0.4.1 is the settings release; the signer journal and verified
 approvals in `signer-hardening.md` follow this, from 0.4.3.
@@ -375,7 +376,8 @@ message KeySpec {
   3. Create the CA row, its groups and the `SshCaKeys` row, with `PublicKey` encoded from the
      returned SubjectPublicKeyInfo and storage `Signer`.
   4. `CommitKey`.
-  5. Create the default signing profiles.
+  5. Create the default signing profiles. As built, they are written with the key row in step 3,
+     each at the key's own maximum, and the key row takes a review date; see `ssh-defaults.md`.
 
   A failure before the commit retires the pending key, so nothing is left on disk. This is the
   X.509 CA creation shape, and the "label taken during save" path no longer has files to delete.

@@ -9,11 +9,22 @@ namespace ModularCA.Shared.Utils;
 /// 1 to <see cref="MaxLength"/> characters. The first is an ASCII letter, a digit or an
 /// underscore; the rest are ASCII letters, digits and <c>. _ @ + -</c>. Names are compared byte
 /// for byte, as <c>sshd</c> compares a principal: <c>Deploy</c> and <c>deploy</c> are two names.
+/// <see cref="Pattern"/> is the same grammar as a regular expression, for a certificate
+/// profile's principal patterns.
 /// </remarks>
 public static class SshLoginNameRules
 {
     /// <summary>The longest login name, in characters.</summary>
     public const int MaxLength = 128;
+
+    /// <summary>
+    /// The grammar <see cref="IsValid"/> checks, as the regular expression a certificate profile
+    /// lists among its allowed principal patterns, so that a profile seeded with it refuses no
+    /// name a grant allows. It reads the same in .NET and in a browser. In .NET alone its
+    /// <c>$</c> also matches before one final line feed, which <see cref="IsValid"/> refuses and
+    /// the signer refuses as a control character in a principal.
+    /// </summary>
+    public static readonly string Pattern = $"^[A-Za-z0-9_][A-Za-z0-9._@+-]{{0,{MaxLength - 1}}}$";
 
     /// <summary>Whether <paramref name="name"/> fits the grammar.</summary>
     public static bool IsValid(string? name)

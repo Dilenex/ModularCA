@@ -3,7 +3,7 @@ import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
-import { apiGet, apiDeleteWithMfa, apiBlob } from '../api/client';
+import { apiGet, apiPut, apiDeleteWithMfa, apiBlob } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
@@ -16,6 +16,14 @@ import { signBlockedReason, sshKeyCustody } from './sshKeyCustody';
 import { SshPlaintextNoticePanel, useSshPlaintextNotice } from '../components/SshPlaintextNotice';
 import { SshKeyLoginNames } from '../components/SshLoginNameGrants';
 import { KRL_DESTINATION, KRL_FETCHER_DIRECTORY, krlHostSetupCommands, krlLastRevocationText, krlVersionText } from './sshKrl';
+import { Capabilities } from '@shared/generated';
+import { useAuth } from '../context/AuthContext';
+import { FieldHint, inputClassNarrow, labelClass } from '@shared/components/forms';
+import { actionButtonPrimary } from '@shared/components/actionButtons';
+import { canOnSshCa, dayText } from './sshLoginNames';
+import {
+    REVIEW_DATE_ACTS_ON_NOTHING, SSH_CA_REVIEW_YEARS, hoursText, reviewByProblem, reviewByToSend, reviewDateFieldValue, sshCaKeyReview,
+} from './sshCaDefaults';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -32,12 +40,84 @@ function downloadText(content: string, filename: string) {
 
 
 /// <summary>
-/// Detail page for a single SSH CA key: shows algorithm, validity, public key, where the private
-/// key is held, its login names, its revocation list (the KRL's URL, version and last revocation,
-/// and the commands that set a host up to fetch it) and integration hints, with download / disable
-/// actions in the action bar. A key that was a plaintext file on the node also carries the plaintext notice. The
-/// key itself is not edited in place, so the page is View-only (Edit disabled); the Login names
-/// section changes its grants where the reader may manage the SSH CA.
+/// The "Review" section of an SSH CA key's page: the advisory review date, the sentence that
+/// nothing stops working on it, a warning within 90 days of the date and after it, and, where
+/// the reader may manage the SSH CA, a date field that moves it.
+/// </summary>
+const SshCaKeyReviewSection: React.FC<{ caKey: any; onMoved: () => void }> = ({ caKey, onMoved }) => {
+    const { showToast } = useToast();
+    const { capabilities } = useAuth();
+    const canMove = canOnSshCa(capabilities, caKey, Capabilities.CaManage) && caKey.isEnabled !== false;
+    const [moving, setMoving] = useState(false);
+    const [date, setDate] = useState('');
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<NoticeInput | null>(null);
+
+    const review = sshCaKeyReview(caKey, new Date());
+    const problem = moving ? reviewByProblem(date, new Date()) : null;
+    const defaultYears = caKey.isHostCa && !caKey.isUserCa ? SSH_CA_REVIEW_YEARS.host : SSH_CA_REVIEW_YEARS.user;
+
+    const save = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (problem) return;
+        setBusy(true);
+        setError(null);
+        try {
+            await apiPut(`/api/v1/admin/ssh/ca-keys/${caKey.id}/review-by`, { reviewBy: reviewByToSend(date) }, { toast: false });
+            showToast('success', 'Review date moved.');
+            setMoving(false);
+            onMoved();
+        } catch (err: any) {
+            setError(errorNotice(err, 'The review date could not be moved.'));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    return (
+        <DetailSection title="Review">
+            <div className="max-w-4xl space-y-2">
+                {review.warning && (
+                    <div role="status" className="bg-warn-soft border border-warn/40 rounded-md px-3 py-2">
+                        <p className="text-sm font-semibold text-warn">{review.warning}</p>
+                    </div>
+                )}
+                <div>
+                    <DetailField label="Review by" value={caKey.reviewBy ? dayText(caKey.reviewBy) : 'No date set'} />
+                    <DetailField label="What it means" value={`${REVIEW_DATE_ACTS_ON_NOTHING} A key of this type is first given a date ${defaultYears} years after it is created.`} />
+                </div>
+                {canMove && !moving && (
+                    <button type="button" onClick={() => { setDate(reviewDateFieldValue(caKey)); setError(null); setMoving(true); }} className={actionButton}>Move the date</button>
+                )}
+                {canMove && moving && (
+                    <form onSubmit={save} className="space-y-2">
+                        <div>
+                            <label htmlFor="ssh-ca-review-by" className={labelClass}>Review by</label>
+                            <input id="ssh-ca-review-by" type="date" value={date} onChange={(e) => setDate(e.target.value)} className={`${inputClassNarrow} w-48`} />
+                            {problem
+                                ? <FieldHint tone="warn">{problem}</FieldHint>
+                                : <FieldHint>A date in the future, at most ten years ahead. Moving it changes the reminder and nothing else.</FieldHint>}
+                        </div>
+                        <InlineNotice notice={error} onDismiss={() => setError(null)} />
+                        <div className="flex gap-2">
+                            <button type="submit" disabled={busy || !!problem} className={actionButtonPrimary}>{busy ? 'Saving…' : 'Save'}</button>
+                            <button type="button" onClick={() => setMoving(false)} className={actionButton}>Cancel</button>
+                        </div>
+                    </form>
+                )}
+            </div>
+        </DetailSection>
+    );
+};
+
+/// <summary>
+/// Detail page for a single SSH CA key: shows algorithm, validity, public key, its advisory review
+/// date, where the private key is held, its login names, its revocation list (the KRL's URL,
+/// version and last revocation, and the commands that set a host up to fetch it) and integration
+/// hints, with download / disable actions in the action bar. A key that was a plaintext file on
+/// the node also carries the plaintext notice. The key itself is not edited in place, so the page
+/// is View-only (Edit disabled); the Review section moves the review date and the Login names
+/// section changes the grants, where the reader may manage the SSH CA.
 /// </summary>
 const SshCaKeyDetail: React.FC = () => {
     const { id } = useParams<{ id: string }>();
@@ -119,6 +199,7 @@ const SshCaKeyDetail: React.FC = () => {
     const signBlocked = signBlockedReason(key);
     const wasPlaintext = !!key.importedAt || custody.state === 'awaitingImport';
     const custodyBadge = <StatusBadge status={custody.badge.status} label={custody.badge.label} />;
+    const reviewBadge = sshCaKeyReview(key, new Date()).badge;
 
     return (
         <DetailPage
@@ -127,6 +208,7 @@ const SshCaKeyDetail: React.FC = () => {
             status={<>
                 {enabled ? <Tag label="CA Key" /> : <StatusBadge status="revoked" label="Disabled" />}
                 {custody.state !== 'held' && custodyBadge}
+                {reviewBadge && <StatusBadge status={reviewBadge.status} label={reviewBadge.label} />}
             </>}
             subtitle={algorithm}
             backTo="/ssh"
@@ -148,7 +230,7 @@ const SshCaKeyDetail: React.FC = () => {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
                         <DetailField label="ID" value={key.id} mono />
                         <DetailField label="Algorithm" value={algorithm} />
-                        <DetailField label="Max Validity" value={`${key.maxValidityHours}h`} />
+                        <DetailField label="Longest certificate" value={hoursText(key.maxValidityHours)} />
                         <DetailField label="Created" value={formatDate(key.createdAt)} />
                         <DetailField label="User CA" value={key.isUserCa ? 'Yes' : 'No'} />
                         <DetailField label="Host CA" value={key.isHostCa ? 'Yes' : 'No'} />
@@ -157,6 +239,8 @@ const SshCaKeyDetail: React.FC = () => {
                         <DetailField label="Public Key" value={key.publicKey} mono />
                     </div>
                 </DetailSection>
+
+                <SshCaKeyReviewSection caKey={key} onMoved={() => setRefresh((r) => r + 1)} />
 
                 <DetailSection title="Key storage">
                     <div className="max-w-4xl">

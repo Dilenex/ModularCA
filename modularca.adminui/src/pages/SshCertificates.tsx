@@ -25,9 +25,13 @@ import { SshSignKeyForm, type SshSignResult } from '../components/SshSignKeyForm
 import { SshLogLineLookup } from '../components/SshLogLineLookup';
 import { LoginNameGrounds } from '../components/SshCertificateParts';
 import {
-    certificateBadge, certificateStatus, dayTimeText, defaultKeyFile, isUserCertificate, issuedByDetail, issuedByText, issuedToDetail, issuedToText, jsonList,
+    certificateBadge, certificateStatus, dayText, dayTimeText, defaultKeyFile, isUserCertificate, issuedByDetail, issuedByText, issuedToDetail, issuedToText, jsonList,
     type SshCertificateView,
 } from './sshLoginNames';
+import {
+    REVIEW_DATE_ACTS_ON_NOTHING, SSH_CA_MAX_VALIDITY_HOURS, WHY_ONE_TYPE, emptySshCaKeyForm, hoursProblem, hoursText, sshCaKeyBody, sshCaKeyReview, withHours, withKind,
+    type SshCaKeyForm,
+} from './sshCaDefaults';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -56,7 +60,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
     const [generating, setGenerating] = useState(false);
-    const [genForm, setGenForm] = useState({ name: '', keyType: 'ed25519', keySize: '', isUserCa: true, isHostCa: false, maxValidityHours: '720' });
+    const [genForm, setGenForm] = useState<SshCaKeyForm>(emptySshCaKeyForm);
     const [showGenForm, setShowGenForm] = useState(false);
     // Creating the CA was refused because nobody else could approve its ceremony.
     const [genRefusal, setGenRefusal] = useState<CeremonyRefusal | null>(null);
@@ -90,32 +94,24 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
         return () => { cancelled = true; };
     }, [refreshTrigger]);
 
-    // A key that is neither a user nor a host CA is useless and the server would accept it anyway.
-    const caRoleMissing = !genForm.isUserCa && !genForm.isHostCa;
+    const genHoursProblem = hoursProblem(genForm);
 
     const handleGenerate = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (caRoleMissing) return;
+        if (genHoursProblem) return;
         setGenerating(true);
         setGenRefusal(null);
         setGenError(null);
         try {
-            const result: any = await apiPostWithMfa('/api/v1/admin/ssh/ca-keys', {
-                name: genForm.name || 'SSH CA Key',
-                keyType: genForm.keyType,
-                keySize: genForm.keySize ? parseInt(genForm.keySize) : undefined,
-                isUserCa: genForm.isUserCa,
-                isHostCa: genForm.isHostCa,
-                maxValidityHours: parseInt(genForm.maxValidityHours) || 720,
-            }, requireStepUp, StepUpOps.CreateSshCa);
+            const result: any = await apiPostWithMfa('/api/v1/admin/ssh/ca-keys', sshCaKeyBody(genForm), requireStepUp, StepUpOps.CreateSshCa);
             if (result?.requiresCeremony) {
                 showToast('info', result.message || 'Key ceremony created for approval.');
                 setShowGenForm(false);
-                setGenForm({ name: '', keyType: 'ed25519', keySize: '', isUserCa: true, isHostCa: false, maxValidityHours: '720' });
+                setGenForm(emptySshCaKeyForm());
                 return;
             }
             setShowGenForm(false);
-            setGenForm({ name: '', keyType: 'ed25519', keySize: '', isUserCa: true, isHostCa: false, maxValidityHours: '720' });
+            setGenForm(emptySshCaKeyForm());
             onRefresh();
         } catch (err: any) {
             const refusal = readCeremonyRefusal(err);
@@ -193,6 +189,21 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
             ),
         },
         { key: 'created', header: 'Created', defaultWidth: 160, exportValue: (k) => formatDate(k.createdAt), render: (k) => <span className="text-xs text-ink-muted">{formatDate(k.createdAt)}</span> },
+        {
+            key: 'reviewBy', header: 'Review by', defaultWidth: 220, truncate: false,
+            headerTitle: 'A reminder to review the key. Nothing stops working on this date.',
+            exportValue: (k) => { const r = sshCaKeyReview(k, new Date()); return k.reviewBy ? `${dayText(k.reviewBy)}${r.badge ? ` (${r.badge.label})` : ''}` : ''; },
+            render: (k) => {
+                if (!k.reviewBy) return <span className="text-xs text-ink-muted">-</span>;
+                const review = sshCaKeyReview(k, new Date());
+                return (
+                    <span className="inline-flex items-center gap-1.5" title={review.warning ? `${review.warning} ${REVIEW_DATE_ACTS_ON_NOTHING}` : REVIEW_DATE_ACTS_ON_NOTHING}>
+                        <span className="text-xs text-ink-muted tabular-nums">{dayText(k.reviewBy)}</span>
+                        {review.badge && <StatusBadge status={review.badge.status} label={review.badge.label} />}
+                    </span>
+                );
+            },
+        },
     ];
 
     // Disable is step-up MFA gated with no bulk endpoint, so it's single-select.
@@ -216,6 +227,8 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
                 <DetailField label="Algorithm" value={`${k.keyType || k.algorithm}${k.keySize ? ` (${k.keySize} bits)` : ''}`} />
                 <DetailField label="Max Validity" value={`${k.maxValidityHours}h`} />
                 <DetailField label="Created" value={formatDate(k.createdAt)} />
+                {k.reviewBy && <DetailField label="Review by" value={dayText(k.reviewBy)} />}
+                {sshCaKeyReview(k, new Date()).warning && <DetailField label="Review" value={`${sshCaKeyReview(k, new Date()).warning} ${REVIEW_DATE_ACTS_ON_NOTHING}`} />}
                 <DetailField label="User CA" value={k.isUserCa ? 'Yes' : 'No'} />
                 <DetailField label="Host CA" value={k.isHostCa ? 'Yes' : 'No'} />
                 <DetailField label="Public Key" value={k.publicKey} mono />
@@ -286,37 +299,39 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
                             )}
                         </div>
                         )}
-                        <div>
-                            <label className="block text-xs text-ink-muted mb-1">Max Validity (hours)</label>
-                            <input
-                                type="text"
-                                inputMode="numeric"
-                                value={genForm.maxValidityHours}
-                                onChange={(e) => setGenForm({ ...genForm, maxValidityHours: e.target.value.replace(/\D/g, '') })}
-                                className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent"
-                            />
-                        </div>
                     </div>
-                    <div>
+                    <fieldset>
+                        <legend className="block text-xs text-ink-muted mb-1">Type</legend>
                         <div className="flex gap-4">
                             <label className="flex items-center gap-2 text-sm text-ink">
-                                <input type="checkbox" checked={genForm.isUserCa} onChange={(e) => setGenForm({ ...genForm, isUserCa: e.target.checked })} className="rounded" />
-                                User CA
+                                <input type="radio" name="ssh-ca-kind" checked={genForm.kind === 'user'} onChange={() => setGenForm(withKind(genForm, 'user'))} />
+                                User: signs the certificates people present to servers
                             </label>
                             <label className="flex items-center gap-2 text-sm text-ink">
-                                <input type="checkbox" checked={genForm.isHostCa} onChange={(e) => setGenForm({ ...genForm, isHostCa: e.target.checked })} className="rounded" />
-                                Host CA
+                                <input type="radio" name="ssh-ca-kind" checked={genForm.kind === 'host'} onChange={() => setGenForm(withKind(genForm, 'host'))} />
+                                Host: signs the certificates servers present to clients
                             </label>
                         </div>
-                        {caRoleMissing ? (
-                            <FieldHint tone="warn">Choose at least one role. A key that is neither a User CA nor a Host CA can be trusted by nothing and can sign nothing.</FieldHint>
-                        ) : (
-                            <FieldHint>A User CA signs certificates that people present to servers; a Host CA signs certificates that servers present to clients. One key may do both, but separate keys keep a host-key leak from minting user access.</FieldHint>
-                        )}
+                        <FieldHint>{WHY_ONE_TYPE}</FieldHint>
+                    </fieldset>
+                    <div className="max-w-xs">
+                        <label htmlFor="ssh-ca-max-validity" className="block text-xs text-ink-muted mb-1">Longest certificate (hours)</label>
+                        <input
+                            id="ssh-ca-max-validity"
+                            type="text"
+                            inputMode="numeric"
+                            value={genForm.maxValidityHours}
+                            onChange={(e) => setGenForm(withHours(genForm, e.target.value))}
+                            aria-describedby="ssh-ca-max-validity-hint"
+                            className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent"
+                        />
+                        {genHoursProblem
+                            ? <FieldHint id="ssh-ca-max-validity-hint" tone="warn">{genHoursProblem}</FieldHint>
+                            : <FieldHint id="ssh-ca-max-validity-hint">The hard ceiling for every certificate this key signs: {hoursText(SSH_CA_MAX_VALIDITY_HOURS[genForm.kind])} for a {genForm.kind} key unless you change it. Profiles and login name grants can only shorten it.</FieldHint>}
                     </div>
                     <button
                         type="submit"
-                        disabled={generating || caRoleMissing}
+                        disabled={generating || !!genHoursProblem}
                         className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover disabled:opacity-50 transition-colors"
                     >
                         {generating ? 'Generating...' : 'Generate'}

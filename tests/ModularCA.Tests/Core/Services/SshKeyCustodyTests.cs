@@ -306,18 +306,19 @@ public class SshKeyCustodyTests
     public async Task What_the_profile_note_says_a_certificate_carries_is_what_the_signer_issues_for_that_profile()
     {
         // The note is computed with the option mapping the service signs with: a profile it says
-        // lacks two permits yields a certificate with exactly the other three.
+        // lacks four permits yields a certificate with exactly the other one. The profile is the
+        // one created with a key, which permits a terminal and no forwarding.
         using var node = new SshNode();
         var ca = await node.CreateCaAsync("Fleet SSH");
         var profile = node.Db.SshSigningProfiles.Single(p => p.SshCaKeyId == ca.Id && p.AllowUserCerts);
         var note = SshUpgradeCheck.ProfilesNote([new SshUpgradeSigningProfile(profile.Id, profile.Name, true, profile.DefaultExtensions)], [])!;
-        Assert.Contains("will no longer carry permit-X11-forwarding, permit-user-rc", note);
+        Assert.Contains("will no longer carry permit-X11-forwarding, permit-agent-forwarding, permit-port-forwarding, permit-user-rc", note);
 
         var defaults = JsonSerializer.Deserialize<List<string>>(profile.DefaultExtensions)!;
         var certificate = ModularCA.Ssh.SshCertificate.ParseOpenSsh(
             (await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, defaults, node.Actor)).SignedCertificate);
 
-        Assert.Equal(new[] { "permit-agent-forwarding", "permit-port-forwarding", "permit-pty" },
+        Assert.Equal(new[] { "permit-pty" },
             certificate.Fields.Extensions.Select(e => e.Name).OrderBy(n => n, StringComparer.Ordinal));
     }
 }

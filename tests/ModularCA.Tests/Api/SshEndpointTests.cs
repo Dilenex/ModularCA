@@ -151,8 +151,8 @@ public sealed class SshEndpointTests
         var hostCert = SshCertificate.ParseOpenSsh(JsonDocument.Parse(JsonSerializer.Serialize(host.Value)).RootElement.GetProperty("SignedCertificate").GetString()!);
         Assert.True(userCert.VerifySignature() && hostCert.VerifySignature());
 
-        // The CA's own default profile names three permits; the certificate carries those three and no others.
-        Assert.Equal(new[] { "permit-agent-forwarding", "permit-port-forwarding", "permit-pty" }, userCert.Fields.Extensions.Select(e => e.Name).ToArray());
+        // The CA's own default profile names one permit, a terminal; the certificate carries that one and no others.
+        Assert.Equal(new[] { "permit-pty" }, userCert.Fields.Extensions.Select(e => e.Name).ToArray());
         Assert.Empty(userCert.Fields.CriticalOptions);
         Assert.Empty(hostCert.Fields.Extensions);
 
