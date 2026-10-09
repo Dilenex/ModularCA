@@ -72,17 +72,18 @@ public class SshCaService : ISshCaService
 
     /// <summary>
     /// Creates the service over the application database, the signer and the audit.
-    /// <paramref name="loginNames"/> decides which login names a user holds; without one, the
-    /// rule is read from the same database and audit.
+    /// <paramref name="loginNames"/> decides whether a user may request from an SSH CA and
+    /// which login names they hold.
     /// </summary>
     public SshCaService(ModularCADbContext db, ISigningService signer, IAuditService audit, ILogger<SshCaService> logger,
-        ISshLoginNameService? loginNames = null)
+        ISshLoginNameService loginNames)
     {
+        ArgumentNullException.ThrowIfNull(loginNames);
         _db = db;
         _signer = signer;
         _audit = audit;
         _logger = logger;
-        _loginNames = loginNames ?? new SshLoginNameService(db, audit);
+        _loginNames = loginNames;
     }
 
     /// <summary>
@@ -497,10 +498,16 @@ public class SshCaService : ISshCaService
     private const string SubjectRefused =
         "The user this certificate is for does not exist, is not active, or has no membership, role or grant in this SSH CA's scope.";
 
+    /// <summary>The refusal for a subject the SSH CA may refer to but who holds no cert.request on it.</summary>
+    private const string SubjectMayNotRequest =
+        "The user this certificate is for may not request certificates from this SSH CA, so none is issued for them. "
+        + "Give the user a role on the SSH CA that lets them request.";
+
     /// <summary>
     /// What both certificate types share. Which profiles apply was decided by the caller; this
-    /// checks the subject key and the CA key's row, writes the key id, holds a user certificate
-    /// to the login names its subject holds, picks a serial no certificate of the CA key has, and
+    /// checks the subject key and the CA key's row, writes the key id, issues for a user only
+    /// while that user may request from the SSH CA, holds a user certificate to the login names
+    /// its subject holds, picks a serial no certificate of the CA key has, and
     /// asks the signer for the certificate under an <see cref="SigningPurpose.SshCertificate"/>
     /// context naming the SSH CA at instance scope.
     /// </summary>
@@ -575,13 +582,16 @@ public class SshCaService : ISshCaService
             {
                 if (!await _loginNames.MayReferenceUserAsync(caKey.Id, forUser.Id))
                     throw new InvalidRequestException(SubjectRefused);
+                if (!await _loginNames.MayRequestAsync(forUser.Id, caKey.Id))
+                    throw new InvalidRequestException(SubjectMayNotRequest);
                 names = await _loginNames.ForIssuanceAsync(forUser.Id, caKey.Id, principals, startsAt);
                 grounds = names.Grounds;
             }
             catch (InvalidRequestException)
             {
                 await AuditFailureAsync(AuditActionType.SshCertIssued, actor, "SshCaKey", caKey.Id.ToString(), asked,
-                    new InvalidRequestException("The subject does not hold a login name asked for, or the SSH CA may not refer to the subject."));
+                    new InvalidRequestException(
+                        "The subject does not hold a login name asked for, may not request from the SSH CA, or the SSH CA may not refer to the subject."));
                 throw;
             }
         }

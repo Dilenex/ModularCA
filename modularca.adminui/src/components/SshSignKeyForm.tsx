@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
-import { apiGet, apiPost, apiPostWithMfa } from '../api/client';
+import { apiGet, apiPostWithMfa } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { useStepUp } from './StepUpMfaContext';
 import { StepUpOps } from '@shared/generated';
@@ -38,7 +38,7 @@ const STEP_UP_CANCELLED = 'Step-up MFA cancelled';
 /// The Sign key form of the SSH Certificates page. A user certificate is for a user of this
 /// console, whose login names are offered as a tick list, or for a service identity with a
 /// label and typed login names. A host certificate takes hostnames. The CA writes the name
-/// hosts log, so the form shows it and asks for none. Signing a user certificate asks step-up MFA.
+/// hosts log, so the form shows it and asks for none. Signing asks step-up MFA.
 /// </summary>
 export const SshSignKeyForm: React.FC<{
     caKey: { id: string; name: string; isUserCa?: boolean; isHostCa?: boolean; maxValidityHours?: number };
@@ -61,6 +61,8 @@ export const SshSignKeyForm: React.FC<{
     const [serviceLabel, setServiceLabel] = useState('');
     const [held, setHeld] = useState<SshHeldLoginName[] | null>(null);
     const [heldState, setHeldState] = useState<'idle' | 'loading' | 'refused' | 'failed'>('idle');
+    /** False when the chosen user holds no right to request from this SSH CA, so nothing is signed for them. */
+    const [mayRequest, setMayRequest] = useState(true);
     const [ticked, setTicked] = useState<string[]>([]);
     const [typed, setTyped] = useState<string[]>([]);
     const [publicKey, setPublicKey] = useState('');
@@ -87,6 +89,7 @@ export const SshSignKeyForm: React.FC<{
         setHeld(null);
         setTicked([]);
         setValidity(null);
+        setMayRequest(true);
         if (!forUser || !subjectUserId) { setHeldState('idle'); return; }
         let cancelled = false;
         setHeldState('loading');
@@ -95,6 +98,7 @@ export const SshSignKeyForm: React.FC<{
                 if (cancelled) return;
                 const names: SshHeldLoginName[] = Array.isArray(data?.loginNames) ? data.loginNames : [];
                 setHeld(names);
+                setMayRequest(data?.mayRequest !== false);
                 setHeldState('idle');
             })
             .catch((err) => { if (!cancelled) setHeldState(err?.problem?.status === 404 ? 'refused' : 'failed'); });
@@ -149,7 +153,7 @@ export const SshSignKeyForm: React.FC<{
         if (v) problems.push(v);
         if (certType === 'user' && subject === 'service' && serviceLabel && serviceLabelError(serviceLabel)) problems.push(serviceLabelError(serviceLabel)!);
     }
-    const subjectChosen = certType === 'host' || (subject === 'user' ? !!subjectUserId && heldState === 'idle' && !!held : !!serviceLabel);
+    const subjectChosen = certType === 'host' || (subject === 'user' ? !!subjectUserId && heldState === 'idle' && !!held && mayRequest : !!serviceLabel);
     const ready = profilesChosen && subjectChosen && names.length > 0 && publicKey.trim() !== '' && problems.length === 0 && !signBlocked;
 
     const subjectUser = users.find((u) => u.id === subjectUserId);
@@ -172,9 +176,7 @@ export const SshSignKeyForm: React.FC<{
                 else body.serviceLabel = serviceLabel;
             }
             const path = `/api/v1/admin/ssh/ca-keys/${caKey.id}/certificates/sign-${certType}`;
-            const result: any = certType === 'user'
-                ? await apiPostWithMfa(path, body, requireStepUp, StepUpOps.SignSshUserCert, caKey.id)
-                : await apiPost(path, body);
+            const result: any = await apiPostWithMfa(path, body, requireStepUp, StepUpOps.SignSshCert, caKey.id);
             onSigned({ ...result, certType, forUser: forUser ? (subjectUser?.username ?? null) : null, publicKey: publicKey.trim() });
         } catch (err: any) {
             if (err?.message !== STEP_UP_CANCELLED) setError(errorNotice(err, 'Signing failed'));
@@ -300,10 +302,13 @@ export const SshSignKeyForm: React.FC<{
                             <FieldHint tone="warn">No certificate can be signed for this user with this SSH CA: the account is not active, or it has no role, group or grant on the SSH CA.</FieldHint>
                         )}
                         {heldState === 'failed' && <FieldHint tone="warn">The login names of this user could not be read. Choose the user again to retry.</FieldHint>}
-                        {held && held.length === 0 && (
-                            <FieldHint tone="warn">{subjectUser?.username ?? 'This user'} holds no login name on this SSH CA: own usernames are off, and nothing is granted.</FieldHint>
+                        {held && !mayRequest && (
+                            <FieldHint tone="warn">{subjectUser?.username ?? 'This user'} may not request certificates from this SSH CA, so none can be signed for them. Give them a role on the SSH CA that lets them request first.</FieldHint>
                         )}
-                        {held && held.length > 0 && (
+                        {held && mayRequest && held.length === 0 && (
+                            <FieldHint tone="warn">{subjectUser?.username ?? 'This user'} holds no login name on this SSH CA: nothing is granted, and their own username does not count here. Own usernames are off, or the username is root or cannot be a login name.</FieldHint>
+                        )}
+                        {held && mayRequest && held.length > 0 && (
                             <LoginNameTicks idPrefix="ssh-sign-name" names={held} ticked={ticked} onChange={(next) => { setTicked(next); setValidity(null); }}
                                 whose={subjectUser?.username ?? 'the user'} unavailable={unavailable} limitedBy={limit.loginName} />
                         )}

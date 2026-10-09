@@ -154,6 +154,19 @@ public class SshLoginNameTests
         Assert.Empty(SshLoginNameHolding.Grounds(Alice, "svc:alice", true, new HashSet<Guid>(), [], Now));
     }
 
+    [Theory]
+    [InlineData("root")]
+    [InlineData("Root")]
+    [InlineData("ROOT")]
+    public void Root_is_never_an_own_username_and_is_held_only_through_a_grant(string username)
+    {
+        Assert.False(SshLoginNameRules.CanBeOwn(username));
+        Assert.Empty(SshLoginNameHolding.Grounds(Alice, username, true, new HashSet<Guid>(), [], Now));
+        Assert.Equal(new[] { "root:user" }, Names(SshLoginNameHolding.Grounds(Alice, username, true, new HashSet<Guid>(), [ToUser("root")], Now)));
+        Assert.True(SshLoginNameRules.CanBeOwn("rooter"));
+        Assert.Equal(new[] { "rooter:own" }, Names(SshLoginNameHolding.Grounds(Alice, "rooter", true, new HashSet<Guid>(), [], Now)));
+    }
+
     [Fact]
     public void A_user_holds_the_names_granted_to_them_and_to_the_groups_they_are_in_now_and_no_others()
     {
@@ -419,6 +432,23 @@ public class SshLoginNameTests
         var ex = await Assert.ThrowsAsync<InvalidRequestException>(() => SignFor(node, ca, alice, 1, "alice"));
         Assert.Contains("'alice'", ex.Message);
         Assert.Empty(await node.LoginNames.HeldAsync(alice.Id, ca.Id));
+    }
+
+    [Fact]
+    public async Task A_user_named_root_gets_no_certificate_for_root_until_root_is_granted()
+    {
+        using var node = new SshNode();
+        var ca = await node.CreateCaAsync();
+        var root = node.AddUser("root", node.GroupOf(ca, "user").Id);
+
+        Assert.Empty(await node.LoginNames.HeldAsync(root.Id, ca.Id));
+        var ex = await Assert.ThrowsAsync<InvalidRequestException>(() => SignFor(node, ca, root, 1, "root"));
+        Assert.Contains("root is never held as an own username", ex.Message);
+
+        await node.LoginNames.GrantAsync(ca.Id, Grant(root, null, null, "root"), node.Actor);
+        var signed = await SignFor(node, ca, root, 1, "root");
+        Assert.Equal("root", signed.KeyId);
+        Assert.Equal("user", SshLoginNameHolding.Parse(signed.LoginNameGrounds)!.Single().Source);
     }
 
     [Fact]
@@ -921,6 +951,281 @@ public class SshLoginNameTests
         Assert.Empty(db.SshLoginNameGrants);
     }
 
+    // ---- The periodic sweep ------------------------------------------------------------------
+
+    private static readonly SshCaActor Scheduler = new(null, "scheduler");
+
+    [Fact]
+    public async Task The_sweep_revokes_the_certificates_of_a_user_renamed_past_the_hook_whatever_names_they_carry()
+    {
+        using var node = new SshNode();
+        var ca = await node.CreateCaAsync();
+        var alice = node.AddUser("alice", node.GroupOf(ca, "user").Id);
+        var bob = node.AddUser("bob", node.GroupOf(ca, "user").Id);
+        await node.LoginNames.GrantAsync(ca.Id, Grant(alice, null, null, "deploy"), node.Actor);
+        var granted = await SignFor(node, ca, alice, 1, "deploy");
+        var bobs = await SignFor(node, ca, bob, 1, "bob");
+
+        alice.Username = "alice2";
+        node.Db.SaveChanges();
+
+        var swept = await node.LoginNames.SweepAsync(Scheduler);
+
+        Assert.Equal(new SshLoginNameSweep(0, 0, 0, UserRenamed: 1), swept);
+        Assert.True(Revoked(node, granted));
+        Assert.False(Revoked(node, bobs));
+        Assert.Contains("was renamed", JsonSerializer.Serialize(node.Audit.Of(AuditActionType.SshCertRevoked).Single().Details));
+        Assert.Equal(0, (await node.LoginNames.SweepAsync(Scheduler)).Total);
+    }
+
+    /// <summary>
+    /// Each change here is made straight in the database, as a node that stopped after saving the
+    /// change and before running its hook leaves it.
+    /// </summary>
+    [Fact]
+    public async Task The_sweep_revokes_what_a_lost_hook_left_live_on_every_key_once_each_and_a_second_run_writes_nothing()
+    {
+        using var node = new SshNode();
+        var ca = await node.CreateCaAsync();
+        var lab = await node.CreateCaAsync("Lab SSH");
+        var alice = node.AddUser("alice", node.GroupOf(ca, "user").Id);
+        var bob = node.AddUser("bob", node.GroupOf(ca, "user").Id);
+        var carol = node.AddUser("carol", node.GroupOf(lab, "user").Id);
+        var root = (await node.LoginNames.GrantAsync(ca.Id, Grant(alice, null, null, "root"), node.Actor)).Single();
+        var deploy = (await node.LoginNames.GrantAsync(ca.Id, Grant(bob, null, null, "deploy"), node.Actor)).Single();
+        var lostName = await SignFor(node, ca, alice, 1, "alice", "root");
+        var ofDisabled = await SignFor(node, ca, bob, 1, "bob");
+        var ofDisabledThatLostAName = await SignFor(node, ca, bob, 1, "deploy");
+        var olderOfDisabled = SeedOlder(node, ca, bob.Id, "anything");
+        var ofDeleted = await SignFor(node, lab, carol, 1, "carol");
+
+        node.Db.SshLoginNameGrants.RemoveRange(node.Db.SshLoginNameGrants.Where(g => g.Id == root.Id || g.Id == deploy.Id));
+        bob.IsActive = false;
+        // What the foreign key leaves of a certificate's subject when the user row is deleted.
+        node.Db.SshCertificates.Single(c => c.Id == ofDeleted.Id).SubjectUserId = null;
+        node.Db.SaveChanges();
+        var saves = 0;
+        node.Db.SavedChanges += (_, _) => saves++;
+
+        var swept = await node.LoginNames.SweepAsync(Scheduler);
+
+        Assert.Equal(new SshLoginNameSweep(UserNotActive: 3, UserDeleted: 1, LoginNameLost: 1), swept);
+        Assert.Equal(5, swept.Total);
+        Assert.All(new[] { lostName, ofDisabled, ofDisabledThatLostAName, olderOfDisabled, ofDeleted }, c => Assert.True(Revoked(node, c)));
+        var audits = node.Audit.Of(AuditActionType.SshCertRevoked);
+        Assert.Equal(5, audits.Count);
+        Assert.All(audits, a =>
+        {
+            Assert.Null(a.ActorId);
+            Assert.Equal("scheduler", a.Actor);
+            Assert.Contains("the periodic sweep found", JsonSerializer.Serialize(a.Details));
+        });
+        SshAuditLog.Entry Of(SshCertificateEntity certificate) => audits.Single(a => a.TargetId == certificate.Id.ToString());
+        Assert.Contains("is not active", JsonSerializer.Serialize(Of(ofDisabled).Details));
+        Assert.Contains("is not active", JsonSerializer.Serialize(Of(ofDisabledThatLostAName).Details));
+        Assert.Contains("is not active", JsonSerializer.Serialize(Of(olderOfDisabled).Details));
+        Assert.Contains("was deleted", JsonSerializer.Serialize(Of(ofDeleted).Details));
+        Assert.Equal(lab.CertificateAuthorityId, Of(ofDeleted).CaId);
+        Assert.Contains("no longer holds", JsonSerializer.Serialize(Of(lostName).Details));
+        Assert.Contains("\"LoginName\":\"root\"", JsonSerializer.Serialize(Of(lostName).Details));
+        Assert.Equal(ca.CertificateAuthorityId, Of(lostName).CaId);
+        Assert.True(saves > 0);
+
+        var savesAfterFirst = saves;
+        var again = await node.LoginNames.SweepAsync(Scheduler);
+
+        Assert.Equal(new SshLoginNameSweep(0, 0, 0), again);
+        Assert.Equal(savesAfterFirst, saves);
+        Assert.Equal(5, node.Audit.Of(AuditActionType.SshCertRevoked).Count);
+    }
+
+    [Fact]
+    public async Task The_sweep_leaves_held_host_service_identity_older_and_expired_certificates_and_writes_nothing()
+    {
+        using var node = new SshNode();
+        var ca = await node.CreateCaAsync();
+        var ops = node.AddGroup("web-ops");
+        var alice = node.AddUser("alice", node.GroupOf(ca, "user").Id, ops.Id);
+        var idle = node.AddUser("idle", node.GroupOf(ca, "user").Id);
+        await node.LoginNames.GrantAsync(ca.Id, Grant(alice, null, null, "root"), node.Actor);
+        await node.LoginNames.GrantAsync(ca.Id, Grant(ops, null, null, "deploy"), node.Actor);
+        var held = await SignFor(node, ca, alice, 1, "alice", "deploy", "root");
+        var host = await node.Service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey(), ["web01"], 1, node.Actor);
+        var service = await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["root"], 1, null, node.Actor);
+        var older = SeedOlder(node, ca, alice.Id, "root", "anything");
+        var olderWithNoSubject = SeedOlder(node, ca, null, "root");
+        var expiredOfDisabled = SeedOlder(node, ca, idle.Id, "idle");
+        expiredOfDisabled.ValidBefore = DateTime.UtcNow.AddMinutes(-1);
+        idle.IsActive = false;
+        node.Db.SaveChanges();
+        var entries = node.Audit.Entries.Count;
+        var saves = 0;
+        node.Db.SavedChanges += (_, _) => saves++;
+
+        var swept = await node.LoginNames.SweepAsync(Scheduler);
+
+        Assert.Equal(new SshLoginNameSweep(0, 0, 0), swept);
+        Assert.Equal(0, swept.Total);
+        Assert.All(new[] { held, host, service, older, olderWithNoSubject, expiredOfDisabled }, c => Assert.False(Revoked(node, c)));
+        Assert.Equal(0, saves);
+        Assert.False(node.Db.ChangeTracker.HasChanges());
+        Assert.Equal(entries, node.Audit.Entries.Count);
+    }
+
+    // ---- The right to request ----------------------------------------------------------------
+
+    private static string Why(SshNode node, SshCertificateEntity certificate)
+        => JsonSerializer.Serialize(node.Audit.Of(AuditActionType.SshCertRevoked).Single(a => a.TargetId == certificate.Id.ToString()).Details);
+
+    /// <summary>A custom role that lets its holder request, and nothing else.</summary>
+    private static RoleEntity RequesterRole(SshNode node, string name)
+    {
+        var role = new RoleEntity { Id = Guid.NewGuid(), Name = name };
+        node.Db.Roles.Add(role);
+        node.Db.RoleCapabilities.Add(new RoleCapabilityEntity { RoleId = role.Id, Capability = ModularCA.Shared.Authorization.Capabilities.CertRequest });
+        node.Db.SaveChanges();
+        return role;
+    }
+
+    [Fact]
+    public async Task A_certificate_is_issued_for_a_user_only_while_that_user_may_request_from_the_ssh_ca()
+    {
+        using var node = new SshNode();
+        var ca = await node.CreateCaAsync();
+        var lab = await node.CreateCaAsync("Lab SSH");
+        var requester = node.AddUser("alice", node.GroupOf(ca, "user").Id);
+        var auditor = node.AddUser("audrey", node.GroupOf(ca, "auditor").Id);
+        await node.LoginNames.GrantAsync(ca.Id, Grant(auditor, null, null, "deploy"), node.Actor);
+
+        Assert.True(await node.LoginNames.MayRequestAsync(requester.Id, ca.Id));
+        Assert.False(await node.LoginNames.MayRequestAsync(requester.Id, lab.Id));
+        Assert.False(await node.LoginNames.MayRequestAsync(auditor.Id, ca.Id));
+        Assert.False(await node.LoginNames.MayRequestAsync(Guid.NewGuid(), ca.Id));
+        Assert.False(await node.LoginNames.MayRequestAsync(requester.Id, Guid.NewGuid()));
+
+        // The auditor holds both names; an operator signing for them is refused all the same.
+        Assert.Equal(new[] { "audrey", "deploy" }, (await node.LoginNames.HeldAsync(auditor.Id, ca.Id)).Select(h => h.Name).ToArray());
+        var refused = await Assert.ThrowsAsync<InvalidRequestException>(() => SignFor(node, ca, auditor, 1, "audrey"));
+        Assert.Contains("may not request certificates from this SSH CA", refused.Message);
+        Assert.Empty(node.Db.SshCertificates);
+        var failure = Assert.Single(node.Audit.Of(AuditActionType.SshCertIssued));
+        Assert.False(failure.Success);
+        Assert.Contains("may not request", failure.Error);
+
+        Assert.Equal("alice", (await SignFor(node, ca, requester, 1, "alice")).KeyId);
+    }
+
+    [Fact]
+    public async Task Leaving_the_group_that_let_a_user_request_revokes_all_of_their_certificates_on_that_ssh_ca_older_ones_included()
+    {
+        using var node = new SshNode();
+        var ca = await node.CreateCaAsync();
+        var lab = await node.CreateCaAsync("Lab SSH");
+        var alice = node.AddUser("alice", node.GroupOf(ca, "user").Id, node.GroupOf(lab, "user").Id);
+        var bob = node.AddUser("bob", node.GroupOf(ca, "user").Id, node.GroupOf(ca, "operator").Id);
+        var onFleet = await SignFor(node, ca, alice, 1, "alice");
+        var olderOnFleet = SeedOlder(node, ca, alice.Id, "anything");
+        var onLab = await SignFor(node, lab, alice, 1, "alice");
+        var bobs = await SignFor(node, ca, bob, 1, "bob");
+
+        Assert.True(await Users(node).RemoveUserFromGroup(alice.Id, node.GroupOf(ca, "user").Id));
+        // Bob still requests through the operators' group.
+        Assert.True(await Users(node).RemoveUserFromGroup(bob.Id, node.GroupOf(ca, "user").Id));
+
+        Assert.True(Revoked(node, onFleet));
+        Assert.True(Revoked(node, olderOnFleet));
+        Assert.False(Revoked(node, onLab));
+        Assert.False(Revoked(node, bobs));
+        Assert.Contains("the user left a group, and the user may no longer request certificates from the SSH CA", Why(node, onFleet));
+        Assert.Contains("\"LoginName\":null", Why(node, onFleet));
+        Assert.Contains("may no longer request", Why(node, olderOnFleet));
+        var again = await Assert.ThrowsAsync<InvalidRequestException>(() => SignFor(node, ca, alice, 1, "alice"));
+        Assert.Contains("may not request", again.Message);
+    }
+
+    [Fact]
+    public async Task Taking_a_role_or_a_capability_from_a_user_a_group_or_a_role_revokes_what_only_it_allowed()
+    {
+        using var node = new SshNode();
+        var ca = await node.CreateCaAsync();
+        var caId = ca.CertificateAuthorityId;
+        var role = RequesterRole(node, "ssh-requester");
+        var team = new CaGroupEntity { Id = Guid.NewGuid(), Name = "fleet-contractors", DisplayName = "Contractors", CertificateAuthorityId = caId };
+        node.Db.CaGroups.Add(team);
+        var direct = node.AddUser("dora");
+        var viaRole = node.AddUser("rob");
+        var viaGroup = node.AddUser("gina", team.Id);
+        var twice = node.AddUser("tess", team.Id, node.GroupOf(ca, "user").Id);
+        var grant = new UserCapabilityGrantEntity { UserId = direct.Id, Capability = ModularCA.Shared.Authorization.Capabilities.CertRequest, CertificateAuthorityId = caId };
+        var onUser = new RoleAssignmentEntity { RoleId = role.Id, UserId = viaRole.Id, CertificateAuthorityId = caId };
+        var onGroup = new RoleAssignmentEntity { RoleId = role.Id, GroupId = team.Id, CertificateAuthorityId = caId };
+        node.Db.UserCapabilityGrants.Add(grant);
+        node.Db.RoleAssignments.AddRange(onUser, onGroup);
+        node.Db.SaveChanges();
+        var doras = await SignFor(node, ca, direct, 1, "dora");
+        var robs = await SignFor(node, ca, viaRole, 1, "rob");
+        var ginas = await SignFor(node, ca, viaGroup, 1, "gina");
+        var tesss = await SignFor(node, ca, twice, 1, "tess");
+
+        node.Db.UserCapabilityGrants.Remove(grant);
+        node.Db.SaveChanges();
+        Assert.Equal(1, await node.LoginNames.ReconcileUsersAsync([direct.Id], "a capability was taken from the user", node.Actor));
+        Assert.True(Revoked(node, doras));
+        Assert.Contains("a capability was taken from the user, and the user may no longer request", Why(node, doras));
+
+        node.Db.RoleAssignments.Remove(onGroup);
+        node.Db.SaveChanges();
+        Assert.Equal(1, await node.LoginNames.RoleUnassignedAsync(null, team.Id, node.Actor));
+        Assert.True(Revoked(node, ginas));
+        Assert.False(Revoked(node, tesss));
+        Assert.Contains("a role was taken from a group the user is in", Why(node, ginas));
+
+        node.Db.RoleCapabilities.RemoveRange(node.Db.RoleCapabilities.Where(c => c.RoleId == role.Id));
+        node.Db.SaveChanges();
+        Assert.Equal(1, await node.LoginNames.ReconcileAllAsync("role 'ssh-requester' lost a capability", node.Actor));
+        Assert.True(Revoked(node, robs));
+        Assert.False(Revoked(node, tesss));
+        Assert.Matches("role .+ssh-requester.+ lost a capability, and the user may no longer request", Why(node, robs));
+        Assert.All(node.Audit.Of(AuditActionType.SshCertRevoked), a => Assert.Equal("ssh-operator", a.Actor));
+        Assert.Equal(0, await node.LoginNames.RoleUnassignedAsync(null, null));
+    }
+
+    /// <summary>
+    /// The rights are taken straight in the database, as a change no hook follows leaves them.
+    /// </summary>
+    [Fact]
+    public async Task The_sweep_revokes_the_certificates_of_a_user_who_may_no_longer_request_and_says_so()
+    {
+        using var node = new SshNode();
+        var ca = await node.CreateCaAsync();
+        var lab = await node.CreateCaAsync("Lab SSH");
+        var alice = node.AddUser("alice", node.GroupOf(ca, "user").Id, node.GroupOf(lab, "user").Id);
+        var bob = node.AddUser("bob", node.GroupOf(ca, "user").Id);
+        await node.LoginNames.GrantAsync(ca.Id, Grant(alice, null, null, "deploy"), node.Actor);
+        var withAName = await SignFor(node, ca, alice, 1, "alice", "deploy");
+        var older = SeedOlder(node, ca, alice.Id, "anything");
+        var onLab = await SignFor(node, lab, alice, 1, "alice");
+        var bobs = await SignFor(node, ca, bob, 1, "bob");
+        var host = await node.Service.SignHostKeyAsync(ca.Id, SshNode.SubjectKey(), ["web01"], 1, node.Actor);
+        var service = await node.Service.SignUserKeyAsync(ca.Id, SshNode.SubjectKey(), SshNode.Ci, ["root"], 1, null, node.Actor);
+
+        var userGroup = node.GroupOf(ca, "user").Id;
+        node.Db.CaGroupMembers.Remove(node.Db.CaGroupMembers.Single(m => m.UserId == alice.Id && m.GroupId == userGroup));
+        node.Db.SaveChanges();
+
+        var swept = await node.LoginNames.SweepAsync(Scheduler);
+
+        Assert.Equal(new SshLoginNameSweep(0, 0, 0, RequestRightLost: 2), swept);
+        Assert.Equal(2, swept.Total);
+        Assert.True(Revoked(node, withAName));
+        Assert.True(Revoked(node, older));
+        Assert.All(new[] { onLab, bobs, host, service }, c => Assert.False(Revoked(node, c)));
+        Assert.Contains("the periodic sweep found that the user may no longer request certificates from the SSH CA", Why(node, withAName));
+        Assert.Contains("the periodic sweep found that the user may no longer request", Why(node, older));
+        Assert.Equal("scheduler", node.Audit.Of(AuditActionType.SshCertRevoked)[0].Actor);
+        Assert.Equal(0, (await node.LoginNames.SweepAsync(Scheduler)).Total);
+    }
+
     // ---- What the routes read ----------------------------------------------------------------
 
     [Fact]
@@ -1112,8 +1417,10 @@ public class SshLoginNameTests
 
         Assert.Contains("2 of 4 live user certificate(s) carry a name other than their key id", before);
         Assert.Contains("may only name the requester's own username and the login names granted to them", before);
-        Assert.Contains("for a user, who must hold the names, or for a service identity", before);
+        Assert.Contains("for a user, who must hold the names and be allowed to request from the SSH CA, or for a service identity", before);
         Assert.Contains("stay valid until they expire", before);
+        Assert.Contains("a user who is disabled and a user who may no longer request from the SSH CA: the periodic sweep revokes", before);
+        Assert.Contains("a user who may no longer request from the SSH CA", after);
         Assert.StartsWith("After this upgrade", before);
         Assert.DoesNotContain("After this upgrade", after);
         Assert.Contains("0 of 0 live user certificate(s)", SshUpgradeCheck.LoginNamesNote(1, [])!);

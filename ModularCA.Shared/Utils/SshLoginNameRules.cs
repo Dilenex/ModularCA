@@ -32,6 +32,15 @@ public static class SshLoginNameRules
     }
 
     /// <summary>
+    /// Whether <paramref name="username"/> is a login name its user holds as their own on a key
+    /// that allows own usernames: it fits the grammar and is not <c>root</c>, in any case.
+    /// Whoever may create or rename a user decides that user's username, so <c>root</c> is never
+    /// held this way; it is held only through a grant (owner, 2026-10-07).
+    /// </summary>
+    public static bool CanBeOwn(string? username)
+        => IsValid(username) && !string.Equals(username, "root", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Null when <paramref name="name"/> fits the grammar, otherwise a sentence for a 400 answer.
     /// The sentence repeats the name only when it is short and printable.
     /// </summary>

@@ -8,7 +8,8 @@ namespace ModularCA.API.Startup;
 /// jobs of the roles this process runs, so a validation-only process runs none and an
 /// enrollment-only process runs the protocol sweeps and nothing that mutates. The control
 /// plane owns everything else: CRL generation and publishing, LDAP publishing and group sync,
-/// renewals, expiry, notifications, compliance, backups, audit retention and the TLS renewal.
+/// renewals, expiry, notifications, compliance, backups, audit retention, the TLS renewal and
+/// the SSH login name sweep, which revokes SSH certificates beside the SSH admin API.
 /// A job with no owner stops startup, and the architecture test over this table fails first.
 /// </summary>
 public static class SchedulerJobRoles
@@ -38,6 +39,7 @@ public static class SchedulerJobRoles
         [typeof(BackupVerificationJob)] = ProcessRole.Control,
         [typeof(AuditRetentionJob)] = ProcessRole.Control,
         [typeof(TlsRenewalJob)] = ProcessRole.Control,
+        [typeof(SshLoginNameSweepJob)] = ProcessRole.Control,
     };
 
     /// <summary>

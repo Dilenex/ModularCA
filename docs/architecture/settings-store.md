@@ -172,6 +172,7 @@ the state when this was drawn (2026-10-05); the readers made live since are list
 | `Est.AuthSubdomain` | d | Kestrel SNI callback | restart | restart |
 | `Est.TrustAnchorRefreshSeconds` | d | `EstTrustAnchorCache` (captured) | restart | live |
 | `ProtocolCleanup.Schedule`, `OrphanRequestGraceMinutes` | d | `ProtocolCleanupJob` | live | live |
+| `SshLoginNameSweep.Schedule` | d | `SshLoginNameSweepJob`, registry | live | live |
 | `Backup.Enabled`, `RetentionCount`, `Schedule`, `MaxBackupAgeDays`, `VerifyOnSchedule`, `CreateOnSchedule`, `VerifyCount`, `MinimumRetentionDays` | d | backup creation and verification jobs, registry, `AdminBackupController` | live | live |
 | `Backup.OutputPath`, `EncryptionKeyPath`, `EncryptionMode`, `PasswordFilePath` | c | backup jobs, `BackupRestore`, the backup static-file mapping at startup | live; restart for the mapping | same |
 | `WebAuthn.Enabled`, `RelyingPartyName` | d | `AddFido2` at startup, `AuthController` | restart | restart |
@@ -246,7 +247,7 @@ will list settings from, so they cannot drift from the code.
 A list or a dictionary is one setting. The element types (`WebhookEndpoint`, `IngressRouteConfig`,
 `HsmKeyMapping`) declare nothing, so the catalog holds 216 settings where the table above counts
 223 properties. `Backup.DatabaseTimeoutMinutes`, added after the table was drawn, is
-instance-wide and live.
+instance-wide and live. So is `SshLoginNameSweep.Schedule`, added in 0.4.2.
 
 ## 2. Storage model
 
@@ -439,7 +440,7 @@ Then the generic section endpoint and the CLI cannot get around them:
 
 | Tier | Sections | Gate |
 |---|---|---|
-| Routine | Logging (level and targets), Scheduler, Tokens, Metrics, Email (non-secret), Https renewal, Webhook retries, Acme (cleanup, nonce, http-01, challenge limits, terms URL), Est, ProtocolCleanup, Backup schedule and retention counts, CertExpiryNotification, ComplianceScan, SourceCode, Msae | step-up (`UpdateConfig`), as today |
+| Routine | Logging (level and targets), Scheduler, Tokens, Metrics, Email (non-secret), Https renewal, Webhook retries, Acme (cleanup, nonce, http-01, challenge limits, terms URL), Est, ProtocolCleanup, SshLoginNameSweep, Backup schedule and retention counts, CertExpiryNotification, ComplianceScan, SourceCode, Msae | step-up (`UpdateConfig`), as today |
 | Security | JWT, Security, LdapAuth, Http (CORS, Swagger, HSTS), IpWhitelist, NetworkAudit, Mtls, WebAuthn, Audit, CertPolicy, `Acme.ExternalAccountRequired` and `EnforceCaa`, `AutoRenewal.AutoApprove` and `RequireKeyRotation`, `Backup.Enabled` and `MinimumRetentionDays`, Alert, IntegrationApi, CertManager, every secret | step-up always. A **weakening** change needs a `SettingsChange` ceremony when the instance requires settings ceremonies. The LDAP identity fields stay super-only. |
 
 Each property in the security tier declares which direction weakens. Some examples:

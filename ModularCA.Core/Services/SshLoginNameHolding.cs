@@ -23,7 +23,7 @@ public sealed record SshLoginNameGrantRow(Guid Id, string LoginName, Guid? UserI
 /// <summary>
 /// The rule for holding an SSH login name, and what it allows a certificate, as functions of
 /// what the database says. A user holds their own username on a key that allows it, when the
-/// username is a login name; and each name granted on the key to them or to a group they are a
+/// username is a login name and is not <c>root</c>; and each name granted on the key to them or to a group they are a
 /// member of, while the grant has not ended. Of several grounds for one name the most generous
 /// counts: the one that allows the latest certificate end.
 /// </summary>
@@ -44,7 +44,7 @@ public static class SshLoginNameHolding
         IEnumerable<SshLoginNameGrantRow> grantsOnKey, DateTime now)
     {
         var grounds = new List<SshLoginNameGround>();
-        if (allowOwnUsername && SshLoginNameRules.IsValid(username))
+        if (allowOwnUsername && SshLoginNameRules.CanBeOwn(username))
             grounds.Add(new SshLoginNameGround { Name = username!, Source = SshLoginNameSources.Own });
 
         foreach (var grant in grantsOnKey)
@@ -174,11 +174,15 @@ public static class SshLoginNameHolding
     public static bool HeldThrough(IEnumerable<SshLoginNameGround> groundsOfName, DateTime validBefore)
         => groundsOfName.Any(g => g.ExpiresAt == null || g.ExpiresAt >= validBefore);
 
-    /// <summary>The sentence for a principal the subject does not hold.</summary>
+    /// <summary>The sentence for a principal the subject does not hold. For <c>root</c> it says that only a grant gives it.</summary>
     public static string NotHeldMessage(string? principal)
-        => SshLoginNameRules.IsValid(principal)
+    {
+        if (!SshLoginNameRules.IsValid(principal))
+            return "A login name asked for is not held, and is not a login name at all.";
+        return SshLoginNameRules.CanBeOwn(principal)
             ? $"Login name '{principal}' is not held: it is not the user's own username on this SSH CA and no grant gives it. An administrator grants login names on the SSH CA."
-            : "A login name asked for is not held, and is not a login name at all.";
+            : $"Login name '{principal}' is not held: no grant gives it, and root is never held as an own username. An administrator grants login names on the SSH CA.";
+    }
 
     /// <summary>The grounds of a certificate as its row stores them.</summary>
     public static string Serialize(IReadOnlyList<SshLoginNameGround> grounds) => JsonSerializer.Serialize(grounds, StoredJson);

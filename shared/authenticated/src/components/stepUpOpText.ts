@@ -11,7 +11,7 @@ const TEXT: Record<string, string> = {
     'manage-trust-anchor': "Import, enable, disable or delete a trust anchor",
     'revoke-ssh-cert': "Revoke an SSH certificate",
     'manage-ssh-login-names': "Change who may log in as which account with an SSH CA",
-    'sign-ssh-user-cert': "Sign an SSH certificate for a user or a service identity",
+    'sign-ssh-cert': "Sign an SSH certificate for a user, a service identity or a host",
     'create-enrollment-secret': "Create an enrollment token or shared secret",
     'create-eab-key': "Create an ACME external account binding key",
     'manage-user-badge': "Change another user's access badges",

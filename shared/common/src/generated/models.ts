@@ -1498,6 +1498,11 @@ export interface SshKeyCeremonyParameters {
     sshCaKeyId?: string | null;
 }
 
+/** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
+export interface SshLoginNameSweepConfig {
+    schedule: string;
+}
+
 /** From `ModularCA.Shared/Models/RequestProfiles/SubjectDnFieldRule.cs`. */
 export interface SubjectDnFieldRule {
     field: string;
@@ -1547,6 +1552,7 @@ export interface SystemConfig {
     acme: AcmeConfig;
     est: EstConfig;
     protocolCleanup: ProtocolCleanupConfig;
+    sshLoginNameSweep: SshLoginNameSweepConfig;
     backup: BackupConfig;
     webAuthn: WebAuthnConfig;
     alert: AlertConfig;

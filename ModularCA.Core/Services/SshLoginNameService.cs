@@ -16,12 +16,16 @@ namespace ModularCA.Core.Services;
 /// <summary>
 /// SSH login names over the application database: who holds which name on which SSH CA key
 /// (<see cref="SshLoginNameHolding"/>), the grants, what the admin and self-service routes read,
-/// and the reconciliation that keeps one invariant: a live certificate issued with grounds
-/// never carries a login name its subject no longer holds. It signs nothing and asks no signer.
+/// and the reconciliation that keeps two invariants: a live certificate issued with grounds
+/// never carries a login name its subject no longer holds, and a live certificate issued for a
+/// user is on an SSH CA that user may request from (<see cref="ISshRequestRights"/>). It signs
+/// nothing and asks no signer.
 /// </summary>
 /// <remarks>
 /// A reconciliation saves on the context it was given, after the change that prompted it has
 /// been saved by its caller. The two are one transaction only where the caller holds one.
+/// <see cref="SweepAsync"/>, run on a schedule, revokes what a stop between the two left live,
+/// and what a change that no hook follows took away.
 /// </remarks>
 public sealed class SshLoginNameService : ISshLoginNameService
 {
@@ -34,15 +38,24 @@ public sealed class SshLoginNameService : ISshLoginNameService
     /// <summary>The most login names one grant request may carry.</summary>
     public const int MaxNamesPerRequest = 64;
 
+    /// <summary>What the audit entry of a revocation says when its subject may no longer request from the SSH CA.</summary>
+    public const string RequestRightLost = "the user may no longer request certificates from the SSH CA";
+
     private readonly ModularCADbContext _db;
     private readonly IAuditService _audit;
+    private readonly ISshRequestRights _rights;
     private readonly ILogger<SshLoginNameService> _logger;
 
-    /// <summary>Creates the service over the application database and the audit.</summary>
-    public SshLoginNameService(ModularCADbContext db, IAuditService audit, ILogger<SshLoginNameService>? logger = null)
+    /// <summary>
+    /// Creates the service over the application database, the audit, and <paramref name="rights"/>,
+    /// which says which SSH CAs a certificate's subject may request from.
+    /// </summary>
+    public SshLoginNameService(ModularCADbContext db, IAuditService audit, ISshRequestRights rights, ILogger<SshLoginNameService>? logger = null)
     {
+        ArgumentNullException.ThrowIfNull(rights);
         _db = db;
         _audit = audit;
+        _rights = rights;
         _logger = logger ?? NullLogger<SshLoginNameService>.Instance;
     }
 
@@ -145,6 +158,13 @@ public sealed class SshLoginNameService : ISshLoginNameService
         if (scope == null || !await _db.Users.AsNoTracking().AnyAsync(u => u.Id == userId, cancellationToken))
             return false;
         return (await ScopesOfUserAsync(userId, cancellationToken)).Contains(scope.Value.SpaceId);
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> MayRequestAsync(Guid userId, Guid caKeyId, CancellationToken cancellationToken = default)
+    {
+        var caId = await _db.SshCaKeys.AsNoTracking().Where(k => k.Id == caKeyId).Select(k => (Guid?)k.CertificateAuthorityId).FirstOrDefaultAsync(cancellationToken);
+        return caId is Guid ca && (await _rights.RequestableCaIdsAsync(userId, cancellationToken)).Contains(ca);
     }
 
     /// <summary>The space of the certificate authority an SSH CA key belongs to (null for the instance), or null when there is no such key or authority.</summary>
@@ -665,58 +685,93 @@ public sealed class SshLoginNameService : ISshLoginNameService
     // ---- Reconciliation ----------------------------------------------------------------------
 
     /// <inheritdoc />
-    public Task<int> ReconcileUsersAsync(IEnumerable<Guid> userIds, string reason, SshCaActor? actor = null, CancellationToken cancellationToken = default)
+    public async Task<int> ReconcileUsersAsync(IEnumerable<Guid> userIds, string reason, SshCaActor? actor = null, CancellationToken cancellationToken = default)
     {
         var ids = userIds.Distinct().ToList();
         return ids.Count == 0
-            ? Task.FromResult(0)
-            : ReconcileAsync(_db.SshCertificates.Where(c => c.SubjectUserId != null && ids.Contains(c.SubjectUserId.Value)), reason, actor, cancellationToken);
+            ? 0
+            : Sum(await ReconcileAsync(_db.SshCertificates.Where(c => c.SubjectUserId != null && ids.Contains(c.SubjectUserId.Value)), reason, null, actor, cancellationToken));
     }
 
     /// <inheritdoc />
-    public Task<int> ReconcileKeyAsync(Guid caKeyId, string reason, SshCaActor? actor = null, CancellationToken cancellationToken = default)
-        => ReconcileAsync(_db.SshCertificates.Where(c => c.SshCaKeyId == caKeyId), reason, actor, cancellationToken);
+    public async Task<int> ReconcileKeyAsync(Guid caKeyId, string reason, SshCaActor? actor = null, CancellationToken cancellationToken = default)
+        => Sum(await ReconcileAsync(_db.SshCertificates.Where(c => c.SshCaKeyId == caKeyId), reason, null, actor, cancellationToken));
+
+    /// <inheritdoc />
+    public async Task<int> ReconcileGroupAsync(Guid groupId, string reason, SshCaActor? actor = null, CancellationToken cancellationToken = default)
+        => await ReconcileUsersAsync(
+            await _db.CaGroupMembers.AsNoTracking().Where(m => m.GroupId == groupId).Select(m => m.UserId).ToListAsync(cancellationToken),
+            reason, actor, cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<int> ReconcileAllAsync(string reason, SshCaActor? actor = null, CancellationToken cancellationToken = default)
+        => Sum(await ReconcileAsync(_db.SshCertificates, reason, null, actor, cancellationToken));
+
+    private static int Sum((int RequestRightLost, int LoginNameLost) revoked) => revoked.RequestRightLost + revoked.LoginNameLost;
 
     /// <summary>
-    /// Revokes, among <paramref name="scope"/>, every live user certificate issued with grounds
-    /// that carries a login name its subject does not hold now through the certificate's end.
-    /// Rows from before login names have no grounds and are left alone.
+    /// Revokes, among <paramref name="scope"/>, the live certificates issued for a user that
+    /// their subject may no longer have. First every one on an SSH CA its subject may not
+    /// request from now, rows from before login names included, since the right needs no
+    /// grounds to judge. Then every one issued with grounds that carries a login name its
+    /// subject does not hold now through the certificate's end; rows with no grounds are left
+    /// alone there. Returns how many each rule revoked.
     /// </summary>
-    private async Task<int> ReconcileAsync(IQueryable<SshCertificateEntity> scope, string reason, SshCaActor? actor, CancellationToken cancellationToken)
+    /// <param name="reason">Why the pass runs: what changed.</param>
+    /// <param name="rightReason">
+    /// What the audit entry of a certificate revoked for the right says; null for
+    /// <paramref name="reason"/> followed by <see cref="RequestRightLost"/>.
+    /// </param>
+    private async Task<(int RequestRightLost, int LoginNameLost)> ReconcileAsync(IQueryable<SshCertificateEntity> scope, string reason, string? rightReason,
+        SshCaActor? actor, CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
         var live = await scope
-            .Where(c => !c.IsRevoked && c.ValidBefore > now && c.CertificateType == UserType && c.SubjectUserId != null && c.LoginNameGrounds != null)
+            .Where(c => !c.IsRevoked && c.ValidBefore > now && c.CertificateType == UserType && c.SubjectUserId != null)
             .ToListAsync(cancellationToken);
         if (live.Count == 0)
-            return 0;
+            return (0, 0);
 
         var keyIds = live.Select(c => c.SshCaKeyId).Distinct().ToList();
         var keys = await _db.SshCaKeys.AsNoTracking().Where(k => keyIds.Contains(k.Id)).ToDictionaryAsync(k => k.Id, cancellationToken);
+        var noRight = new List<(SshCertificateEntity Certificate, string? LoginName)>();
         var lost = new List<(SshCertificateEntity Certificate, string? LoginName)>();
-        foreach (var bySubject in live.GroupBy(c => (UserId: c.SubjectUserId!.Value, c.SshCaKeyId)))
+        foreach (var byUser in live.GroupBy(c => c.SubjectUserId!.Value))
         {
-            if (!keys.TryGetValue(bySubject.Key.SshCaKeyId, out var key))
-                continue;
-            var grounds = (await GroundsAsync(bySubject.Key.UserId, key, now, cancellationToken)).ToLookup(g => g.Name, StringComparer.Ordinal);
-            foreach (var certificate in bySubject)
+            var requestable = await _rights.RequestableCaIdsAsync(byUser.Key, cancellationToken);
+            foreach (var byKey in byUser.GroupBy(c => c.SshCaKeyId))
             {
-                List<string>? principals;
-                try
+                if (!keys.TryGetValue(byKey.Key, out var key))
+                    continue;
+                if (!requestable.Contains(key.CertificateAuthorityId))
                 {
-                    principals = JsonSerializer.Deserialize<List<string>>(certificate.Principals);
-                }
-                catch (JsonException)
-                {
-                    _logger.LogWarning("The login names of SSH certificate {Id} cannot be read; it was not reconciled.", certificate.Id);
+                    noRight.AddRange(byKey.Select(c => (c, (string?)null)));
                     continue;
                 }
-                var gone = (principals ?? []).FirstOrDefault(p => !SshLoginNameHolding.HeldThrough(grounds[p], certificate.ValidBefore));
-                if (gone != null)
-                    lost.Add((certificate, gone));
+                var withGrounds = byKey.Where(c => c.LoginNameGrounds != null).ToList();
+                if (withGrounds.Count == 0)
+                    continue;
+                var grounds = (await GroundsAsync(byUser.Key, key, now, cancellationToken)).ToLookup(g => g.Name, StringComparer.Ordinal);
+                foreach (var certificate in withGrounds)
+                {
+                    List<string>? principals;
+                    try
+                    {
+                        principals = JsonSerializer.Deserialize<List<string>>(certificate.Principals);
+                    }
+                    catch (JsonException)
+                    {
+                        _logger.LogWarning("The login names of SSH certificate {Id} cannot be read; it was not reconciled.", certificate.Id);
+                        continue;
+                    }
+                    var gone = (principals ?? []).FirstOrDefault(p => !SshLoginNameHolding.HeldThrough(grounds[p], certificate.ValidBefore));
+                    if (gone != null)
+                        lost.Add((certificate, gone));
+                }
             }
         }
-        return await RevokeAsync(lost, reason, actor, cancellationToken);
+        var rightLost = await RevokeAsync(noRight, rightReason ?? $"{reason}, and {RequestRightLost}", actor, cancellationToken);
+        return (rightLost, await RevokeAsync(lost, reason, actor, cancellationToken));
     }
 
     /// <inheritdoc />
@@ -745,6 +800,56 @@ public sealed class SshLoginNameService : ISshLoginNameService
         var members = await _db.CaGroupMembers.AsNoTracking().Where(m => m.GroupId == groupId).Select(m => m.UserId).ToListAsync(cancellationToken);
         await RemoveGrantsAsync(grants, "the group was deleted", actor, cancellationToken);
         return await ReconcileUsersAsync(members, "a group that gave the login name was deleted", actor, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The five rules run in the order below (not active, deleted, renamed, right lost, name
+    /// lost), each over what the one before left live, so a certificate is revoked once and its
+    /// audit entry gives the first reason that applies.
+    /// </remarks>
+    public async Task<SshLoginNameSweep> SweepAsync(SshCaActor? actor = null, CancellationToken cancellationToken = default)
+    {
+        var now = DateTime.UtcNow;
+
+        var ofInactive = await _db.SshCertificates
+            .Where(c => !c.IsRevoked && c.ValidBefore > now && _db.Users.Any(u => u.Id == c.SubjectUserId && !u.IsActive))
+            .ToListAsync(cancellationToken);
+        var userNotActive = await RevokeAsync(ofInactive.Select(c => (c, (string?)null)).ToList(),
+            "the periodic sweep found that the user is not active", actor, cancellationToken);
+
+        var orphaned = (await _db.SshCertificates.AsNoTracking()
+                .Where(c => !c.IsRevoked && c.ValidBefore > now && c.CertificateType == UserType && c.SubjectUserId == null && c.LoginNameGrounds != null)
+                .Select(c => new { c.Id, c.LoginNameGrounds })
+                .ToListAsync(cancellationToken))
+            .Where(c => (SshLoginNameHolding.Parse(c.LoginNameGrounds) ?? []).Any(g => g != null && g.Source != SshLoginNameSources.Typed))
+            .Select(c => c.Id)
+            .ToList();
+        var ofDeleted = orphaned.Count == 0
+            ? []
+            : await _db.SshCertificates.Where(c => orphaned.Contains(c.Id) && !c.IsRevoked).ToListAsync(cancellationToken);
+        var userDeleted = await RevokeAsync(ofDeleted.Select(c => (c, (string?)null)).ToList(),
+            "the periodic sweep found that the user was deleted", actor, cancellationToken);
+
+        // The CA wrote the key id of a row with grounds from its subject's username, so one that differs now is a rename.
+        var renamed = (await _db.SshCertificates.AsNoTracking()
+                .Where(c => !c.IsRevoked && c.ValidBefore > now && c.CertificateType == UserType && c.SubjectUserId != null && c.LoginNameGrounds != null)
+                .Join(_db.Users.AsNoTracking(), c => c.SubjectUserId, u => (Guid?)u.Id, (c, u) => new { c.Id, c.KeyId, u.Username })
+                .ToListAsync(cancellationToken))
+            .Where(c => !string.Equals(c.KeyId, c.Username, StringComparison.Ordinal))
+            .Select(c => c.Id)
+            .ToList();
+        var ofRenamed = renamed.Count == 0
+            ? []
+            : await _db.SshCertificates.Where(c => renamed.Contains(c.Id) && !c.IsRevoked).ToListAsync(cancellationToken);
+        var userRenamed = await RevokeAsync(ofRenamed.Select(c => (c, (string?)null)).ToList(),
+            "the periodic sweep found that the user was renamed", actor, cancellationToken);
+
+        var (requestRightLost, loginNameLost) = await ReconcileAsync(_db.SshCertificates,
+            "the periodic sweep found a login name that the subject no longer holds",
+            "the periodic sweep found that " + RequestRightLost, actor, cancellationToken);
+
+        return new SshLoginNameSweep(userNotActive, userDeleted, loginNameLost, userRenamed, requestRightLost);
     }
 
     /// <summary>

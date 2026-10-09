@@ -9,6 +9,18 @@ using ModularCA.Tests.TestUtils;
 
 namespace ModularCA.Tests.Core.Services;
 
+/// <summary>The SSH services as a node composes them, for a test that has only a database, a signer and an audit.</summary>
+internal static class SshServices
+{
+    /// <summary>The login name rule over <paramref name="db"/>, asking the real capability resolver who may request.</summary>
+    public static SshLoginNameService LoginNames(ModularCADbContext db, ModularCA.Shared.Interfaces.IAuditService audit)
+        => new(db, audit, new ModularCA.Auth.Authorization.SshRequestRights(db));
+
+    /// <summary>The SSH CA service over <paramref name="db"/>, with <see cref="LoginNames"/> over the same database and audit.</summary>
+    public static SshCaService Ca(ModularCADbContext db, ISigningService signer, ModularCA.Shared.Interfaces.IAuditService audit)
+        => new(db, signer, audit, NullLogger<SshCaService>.Instance, LoginNames(db, audit));
+}
+
 /// <summary>
 /// A signer no test expects to be asked anything: every call fails the test that made it, and
 /// <see cref="Calls"/> counts them. For the paths that must not reach the signer: a refusal
@@ -180,7 +192,7 @@ internal sealed class SshNode : IDisposable
     public const string CiKeyId = "svc:ci";
 
     /// <summary>The login name rule over this node's database and audit.</summary>
-    public SshLoginNameService LoginNames => new(Db, Audit);
+    public SshLoginNameService LoginNames => SshServices.LoginNames(Db, Audit);
 
     /// <summary>Adds an active user, and makes them a member of <paramref name="groups"/>.</summary>
     public UserEntity AddUser(string username, params Guid[] groups)
@@ -226,7 +238,7 @@ internal sealed class SshNode : IDisposable
     }
 
     /// <summary>The service over this node's database and audit, asking <paramref name="signer"/>.</summary>
-    public SshCaService ServiceOver(ISigningService signer) => new(Db, signer, Audit, NullLogger<SshCaService>.Instance);
+    public SshCaService ServiceOver(ISigningService signer) => SshServices.Ca(Db, signer, Audit);
 
     /// <summary>A second context over the same database, to read what was really saved.</summary>
     public ModularCADbContext Reopen() => InMemoryDbContextFactory.Create(DatabaseName);

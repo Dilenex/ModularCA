@@ -15,6 +15,8 @@ namespace ModularCA.API.Controllers.v1.Admin;
 
 /// <summary>
 /// Admin endpoints for managing direct user capability grants and querying effective permissions.
+/// Revoking one revokes through <see cref="ISshLoginNameService"/> the SSH certificates of a
+/// user who could request from an SSH CA only through it.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/user-grants")]
@@ -24,7 +26,8 @@ public class AdminUserGrantController(
     ModularCADbContext db,
     ICurrentUserService currentUser,
     IAuditService audit,
-    IControlledUserCeremonyService controlledUserSvc) : ControllerBase
+    IControlledUserCeremonyService controlledUserSvc,
+    ISshLoginNameService? sshLoginNames = null) : ControllerBase
 {
     private readonly ModularCADbContext _db = db;
     private readonly ICurrentUserService _currentUser = currentUser;
@@ -178,7 +181,9 @@ public class AdminUserGrantController(
     /// Revokes (deletes) a direct user capability grant by its ID. Requires step-up MFA because
     /// the revocation can lock another admin out of resources mid-session. Revoking a controlled
     /// grant is refused for every caller when no one other than the caller and the grantee would
-    /// still dominate its tier; otherwise non-super opens a ceremony.
+    /// still dominate its tier; otherwise non-super opens a ceremony. A revocation made here
+    /// revokes the user's SSH certificates on an SSH CA they could request from only through
+    /// the grant.
     /// </summary>
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.RevokeUserCapability, "id")]
@@ -229,6 +234,9 @@ public class AdminUserGrantController(
 
         _db.UserCapabilityGrants.Remove(grant);
         await _db.SaveChangesAsync();
+        if (sshLoginNames != null)
+            await sshLoginNames.ReconcileUsersAsync([grant.UserId], "a capability was taken from the user",
+                new SshCaActor(_currentUser.User?.Id, _currentUser.User?.Username, HttpContext.Connection.RemoteIpAddress?.ToString()));
 
         await _audit.LogAsync(AuditActionType.ConfigUpdated, _currentUser.User?.Id, _currentUser.User?.Username,
             "UserCapabilityGrant", id.ToString(),

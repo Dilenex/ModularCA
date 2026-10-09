@@ -181,7 +181,8 @@ export default function UserUiGuide() {
                 <p className="text-ink leading-relaxed mb-3">
                     If you hold no login name on an SSH CA, the form says so: an administrator of the SSH CA has to grant
                     one, or turn on logging in as your own username. Your certificates are revoked when a login name they
-                    carry is taken from you, and all of them when your account is disabled or renamed.
+                    carry is taken from you, and all of them when your account is disabled or renamed. Those on an SSH CA are
+                    also revoked when you may no longer request from it.
                 </p>
 
                 <h3 className="text-lg font-semibold text-ink mb-2">Through the API</h3>

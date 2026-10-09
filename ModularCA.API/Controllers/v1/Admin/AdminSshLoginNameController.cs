@@ -174,7 +174,9 @@ public class AdminSshLoginNameController(ISshLoginNameService loginNames, ICurre
     /// The login names one user holds on one SSH CA key, for signing a certificate for that user:
     /// each name with the ground that counts, its limit in hours and its end. Needs what the
     /// admin sign route needs, cert.revoke on the key's CA. A user who does not exist, is not
-    /// active, or whom the SSH CA may not refer to is 404, as one answer.
+    /// active, or whom the SSH CA may not refer to is 404, as one answer. <c>mayRequest</c> says
+    /// whether the user holds cert.request on the SSH CA; when it is false the sign route
+    /// refuses to sign for them, whatever names they hold.
     /// </summary>
     [HttpGet("ca-keys/{caKeyId:guid}/users/{userId:guid}/login-names")]
     [Authorize(Policy = "CaOperator")]
@@ -189,6 +191,7 @@ public class AdminSshLoginNameController(ISshLoginNameService loginNames, ICurre
         return Ok(new
         {
             user = new SshUserRef(user.Id, user.Username),
+            mayRequest = await loginNames.MayRequestAsync(userId, caKeyId, HttpContext.RequestAborted),
             loginNames = held.Select(h => new SshRequestLoginName(h.Name, h.Ground.Source, h.Ground.GrantId, h.Ground.GroupId, h.Ground.GroupName,
                 h.MaxValidityHours, h.ExpiresAt)),
         });

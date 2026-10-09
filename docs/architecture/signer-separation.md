@@ -315,8 +315,9 @@ table above, this section records it.
 - **One declaration per job.** `SchedulerJobRoles` names the owner of every scheduled job.
   Enrollment owns the two protocol sweeps (ACME cleanup, protocol cleanup). Control owns
   CRL export, LDAP publishing and group sync, expiry notification, compliance, auto-renewal,
-  certificate expiry, backup creation and verification, audit retention and TLS renewal. A
-  validation-only process hosts no scheduler. Migrations, the startup repairs, the policy
+  certificate expiry, backup creation and verification, audit retention, TLS renewal and,
+  from 0.4.2, the SSH login name sweep. A validation-only process hosts no scheduler.
+  Migrations, the startup repairs, the policy
   sync, the bootstrap audit replay and the pending web TLS provisioning run where control
   runs; the OCSP responder warning runs where validation runs.
 - **Two leases, not one.** The lease logic is unchanged, but a process without the control

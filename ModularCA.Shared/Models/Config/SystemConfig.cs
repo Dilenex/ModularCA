@@ -49,6 +49,7 @@ namespace ModularCA.Shared.Models.Config
         public AcmeConfig Acme { get; set; } = new();
         public EstConfig Est { get; set; } = new();
         public ProtocolCleanupConfig ProtocolCleanup { get; set; } = new();
+        public SshLoginNameSweepConfig SshLoginNameSweep { get; set; } = new();
         public BackupConfig Backup { get; set; } = new();
         public WebAuthnConfig WebAuthn { get; set; } = new();
         public AlertConfig Alert { get; set; } = new();
@@ -605,6 +606,7 @@ namespace ModularCA.Shared.Models.Config
             ["CertExpire"] = 120,
             ["AcmeCleanup"] = 120,
             ["ProtocolCleanup"] = 120,
+            ["SshLoginNameSweep"] = 120,
             ["CertExpiryNotification"] = 120,
             ["TlsRenewal"] = 300,
         });
@@ -1221,6 +1223,19 @@ namespace ModularCA.Shared.Models.Config
         /// </summary>
         [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int OrphanRequestGraceMinutes { get; set; } = 60;
+    }
+
+    /// <summary>
+    /// Settings for the SSH login name sweep, which revokes the live SSH certificates whose user
+    /// is not active, was deleted or renamed, or may no longer request from the SSH CA, and
+    /// those that carry a login name their subject no longer holds. It is the backstop for the
+    /// revocation that normally follows such a change at once.
+    /// </summary>
+    public class SshLoginNameSweepConfig
+    {
+        /// <summary>Cron expression for the sweep. Default every 15 minutes.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        public string Schedule { get; set; } = "*/15 * * * *";
     }
 
     public class AcmeConfig

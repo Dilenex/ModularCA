@@ -63,18 +63,19 @@ public interface ISshCaService
 
     /// <summary>
     /// Signs a user certificate for <paramref name="publicKey"/> through the signer. The CA
-    /// writes the key id from <paramref name="subject"/>. For a user, every one of
-    /// <paramref name="principals"/> must be a login name that user holds on the key, and the
-    /// certificate ends no later than those names allow. The certificate carries exactly
-    /// <paramref name="extensions"/>, and the row returned is what the certificate says.
+    /// writes the key id from <paramref name="subject"/>. For a user, whoever asks, that user
+    /// must hold cert.request on the SSH CA, every one of <paramref name="principals"/> must be
+    /// a login name that user holds on the key, and the certificate ends no later than those
+    /// names allow. The certificate carries exactly <paramref name="extensions"/>, and the row
+    /// returned is what the certificate says.
     /// </summary>
     /// <param name="validityHours">The validity asked, in hours; null for the most allowed.</param>
     /// <param name="profileMaxValidityHours">The limit of the profiles the caller checked, in hours; null when there is none beyond the key's.</param>
     /// <exception cref="ModularCA.Shared.Errors.SshCaKeyUnavailableException">The signer is locked or cannot serve the key, or the key awaits its import into the signer.</exception>
     /// <exception cref="ModularCA.Shared.Errors.RequestValidationException">
-    /// The public key is unusable, the CA is disabled, the subject is unknown or inactive, a login
-    /// name is not held, the validity asked is over what a login name allows, or the signer
-    /// refused the certificate's fields.
+    /// The public key is unusable, the CA is disabled, the subject is unknown or inactive or may
+    /// not request from the SSH CA, a login name is not held, the validity asked is over what a
+    /// login name allows, or the signer refused the certificate's fields.
     /// </exception>
     Task<SshCertificateEntity> SignUserKeyAsync(Guid caKeyId, string publicKey, SshCertificateSubject subject, List<string> principals,
         int? validityHours, List<string>? extensions, SshCaActor? actor = null, int? profileMaxValidityHours = null);

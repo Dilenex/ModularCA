@@ -49,10 +49,10 @@ public sealed class SshKeyImportApiTests
     {
         var actor = install.Node.Actor.UserId!.Value;
         var controller = Activator.CreateInstance(ApiAssembly.TypeNamed(Admin),
-            new SshCaService(db, install.Node.Relay, install.Node.Audit, NullLogger<SshCaService>.Instance), new CurrentUserStub(actor), db, new SystemConfig(),
+            SshServices.Ca(db, install.Node.Relay, install.Node.Audit), new CurrentUserStub(actor), db, new SystemConfig(),
             new KeyCeremonyService(db, new RecordingAuditService()),
             (IDistributedCache)new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions())),
-            (ISigningService)install.Node.Relay, install.State, new SshLoginNameService(db, install.Node.Audit))!;
+            (ISigningService)install.Node.Relay, install.State, SshServices.LoginNames(db, install.Node.Audit))!;
         var http = new DefaultHttpContext
         {
             User = new ClaimsPrincipal(new ClaimsIdentity(new[] { new Claim("sub", actor.ToString()) }, "test")),

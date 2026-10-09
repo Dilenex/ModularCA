@@ -331,7 +331,7 @@ public class CaNamingTests
     {
         using var db = Seeded();
         var signer = new UnaskedSigner();
-        var service = new SshCaService(db, signer, new SshAuditLog(), NullLogger<SshCaService>.Instance);
+        var service = SshServices.Ca(db, signer, new SshAuditLog());
         var ex = await Record.ExceptionAsync(() => service.GenerateKeyPairAsync(name, "ed25519", true, false, 24));
         Assert.IsType(refusal, ex);
         Assert.Equal(0, signer.Calls);

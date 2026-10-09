@@ -630,6 +630,139 @@ public sealed class SshLoginNameEndpointTests
         Assert.All(w.Node.Audit.Of(AuditActionType.SshCertRevoked), a => Assert.Equal("root-admin", a.Actor));
     }
 
+    // ---- The right to request ----------------------------------------------------------------
+
+    [Fact]
+    public async Task The_admin_sign_route_refuses_a_user_who_may_not_request_and_the_form_is_told_so()
+    {
+        using var w = new World();
+        var auditor = w.Node.AddUser("audrey", w.Node.GroupOf(w.Ca, "auditor").Id);
+        var admin = AdminController(w.Node, w.Operator);
+        var names = NamesController(w.Node, w.Operator);
+
+        var refused = await Assert.ThrowsAsync<InvalidRequestException>(() => Call(admin, "SignUserKey", w.Ca.Id, w.AdminRequest(auditor.Id, null, null, "audrey")));
+        var forAuditor = Json(await Call(names, "GetUserLoginNamesOnKey", w.Ca.Id, auditor.Id));
+        var forAlice = Json(await Call(names, "GetUserLoginNamesOnKey", w.Ca.Id, w.Alice.Id));
+
+        Assert.Equal(400, refused.Status);
+        Assert.Contains("may not request certificates from this SSH CA", refused.Message);
+        Assert.False(forAuditor.GetProperty("mayRequest").GetBoolean());
+        Assert.Equal("audrey", forAuditor.GetProperty("loginNames").EnumerateArray().Single().GetProperty("name").GetString());
+        Assert.True(forAlice.GetProperty("mayRequest").GetBoolean());
+        using var db = w.Node.Reopen();
+        Assert.Empty(db.SshCertificates);
+    }
+
+    /// <summary>
+    /// Each user here may request from the SSH CA through one thing only, and that thing is
+    /// taken away through the console's own route.
+    /// </summary>
+    [Fact]
+    public async Task Taking_a_role_a_capability_or_a_group_away_in_the_console_revokes_the_certificates_it_alone_allowed()
+    {
+        using var w = new World();
+        var node = w.Node;
+        var caId = w.Ca.CertificateAuthorityId;
+        var supers = new CaGroupEntity { Id = Guid.NewGuid(), Name = "system-super", DisplayName = "System super", IsSystemGroup = true, IsSystemTierSuper = true };
+        node.Db.CaGroups.Add(supers);
+        foreach (var capability in Capabilities.AdministratorTemplate)
+            node.Db.CapabilityGrants.Add(new CapabilityGrantEntity { GroupId = supers.Id, Capability = capability });
+        var root = node.AddUser("root-admin", supers.Id);
+
+        RoleEntity Role(string name)
+        {
+            var role = new RoleEntity { Id = Guid.NewGuid(), Name = name };
+            node.Db.Roles.Add(role);
+            node.Db.RoleCapabilities.Add(new RoleCapabilityEntity { RoleId = role.Id, Capability = Capabilities.CertRequest });
+            return role;
+        }
+        RoleAssignmentEntity Assign(RoleEntity role, UserEntity user)
+        {
+            var assignment = new RoleAssignmentEntity { RoleId = role.Id, UserId = user.Id, CertificateAuthorityId = caId };
+            node.Db.RoleAssignments.Add(assignment);
+            return assignment;
+        }
+        var unassigned = Role("unassigned");
+        var trimmed = Role("trimmed");
+        var emptied = Role("emptied");
+        var deleted = Role("deleted");
+        var contractors = new CaGroupEntity { Id = Guid.NewGuid(), Name = "fleet-contractors", DisplayName = "Contractors", CertificateAuthorityId = caId };
+        node.Db.CaGroups.Add(contractors);
+        node.Db.CapabilityGrants.Add(new CapabilityGrantEntity { GroupId = contractors.Id, Capability = Capabilities.CertRequest });
+        var byGrant = node.AddUser("dora");
+        var byAssignment = node.AddUser("rob");
+        var byTrimmed = node.AddUser("tina");
+        var byEmptied = node.AddUser("emil");
+        var byDeleted = node.AddUser("dan");
+        var byGroup = node.AddUser("gina", contractors.Id);
+        var grant = new UserCapabilityGrantEntity { UserId = byGrant.Id, Capability = Capabilities.CertRequest, CertificateAuthorityId = caId };
+        node.Db.UserCapabilityGrants.Add(grant);
+        var assignment = Assign(unassigned, byAssignment);
+        Assign(trimmed, byTrimmed);
+        Assign(emptied, byEmptied);
+        Assign(deleted, byDeleted);
+        node.Db.SaveChanges();
+
+        Task<SshCertificateEntity> For(UserEntity user)
+            => node.Service.SignUserKeyAsync(w.Ca.Id, SshNode.SubjectKey(), SshCertificateSubject.ForUser(user.Id), [user.Username], 1, null);
+        var ofGrant = await For(byGrant);
+        var ofAssignment = await For(byAssignment);
+        var ofTrimmed = await For(byTrimmed);
+        var ofEmptied = await For(byEmptied);
+        var ofDeleted = await For(byDeleted);
+        var ofGroup = await For(byGroup);
+        var alices = await For(w.Alice);
+
+        var controlled = new ControlledUserCeremonyService(node.Db, new KeyCeremonyService(node.Db, new RecordingAuditService()), null!,
+            NullLogger<ControlledUserCeremonyService>.Instance);
+        object Console(string controller, params object?[] more)
+        {
+            var http = New(Ns + "Admin." + controller, root, true,
+                [node.Db, new CurrentUserStub(root), new RecordingAuditService(), .. more, controlled, node.LoginNames]);
+            SpaceFence.Store(((ControllerBase)http).HttpContext, SpaceFence.Of([], instanceScope: true, isSystemAdmin: true));
+            return http;
+        }
+        string Why(SshCertificateEntity certificate)
+            => JsonSerializer.Serialize(node.Audit.Of(AuditActionType.SshCertRevoked).Single(a => a.TargetId == certificate.Id.ToString()).Details);
+
+        Assert.IsType<OkObjectResult>(await Call(Console("AdminUserGrantController"), "Delete", grant.Id));
+        Assert.True(w.Row(ofGrant.Id).IsRevoked);
+        Assert.Contains("a capability was taken from the user", Why(ofGrant));
+
+        Assert.IsType<OkObjectResult>(await Call(Console("AdminRoleAssignmentController"), "Delete", assignment.Id));
+        Assert.True(w.Row(ofAssignment.Id).IsRevoked);
+        Assert.Contains("a role was taken from the user", Why(ofAssignment));
+
+        var roles = Console("AdminRoleController");
+        var binding = node.Db.RoleCapabilities.Single(c => c.RoleId == trimmed.Id);
+        Assert.IsType<OkObjectResult>(await Call(roles, "RemoveCapability", trimmed.Id, binding.Id));
+        Assert.True(w.Row(ofTrimmed.Id).IsRevoked);
+        Assert.Matches("role .+trimmed.+ lost a capability", Why(ofTrimmed));
+
+        var inputs = Activator.CreateInstance(typeof(List<>).MakeGenericType(ApiAssembly.TypeNamed(Ns + "Admin.RoleCapabilityInput")));
+        Assert.IsType<OkObjectResult>(await Call(roles, "Update", emptied.Id, Body("Admin.UpdateRoleRequest", ("Capabilities", inputs))));
+        Assert.True(w.Row(ofEmptied.Id).IsRevoked);
+        Assert.Matches("role .+emptied.+ lost a capability", Why(ofEmptied));
+
+        Assert.IsType<OkObjectResult>(await Call(roles, "Delete", deleted.Id));
+        Assert.True(w.Row(ofDeleted.Id).IsRevoked);
+        Assert.Matches("role .+deleted.+ was deleted", Why(ofDeleted));
+
+        var groups = Console("AdminGroupController",
+            (IDistributedCache)new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions())), Auth(node));
+        Assert.IsType<OkObjectResult>(await Call(groups, "Delete", contractors.Id));
+        Assert.True(w.Row(ofGroup.Id).IsRevoked);
+        Assert.Contains("a group the user was in was deleted", Why(ofGroup));
+
+        Assert.False(w.Row(alices.Id).IsRevoked);
+        Assert.Equal(6, node.Audit.Of(AuditActionType.SshCertRevoked).Count);
+        Assert.All(node.Audit.Of(AuditActionType.SshCertRevoked), a =>
+        {
+            Assert.Equal("root-admin", a.Actor);
+            Assert.Contains("may no longer request certificates from the SSH CA", JsonSerializer.Serialize(a.Details));
+        });
+    }
+
     // ---- Rights ------------------------------------------------------------------------------
 
     private static (string? Policy, string? Capability, string? StepUp, string Verb, string Route) RightsOf(string controller, string action)
@@ -664,8 +797,8 @@ public sealed class SshLoginNameEndpointTests
         Assert.Equal(("CaAuditor", null, null, "GET", "certificates/find"), RightsOf(Names, "FindCertificates"));
         Assert.Equal(("CaAuditor", null, null, "GET", "certificates/{id:guid}"), RightsOf(Names, "GetCertificate"));
         Assert.Equal(("CaUser", null, null, "GET", "request-options"), RightsOf(Self, "GetRequestOptions"));
-        Assert.Equal(("CaOperator", null, StepUpOps.SignSshUserCert, "POST", "ca-keys/{caKeyId:guid}/certificates/sign-user"), RightsOf(Admin, "SignUserKey"));
-        Assert.Equal(("CaOperator", null, null, "POST", "ca-keys/{caKeyId:guid}/certificates/sign-host"), RightsOf(Admin, "SignHostKey"));
+        Assert.Equal(("CaOperator", null, StepUpOps.SignSshCert, "POST", "ca-keys/{caKeyId:guid}/certificates/sign-user"), RightsOf(Admin, "SignUserKey"));
+        Assert.Equal(("CaOperator", null, StepUpOps.SignSshCert, "POST", "ca-keys/{caKeyId:guid}/certificates/sign-host"), RightsOf(Admin, "SignHostKey"));
 
         Assert.Equal(Capabilities.CertView, PolicyDefinitions.All["CaAuditor"].Capability);
         Assert.Equal(Capabilities.CaManage, PolicyDefinitions.All["CaAdmin"].Capability);

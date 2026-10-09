@@ -299,7 +299,7 @@ public sealed class ControlledUserBypassEndpointTests
 
     private static object Groups(ControlledUserWorld w, Guid actor)
         => New(Ns + "AdminGroupController", actor, w.Db, new CurrentUserStub(actor), new RecordingAuditService(), NewCache(), null, w.Controlled,
-            new ModularCA.Core.Services.SshLoginNameService(w.Db, new RecordingAuditService()));
+            ModularCA.Tests.Core.Services.SshServices.LoginNames(w.Db, new RecordingAuditService()));
 
     [Fact]
     public async Task A_super_may_remove_the_only_system_admin_because_the_super_still_dominates()
@@ -534,13 +534,13 @@ public sealed class ControlledUserBypassEndpointTests
 
         var asAdmin = New(Ns + "AdminGroupController", w.SystemAdmin,
             w.Db, new CurrentUserStub(w.SystemAdmin), new RecordingAuditService(), NewCache(), null, w.Controlled,
-            new ModularCA.Core.Services.SshLoginNameService(w.Db, new RecordingAuditService()));
+            ModularCA.Tests.Core.Services.SshServices.LoginNames(w.Db, new RecordingAuditService()));
         Assert.Equal(403, Status(await Call(asAdmin, "Delete", custom.Id)));
         Assert.True(w.Db.CaGroups.Any(g => g.Id == custom.Id));
 
         var asSuper = New(Ns + "AdminGroupController", w.Super,
             w.Db, new CurrentUserStub(w.Super), new RecordingAuditService(), NewCache(), null, w.Controlled,
-            new ModularCA.Core.Services.SshLoginNameService(w.Db, new RecordingAuditService()));
+            ModularCA.Tests.Core.Services.SshServices.LoginNames(w.Db, new RecordingAuditService()));
         Assert.Equal(200, Status(await Call(asSuper, "Delete", custom.Id)));
         Assert.False(w.Db.CaGroups.Any(g => g.Id == custom.Id));
     }
@@ -560,7 +560,8 @@ public sealed class ControlledUserBypassEndpointTests
     }
 
     private static object Roles(ControlledUserWorld w, Guid actor)
-        => New(Ns + "AdminRoleController", actor, w.Db, new CurrentUserStub(actor), new RecordingAuditService(), w.Controlled);
+        => New(Ns + "AdminRoleController", actor, w.Db, new CurrentUserStub(actor), new RecordingAuditService(), w.Controlled,
+            ModularCA.Tests.Core.Services.SshServices.LoginNames(w.Db, new RecordingAuditService()));
 
     private static object AddCap(string capability) => Body(Ns + "AddRoleCapabilityRequest", ("Capability", capability));
 
@@ -671,8 +672,10 @@ public sealed class ControlledUserBypassEndpointTests
     {
         var w = new ControlledUserWorld();
         var controlled = WithCeremonies(w);
-        object Grants(Guid actor) => New(Ns + "AdminUserGrantController", actor, w.Db, new CurrentUserStub(actor), new RecordingAuditService(), controlled);
-        object Assignments(Guid actor) => New(Ns + "AdminRoleAssignmentController", actor, w.Db, new CurrentUserStub(actor), new RecordingAuditService(), controlled);
+        object Grants(Guid actor) => New(Ns + "AdminUserGrantController", actor, w.Db, new CurrentUserStub(actor), new RecordingAuditService(), controlled,
+            ModularCA.Tests.Core.Services.SshServices.LoginNames(w.Db, new RecordingAuditService()));
+        object Assignments(Guid actor) => New(Ns + "AdminRoleAssignmentController", actor, w.Db, new CurrentUserStub(actor), new RecordingAuditService(), controlled,
+            ModularCA.Tests.Core.Services.SshServices.LoginNames(w.Db, new RecordingAuditService()));
         var role = w.Role(Capabilities.CaManage);
         var grant = Body(Ns + "CreateUserGrantRequest", ("UserId", w.Plain), ("Capability", Capabilities.CaManage));
         var assign = Body(Ns + "CreateRoleAssignmentRequest", ("RoleId", role.Id), ("UserId", (Guid?)w.Plain));

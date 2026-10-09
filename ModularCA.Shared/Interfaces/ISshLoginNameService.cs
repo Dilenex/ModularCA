@@ -224,6 +224,18 @@ public sealed record SshCertificateView
 /// <param name="LeftForRights">How many live ones were left because the caller may not revoke on their key.</param>
 public sealed record SshSubjectRevocation(int Revoked, int LeftForRights);
 
+/// <summary>What one periodic sweep of the SSH certificates revoked, per rule.</summary>
+/// <param name="UserNotActive">Certificates whose user is not active.</param>
+/// <param name="UserDeleted">Certificates issued for a user that has since been deleted.</param>
+/// <param name="LoginNameLost">Certificates that carried a login name their subject no longer holds.</param>
+/// <param name="UserRenamed">Certificates whose key id is no longer their subject's username.</param>
+/// <param name="RequestRightLost">Certificates whose user may no longer request from the SSH CA.</param>
+public sealed record SshLoginNameSweep(int UserNotActive, int UserDeleted, int LoginNameLost, int UserRenamed = 0, int RequestRightLost = 0)
+{
+    /// <summary>Everything the sweep revoked, across the five rules.</summary>
+    public int Total => UserNotActive + UserDeleted + LoginNameLost + UserRenamed + RequestRightLost;
+}
+
 /// <summary>A login name the caller may ask for on a key, for the request form.</summary>
 /// <param name="Name">The login name.</param>
 /// <param name="Source">One of <c>own</c>, <c>user</c>, <c>group</c>: the ground that counts.</param>
@@ -277,9 +289,10 @@ public sealed record SshLoginNameIssuance(IReadOnlyList<SshLoginNameGround> Grou
 /// <summary>
 /// SSH login names: which accounts a user may get a certificate for from an SSH CA key, the
 /// grants that give them, and the revocation of certificates whose subject no longer holds a
-/// name. A user holds their own username where the key allows it, and each name granted on the
-/// key to them or to a group they are a member of, while the grant has not ended. The service
-/// writes the audit entry of each grant operation and each revocation itself.
+/// name or may no longer request from the SSH CA. A user holds their own username where the key
+/// allows it, and each name granted on the key to them or to a group they are a member of,
+/// while the grant has not ended. The service writes the audit entry of each grant operation
+/// and each revocation itself.
 /// </summary>
 public interface ISshLoginNameService
 {
@@ -300,6 +313,14 @@ public interface ISshLoginNameService
     /// has a membership, a role or a grant in that authority's scope.
     /// </summary>
     Task<bool> MayReferenceUserAsync(Guid caKeyId, Guid userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Whether the user may request certificates from the SSH CA key's certificate authority:
+    /// they hold cert.request on it, from any grant source. A certificate is issued for a user,
+    /// whoever asks, only while this holds, and a live one is revoked once it no longer does.
+    /// False for an unknown user or key.
+    /// </summary>
+    Task<bool> MayRequestAsync(Guid userId, Guid caKeyId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// The scopes a user has a footing in: the space of each group they are a member of and of
@@ -375,15 +396,29 @@ public interface ISshLoginNameService
     Task<SshRequestOptions> RequestOptionsAsync(Guid userId, IReadOnlyCollection<Guid> requestableCaIds, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Revokes every live certificate of <paramref name="userIds"/> that was issued with grounds
-    /// and carries a login name its subject no longer holds through its validity. Call it after
-    /// the change that may have taken a name away has been saved. Returns how many were revoked.
+    /// Revokes the live certificates of <paramref name="userIds"/> that their subject may no
+    /// longer have: every one on an SSH CA the user may no longer request from, those from
+    /// before login names included, and every one issued with grounds that carries a login name
+    /// its subject no longer holds through its validity. Call it after the change that may have
+    /// taken a right or a name away has been saved. Returns how many were revoked.
     /// </summary>
     /// <param name="reason">Why, for the audit entry of each revocation.</param>
     Task<int> ReconcileUsersAsync(IEnumerable<Guid> userIds, string reason, SshCaActor? actor = null, CancellationToken cancellationToken = default);
 
     /// <summary>As <see cref="ReconcileUsersAsync"/>, for every certificate of one SSH CA key.</summary>
     Task<int> ReconcileKeyAsync(Guid caKeyId, string reason, SshCaActor? actor = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// As <see cref="ReconcileUsersAsync"/>, for the members of a group: a role or a capability
+    /// was taken from the group, so each member may have lost a right.
+    /// </summary>
+    Task<int> ReconcileGroupAsync(Guid groupId, string reason, SshCaActor? actor = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// As <see cref="ReconcileUsersAsync"/>, for every user certificate: a role lost a capability
+    /// or was deleted, so anyone who held it may have lost a right.
+    /// </summary>
+    Task<int> ReconcileAllAsync(string reason, SshCaActor? actor = null, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Revokes every live certificate issued for a user, those from before login names included:
@@ -401,6 +436,41 @@ public interface ISshLoginNameService
     /// What deleting a group takes with it, to be called before the group row is removed: the
     /// grants made to the group are removed, and the certificates of its members that then
     /// carry a login name their subject no longer holds are revoked. Returns how many were revoked.
+    /// The rights the group gave are still held at that point: reconcile its former members
+    /// (<see cref="ReconcileUsersAsync"/>) once the row is gone.
     /// </summary>
     Task<int> GroupDeletingAsync(Guid groupId, SshCaActor? actor = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The periodic backstop for the hooks above, over every SSH CA key: a hook runs after its
+    /// change is saved, so a node that stops between the two leaves a certificate live. Revokes
+    /// every live certificate issued for a user that is not active (those from before login names
+    /// included), every live user certificate whose grounds name a source other than <c>typed</c>
+    /// and whose user has been deleted, every live user certificate issued with grounds whose key
+    /// id is no longer its subject's username (a rename), every live certificate issued for a
+    /// user who may no longer request from its SSH CA (those from before login names included),
+    /// and every live user certificate issued with grounds that carries a login name its subject
+    /// no longer holds through its validity. A right can also be lost by a change no hook
+    /// follows; the sweep is then what revokes. Host certificates, service identities' and rows
+    /// with neither grounds nor a subject are left alone. A sweep that finds nothing writes nothing.
+    /// </summary>
+    Task<SshLoginNameSweep> SweepAsync(SshCaActor? actor = null, CancellationToken cancellationToken = default);
+}
+
+/// <summary>What the places that take a role away call, so each says the same thing in the audit.</summary>
+public static class SshLoginNameHooks
+{
+    /// <summary>
+    /// Reconciles after a role assignment has been removed and saved: the user it was on, or
+    /// the members of the group it was on.
+    /// </summary>
+    public static Task<int> RoleUnassignedAsync(this ISshLoginNameService loginNames, Guid? userId, Guid? groupId, SshCaActor? actor = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (groupId is Guid group)
+            return loginNames.ReconcileGroupAsync(group, "a role was taken from a group the user is in", actor, cancellationToken);
+        return userId is Guid user
+            ? loginNames.ReconcileUsersAsync([user], "a role was taken from the user", actor, cancellationToken)
+            : Task.FromResult(0);
+    }
 }

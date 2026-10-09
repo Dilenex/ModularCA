@@ -91,6 +91,8 @@ public static class AuditActionType
     public const string CrlExported = "CrlExported";
     public const string AcmeCleanupCompleted = "AcmeCleanupCompleted";
     public const string ProtocolCleanupCompleted = "ProtocolCleanupCompleted";
+    /// <summary>A periodic SSH login name sweep revoked at least one certificate; the details count them per reason.</summary>
+    public const string SshLoginNameSweepCompleted = "SshLoginNameSweepCompleted";
     public const string ExpiredCertificatesRevoked = "ExpiredCertificatesRevoked";
     // Emitted by SchedulerService.RunJobAsync when a scheduled
     // job's outer catch fires. Distinct from the individual job's own audit event

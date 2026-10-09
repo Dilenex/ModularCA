@@ -20,7 +20,7 @@ import {
 import { inputClass as inputCls, labelClass as labelCls, FieldHint } from '@shared/components/forms';
 import { actionButton } from '@shared/components/actionButtons';
 
-const NON_TOGGLEABLE_JOBS = new Set<string>(['AcmeCleanup', 'ProtocolCleanup', 'TlsRenewal']);
+const NON_TOGGLEABLE_JOBS = new Set<string>(['AcmeCleanup', 'ProtocolCleanup', 'SshLoginNameSweep', 'TlsRenewal']);
 const CRON_5_FIELD = /^\s*\S+\s+\S+\s+\S+\s+\S+\s+\S+\s*$/;
 
 // Scheduler timestamps arrive as UTC instants without a trailing 'Z' (EF/NCrontab emit

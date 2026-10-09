@@ -119,7 +119,7 @@ public sealed class ScopedAuthorizationTests
     {
         var badge = Badge(badgeGroups);
         return New(Ns + "AdminGroupController", actor, w.Db, new CurrentUserStub(actor), new RecordingAuditService(), NewCache(),
-            GroupAuth(w, badge), Controlled(w, badge), new ModularCA.Core.Services.SshLoginNameService(w.Db, new RecordingAuditService()));
+            GroupAuth(w, badge), Controlled(w, badge), ModularCA.Tests.Core.Services.SshServices.LoginNames(w.Db, new RecordingAuditService()));
     }
 
     /// <summary>Creates an account named <paramref name="name"/> in <paramref name="group"/> as <paramref name="actor"/>.</summary>

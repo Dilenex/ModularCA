@@ -257,8 +257,8 @@ public static class StepUpOps
     /// <summary>Granting, changing or removing SSH login names on an SSH CA key, or switching its own-username rule.</summary>
     public const string ManageSshLoginNames = "manage-ssh-login-names";
 
-    /// <summary>Signing an SSH user certificate for a user or a service identity through the admin route.</summary>
-    public const string SignSshUserCert = "sign-ssh-user-cert";
+    /// <summary>Signing an SSH certificate through the admin routes: a user certificate for a user or a service identity, or a host certificate.</summary>
+    public const string SignSshCert = "sign-ssh-cert";
 
     /// <summary>
     /// The canonical allow-list consulted by <c>IssueStepUpTokenAsync</c>. Any operation
@@ -310,7 +310,7 @@ public static class StepUpOps
         EnableSpace, DisableSpace, UpdateSpaceSettings,
         RestartAuditChain, ManageTrustAnchor, RevokeSshCert, CreateEnrollmentSecret, CreateEabKey, ManageUserBadge,
         CreateSpace, CreateCertProfile, CreateRequestProfile, CreateSigningProfile, ManageSshTemplate, ApproveRequest, RejectRequest,
-        ManageSshLoginNames, SignSshUserCert,
+        ManageSshLoginNames, SignSshCert,
     };
 
     /// <summary>

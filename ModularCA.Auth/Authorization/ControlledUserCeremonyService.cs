@@ -24,8 +24,9 @@ namespace ModularCA.Auth.Authorization;
 /// says so instead. Approval and execute read them again to bar the resetters from approving,
 /// falling back to those recorded at initiation. A group membership removed on execute revokes,
 /// through <paramref name="sshLoginNames"/>, the SSH certificates that carried a login name the
-/// user held through that group; a deletion or a disabling goes through the user service,
-/// which revokes for itself.
+/// user held through that group; a membership, a role or a capability removed on execute
+/// revokes those on an SSH CA the user may then no longer request from. A deletion or a
+/// disabling goes through the user service, which revokes for itself.
 /// </summary>
 public class ControlledUserCeremonyService(
     ModularCADbContext db,
@@ -750,6 +751,8 @@ public class ControlledUserCeremonyService(
                         {
                             db.UserCapabilityGrants.Remove(grant);
                             await db.SaveChangesAsync();
+                            if (sshLoginNames != null)
+                                await sshLoginNames.ReconcileUsersAsync([grant.UserId], "a capability was taken from the user");
                         }
                     }
                     break;
@@ -763,6 +766,8 @@ public class ControlledUserCeremonyService(
                         {
                             db.RoleAssignments.Remove(assignment);
                             await db.SaveChangesAsync();
+                            if (sshLoginNames != null)
+                                await sshLoginNames.RoleUnassignedAsync(assignment.UserId, assignment.GroupId);
                         }
                     }
                     break;

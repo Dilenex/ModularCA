@@ -539,7 +539,7 @@ export default function AdminUiGuide() {
                     holds on the SSH CA key that signs it, and a request that names anything else is refused. A user holds:
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
-                    <li>their own username, while the key&apos;s switch &ldquo;Everyone who can request from this CA may log in as their own username&rdquo; is on;</li>
+                    <li>their own username, while the key&apos;s switch &ldquo;Everyone who can request from this CA may log in as their own username&rdquo; is on. The username root is never counted, in any case: root always needs a grant;</li>
                     <li>each name granted on the key to them, until the grant ends;</li>
                     <li>each name granted on the key to a group, while they are a member of it.</li>
                 </ul>
@@ -551,7 +551,7 @@ export default function AdminUiGuide() {
                     step-up MFA.
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
-                    <li><span className="font-semibold">The own-username switch</span> is on for every key until it is turned off, and it is saved at once. Turn it off where console usernames are not accounts on the hosts. Turning it off revokes the live certificates that carried their holder&apos;s own username with no grant behind it. Bear in mind that whoever may create or rename a user decides that user&apos;s username, and so one login name on every key that leaves the switch on.</li>
+                    <li><span className="font-semibold">The own-username switch</span> is on for every key until it is turned off, and it is saved at once. Turn it off where console usernames are not accounts on the hosts. Turning it off revokes the live certificates that carried their holder&apos;s own username with no grant behind it. Bear in mind that whoever may create or rename a user decides that user&apos;s username, and so one login name on every key that leaves the switch on. Only root is kept out of that.</li>
                     <li><span className="font-semibold">+ Grant</span> takes several login names at once (type one, then Enter), one user or one group, an optional longest certificate in hours, an optional end date and an optional note. A name is 1 to 128 characters: first a letter, a digit or an underscore, then letters, digits and . _ @ + -. Upper and lower case are different names, as they are to sshd. A group must be an instance group, since an SSH CA belongs to the instance; a user must already have a role, a group or a grant on the SSH CA.</li>
                     <li><span className="font-semibold">A grant with an end</span> is for temporary access. No certificate under it is valid past the end, and a grant that ends within fourteen days is marked in the table. A grant that has ended gives nothing, but it still holds its place: granting the same name to the same user or group again is refused until the old grant is edited or removed. The form says so and offers the edit.</li>
                     <li><span className="font-semibold">Edit</span> changes the longest certificate, the end and the note. Lowering the limit revokes nothing; moving the end earlier revokes the certificates that would outlive it.</li>
@@ -565,6 +565,9 @@ export default function AdminUiGuide() {
                     not revoke on their SSH CA. A group&apos;s page lists the login names its members get, per SSH CA.
                     Disabling, renaming or deleting a user revokes every live SSH certificate issued for them; removing a
                     member from a group, or deleting the group, revokes the certificates that carried a name only through it.
+                    A user who may no longer request from an SSH CA loses every live certificate they have on it, at once
+                    when the right goes with a group, a role or a capability taken away in the console, and within 15
+                    minutes otherwise.
                 </p>
                 <p className="text-ink leading-relaxed mb-3">
                     An SSH certificate profile&apos;s patterns are the outer limit on login names: a name outside them is refused
@@ -574,11 +577,11 @@ export default function AdminUiGuide() {
                 <h3 className="text-lg font-semibold text-ink mb-2">Signing for a user or a service identity</h3>
                 <p className="text-ink leading-relaxed mb-3">
                     The CA writes the name a certificate carries into host logs (its key id); the Sign key form shows it and
-                    asks for none. Signing a user certificate asks for step-up MFA, because whoever signs decides whose
-                    name a public key is certified under. For a user certificate the form asks who the certificate is for:
+                    asks for none. Signing a user or a host certificate asks for step-up MFA, because whoever signs decides whose
+                    name, or which host, a public key is certified as. For a user certificate the form asks who the certificate is for:
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
-                    <li><span className="font-semibold">A user of this console.</span> Pick the user. Their login names on the chosen SSH CA key are listed to tick, each with where it comes from and its limit; nothing is typed. To give the user another name, grant it on the key first, so the grant is on record. Hosts log the user&apos;s username, and the certificate is listed under that user&apos;s own SSH certificates, not under yours.</li>
+                    <li><span className="font-semibold">A user of this console.</span> Pick the user. Their login names on the chosen SSH CA key are listed to tick, each with where it comes from and its limit; nothing is typed. To give the user another name, grant it on the key first, so the grant is on record. The user must be allowed to request from the SSH CA themselves; for one who is not, the form says so and signs nothing. Hosts log the user&apos;s username, and the certificate is listed under that user&apos;s own SSH certificates, not under yours.</li>
                     <li><span className="font-semibold">A service identity with no account.</span> Give it a label of 1 to 64 letters, digits and . _ -. Hosts log it as <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">svc:label</code>, which no username can equal. Its login names are typed and checked against the certificate profile&apos;s patterns.</li>
                 </ul>
                 <p className="text-ink leading-relaxed mb-3">
@@ -674,7 +677,8 @@ AuthorizedPrincipalsFile /etc/ssh/auth_principals/%u`}</pre>
                 <p className="text-ink leading-relaxed mb-3">
                     Disabling, renaming or deleting a user revokes every live SSH certificate issued for them. A rename
                     revokes them because hosts log the username the certificate was issued under, and that name would no
-                    longer say who logged in. See Login names under SSH Certificates.
+                    longer say who logged in. Taking away a user&apos;s right to request from an SSH CA revokes their
+                    certificates on it. See Login names under SSH Certificates.
                 </p>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/admin/users<br />

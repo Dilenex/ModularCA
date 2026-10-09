@@ -18,7 +18,8 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
 /// Admin endpoints for managing CA-scoped authorization groups and their memberships. Deleting a
 /// group, or removing a member, revokes through <see cref="ISshLoginNameService"/> the SSH
-/// certificates that carried a login name held through the group.
+/// certificates that carried a login name held through the group, and those of a member who
+/// could request from an SSH CA only through it.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/groups")]
@@ -372,7 +373,8 @@ public class AdminGroupController(
     /// that still has members can only be deleted by system-super (others get 403 and must remove
     /// members through the ceremony-gated path), and never when that would remove the last
     /// dominating controlled user of its scope. The SSH login names granted to the group go with
-    /// it, and the SSH certificates of its members that carried one are revoked.
+    /// it, and the SSH certificates of its members that carried one are revoked, as are those of
+    /// a member who could request from an SSH CA only through the group.
     /// </summary>
     [HttpDelete("{id:guid}")]
     [Authorize(Policy = "SystemAdmin")]
@@ -405,11 +407,14 @@ public class AdminGroupController(
                 return BadRequest(new { error = "Refusing to delete this group: it would remove the last controlled user of this scope." });
         }
 
+        var formerMembers = group.Members.Select(m => m.UserId).ToList();
         if (sshLoginNames != null)
             await sshLoginNames.GroupDeletingAsync(group.Id, SshActor());
         _db.CaGroupMembers.RemoveRange(group.Members);
         _db.CaGroups.Remove(group);
         await _db.SaveChangesAsync();
+        if (sshLoginNames != null)
+            await sshLoginNames.ReconcileUsersAsync(formerMembers, "a group the user was in was deleted", SshActor());
 
         await _audit.LogAsync(AuditActionType.GroupDeleted, _currentUser.User?.Id, _currentUser.User?.Username,
             "CaGroup", id.ToString(),
@@ -627,7 +632,8 @@ public class AdminGroupController(
     /// group is refused (400) for every caller, super included, when no user other than the caller
     /// and the member would still dominate the group's tier; otherwise non-super opens a ceremony.
     /// A removal made here revokes the SSH certificates that carried a login name the member held
-    /// through the group.
+    /// through the group, and all of the member's on an SSH CA they could request from only
+    /// through it.
     /// </summary>
     [HttpDelete("{id:guid}/members/{userId:guid}")]
     [Authorize(Policy = "SystemAdmin")]
@@ -707,7 +713,8 @@ public class AdminGroupController(
     /// controlled user of its scope is refused individually (status <c>last_user</c>) without aborting
     /// the rest, as is one whose ceremony nobody else could approve (status <c>refused</c>).
     /// Each removal made here revokes the SSH certificates that carried a login name the member
-    /// held through the group. Returns a per-user result summary.
+    /// held through the group, and all of the member's on an SSH CA they could request from only
+    /// through it. Returns a per-user result summary.
     /// </summary>
     [HttpPost("{id:guid}/members/bulk-remove")]
     [Authorize(Policy = "SystemAdmin")]

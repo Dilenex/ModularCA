@@ -15,6 +15,8 @@ namespace ModularCA.API.Controllers.v1.Admin;
 
 /// <summary>
 /// Admin endpoints for managing role assignments (assigning roles to users or groups with optional scope).
+/// Removing one revokes through <see cref="ISshLoginNameService"/> the SSH certificates of a
+/// user who could request from an SSH CA only through it.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/role-assignments")]
@@ -24,7 +26,8 @@ public class AdminRoleAssignmentController(
     ModularCADbContext db,
     ICurrentUserService currentUser,
     IAuditService audit,
-    IControlledUserCeremonyService controlledUserSvc) : ControllerBase
+    IControlledUserCeremonyService controlledUserSvc,
+    ISshLoginNameService? sshLoginNames = null) : ControllerBase
 {
     private readonly ModularCADbContext _db = db;
     private readonly ICurrentUserService _currentUser = currentUser;
@@ -264,6 +267,8 @@ public class AdminRoleAssignmentController(
     /// revocation can immediately strip the target principal of role-derived capabilities.
     /// Removing a controlled assignment is refused for every caller when no one other than the
     /// caller would still dominate its tier; otherwise non-super opens a ceremony.
+    /// A removal made here revokes the SSH certificates of the user, or of the group's members,
+    /// on an SSH CA they could request from only through the role.
     /// </summary>
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.UnassignRole, "id")]
@@ -319,6 +324,9 @@ public class AdminRoleAssignmentController(
 
         _db.RoleAssignments.Remove(assignment);
         await _db.SaveChangesAsync();
+        if (sshLoginNames != null)
+            await sshLoginNames.RoleUnassignedAsync(assignment.UserId, assignment.GroupId,
+                new SshCaActor(_currentUser.User?.Id, _currentUser.User?.Username, HttpContext.Connection.RemoteIpAddress?.ToString()));
 
         await _audit.LogAsync(
             AuditActionType.ConfigUpdated,

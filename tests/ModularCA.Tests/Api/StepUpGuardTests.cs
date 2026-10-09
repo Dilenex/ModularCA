@@ -41,7 +41,6 @@ public class StepUpGuardTests
         ["AdminIssuanceController.IssueCertificate"] = "follows through on an approval, which is gated (owner, 2026-10-06)",
         ["AdminIssuanceController.IssueWithServerKey"] = RoutineIssuance,
         ["AdminCertificateController.RenewCertificate"] = RoutineIssuance,
-        ["AdminSshController.SignHostKey"] = RoutineIssuance,
 
         ["AdminEnrollmentTokenController.RevokeToken"] = "takes an enrollment credential away",
         ["AdminCertificateController.AddCertificateTag"] = "a label on a certificate; trust is unchanged",

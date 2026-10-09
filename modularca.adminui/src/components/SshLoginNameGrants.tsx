@@ -496,7 +496,7 @@ export const SshKeyLoginNames: React.FC<{ caKey: { id: string; name: string; cer
                     <div className="max-w-3xl">
                         <ToggleField
                             label="Everyone who can request from this CA may log in as their own username"
-                            description="Needs no grant. Turn off where console usernames are not host accounts. It is saved at once, and turning it off revokes the live certificates that carry their holder's own username with no grant behind it."
+                            description="Needs no grant, except for root, which always does. Turn off where console usernames are not host accounts. It is saved at once, and turning it off revokes the live certificates that carry their holder's own username with no grant behind it."
                             checked={list.allowOwnUsername}
                             disabled={!canManage || switching}
                             onChange={setOwnUsername}

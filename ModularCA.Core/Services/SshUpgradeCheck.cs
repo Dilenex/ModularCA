@@ -170,7 +170,9 @@ public static class SshUpgradeCheck
     /// own username and the login names granted to them, and the admin form signs for a user or
     /// a service identity. It counts the live user certificates that carry a name other than
     /// their key id, which are the ones a requester could not get again as they are; they stay
-    /// valid until they expire. It informs only and never refuses.
+    /// valid until they expire, except those recorded as belonging to a user who is disabled or
+    /// may no longer request from the SSH CA, which the sweep revokes. It informs only and never
+    /// refuses.
     /// </summary>
     /// <param name="sshCaKeys">How many SSH CA keys the install has.</param>
     /// <param name="liveUserCertificates">The unexpired, unrevoked user certificates.</param>
@@ -185,14 +187,18 @@ public static class SshUpgradeCheck
         {
             beforeUpgrade
                 ? "After this upgrade the CA writes the key id of every SSH certificate, and a self-service request may only name the requester's "
-                  + "own username and the login names granted to them on the SSH CA. The admin form signs for a user, who must hold the names, or "
-                  + "for a service identity. A request that sends a key id, or names another account, will be refused."
+                  + "own username and the login names granted to them on the SSH CA. The admin form signs for a user, who must hold the names and "
+                  + "be allowed to request from the SSH CA, or for a service identity. A request that sends a key id, or names another account, "
+                  + "will be refused."
                 : "The CA writes the key id of every SSH certificate, and a self-service request may only name the requester's own username and "
-                  + "the login names granted to them on the SSH CA. The admin form signs for a user, who must hold the names, or for a service "
-                  + "identity. A request that sends a key id, or names another account, is refused.",
+                  + "the login names granted to them on the SSH CA. The admin form signs for a user, who must hold the names and be allowed to "
+                  + "request from the SSH CA, or for a service identity. A request that sends a key id, or names another account, is refused.",
             $"{otherNames} of {liveUserCertificates.Count} live user certificate(s) carry a name other than their key id. "
-            + (beforeUpgrade ? "The upgrade revokes none of them: they stay valid until they expire." : "The upgrade revoked none of them: they stay valid until they expire."),
-            "Every SSH CA key lets everyone log in as their own username until that is turned off on the key. Grant the other login names "
+            + (beforeUpgrade ? "The upgrade revokes none of them: they stay valid until they expire." : "The upgrade revoked none of them: they stay valid until they expire.")
+            + " The exceptions are a user who is disabled and a user who may no longer request from the SSH CA: the periodic sweep revokes "
+            + "the live certificates recorded as theirs.",
+            "Every SSH CA key lets everyone log in as their own username until that is turned off on the key; root is never counted and always "
+            + "needs a grant. Grant the other login names "
             + "on each SSH CA before those certificates are due to be asked for again.",
         };
         return string.Join(Environment.NewLine, lines);

@@ -308,7 +308,7 @@ public class SshKeyFileImportTests
         await install.Import().RunAsync();
 
         using var node = install.Node.Reopen();
-        var service = new SshCaService(node, install.Node.Relay, install.Node.Audit, NullLogger<SshCaService>.Instance);
+        var service = SshServices.Ca(node, install.Node.Relay, install.Node.Audit);
         var signed = await service.SignUserKeyAsync(key.Id, SshNode.SubjectKey(), SshNode.Ci, ["alice"], 1, null, install.Node.Actor);
         Assert.True(SshCertificate.ParseOpenSsh(signed.SignedCertificate).VerifySignature());
     }

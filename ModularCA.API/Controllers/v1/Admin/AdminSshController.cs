@@ -236,7 +236,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// writes the key id: a <c>keyId</c> in the body is refused (400) unless it is exactly what
     /// the CA would write. At least one principal is required. Whoever signs here decides whose
     /// name a public key is certified under, so the route asks step-up MFA
-    /// (<c>sign-ssh-user-cert</c>, issued for the key id).
+    /// (<c>sign-ssh-cert</c>, issued for the key id).
     /// Requires both an SSH signing profile and cert profile for validation.
     /// The CA key is identified by the route parameter; the signing profile must reference the same key.
     /// A validity over a profile's maximum, or over what a login name asked for allows, is 400;
@@ -248,7 +248,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// </summary>
     [HttpPost("ca-keys/{caKeyId:guid}/certificates/sign-user")]
     [Authorize(Policy = "CaOperator")]
-    [RequireStepUp(StepUpOps.SignSshUserCert, "caKeyId")]
+    [RequireStepUp(StepUpOps.SignSshCert, "caKeyId")]
     [RequireUnlockedSigner]
     public async Task<IActionResult> SignUserKey(Guid caKeyId, [FromBody] SignSshUserKeyRequest request)
     {
@@ -337,11 +337,14 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// Requires both an SSH signing profile and cert profile for validation.
     /// The CA key is identified by the route parameter; the signing profile must reference the same key.
     /// With no validity asked the certificate lasts as long as the profiles and the key allow.
+    /// A host certificate lets its holder answer as that host, so the route asks step-up MFA
+    /// (<c>sign-ssh-cert</c>, issued for the key id), as signing a user key does.
     /// A locked signer, a key the signer cannot serve and a key awaiting its import into the
     /// signer are 503 with the reason; a certificate the signer's rules refuse is 400 with its reason.
     /// </summary>
     [HttpPost("ca-keys/{caKeyId:guid}/certificates/sign-host")]
     [Authorize(Policy = "CaOperator")]
+    [RequireStepUp(StepUpOps.SignSshCert, "caKeyId")]
     [RequireUnlockedSigner]
     public async Task<IActionResult> SignHostKey(Guid caKeyId, [FromBody] SignSshHostKeyRequest request)
     {

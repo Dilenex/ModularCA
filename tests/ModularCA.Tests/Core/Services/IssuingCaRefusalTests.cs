@@ -328,7 +328,7 @@ public class IssuingCaRefusalTests
         db.SshCaKeys.Add(key);
         db.SaveChanges();
         var signer = new UnaskedSigner();
-        var service = new SshCaService(db, signer, new SshAuditLog(), NullLogger<SshCaService>.Instance);
+        var service = SshServices.Ca(db, signer, new SshAuditLog());
         var pub = SshNode.SubjectKey();
 
         var user = await Assert.ThrowsAsync<ConfigurationValidationException>(

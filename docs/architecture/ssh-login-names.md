@@ -1,7 +1,8 @@
 # SSH login names
 
 Status: built (2026-10-07): the tables and their migration, the rule, the grants, issuance,
-reconciliation, the API, the upgrade-check note, the console pages and the docs site. The
+reconciliation and its periodic sweep, the API, the upgrade-check note, the console pages and
+the docs site. The right to request became part of it on 2026-10-08. The
 console has not been seen in a browser. It belongs to 0.4.2, with the SSH keystore
 (`ssh-keystore.md`).
 
@@ -84,7 +85,9 @@ digits and `. _ @ + -`. A username that does not fit is not a login name of its 
 `SshLoginNameHolding` holds the rule as functions; `SshLoginNameService`
 (`ISshLoginNameService`) reads the rows and applies it. A user U holds on an SSH CA key K:
 
-- U's own username, when `K.AllowOwnUsername` is true and the username fits the grammar;
+- U's own username, when `K.AllowOwnUsername` is true, the username fits the grammar and it is
+  not `root`, in any case (`SshLoginNameRules.CanBeOwn`). Whoever may create or rename a user
+  decides that user's username, so `root` is held only through a grant (owner, 2026-10-07);
 - each name granted on K to U, or to a group U is a member of now, while the grant has not
   ended. A grant has ended when `ExpiresAt` is at or before now.
 
@@ -94,6 +97,24 @@ to the user, and that before a grant to a group.
 
 Holding looks only at the username, the memberships and the grants. It does not ask whether the
 user is active or may request from the CA; issuance asks that.
+
+### The right to request
+
+A certificate is issued for a user, and stays live, only while that user may request from the
+SSH CA: they hold `cert.request` on the SSH CA key's certificate authority, from any grant source
+(owner, 2026-10-08). `ISshLoginNameService.MayRequestAsync` answers it for a user and a key.
+
+- **It is the subject's right, not the caller's.** The capability resolver the request pipeline
+  uses narrows every answer to the badge on the caller's token, and a badge that is not the
+  asked user's grants nothing. Asked about another user inside a request, it would say that
+  user holds no right. `SshRequestRights` (`ISshRequestRights`, in `ModularCA.Auth`) therefore
+  builds its own resolver with no badge, no request and no audit, and asks it which CAs the user
+  holds `cert.request` on. A system administrator holds it on every CA.
+- **It applies whoever asks.** The self-service route already asked it of the caller. The admin
+  route now asks it of the user the certificate is for, so an operator cannot sign for a user
+  who could not request themselves. A service identity with no account has no rights to ask
+  about and is unchanged.
+- **Losing it revokes.** See Reconciliation.
 
 ### Who a grant may name
 
@@ -115,16 +136,17 @@ The same rule holds for the subject of an admin sign request.
   must be held, or the answer is 400 naming the first one that is not. At least one is required.
   The certificate profile's patterns, `MaxPrincipals` and the other profile checks still apply.
 - **Admin, for a user** (`subjectUserId`): the user must exist, be active and have a footing in
-  the SSH CA's scope; the three cases get one sentence. The same holding rule applies. An
-  administrator cannot add a name the user does not hold: they grant it first, so the grant is on
-  record.
+  the SSH CA's scope; the three cases get one sentence. The user must also hold `cert.request`
+  on the SSH CA, and one who does not is refused with a sentence of its own, since the operator
+  may already see that user. The same holding rule applies. An administrator cannot add a name
+  the user does not hold: they grant it first, so the grant is on record.
 - **Admin, for a service identity** (`serviceLabel`): the principals are typed and checked against
   the certificate profile as before. `SubjectUserId` stays null and every ground says `typed`.
 - The body names exactly one of `subjectUserId` and `serviceLabel`; neither or both is 400.
 - **Host certificates** are unchanged except for the key id.
 
-The holding check is in `SshCaService.SignAsync`, so no caller of the service can issue a user's
-certificate past it. A refusal there writes a failure entry in the audit with the subject and a
+The holding check and the right to request are in `SshCaService.SignAsync`, so no caller of the
+service can issue a user's certificate past them. A refusal there writes a failure entry in the audit with the subject and a
 principal count, and no principal.
 
 ### Validity
@@ -151,19 +173,28 @@ that was over the certificate profile's. It now means the smallest of all of the
 
 ## Reconciliation
 
-The invariant: **a live certificate issued under these rules never carries a login name its
-subject no longer holds.**
+Two invariants: **a live certificate issued under these rules never carries a login name its
+subject no longer holds, and a live certificate issued for a user is on an SSH CA that user may
+request from.**
 
-`SshLoginNameService.ReconcileAsync` takes the live user certificates that have grounds and a
-subject. For each it reads what the subject holds now, and revokes the certificate when one of
-its names has no current ground that reaches the certificate's end: a ground with no end, or an
-end at or after `ValidBefore`. It looks at what is held now, not at the grounds stored with the
+`SshLoginNameService.ReconcileAsync` takes the live user certificates that have a subject, and
+works through them per subject and key.
+
+1. **The right.** When the subject may not request from the key's CA now, every one of their
+   live certificates on that key is revoked, rows from before this included: the right needs no
+   grounds to judge. The audit entry says "the user may no longer request certificates from the
+   SSH CA" after what changed, and names no login name.
+2. **The names.** Otherwise, for each certificate that has grounds, it reads what the subject
+   holds now, and revokes the certificate when one of its names has no current ground that
+   reaches the certificate's end: a ground with no end, or an end at or after `ValidBefore`.
+ It looks at what is held now, not at the grounds stored with the
 certificate, so a name that is still held another way keeps its certificate. Each revocation
 writes `SshCertRevoked` with the reason and the login name that was lost. A revoked certificate
 is in the key's KRL.
 
-Rows from before this have no grounds and are left alone, as are service identities' and host
-certificates. Lowering a grant's `MaxValidityHours` revokes nothing.
+Rows from before this have no grounds, so the names are not judged for them; service identities'
+and host certificates are left alone altogether. Lowering a grant's `MaxValidityHours` revokes
+nothing.
 
 ### Where it runs
 
@@ -172,12 +203,16 @@ certificates. Lowering a grant's `MaxValidityHours` revokes nothing.
 | A grant is removed | `SshLoginNameService.RemoveGrantAsync` | the key's certificates are reconciled |
 | A grant's end is moved earlier, or set where there was none | `ChangeGrantAsync` | the key's certificates are reconciled |
 | Own usernames are turned off on a key | `SetOwnUsernameAsync` | the key's certificates are reconciled |
-| A user leaves a group | `UserManagementService.RemoveUserFromGroup` | that user is reconciled |
+| A user leaves a group | `UserManagementService.RemoveUserFromGroup` | that user is reconciled: the names the group gave, and the right if only the group gave it |
 | | `AdminGroupController.RemoveMember` and `RemoveMembersBulk` | that user is reconciled |
 | | `ControlledUserCeremonyService`, change `RemoveGroupMember` | that user is reconciled, inside the ceremony's transaction |
 | | `ServiceIdentityService.SetGroupsAsync` | that identity is reconciled |
 | | `LdapGroupSyncService.SyncUserGroupsAsync` | that user is reconciled |
 | A group is deleted | `AdminGroupController.Delete`, before the row goes | the group's grants are removed and its members reconciled (`GroupDeletingAsync`) |
+| | the same, once the row is gone | its former members are reconciled again, for the right the group gave |
+| A role is taken from a user or a group | `AdminRoleAssignmentController.Delete`; `ControlledUserCeremonyService`, change `UnassignRole` | that user, or the group's members, are reconciled (`RoleUnassignedAsync`) |
+| A capability is taken from a user | `AdminUserGrantController.Delete`; `ControlledUserCeremonyService`, change `RevokeCapability` | that user is reconciled |
+| A role loses a capability, or is deleted | `AdminRoleController.Update`, `RemoveCapability` and `Delete` | every user certificate is reconciled (`ReconcileAllAsync`), since anyone may have held the role |
 | A user is disabled | `UserManagementService.UpdateUser`; `ServiceIdentityService.UpdateAsync` | every live certificate issued for the user is revoked, older rows included (`RevokeAllOfUserAsync`) |
 | A user is deleted | `UserManagementService.DeleteUser`; `ServiceIdentityService.DeleteAsync`, before the row goes | every live certificate issued for the user is revoked, older rows included, and the grants to the user are removed (`UserDeletingAsync`) |
 | A user is renamed | `UserManagementService.UpdateUser` | every live certificate issued for the user is revoked, older rows included (`RevokeAllOfUserAsync`) |
@@ -189,17 +224,73 @@ A rename revokes everything because the key id of those certificates is the old 
 host would go on logging a name that no longer says who logged in, and that another account
 could later take.
 
+### The sweep
+
+A hook can be lost: the node stops after the change is saved and before the hook runs. The
+scheduled job `SshLoginNameSweep` (`SshLoginNameSweepJob`, which calls
+`SshLoginNameService.SweepAsync`) is the backstop. Every 15 minutes it looks at the live
+certificates of every SSH CA key and revokes what a hook should have revoked. The hooks still
+revoke at once; the sweep only finds what one of them missed.
+
+One sweep revokes, in this order:
+
+1. every live certificate issued for a user that is not active, older rows included. This is
+   what disabling the user does;
+2. every live user certificate whose grounds name a source other than `typed` and whose
+   `SubjectUserId` is null. Only a certificate for a user has such grounds, and the column is
+   null only once that user is deleted. This is what deleting the user does;
+3. every live user certificate with grounds and a subject whose key id is no longer that
+   subject's username. The CA wrote the key id from the username, so the two differ only after
+   a rename. This is what renaming the user does, for the certificates issued under these rules;
+4. every live certificate issued for a user who may not request from its SSH CA now, older rows
+   with a subject included;
+5. every live user certificate with grounds and a subject that carries a login name its subject
+   does not hold now through the certificate's end. The fourth and fifth are `ReconcileAsync`
+   over all certificates.
+
+For the fourth rule the sweep is more than a backstop. Rights are changed in more places than
+names are, and a right can go in a way no hook follows: a change made in the database, or a
+route added later that forgets the hook. The sweep revokes for those within one period.
+
+It leaves alone host certificates, the certificates of service identities with no account
+(every ground is `typed`), and rows from before this with no grounds and no subject.
+
+- **Schedule.** The cron expression is `SshLoginNameSweep.Schedule`, by default `*/15 * * * *`.
+  It is changed on the job's page under Schedules in the console, where the job can also be run
+  at once. The job cannot be turned off. Its timeout is 120 seconds, under
+  `Scheduler.JobTimeouts`.
+- **Which node.** The control role, which serves the SSH admin API, under the scheduler's
+  lease, so one node sweeps at a time. Under the default `Scheduler.MissedRunPolicy` a job
+  that has never run is due at once, so the first sweep follows the first start on this version.
+- **Audit.** Each revocation writes `SshCertRevoked` as a hook does. The actor is `scheduler`
+  and the reason begins with "the periodic sweep found". A sweep that revoked anything also
+  writes one `SshLoginNameSweepCompleted` with the count per rule. A sweep that finds nothing
+  changes no row and writes no audit entry; the scheduler records when the job last ran, as it
+  does for every job.
+- **Cost.** A sweep reads every live certificate issued for a user. For each subject it asks the
+  capability resolver once which CAs they may request from, about fifteen small queries, and for
+  each subject on each key it reads the memberships and the grants. It writes only when it
+  revokes. Certificates are short-lived, so the live set is small; an install with thousands of
+  subjects holding live certificates would want the rights read in one query.
+
 ### What it does not cover
 
 - **It is not one transaction with the change.** A hook runs after the change is saved, on the
   same context. Only the ceremony path holds a transaction around both. A node that stops between
-  the two leaves a live certificate that the next reconciliation of that user or key revokes;
-  nothing runs one on a timer.
+  the two leaves a live certificate until the next sweep revokes it, or until that user or key
+  is reconciled, whichever comes first.
+- **Lost hooks the sweep cannot see, on older rows.** A row from before this has no grounds.
+  After a deletion nothing tells it from a row that never had a subject, and after a rename its
+  key id was never written by the CA, so the sweep judges neither and both stay until they
+  expire.
 - **An older row with a subject** (the backfill below) is revoked only when its user is disabled
-  or deleted, since it has no grounds to judge.
+  or deleted, or may no longer request from the SSH CA, since it has no grounds to judge.
 - **A user that is locked** keeps their certificates. Locking is not disabling.
-- **Rights are not part of holding.** A user who loses `cert.request` on the SSH CA keeps the
-  certificates they have.
+- **An older row with no subject** is not judged for the right either: nothing says whose it is.
+- **A badge is not a loss.** A user who wears a badge that leaves `cert.request` out cannot
+  request while wearing it, and keeps the certificates they have: the right is still theirs.
+- **Only `cert.request` is asked.** A request profile that a user may no longer use, or a
+  signing profile taken off a request profile, revokes nothing.
 - **The hooks in the services have no actor.** The audit entry of a revocation made from
   `UserManagementService`, the ceremony, the directory sync or `ServiceIdentityService` names
   `system`, with the reason; the entry of the change itself names who made it. The hooks in
@@ -214,9 +305,9 @@ carries the policy that resolves the CA from `caKeyId` (`CaAuditor` for `cert.vi
 `ca.manage`) and answers 404 when the key is outside the caller's fence. A route that names no key
 answers only for the keys of the CAs the caller holds the capability on, inside the fence. Every
 change needs step-up MFA: `manage-ssh-login-names` for the grants, issued for the key id, and
-`revoke-ssh-cert` for revoking a user's certificates, issued for the user id. So does the admin
-sign route for a user certificate: `sign-ssh-user-cert`, issued for the key id (owner,
-2026-10-07). Signing a host key asks none, as routine issuance.
+`revoke-ssh-cert` for revoking a user's certificates, issued for the user id. So do both admin
+sign routes, for a user certificate and for a host certificate: `sign-ssh-cert`, issued for
+the key id (owner, 2026-10-07).
 
 A refusal decided by a controller is `{ "error": "..." }`. One decided by the service is a
 problem-details body with the sentence in `detail`, as the signer's refusals already are.
@@ -230,7 +321,7 @@ problem-details body with the sentence in `detail`, as the signer's refusals alr
 | `PUT .../login-names/{grantId}` | `ca.manage`, step-up | sets limit, end and note; null clears one |
 | `DELETE .../login-names/{grantId}` | `ca.manage`, step-up | removes it, reconciles, answers how many were revoked |
 | `PUT .../login-names/own-username` | `ca.manage`, step-up | `{ allowed }`; turning it off reconciles |
-| `GET .../ca-keys/{caKeyId}/users/{userId}/login-names` | `cert.revoke` on the CA, as the sign route | the names one active user holds on the key, for signing for that user |
+| `GET .../ca-keys/{caKeyId}/users/{userId}/login-names` | `cert.revoke` on the CA, as the sign route | the names one active user holds on the key, for signing for that user, and `mayRequest`: whether the sign route will sign for them at all |
 | `GET /api/v1/admin/ssh/users/{userId}/login-names` | `user.manage` | every ground the user holds a name on, per key the caller may view |
 | `GET /api/v1/admin/ssh/groups/{groupId}/login-names` | `cert.view` | the grants to the group, per key the caller may view |
 | `GET /api/v1/admin/ssh/users/{userId}/certificates?live=true` | `user.manage` | the certificates issued for the user, on keys the caller may view |
@@ -291,7 +382,11 @@ is still a JSON array inside a string. Added:
   `SshOwnUsernameChanged`, each with the key, the name, the target and the actor, against the SSH
   CA. A grant removed with its user or its group has an entry too, with that as the reason.
 - `SshCertIssued` gains `SubjectUserId` and `SubjectUsername`, or `ServiceLabel`.
-- `SshCertRevoked` by reconciliation carries the reason and the login name.
+- `SshCertRevoked` by reconciliation carries the reason and the login name. One for a lost right
+  to request carries no login name, and its reason ends "the user may no longer request
+  certificates from the SSH CA".
+- `SshLoginNameSweepCompleted`, by the scheduler, when a periodic sweep revoked anything: how many
+  certificates per rule. Each of them has its own `SshCertRevoked`.
 
 ## The upgrade
 
@@ -302,6 +397,10 @@ is still a JSON array inside a string. Added:
 - `--upgrade-check` gains a note, never a refusal, beside the SSH findings, when the install has
   an SSH CA key: what a request may name from now on, and how many of the live user certificates
   carry a name other than their key id. They stay valid until they expire.
+- Two cases are revoked soon after the upgrade, by the sweep and not by the migration: a live
+  certificate that the migration gave a subject, when that user is already disabled, or no
+  longer holds `cert.request` on the SSH CA. The first sweep revokes it, as disabling the user
+  or taking the right away would have.
 - After the upgrade a request that sends a key id, or names an account that is not the
   requester's own username or granted to them, is refused. The admin form must name a user or a
   service label. Older consoles and scripts that send `keyId` get 400.
@@ -310,14 +409,15 @@ is still a JSON array inside a string. Added:
 
 - **Who may sign for someone.** The admin sign route asks `cert.revoke` on the CA and step-up
   MFA, while granting a name asks `ca.manage`. Whoever may sign can certify any public key
-  under a user's name and held login names, and can type any login name the certificate profile
-  allows for a service identity. The certificate row and the audit name the issuer beside the
+  under the name and held login names of a user who may request, and can type any login name
+  the certificate profile allows for a service identity. The certificate row and the audit name the issuer beside the
   subject; the host log names only the subject.
-- **`root` as an own username.** Whoever may rename a user, or create one, decides what that
-  user's own username is, and so one login name on every key that allows own usernames.
+- **Own usernames other than `root`.** Whoever may rename a user, or create one, still decides
+  what that user's own username is, and so one login name on every key that allows own
+  usernames. Only `root` is kept out; a key whose hosts have other accounts worth guarding
+  turns own usernames off and grants.
 - Whether locking a user should revoke as disabling does. A lock also follows failed sign-ins,
   so revoking on it would let anyone who can guess wrong passwords cut a user's access.
-- A periodic reconciliation, to close the gap a stop between a change and its hook leaves.
 - Grants on an SSH CA to groups of a space. The scope rule refuses them today.
 - The list of SSH CA keys asks `cert.revoke`, so a caller with only `cert.view` cannot open a
   key's page in the console, though the route that reads its login names would answer.
