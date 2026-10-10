@@ -200,6 +200,61 @@ public sealed class InfrastructureCertProfileTests
         Assert.Empty(world.Persistence.Appended);
     }
 
+    /// <summary>
+    /// The lifetime follows the profile where the profile is shorter than the ten years asked
+    /// for. Issuance refuses a date past the profile's maximum, so a CA that named such a
+    /// profile could not issue the certificate at all.
+    /// </summary>
+    [Fact]
+    public void The_lifetime_is_ten_years_unless_the_profile_or_the_ca_ends_sooner()
+    {
+        var start = new DateTime(2026, 10, 10, 0, 0, 0, DateTimeKind.Utc);
+        var farCa = start.AddYears(25);
+
+        Assert.Equal(start.AddYears(10), CaCreationService.InfrastructureNotAfter(start, null, farCa));
+        Assert.Equal(start.AddYears(10), CaCreationService.InfrastructureNotAfter(start, "P25Y", farCa));
+        Assert.Equal(start.AddYears(10), CaCreationService.InfrastructureNotAfter(start, "not a duration", farCa));
+        Assert.Equal(start.AddHours(10), CaCreationService.InfrastructureNotAfter(start, "PT10H", farCa));
+        Assert.InRange(CaCreationService.InfrastructureNotAfter(start, "P30D", farCa), start.AddDays(30).AddMinutes(-1), start.AddDays(30).AddMinutes(1));
+        Assert.Equal(start.AddYears(2), CaCreationService.InfrastructureNotAfter(start, "P25Y", start.AddYears(2)));
+        Assert.Equal(start.AddDays(5), CaCreationService.InfrastructureNotAfter(start, "P30D", start.AddDays(5)));
+    }
+
+    [Fact]
+    public async Task A_responder_issued_from_a_short_profile_lives_as_long_as_the_profile_allows()
+    {
+        var world = SignerTestWorld.Create();
+        var caId = world.CaEcId;
+        using (var seed = world.OpenDb())
+        {
+            var own = Profile("Thirty-day OCSP", $"[\"{OcspSigning}\"]");
+            own.ValidityPeriodMax = "P30D";
+            seed.CertProfiles.Add(own);
+            seed.SigningProfiles.Add(new SigningProfileEntity { Name = "ca-ec signing", AllowedAlgorithms = "[]", IssuerId = world["ca-ec"].Ref.CertificateId });
+            seed.CertificateAuthorities.Single(c => c.Id == caId).OcspResponderCertProfileId = own.Id;
+            await seed.SaveChangesAsync();
+        }
+
+        using var db = world.OpenDb();
+        await Service(world, db).ReissueInfrastructureCertsAsync(caId, reissueOcsp: true, reissueTsa: false);
+
+        using var check = world.OpenDb();
+        var responder = check.Certificates.Single(c => c.CertificateId == check.CertificateAuthorities.Single(a => a.Id == caId).OcspResponderCertificateId);
+        Assert.InRange(responder.NotAfter, DateTime.UtcNow.AddDays(29), DateTime.UtcNow.AddDays(31));
+    }
+
+    [Fact]
+    public void The_key_of_a_cas_own_certificates_follows_the_cas_key()
+    {
+        var world = SignerTestWorld.Create();
+        using var db = world.OpenDb();
+        string KeyFor(Guid caId) => CaCreationService.InfrastructureKeyFor(CertificateUtil.ParseFromPem(
+            db.Certificates.Single(c => c.CertificateId == db.CertificateAuthorities.Single(a => a.Id == caId).CertificateId).Pem));
+
+        Assert.Equal("ECDSA P-256", KeyFor(world.CaEcId));
+        Assert.Equal("RSA 3072", KeyFor(world.CaRsaId));
+    }
+
     // ---- the lock --------------------------------------------------------------------------
 
     public static TheoryData<string, bool> NameBound() => new()
@@ -359,6 +414,15 @@ public sealed class InfrastructureCertProfileTests
         var candidates = read.GetProperty("Candidates").EnumerateArray().ToDictionary(c => c.GetProperty("Name").GetString()!);
         Assert.Equal(["Long-lived TSA", SystemCertProfiles.OcspResponder, SystemCertProfiles.Tsa], candidates.Keys.Order(StringComparer.Ordinal));
         Assert.Equal(["tsa", "cmpSigner"], candidates["Long-lived TSA"].GetProperty("Suits").EnumerateArray().Select(s => s.GetString()));
+
+        // What the panel beside the pickers shows: each profile's usages, and what all three certificates get.
+        Assert.Equal(seededTsa.Id, roles["tsa"].GetProperty("DefaultProfileId").GetGuid());
+        Assert.Equal(JsonValueKind.Null, roles["cmpSigner"].GetProperty("DefaultProfileId").ValueKind);
+        Assert.Equal(["Digital Signature"], candidates["Long-lived TSA"].GetProperty("KeyUsages").EnumerateArray().Select(s => s.GetString()));
+        var usage = Assert.Single(candidates["Long-lived TSA"].GetProperty("ExtendedKeyUsages").EnumerateArray());
+        Assert.Equal(TimeStamping, usage.GetProperty("Value").GetString());
+        Assert.Equal(10, read.GetProperty("LifetimeYears").GetInt32());
+        Assert.Equal(JsonValueKind.Null, read.GetProperty("SubjectKey").ValueKind);
 
         foreach (var (profileId, word) in new[] { (foreign.Id, "another scope"), (caProfile.Id, "CA profile"), (seededOcsp.Id, "time stamping"), (Guid.NewGuid(), "does not exist") })
         {

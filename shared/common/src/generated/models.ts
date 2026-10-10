@@ -1082,6 +1082,12 @@ export interface MtlsConfig {
     authSubdomain: string;
 }
 
+/** From `ModularCA.Shared/Models/Issuance/ServerKeyOptions.cs`. */
+export interface NamedUsage {
+    value: string;
+    name: string;
+}
+
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
 export interface NetworkAuditConfig {
     enabled: boolean;
@@ -1120,6 +1126,18 @@ export interface PolicySyncConfig {
     enabled: boolean;
     policyDirectory: string;
     syncOnStartup: boolean;
+}
+
+/** From `ModularCA.Shared/Models/Issuance/ServerKeyOptions.cs`. */
+export interface ProfilePairConstraints {
+    issuingCaName?: string | null;
+    nameConstraintsPermitted: string[];
+    nameConstraintsExcluded: string[];
+    keyUsages: string[];
+    extendedKeyUsages: NamedUsage[];
+    validityPeriodMin?: string | null;
+    validityPeriodMax?: string | null;
+    allowWildcard: boolean;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
@@ -1300,6 +1318,7 @@ export interface ServerKeyOptions {
     certProfileName: string;
     options: ServerKeyOption[];
     refused: ServerKeyRefusal[];
+    constraints?: ProfilePairConstraints | null;
 }
 
 /** From `ModularCA.Shared/Models/Issuance/ServerKeyOptions.cs`. */

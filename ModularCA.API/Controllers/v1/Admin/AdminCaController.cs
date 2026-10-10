@@ -956,7 +956,11 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// responder, its timestamp signer and its CMP signer. Each role carries the profile the
         /// CA names (<c>chosenProfileId</c>, null for the seeded default), the profile in effect
         /// and, when that profile cannot do the job, why (<c>problem</c>). <c>candidates</c> are
-        /// the end-entity profiles the CA may issue under, each with the roles it suits.
+        /// the end-entity profiles the CA may issue under, each with the roles it suits and what
+        /// it gives a certificate (key usages, extended key usages, validity range).
+        /// <c>subjectKey</c>, <c>lifetimeYears</c> and <c>caNotAfter</c> are what these
+        /// certificates get whatever their profile: the key follows the CA's, and the lifetime
+        /// is that many years unless the profile's longest validity or the CA's expiry is sooner.
         /// </summary>
         /// <param name="caId">The CA.</param>
         [HttpGet("{caId:guid}/infrastructure-profiles")]
@@ -980,6 +984,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     role.Key,
                     Name = role.CertType,
                     role.DefaultProfileName,
+                    DefaultProfileId = profiles.FirstOrDefault(p => p.Name == role.DefaultProfileName)?.Id,
                     ChosenProfileId = chosenId,
                     ProfileId = inEffect?.Id,
                     ProfileName = inEffect?.Name,
@@ -991,10 +996,23 @@ namespace ModularCA.API.Controllers.v1.Admin
                 });
             }
 
-            return Ok(new
+            // What every one of these certificates gets whatever its profile: the key follows the
+            // CA's, and the lifetime is ten years unless the profile or the CA ends sooner.
+            var caCertificate = await _db.Certificates.AsNoTracking()
+                .Where(c => c.CertificateId == ca.CertificateId)
+                .Select(c => new { c.Pem, c.NotAfter })
+                .FirstOrDefaultAsync();
+            string? subjectKey = null;
+            if (!string.IsNullOrWhiteSpace(caCertificate?.Pem))
             {
-                Roles = roles,
-                Candidates = profiles.Select(p => new
+                try { subjectKey = CaCreationService.InfrastructureKeyFor(CertificateUtil.ParseFromPem(caCertificate.Pem)); }
+                catch (Exception) { subjectKey = null; }
+            }
+
+            var candidates = new List<object>();
+            foreach (var p in profiles)
+            {
+                candidates.Add(new
                 {
                     p.Id,
                     p.Name,
@@ -1002,7 +1020,21 @@ namespace ModularCA.API.Controllers.v1.Admin
                         .Where(role => InfrastructureCertProfiles.WhyUnsuitable(p, role) == null)
                         .Select(role => role.Key)
                         .ToList(),
-                }),
+                    KeyUsages = ProfileConstraintReader.ReadList(p.KeyUsages),
+                    ExtendedKeyUsages = await ProfileConstraintReader.ExtendedKeyUsageNamesAsync(
+                        _db, ProfileConstraintReader.ReadList(p.ExtendedKeyUsages), HttpContext.RequestAborted),
+                    p.ValidityPeriodMin,
+                    p.ValidityPeriodMax,
+                });
+            }
+
+            return Ok(new
+            {
+                Roles = roles,
+                Candidates = candidates,
+                SubjectKey = subjectKey,
+                LifetimeYears = CaCreationService.InfrastructureLifetimeYears,
+                CaNotAfter = caCertificate?.NotAfter,
             });
         }
 

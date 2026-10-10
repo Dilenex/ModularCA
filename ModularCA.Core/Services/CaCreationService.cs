@@ -1607,9 +1607,7 @@ public class CaCreationService(
 
             // Issue through the standard pipeline with the CA named explicitly
             var notBefore = CertificateValidityUtil.DefaultNotBefore();
-            var notAfter = notBefore.AddYears(10);
-            if (notAfter > caCert.NotAfter)
-                notAfter = caCert.NotAfter;
+            var notAfter = InfrastructureNotAfter(notBefore, certProfile.ValidityPeriodMax, caCert.NotAfter);
 
             var result = await issuanceService.IssueCertificateAsync(
                 csrId, notBefore, notAfter, caCert, caKey, caSigningContext);
@@ -1691,6 +1689,46 @@ public class CaCreationService(
     // NOTE: CreateAndStoreTsaCertificateAsync and CreateAndStoreOcspResponderCertificateAsync
     // have been replaced by IssueInfrastructureCertAsync which routes through the standard
     // CSR → profile validation → CertificateIssuanceService pipeline.
+
+    /// <summary>The lifetime an infrastructure certificate is asked for, before the profile and the CA shorten it.</summary>
+    public const int InfrastructureLifetimeYears = 10;
+
+    /// <summary>
+    /// When an infrastructure certificate starting at <paramref name="notBefore"/> ends:
+    /// <see cref="InfrastructureLifetimeYears"/> later, or sooner at its profile's longest
+    /// validity (<paramref name="profileValidityMax"/>, an ISO 8601 duration) or at the CA's own
+    /// expiry. Issuance refuses a date past the profile's maximum, so a CA that names a profile
+    /// shorter than ten years could not issue the certificate at all until the lifetime followed
+    /// the profile. A maximum that cannot be read is left to issuance, which reports it.
+    /// </summary>
+    internal static DateTime InfrastructureNotAfter(DateTime notBefore, string? profileValidityMax, DateTime caNotAfter)
+    {
+        var notAfter = notBefore.AddYears(InfrastructureLifetimeYears);
+        if (!string.IsNullOrWhiteSpace(profileValidityMax))
+        {
+            try
+            {
+                var longest = notBefore.Add(Iso8601ParserUtil.ParseIso8601(profileValidityMax));
+                if (longest < notAfter)
+                    notAfter = longest;
+            }
+            catch (FormatException)
+            {
+            }
+        }
+        return notAfter > caNotAfter ? caNotAfter : notAfter;
+    }
+
+    /// <summary>
+    /// The key a CA's own certificates are given, as words: the same family as the CA's key
+    /// (<c>RSA 3072</c>, <c>ECDSA P-256</c>, <c>Ed25519</c>, <c>ML-DSA-65</c> and so on). It
+    /// follows the CA and not the certificate profile.
+    /// </summary>
+    public static string InfrastructureKeyFor(X509Certificate caCert)
+    {
+        var (algorithm, sizeOrCurve) = ResolveTsaKeyAlgorithmForParent(caCert.GetPublicKey());
+        return sizeOrCurve == 0 ? algorithm : $"{algorithm} {KeyAlgorithmPolicy.FormatKeySizeForProfile(algorithm, sizeOrCurve)}";
+    }
 
     /// <summary>
     /// Choose an infrastructure key algorithm compatible with the parent CA, from the parent

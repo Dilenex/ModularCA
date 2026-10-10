@@ -45,18 +45,77 @@ public sealed class ServerKeyOptionsService(
         if (signingProfile == null || certProfile == null)
             return null;
 
+        string? issuingCaName = null;
         if (signingProfile.IssuerId is Guid issuerId)
         {
             var ca = await db.CertificateAuthorities.AsNoTracking()
                 .Where(c => c.CertificateId == issuerId)
-                .Select(c => new { c.Id, c.SpaceId })
+                .Select(c => new { c.Id, c.SpaceId, c.Name })
                 .FirstOrDefaultAsync(cancellationToken);
             if (ca != null && !CertProfileScope.Admits(certProfile.SpaceId, certProfile.CertificateAuthorityId, ca.Id, ca.SpaceId))
                 return null;
+            issuingCaName = ca?.Name;
         }
 
         var effective = await profileResolver.ResolveCertProfileAsync(certProfileId);
-        return ServerKeyOptionsResolver.Resolve(signingProfile, certProfile, effective, validation);
+        var extendedKeyUsages = ProfileConstraintReader.ReadList(effective.ExtendedKeyUsages);
+        var names = await ProfileConstraintReader.ExtendedKeyUsageNamesAsync(db, extendedKeyUsages, cancellationToken);
+        return ServerKeyOptionsResolver.Resolve(signingProfile, certProfile, effective, validation) with
+        {
+            Constraints = new ProfilePairConstraints(
+                issuingCaName,
+                ProfileConstraintReader.ReadList(signingProfile.NameConstraintsPermitted),
+                ProfileConstraintReader.ReadList(signingProfile.NameConstraintsExcluded),
+                ProfileConstraintReader.ReadList(effective.KeyUsages),
+                names,
+                effective.ValidityPeriodMin,
+                effective.ValidityPeriodMax,
+                effective.AllowWildcard),
+        };
+    }
+}
+
+/// <summary>Reads the list columns of a profile for display beside a picker.</summary>
+public static class ProfileConstraintReader
+{
+    /// <summary>
+    /// A profile's stored list: a JSON array, or for older rows a comma-separated list. An
+    /// unreadable or empty value is an empty list.
+    /// </summary>
+    public static List<string> ReadList(string? stored)
+    {
+        if (string.IsNullOrWhiteSpace(stored))
+            return [];
+        var trimmed = stored.Trim();
+        if (trimmed.StartsWith('['))
+        {
+            try
+            {
+                return (System.Text.Json.JsonSerializer.Deserialize<List<string>>(trimmed, SafeJsonOptions.Default) ?? [])
+                    .Where(v => !string.IsNullOrWhiteSpace(v))
+                    .ToList();
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return [];
+            }
+        }
+        return trimmed.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    }
+
+    /// <summary>Each extended key usage with the OID catalog's name for it; a value the catalog does not hold names itself.</summary>
+    public static async Task<List<NamedUsage>> ExtendedKeyUsageNamesAsync(
+        ModularCADbContext db, IReadOnlyList<string> values, CancellationToken cancellationToken = default)
+    {
+        if (values.Count == 0)
+            return [];
+        var catalog = await db.OIDOptions.AsNoTracking()
+            .Where(o => values.Contains(o.OID))
+            .Select(o => new { o.OID, o.FriendlyName })
+            .ToListAsync(cancellationToken);
+        return values
+            .Select(v => new NamedUsage(v, catalog.FirstOrDefault(o => o.OID == v)?.FriendlyName is { Length: > 0 } name ? name : v))
+            .ToList();
     }
 }
 

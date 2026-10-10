@@ -96,6 +96,37 @@ public sealed class RequestProfileEnforcementTests
         Assert.Equal(["DNS", "IP"], RequestProfileValidationService.ReadSanRules(null)!.AllowedTypes);
     }
 
+    /// <summary>
+    /// The admin pages read a profile through this mapping. Read case-sensitively, a seeded
+    /// profile showed "DNS and IP, none required" whatever it held, and saving the page wrote
+    /// that back over its rules.
+    /// </summary>
+    [Fact]
+    public async Task The_admin_view_of_a_seeded_profile_shows_its_own_san_rules_and_a_save_keeps_them()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var seeded = new RequestProfileEntity
+        {
+            Name = "Enterprise User (CMP)",
+            SubjectDnRules = Rules(new SubjectDnFieldRule { Field = "CN", Requirement = "Required", MaxLength = 64 }),
+            SanRules = SeededSanRules(["Email"], required: true, maxCount: 5),
+        };
+        db.RequestProfiles.Add(seeded);
+        await db.SaveChangesAsync();
+        var service = new RequestProfileService(db);
+
+        var shown = (await service.GetAllAsync()).Single();
+        Assert.Equal(["Email"], shown.SanRules.AllowedTypes);
+        Assert.True(shown.SanRules.Required);
+        Assert.Equal(5, shown.SanRules.Rules["Email"].MaxCount);
+        Assert.Equal("CN", Assert.Single(shown.SubjectDnRules).Field);
+
+        // Saving what the page shows keeps the rules, in the console's own spelling.
+        var kept = RequestProfileValidationService.ReadSanRules(JsonSerializer.Serialize(shown.SanRules))!;
+        Assert.Equal(["Email"], kept.AllowedTypes);
+        Assert.True(kept.Required);
+    }
+
     [Fact]
     public void A_profile_that_lists_no_san_type_allows_none()
     {

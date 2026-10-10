@@ -123,14 +123,18 @@ namespace ModularCA.Core.Services
 
         /// <summary>
         /// Maps a <see cref="RequestProfileEntity"/> (JSON strings) to a <see cref="RequestProfileDto"/> (strongly-typed objects).
+        /// The rules are read whatever the case of their keys: bootstrap writes the SAN rules in
+        /// camel case, and read case-sensitively a seeded profile showed "DNS and IP, none
+        /// required" on its page whatever it held, and an edit saved that back over its rules.
         /// </summary>
-        private static RequestProfileDto MapToDto(RequestProfileEntity entity) => new()
+        internal static RequestProfileDto MapToDto(RequestProfileEntity entity) => new()
         {
             Id = entity.Id,
             Name = entity.Name,
             Description = entity.Description,
-            SubjectDnRules = JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(entity.SubjectDnRules) ?? new(),
-            SanRules = JsonSerializer.Deserialize<SanRules>(entity.SanRules) ?? new(),
+            SubjectDnRules = JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(
+                string.IsNullOrWhiteSpace(entity.SubjectDnRules) ? "[]" : entity.SubjectDnRules, ModularCA.Shared.Utils.SafeJsonOptions.Stored) ?? new(),
+            SanRules = RequestProfileValidationService.ReadSanRules(entity.SanRules) ?? new(),
             AllowedCertProfileIds = JsonSerializer.Deserialize<List<Guid>>(entity.AllowedCertProfileIds) ?? new(),
             DefaultCertProfileId = entity.DefaultCertProfileId,
             RequireApproval = entity.RequireApproval,

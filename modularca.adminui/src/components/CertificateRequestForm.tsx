@@ -12,6 +12,8 @@ import type { ServerKeyOptions, ValidityCeilingPreflight } from '@shared/generat
 import { describeCeiling, exceedsCeiling, toDatetimeLocalValue } from '../pages/validityCeiling';
 import { chooseAlgorithm, findOption, groupRefusals, offeredAlgorithms, offeredSizes, requestKeySize, settleKeyChoice, type KeyChoice } from '../pages/keyOptions';
 import { designatedCertProfileIds, offeredCertProfiles, settleCertProfile } from '../pages/requestCertProfiles';
+import { certificateGroup, issuerGroup, keysGroup, namesGroup, type ConstraintGroup } from '../pages/profileConstraints';
+import { ConstraintPanel } from './ConstraintPanel';
 import { sizeLabel } from '../pages/profiles/keyPolicy';
 import { HeldKeyDownload } from './HeldKeyDownload';
 import { TypedEntryListEditor, type TypedEntryRowStatus } from '@shared/components/TypedEntryListEditor';
@@ -492,8 +494,9 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
 
     // --- Keys the profiles accept ---
     // Asked of the server, which runs the checks submission and issuance run, whenever the
-    // profile pair changes while the CA is to generate the key.
-    const keyOptionsWanted = tab === 'generate' && !!selectedSigningProfile && !!effectiveCertProfileId;
+    // profile pair changes. The answer feeds the key pickers and, with what the pair imposes
+    // on the certificate, the panel beside the profile pickers.
+    const keyOptionsWanted = !!selectedSigningProfile && !!effectiveCertProfileId;
     useEffect(() => {
         setKeyOptions(null);
         setKeyOptionsError(null);
@@ -510,6 +513,17 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
     }, [keyOptionsWanted, endpoints.keyOptions, selectedSigningProfile, effectiveCertProfileId]);
 
     const keyOptionsLoading = keyOptionsWanted && !keyOptions && !keyOptionsError;
+
+    // What the chosen profiles impose, a group to a profile, for the panel beside the pickers.
+    const constraintGroups: ConstraintGroup[] = [];
+    if (selectedProfileObj) constraintGroups.push(namesGroup(selectedProfileObj));
+    if (keyOptions?.constraints) {
+        constraintGroups.push(
+            issuerGroup(keyOptions.signingProfileName, keyOptions.constraints),
+            certificateGroup(keyOptions.certProfileName, keyOptions.constraints),
+            keysGroup(keyOptions.options, keyOptions.refused.length),
+        );
+    }
     const offeredKeys = keyOptions?.options ?? [];
     const chosenKey = findOption(offeredKeys, keyChoice);
     const chosenKeySizes = keyChoice ? offeredSizes(offeredKeys, keyChoice.algorithm) : [];
@@ -853,14 +867,15 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
         <div className={embedded ? 'space-y-4 sm:space-y-6' : 'p-3 sm:p-6 space-y-4 sm:space-y-6'}>
             {!embedded && <h1 className="text-xl font-semibold text-ink">Request Certificate</h1>}
 
-            {/* Step 1: Profiles */}
+            {/* Step 1: the profiles on the left, what they impose on the right */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 items-start">
             <div className={CARD}>
                 <div className={CARD_HEAD}>
                     <h3 className={CARD_TITLE}>Step 1: Profiles</h3>
                     <p className="text-xs text-ink-muted mt-1">The request profile sets the rules for the names. The signing profile and the certificate profile decide which keys are accepted.</p>
                 </div>
                 <div className="p-4 space-y-3">
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="space-y-4">
                         <div>
                             <label htmlFor="request-profile" className={labelClass}>Request Profile</label>
                             <select
@@ -924,6 +939,23 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                         <FieldHint tone="warn">This request profile has no certificate profile assigned, so it cannot be used from here. Ask an administrator to set one.</FieldHint>
                     )}
                 </div>
+            </div>
+            <div className={CARD}>
+                <div className={CARD_HEAD}>
+                    <h3 className={CARD_TITLE}>What These Profiles Allow</h3>
+                    <p className="text-xs text-ink-muted mt-1">The server holds the request to these at submission, approval and issuance.</p>
+                </div>
+                <div className="p-4">
+                    <ConstraintPanel
+                        groups={constraintGroups}
+                        empty="Choose a request profile to see its rules for the names, and a signing and a certificate profile to see the issuing CA, the certificate's usages and validity, and the keys they accept."
+                        pending={keyOptionsLoading ? 'Checking what the signing and certificate profile allow…' : null}
+                    />
+                    {keyOptionsError && tab !== 'generate' && (
+                        <div className="mt-3"><InlineNotice notice={keyOptionsError} variant="line" /></div>
+                    )}
+                </div>
+            </div>
             </div>
 
             {/* Step 2: the key, in a CSR made elsewhere or generated by the CA */}

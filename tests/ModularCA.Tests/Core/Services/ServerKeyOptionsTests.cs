@@ -143,4 +143,62 @@ public class ServerKeyOptionsTests
         Assert.Equal(option.SignatureAlgorithm, parsed.SignatureAlgorithm, ignoreCase: true);
         Assert.True(CsrService.IsValidKeyParameters(parsed.KeyAlgorithm, parsed.KeySize, parsed.SignatureAlgorithm, Signing(), Cert()));
     }
+
+    /// <summary>
+    /// The answer also says what the pair imposes besides the key, for the panel beside the
+    /// pickers: the issuing CA and its name constraints from the signing profile, and the usages,
+    /// validity and wildcard setting of the certificate profile after inheritance.
+    /// </summary>
+    [Fact]
+    public async Task The_answer_carries_what_the_pair_imposes_on_the_certificate()
+    {
+        using var db = ModularCA.Tests.TestUtils.InMemoryDbContextFactory.Create();
+        var ca = new CertificateAuthorityEntity { Name = "Staging CA R1", Label = "staging-ca-r1", CertificateId = Guid.NewGuid() };
+        var signing = new SigningProfileEntity
+        {
+            Name = "Staging CA R1 Signing Profile",
+            AllowedAlgorithms = "[]",
+            IssuerId = ca.CertificateId,
+            NameConstraintsPermitted = "[\"DNS:.corp.example\"]",
+        };
+        var parent = new CertProfileEntity
+        {
+            Name = "Server baseline",
+            KeyUsages = "[\"digitalSignature\",\"keyEncipherment\"]",
+            ExtendedKeyUsages = "[\"1.3.6.1.5.5.7.3.1\",\"1.2.3.4\"]",
+            AllowedKeySizes = "[]",
+            AllowedSignatureAlgorithms = "[]",
+            ValidityPeriodMin = "P1D",
+            ValidityPeriodMax = "P397D",
+        };
+        db.AddRange(ca, signing, parent,
+            new OIDOptionEntity { OID = "1.3.6.1.5.5.7.3.1", FriendlyName = "serverAuth", KeyUsage = "Extended" });
+        await db.SaveChangesAsync();
+        var service = new ServerKeyOptionsService(db,
+            new ProfileResolutionService(db, NullLogger<ProfileResolutionService>.Instance), Validation);
+
+        var answer = await service.ResolveAsync(signing.Id, parent.Id);
+
+        var constraints = Assert.IsType<ProfilePairConstraints>(answer!.Constraints);
+        Assert.Equal("Staging CA R1", constraints.IssuingCaName);
+        Assert.Equal(["DNS:.corp.example"], constraints.NameConstraintsPermitted);
+        Assert.Empty(constraints.NameConstraintsExcluded);
+        Assert.Equal(["digitalSignature", "keyEncipherment"], constraints.KeyUsages);
+        Assert.Equal([new NamedUsage("1.3.6.1.5.5.7.3.1", "serverAuth"), new NamedUsage("1.2.3.4", "1.2.3.4")], constraints.ExtendedKeyUsages);
+        Assert.Equal("P1D", constraints.ValidityPeriodMin);
+        Assert.Equal("P397D", constraints.ValidityPeriodMax);
+        Assert.False(constraints.AllowWildcard);
+        Assert.Equal(14, answer.Options.Count);
+
+        // A signing profile that names no CA says so, and an unreadable list reads as empty.
+        var loose = new SigningProfileEntity { Name = "Loose", AllowedAlgorithms = "[]", NameConstraintsExcluded = "not json" };
+        db.Add(loose);
+        await db.SaveChangesAsync();
+        var unbound = (await service.ResolveAsync(loose.Id, parent.Id))!.Constraints!;
+        Assert.Null(unbound.IssuingCaName);
+        Assert.Equal(["not json"], unbound.NameConstraintsExcluded);
+        Assert.Equal(["a", "b"], ProfileConstraintReader.ReadList("a, b"));
+        Assert.Empty(ProfileConstraintReader.ReadList("[1,"));
+        Assert.Empty(ProfileConstraintReader.ReadList(null));
+    }
 }

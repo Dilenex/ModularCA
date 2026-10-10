@@ -2,6 +2,7 @@ import React from 'react';
 import { DEFAULT_EKU_OPTIONS, parseJsonArray, parseListField } from './profiles/profileFormCore';
 import { FieldHint } from '@shared/components/forms';
 import { formatIso8601Duration } from './validityCeiling';
+import { DEFAULT_EKU_LABELS, KEY_USAGE_LABELS } from './profiles/usageLabels';
 
 /* Shared constants + helper components for the Profile Management tabs and their detail pages. */
 
@@ -40,34 +41,8 @@ export const caCertId = (ca: any): string => ca?.certificateId ?? '';
 export const caDisplayName = (ca: any): string =>
     ca?.name || ca?.commonName || ca?.label || ca?.id || '';
 
-export const DEFAULT_EKU_LABELS: Record<string, string> = {
-    '1.3.6.1.5.5.7.3.1': 'Server Auth',
-    '1.3.6.1.5.5.7.3.2': 'Client Auth',
-    '1.3.6.1.5.5.7.3.3': 'Code Signing',
-    '1.3.6.1.5.5.7.3.4': 'Email Protection',
-    '1.3.6.1.5.5.7.3.8': 'Time Stamping',
-    '1.3.6.1.5.5.7.3.9': 'OCSP Signing',
-    '1.3.6.1.4.1.311.20.2.2': 'Smart Card Logon',
-    '1.3.6.1.5.2.3.5': 'KDC Authentication',
-};
-
-/**
- * Display labels for the nine key usages.
- *
- * Presentation only — never persist these. `canonicalizeUsage` maps every one of them back onto
- * its canonical value, so a profile written with a label by an older build still resolves.
- */
-export const KEY_USAGE_LABELS: Record<string, string> = {
-    digitalSignature: 'Digital Signature',
-    nonRepudiation: 'Non Repudiation',
-    keyEncipherment: 'Key Encipherment',
-    dataEncipherment: 'Data Encipherment',
-    keyAgreement: 'Key Agreement',
-    keyCertSign: 'Key Cert Sign',
-    crlSign: 'CRL Sign',
-    encipherOnly: 'Encipher Only',
-    decipherOnly: 'Decipher Only',
-};
+// The label tables live in a module with no React in it, so pure code can read them too.
+export { DEFAULT_EKU_LABELS, KEY_USAGE_LABELS } from './profiles/usageLabels';
 
 export const keyUsageLabel = (v: string): string => KEY_USAGE_LABELS[v] ?? v;
 

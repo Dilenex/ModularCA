@@ -167,7 +167,7 @@ namespace ModularCA.Core.Services
 
             try
             {
-                var rules = JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(profile.SubjectDnRules) ?? new();
+                var rules = JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(profile.SubjectDnRules, SafeJsonOptions.Stored) ?? new();
                 return rules.Any(rule =>
                     string.Equals(rule.Field, field, StringComparison.OrdinalIgnoreCase)
                     && RequestProfileRules.IsRequired(rule.Requirement)
@@ -197,7 +197,7 @@ namespace ModularCA.Core.Services
 
             // Parse the subject DN into components
             var dnComponents = ParseSubjectDn(subjectDn);
-            var rules = JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(profile.SubjectDnRules) ?? new();
+            var rules = JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(profile.SubjectDnRules, SafeJsonOptions.Stored) ?? new();
 
             // Validate each rule
             foreach (var rule in rules)

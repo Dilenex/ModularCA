@@ -88,23 +88,25 @@ function formatDate(iso: string): string {
  */
 export function describeCeiling(p: ValidityCeilingPreflight): CeilingNotice {
     const days = p.resolution.effectiveMaxDays;
+    // The server counts whole days, so a ceiling of hours arrives as 0.
+    const span = days >= 1 ? `${days} day${days === 1 ? '' : 's'}` : 'less than a day';
     const profileAllows = formatIso8601Duration(p.certProfileValidityPeriodMax) ?? '1y';
     const refuses = p.spaceCeilingApplies && p.spaceBehavior === 'Refuse';
 
     let text: string;
     switch (p.resolution.boundBy) {
         case 'Space':
-            text = `Max ${days} days — capped by space '${p.spaceName ?? 'unknown'}'`
+            text = `Max ${span} — capped by space '${p.spaceName ?? 'unknown'}'`
                 + ` (profile allows ${profileAllows})`;
             break;
         case 'IssuingCa':
             // Not a policy ceiling at all, and the only one of the three with a deadline attached:
             // it moves on its own as the CA ages, and the fix is to renew the CA.
-            text = `Max ${days} days — capped by issuing CA '${p.issuingCaName ?? 'unknown'}',`
+            text = `Max ${span} — capped by issuing CA '${p.issuingCaName ?? 'unknown'}',`
                 + ` which expires ${p.issuingCaNotAfter ? formatDate(p.issuingCaNotAfter) : 'sooner'}`;
             break;
         default:
-            text = `Max ${days} days — from certificate profile '${p.certProfileName}' (${profileAllows})`;
+            text = `Max ${span} — from certificate profile '${p.certProfileName}' (${profileAllows})`;
             break;
     }
 

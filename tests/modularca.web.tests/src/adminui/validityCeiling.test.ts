@@ -108,6 +108,14 @@ describe('describeCeiling', () => {
         expect(notice.tone).toBe('info');
     });
 
+    it('does not call a ceiling of hours "0 days"', () => {
+        // The server counts whole days, so a ten-hour profile arrives as 0.
+        const hours = describeCeiling(preflight({ resolution: { effectiveMaxDays: 0, boundBy: 'CertProfile' }, certProfileValidityPeriodMax: 'PT10H' }));
+        expect(hours.text).toContain('Max less than a day');
+        expect(hours.text).not.toContain('0 days');
+        expect(describeCeiling(preflight({ resolution: { effectiveMaxDays: 1 } })).text).toContain('Max 1 day —');
+    });
+
     it('names the issuing CA and its expiry when the CA binds', () => {
         // A different remedy from the other two — renew the CA — so it must not be reported as a
         // policy ceiling.
