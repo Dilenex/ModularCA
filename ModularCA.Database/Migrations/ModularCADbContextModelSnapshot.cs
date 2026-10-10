@@ -989,6 +989,9 @@ namespace ModularCA.Database.Migrations
                     b.Property<Guid?>("CertificateId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("CmpSignerCertProfileId")
+                        .HasColumnType("uuid");
+
                     b.Property<Guid?>("CmpSigningCertificateId")
                         .HasColumnType("uuid");
 
@@ -1027,6 +1030,9 @@ namespace ModularCA.Database.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("citext");
 
+                    b.Property<Guid?>("OcspResponderCertProfileId")
+                        .HasColumnType("uuid");
+
                     b.Property<Guid?>("OcspResponderCertificateId")
                         .HasColumnType("uuid");
 
@@ -1040,6 +1046,9 @@ namespace ModularCA.Database.Migrations
                         .HasColumnType("uuid");
 
                     b.Property<Guid?>("SpaceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("TsaCertProfileId")
                         .HasColumnType("uuid");
 
                     b.Property<Guid?>("TsaCertificateId")
@@ -1064,6 +1073,8 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("CertificateId")
                         .IsUnique();
 
+                    b.HasIndex("CmpSignerCertProfileId");
+
                     b.HasIndex("IsDeleted");
 
                     b.HasIndex("Label")
@@ -1072,9 +1083,13 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("Name")
                         .IsUnique();
 
+                    b.HasIndex("OcspResponderCertProfileId");
+
                     b.HasIndex("ParentCaId");
 
                     b.HasIndex("SpaceId");
+
+                    b.HasIndex("TsaCertProfileId");
 
                     b.ToTable("CertificateAuthorities", t =>
                         {
@@ -4282,6 +4297,16 @@ namespace ModularCA.Database.Migrations
                         .WithOne("CertificateAuthority")
                         .HasForeignKey("ModularCA.Shared.Entities.CertificateAuthorityEntity", "CertificateId");
 
+                    b.HasOne("ModularCA.Shared.Entities.CertProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("CmpSignerCertProfileId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("ModularCA.Shared.Entities.CertProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("OcspResponderCertProfileId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("ModularCA.Shared.Entities.CertificateAuthorityEntity", "ParentCa")
                         .WithMany("ChildCAs")
                         .HasForeignKey("ParentCaId")
@@ -4290,6 +4315,11 @@ namespace ModularCA.Database.Migrations
                     b.HasOne("ModularCA.Shared.Entities.SpaceEntity", "Space")
                         .WithMany()
                         .HasForeignKey("SpaceId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("ModularCA.Shared.Entities.CertProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("TsaCertProfileId")
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Certificate");

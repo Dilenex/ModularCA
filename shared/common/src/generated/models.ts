@@ -474,6 +474,8 @@ export interface CertProfileDto {
     spaceId?: string | null;
     inheritsFromId?: string | null;
     inheritanceEnabled: boolean;
+    systemPurpose?: string | null;
+    infrastructureUses: string[];
 }
 
 /** From `ModularCA.Shared/Models/Csr/CertRequestDto.cs`. */

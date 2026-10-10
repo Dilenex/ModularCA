@@ -91,7 +91,7 @@ public class WebTlsProvisioningService(
 
             // Resolve the Web TLS cert profile and a signing profile linked to it
             var certProfile = await db.CertProfiles
-                .FirstOrDefaultAsync(cp => cp.Name == "Web TLS Certificate Profile", cancellationToken);
+                .FirstOrDefaultAsync(cp => cp.Name == ModularCA.Shared.Utils.SystemCertProfiles.WebTls, cancellationToken);
             if (certProfile == null)
                 throw new InvalidOperationException("Web TLS Certificate Profile not found. Run bootstrap to seed profiles.");
 

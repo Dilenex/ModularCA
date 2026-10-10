@@ -358,7 +358,7 @@ const AuditLogs: React.FC = () => {
                 rowKey={(l) => l.id || `${l.timestamp}-${l.actionType || l.operation || l.messageType || ''}`}
                 loading={loading}
                 error={error}
-                empty={scopeCaId ? `No audit entries in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No audit entries found'}
+                empty={scopeCaId ? `No audit entries in ${scopeLabel(scope)}. Change the scope in the top bar to see others.` : 'No audit entries found'}
                 columns={columns}
                 selectable
                 exportFileName={`audit-${activeTab.toLowerCase()}`}

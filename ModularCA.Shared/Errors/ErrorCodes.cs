@@ -172,6 +172,12 @@ public static class ErrorCodes
     /// </summary>
     public const string CaLabelLocked = "MCA-RES-006";
 
+    /// <summary>
+    /// The certificate profile is one the application finds by name, or one a CA issues its own
+    /// signers from, so the change asked for would leave something unable to be issued.
+    /// </summary>
+    public const string CertProfileInUse = "MCA-RES-007";
+
     // ---- POL: deliberate certificate-policy limits ------------------------------------------
 
     /// <summary>One or more certificate-policy rules were violated.</summary>

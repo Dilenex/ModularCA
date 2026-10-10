@@ -87,5 +87,5 @@ export const SELF_SSH_CERTIFICATES_PATH = sshTab(SELF_CERTIFICATES_PATH);
  */
 export function sshScopeSentence(scope: Scope): string | null {
     if (scopeSpaceId(scope) == null) return null;
-    return `SSH CAs belong to the instance, not to a space, so the scope ${scopeLabel(scope)} holds none. Change the scope in the sidebar to see them.`;
+    return `SSH CAs belong to the instance, not to a space, so the scope ${scopeLabel(scope)} holds none. Change the scope in the top bar to see them.`;
 }

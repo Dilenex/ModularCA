@@ -128,7 +128,7 @@ public class ErrorCodeCatalogTests
             "MCA-PRF-000",
             "MCA-REQ-000", "MCA-REQ-001", "MCA-REQ-002", "MCA-REQ-003", "MCA-REQ-004",
             "MCA-RES-000", "MCA-RES-001", "MCA-RES-002", "MCA-RES-003", "MCA-RES-004",
-            "MCA-RES-005", "MCA-RES-006",
+            "MCA-RES-005", "MCA-RES-006", "MCA-RES-007",
         ];
 
         var missing = pinned.Except(ErrorCodes.All, StringComparer.Ordinal).ToList();

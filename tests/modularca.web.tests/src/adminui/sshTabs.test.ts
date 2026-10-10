@@ -225,7 +225,7 @@ describe('the addresses', () => {
 
 describe('the scope sentence', () => {
     it('is said under a space, and under a CA of a space', () => {
-        expect(sshScopeSentence(acme)).toBe('SSH CAs belong to the instance, not to a space, so the scope Acme holds none. Change the scope in the sidebar to see them.');
+        expect(sshScopeSentence(acme)).toBe('SSH CAs belong to the instance, not to a space, so the scope Acme holds none. Change the scope in the top bar to see them.');
         expect(sshScopeSentence(acmeRoot)).toContain('the scope acme-root holds none');
     });
 

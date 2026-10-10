@@ -86,13 +86,19 @@ export const CertProfileForm: React.FC<{
     keyUsageCatalog: UsageCatalog;
     /** The CT log catalog; null while loading or when it could not be read. */
     ctLogs: CtLogChoice[] | null;
-}> = ({ value: f, onChange, profileId, parentProfiles, authorities, ekuCatalog, keyUsageCatalog, ctLogs }) => {
+    /** What the application finds this profile by name for; its name, CA scope and kind are then fixed. */
+    systemPurpose?: string | null;
+}> = ({ value: f, onChange, profileId, parentProfiles, authorities, ekuCatalog, keyUsageCatalog, ctLogs, systemPurpose }) => {
     const set = <K extends keyof CertProfileFormState>(key: K, v: CertProfileFormState[K]) => onChange({ ...f, [key]: v });
     const parent = useParentKeyPolicy(f.inheritanceEnabled ? f.inheritsFromId : '', parentProfiles);
     return (
         <div className="space-y-3 max-w-3xl">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div><label className={labelClass}>Name</label><input type="text" value={f.name} onChange={(e) => set('name', e.target.value)} className={inputClass} /></div>
+                <div>
+                    <label className={labelClass}>Name</label>
+                    <input type="text" value={f.name} onChange={(e) => set('name', e.target.value)} className={inputClass} disabled={!!systemPurpose} aria-describedby={systemPurpose ? 'cp-name-fixed' : undefined} />
+                    {systemPurpose && <FieldHint id="cp-name-fixed">Fixed: {systemPurpose}, and it is found by this name. Its CA scope and kind are fixed too.</FieldHint>}
+                </div>
                 <div><label className={labelClass}>Description</label><input type="text" value={f.description} onChange={(e) => set('description', e.target.value)} className={inputClass} /></div>
                 <div>
                     <label className={labelClass}>Validity Period Min (ISO 8601)</label>
@@ -113,14 +119,14 @@ export const CertProfileForm: React.FC<{
                 </div>
                 <div>
                     <label className={labelClass}>CA Scope</label>
-                    <select value={f.certificateAuthorityId} onChange={(e) => set('certificateAuthorityId', e.target.value)} className={inputClass}>
+                    <select value={f.certificateAuthorityId} onChange={(e) => set('certificateAuthorityId', e.target.value)} className={inputClass} disabled={!!systemPurpose}>
                         <option value="">-- System-wide --</option>
                         {authorities.map((a) => <option key={caRowId(a)} value={caRowId(a)}>{caDisplayName(a)}</option>)}
                     </select>
                 </div>
             </div>
             <div className="flex flex-wrap gap-4">
-                <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={f.isCaProfile} onChange={(e) => set('isCaProfile', e.target.checked)} className={checkboxClass} />CA Profile</label>
+                <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={f.isCaProfile} onChange={(e) => set('isCaProfile', e.target.checked)} className={checkboxClass} disabled={!!systemPurpose} />CA Profile</label>
                 <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={f.ctEnabled} onChange={(e) => set('ctEnabled', e.target.checked)} className={checkboxClass} />CT Enabled</label>
                 <label className="flex items-center gap-2 text-xs text-ink"><input type="checkbox" checked={f.inheritanceEnabled} onChange={(e) => set('inheritanceEnabled', e.target.checked)} className={checkboxClass} />Enable Inheritance</label>
             </div>

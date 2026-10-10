@@ -7,6 +7,7 @@ using ModularCA.API.Filters;
 using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Shared.Authorization;
+using ModularCA.Core.Authorization;
 using ModularCA.Core.Helpers;
 using ModularCA.Core.Services;
 using ModularCA.Database;
@@ -950,7 +951,126 @@ namespace ModularCA.API.Controllers.v1.Admin
             }
         }
 
+        /// <summary>
+        /// The certificate profile each of a CA's own certificates is issued under: its OCSP
+        /// responder, its timestamp signer and its CMP signer. Each role carries the profile the
+        /// CA names (<c>chosenProfileId</c>, null for the seeded default), the profile in effect
+        /// and, when that profile cannot do the job, why (<c>problem</c>). <c>candidates</c> are
+        /// the end-entity profiles the CA may issue under, each with the roles it suits.
+        /// </summary>
+        /// <param name="caId">The CA.</param>
+        [HttpGet("{caId:guid}/infrastructure-profiles")]
+        [Authorize(Policy = "CaAuditor")]
+        public async Task<IActionResult> GetInfrastructureProfiles(Guid caId)
+        {
+            var ca = await _db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(c => c.Id == caId && !c.IsDeleted && !c.IsSshCa);
+            if (ca == null) return NotFound(new { error = "Certificate authority not found." });
 
+            var profiles = (await _db.CertProfiles.AsNoTracking().Where(p => !p.IsCaProfile).OrderBy(p => p.Name).ToListAsync())
+                .Where(p => CertProfileScope.Admits(p, ca))
+                .ToList();
+
+            var roles = new List<object>();
+            foreach (var role in InfrastructureCertProfiles.All)
+            {
+                var chosenId = InfrastructureCertProfiles.ChosenId(ca, role);
+                var inEffect = await InfrastructureCertProfiles.ResolveAsync(_db, chosenId, role, HttpContext.RequestAborted);
+                roles.Add(new
+                {
+                    role.Key,
+                    Name = role.CertType,
+                    role.DefaultProfileName,
+                    ChosenProfileId = chosenId,
+                    ProfileId = inEffect?.Id,
+                    ProfileName = inEffect?.Name,
+                    Problem = inEffect == null
+                        ? $"The certificate profile '{role.DefaultProfileName}' does not exist yet. It is created the first time this certificate is issued."
+                        : chosenId != null
+                            ? InfrastructureCertProfiles.WhyNotChoosable(inEffect, role, ca)
+                            : InfrastructureCertProfiles.WhyUnsuitable(inEffect, role),
+                });
+            }
+
+            return Ok(new
+            {
+                Roles = roles,
+                Candidates = profiles.Select(p => new
+                {
+                    p.Id,
+                    p.Name,
+                    Suits = InfrastructureCertProfiles.All
+                        .Where(role => InfrastructureCertProfiles.WhyUnsuitable(p, role) == null)
+                        .Select(role => role.Key)
+                        .ToList(),
+                }),
+            });
+        }
+
+        /// <summary>
+        /// Names the certificate profile each of a CA's own certificates is issued under. A null
+        /// id names the seeded default. A profile must be an end-entity profile the CA may issue
+        /// under that lists the usage the certificate exists for (400 otherwise). Nothing is
+        /// reissued: the choice applies the next time that certificate is issued. A profile named
+        /// here cannot be deleted while it is named. Requires step-up MFA verification.
+        /// </summary>
+        /// <param name="caId">The CA.</param>
+        /// <param name="request">The profile of each role; a role left out keeps the seeded default.</param>
+        [HttpPut("{caId:guid}/infrastructure-profiles")]
+        [Authorize(Policy = "SystemOperator")]
+        [RequireStepUp(StepUpOps.UpdateCa, "caId")]
+        public async Task<IActionResult> SetInfrastructureProfiles(Guid caId, [FromBody] SetInfrastructureProfilesRequest request)
+        {
+            await _currentUser.EnsureLoadedAsync();
+            if (_currentUser.User == null) return Unauthorized();
+
+            var ca = await _db.CertificateAuthorities.FirstOrDefaultAsync(c => c.Id == caId && !c.IsDeleted && !c.IsSshCa);
+            if (ca == null) return NotFound(new { error = "Certificate authority not found." });
+
+            if (!await _groupAuth.HasCaCapabilityAsync(_currentUser.User.Id, ca.Id, Capabilities.CaManage))
+                return StatusCode(403, new { error = "You are not authorized to manage this certificate authority." });
+
+            var asked = new (InfrastructureCertRole Role, Guid? ProfileId)[]
+            {
+                (InfrastructureCertProfiles.OcspResponder, request.OcspResponderCertProfileId),
+                (InfrastructureCertProfiles.Tsa, request.TsaCertProfileId),
+                (InfrastructureCertProfiles.CmpSigner, request.CmpSignerCertProfileId),
+            };
+            var changes = new List<object>();
+            foreach (var (role, profileId) in asked)
+            {
+                if (profileId == InfrastructureCertProfiles.ChosenId(ca, role))
+                    continue;
+                string? profileName = null;
+                if (profileId is Guid id)
+                {
+                    var profile = await _db.CertProfiles.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
+                    if (profile == null)
+                        return BadRequest(new { error = $"The certificate profile named for the {role.CertType} certificate does not exist." });
+                    if (InfrastructureCertProfiles.WhyNotChoosable(profile, role, ca) is string reason)
+                        return BadRequest(new { error = reason });
+                    profileName = profile.Name;
+                }
+                InfrastructureCertProfiles.Choose(ca, role, profileId);
+                changes.Add(new { Role = role.Key, ProfileId = profileId, ProfileName = profileName ?? role.DefaultProfileName, Default = profileId == null });
+            }
+
+            if (changes.Count > 0)
+            {
+                await _db.SaveChangesAsync();
+                await _audit.LogAsync(AuditActionType.CaUpdated, _currentUser.User.Id, _currentUser.User.Username,
+                    "CertificateAuthority", caId.ToString(), new { Action = "SetInfrastructureProfiles", Changes = changes, ca.Name, ca.Label },
+                    HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    certificateAuthorityId: ca.Id, spaceId: ca.SpaceId);
+            }
+
+            return Ok(new
+            {
+                message = changes.Count > 0
+                    ? "Saved. The choice applies the next time each certificate is issued; reissue to apply it now."
+                    : "No changes",
+                changed = changes.Count,
+            });
+        }
     }
 
     /// <summary>
@@ -1124,6 +1244,24 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// revoked is untouched either way.
         /// </summary>
         public bool RevokeSuperseded { get; set; } = true;
+    }
+
+    /// <summary>
+    /// Body for <c>PUT /api/v1/admin/authorities/{caId}/infrastructure-profiles</c>. Each id names
+    /// the certificate profile one of the CA's own certificates is issued under; null names the
+    /// seeded default.
+    /// </summary>
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+    public class SetInfrastructureProfilesRequest
+    {
+        /// <summary>Profile of the delegated OCSP responder certificate.</summary>
+        public Guid? OcspResponderCertProfileId { get; set; }
+
+        /// <summary>Profile of the timestamp signer certificate.</summary>
+        public Guid? TsaCertProfileId { get; set; }
+
+        /// <summary>Profile of the CMP message-signing certificate.</summary>
+        public Guid? CmpSignerCertProfileId { get; set; }
     }
 
 }

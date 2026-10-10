@@ -236,7 +236,7 @@ const CrlSchedulesSection: React.FC = () => {
                 rowKey={crlId}
                 loading={loading}
                 error={error}
-                empty={scopeCaId ? `No CRL schedules in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No CRL schedules configured'}
+                empty={scopeCaId ? `No CRL schedules in ${scopeLabel(scope)}. Change the scope in the top bar to see others.` : 'No CRL schedules configured'}
                 columns={columns}
                 selectable
                 bulkActions={bulkActions}
@@ -452,7 +452,7 @@ const ServiceUrlsTab: React.FC = () => {
             )}
             {!loading && !hierarchyError && rows.length === 0 && (
                 <div className="text-sm text-ink-muted">
-                    {scopeCaId ? `No certificate authorities in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate authorities found.'}
+                    {scopeCaId ? `No certificate authorities in ${scopeLabel(scope)}. Change the scope in the top bar to see others.` : 'No certificate authorities found.'}
                 </div>
             )}
             {rows.map((row) => (

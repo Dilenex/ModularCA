@@ -21,6 +21,7 @@ import { NewProfileButton } from './profiles/NewProfileButton';
 import { PROFILE_TABS as TABS, type ProfileTab as Tab } from './profiles/profileRoutes';
 import { periodRangeText, periodText } from '@shared/periodText';
 import { profileTypeLabel } from './sshProfileType';
+import { certProfileInUse, certProfileUseText } from './infrastructureProfiles';
 
 /* ─── Certificate Profiles Tab ─── */
 const CertProfilesTab: React.FC = () => {
@@ -80,6 +81,7 @@ const CertProfilesTab: React.FC = () => {
                     {p.inheritanceEnabled && p.inheritsFromId && (
                         <span className="px-2 py-0.5 text-[10px] rounded bg-accent-soft text-accent-ink border border-accent/40 shrink-0">Inherits: {resolveParentName(p.inheritsFromId)}</span>
                     )}
+                    {certProfileInUse(p) && <span title={certProfileUseText(p)} className="shrink-0"><Tag label="In use" /></span>}
                 </span>
             ),
         },
@@ -89,7 +91,7 @@ const CertProfilesTab: React.FC = () => {
     ];
 
     const bulkActions: DataTableBulkAction<any>[] = [
-        { label: 'Delete', single: true, variant: 'danger', onClick: (rows) => setConfirmDelete(rows[0]), enabledFor: (p) => mayChangeProfile(isInstanceWideCertProfile(p), systemCertRevoke) },
+        { label: 'Delete', single: true, variant: 'danger', onClick: (rows) => setConfirmDelete(rows[0]), enabledFor: (p) => !certProfileInUse(p) && mayChangeProfile(isInstanceWideCertProfile(p), systemCertRevoke) },
     ];
 
     const drawer = (p: any) => (

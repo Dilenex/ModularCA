@@ -11,6 +11,7 @@ import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { ocspStatus } from './ocspReadiness';
+import InfrastructureProfiles from '../components/InfrastructureProfiles';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -222,6 +223,10 @@ const CaDetail: React.FC = () => {
                 {/* Infrastructure certificates.
                     Placed next to the OCSP Responder section because that is where an operator
                     looks when OCSP is answering "unauthorized" — which is the state this repairs. */}
+                <DetailSection title="Infrastructure Certificate Profiles">
+                    <InfrastructureProfiles caId={ca.id} />
+                </DetailSection>
+
                 <DetailSection title="Infrastructure Certificates">
                     <div className="space-y-3">
                         <p className="text-xs text-ink-muted max-w-3xl">

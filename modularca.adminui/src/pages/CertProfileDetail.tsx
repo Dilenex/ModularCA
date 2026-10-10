@@ -21,6 +21,7 @@ import { PROFILE_TYPES, profileDetailPath } from './profiles/profileRoutes';
 import { type CtLogChoice, ctLogChoicesFromResponse, ctLogDisplay, ctLogIdsFromStored } from './profiles/ctLogChoices';
 import { actionButtonDanger } from '@shared/components/actionButtons';
 import { periodText } from '@shared/periodText';
+import { certProfileInUse } from './infrastructureProfiles';
 
 const CERT_TAB = PROFILE_TYPES.cert.listPath;
 
@@ -177,6 +178,9 @@ const CertProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => 
     // An instance-wide profile is read-only without CertRevoke at system scope, as the server requires.
     const readOnly = !isNew && !mayChangeProfile(isInstanceWideCertProfile(p), can(Capabilities.CertRevoke));
     const title = isNew ? 'New certificate profile' : p.name;
+    // The server refuses to delete a profile it finds by name or one a CA issues its own signers from.
+    const usedBy: string[] = p.infrastructureUses ?? [];
+    const undeletable = certProfileInUse(p);
 
     return (
         <DetailPage
@@ -191,16 +195,33 @@ const CertProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => 
             onSave={handleSave}
             onCancel={handleCancel}
             saveDisabled={blockedReasons.length > 0 || (!isNew && !dirty)}
-            actions={isNew || readOnly ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className={actionButtonDanger}>Delete</button>}
+            actions={isNew || readOnly || undeletable ? undefined : <button onClick={() => setConfirmDelete(true)} disabled={deleting} className={actionButtonDanger}>Delete</button>}
         >
             {(viewMode) => viewMode === 'edit' ? (
                 <DetailSection title={isNew ? 'New Certificate Profile' : 'Edit Certificate Profile'}>
                     <SubmitBlockedHint reasons={blockedReasons} />
                     <CertProfileForm value={editForm} onChange={setEditForm} mode={mode}
                         profileId={isNew ? undefined : id} parentProfiles={profiles} authorities={authorities}
-                        ekuCatalog={ekuCatalog} keyUsageCatalog={keyUsageCatalog} ctLogs={ctLogs} />
+                        ekuCatalog={ekuCatalog} keyUsageCatalog={keyUsageCatalog} ctLogs={ctLogs}
+                        systemPurpose={isNew ? null : p.systemPurpose} />
                 </DetailSection>
             ) : (<>
+                {undeletable && (
+                    <DetailSection title="In Use">
+                        {p.systemPurpose && (
+                            <p className="text-xs text-ink-muted max-w-3xl">
+                                The application finds this profile by its name: {p.systemPurpose}. It cannot be renamed,
+                                deleted, bound to one CA or changed in kind.
+                            </p>
+                        )}
+                        {usedBy.length > 0 && (
+                            <p className="text-xs text-ink-muted max-w-3xl">
+                                Named for a CA's own certificate by: {usedBy.join('; ')}. It cannot be deleted until
+                                those CAs name another profile on their own pages.
+                            </p>
+                        )}
+                    </DetailSection>
+                )}
                 <DetailSection title="Certificate Profile">
                     <DetailField label="Name" value={p.name} />
                     <DetailField label="Description" value={p.description} />

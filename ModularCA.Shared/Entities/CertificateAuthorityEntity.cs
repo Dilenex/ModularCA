@@ -109,6 +109,25 @@ namespace ModularCA.Shared.Entities
         public Guid? CmpSigningCertificateId { get; set; }
 
         /// <summary>
+        /// The certificate profile this CA's timestamp signer is issued under, or null for the
+        /// seeded default (<see cref="ModularCA.Shared.Utils.SystemCertProfiles.Tsa"/>). A profile
+        /// a CA names here cannot be deleted.
+        /// </summary>
+        public Guid? TsaCertProfileId { get; set; }
+
+        /// <summary>
+        /// The certificate profile this CA's OCSP responder is issued under, or null for the
+        /// seeded default (<see cref="ModularCA.Shared.Utils.SystemCertProfiles.OcspResponder"/>).
+        /// </summary>
+        public Guid? OcspResponderCertProfileId { get; set; }
+
+        /// <summary>
+        /// The certificate profile this CA's CMP signer is issued under, or null for the seeded
+        /// default (<see cref="ModularCA.Shared.Utils.SystemCertProfiles.CmpSigner"/>).
+        /// </summary>
+        public Guid? CmpSignerCertProfileId { get; set; }
+
+        /// <summary>
         /// Key storage backend: "Software" (encrypted keystore file) or "Pkcs11" (HSM).
         /// </summary>
         [MaxLength(20)]

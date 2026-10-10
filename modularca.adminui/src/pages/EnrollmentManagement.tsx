@@ -379,7 +379,7 @@ const EnrollmentManagement: React.FC = () => {
                 rows={tokens}
                 loading={loading}
                 error={error}
-                empty={scopeCaId ? `No active tokens in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No active tokens'}
+                empty={scopeCaId ? `No active tokens in ${scopeLabel(scope)}. Change the scope in the top bar to see others.` : 'No active tokens'}
                 {...recordTableProps(record)}
                 selectable
                 bulkActions={bulkActions}

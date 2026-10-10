@@ -355,7 +355,7 @@ const X509TemplatesTab: React.FC = () => {
                 rows={templates}
                 loading={loading}
                 error={error}
-                empty={scopeCaId || scopeSpaceId ? `No certificate templates in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate templates found'}
+                empty={scopeCaId || scopeSpaceId ? `No certificate templates in ${scopeLabel(scope)}. Change the scope in the top bar to see others.` : 'No certificate templates found'}
                 sort={{ key: 'name', dir: 'asc' }}
                 toolbarAction={<NewButton what="template" open={showCreate} onClick={() => setShowCreate(!showCreate)} />}
                 {...recordTableProps(record)}

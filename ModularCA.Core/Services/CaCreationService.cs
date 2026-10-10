@@ -350,7 +350,7 @@ public class CaCreationService(
         }
         else
         {
-            caCertProfile = await db.CertProfiles.FirstOrDefaultAsync(cp => cp.IsCaProfile && cp.Name == "Main CA Certificate Profile")
+            caCertProfile = await db.CertProfiles.FirstOrDefaultAsync(cp => cp.IsCaProfile && cp.Name == SystemCertProfiles.MainCa)
                 ?? throw new InvalidOperationException("Default CA Certificate Profile not found. Run bootstrap to seed profiles.");
         }
 
@@ -533,8 +533,8 @@ public class CaCreationService(
         {
             // A new CA issues itself a timestamp signer and an OCSP responder from these two
             // profiles. One that lists no usage would give it a responder that cannot answer.
-            await EnsureCertProfileRequestsEkuAsync("TSA Certificate Profile", IdKpTimeStampingOid, "timeStamping", "time stamping");
-            await EnsureCertProfileRequestsEkuAsync("OCSP Responder Certificate Profile", IdKpOcspSigningOid, "OCSPSigning", "OCSP signing");
+            await EnsureInfrastructureProfileSuitsAsync(null, InfrastructureCertProfiles.Tsa);
+            await EnsureInfrastructureProfileSuitsAsync(null, InfrastructureCertProfiles.OcspResponder);
 
             // For self-signed roots, link IssuerCertificateId back to the cert's own row.
             // For intermediates (issued via the pipeline), IssuerCertificateId is already set
@@ -696,11 +696,11 @@ public class CaCreationService(
             // committed yet, so the signer could not attribute a signature to it by row.
             (tsaCert, tsaCertificateId, tsaKey) = await IssueInfrastructureCertAsync(
                 newCaCert, caKey, ceremony, caEntity, signingProfile,
-                "TSA Certificate Profile", "TSA", logger);
+                InfrastructureCertProfiles.Tsa, logger);
 
             (ocspCert, ocspCertificateId, ocspKey) = await IssueInfrastructureCertAsync(
                 newCaCert, caKey, ceremony, caEntity, signingProfile,
-                "OCSP Responder Certificate Profile", "OCSP Responder", logger);
+                InfrastructureCertProfiles.OcspResponder, logger);
 
             // Seed default protocol configs using the per-CA signing profile
             var defaultCertProfile = await DefaultLeafProfileAsync(db, caEntity.Id, spaceId);
@@ -1002,14 +1002,18 @@ public class CaCreationService(
         EnsureSigningProfilePermitsInfrastructureEkus(signingProfile, reissueOcsp, reissueTsa);
         // The certificate profiles must ask for the usage too: issuance emits what they list.
         if (reissueTsa)
-            await EnsureCertProfileRequestsEkuAsync("TSA Certificate Profile", IdKpTimeStampingOid, "timeStamping", "time stamping");
+            await EnsureInfrastructureProfileSuitsAsync(caEntity, InfrastructureCertProfiles.Tsa);
         if (reissueOcsp)
-            await EnsureCertProfileRequestsEkuAsync("OCSP Responder Certificate Profile", IdKpOcspSigningOid, "OCSPSigning", "OCSP signing");
+            await EnsureInfrastructureProfileSuitsAsync(caEntity, InfrastructureCertProfiles.OcspResponder);
 
-        // The CMP signer profile is created on first use so installs that predate it need no
-        // migration; the seeder creates the same row on fresh installs.
+        // The default CMP signer profile is created on first use so installs that predate it
+        // need no migration; the seeder creates the same row on fresh installs.
         if (reissueCmpSigner)
-            await EnsureCmpSignerProfileAsync();
+        {
+            if (caEntity.CmpSignerCertProfileId == null)
+                await EnsureCmpSignerProfileAsync();
+            await EnsureInfrastructureProfileSuitsAsync(caEntity, InfrastructureCertProfiles.CmpSigner);
+        }
 
         // Captured before IssueInfrastructureCertAsync overwrites them.
         var previousOcspId = caEntity.OcspResponderCertificateId;
@@ -1032,7 +1036,7 @@ public class CaCreationService(
             {
                 var (cert, certificateId, key) = await IssueInfrastructureCertAsync(
                     caCert, caKey, caSigningContext, caEntity, signingProfile,
-                    "TSA Certificate Profile", "TSA", logger);
+                    InfrastructureCertProfiles.Tsa, logger);
                 newTsaCert = cert;
                 newKeys.Add((key, certificateId));
             }
@@ -1041,7 +1045,7 @@ public class CaCreationService(
             {
                 var (cert, certificateId, key) = await IssueInfrastructureCertAsync(
                     caCert, caKey, caSigningContext, caEntity, signingProfile,
-                    "OCSP Responder Certificate Profile", "OCSP Responder", logger);
+                    InfrastructureCertProfiles.OcspResponder, logger);
                 newOcspCert = cert;
                 newKeys.Add((key, certificateId));
             }
@@ -1049,7 +1053,7 @@ public class CaCreationService(
             {
                 var (cert, certificateId, key) = await IssueInfrastructureCertAsync(
                     caCert, caKey, caSigningContext, caEntity, signingProfile,
-                    CmpSignerProfileName, CmpSignerCertType, logger);
+                    InfrastructureCertProfiles.CmpSigner, logger);
                 newCmpCert = cert;
                 newKeys.Add((key, certificateId));
             }
@@ -1140,10 +1144,10 @@ public class CaCreationService(
     private const string IdKpOcspSigningOid = "1.3.6.1.5.5.7.3.9";
     private const string IdKpTimeStampingOid = "1.3.6.1.5.5.7.3.8";
 
-    /// <summary>Name of the seeded certificate profile the CMP signer is issued under.</summary>
-    public const string CmpSignerProfileName = "CMP Signer Certificate Profile";
+    /// <summary>Name of the seeded certificate profile the CMP signer is issued under unless the CA names another.</summary>
+    public const string CmpSignerProfileName = SystemCertProfiles.CmpSigner;
 
-    /// <summary>The certType tag that routes an issued infrastructure certificate to <c>CmpSigningCertificateId</c>.</summary>
+    /// <summary>What a CMP signer is called in its subject and in refusals.</summary>
     internal const string CmpSignerCertType = "CMP Signer";
 
     /// <summary>
@@ -1173,7 +1177,7 @@ public class CaCreationService(
 
         // Mirrors the OCSP responder profile the seeder writes, minus the EKU.
         var ocspTemplate = await db.CertProfiles.AsNoTracking()
-            .FirstOrDefaultAsync(cp => cp.Name == "OCSP Responder Certificate Profile");
+            .FirstOrDefaultAsync(cp => cp.Name == SystemCertProfiles.OcspResponder);
 
         db.CertProfiles.Add(new CertProfileEntity
         {
@@ -1300,45 +1304,26 @@ public class CaCreationService(
     }
 
     /// <summary>
-    /// Confirms an infrastructure certificate profile lists the extended key usage its
-    /// certificates exist for, before a CA is created or its certificates reissued. Issuance emits exactly what the profile
-    /// lists and an empty list is legitimate there, so a profile that has lost the usage yields a
-    /// certificate that cannot do its job, with no error. A profile that does not exist is left
-    /// to issuance, which says so.
+    /// Confirms, before a CA is created or its certificates reissued, that the profile
+    /// <paramref name="role"/> is issued under can do the job: the profile <paramref name="ca"/>
+    /// names, or the seeded default when it names none or is not created yet (null). Issuance
+    /// emits exactly what the profile lists and an empty list is legitimate there, so a profile
+    /// that has lost the usage yields a certificate that cannot do its job, with no error. A
+    /// profile the CA names must also be one it may issue under. A profile that does not exist
+    /// is left to issuance, which says so.
     /// </summary>
-    /// <param name="profileName">The certificate profile's name.</param>
-    /// <param name="oid">The extended key usage, as an OID.</param>
-    /// <param name="friendly">Its catalog name, as the console stores it.</param>
-    /// <param name="what">What to call it in the refusal.</param>
-    private async Task EnsureCertProfileRequestsEkuAsync(string profileName, string oid, string friendly, string what)
+    private async Task EnsureInfrastructureProfileSuitsAsync(CertificateAuthorityEntity? ca, InfrastructureCertRole role)
     {
-        var stored = await db.CertProfiles.AsNoTracking()
-            .Where(cp => cp.Name == profileName)
-            .Select(cp => cp.ExtendedKeyUsages)
-            .FirstOrDefaultAsync();
-        if (stored == null && !await db.CertProfiles.AnyAsync(cp => cp.Name == profileName))
+        var chosenId = ca == null ? null : InfrastructureCertProfiles.ChosenId(ca, role);
+        var profile = await InfrastructureCertProfiles.ResolveAsync(db, chosenId, role);
+        if (profile == null)
             return;
 
-        List<string> requested;
-        try
-        {
-            requested = JsonSerializer.Deserialize<List<string>>(
-                string.IsNullOrWhiteSpace(stored) ? "[]" : stored, SafeJsonOptions.Default) ?? new List<string>();
-        }
-        catch (JsonException)
-        {
-            requested = new List<string>();
-        }
-
-        if (requested.Any(r => string.Equals(r.Trim(), oid, StringComparison.Ordinal)
-                            || UsageCatalogResolver.Canonicalize(r) == UsageCatalogResolver.Canonicalize(oid)
-                            || UsageCatalogResolver.Canonicalize(r) == UsageCatalogResolver.Canonicalize(friendly)))
-            return;
-
-        throw new ConfigurationValidationException(
-            $"The certificate profile '{profileName}' does not list {what} ({oid}) among its extended key " +
-            "usages, so a certificate issued from it would not work. Nothing has been changed. Add the " +
-            "usage to that certificate profile and try again.", ErrorCodes.SigningProfileMissingRequiredEku);
+        var reason = ca != null && chosenId != null
+            ? InfrastructureCertProfiles.WhyNotChoosable(profile, role, ca)
+            : InfrastructureCertProfiles.WhyUnsuitable(profile, role);
+        if (reason != null)
+            throw new ConfigurationValidationException(reason + " Nothing has been changed.", ErrorCodes.SigningProfileMissingRequiredEku);
     }
 
     /// <summary>
@@ -1574,6 +1559,8 @@ public class CaCreationService(
     /// the CA entity and returns it with its row id and the pending key's reference, for the
     /// caller to commit once its rows are committed. The pending key is retired if issuance fails.
     /// The subject is "{CA CN} {certType}", within the CA's own DN constraints (<see cref="InfrastructureSubject"/>).
+    /// The certificate profile is the one the CA names for <paramref name="role"/>, or the
+    /// seeded default when it names none (<see cref="InfrastructureCertProfiles.ResolveAsync"/>).
     /// </summary>
     private async Task<(X509Certificate cert, Guid certificateId, KeyRef key)> IssueInfrastructureCertAsync(
         X509Certificate caCert,
@@ -1581,10 +1568,10 @@ public class CaCreationService(
         SigningContext caSigningContext,
         CertificateAuthorityEntity caEntity,
         SigningProfileEntity signingProfile,
-        string certProfileName,
-        string certType,
+        InfrastructureCertRole role,
         ILogger logger)
     {
+        var certType = role.CertType;
         // Resolve key algorithm to match the parent CA
         var (alg, sizeOrCurve) = ResolveTsaKeyAlgorithmForParent(caCert.GetPublicKey());
 
@@ -1602,9 +1589,8 @@ public class CaCreationService(
         }
         var subjectDn = InfrastructureSubject(caCert, $"{parentCn} {certType}");
 
-        // Look up the infrastructure cert profile
-        var certProfile = await db.CertProfiles.FirstOrDefaultAsync(cp => cp.Name == certProfileName)
-            ?? throw new InvalidOperationException($"Infrastructure cert profile '{certProfileName}' not found. Run bootstrap to seed it.");
+        var certProfile = await InfrastructureCertProfiles.ResolveAsync(db, InfrastructureCertProfiles.ChosenId(caEntity, role), role)
+            ?? throw new InvalidOperationException($"Infrastructure cert profile '{role.DefaultProfileName}' not found. Run bootstrap to seed it.");
 
         var keyContext = caSigningContext.Purpose == SigningPurpose.Ceremony
             ? SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, caEntity.SpaceId, caEntity.Id, caSigningContext.CeremonyId)
@@ -1634,11 +1620,11 @@ public class CaCreationService(
             var csrEntity = await db.CertificateRequests.FirstOrDefaultAsync(c => c.Id == csrId);
             var issuedCertificateId = csrEntity?.IssuedCertificateId
                 ?? throw new InvalidOperationException($"Issued {certType} certificate is not recorded on its request.");
-            if (certType == "TSA")
+            if (role == InfrastructureCertProfiles.Tsa)
                 caEntity.TsaCertificateId = issuedCertificateId;
-            else if (certType == "OCSP Responder")
+            else if (role == InfrastructureCertProfiles.OcspResponder)
                 caEntity.OcspResponderCertificateId = issuedCertificateId;
-            else if (certType == CmpSignerCertType)
+            else if (role == InfrastructureCertProfiles.CmpSigner)
                 caEntity.CmpSigningCertificateId = issuedCertificateId;
             await db.SaveChangesAsync();
 

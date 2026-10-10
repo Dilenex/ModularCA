@@ -465,6 +465,19 @@ public class ModularCADbContext : DbContext
                   .WithMany()
                   .HasForeignKey(e => e.SpaceId)
                   .OnDelete(DeleteBehavior.Restrict);
+            // A profile a CA issues its own signers from stays until the CA names another.
+            entity.HasOne<CertProfileEntity>()
+                  .WithMany()
+                  .HasForeignKey(e => e.TsaCertProfileId)
+                  .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<CertProfileEntity>()
+                  .WithMany()
+                  .HasForeignKey(e => e.OcspResponderCertProfileId)
+                  .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<CertProfileEntity>()
+                  .WithMany()
+                  .HasForeignKey(e => e.CmpSignerCertProfileId)
+                  .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<CaServiceUrlEntity>(entity =>

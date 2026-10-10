@@ -549,7 +549,7 @@ const X509Authorities: React.FC = () => {
                 error={error}
                 empty={consoleCas(capabilities).length === 0 && canCreateCa
                     ? 'No certificate authorities yet. Create the first one with + New.'
-                    : scopeCaId || scopeSpaceId ? `No certificate authorities in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No certificate authorities found'}
+                    : scopeCaId || scopeSpaceId ? `No certificate authorities in ${scopeLabel(scope)}. Change the scope in the top bar to see others.` : 'No certificate authorities found'}
                 columns={caColumns}
                 selectable
                 exportFileName="certificate-authorities"
