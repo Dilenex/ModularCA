@@ -33,18 +33,22 @@ RUN chmod 0644 /usr/share/keyrings/pgdg.asc \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --system modularca && useradd --system --gid modularca --home-dir /opt/modularca --shell /usr/sbin/nologin modularca
 
-# share/ holds the schema-ownership repair SQL, which is run as the PostgreSQL superuser: it stays
-# root-owned under /usr/share/modularca. install.sh and deploy/ are for a host install.
+# share/ holds the schema-ownership repair SQL, which is run as the PostgreSQL superuser, and the
+# KRL fetcher an administrator copies to each SSH server: both stay root-owned under
+# /usr/share/modularca, where a host install puts them. install.sh and deploy/ are for a host install.
 # /var/lib/modularca is kept only so that a mount an older manifest names still has a target.
 COPY ${DIST} /tmp/dist.tar.gz
 RUN mkdir -p /opt/modularca /var/lib/modularca /usr/share/modularca \
  && tar -xzf /tmp/dist.tar.gz --strip-components=1 -C /opt/modularca \
  && rm /tmp/dist.tar.gz \
- && mv /opt/modularca/share/sql /usr/share/modularca/sql && rmdir /opt/modularca/share \
+ && mv /opt/modularca/share/sql /usr/share/modularca/sql \
+ && mv /opt/modularca/share/ssh-krl /usr/share/modularca/ssh-krl \
+ && rmdir /opt/modularca/share \
  && rm -rf /opt/modularca/install.sh /opt/modularca/deploy \
  && chown -R root:root /opt/modularca /usr/share/modularca \
  && chmod -R u=rwX,go=rX /opt/modularca /usr/share/modularca \
  && chmod 0755 /opt/modularca/ModularCA.API /opt/modularca/ModularCA.Keystore.Unlocker /opt/modularca/modularca-migrate \
+      /usr/share/modularca/ssh-krl/modularca-krl-fetch.sh \
  && for dir in config keystores logs backups; do \
       mkdir -p "/opt/modularca/$dir" \
       && chown -R modularca:modularca "/opt/modularca/$dir" \
