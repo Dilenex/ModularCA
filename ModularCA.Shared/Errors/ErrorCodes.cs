@@ -146,6 +146,12 @@ public static class ErrorCodes
     /// </summary>
     public const string CeremonyQuorumUnreachable = "MCA-CFG-021";
 
+    /// <summary>
+    /// The request profile a certificate request was made under does not permit it: its names,
+    /// its certificate profile or its CA. Raised when the request is submitted, approved or issued.
+    /// </summary>
+    public const string RequestProfileRefused = "MCA-CFG-022";
+
     // ---- RES: missing resource, or collision with existing state ---------------------------
 
     /// <summary>A resource the request named does not exist or is not of the required kind.</summary>

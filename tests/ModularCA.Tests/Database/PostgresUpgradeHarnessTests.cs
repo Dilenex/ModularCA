@@ -100,6 +100,12 @@ public class PostgresUpgradeHarnessTests
     /// <summary>The 0.4.2 migration that adds the certificate type of an SSH request profile and an SSH certificate profile, without its timestamp.</summary>
     public const string SshProfileCertificateType = "SshProfileCertificateType";
 
+    /// <summary>The 0.4.2 migration that lets a CA name the profiles of its own certificates, without its timestamp.</summary>
+    public const string CaInfrastructureCertProfiles = "CaInfrastructureCertProfiles";
+
+    /// <summary>The 0.4.2 migration that adds the purpose-specific certificate profiles to an install that predates them, without its timestamp.</summary>
+    public const string StandardCertProfilesMigration = "StandardCertProfiles";
+
     private const string ServerVariable = "MODULARCA_TEST_PG";
     private const string RehearsalVariable = "MODULARCA_TEST_PG_REHEARSAL";
     private const string RehearsalAuditVariable = "MODULARCA_TEST_PG_REHEARSAL_AUDIT";
@@ -1870,6 +1876,117 @@ public class PostgresUpgradeHarnessTests
         {
             NpgsqlConnection.ClearAllPools();
             await DropDatabaseAsync(server, otherCase);
+        }
+    }
+
+    /// <summary>
+    /// The <c>StandardCertProfiles</c> migration on an install that predates the profiles: each
+    /// is added as <see cref="ModularCA.Shared.Utils.StandardCertProfiles"/> defines it, except
+    /// one whose name the install already uses in any letter case; each added profile is linked
+    /// to the signing profiles the main profile is linked to; and a seeded request profile gets
+    /// its default only where it has neither a default nor an allowed list. Nothing else of any
+    /// profile changes, and an empty database is left empty for bootstrap.
+    /// </summary>
+    [RequiresEnvironmentFact(ServerVariable)]
+    public async Task The_standard_certificate_profiles_are_added_to_an_install_that_predates_them_and_nothing_is_overwritten()
+    {
+        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+        Guid main = Guid.NewGuid(), webTls = Guid.NewGuid(), ownCodeSigning = Guid.NewGuid(), linked = Guid.NewGuid(), unlinked = Guid.NewGuid();
+
+        string CertProfile(Guid id, string name) =>
+            "INSERT INTO \"CertProfiles\" (\"Id\",\"Name\",\"Description\",\"IsCaProfile\",\"KeyUsages\",\"ExtendedKeyUsages\",\"AllowedKeyAlgorithms\",\"AllowedKeySizes\","
+            + "\"AllowedSignatureAlgorithms\",\"CreatedAt\",\"Revision\",\"UpdatedAt\",\"CanBeDeleted\",\"ProfileHash\",\"CtEnabled\",\"AllowWildcard\",\"InheritanceEnabled\") "
+            + $"VALUES ('{id}','{name}','',false,'[]','[]','[]','[]','[]','2026-03-01T08:15:30Z',0,'2026-03-01T08:15:30Z',true,'',false,false,false); ";
+        string SigningProfile(Guid id, string name) =>
+            "INSERT INTO \"SigningProfiles\" (\"Id\",\"Name\",\"Description\",\"AllowedAlgorithms\",\"AllowedEKUs\",\"CreatedAt\",\"UpdatedAt\",\"Revision\","
+            + "\"ExtendedKeyUsageCritical\",\"InheritanceEnabled\",\"InhibitAnyPolicy\",\"IsDefault\") "
+            + $"VALUES ('{id}','{name}','','[]','[]','2026-03-01T08:15:30Z','2026-03-01T08:15:30Z',0,false,false,false,false); ";
+        string RequestProfile(string name, string defaultId = "NULL", string allowed = "[]") =>
+            "INSERT INTO \"RequestProfiles\" (\"Id\",\"Name\",\"SubjectDnRules\",\"SanRules\",\"AllowedCertProfileIds\",\"DefaultCertProfileId\",\"RequireApproval\","
+            + "\"RequiredApprovalCount\",\"CreatedAt\",\"UpdatedAt\",\"InheritanceEnabled\") "
+            + $"VALUES ('{Guid.NewGuid()}','{name}','[]','{{}}','{allowed}',{defaultId},false,1,'2026-03-01T08:15:30Z','2026-03-01T08:15:30Z',false); ";
+
+        const string defaults = "SELECT string_agg(r.\"Name\"::text || '=' || coalesce(c.\"Name\"::text, 'none'), E'\\n' ORDER BY r.\"Name\"::text COLLATE \"C\") "
+            + "FROM \"RequestProfiles\" r LEFT JOIN \"CertProfiles\" c ON c.\"Id\" = r.\"DefaultCertProfileId\"";
+
+        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+        await CreateDatabaseAsync(server, appName);
+        try
+        {
+            await using var app = CreateApp(WithDatabase(server, appName));
+            await MigrateThroughAsync(app, CaInfrastructureCertProfiles);
+            await ExecAsync(app,
+                CertProfile(main, "Main Certificate Profile") + CertProfile(webTls, "Web TLS Certificate Profile") + CertProfile(ownCodeSigning, "code signing")
+                + SigningProfile(linked, "Issuing Signing Profile") + SigningProfile(unlinked, "Other Signing Profile")
+                + $"INSERT INTO \"AllowedCertProfileSigningProfiles\" (\"Id\",\"CertProfileId\",\"SigningProfileId\") VALUES ('{Guid.NewGuid()}','{main}','{linked}'); "
+                + RequestProfile("Web Server (ACME)") + RequestProfile("Web TLS (Internal)")
+                + RequestProfile("Enterprise Server (EST)", $"'{main}'")
+                + RequestProfile("MDM Device (SCEP)", allowed: $"[\"{main}\"]")
+                + RequestProfile("Enterprise User (CMP)") + RequestProfile("Code Signing") + RequestProfile("Custom"));
+            async Task<string> Untouched() => await TextAsync(app,
+                "SELECT string_agg(to_jsonb(t)::text, E'\\n' ORDER BY t.\"Id\") FROM \"CertProfiles\" t WHERE t.\"Id\" IN "
+                + $"('{main}','{webTls}','{ownCodeSigning}')")
+                + await TextAsync(app, "SELECT string_agg((to_jsonb(t) - 'DefaultCertProfileId' - 'UpdatedAt')::text, E'\\n' ORDER BY t.\"Id\") FROM \"RequestProfiles\" t");
+            var before = await Untouched();
+
+            await MigrateThroughAsync(app, StandardCertProfilesMigration);
+
+            // A request records its request profile from here on; nothing already stored names one.
+            Assert.Equal("YES", await TextAsync(app, "SELECT is_nullable FROM information_schema.columns WHERE table_name = 'CertificateRequests' AND column_name = 'RequestProfileId'"));
+
+            // The install's own "code signing" stands; the three other profiles are added as defined.
+            Assert.Equal("Device Client\nMain Certificate Profile\nTLS Server\nUser Authentication and Email\nWeb TLS Certificate Profile\ncode signing",
+                await TextAsync(app, "SELECT string_agg(\"Name\"::text, E'\\n' ORDER BY \"Name\"::text COLLATE \"C\") FROM \"CertProfiles\""));
+            foreach (var standard in ModularCA.Shared.Utils.StandardCertProfiles.All.Where(p => p.Name != ModularCA.Shared.Utils.StandardCertProfiles.CodeSigning))
+            {
+                var row = System.Text.Json.JsonDocument.Parse(await TextAsync(app, $"SELECT to_jsonb(t)::text FROM \"CertProfiles\" t WHERE t.\"Name\" = '{standard.Name}'")).RootElement;
+                Assert.Equal(standard.Description, row.GetProperty("Description").GetString());
+                Assert.Equal(standard.KeyUsages, System.Text.Json.JsonSerializer.Deserialize<string[]>(row.GetProperty("KeyUsages").GetString()!));
+                Assert.Equal(standard.ExtendedKeyUsageOids, System.Text.Json.JsonSerializer.Deserialize<string[]>(row.GetProperty("ExtendedKeyUsages").GetString()!));
+                Assert.Equal(ModularCA.Shared.Utils.StandardCertProfiles.ValidityPeriodMin, row.GetProperty("ValidityPeriodMin").GetString());
+                Assert.Equal(standard.ValidityPeriodMax, row.GetProperty("ValidityPeriodMax").GetString());
+                Assert.False(row.GetProperty("IsCaProfile").GetBoolean());
+                Assert.True(row.GetProperty("CanBeDeleted").GetBoolean());
+                Assert.Equal(System.Text.Json.JsonValueKind.Null, row.GetProperty("SpaceId").ValueKind);
+                Assert.Equal(System.Text.Json.JsonValueKind.Null, row.GetProperty("CertificateAuthorityId").ValueKind);
+            }
+
+            // Linked where the main profile is linked, and nowhere else.
+            Assert.Equal(4, await ScalarAsync(app, $"SELECT count(*) FROM \"AllowedCertProfileSigningProfiles\" WHERE \"SigningProfileId\" = '{linked}'"));
+            Assert.Equal(0, await ScalarAsync(app, $"SELECT count(*) FROM \"AllowedCertProfileSigningProfiles\" WHERE \"SigningProfileId\" = '{unlinked}'"));
+            Assert.Equal(0, await ScalarAsync(app, $"SELECT count(*) FROM \"AllowedCertProfileSigningProfiles\" WHERE \"CertProfileId\" = '{ownCodeSigning}'"));
+
+            // A default only where the profile had neither a default nor an allowed list, and only from an added profile.
+            Assert.Equal(
+                "Code Signing=none\nCustom=none\nEnterprise Server (EST)=Main Certificate Profile\nEnterprise User (CMP)=User Authentication and Email\n"
+                + "MDM Device (SCEP)=none\nWeb Server (ACME)=TLS Server\nWeb TLS (Internal)=Web TLS Certificate Profile",
+                await TextAsync(app, defaults));
+            Assert.Equal(before, await Untouched());
+
+            await MigrateToLatestAsync(app, "application");
+            Assert.Equal(before, await Untouched());
+            Assert.Equal(6, await ScalarAsync(app, "SELECT count(*) FROM \"CertProfiles\""));
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await DropDatabaseAsync(server, appName);
+        }
+
+        // An empty database stays empty: bootstrap seeds the profiles itself.
+        var empty = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+        await CreateDatabaseAsync(server, empty);
+        try
+        {
+            await using var app = CreateApp(WithDatabase(server, empty));
+            await MigrateToLatestAsync(app, "application");
+            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"CertProfiles\""));
+            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"RequestProfiles\""));
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await DropDatabaseAsync(server, empty);
         }
     }
 

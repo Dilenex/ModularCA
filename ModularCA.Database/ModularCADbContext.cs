@@ -263,6 +263,12 @@ public class ModularCADbContext : DbContext
                   .WithMany()
                   .HasForeignKey(c => c.IssuedCertificateId)
                   .OnDelete(DeleteBehavior.SetNull);
+            // RequestProfileService refuses to delete a profile open requests were made under;
+            // a finished request merely forgets a profile that is deleted later.
+            entity.HasOne<RequestProfileEntity>()
+                  .WithMany()
+                  .HasForeignKey(c => c.RequestProfileId)
+                  .OnDelete(DeleteBehavior.SetNull);
         });
         modelBuilder.Entity<CertificateEntity>(c =>
         {

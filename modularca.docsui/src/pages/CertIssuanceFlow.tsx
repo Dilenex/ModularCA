@@ -292,6 +292,31 @@ export default function CertIssuanceFlow() {
                         reviewed and approved by an authorized administrator before issuance proceeds.
                         Configured per request profile for user-facing enrollment.</li>
                 </ul>
+
+                <h3 className="text-lg font-semibold text-ink mt-4 mb-2">Where the Request Profile Is Enforced</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    A request records the request profile it was made under, and the server holds it to that
+                    profile three times: when it is submitted, when it is approved and when it is issued. Each
+                    time the names checked are the ones the certificate would carry, with any subject or SAN
+                    override applied, so an override cannot carry a name past the profile.
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-4">
+                    <li><strong>Console and API requests</strong> must name a request profile
+                        (<code>requestProfileId</code>); one without is refused. The certificate profile must be
+                        the request profile's default or in its allowed list. A request profile that names no
+                        certificate profile takes any for an operator and cannot be used for self-service.</li>
+                    <li><strong>Fixed and default values</strong> are supplied by the server: a field the profile
+                        fixes carries the fixed value, and a field it gives a default for carries the default when
+                        the request left it out. This applies to the enrollment protocols as well.</li>
+                    <li><strong>Subject alternative names:</strong> a type the profile does not list is refused,
+                        and a profile that lists no type allows none.</li>
+                    <li><strong>A changed profile</strong> applies to requests still waiting: one that no longer
+                        satisfies it is refused at approval or issuance with the reason. A request profile cannot
+                        be deleted while requests are waiting under it.</li>
+                    <li><strong>Not covered:</strong> automatic renewals, the API-key integration route and
+                        requests stored before this version carry no request profile and are not checked
+                        against one.</li>
+                </ul>
             </section>
 
             {/* Post-Quantum Cryptography */}

@@ -654,6 +654,7 @@ export interface CreateCsrRequest {
     keySize: string;
     signingProfileId: string;
     certificateProfileId: string;
+    requestProfileId?: string | null;
     requestorUserId: string;
 }
 
@@ -937,6 +938,7 @@ export interface IssueWithKeyRequest {
     keySize: string;
     certProfileId: string;
     signingProfileId: string;
+    requestProfileId?: string | null;
     notBefore?: string | null;
     notAfter?: string | null;
 }
@@ -1672,6 +1674,7 @@ export interface UploadCsrRequest {
     pem: string;
     certificateProfileId: string;
     signingProfileId: string;
+    requestProfileId?: string | null;
     requestorUserId: string;
     subjectOverrides?: Record<string, string> | null;
     sanOverrides?: SanOverride[] | null;

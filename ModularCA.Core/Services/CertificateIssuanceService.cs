@@ -403,6 +403,10 @@ namespace ModularCA.Core.Services
             // Re-validate overridden subject DN and SANs against profile rules
             ValidateOverridesAgainstProfile(subjectDn, effectiveSans, csrEntity.SubjectOverrides, csrEntity.SanOverrides, effectiveCertProfile.AllowWildcard);
 
+            // The names are final here, overrides included: hold them to the request profile
+            // the request was made under.
+            await new RequestProfileEnforcement(_db, _profileResolver).EnsureSatisfiedAsync(csrEntity, subjectDn, effectiveSans);
+
             // Evaluate system-wide certificate policy rules before building the certificate
             EnforceCertPolicy(csrEntity.KeyAlgorithm, csrEntity.KeySize, csrEntity.SignatureAlgorithm,
                 validFrom, validTo, subjectDn.ToString(), ParseSanJson(effectiveSans),
@@ -856,6 +860,9 @@ namespace ModularCA.Core.Services
             // Re-validate overridden subject DN and SANs against profile rules
             ValidateOverridesAgainstProfile(reissueSubjectDn, reissueEffectiveSans, csrEntity.SubjectOverrides, csrEntity.SanOverrides, effectiveCertProfile.AllowWildcard);
 
+            // A reissue under new names is held to the original request's profile as well.
+            await new RequestProfileEnforcement(_db, _profileResolver).EnsureSatisfiedAsync(csrEntity, reissueSubjectDn, reissueEffectiveSans);
+
             // Evaluate system-wide certificate policy rules before building the certificate
             EnforceCertPolicy(csrEntity.KeyAlgorithm, csrEntity.KeySize, csrEntity.SignatureAlgorithm,
                 validFrom, validTo, reissueSubjectDn.ToString(), ParseSanJson(reissueEffectiveSans),
@@ -1074,7 +1081,7 @@ namespace ModularCA.Core.Services
         /// <param name="originalSubject">The original subject DN resolved from the CSR.</param>
         /// <param name="subjectOverridesJson">JSON dictionary of subject field overrides, or null.</param>
         /// <returns>The subject DN with overrides applied.</returns>
-        private static X509Name ApplySubjectOverrides(X509Name originalSubject, string? subjectOverridesJson)
+        internal static X509Name ApplySubjectOverrides(X509Name originalSubject, string? subjectOverridesJson)
         {
             if (string.IsNullOrWhiteSpace(subjectOverridesJson))
                 return originalSubject;

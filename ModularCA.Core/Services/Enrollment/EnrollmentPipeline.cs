@@ -173,6 +173,7 @@ public class EnrollmentPipeline : IEnrollmentPipeline
 
         var sanJson = JsonSerializer.Serialize(request.SubjectAlternativeNames);
         var requireApproval = false;
+        string? subjectOverrides = null;
         if (context.RequestProfileId != null)
         {
             var (isValid, error, modifiedSubject) = await _requestProfileValidation
@@ -190,6 +191,12 @@ public class EnrollmentPipeline : IEnrollmentPipeline
             // never runs.
             var effective = await _profileResolution.ResolveRequestProfileAsync(context.RequestProfileId.Value);
             requireApproval = effective.RequireApproval;
+
+            // The certificate is built from the CSR's own subject, so what the profile settled
+            // above (a fixed value, a default, the common name added for it) reaches it only as
+            // an override. Without this the row said one subject and the certificate another.
+            subjectOverrides = RequestProfileEnforcement.ProtocolSubjectOverrides(
+                effective, request.CsrPem, sanJson, subject);
         }
 
         // 7. The protocol's own check, now that the profile is known.
@@ -218,6 +225,8 @@ public class EnrollmentPipeline : IEnrollmentPipeline
             CertProfile = certProfile,
             SigningProfileId = signingProfile.Id,
             SigningProfile = signingProfile,
+            RequestProfileId = context.RequestProfileId,
+            SubjectOverrides = subjectOverrides,
         };
         _db.CertificateRequests.Add(csrEntity);
         await _db.SaveChangesAsync(cancellationToken);

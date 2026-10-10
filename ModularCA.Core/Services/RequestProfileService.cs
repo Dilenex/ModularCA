@@ -95,14 +95,26 @@ namespace ModularCA.Core.Services
             return MapToDto(entity);
         }
 
+        /// <summary>The request statuses that still lead to approval or issuance.</summary>
+        private static readonly string[] OpenStatuses = ["Pending", "PendingApproval", "PartiallyApproved", "Approved"];
+
         /// <summary>
-        /// Deletes a request profile by ID. Returns true if deleted, false if not found.
+        /// Deletes a request profile by ID. Returns true if deleted, false if not found. A
+        /// profile that requests still waiting for approval or issuance were made under is
+        /// refused (<see cref="ModularCA.Shared.Errors.ResourceConflictException"/>): deleting it
+        /// would release them from its rules.
         /// </summary>
         public async Task<bool> DeleteAsync(Guid id)
         {
             var entity = await _db.RequestProfiles.FindAsync(id);
             if (entity == null)
                 return false;
+
+            var open = await _db.CertificateRequests.CountAsync(r => r.RequestProfileId == id && OpenStatuses.Contains(r.Status));
+            if (open > 0)
+                throw new ModularCA.Shared.Errors.ResourceConflictException(
+                    $"The request profile '{entity.Name}' cannot be deleted: {open} request{(open == 1 ? " is" : "s are")} still waiting "
+                    + "for approval or issuance under it.", remediation: "Issue, reject or cancel those requests first.");
 
             _db.RequestProfiles.Remove(entity);
             await _db.SaveChangesAsync();

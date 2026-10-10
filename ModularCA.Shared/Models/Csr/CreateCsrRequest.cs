@@ -25,6 +25,9 @@ namespace ModularCA.Shared.Models.Csr
 
         public Guid CertificateProfileId { get; set; }
 
+        /// <summary>The request profile the request is made under. The console routes require it.</summary>
+        public Guid? RequestProfileId { get; set; }
+
         public Guid RequestorUserId { get; set; }
     }
 }

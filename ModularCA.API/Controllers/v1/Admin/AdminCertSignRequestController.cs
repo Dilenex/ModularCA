@@ -93,12 +93,15 @@ public class AdminCertSignRequestController(
         return Ok(requests);
     }
 
+    private const string RequestProfileRequired = "A request profile is required: name the one this request is made under as requestProfileId.";
+
     /// <summary>
     /// Generates a new certificate signing request from the provided parameters, with a key
     /// pair the server generates. The private key is held on the request until the certificate
     /// is issued and downloaded as PKCS#12 from <c>{id}/pkcs12</c>. Requires CaOperator
     /// (state-changing: persists a CsrSubmitted record) — overrides the read-only CaAuditor
-    /// class policy so an auditor cannot seed the issuance pipeline.
+    /// class policy so an auditor cannot seed the issuance pipeline. The request names its
+    /// request profile (400 without one) and is held to it (<see cref="RequestProfileEnforcement"/>).
     /// </summary>
     [HttpPost]
     [Authorize]
@@ -108,9 +111,14 @@ public class AdminCertSignRequestController(
         await _currentUser.EnsureLoadedAsync();
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
             return Unauthorized();
+        if (request.RequestProfileId is not Guid requestProfileId)
+            return BadRequest(new { error = RequestProfileRequired });
+        request.SubjectName = await new RequestProfileEnforcement(_db, profiles).SettleSubjectNameAsync(
+            requestProfileId, request.CertificateProfileId, request.SigningProfileId, selfService: false,
+            request.SubjectName, request.SubjectAlternativeNames);
         var generated = await _csrService.GenerateCsrAsync(request, _currentUser.User.Id);
         await _audit.LogAsync(AuditActionType.CsrSubmitted, _currentUser.User.Id, _currentUser.User.Username,
-            "CertificateRequest", generated.RequestId.ToString(), new { request.SubjectName },
+            "CertificateRequest", generated.RequestId.ToString(), new { request.SubjectName, RequestProfileId = requestProfileId },
             HttpContext.Connection.RemoteIpAddress?.ToString());
         return Ok(new { csrId = generated.RequestId, csr = generated.CsrPem, keyHeld = generated.KeyHeld });
     }
@@ -199,8 +207,9 @@ public class AdminCertSignRequestController(
         try { profile = await profiles.ResolveRequestProfileAsync(request.RequestProfileId); }
         catch (InvalidOperationException) { return NotFound(new { error = "Request profile not found." }); }
 
-        var dnRules = JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(profile.SubjectDnRules) ?? new();
-        var sanRules = JsonSerializer.Deserialize<SanRules>(profile.SanRules) ?? new();
+        // Read whatever the case of the stored keys: bootstrap writes camel case, the console Pascal case.
+        var dnRules = JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(profile.SubjectDnRules, SafeJsonOptions.Stored) ?? new();
+        var sanRules = JsonSerializer.Deserialize<SanRules>(profile.SanRules, SafeJsonOptions.Stored) ?? new();
 
         var response = new ValidateAgainstProfileResponse { Valid = true };
 
@@ -454,14 +463,19 @@ public class AdminCertSignRequestController(
         await _currentUser.EnsureLoadedAsync();
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
             return Unauthorized();
+        if (request.RequestProfileId is not Guid requestProfileId)
+            return BadRequest(new { error = RequestProfileRequired });
+        var subjectOverrides = await new RequestProfileEnforcement(_db, profiles).SettleUploadAsync(
+            requestProfileId, request.CertificateProfileId, request.SigningProfileId, selfService: false,
+            request.Pem, request.SubjectOverrides, request.SanOverrides);
         var pem = await _csrService.UploadCsrAsync(
             request.Pem, request.CertificateProfileId, request.SigningProfileId,
-            _currentUser.User.Id, request.SubjectOverrides, request.SanOverrides,
-            request.NotBefore, request.NotAfter);
+            _currentUser.User.Id, subjectOverrides, request.SanOverrides,
+            request.NotBefore, request.NotAfter, requestProfileId);
         if (pem == null)
             return BadRequest(new { error = "Failed to upload CSR" });
         await _audit.LogAsync(AuditActionType.CsrSubmitted, _currentUser.User.Id, _currentUser.User.Username,
-            "CertificateRequest", null, new { Source = "Upload", HasOverrides = request.SubjectOverrides != null || request.SanOverrides != null },
+            "CertificateRequest", null, new { Source = "Upload", HasOverrides = request.SubjectOverrides != null || request.SanOverrides != null, RequestProfileId = requestProfileId },
             HttpContext.Connection.RemoteIpAddress?.ToString());
         return Ok();
     }
@@ -504,6 +518,11 @@ public class AdminCertSignRequestController(
         if (csr.Status != "Pending" && csr.Status != "PendingApproval" && csr.Status != "PartiallyApproved")
             return BadRequest(new { error = $"CSR is already {csr.Status}" });
 
+        // The request profile may have changed since the request was made, and the names an
+        // approver agrees to are the ones issuance will hold to it.
+        if (await new RequestProfileEnforcement(_db, profiles).WhyRefusedAsync(csr) is string refusedByProfile)
+            return Conflict(new { error = refusedByProfile + " Reject the request, or change the request profile and approve again.", code = ModularCA.Shared.Errors.ErrorCodes.RequestProfileRefused });
+
         // Prevent same user approving twice
         if (csr.Approvals.Any(a => a.ApproverId == _currentUser.User.Id && a.Decision == "Approved"))
             return BadRequest(new { error = "You have already approved this request" });
@@ -540,8 +559,15 @@ public class AdminCertSignRequestController(
 
         // Check if fully approved
         var requiredCount = 1;
-        // Trace: CSR -> SigningProfile -> CaProtocolConfig -> RequestProfile -> RequiredApprovalCount
-        if (csr.SigningProfileId != null)
+        // The request profile the request was made under says how many approvals it needs. A
+        // request made under none (older than the column) falls back to the trace that was used
+        // for every request: CSR -> SigningProfile -> CaProtocolConfig -> RequestProfile.
+        if (csr.RequestProfileId is Guid ownProfileId)
+        {
+            try { requiredCount = Math.Max(1, (await profiles.ResolveRequestProfileAsync(ownProfileId)).RequiredApprovalCount); }
+            catch (InvalidOperationException) { requiredCount = 1; }
+        }
+        else if (csr.SigningProfileId != null)
         {
             var protocolConfig = await _db.CaProtocolConfigs
                 .Include(pc => pc.RequestProfile)

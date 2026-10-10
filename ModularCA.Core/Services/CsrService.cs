@@ -149,7 +149,8 @@ public class CsrService : ICsrService
             SigningProfileId = signingProfile.Id,
             SigningProfile = signingProfile,
             RequestorUserId = user.Id,
-            RequestorUser = user
+            RequestorUser = user,
+            RequestProfileId = request.RequestProfileId
         };
 
         // The key is held on the row, wrapped, until the certificate is issued and the holder
@@ -349,11 +350,13 @@ public class CsrService : ICsrService
     /// Uploads an externally-generated PEM-encoded CSR with optional subject and SAN overrides,
     /// validates its key parameters against the signing and certificate profiles, and stores the
     /// CSR entity in the database with override metadata for use during issuance. A profile
-    /// outside the issuing CA's scope is refused.
+    /// outside the issuing CA's scope is refused. <paramref name="requestProfileId"/> is recorded
+    /// as the request profile the request was made under; the caller has checked the request
+    /// against it (<see cref="RequestProfileEnforcement"/>), and issuance checks again.
     /// </summary>
     public async Task<string> UploadCsrAsync(string pem, Guid certProfileId, Guid signingProfileId, Guid userId,
         Dictionary<string, string>? subjectOverrides, List<Shared.Models.Csr.SanOverride>? sanOverrides,
-        DateTime? requestedNotBefore = null, DateTime? requestedNotAfter = null)
+        DateTime? requestedNotBefore = null, DateTime? requestedNotAfter = null, Guid? requestProfileId = null)
     {
         // Load cert and signing profiles
         var certProfile = await _dbContext.CertProfiles.FindAsync(certProfileId);
@@ -409,7 +412,8 @@ public class CsrService : ICsrService
             RequestorUserId = user.Id,
             RequestorUser = user,
             RequestedNotBefore = requestedNotBefore,
-            RequestedNotAfter = requestedNotAfter
+            RequestedNotAfter = requestedNotAfter,
+            RequestProfileId = requestProfileId
         };
 
         // Store overrides if provided

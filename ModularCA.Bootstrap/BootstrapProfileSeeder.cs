@@ -484,6 +484,18 @@ public static class BootstrapProfileSeeder
         db.RequestProfiles.Add(codeSigning);
         profiles["CodeSigning"] = codeSigning;
 
+        // Each seeded request profile defaults to the certificate profile made for it. Only the
+        // default is set, not an allowed list: a list would also override the certificate
+        // profile a protocol is configured with.
+        foreach (var profile in profiles.Values)
+        {
+            if (StandardCertProfiles.DefaultForRequestProfile.TryGetValue(profile.Name, out var certProfileName))
+                profile.DefaultCertProfileId = db.CertProfiles
+                    .Where(c => c.Name == certProfileName && !c.IsCaProfile)
+                    .Select(c => (Guid?)c.Id)
+                    .FirstOrDefault();
+        }
+
         db.SaveChanges();
         Console.WriteLine($"✓ {profiles.Count} default request profiles seeded (Web Server, Enterprise Server, MDM Device, Enterprise User, Code Signing).");
         return profiles;
@@ -860,6 +872,45 @@ public static class BootstrapProfileSeeder
         db.NotificationPreferences.AddRange(prefs);
         db.SaveChanges();
         Console.WriteLine($"✓ {prefs.Length} notification preferences seeded.");
+    }
+
+    /// <summary>
+    /// Seeds the purpose-specific end-entity certificate profiles
+    /// (<see cref="StandardCertProfiles"/>: TLS server, device client, user authentication and
+    /// email, code signing) and links each to <paramref name="signingProfile"/>. Idempotent: a
+    /// profile whose name exists is left as it is. An install that predates these gets them from
+    /// migration <c>StandardCertProfiles</c>.
+    /// </summary>
+    public static void SeedStandardCertProfiles(ModularCADbContext db, SigningProfileEntity signingProfile)
+    {
+        var keyAlgorithms = JsonSerializer.Serialize(new[] { "RSA", "ECDSA", "Ed25519", "Ed448", "ML-DSA-44", "ML-DSA-65", "ML-DSA-87", "SLH-DSA-SHA2-128F" });
+        var keySizes = JsonSerializer.Serialize(new[] { "2048", "3072", "4096", "7680", "8192", "P-256", "P-384", "P-521" });
+        var sigAlgorithms = JsonSerializer.Serialize(new[] { "SHA256withRSA", "SHA384withRSA", "SHA512withRSA", "SHA256withRSAandMGF1", "SHA384withRSAandMGF1", "SHA512withRSAandMGF1", "SHA256withECDSA", "SHA384withECDSA", "SHA512withECDSA", "Ed25519", "Ed448", "ML-DSA-44", "ML-DSA-65", "ML-DSA-87", "SLH-DSA-SHA2-128F" });
+
+        foreach (var standard in StandardCertProfiles.All)
+        {
+            if (db.CertProfiles.Any(c => c.Name == standard.Name))
+                continue;
+            var profile = new CertProfileEntity
+            {
+                Name = standard.Name,
+                Description = standard.Description,
+                IsCaProfile = false,
+                KeyUsages = SetupAllowedStandardOidsJson(standard.KeyUsages, db),
+                ExtendedKeyUsages = SetupAllowedExtendedOidsJson(standard.ExtendedKeyUsages, db),
+                AllowedKeyAlgorithms = keyAlgorithms,
+                AllowedKeySizes = keySizes,
+                AllowedSignatureAlgorithms = sigAlgorithms,
+                ValidityPeriodMin = StandardCertProfiles.ValidityPeriodMin,
+                ValidityPeriodMax = standard.ValidityPeriodMax,
+                CanBeDeleted = true,
+                CreatedAt = DateTime.UtcNow,
+            };
+            db.CertProfiles.Add(profile);
+            db.SaveChanges();
+            LinkCertProfileToSigningProfile(db, profile, signingProfile);
+            Console.WriteLine($"✓ Certificate profile '{profile.Name}' seeded.");
+        }
     }
 
     /// <summary>

@@ -44,6 +44,12 @@ namespace ModularCA.Shared.Models.Issuance
         public Guid SigningProfileId { get; set; }
 
         /// <summary>
+        /// The request profile the request is made under. Required; the subject and the SANs
+        /// must satisfy its rules, and it supplies the fields it fixes or gives a default for.
+        /// </summary>
+        public Guid? RequestProfileId { get; set; }
+
+        /// <summary>
         /// Optional certificate validity start date. Defaults to now if not specified.
         /// </summary>
         public DateTime? NotBefore { get; set; }

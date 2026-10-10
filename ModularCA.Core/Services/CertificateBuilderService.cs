@@ -378,6 +378,13 @@ namespace ModularCA.Core.Services
         }
 
         public X509Name ResolveSubjectDn(Pkcs10CertificationRequest csr, CertRequestEntity csrEntity)
+            => SubjectOf(csr, csrEntity);
+
+        /// <summary>
+        /// The subject a request asks for before any override: the CSR's own, or, when the CSR
+        /// carries none (common with ACME), a common name taken from the request's first DNS SAN.
+        /// </summary>
+        internal static X509Name SubjectOf(Pkcs10CertificationRequest csr, CertRequestEntity csrEntity)
         {
             var csrSubject = csr.GetCertificationRequestInfo().Subject;
             if (csrSubject != null && csrSubject.ToString().Length > 0)

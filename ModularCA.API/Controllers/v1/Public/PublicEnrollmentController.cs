@@ -219,6 +219,7 @@ public class PublicEnrollmentController(
 
         // Validate against request profile if one is configured on the token
         bool requireApproval = false;
+        string? subjectOverrides = null;
         if (entity.RequestProfileId != null)
         {
             var (isValid, error, modifiedSubject) = await requestProfileValidation
@@ -235,6 +236,11 @@ public class PublicEnrollmentController(
             var requestProfile = await profileResolution.ResolveRequestProfileAsync(entity.RequestProfileId.Value);
             if (requestProfile.RequireApproval)
                 requireApproval = true;
+
+            // The certificate is built from the CSR's subject; what the profile fixed or
+            // defaulted reaches it as an override (see EnrollmentPipeline).
+            subjectOverrides = RequestProfileEnforcement.ProtocolSubjectOverrides(
+                requestProfile, request.CsrPem, sanJson, subject);
         }
 
         // Consume the token (validate + decrement uses)
@@ -260,7 +266,9 @@ public class PublicEnrollmentController(
             CertProfileId = certProfileId,
             CertProfile = certProfile,
             SigningProfileId = signingProfileId,
-            SigningProfile = signingProfile
+            SigningProfile = signingProfile,
+            RequestProfileId = entity.RequestProfileId,
+            SubjectOverrides = subjectOverrides
         };
 
         db.CertificateRequests.Add(csrEntity);

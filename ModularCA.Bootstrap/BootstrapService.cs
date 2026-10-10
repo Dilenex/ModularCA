@@ -364,6 +364,7 @@ public class BootstrapService
             BootstrapProfileSeeder.LinkCertProfileToSigningProfile(dbContext, tsaCertProfile, signingProfile);
             BootstrapProfileSeeder.LinkCertProfileToSigningProfile(dbContext, ocspCertProfile, signingProfile);
             BootstrapProfileSeeder.LinkCertProfileToSigningProfile(dbContext, webTlsCertProfile, signingProfile);
+            BootstrapProfileSeeder.SeedStandardCertProfiles(dbContext, signingProfile);
 
             BootstrapProfileSeeder.AddFeatureFlagsToDb(dbContext, defaultFlags);
 

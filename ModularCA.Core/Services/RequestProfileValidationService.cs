@@ -140,7 +140,7 @@ namespace ModularCA.Core.Services
 
             try
             {
-                var sanRules = JsonSerializer.Deserialize<SanRules>(profile.SanRules);
+                var sanRules = ReadSanRules(profile.SanRules);
                 if (sanRules?.Rules == null) return false;
                 foreach (var (type, rule) in sanRules.Rules)
                 {
@@ -241,20 +241,21 @@ namespace ModularCA.Core.Services
                     return (false, $"Subject field '{rule.Field}' exceeds max length {rule.MaxLength}", null);
             }
 
-            // Validate SANs
-            var sanRules = JsonSerializer.Deserialize<SanRules>(profile.SanRules);
-            if (sanRules != null && !string.IsNullOrEmpty(sansJson))
+            // Validate SANs. An empty list is no SAN at all: the pipeline hands "[]" for a
+            // request that carries none, which used to skip the required check.
+            var sanRules = ReadSanRules(profile.SanRules);
+            if (sanRules != null)
             {
-                var sans = JsonSerializer.Deserialize<List<string>>(sansJson) ?? new();
-                var sanError = ValidateSans(sans, sanRules);
-                if (sanError != null)
+                var sans = string.IsNullOrEmpty(sansJson) ? new() : JsonSerializer.Deserialize<List<string>>(sansJson) ?? new();
+                if (sans.Count == 0)
+                {
+                    if (sanRules.Required)
+                        return (false, "At least one Subject Alternative Name is required", null);
+                }
+                else if (ValidateSans(sans, sanRules) is string sanError)
+                {
                     return (false, sanError, null);
-            }
-            else if (sanRules?.Required == true)
-            {
-                var sans = !string.IsNullOrEmpty(sansJson) ? JsonSerializer.Deserialize<List<string>>(sansJson) : null;
-                if (sans == null || sans.Count == 0)
-                    return (false, "At least one Subject Alternative Name is required", null);
+                }
             }
 
             // Rebuild the modified subject DN
@@ -362,8 +363,29 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
+        /// Reads a profile's stored SAN rules whatever the case of their keys. Bootstrap writes
+        /// them in camel case and the console in Pascal case; read case-sensitively, the seeded
+        /// rules bound to nothing and every seeded profile fell back to "DNS and IP, none
+        /// required, no per-type rule".
+        /// </summary>
+        internal static SanRules? ReadSanRules(string? sanRulesJson)
+            => JsonSerializer.Deserialize<SanRules>(string.IsNullOrWhiteSpace(sanRulesJson) ? "{}" : sanRulesJson, SafeJsonOptions.Stored);
+
+        /// <summary>Whether two SAN type names mean the same type: any case, and EMAIL or RFC822 for Email.</summary>
+        private static bool SameSanType(string? a, string? b)
+        {
+            static string Canonical(string? type)
+            {
+                var upper = (type ?? string.Empty).Trim().ToUpperInvariant();
+                return upper is "RFC822" or "RFC822NAME" ? "EMAIL" : upper;
+            }
+            return Canonical(a) == Canonical(b);
+        }
+
+        /// <summary>
         /// Validates a list of SANs against the SAN rules.
-        /// SANs are stored as "TYPE:value" (e.g., "DNS:example.com", "IP:1.2.3.4"). Per-type rules
+        /// SANs are stored as "TYPE:value" (e.g., "DNS:example.com", "IP:1.2.3.4"). A type the
+        /// profile does not list is refused, and a profile that lists none allows none. Per-type rules
         /// are found whatever the case of their key (<see cref="RequestProfileRules.TryGetSanRule"/>).
         /// Returns an error string if validation fails, null if valid.
         /// Per-type patterns run through <see cref="ProfileRegex"/> so a pathological profile
@@ -384,14 +406,12 @@ namespace ModularCA.Core.Services
                 var sanType = san.Substring(0, colonIndex).Trim().ToUpperInvariant();
                 var sanValue = san.Substring(colonIndex + 1).Trim();
 
-                // Check if the SAN type is allowed
-                if (rules.AllowedTypes != null && rules.AllowedTypes.Count > 0)
-                {
-                    var allowed = rules.AllowedTypes.Any(t =>
-                        string.Equals(t, sanType, StringComparison.OrdinalIgnoreCase));
-                    if (!allowed)
-                        return $"SAN type '{sanType}' is not allowed. Allowed types: {string.Join(", ", rules.AllowedTypes)}";
-                }
+                // A profile that lists no type allows none, as the console shows it ("None")
+                // and as its own preview answers. An empty list used to allow every type.
+                if (rules.AllowedTypes == null || rules.AllowedTypes.Count == 0)
+                    return $"SAN type '{sanType}' is not allowed. The profile allows no subject alternative names";
+                if (!rules.AllowedTypes.Any(t => SameSanType(t, sanType)))
+                    return $"SAN type '{sanType}' is not allowed. Allowed types: {string.Join(", ", rules.AllowedTypes)}";
 
                 // Track count per type
                 typeCounts.TryGetValue(sanType, out var count);

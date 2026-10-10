@@ -343,6 +343,11 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (!await _authService.HasResourceCapabilityAsync(_currentUser.User.Id, Capabilities.ProfileUse, "SigningProfile", req.SigningProfileId))
                 return StatusCode(403, new { error = "You do not have profile.use access on this signing profile." });
 
+            if (req.RequestProfileId is not Guid requestProfileId)
+                return BadRequest(new { error = "A request profile is required: name the one this request is made under as requestProfileId." });
+            req.Subject = await new RequestProfileEnforcement(_dbContext, HttpContext.RequestServices.GetRequiredService<IProfileResolutionService>())
+                .SettleKeyRequestAsync(requestProfileId, req.CertProfileId, req.SigningProfileId, selfService: false, req.Subject, req.Sans);
+
             // Determine the signature algorithm from the key algorithm
             var signatureAlgorithm = ResolveSignatureAlgorithm(req.KeyAlgorithm, req.KeySize);
             if (signatureAlgorithm == null)
@@ -417,7 +422,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                 // from the Requests page, so without persisting these the operator's Not Before
                 // / Not After choices were accepted by the DTO and then discarded.
                 req.NotBefore,
-                req.NotAfter);
+                req.NotAfter,
+                requestProfileId);
 
             // Find the CSR entity that was just created
             var csrEntity = await _dbContext.CertificateRequests

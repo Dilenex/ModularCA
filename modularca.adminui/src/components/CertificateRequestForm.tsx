@@ -11,6 +11,7 @@ import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
 import type { ServerKeyOptions, ValidityCeilingPreflight } from '@shared/generated';
 import { describeCeiling, exceedsCeiling, toDatetimeLocalValue } from '../pages/validityCeiling';
 import { chooseAlgorithm, findOption, groupRefusals, offeredAlgorithms, offeredSizes, requestKeySize, settleKeyChoice, type KeyChoice } from '../pages/keyOptions';
+import { designatedCertProfileIds, offeredCertProfiles, settleCertProfile } from '../pages/requestCertProfiles';
 import { sizeLabel } from '../pages/profiles/keyPolicy';
 import { HeldKeyDownload } from './HeldKeyDownload';
 import { TypedEntryListEditor, type TypedEntryRowStatus } from '@shared/components/TypedEntryListEditor';
@@ -447,21 +448,22 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
         ? resolvedProfile
         : listedProfile;
 
-    // The certificate profiles the picker offers: every one for an admin, the ones the request
-    // profile designates for a user.
+    // The certificate profiles the picker offers. The server refuses a request that names one
+    // the request profile does not designate, so the picker holds the designated ones: for a
+    // user always, for an admin when the request profile designates any (every profile when it
+    // designates none).
+    const designatedCertProfiles = designatedCertProfileIds(selectedProfileObj?.defaultCertProfileId, selectedProfileObj?.allowedCertProfileIds);
+    const offersEveryCertProfile = listsCertProfiles && designatedCertProfiles.length === 0;
     const certProfileChoices: CertProfileChoice[] = listsCertProfiles
-        ? certProfiles.map((p: any) => ({ id: p.id, name: p.name || p.id }))
+        ? offeredCertProfiles(certProfiles.map((p: any) => ({ id: p.id, name: p.name || p.id })), designatedCertProfiles)
         : (selectedProfileObj?.certProfiles ?? []);
     const effectiveCertProfileId = selectedCertProfile;
 
-    // A request profile that designates a certificate profile pre-selects it in the picker, so
-    // the operator does not have to know which of the two lists the pairing lives in. Where the
-    // picker holds only the designated ones, it never keeps a choice from another request profile.
+    // A request profile that designates a certificate profile pre-selects it, and the picker
+    // never keeps a choice the list no longer offers.
     useEffect(() => {
-        const wanted = selectedProfileObj?.defaultCertProfileId || selectedProfileObj?.allowedCertProfileIds[0];
-        if (wanted && certProfileChoices.some(p => p.id === wanted)) setSelectedCertProfile(wanted);
-        else if (!listsCertProfiles) setSelectedCertProfile(certProfileChoices[0]?.id ?? '');
-    }, [selectedRequestProfile, certProfiles]); // eslint-disable-line react-hooks/exhaustive-deps
+        setSelectedCertProfile((current) => settleCertProfile(current, certProfileChoices, designatedCertProfiles, offersEveryCertProfile));
+    }, [selectedRequestProfile, certProfiles, selectedProfileObj]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // --- Validity ceiling pre-flight ---
     // Re-asked whenever the profile pair changes, because both selections feed the answer: the
@@ -792,6 +794,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                     keySize: requestKeySize(keyChoice!),
                     certProfileId: effectiveCertProfileId,
                     signingProfileId: selectedSigningProfile,
+                    requestProfileId: selectedRequestProfile,
                     ...validity,
                 });
 
@@ -816,6 +819,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                     pem: csrPem.trim(),
                     signingProfileId: selectedSigningProfile,
                     certificateProfileId: effectiveCertProfileId,
+                    requestProfileId: selectedRequestProfile,
                     subjectOverrides: Object.keys(subject).length > 0 ? subject : undefined,
                     sanOverrides: sans.length > 0 ? sans : undefined,
                     ...validity,
@@ -904,7 +908,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                                     <option key={p.id} value={p.id}>{p.name}</option>
                                 ))}
                             </select>
-                            {!listsCertProfiles && (
+                            {!offersEveryCertProfile && (
                                 <FieldHint className="mt-1">The ones the request profile allows.</FieldHint>
                             )}
                         </div>

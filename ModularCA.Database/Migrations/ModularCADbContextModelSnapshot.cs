@@ -886,6 +886,9 @@ namespace ModularCA.Database.Migrations
                     b.Property<Guid?>("RenewalOfCertificateId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("RequestProfileId")
+                        .HasColumnType("uuid");
+
                     b.Property<DateTime?>("RequestedNotAfter")
                         .HasColumnType("timestamp with time zone");
 
@@ -937,6 +940,8 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("IssuedCertificateId");
 
                     b.HasIndex("RenewalOfCertificateId");
+
+                    b.HasIndex("RequestProfileId");
 
                     b.HasIndex("RequestorUserId");
 
@@ -4246,6 +4251,11 @@ namespace ModularCA.Database.Migrations
                     b.HasOne("ModularCA.Shared.Entities.CertificateEntity", "IssuedCertificate")
                         .WithMany()
                         .HasForeignKey("IssuedCertificateId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("ModularCA.Shared.Entities.RequestProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("RequestProfileId")
                         .OnDelete(DeleteBehavior.SetNull);
 
                     b.HasOne("ModularCA.Shared.Entities.UserEntity", "RequestorUser")

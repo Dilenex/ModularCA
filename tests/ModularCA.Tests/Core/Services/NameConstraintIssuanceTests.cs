@@ -210,8 +210,9 @@ public sealed class NameConstraintIssuanceTests
                 name, "Acme", null, null, null, "US", "ECDSA", 256, 2, null, SpaceId,
                 nameConstraintsPermittedJson: permitted, nameConstraintsExcludedJson: excluded);
 
-        /// <summary>Stores an approved request for <paramref name="subject"/> and <paramref name="sans"/> (with <paramref name="sanOverrides"/> as stored, when given) under the CA's own signing profile, and issues it.</summary>
-        public Task<IssuanceResult> IssueLeafAsync(CertificateAuthorityEntity ca, string subject, string[] sans, string? sanOverrides = null)
+        /// <summary>Stores an approved request for <paramref name="subject"/> and <paramref name="sans"/> (with <paramref name="sanOverrides"/> and <paramref name="subjectOverrides"/> as stored, when given, made under <paramref name="requestProfileId"/>) under the CA's own signing profile, and issues it.</summary>
+        public Task<IssuanceResult> IssueLeafAsync(CertificateAuthorityEntity ca, string subject, string[] sans, string? sanOverrides = null,
+            Guid? requestProfileId = null, string? subjectOverrides = null)
         {
             var keys = KeyAlgorithmPolicy.GenerateKeyPair("ECDSA", "P-256");
             var csr = new Pkcs10CertificationRequest(new Asn1SignatureFactory("SHA256WITHECDSA", keys.Private, new SecureRandom()),
@@ -231,6 +232,8 @@ public sealed class NameConstraintIssuanceTests
                 CertProfileId = LeafProfileId,
                 SigningProfileId = Db.SigningProfiles.Single(p => p.IssuerId == ca.CertificateId).Id,
                 SanOverrides = sanOverrides,
+                RequestProfileId = requestProfileId,
+                SubjectOverrides = subjectOverrides,
             };
             Db.CertificateRequests.Add(request);
             Db.SaveChanges();
