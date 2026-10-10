@@ -10,8 +10,8 @@ import { MySshRequestTab } from './MySshCertificates';
  *
  * `/api/v1/user` has no cert-profiles listing and no validity-ceiling endpoint, and its upload
  * and request-with-key handlers take no validity window, so those endpoints are left out and
- * the form's `user` mode hides the controls that would need them. Module-level so the prop
- * keeps one identity across renders.
+ * the form's `user` mode hides the validity window and offers the certificate profiles each
+ * request profile names. Module-level so the prop keeps one identity across renders.
  */
 const USER_ENDPOINTS: CertificateRequestEndpoints = {
     requestProfiles: '/api/v1/user/request-profiles',
@@ -21,6 +21,9 @@ const USER_ENDPOINTS: CertificateRequestEndpoints = {
     requestWithKey: '/api/v1/user/requests/request-with-key',
     pkcs12: (requestId) => `/api/v1/user/requests/${encodeURIComponent(requestId)}/pkcs12`,
     upload: '/api/v1/user/requests/upload',
+    keyOptions: (signingProfileId, certProfileId) =>
+        `/api/v1/user/requests/key-options?signingProfileId=${encodeURIComponent(signingProfileId)}`
+        + `&certProfileId=${encodeURIComponent(certProfileId)}`,
 };
 
 /**

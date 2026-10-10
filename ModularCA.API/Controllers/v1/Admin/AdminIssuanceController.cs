@@ -177,6 +177,41 @@ namespace ModularCA.API.Controllers.v1.Admin
         }
 
         /// <summary>
+        /// Pre-flight: the keys the CA may generate for a request under a signing profile and
+        /// certificate profile, and the ones the pair refuses with the reason for each. Same
+        /// space fence and <c>profile.use</c> checks as <see cref="GetValidityCeiling"/>.
+        /// </summary>
+        /// <param name="signingProfileId">The signing profile the request would name.</param>
+        /// <param name="certProfileId">The certificate profile the request would name.</param>
+        /// <param name="keyOptions">Resolves the answer.</param>
+        [HttpGet("key-options")]
+        [Authorize(Policy = "CaOperator")]
+        public async Task<IActionResult> GetKeyOptions(
+            [FromQuery] Guid signingProfileId,
+            [FromQuery] Guid certProfileId,
+            [FromServices] IServerKeyOptionsService keyOptions)
+        {
+            await _currentUser.EnsureLoadedAsync();
+            if (!_currentUser.IsAuthenticated || _currentUser.User == null)
+                return Unauthorized();
+
+            var fence = EnforceSpaceFence(await ResolveCaFromSigningProfileAsync(signingProfileId));
+            if (fence != null)
+                return fence;
+
+            if (!await _authService.HasResourceCapabilityAsync(_currentUser.User.Id, Capabilities.ProfileUse, "SigningProfile", signingProfileId))
+                return StatusCode(403, new { error = "You do not have profile.use access on this signing profile." });
+            if (!await _authService.HasResourceCapabilityAsync(_currentUser.User.Id, Capabilities.ProfileUse, "CertProfile", certProfileId))
+                return StatusCode(403, new { error = "You do not have profile.use access on this certificate profile." });
+
+            var options = await keyOptions.ResolveAsync(signingProfileId, certProfileId, HttpContext.RequestAborted);
+            if (options == null)
+                return NotFound(new { error = "Signing profile or certificate profile not found." });
+
+            return Ok(options);
+        }
+
+        /// <summary>
         /// Issues a certificate from an approved CSR. Enforces space access and profile.use
         /// capability checks before delegating to the issuance service.
         /// </summary>

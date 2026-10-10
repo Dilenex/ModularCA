@@ -5,6 +5,7 @@ using ModularCA.Auth.Interfaces;
 using ModularCA.Core.Services;
 using ModularCA.Database;
 using ModularCA.API.Startup;
+using ModularCA.Core.Helpers;
 
 namespace ModularCA.API.Controllers.v1.User;
 
@@ -66,11 +67,24 @@ public class UserRequestProfileController(
             catch (InvalidOperationException) { /* an unresolvable parent: fall back to the row's own rules below */ }
         }
 
+        // The certificate profiles each request profile designates, default first, by name: a
+        // user has no certificate profile listing, and the request form lets them choose among these.
+        var designated = profiles.ToDictionary(p => p.Id, p => RequestProfileCertProfiles.DesignatedIds(
+            effective.TryGetValue(p.Id, out var d) ? d.DefaultCertProfileId : p.DefaultCertProfileId,
+            effective.TryGetValue(p.Id, out var a) ? a.AllowedCertProfileIds : p.AllowedCertProfileIds));
+        var designatedIds = designated.Values.SelectMany(ids => ids).Distinct().ToList();
+        var certProfileNames = await _db.CertProfiles.AsNoTracking()
+            .Where(c => designatedIds.Contains(c.Id) && !c.IsCaProfile)
+            .ToDictionaryAsync(c => c.Id, c => c.Name);
+
         return Ok(profiles.Select(p => new
         {
             p.Id,
             p.Name,
             p.Description,
+            CertProfiles = designated[p.Id]
+                .Where(certProfileNames.ContainsKey)
+                .Select(id => new { Id = id, Name = certProfileNames[id] }),
             SubjectDnRules = effective.TryGetValue(p.Id, out var e) ? e.SubjectDnRules : p.SubjectDnRules,
             SanRules = effective.TryGetValue(p.Id, out var e2) ? e2.SanRules : p.SanRules,
             EffectiveSubjectDnRules = effective.TryGetValue(p.Id, out var e3) ? e3.SubjectDnRules : p.SubjectDnRules,

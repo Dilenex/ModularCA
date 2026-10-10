@@ -1283,6 +1283,28 @@ export interface SecurityUpdateRequest {
     behindReverseProxy?: boolean | null;
 }
 
+/** From `ModularCA.Shared/Models/Issuance/ServerKeyOptions.cs`. */
+export interface ServerKeyOption {
+    algorithm: string;
+    keySize?: string | null;
+    signatureAlgorithm: string;
+}
+
+/** From `ModularCA.Shared/Models/Issuance/ServerKeyOptions.cs`. */
+export interface ServerKeyOptions {
+    signingProfileName: string;
+    certProfileName: string;
+    options: ServerKeyOption[];
+    refused: ServerKeyRefusal[];
+}
+
+/** From `ModularCA.Shared/Models/Issuance/ServerKeyOptions.cs`. */
+export interface ServerKeyRefusal {
+    algorithm: string;
+    keySize?: string | null;
+    reason: string;
+}
+
 /** From `ModularCA.Shared/Models/Management/PermissionChangeRequest.cs`. */
 export interface SetCertPermissionRequest {
     userId: string;

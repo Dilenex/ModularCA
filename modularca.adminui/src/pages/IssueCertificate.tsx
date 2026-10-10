@@ -26,6 +26,9 @@ const ADMIN_ENDPOINTS: CertificateRequestEndpoints = {
     validityCeiling: (signingProfileId, certProfileId) =>
         `/api/v1/admin/certificates/validity-ceiling?signingProfileId=${encodeURIComponent(signingProfileId)}`
         + `&certProfileId=${encodeURIComponent(certProfileId)}`,
+    keyOptions: (signingProfileId, certProfileId) =>
+        `/api/v1/admin/certificates/key-options?signingProfileId=${encodeURIComponent(signingProfileId)}`
+        + `&certProfileId=${encodeURIComponent(certProfileId)}`,
     // The admin list returns raw rows for the profile editor's sake; validation needs the
     // effective profile after inheritance, which is what issuance applies.
     resolvedRequestProfile: (id) => `/api/v1/admin/request-profiles/${encodeURIComponent(id)}/resolved`,

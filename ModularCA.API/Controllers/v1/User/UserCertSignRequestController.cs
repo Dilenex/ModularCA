@@ -256,6 +256,41 @@ public class UserCertSignRequestController(
     }
 
     /// <summary>
+    /// Pre-flight: the keys the CA may generate for a request under a signing profile and
+    /// certificate profile, and the ones the pair refuses with the reason for each. Needs
+    /// <c>cert.request</c> on the signing profile's CA, inside the caller's space fence.
+    /// </summary>
+    /// <param name="signingProfileId">The signing profile the request would name.</param>
+    /// <param name="certProfileId">The certificate profile the request would name.</param>
+    /// <param name="keyOptions">Resolves the answer.</param>
+    [HttpGet("key-options")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRequest, CaTarget.SigningProfile, "signingProfileId")]
+    public async Task<IActionResult> GetKeyOptions(
+        [FromQuery] Guid signingProfileId,
+        [FromQuery] Guid certProfileId,
+        [FromServices] IServerKeyOptionsService keyOptions)
+    {
+        var issuerId = await _db.SigningProfiles.AsNoTracking()
+            .Where(sp => sp.Id == signingProfileId)
+            .Select(sp => sp.IssuerId)
+            .FirstOrDefaultAsync();
+        if (issuerId != null)
+        {
+            var ca = await _db.CertificateAuthorities.AsNoTracking()
+                .FirstOrDefaultAsync(c => c.CertificateId == issuerId);
+            if (ca != null && !SpaceFence.From(HttpContext, Capabilities.CertRequest).Allows(ca.SpaceId))
+                return NotFound(new { error = "Signing profile or certificate profile not found." });
+        }
+
+        var options = await keyOptions.ResolveAsync(signingProfileId, certProfileId, HttpContext.RequestAborted);
+        if (options == null)
+            return NotFound(new { error = "Signing profile or certificate profile not found." });
+
+        return Ok(options);
+    }
+
+    /// <summary>
     /// Parses a PEM-encoded CSR and returns subject, SANs, key info, and signature validation.
     /// </summary>
     [HttpPost("parse-csr")]
