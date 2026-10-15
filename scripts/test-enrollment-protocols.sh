@@ -21,6 +21,9 @@
 # certificate or this script — pass the mTLS hostname as the base URL to exercise it.
 #   ./scripts/test-enrollment-protocols.sh https://ca.example.test my-ca-label \
 #        --cmp-secret 'shared-secret'                       # CMP PBM enrolment
+#   ./scripts/test-enrollment-protocols.sh https://ca.example.test my-ca-label \
+#        --basic-netrc est.netrc --cmp-secret-file cmp.secret --cmp-ref R --enforcement
+#                                                           # and the request profile's refusals
 #
 # Exit status is the number of checks that failed, so this is usable from CI once a disposable CA
 # exists to point it at.
@@ -29,12 +32,12 @@ set -uo pipefail
 BASE="${1:-}"
 CA_LABEL="${2:-}"
 [ -z "$BASE" ] || [ -z "$CA_LABEL" ] && {
-    echo "usage: $0 <base-url> <ca-label> [--client-cert F --client-key F] [--basic-netrc F] [--cmp-secret S | --cmp-secret-file F] [--cmp-ref R] [--insecure]" >&2
+    echo "usage: $0 <base-url> <ca-label> [--client-cert F --client-key F] [--basic-netrc F] [--cmp-secret S | --cmp-secret-file F] [--cmp-ref R] [--enforcement] [--insecure]" >&2
     exit 2
 }
 shift 2
 
-CLIENT_CERT=""; CLIENT_KEY=""; CMP_SECRET=""; INSECURE=""; BASIC_NETRC=""; CMP_REF="cmp-probe"
+CLIENT_CERT=""; CLIENT_KEY=""; CMP_SECRET=""; INSECURE=""; BASIC_NETRC=""; CMP_REF="cmp-probe"; ENFORCEMENT=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --client-cert) CLIENT_CERT="$2"; shift 2 ;;
@@ -50,6 +53,9 @@ while [ $# -gt 0 ]; do
         # shared secret the server verifies the MAC against.
         --cmp-ref)     CMP_REF="$2";     shift 2 ;;
         --insecure)    INSECURE="1";     shift ;;
+        # After each enrolment that issues, the same request with one thing changed that the
+        # seeded request profile refuses. Under a looser profile the CA issues those too.
+        --enforcement) ENFORCEMENT="1";  shift ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -156,6 +162,32 @@ fi
 # EST wants the base64 of the DER CSR, with no PEM armour.
 openssl req -in "$WORK/est.csr" -outform DER 2>/dev/null | base64 | tr -d '\n' > "$WORK/est.b64"
 
+expect_refused() {   # $1 = label, $2 = URL, remaining = extra curl args; posts $WORK/est.b64
+    local label="$1" url="$2"; shift 2
+    local code
+    code=$("${CURL[@]}" -o "$WORK/refusal.body" -w '%{http_code}' "$@" \
+        -H 'Content-Type: application/pkcs10' \
+        -H 'Content-Transfer-Encoding: base64' \
+        --data-binary "@$WORK/est.b64" "$url" 2>/dev/null)
+    case "$code" in
+        400) pass "$label — refused (HTTP 400); the EST tab of the audit log names the rule" ;;
+        200) fail "$label — issued. Either the request profile EST uses on this CA allows it, or the profile was not applied" ;;
+        202) fail "$label — held for approval instead of refused at submission" ;;
+        *)   fail "$label — HTTP $code, which is not the refusal expected"
+             note "$(head -c 300 "$WORK/refusal.body" 2>/dev/null)" ;;
+    esac
+}
+
+est_csr() {   # $1 = CN, $2 = subjectAltName value or empty; writes $WORK/est.b64
+    local san_args=()
+    [ -n "${2:-}" ] && san_args=(-addext "subjectAltName=$2")
+    rm -f "$WORK/est-probe.csr"
+    openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+        -keyout "$WORK/est-probe.key" -out "$WORK/est-probe.csr" \
+        -subj "${SUBJ_PREFIX}CN=$1" "${san_args[@]}" >/dev/null 2>&1
+    openssl req -in "$WORK/est-probe.csr" -outform DER 2>/dev/null | base64 | tr -d '\n' > "$WORK/est.b64"
+}
+
 enroll() {   # $1 = label, remaining = extra curl args
     local label="$1"; shift
     local out
@@ -220,6 +252,9 @@ fi
 # for change or expired. Until the scheme existed this probe was expected to fail and said so;
 # it now expects to succeed when credentials are supplied, and the CSR's CN must equal the
 # username because the service binds the two.
+#
+# The CSR also carries DNS:<username>. The seeded "Enterprise Server (EST)" request profile requires
+# a SAN, and EST accepts a SAN that repeats the caller's own name without any profile rule.
 if [ -n "$BASIC_NETRC" ]; then
     if [ ! -r "$BASIC_NETRC" ]; then
         fail "--basic-netrc file is not readable: $BASIC_NETRC"
@@ -228,12 +263,10 @@ if [ -n "$BASIC_NETRC" ]; then
         if [ -z "$BASIC_USER" ]; then
             fail "--basic-netrc file has no 'login' entry"
         else
-            # Re-key the CSR with the username as CN: EST binds the CSR subject to the caller.
-            openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
-                -keyout "$WORK/est-basic.key" -out "$WORK/est-basic.csr" \
-                -subj "${SUBJ_PREFIX}CN=${BASIC_USER}" >/dev/null 2>&1
-            openssl req -in "$WORK/est-basic.csr" -outform DER 2>/dev/null | base64 | tr -d '\n' > "$WORK/est.b64"
-            enroll "/simpleenroll with HTTP Basic (CN=${BASIC_USER})" --netrc-file "$BASIC_NETRC" || true
+            est_csr "$BASIC_USER" "DNS:${BASIC_USER}"
+            if enroll "/simpleenroll with HTTP Basic (CN=${BASIC_USER}, DNS:${BASIC_USER})" --netrc-file "$BASIC_NETRC"; then
+                EST_BASIC_OK=1
+            fi
         fi
     fi
 else
@@ -254,10 +287,24 @@ if out=$("${CURL[@]}" -o /dev/null -w '%{http_code}' -u "est-probe-nobody:not-th
     esac
 fi
 
-# ── CMP ──────────────────────────────────────────────────────────────────────
+# The request profile, enforced. Each probe is the request that was just issued with one thing
+# changed, sent with the same credentials, so a refusal can only be about that one thing. EST
+# answers every refusal with the same 400 and keeps the reason for the audit log (EST tab).
+if [ -n "$ENFORCEMENT" ]; then
+    note ""
+    note "Request profile probes (refused under the seeded 'Enterprise Server (EST)' profile):"
+    if [ -z "${EST_BASIC_OK:-}" ]; then
+        note "SKIPPED — they need the HTTP Basic enrolment above to have issued first."
+    else
+        est_csr "$BASIC_USER" ""
+        expect_refused "EST, no SAN (the profile requires one)" "$BASE/est/$CA_LABEL/simpleenroll" --netrc-file "$BASIC_NETRC"
+        est_csr "$BASIC_USER" "email:${BASIC_USER}"
+        expect_refused "EST, an email SAN (the profile allows DNS and IP)" "$BASE/est/$CA_LABEL/simpleenroll" --netrc-file "$BASIC_NETRC"
+    fi
+fi
 fi
 
-# ââ CMP ââ
+# ── CMP ──────────────────────────────────────────────────────────────────────
 head2 "CMP (RFC 4210)"
 
 if ! openssl cmp -help >/dev/null 2>&1; then
@@ -304,6 +351,29 @@ else
         else
             fail "key update (kur) failed"
             grep -E "CMP (error|info: received)|no suitable sender|PKIStatus" "$WORK/cmp-kur.log" | tail -6 | sed 's/^/        /'
+        fi
+
+        # The initial request again with a DNS SAN added. The server words every refusal as a
+        # system failure on the wire and keeps the reason for the audit log (CMP tab).
+        if [ -n "$ENFORCEMENT" ]; then
+            note ""
+            note "Request profile probe (refused under the seeded 'Enterprise User (CMP)' profile, which allows email SANs only):"
+            openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$WORK/cmp3.key" >/dev/null 2>&1
+            if openssl cmp -cmd ir \
+                -server "$BASE/cmp/$CA_LABEL" \
+                -ref "$CMP_REF" -secret "pass:$CMP_SECRET" "${TRUSTED_ARGS[@]}" -unprotected_errors \
+                -subject "${SUBJ_PREFIX}CN=cmp-probe.example.test" -sans "cmp-probe.example.test" \
+                -newkey "$WORK/cmp3.key" -certout "$WORK/cmp3.crt" \
+                ${INSECURE:+-tls_used -no_check_time} \
+                >"$WORK/cmp-sans.log" 2>&1; then
+                fail "CMP, a DNS SAN — issued. Either the request profile CMP uses on this CA allows it, or the profile was not applied"
+                openssl x509 -in "$WORK/cmp3.crt" -noout -subject -ext subjectAltName 2>/dev/null | sed 's/^/        /'
+            elif grep -qi "rejection" "$WORK/cmp-sans.log"; then
+                pass "CMP, a DNS SAN — refused; the CMP tab of the audit log names the rule"
+            else
+                fail "CMP, a DNS SAN — failed, but not with a rejection from the server"
+                tail -8 "$WORK/cmp-sans.log" | sed 's/^/        /'
+            fi
         fi
     else
         fail "initial request (ir) failed"
