@@ -82,11 +82,31 @@ public class ProfileResolutionService : IProfileResolutionService
             _logger.LogWarning(
                 "Request profile '{ChildId}' references non-existent parent '{ParentId}'. Treating as standalone.",
                 requestProfileId, child.InheritsFromId);
-            return MapRequestProfileStandalone(child);
         }
 
-        return MergeRequestProfiles(child, parent);
+        return ResolveLoaded(child, parent);
     }
+
+    /// <summary>
+    /// The effective profile of <paramref name="child"/> from rows already loaded, as
+    /// <see cref="ResolveRequestProfileAsync"/> resolves it: merged with <paramref name="parent"/>
+    /// when the child inherits from it, standalone otherwise or when the parent is missing.
+    /// Reads nothing from the database.
+    /// </summary>
+    /// <param name="child">The request profile to resolve.</param>
+    /// <param name="parent">The row <paramref name="child"/> inherits from, or null when there is none.</param>
+    internal EffectiveRequestProfile ResolveLoaded(RequestProfileEntity child, RequestProfileEntity? parent)
+        => !child.InheritanceEnabled || child.InheritsFromId == null || parent == null || parent.Id != child.InheritsFromId
+            ? MapRequestProfileStandalone(child)
+            : MergeRequestProfiles(child, parent);
+
+    /// <summary>
+    /// A resolver for <see cref="ResolveLoaded"/> only, for code that reads the rows itself (the
+    /// upgrade check reads them by column name, before the model applies). It has no database:
+    /// its other methods must not be called.
+    /// </summary>
+    /// <param name="logger">Where the inheritance clamps log what they override.</param>
+    internal static ProfileResolutionService ForLoadedRows(ILogger<ProfileResolutionService> logger) => new(null!, logger);
 
     /// <inheritdoc />
     public async Task<List<string>> ValidateCertProfileInheritanceAsync(Guid childProfileId)

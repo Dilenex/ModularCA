@@ -339,10 +339,16 @@ public sealed class RequestProfileEnforcement(ModularCADbContext db, IProfileRes
         => JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(
             string.IsNullOrWhiteSpace(profile.SubjectDnRules) ? "[]" : profile.SubjectDnRules, SafeJsonOptions.Stored) ?? [];
 
-    private static List<string> ReadSans(string? sansJson)
+    /// <summary>A request's stored subject alternative names, a JSON array of <c>TYPE:value</c> strings, as a list.</summary>
+    internal static List<string> ReadSans(string? sansJson)
         => string.IsNullOrWhiteSpace(sansJson)
             ? []
             : JsonSerializer.Deserialize<List<string>>(sansJson, SafeJsonOptions.Default) ?? [];
+
+    /// <summary>Whether <paramref name="profile"/> requires the subject field <paramref name="field"/> without fixing its value.</summary>
+    internal static bool Requires(EffectiveRequestProfile profile, string field)
+        => RulesOf(profile).Any(r => Canonical(r.Field) == Canonical(field)
+            && string.IsNullOrEmpty(r.FixedValue) && RequestProfileRules.IsRequired(r.Requirement));
 
     /// <summary>
     /// <paramref name="subject"/> with the profile's own values in place: a field the profile

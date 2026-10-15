@@ -3,9 +3,11 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using ModularCA.Core.Services;
 using ModularCA.Database;
+using ModularCA.Shared.Entities;
 using ModularCA.Shared.Models;
 using ModularCA.Shared.Models.Config;
 using Npgsql;
+using System.Text.Json;
 using Xunit;
 using F = ModularCA.Tests.Shared.CeremonyParametersFixtures;
 using RenameMigration = ModularCA.Database.Migrations.RenameTenantToSpace;
@@ -2094,6 +2096,107 @@ public class PostgresUpgradeHarnessTests
             NpgsqlConnection.ClearAllPools();
             await DropDatabaseAsync(server, appName);
             try { Directory.Delete(install, true); } catch (IOException) { }
+        }
+    }
+
+    /// <summary>
+    /// The request profile part of <c>--upgrade-check</c>: the certificates a protocol issued are
+    /// found in the audit database, their requests in the application database, and the ones the
+    /// request profile that protocol uses now would refuse are noted, without refusing the
+    /// upgrade. Old audit rows and protocols switched off are left out.
+    /// </summary>
+    [RequiresEnvironmentFact(ServerVariable)]
+    public async Task The_upgrade_check_notes_the_protocol_certificates_their_request_profile_would_now_refuse()
+    {
+        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+        var suffix = Guid.NewGuid().ToString("N")[..12];
+        var appName = $"modularca_upgrade_app_{suffix}";
+        var auditName = $"modularca_upgrade_audit_{suffix}";
+        await CreateDatabaseAsync(server, appName);
+        await CreateDatabaseAsync(server, auditName);
+        try
+        {
+            var appConnection = WithDatabase(server, appName);
+            var auditConnection = WithDatabase(server, auditName);
+            await using var app = CreateApp(appConnection);
+            await using var audit = CreateAudit(auditConnection);
+            await MigrateToLatestAsync(app, "application");
+            await MigrateToLatestAsync(audit, "audit");
+
+            var ca = new CertificateAuthorityEntity { Name = "Issuing", Label = "issuing-ca", Type = "Root", KeyStorageType = "Software", IsEnabled = true };
+            var sanRules = JsonSerializer.Serialize(new
+            {
+                allowedTypes = new[] { "DNS", "IP" },
+                required = true,
+                rules = new Dictionary<string, object> { ["DNS"] = new { regex = (string?)null, maxCount = 10 } },
+            });
+            var profile = new RequestProfileEntity
+            {
+                Name = "Enterprise Server (EST)",
+                SubjectDnRules = """[{"Field":"CN","Requirement":"Required","MaxLength":64}]""",
+                SanRules = sanRules,
+            };
+            app.CertificateAuthorities.Add(ca);
+            app.RequestProfiles.Add(profile);
+            app.CaProtocolConfigs.Add(new CaProtocolConfigEntity { CaId = ca.Id, Protocol = "EST", IsEnabled = true, RequestProfileId = profile.Id });
+            app.CaProtocolConfigs.Add(new CaProtocolConfigEntity { CaId = ca.Id, Protocol = "CMP", IsEnabled = false, RequestProfileId = profile.Id });
+            CertificateEntity Certificate(string serial) => new()
+            {
+                SerialNumber = serial, SubjectDN = "CN=x", Issuer = "CN=Issuing", Pem = "", SubjectAlternativeNamesJson = "[]",
+                KeyUsagesJson = "[]", ExtendedKeyUsagesJson = "[]", NotBefore = DateTime.UtcNow.AddDays(-1), NotAfter = DateTime.UtcNow.AddDays(30),
+            };
+            var withSan = Certificate("0A1B");
+            var withoutSan = Certificate("0C2D");
+            var fromCmp = Certificate("0E3F");
+            var old = Certificate("0F40");
+            app.Certificates.AddRange(withSan, withoutSan, fromCmp, old);
+            CertRequestEntity Request(CertificateEntity certificate, string subject, params string[] sans) => new()
+            {
+                CSR = "", Subject = subject, SubjectAlternativeNames = JsonSerializer.Serialize(sans), Status = "Issued",
+                IssuedCertificateId = certificate.CertificateId,
+            };
+            app.CertificateRequests.AddRange(
+                Request(withSan, "CN=printer1", "DNS:printer1"),
+                Request(withoutSan, "CN=printer2"),
+                Request(fromCmp, "CN=printer3"),
+                Request(old, "CN=printer4"));
+            await app.SaveChangesAsync();
+
+            AuditEstEntity Est(string serial, int daysAgo) => new()
+            {
+                Timestamp = DateTime.UtcNow.AddDays(-daysAgo), Operation = "simpleenroll", CertificateSerial = serial, CaLabel = "issuing-ca", Success = true,
+            };
+            audit.AuditEst.AddRange(Est("0a1b", 3), Est("0c2d", 2), Est("0f40", 120));
+            audit.AuditCmp.Add(new AuditCmpEntity
+            {
+                Timestamp = DateTime.UtcNow.AddDays(-1), MessageType = "ir", CertificateSerial = "0E3F", CaLabel = "issuing-ca", Success = true,
+            });
+            await audit.SaveChangesAsync();
+
+            var targets = new[]
+            {
+                ("application", DatabaseKind.Application, Instance(appConnection)),
+                ("audit", DatabaseKind.Audit, Instance(auditConnection)),
+            };
+            var output = new StringWriter();
+            Assert.Equal(0, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output));
+            var report = output.ToString();
+
+            Assert.Contains("Request profiles", report);
+            Assert.True(report.Contains("note: 2 certificate(s) issued through enrollment protocols in the last 90 days were checked", StringComparison.Ordinal), report);
+            Assert.Contains("1 would be refused if requested again:", report);
+            Assert.Contains("EST on 'issuing-ca', request profile 'Enterprise Server (EST)': 1 certificate(s)", report);
+            Assert.Contains("'CN=printer2':", report);
+            Assert.DoesNotContain("printer1", report);
+            Assert.DoesNotContain("printer3", report);
+            Assert.DoesNotContain("printer4", report);
+            Assert.Contains("UPGRADE CHECK: PASS", report);
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await DropDatabaseAsync(server, appName);
+            await DropDatabaseAsync(server, auditName);
         }
     }
 

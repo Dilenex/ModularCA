@@ -288,6 +288,13 @@ public static partial class SchemaStartup
     /// there is an SSH CA key, what SSH login names change for requests and how many live user
     /// certificates carry a name other than their key id.
     /// </para>
+    /// <para>
+    /// With an audit database among the targets it also notes, without refusing, which
+    /// certificates the enrollment protocols issued in the last
+    /// <see cref="ModularCA.Core.Services.RequestProfileUpgradeCheck.Days"/> days would be refused
+    /// if requested again under the request profile each protocol uses now
+    /// (<see cref="RequestProfileUpgradeNoteAsync"/>).
+    /// </para>
     /// </summary>
     /// <param name="targets">The databases the control role checks, the application database first.</param>
     /// <param name="config">The migration time budgets the dry run runs under.</param>
@@ -304,6 +311,7 @@ public static partial class SchemaStartup
         output ??= Console.Out;
         var findings = new List<UpgradeFinding>();
         Observation? application = null;
+        Observation? audit = null;
         foreach (var target in targets)
         {
             var instance = target.Instance;
@@ -311,6 +319,8 @@ public static partial class SchemaStartup
             var observed = await ObserveAsync(target, appliesMigrations: true, ct);
             if (target.Kind == DatabaseKind.Application)
                 application = observed;
+            else if (target.Kind == DatabaseKind.Audit)
+                audit = observed;
             Report(output, await AssessUpgradeAsync(observed, config, output, ct), findings);
         }
         if (scopes is { Count: > 0 } && application is { State.Presence: DatabasePresence.Managed or DatabasePresence.Unmanaged })
@@ -332,6 +342,16 @@ public static partial class SchemaStartup
             {
                 output.WriteLine("SSH login names");
                 output.WriteLine("  note: " + ssh.LoginNamesNote.ReplaceLineEndings(Environment.NewLine + "    "));
+            }
+        }
+        if (application is { State.Presence: DatabasePresence.Managed or DatabasePresence.Unmanaged }
+            && audit is { State.Presence: DatabasePresence.Managed or DatabasePresence.Unmanaged })
+        {
+            var note = await RequestProfileUpgradeNoteAsync(application.Target, audit.Target, ct);
+            if (note != null)
+            {
+                output.WriteLine(ModularCA.Core.Services.RequestProfileUpgradeCheck.NoteName);
+                output.WriteLine("  note: " + note.ReplaceLineEndings(Environment.NewLine + "    "));
             }
         }
         output.WriteLine(UpgradeCheckVerdict(findings));

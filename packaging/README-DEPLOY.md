@@ -148,6 +148,16 @@ had to skip a statement or could not reach one, it exits 3. The other wording:
 
 The service's own dry run at start (below) lists the same, in the journal.
 
+The check also prints notes, which never change the verdict. One of them, **Request profiles**,
+replays the certificates each enrollment protocol (ACME, EST, SCEP, CMP, Windows autoenrollment)
+issued in the last 90 days against the request profile that protocol uses on its CA now, with the
+rules issuance applies from 0.4.2, and lists the ones whose next request would be refused: by
+protocol, CA and request profile, with a few examples and the reason. Before 0.4.2 the subject
+alternative name rules of the seeded request profiles were not read, so every profile allowed DNS
+and IP names and required none; a client that relied on that is refused from its next request.
+A refusal stops a renewal, not a certificate already issued. Which protocol issued a certificate is
+known only from the audit database, so without one the note is left out.
+
 ### What the service checks when it starts
 
 Before it serves anything, the service reads both databases as its own roles and decides; see
