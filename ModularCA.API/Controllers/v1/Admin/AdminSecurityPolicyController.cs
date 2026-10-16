@@ -46,6 +46,33 @@ public class AdminSecurityPolicyController(
     }
 
     /// <summary>
+    /// Whether the instance is still set up for a single administrator while it has more than one:
+    /// the number of active system super-administrators, whether self-approval is allowed and
+    /// whether key ceremonies are required. <c>outgrown</c> is true when there are several supers
+    /// and either setting still says single administrator, so the console can suggest turning
+    /// ceremonies on and self-approval off. Needs a system administrator.
+    /// </summary>
+    [HttpGet("administrators")]
+    public async Task<IActionResult> Administrators()
+    {
+        var policy = await db.SecurityPolicies.AsNoTracking().FirstOrDefaultAsync();
+        if (policy == null)
+            return NotFound(new { error = "No security policy configured." });
+        var supers = await db.CaGroupMembers.AsNoTracking()
+            .Where(m => m.Group.IsSystemTierSuper && m.User.IsActive && !m.User.IsDeleted && !m.User.IsServiceIdentity)
+            .Select(m => m.UserId)
+            .Distinct()
+            .CountAsync();
+        return Ok(new
+        {
+            systemSuperCount = supers,
+            selfApprovalAllowed = policy.AllowSystemSuperSelfApproval,
+            keyCeremonyRequired = policy.RequireKeyCeremony,
+            outgrown = supers > 1 && (policy.AllowSystemSuperSelfApproval || !policy.RequireKeyCeremony),
+        });
+    }
+
+    /// <summary>
     /// Applies a partial update to the security policy. Needs a system administrator; a change to
     /// <c>UserQuorum</c> or <c>AllowSystemSuperSelfApproval</c> needs a system-super (403 otherwise,
     /// nothing saved). Null fields are left untouched.

@@ -56,6 +56,7 @@ public class BootstrapAdministratorChoiceTests : IDisposable
             db.ChangeTracker.Clear();
             Assert.Equal(severalAdministrators, db.SecurityPolicies.Single().RequireKeyCeremony);
             Assert.Equal(severalAdministrators, db.Spaces.Single().RequireKeyCeremony);
+            Assert.Equal(!severalAdministrators, db.SecurityPolicies.Single().AllowSystemSuperSelfApproval);
         }
 
         using var line = JsonDocument.Parse(Assert.Single(AuditLines()));
@@ -65,6 +66,7 @@ public class BootstrapAdministratorChoiceTests : IDisposable
         Assert.Equal(severalAdministrators, details.GetProperty("MultipleAdministrators").GetBoolean());
         Assert.Equal(severalAdministrators, details.GetProperty("CeremoniesRequired").GetBoolean());
         Assert.Equal(!severalAdministrators, details.GetProperty("CeremonyRequirementDisabled").GetBoolean());
+        Assert.Equal(!severalAdministrators, details.GetProperty("SelfApprovalAllowed").GetBoolean());
         Assert.Equal(space.Id, details.GetProperty("SpaceId").GetGuid());
     }
 
@@ -79,6 +81,7 @@ public class BootstrapAdministratorChoiceTests : IDisposable
             db.ChangeTracker.Clear();
             Assert.True(db.SecurityPolicies.Single().RequireKeyCeremony);
             Assert.True(db.Spaces.Single().RequireKeyCeremony);
+            Assert.False(db.SecurityPolicies.Single().AllowSystemSuperSelfApproval);
         }
         Assert.Empty(AuditLines());
     }

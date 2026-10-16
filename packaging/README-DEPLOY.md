@@ -1081,8 +1081,10 @@ fingerprint with the one in the log before going on. The wizard asks for:
   left on "Require". The superuser is used once, to create the two databases and their roles.
 - **The public name** clients will use for this host. ACME, passkeys and the web certificate are
   all bound to it, so choose the real one.
-- **Whether more than one person will administer the CA.** "Just me" starts key ceremonies off,
-  since a lone administrator could never get one approved.
+- **Whether more than one person will administer the CA.** "Just me" starts key ceremonies off
+  and lets you approve your own certificate requests, since a lone administrator could never get
+  either approved by someone else. Settings and the dashboard say so once a second system
+  super-administrator exists.
 - **Ports.** Keep 8443 and 8080, or change the `ports:` mappings in `compose.yaml` to match.
 
 The wizard stops the process after the database step and again at the end. The `restart:` line
@@ -1142,7 +1144,8 @@ hostname clients will use; bootstrap writes `config.yaml` itself and replaces on
 already there. If one person will administer the
 instance, set `Administration.MultipleAdministrators: false` in `bootstrap.yaml`: key ceremonies
 then start off for the instance and the first space, where a lone administrator could never get
-one approved. Left out, they start on. Three init containers run every start and find their work
+one approved, and a system super-administrator may approve their own certificate requests. Left
+out, ceremonies start on and self-approval off. Three init containers run every start and find their work
 done after the first:
 
 1. **bootstrap** completes the first install as a single process, because bootstrap writes the

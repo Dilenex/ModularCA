@@ -43,7 +43,7 @@ export const setup: ApiEndpoint[] = [
         auth: 'Anonymous',
         category: 'Setup',
         requestBody: [
-            { name: 'admin.multipleAdministrators', type: 'bool', required: true, description: 'The answer to “Will more than one person administer this CA?”. false starts key ceremonies off for the instance policy and the first space, because a lone administrator could never get one approved; true starts them on. A request without it is refused with 400. The rest of the body is the wizard’s configuration (organization, rootCa, admin, features, webTlsCertificate, database, security, network)' },
+            { name: 'admin.multipleAdministrators', type: 'bool', required: true, description: 'The answer to “Will more than one person administer this CA?”. false starts key ceremonies off for the instance policy and the first space, because a lone administrator could never get one approved, and allows system-supers to approve their own certificate requests; true starts ceremonies on and self-approval off. A request without it is refused with 400. The rest of the body is the wizard’s configuration (organization, rootCa, admin, features, webTlsCertificate, database, security, network)' },
             { name: 'features.acmeAllowPrivateAddressValidation', type: 'bool', required: false, description: 'The answer to “Will ACME clients be on a private network?”. true lets the root CA’s http-01 validation fetch challenges from private, loopback and link-local addresses and resolve names through the host’s hosts file; false, the default, refuses them. Ignored unless features.enableAcme is true. true is written to the audit log' },
         ],
         headers: [

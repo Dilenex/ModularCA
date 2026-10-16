@@ -197,8 +197,9 @@ export default function SetupUiGuide() {
                     The answer decides whether key ceremonies start on. A key ceremony makes a second
                     administrator approve before a CA is created, revoked or deleted, and whoever starts one
                     can never approve it. With <em>Just me</em> they start off, for the instance and for the
-                    first space, because nobody else could approve one; with <em>Several people</em> they
-                    start on. Either way the choice is recorded in the audit log, and it can be changed
+                    first space, because nobody else could approve one, and you may approve your own
+                    certificate requests for the same reason; with <em>Several people</em> ceremonies start
+                    on and requests need someone else to approve them. Either way the choice is recorded in the audit log, and it can be changed
                     later in the admin console: Settings, Security, Key Ceremonies for the instance, and the
                     space&apos;s own page for a space. Turn them on once a second administrator exists.
                 </p>

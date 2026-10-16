@@ -547,6 +547,8 @@ public class CsrService : ICsrService
     /// Returns all pending (unapproved) certificate signing requests. When
     /// <paramref name="accessibleCaIds"/> is provided, results are filtered to CSRs whose
     /// signing profile's issuer certificate belongs to one of the accessible CAs (CLM-022).
+    /// A request waiting for approval carries the approvals it needs
+    /// (<see cref="RequestApprovals.RequiredCountAsync"/>).
     /// </summary>
     public async Task<List<CertRequestDto>> GetPendingRequests(List<Guid>? accessibleCaIds = null)
     {
@@ -588,6 +590,7 @@ public class CsrService : ICsrService
             .OrderByDescending(r => r.SubmittedAt)
             .ToListAsync();
 
+        var profiles = new ProfileResolutionService(_dbContext, NullLogger<ProfileResolutionService>.Instance);
         var results = new List<CertRequestDto>();
         foreach (var pendingRequest in pendingRequests)
         {
@@ -625,6 +628,12 @@ public class CsrService : ICsrService
                 IssuedCertificateId = pendingRequest.IssuedCertificateId,
                 KeyHeld = pendingRequest.HeldPrivateKey != null,
                 HeldKeyDeliveredAt = pendingRequest.HeldKeyDeliveredAt,
+                RequestProfileId = pendingRequest.RequestProfileId,
+                ApprovalCount = pendingRequest.ApprovalCount,
+                RequiredCount = pendingRequest.Status is "PendingApproval" or "PartiallyApproved"
+                    ? await RequestApprovals.RequiredCountAsync(_dbContext, profiles, pendingRequest)
+                    : null,
+                RenewalOfCertificateId = pendingRequest.RenewalOfCertificateId,
             };
 
             results.Add(request);

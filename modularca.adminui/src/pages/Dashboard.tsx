@@ -198,6 +198,17 @@ const Dashboard: React.FC = () => {
     const [pendingLoading, setPendingLoading] = useState(true);
     const [pendingError, setPendingError] = useState<string | null>(null);
 
+    // Single-administrator settings left on after a second system super-administrator arrived.
+    // Only a system administrator can read them; anyone else sees no banner.
+    const [administrators, setAdministrators] = useState<{ systemSuperCount: number; selfApprovalAllowed: boolean; keyCeremonyRequired: boolean; outgrown: boolean } | null>(null);
+    useEffect(() => {
+        let cancelled = false;
+        apiGet<any>('/api/v1/admin/security-policy/administrators', { toast: false })
+            .then((a) => { if (!cancelled) setAdministrators(a); })
+            .catch(() => { if (!cancelled) setAdministrators(null); });
+        return () => { cancelled = true; };
+    }, []);
+
     // Counts come from the lifecycle summary, which counts every certificate in scope on the
     // server; the certificate list is paged, so counting one page was wrong past a page's worth.
     useEffect(() => {
@@ -300,6 +311,16 @@ const Dashboard: React.FC = () => {
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <h1 className="text-xl font-semibold text-ink">Dashboard</h1>
+
+            {administrators?.outgrown && (
+                <div className="bg-warn-soft border border-warn/40 rounded px-3 py-2 text-xs text-warn">
+                    There are now {administrators.systemSuperCount} system super-administrators, but the instance is still set up for one:
+                    {administrators.selfApprovalAllowed ? ' requesters in system-super may approve their own certificate requests' : ''}
+                    {administrators.selfApprovalAllowed && !administrators.keyCeremonyRequired ? ', and' : ''}
+                    {!administrators.keyCeremonyRequired ? ' key ceremonies are off' : ''}.
+                    {' '}<button type="button" onClick={() => navigate('/settings')} className="underline font-semibold hover:text-ink">Review in Settings</button>
+                </div>
+            )}
 
             {/* System Health Indicators */}
             <div className="bg-raised border border-line rounded-lg overflow-hidden">
@@ -647,6 +668,7 @@ const Dashboard: React.FC = () => {
                         renderSummary={(csr: any) => (
                             <div className="flex items-center gap-2">
                                 <StatusBadge status="pending" />
+                                {csr.renewalOfCertificateId && <Tag label="Renewal" />}
                                 <span className="truncate">{csr.subjectName}</span>
                                 <span className="text-xs text-ink-muted">{csr.keyAlgorithm} {csr.keySize}</span>
                             </div>

@@ -304,8 +304,9 @@ Features:
 Administration:
   # Will more than one person administer this CA?
   #   true  - key ceremonies start on.
-  #   false - key ceremonies start off for the instance and the first space.
-  # Omitted, key ceremonies start on.
+  #   false - key ceremonies start off for the instance and the first space, and a system
+  #           super-administrator may approve their own certificate requests.
+  # Omitted, key ceremonies start on and self-approval off.
   MultipleAdministrators: true
 
 Acme:
@@ -322,7 +323,9 @@ Acme:
                     and the person who starts one can never approve it, so a lone administrator could never
                     finish one. <code>false</code> therefore starts the requirement off, for the instance
                     policy and for the first space; <code>true</code>, or leaving the key out, starts it on.
-                    The choice is written to the audit log. Turn the requirement on later in the console,
+                    <code>false</code> also lets a system super-administrator approve their own certificate
+                    requests (Allow System Super Self-Approval), since nobody else could; that approval
+                    completes the request and is recorded as self-approved. The choice is written to the audit log. Turn the requirement on later in the console,
                     under Settings for the instance and on the space&apos;s page for a space, once a second
                     administrator exists.
                 </p>

@@ -294,6 +294,12 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
                         ? 'On: a second administrator approves CA changes'
                         : 'Off: turn on in Settings once a second administrator exists'}
                 />
+                <SummaryRow
+                    label="Self-Approval"
+                    value={admin.multipleAdministrators
+                        ? 'Off: certificate requests need another approver'
+                        : 'On: you may approve your own certificate requests'}
+                />
             </SummaryCard>
 
             {/* Security & Features */}

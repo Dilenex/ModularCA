@@ -36,8 +36,8 @@ public class BootstrapService
     /// refused by pg_hba, or an MCA- coded validation failure is returned verbatim (none carries
     /// a secret); anything else returns only a correlation id. A Web TLS SAN of a type the
     /// certificate cannot carry is refused first (<see cref="BootstrapCertCreator.EnsureWebTlsSansSupported"/>).
-    /// <c>Admin.MultipleAdministrators</c> decides whether key ceremonies start on
-    /// (<see cref="BootstrapModularCA.ApplyAdministratorChoice"/>).
+    /// <c>Admin.MultipleAdministrators</c> decides whether key ceremonies start on and whether
+    /// self-approval is allowed (<see cref="BootstrapModularCA.ApplyAdministratorChoice"/>).
     /// <c>Features.AcmeAllowPrivateAddressValidation</c> lets the first CA's http-01 validator
     /// reach private addresses when ACME is on.
     /// When <paramref name="serviceProvider"/> is supplied, the method resolves

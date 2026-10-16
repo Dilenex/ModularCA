@@ -83,6 +83,7 @@ export function canCancel(csr: any): boolean {
 
 export interface ApprovalRecord {
     id: string;
+    approverId?: string;
     approverUsername: string;
     decision: string;
     comment: string;

@@ -319,7 +319,8 @@ public class BootstrapModularCA
     /// are applied and the data seeded as the runtime roles, the ownership rule is proved, and
     /// only then is the configuration written. No migration ever runs as SqlRoot.
     /// <c>Administration.MultipleAdministrators</c> in bootstrap.yaml decides whether key
-    /// ceremonies start on (<see cref="ApplyAdministratorChoice"/>); absent, they do.
+    /// ceremonies start on and whether self-approval is allowed (<see cref="ApplyAdministratorChoice"/>);
+    /// absent, ceremonies are on and self-approval off.
     /// <c>Acme.AllowPrivateAddressValidation</c> lets the first CA's http-01 validator reach
     /// private addresses when ACME is on; absent, it does not.
     /// Returns 0 on success, 1 on a refusal, a failure or an abort. A refusal (a SqlRoot that is
@@ -920,7 +921,9 @@ public class BootstrapModularCA
     /// Applies the setup answer to "Will more than one person administer this CA?", for both
     /// bootstrap paths, after the security policy is seeded. False turns the key ceremony
     /// requirement off for the instance policy and for <paramref name="firstSpace"/>, where a lone
-    /// administrator could never get a ceremony approved; true sets both on. Null (the wizard
+    /// administrator could never get a ceremony approved, and allows a system super-administrator
+    /// to approve their own certificate requests, which nobody else could; true sets ceremonies on
+    /// and self-approval off. Null (the wizard
     /// field or the <c>Administration.MultipleAdministrators</c> key was absent) changes nothing,
     /// so both keep the entity default, on. An explicit answer is written to the bootstrap audit
     /// log (<see cref="BootstrapAuditLog.LogSetupDecision"/>).
@@ -935,6 +938,7 @@ public class BootstrapModularCA
 
         var space = dbContext.Spaces.First(s => s.Id == firstSpace.Id);
         policy.RequireKeyCeremony = several;
+        policy.AllowSystemSuperSelfApproval = !several;
         space.RequireKeyCeremony = several;
         dbContext.SaveChanges();
 
@@ -947,12 +951,13 @@ public class BootstrapModularCA
                 MultipleAdministrators = several,
                 CeremoniesRequired = several,
                 CeremonyRequirementDisabled = !several,
+                SelfApprovalAllowed = !several,
                 AppliedTo = new[] { "instance", $"space:{space.Slug}" },
                 SpaceId = space.Id,
             });
         Console.WriteLine(several
             ? "✓ Several administrators: key ceremonies are required for the instance and the first space."
-            : "✓ Single administrator: key ceremonies are off for the instance and the first space. Turn them on in Settings once a second administrator exists.");
+            : "✓ Single administrator: key ceremonies are off for the instance and the first space, and you may approve your own certificate requests. Turn ceremonies on and self-approval off in Settings once a second administrator exists.");
         return several;
     }
 

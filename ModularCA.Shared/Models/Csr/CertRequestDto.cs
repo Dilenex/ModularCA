@@ -35,5 +35,17 @@ namespace ModularCA.Shared.Models.Csr
 
         /// <summary>When the held key was delivered as PKCS#12, or null if it was not (yet).</summary>
         public DateTime? HeldKeyDeliveredAt { get; set; }
+
+        /// <summary>The request profile the request was made under, or null for one older than the column.</summary>
+        public Guid? RequestProfileId { get; set; }
+
+        /// <summary>The approvals the request has.</summary>
+        public int ApprovalCount { get; set; }
+
+        /// <summary>The approvals it needs while it waits for approval; null once it no longer waits.</summary>
+        public int? RequiredCount { get; set; }
+
+        /// <summary>The certificate this request renews, or null when it is not a renewal.</summary>
+        public Guid? RenewalOfCertificateId { get; set; }
     }
 }

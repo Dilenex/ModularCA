@@ -91,6 +91,21 @@ export interface CertificateRequestEndpoints {
      * (`EffectiveRequestProfile`). Left out when the list itself already returns effective rules.
      */
     resolvedRequestProfile?: (requestProfileId: string) => string;
+    /**
+     * GET, admin only: how a request under these profiles would be approved
+     * (`requiresApproval`, `requiredCount`, `othersWhoCanApprove`, `requesterMaySelfApprove`,
+     * `canComplete`), so a request nobody could approve is known before it is made.
+     */
+    approvalOutlook?: (requestProfileId: string, signingProfileId: string, certProfileId: string) => string;
+}
+
+/** The answer of `approvalOutlook`. */
+interface SubmissionApprovalOutlook {
+    requiresApproval: boolean;
+    requiredCount: number;
+    othersWhoCanApprove: number;
+    requesterMaySelfApprove: boolean;
+    canComplete: boolean;
 }
 
 export interface CertificateRequestFormProps {
@@ -466,6 +481,19 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
     useEffect(() => {
         setSelectedCertProfile((current) => settleCertProfile(current, certProfileChoices, designatedCertProfiles, offersEveryCertProfile));
     }, [selectedRequestProfile, certProfiles, selectedProfileObj]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const [approvalOutlook, setApprovalOutlook] = useState<SubmissionApprovalOutlook | null>(null);
+    useEffect(() => {
+        if (!endpoints.approvalOutlook || !selectedRequestProfile || !selectedSigningProfile || !selectedProfileObj?.requireApproval) {
+            setApprovalOutlook(null);
+            return;
+        }
+        let cancelled = false;
+        apiGet<SubmissionApprovalOutlook>(endpoints.approvalOutlook(selectedRequestProfile, selectedSigningProfile, selectedCertProfile))
+            .then((o) => { if (!cancelled) setApprovalOutlook(o); })
+            .catch(() => { if (!cancelled) setApprovalOutlook(null); });
+        return () => { cancelled = true; };
+    }, [endpoints.approvalOutlook, selectedRequestProfile, selectedSigningProfile, selectedCertProfile, selectedProfileObj?.requireApproval]);
 
     // --- Validity ceiling pre-flight ---
     // Re-asked whenever the profile pair changes, because both selections feed the answer: the
@@ -933,7 +961,20 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                             <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-warn-soft text-warn border border-warn/40">
                                 Requires Approval{selectedProfileObj.requiredApprovalCount ? ` (${selectedProfileObj.requiredApprovalCount})` : ''}
                             </span>
+                            {approvalOutlook?.requesterMaySelfApprove && (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-sunken text-ink-muted border border-line">
+                                    Self-approval allowed
+                                </span>
+                            )}
                         </div>
+                    )}
+                    {approvalOutlook?.requesterMaySelfApprove && (
+                        <FieldHint>You may approve this request yourself once it is made; your approval completes it. It stays recorded as self-approved.</FieldHint>
+                    )}
+                    {approvalOutlook && !approvalOutlook.canComplete && (
+                        <FieldHint tone="warn">
+                            Nobody could complete this approval: it needs {approvalOutlook.requiredCount} {approvalOutlook.requiredCount === 1 ? 'approval' : 'approvals'}, and {approvalOutlook.othersWhoCanApprove === 1 ? '1 other account' : `${approvalOutlook.othersWhoCanApprove} other accounts`} can approve requests on this CA. The request would wait until someone can.
+                        </FieldHint>
                     )}
                     {requestProfileLacksCertProfile && (
                         <FieldHint tone="warn">This request profile has no certificate profile assigned, so it cannot be used from here. Ask an administrator to set one.</FieldHint>

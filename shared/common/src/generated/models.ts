@@ -498,6 +498,10 @@ export interface CertRequestDto {
     requestedNotAfter?: string | null;
     keyHeld: boolean;
     heldKeyDeliveredAt?: string | null;
+    requestProfileId?: string | null;
+    approvalCount: number;
+    requiredCount?: number | null;
+    renewalOfCertificateId?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */

@@ -13,6 +13,17 @@ export const adminSecurityPolicy: ApiEndpoint[] = [
         responseDescription: 'Security policy row with 21 knobs across session, MFA, and OCSP domains.',
     },
     {
+        method: 'GET',
+        path: '/api/v1/admin/security-policy/administrators',
+        summary: 'Whether the instance is still set up for a single administrator while it has more than one.',
+        auth: 'Authorize (SystemAdmin)',
+        category: 'Admin Security Policy',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: 'systemSuperCount (active system super-administrators), selfApprovalAllowed, keyCeremonyRequired, and outgrown: true when there are several supers and self-approval is still allowed or key ceremonies are still off.',
+    },
+    {
         method: 'PUT',
         path: '/api/v1/admin/security-policy',
         summary: 'Update the runtime-tunable security policy. Partial update — null fields are left unchanged. TTL fields are clamped to their documented ranges on write.',

@@ -408,6 +408,9 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     /* How many accounts other than this one could approve a key ceremony on an instance CA;
        null until known. Read to warn before the requirement is saved where nobody could. */
     const [instanceApprovers, setInstanceApprovers] = useState<number | null>(null);
+    /* How many system super-administrators exist, to suggest leaving single-administrator
+       settings once there are several; null until known. */
+    const [systemSuperCount, setSystemSuperCount] = useState<number | null>(null);
 
     /* Snapshots of what the server last returned, for the unsaved-changes guard. Each loader
        stamps its own key; `dirty` is true when any live buffer differs from its snapshot. */
@@ -469,6 +472,9 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
         apiGet<any>('/api/v1/admin/ceremonies/approvers', { toast: false })
             .then((a) => setInstanceApprovers(typeof a?.eligibleApprovers === 'number' ? a.eligibleApprovers : null))
             .catch(() => setInstanceApprovers(null));
+        apiGet<any>('/api/v1/admin/security-policy/administrators', { toast: false })
+            .then((a) => setSystemSuperCount(typeof a?.systemSuperCount === 'number' ? a.systemSuperCount : null))
+            .catch(() => setSystemSuperCount(null));
     };
 
     /* Protocol Rate Limits (DB) — multi-row */
@@ -1033,7 +1039,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                             <ConfigToggle label="Allow System Super Self-Approval" checked={securityPolicy.allowSystemSuperSelfApproval ?? false} onChange={(v) => updateSecurityPolicyField('allowSystemSuperSelfApproval', v)}
                                                 disabled={!user?.isSuper}
                                                 hintTone={securityPolicy.allowSystemSuperSelfApproval ? 'warn' : 'muted'}
-                                                hint={`Members of system-super may approve certificate requests they submitted themselves. Keeps a single-operator install working, and removes the two-person check for those accounts.${user?.isSuper ? '' : ' Only a system super-administrator can change this.'}`} />
+                                                hint={`Members of system-super may approve certificate requests they submitted themselves, and that approval completes the request whatever its profile's count; it is recorded as self-approved. Keeps a single-administrator install working, and removes the two-person check for those accounts. Setup turns it on when you answer that you alone will administer the CA.${(securityPolicy.allowSystemSuperSelfApproval && (systemSuperCount ?? 0) > 1) ? ` There are now ${systemSuperCount} system super-administrators: consider turning this off so requests need someone else's approval.` : ''}${user?.isSuper ? '' : ' Only a system super-administrator can change this.'}`} />
                                             <ConfigToggle label="Require mTLS OCSP Check" checked={securityPolicy.requireMtlsOcspCheck ?? false} onChange={(v) => updateSecurityPolicyField('requireMtlsOcspCheck', v)}
                                                 hint="Client certificates presented for mTLS login are checked for revocation against the issuing CA. Off means a revoked certificate still logs in until it expires." />
                                         </div>

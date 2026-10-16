@@ -32,6 +32,10 @@ const ADMIN_ENDPOINTS: CertificateRequestEndpoints = {
     // The admin list returns raw rows for the profile editor's sake; validation needs the
     // effective profile after inheritance, which is what issuance applies.
     resolvedRequestProfile: (id) => `/api/v1/admin/request-profiles/${encodeURIComponent(id)}/resolved`,
+    approvalOutlook: (requestProfileId, signingProfileId, certProfileId) =>
+        `/api/v1/admin/requests/approval-outlook?requestProfileId=${encodeURIComponent(requestProfileId)}`
+        + `&signingProfileId=${encodeURIComponent(signingProfileId)}`
+        + (certProfileId ? `&certProfileId=${encodeURIComponent(certProfileId)}` : ''),
 };
 
 /**
