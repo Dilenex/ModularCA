@@ -101,9 +101,24 @@ public class ProfileResolutionService : IProfileResolutionService
             : MergeRequestProfiles(child, parent);
 
     /// <summary>
-    /// A resolver for <see cref="ResolveLoaded"/> only, for code that reads the rows itself (the
+    /// The effective certificate profile of <paramref name="child"/> from rows already loaded, as
+    /// <see cref="ResolveCertProfileAsync"/> resolves it: merged with <paramref name="parent"/>
+    /// when the child inherits from it, standalone otherwise or when the parent is missing.
+    /// Reads nothing from the database.
+    /// </summary>
+    /// <param name="child">The certificate profile to resolve.</param>
+    /// <param name="parent">The row <paramref name="child"/> inherits from, or null when there is none.</param>
+    internal EffectiveCertProfile ResolveLoaded(CertProfileEntity child, CertProfileEntity? parent)
+        => !child.InheritanceEnabled || child.InheritsFromId == null || parent == null || parent.Id != child.InheritsFromId
+            ? MapCertProfileStandalone(child)
+            : MergeCertProfiles(child, parent);
+
+    /// <summary>
+    /// A resolver for <see cref="ResolveLoaded(RequestProfileEntity, RequestProfileEntity?)"/> and
+    /// <see cref="ResolveLoaded(CertProfileEntity, CertProfileEntity?)"/> only, for code that reads the rows itself (the
     /// upgrade check reads them by column name, before the model applies). It has no database:
-    /// its other methods must not be called.
+    /// its other methods must not be called, and certificate profile usages are compared by
+    /// spelling alone, without the usage catalog.
     /// </summary>
     /// <param name="logger">Where the inheritance clamps log what they override.</param>
     internal static ProfileResolutionService ForLoadedRows(ILogger<ProfileResolutionService> logger) => new(null!, logger);
@@ -692,6 +707,8 @@ public class ProfileResolutionService : IProfileResolutionService
     /// <param name="keyUsageKind">The OIDOptions discriminator: "Standard" or "Extended".</param>
     private Func<string, string> BuildUsageComparisonKey(string keyUsageKind)
     {
+        if (_db == null)
+            return raw => UsageCatalogResolver.Canonicalize(raw);
         var catalog = _db.OIDOptions
             .Where(o => o.KeyUsage == keyUsageKind)
             .Select(o => new { o.OID, o.FriendlyName })

@@ -58,7 +58,7 @@ public class AdminCertProfileController(
     public async Task<IActionResult> GetAll([FromQuery] Guid? caId = null, [FromQuery] bool? isCaProfile = null, [FromQuery] Guid? spaceId = null)
     {
         await currentUser.EnsureLoadedAsync();
-        var profiles = await certProfileService.GetAllAsync();
+        var profiles = await certProfileService.GetAllAsync(ReadFence.IsSystemAdmin ? null : ReadFence.Allows);
 
         // The console's space scope: the space's own profiles plus the instance-wide ones not
         // bound to an instance CA.
@@ -224,7 +224,7 @@ public class AdminCertProfileController(
     [Authorize(Policy = "CaAuditor")]
     public async Task<IActionResult> GetById(Guid id)
     {
-        var profile = await certProfileService.GetByIdAsync(id);
+        var profile = await certProfileService.GetByIdAsync(id, ReadFence.IsSystemAdmin ? null : ReadFence.Allows);
         if (profile == null || !await InFenceAsync(id))
             return NotFound(new { message = "Profile not found" });
         return Ok(profile);

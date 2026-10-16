@@ -24,15 +24,18 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
-        /// Returns all certificate profiles with resolved EKU friendly names.
+        /// Returns all certificate profiles with resolved EKU friendly names. With
+        /// <paramref name="caVisible"/>, a profile's uses by CAs the caller may not see are
+        /// counted rather than named.
         /// </summary>
-        public async Task<List<CertProfileDto>> GetAllAsync()
+        /// <param name="caVisible">Whether the caller may see a CA of the given space (null for the instance); null to name every CA.</param>
+        public async Task<List<CertProfileDto>> GetAllAsync(Func<Guid?, bool>? caVisible = null)
         {
             var profiles = await _db.CertProfiles
                 .AsNoTracking()
                 .ToListAsync();
 
-            var usedBy = await InfrastructureUsesAsync(null);
+            var usedBy = await InfrastructureUsesAsync(null, caVisible);
             var profilesDto = new List<CertProfileDto>();
             foreach (var profile in profiles)
             {
@@ -153,7 +156,8 @@ namespace ModularCA.Core.Services
         /// name, its kind and its instance-wide scope. A profile a CA issues its timestamp signer,
         /// OCSP responder or CMP signer from, by name as the default or because the CA names it,
         /// stays an end-entity profile that lists the usage that certificate exists for, and is
-        /// not bound to another CA.
+        /// not bound to another CA. Usages are judged after inheritance, as issuance reads them,
+        /// and a profile that inherits from this one is judged with this change in place.
         /// </summary>
         private async Task EnsureUsesSurviveAsync(CertProfileEntity profile, UpdateCertProfileRequest request)
         {
@@ -181,29 +185,18 @@ namespace ModularCA.Core.Services
                         ErrorCodes.CertProfileInUse, "Name another profile on the CA's page first.");
             }
 
-            var roles = uses.Select(u => u.Role)
-                .Concat(InfrastructureCertProfiles.All.Where(r => r.DefaultProfileName == profile.Name))
-                .Distinct()
-                .ToList();
-            if (roles.Count == 0)
-                return;
             var changed = new CertProfileEntity
             {
+                Id = profile.Id,
                 Name = profile.Name,
                 IsCaProfile = request.IsCaProfile,
                 KeyUsages = EnforceCaKeyUsages(NormalizeJsonStringArray(request.KeyUsages), request.IsCaProfile),
                 ExtendedKeyUsages = NormalizeJsonStringArray(request.ExtendedKeyUsages),
+                InheritsFromId = request.InheritsFromId,
+                InheritanceEnabled = request.InheritanceEnabled,
             };
-            foreach (var role in roles)
-            {
-                if (InfrastructureCertProfiles.WhyUnsuitable(changed, role) is not string reason)
-                    continue;
-                var users = uses.Where(u => u.Role == role).Select(u => u.CaName).ToList();
-                var who = users.Count > 0
-                    ? $"{string.Join(", ", users)} " + (users.Count == 1 ? "issues its" : "issue their") + $" {role.CertType} certificate from it."
-                    : $"Every CA that names no other profile issues its {role.CertType} certificate from it.";
-                throw new ResourceConflictException($"{reason} {who}", ErrorCodes.CertProfileInUse);
-            }
+            if (await InfrastructureCertProfiles.WhyUsagesWouldBeLostAsync(_db, profile, changed) is string why)
+                throw new ResourceConflictException(why, ErrorCodes.CertProfileInUse);
         }
 
         /// <summary>
@@ -234,7 +227,9 @@ namespace ModularCA.Core.Services
         /// Retrieves a single certificate profile by GUID, including resolved EKU names.
         /// Returns null if not found.
         /// </summary>
-        public async Task<CertProfileDto?> GetByIdAsync(Guid id)
+        /// <param name="id">The profile.</param>
+        /// <param name="caVisible">Whether the caller may see a CA of the given space (null for the instance); null to name every CA.</param>
+        public async Task<CertProfileDto?> GetByIdAsync(Guid id, Func<Guid?, bool>? caVisible = null)
         {
             var profile = await _db.CertProfiles.FindAsync(id);
             if (profile == null)
@@ -245,16 +240,17 @@ namespace ModularCA.Core.Services
                 ? await OidHelper.ResolveOidFriendlyNamesAsync(_db, ekuList)
                 : new List<string>();
             var dto = MapToDto(profile, ekuFriendlyNames);
-            if ((await InfrastructureUsesAsync(id)).TryGetValue(id, out var uses))
+            if ((await InfrastructureUsesAsync(id, caVisible)).TryGetValue(id, out var uses))
                 dto.InfrastructureUses = uses;
             return dto;
         }
 
         /// <summary>
         /// For each certificate profile a CA names for a certificate of its own (one profile when
-        /// <paramref name="profileId"/> is given), a line per use: the CA and the certificate.
+        /// <paramref name="profileId"/> is given), a line per use: the CA and the certificate. Uses
+        /// by CAs <paramref name="caVisible"/> refuses are counted in one last line, unnamed.
         /// </summary>
-        private async Task<Dictionary<Guid, List<string>>> InfrastructureUsesAsync(Guid? profileId)
+        private async Task<Dictionary<Guid, List<string>>> InfrastructureUsesAsync(Guid? profileId, Func<Guid?, bool>? caVisible)
         {
             var cas = await _db.CertificateAuthorities.AsNoTracking()
                 .Where(ca => profileId == null
@@ -263,14 +259,26 @@ namespace ModularCA.Core.Services
                 .OrderBy(ca => ca.Name)
                 .ToListAsync();
             var uses = new Dictionary<Guid, List<string>>();
+            var hidden = new Dictionary<Guid, int>();
             foreach (var ca in cas)
                 foreach (var role in InfrastructureCertProfiles.All)
                     if (InfrastructureCertProfiles.ChosenId(ca, role) is Guid used && (profileId == null || used == profileId))
                     {
+                        if (caVisible != null && !caVisible(ca.SpaceId))
+                        {
+                            hidden[used] = hidden.GetValueOrDefault(used) + 1;
+                            continue;
+                        }
                         if (!uses.TryGetValue(used, out var lines))
                             uses[used] = lines = new List<string>();
                         lines.Add($"{ca.Name}: {role.CertType}");
                     }
+            foreach (var (used, count) in hidden)
+            {
+                if (!uses.TryGetValue(used, out var lines))
+                    uses[used] = lines = new List<string>();
+                lines.Add(count == 1 ? "1 use by a CA outside your scope" : $"{count} uses by CAs outside your scope");
+            }
             return uses;
         }
 

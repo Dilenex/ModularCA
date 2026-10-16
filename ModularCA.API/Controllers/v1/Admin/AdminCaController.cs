@@ -970,9 +970,11 @@ namespace ModularCA.API.Controllers.v1.Admin
             var ca = await _db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(c => c.Id == caId && !c.IsDeleted && !c.IsSshCa);
             if (ca == null) return NotFound(new { error = "Certificate authority not found." });
 
-            var profiles = (await _db.CertProfiles.AsNoTracking().Where(p => !p.IsCaProfile).OrderBy(p => p.Name).ToListAsync())
-                .Where(p => CertProfileScope.Admits(p, ca))
-                .ToList();
+            var allProfiles = await _db.CertProfiles.AsNoTracking().OrderBy(p => p.Name).ToListAsync();
+            var byId = allProfiles.ToDictionary(p => p.Id);
+            ModularCA.Shared.Entities.CertProfileEntity? ParentOf(ModularCA.Shared.Entities.CertProfileEntity p)
+                => p.InheritanceEnabled && p.InheritsFromId is Guid parentId && byId.TryGetValue(parentId, out var parent) ? parent : null;
+            var profiles = allProfiles.Where(p => !p.IsCaProfile && CertProfileScope.Admits(p, ca)).ToList();
 
             var roles = new List<object>();
             foreach (var role in InfrastructureCertProfiles.All)
@@ -991,8 +993,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                     Problem = inEffect == null
                         ? $"The certificate profile '{role.DefaultProfileName}' does not exist yet. It is created the first time this certificate is issued."
                         : chosenId != null
-                            ? InfrastructureCertProfiles.WhyNotChoosable(inEffect, role, ca)
-                            : InfrastructureCertProfiles.WhyUnsuitable(inEffect, role),
+                            ? InfrastructureCertProfiles.WhyNotChoosable(inEffect, role, ca, ParentOf(inEffect), _db)
+                            : InfrastructureCertProfiles.WhyUnsuitable(inEffect, role, ParentOf(inEffect), _db),
                 });
             }
 
@@ -1012,17 +1014,18 @@ namespace ModularCA.API.Controllers.v1.Admin
             var candidates = new List<object>();
             foreach (var p in profiles)
             {
+                var effective = InfrastructureCertProfiles.Effective(p, ParentOf(p), _db);
                 candidates.Add(new
                 {
                     p.Id,
                     p.Name,
                     Suits = InfrastructureCertProfiles.All
-                        .Where(role => InfrastructureCertProfiles.WhyUnsuitable(p, role) == null)
+                        .Where(role => InfrastructureCertProfiles.WhyUnsuitable(p, role, ParentOf(p), _db) == null)
                         .Select(role => role.Key)
                         .ToList(),
-                    KeyUsages = ProfileConstraintReader.ReadList(p.KeyUsages),
+                    KeyUsages = ProfileConstraintReader.ReadList(effective.KeyUsages),
                     ExtendedKeyUsages = await ProfileConstraintReader.ExtendedKeyUsageNamesAsync(
-                        _db, ProfileConstraintReader.ReadList(p.ExtendedKeyUsages), HttpContext.RequestAborted),
+                        _db, ProfileConstraintReader.ReadList(effective.ExtendedKeyUsages), HttpContext.RequestAborted),
                     p.ValidityPeriodMin,
                     p.ValidityPeriodMax,
                 });
@@ -1078,7 +1081,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                     var profile = await _db.CertProfiles.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
                     if (profile == null)
                         return BadRequest(new { error = $"The certificate profile named for the {role.CertType} certificate does not exist." });
-                    if (InfrastructureCertProfiles.WhyNotChoosable(profile, role, ca) is string reason)
+                    var parent = await InfrastructureCertProfiles.ParentOfAsync(_db, profile, HttpContext.RequestAborted);
+                    if (InfrastructureCertProfiles.WhyNotChoosable(profile, role, ca, parent, _db) is string reason)
                         return BadRequest(new { error = reason });
                     profileName = profile.Name;
                 }

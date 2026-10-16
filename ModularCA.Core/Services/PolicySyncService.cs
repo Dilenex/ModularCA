@@ -153,6 +153,29 @@ public class PolicySyncService : IPolicySyncService
                 }
                 else if (HasCertProfileChanged(existing, yamlProfile))
                 {
+                    // The same guards as an edit in the console: a profile the application finds by
+                    // name keeps its kind, and one a CA issues its own certificates from keeps the usage.
+                    if (SystemCertProfiles.PurposeOf(existing.Name) is string purpose && yamlProfile.IsCaProfile != existing.IsCaProfile)
+                    {
+                        result.Errors.Add($"Cert profile '{existing.Name}' was not updated: it cannot change between a CA and an end-entity profile: {purpose}.");
+                        continue;
+                    }
+                    var changed = new CertProfileEntity
+                    {
+                        Id = existing.Id,
+                        Name = existing.Name,
+                        IsCaProfile = yamlProfile.IsCaProfile,
+                        KeyUsages = yamlProfile.KeyUsages ?? string.Empty,
+                        ExtendedKeyUsages = yamlProfile.ExtendedKeyUsages ?? "[]",
+                        InheritsFromId = existing.InheritsFromId,
+                        InheritanceEnabled = existing.InheritanceEnabled,
+                    };
+                    if (await InfrastructureCertProfiles.WhyUsagesWouldBeLostAsync(_db, existing, changed) is string why)
+                    {
+                        result.Errors.Add($"Cert profile '{existing.Name}' was not updated: {why}");
+                        continue;
+                    }
+
                     existing.Description = yamlProfile.Description ?? string.Empty;
                     existing.IsCaProfile = yamlProfile.IsCaProfile;
                     existing.KeyUsages = yamlProfile.KeyUsages ?? string.Empty;

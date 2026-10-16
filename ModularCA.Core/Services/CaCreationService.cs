@@ -702,6 +702,10 @@ public class CaCreationService(
                 newCaCert, caKey, ceremony, caEntity, signingProfile,
                 InfrastructureCertProfiles.OcspResponder, logger);
 
+            // As on reissue: what came out is what a relying party sees.
+            EnsureIssuedCertCarriesEku(tsaCert, IdKpTimeStampingOid, "TSA", creatingCa: true);
+            EnsureIssuedCertCarriesEku(ocspCert, IdKpOcspSigningOid, "OCSP Responder", creatingCa: true);
+
             // Seed default protocol configs using the per-CA signing profile
             var defaultCertProfile = await DefaultLeafProfileAsync(db, caEntity.Id, spaceId);
             if (defaultCertProfile != null)
@@ -1289,13 +1293,22 @@ public class CaCreationService(
     /// only one that matters to a relying party is what is in the certificate.
     /// </para>
     /// </summary>
-    private static void EnsureIssuedCertCarriesEku(X509Certificate cert, string requiredOid, string certType)
+    /// <param name="cert">The certificate that was issued.</param>
+    /// <param name="requiredOid">The extended key usage it needs.</param>
+    /// <param name="certType">What it is, for the refusal.</param>
+    /// <param name="creatingCa">True when it was issued for a CA being created, which is then not created; false for a reissue.</param>
+    private static void EnsureIssuedCertCarriesEku(X509Certificate cert, string requiredOid, string certType, bool creatingCa = false)
     {
         // BouncyCastle returns IList of DerObjectIdentifier here, not strings.
         var ekus = cert.GetExtendedKeyUsage();
         if (ekus != null && ekus.Cast<object>().Any(o => string.Equals(o?.ToString(), requiredOid, StringComparison.Ordinal)))
             return;
 
+        if (creatingCa)
+            throw new ConfigurationValidationException(
+                $"The new CA's {certType} certificate came out without the required extended key usage ({requiredOid}), so it " +
+                "would not work, and the CA has not been created. Check the certificate profile it is issued under, including what " +
+                "that profile inherits, and the signing profile's Allowed EKUs, then create the CA again.", ErrorCodes.SigningProfileMissingRequiredEku);
         throw new ConfigurationValidationException(
             $"The reissued {certType} certificate was created without the required extended key usage " +
             $"({requiredOid}), so it would not work. The previous certificate has been left in place " +
@@ -1306,8 +1319,8 @@ public class CaCreationService(
     /// <summary>
     /// Confirms, before a CA is created or its certificates reissued, that the profile
     /// <paramref name="role"/> is issued under can do the job: the profile <paramref name="ca"/>
-    /// names, or the seeded default when it names none or is not created yet (null). Issuance
-    /// emits exactly what the profile lists and an empty list is legitimate there, so a profile
+    /// names, or the seeded default when it names none or is not created yet (null), with what it
+    /// inherits. Issuance emits exactly what the profile lists and an empty list is legitimate there, so a profile
     /// that has lost the usage yields a certificate that cannot do its job, with no error. A
     /// profile the CA names must also be one it may issue under. A profile that does not exist
     /// is left to issuance, which says so.
@@ -1319,9 +1332,10 @@ public class CaCreationService(
         if (profile == null)
             return;
 
+        var parent = await InfrastructureCertProfiles.ParentOfAsync(db, profile);
         var reason = ca != null && chosenId != null
-            ? InfrastructureCertProfiles.WhyNotChoosable(profile, role, ca)
-            : InfrastructureCertProfiles.WhyUnsuitable(profile, role);
+            ? InfrastructureCertProfiles.WhyNotChoosable(profile, role, ca, parent, db)
+            : InfrastructureCertProfiles.WhyUnsuitable(profile, role, parent, db);
         if (reason != null)
             throw new ConfigurationValidationException(reason + " Nothing has been changed.", ErrorCodes.SigningProfileMissingRequiredEku);
     }
