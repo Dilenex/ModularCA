@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
@@ -34,6 +35,11 @@ public class CsrService : ICsrService
         _dbContext = dbContext;
         _heldKeys = heldKeys;
     }
+
+    /// <summary>The status a request made under <paramref name="requestProfileId"/> starts in (<see cref="RequestProfileEnforcement.InitialStatusAsync"/>).</summary>
+    private Task<string> InitialStatusAsync(Guid? requestProfileId)
+        => new RequestProfileEnforcement(_dbContext, new ProfileResolutionService(_dbContext, NullLogger<ProfileResolutionService>.Instance))
+            .InitialStatusAsync(requestProfileId);
 
     /// <summary>
     /// Generates a new CSR with a fresh key pair based on the requested parameters, validates the key
@@ -150,7 +156,8 @@ public class CsrService : ICsrService
             SigningProfile = signingProfile,
             RequestorUserId = user.Id,
             RequestorUser = user,
-            RequestProfileId = request.RequestProfileId
+            RequestProfileId = request.RequestProfileId,
+            Status = await InitialStatusAsync(request.RequestProfileId),
         };
 
         // The key is held on the row, wrapped, until the certificate is issued and the holder
@@ -413,7 +420,8 @@ public class CsrService : ICsrService
             RequestorUser = user,
             RequestedNotBefore = requestedNotBefore,
             RequestedNotAfter = requestedNotAfter,
-            RequestProfileId = requestProfileId
+            RequestProfileId = requestProfileId,
+            Status = await InitialStatusAsync(requestProfileId),
         };
 
         // Store overrides if provided

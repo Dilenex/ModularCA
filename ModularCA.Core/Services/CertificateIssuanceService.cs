@@ -174,6 +174,9 @@ namespace ModularCA.Core.Services
             if (ValidateCsrStatus(csrEntity) == false)
                 throw new ResourceConflictException("CSR is not in a valid state for issuance", ErrorCodes.CsrStateNotEligible);
 
+            if (!csrEntity.IsInfrastructureCert)
+                await new RequestProfileEnforcement(_db, _profileResolver).EnsureApprovedAsync(csrEntity);
+
             if (csrEntity.SigningProfile == null)
                 throw new ConfigurationValidationException("No signing profile associated with CSR");
 
@@ -558,7 +561,8 @@ namespace ModularCA.Core.Services
                 csrEntity = await _db.CertificateRequests
                     .Include(c => c.SigningProfile)
                     .Include(c => c.CertProfile)
-                    .FirstOrDefaultAsync(c => c.IssuedCertificateId == certId);
+                    .ThatIssued(certId.Value)
+                    .FirstOrDefaultAsync();
                 if (csrEntity == null)
                     throw new Exception("Certificate not found.");
             }
@@ -571,7 +575,7 @@ namespace ModularCA.Core.Services
                 csrEntity = await _db.CertificateRequests
                     .Include(c => c.SigningProfile)
                     .Include(c => c.CertProfile)
-                    .Where(c => c.IssuedCertificateId == certEntity.CertificateId)
+                    .ThatIssued(certEntity.CertificateId)
                     .FirstOrDefaultAsync();
                 if (csrEntity == null)
                     throw new Exception("Certificate not found.");
@@ -933,6 +937,7 @@ namespace ModularCA.Core.Services
                 var reissueCsr = new CertRequestEntity
                 {
                     Subject = csrEntity.Subject,
+                    SubjectAlternativeNames = csrEntity.SubjectAlternativeNames,
                     CSR = csrEntity.CSR,
                     KeyAlgorithm = csrEntity.KeyAlgorithm,
                     KeySize = csrEntity.KeySize,
@@ -946,6 +951,7 @@ namespace ModularCA.Core.Services
                     SubmittedAt = DateTime.UtcNow,
                     RenewalOfCertificateId = prevCert.CertificateId,
                 };
+                CertificateRequestLineage.CarryForward(csrEntity, reissueCsr, reusesCsr: true);
                 _db.CertificateRequests.Add(reissueCsr);
                 await _db.SaveChangesAsync();
             }

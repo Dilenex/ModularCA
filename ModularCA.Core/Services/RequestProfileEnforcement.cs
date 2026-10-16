@@ -274,6 +274,35 @@ public sealed class RequestProfileEnforcement(ModularCADbContext db, IProfileRes
             throw new ConfigurationValidationException(why, ErrorCodes.RequestProfileRefused);
     }
 
+    /// <summary>
+    /// The status a new request made under <paramref name="requestProfileId"/> starts in:
+    /// <c>PendingApproval</c> when its effective profile requires approval, <c>Pending</c>
+    /// otherwise, under no profile, or under one that no longer exists.
+    /// </summary>
+    /// <param name="requestProfileId">The request profile the request is made under.</param>
+    public async Task<string> InitialStatusAsync(Guid? requestProfileId)
+        => requestProfileId is Guid id && await LoadAsync(id) is { RequireApproval: true } ? PendingApprovalStatus : PendingStatus;
+
+    /// <summary>
+    /// Refuses to issue <paramref name="request"/> while its request profile requires approval
+    /// and the request has not been approved, whichever route it arrived by and whatever status
+    /// it was stored with. Throws <see cref="ConfigurationValidationException"/>
+    /// (<see cref="ErrorCodes.RequestProfileRefused"/>).
+    /// </summary>
+    /// <param name="request">The request about to be issued.</param>
+    public async Task EnsureApprovedAsync(CertRequestEntity request)
+    {
+        if (request.RequestProfileId is not Guid id || request.Status == ApprovedStatus)
+            return;
+        if (await LoadAsync(id) is { RequireApproval: true } profile)
+            throw new ConfigurationValidationException(
+                $"The request profile '{profile.Name}' requires approval, and this request has not been approved.", ErrorCodes.RequestProfileRefused);
+    }
+
+    private const string PendingStatus = "Pending";
+    private const string PendingApprovalStatus = "PendingApproval";
+    private const string ApprovedStatus = "Approved";
+
     private async Task<string?> WhyRefusedAsync(Guid profileId, X509Name subject, string? sansJson)
     {
         var profile = await LoadAsync(profileId);

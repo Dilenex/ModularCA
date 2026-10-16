@@ -373,7 +373,8 @@ public class UserCertificateController(
         // Load the original CSR request that produced this certificate
         var originalRequest = await _dbContext.CertificateRequests
             .AsNoTracking()
-            .FirstOrDefaultAsync(r => r.IssuedCertificateId == certEntity.CertificateId);
+            .ThatIssued(certEntity.CertificateId)
+            .FirstOrDefaultAsync();
 
         // Use subject and SANs from the certificate itself (may have overrides from the original CSR)
         var subjectDn = certEntity.SubjectDN;
@@ -409,6 +410,9 @@ public class UserCertificateController(
             RequestorUserId = _currentUser.User.Id,
             RenewalOfCertificateId = certEntity.CertificateId
         };
+        CertificateRequestLineage.CarryForward(originalRequest, renewalRequest, reusesCsr: true);
+        renewalRequest.Status = await new RequestProfileEnforcement(_dbContext,
+            HttpContext.RequestServices.GetRequiredService<IProfileResolutionService>()).InitialStatusAsync(renewalRequest.RequestProfileId);
 
         _dbContext.CertificateRequests.Add(renewalRequest);
         await _dbContext.SaveChangesAsync();
