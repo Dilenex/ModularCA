@@ -10,6 +10,88 @@ Builds between releases are numbered after the line they belong to: `0.4.1-dev.1
 `0.4.1-dev.1.1` and so on. They go to test hosts, and are neither tagged nor published. What they
 change is listed here and becomes the release's section.
 
+### 0.4.2-dev.1.11 — 2026-10-16
+
+Fixes from a review of the request profile enforcement and the per-CA infrastructure profiles,
+self-approval wired to the single-administrator setup answer, an upgrade-check note about
+enrollment clients, and two build fixes, on top of `0.4.2-dev.1.10`.
+
+**Changed**
+
+- **A request profile that requires approval now holds on the console too.** A request made from
+  the console (Generate Key Pair, a pasted or uploaded CSR, a key the CA generates) or a renewal,
+  under a profile that requires approval, starts as Pending Approval, and issuance refuses any
+  request whose profile requires approval until it is Approved, whatever route it came by. Before,
+  only the enrollment protocols waited, and an operator could issue a console request that no one
+  had approved. Approving one's own request is refused unless Allow System Super Self-Approval is
+  on (below).
+- **The single-administrator setup answer allows self-approval, and a self-approval completes the
+  request.** Answering "Just me" in setup (or `Administration.MultipleAdministrators: false`) now
+  also turns on Allow System Super Self-Approval, as it turns key ceremonies off; "Several people"
+  turns it off. With it on, a system-super's approval of their own request completes it whatever
+  the profile's count, since nobody else could add to it; it is still an explicit, step-up approval,
+  never automatic, audited with `SelfApproved` and shown as Self-approved in the request's history.
+  Existing installs keep their current setting: a single-administrator instance turns it on in
+  Settings › Security.
+- **A request profile that inherits is never looser than its parent.** Subject rules merge field
+  by field, keeping the stricter requirement (Optional, Required, Forbidden), the parent's fixed
+  value and pattern, and the shorter maximum length. SAN rules allow only the types both allow,
+  require a SAN when either does, and keep the parent's pattern and the lower count. A default
+  certificate profile the parent does not designate gives way to the parent's. Before, a child's
+  own rules replaced the parent's, and a child created in the console never took the parent's
+  SAN rules at all.
+
+**Fixed**
+
+- **Renewals dropped the request profile and what it settled.** Self-service renewal, admin
+  renewal and automatic renewal copied the original CSR but not the request profile, the subject
+  and SAN overrides or the requested extensions, and issuance builds the names from the CSR: a
+  value the profile fixed (since `0.4.2-dev.1.9` delivered as an override) went back to what the
+  CSR said, and nothing checked the renewal against the profile. They carry all of it now, and an
+  automatic renewal under a profile that requires approval waits for approval.
+- **A reissue's second request row carried no request profile, overrides or SANs**, so the next
+  reissue of that certificate was not checked against the profile, and could be issued without its
+  SANs when the lookup found that row. The row carries them, and reissue and renewal read the
+  original request first.
+- **The infrastructure profile checks read a profile's own usages; issuance uses them after
+  inheritance.** A seeded or CA-named profile that inherited from one without the usage passed the
+  checks and issued a responder or TSA certificate without it. The CA page, its save, CA creation
+  and the profile edit guard judge the usages after inheritance, an edit to a parent is refused when
+  a profile that inherits from it would lose the usage, and CA creation checks the issued TSA and
+  OCSP certificates as reissue does.
+- **Policy import and sync bypassed the name lock and the usage guard.** A YAML entry could turn a
+  name-bound profile into a CA profile or strip the usage from one a CA issues from. Such an entry
+  is skipped with an error now.
+- **The certificate profile list named CAs of other spaces.** A profile's "In Use" lines name only
+  the CAs the caller can see and count the rest.
+- **The container image had not built since `0.4.2-dev.1.4`.** It moved only `share/sql` out of the
+  unpacked tarball, and `share/` also holds the KRL fetcher; it moves both now.
+- **Every build stopped at restore**: `System.Security.Cryptography.Pkcs` 10.0.0, which Kerberos.NET
+  and MimeKit bring, has a high-severity advisory (GHSA-846f-f764-76mx). The build references the
+  patched 10.0.13.
+
+**Added**
+
+- **The console says whether a request can be approved.** The request page shows the approvals a
+  request needs (it showed "?" before), whether its requester may approve it alone, and warns when
+  fewer people can approve it than it needs. The request form says the same before a request is
+  made, under profiles that require approval. New endpoints:
+  `GET /api/v1/admin/requests/{id}/approval-outlook` and `GET /api/v1/admin/requests/approval-outlook`.
+  The request list carries `approvalCount`, `requiredCount`, `requestProfileId` and
+  `renewalOfCertificateId`, and the dashboard marks pending renewals.
+- **Settings and the dashboard say when single-administrator settings outlive one administrator.**
+  With more than one system super-administrator and self-approval still on, or key ceremonies still
+  off, the dashboard shows a banner and Settings a hint (`GET /api/v1/admin/security-policy/administrators`).
+  The request profile page says when self-approval applies.
+- **`--upgrade-check` notes which enrollment clients the request profiles will refuse.** It replays
+  the certificates each protocol issued in the last 90 days, found in the audit database, against
+  the request profile that protocol uses now, with the rules issuance applies, and lists the ones
+  whose next request would be refused, by protocol, CA and profile, with examples and the reason.
+  It never changes the verdict.
+- `scripts/test-enrollment-protocols.sh --enforcement` follows each enrolment that issues with
+  requests the seeded profile refuses (EST without a SAN and with an email SAN, CMP with a DNS
+  SAN). The EST HTTP Basic request carries `DNS:<username>`, which the seeded EST profile requires.
+
 ### 0.4.2-dev.1.10 — 2026-10-10
 
 The profile pickers get a second column that says what the chosen profiles impose, on top of
