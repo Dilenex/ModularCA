@@ -194,6 +194,40 @@ To check schema ownership read-only at any time, as the service user and never a
 
 It exits 0 when both databases are sound and 3 when not, and prints what it found and the repair.
 
+### Upgrading to 0.4.2
+
+0.4.2 is the first release after 0.4.0; the 0.4.1 work ships in it. It adds twelve migrations to
+the application database, moves the instance-wide settings and the node's secrets into the
+database, and moves SSH CA keys into the signer. The last two cannot be undone except by restoring
+a backup.
+
+1. **Back up**, and dump both databases (`pg_dump -Fc`). Going back means restoring them.
+2. **Run the new build's `--upgrade-check`** (above), or let `install.sh` run it. Besides the
+   migrations it lists the SSH CA keys the first start will import, and refuses when the key file
+   of an enabled SSH CA is missing or is not its key. Read its notes: **Request profiles** lists the
+   enrollment clients of the last 90 days whose next request will be refused, and the SSH note
+   lists profiles that will issue fewer permits than `ssh-keygen` added.
+3. **Upgrade the signer first.** On one host `install.sh` upgrades both units and the node waits
+   for the signer. On an install split across hosts, upgrade and start the signer's host before
+   any node.
+4. **At the control role's first start:**
+   - each SSH CA key file under `config/ssh-ca-keys` is imported into `keystores/ssh-ca.keystore`,
+     once the signer is unlocked, then overwritten and deleted. The console shows a notice that
+     these keys were stored in plaintext; archives made before still hold them;
+   - the instance-wide settings and the node's secrets move into the database, and `config.yaml`
+     is rewritten with this host's settings. The old file is kept as
+     `config.yaml.pre-settings-<time>.bak` with its secrets in the clear: delete it, and any
+     backup archive made before the upgrade that may have left your hands is a reason to rotate
+     those secrets. From now on change instance-wide settings in the console or with `--settings`.
+5. **After it starts:**
+   - check each enrollment client against its request profile
+     (`scripts/test-enrollment-protocols.sh --enforcement`), and widen a profile where a client
+     legitimately needs what it now refuses;
+   - with one administrator, turn on Settings, Security, Allow System Super Self-Approval, or
+     requests under profiles that require approval cannot be completed;
+   - give SSH users the login names they use before their certificates are due again, and copy
+     `/usr/share/modularca/ssh-krl/` to each SSH server so hosts follow revocation.
+
 ### Upgrading to 0.4.0
 
 0.4.0 renames tenants to spaces in the schema, and every role reads those tables. A node, ingress

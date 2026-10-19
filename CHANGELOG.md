@@ -6,11 +6,133 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
-Builds between releases are numbered after the line they belong to: `0.4.1-dev.1.0`,
-`0.4.1-dev.1.1` and so on. They go to test hosts, and are neither tagged nor published. What they
-change is listed here and becomes the release's section.
+Builds between release candidates are numbered after the candidate they follow: `0.4.2-rc.1.1`,
+`0.4.2-rc.1.2` and so on. They go to test hosts, and are neither tagged nor published. What they
+change is listed here and becomes the next candidate's section.
 
-### 0.4.2-dev.1.12 — 2026-10-19
+## [0.4.2-rc.1.0] — 2026-10-19
+
+The first release candidate of 0.4.2. It carries everything since 0.4.0: the settings work that
+was built as 0.4.1, which is not released on its own, and the SSH work that takes SSH CA keys out
+of plaintext files the node could read. It also holds every request to its request profile on the
+server, at each step. A release candidate is for trying, not for a CA you depend on.
+
+The builds that went to test hosts on the way, `0.4.1-dev.1.0` to `0.4.2-dev.1.12`, are listed
+after this summary, for anyone who ran one.
+
+### Upgrading from 0.4.0
+
+"Upgrading to 0.4.2" in `packaging/README-DEPLOY.md` is the checklist. In short:
+
+- **Check before installing.** `--upgrade-check` (which `install.sh` runs) rehearses the twelve
+  new migrations, lists the SSH CA keys the first start will import, and refuses when the key
+  file of an enabled SSH CA is missing or is not its key. Its notes, which never refuse, list the
+  enrollment clients the request profiles will now refuse, from the last 90 days of the audit
+  database, and the SSH profiles that will issue fewer permits than before.
+- **Upgrade the signer before the node.** The upgrade is one-way for an install with SSH CAs:
+  each key file is imported into the signer's new `ssh-ca.keystore`, then overwritten and
+  deleted. Archives and snapshots made before still hold those keys in plaintext; rotate an SSH
+  CA whose old archives may have left your hands.
+- **Instance-wide settings move into the database** at the control role's first start, and the
+  node's secrets with them, wrapped by the signer. `config.yaml` is rewritten with this host's
+  settings, and the old file is kept as `config.yaml.pre-settings-<time>.bak`, secrets and all:
+  delete it once the instance runs. From then on a node needs its signer at start to read its
+  secrets.
+- **Requests are held to their request profile, also from the console.** On a default install
+  an EST request without a SAN, a SCEP request with a SAN other than DNS and a CMP request with a
+  SAN other than email are refused from this release. Scripts that call the console request
+  routes must send `requestProfileId`. Requests under a profile that requires approval wait for
+  approval on every route; on an install with one administrator, turn on Allow System Super
+  Self-Approval in Settings, Security.
+- **SSH scripts.** A `keyId` in a sign request is refused, `sign-user` names who the certificate
+  is for, and both admin sign routes ask step-up. The first SSH sweep revokes the live
+  certificates of users who are disabled or may no longer request from the SSH CA.
+- **There is no downgrade.** Take a backup and dump both databases first; going back means
+  restoring them.
+- **Containers.** A release candidate is never `latest`. Name it:
+  `MODULARCA_IMAGE=ghcr.io/dilenex/modularca:0.4.2-rc.1.0`.
+
+### Security
+
+- **SSH CA private keys are held by the signer**, which builds and signs every SSH certificate
+  from its fields. The node holds no SSH CA key and runs no program; `ssh-keygen` is no longer
+  used. The signer checks the ceremony before it generates an SSH CA key, and refuses a
+  certificate of the wrong type, one valid for longer than the key allows, one without a
+  principal and one with an option it does not know.
+- **SSH login names.** A certificate for a user carries only the login names that user holds:
+  their own username where the key allows it (never `root`), and the names granted to them or
+  their groups on that SSH CA key. The CA writes every key id, which `sshd` logs with each login.
+  Taking a name or the right to request away revokes the certificates that depended on it, at
+  once, and a sweep every 15 minutes catches what a missed step left live.
+- **Hosts can follow revocation.** `modularca-krl-fetch`, a script with a systemd timer that
+  ships with the CA, installs each SSH CA key's KRL on a server every minute, only ever replacing
+  it with a complete list of a version no lower than the installed one.
+- **A new user certificate permits a terminal and nothing else.** Agent and port forwarding are
+  in a separate seeded profile, attached to nothing until an administrator attaches it.
+- **The request profile is enforced by the server** when a request is submitted, approved and
+  issued, on the names the certificate will carry, overrides included. A child request profile
+  is never looser than its parent, and renewals and reissues keep the profile the request was
+  made under.
+- **The node's secrets** (the JWT secret, the LDAP bind password, the mail credentials and the
+  webhook endpoints) are stored wrapped by the signer, and the integration API keys as hashes.
+
+### Added
+
+- **Settings in the database**, versioned and audited, with `--settings` on the host as the way
+  back in when a setting locks the administrators out. The Settings page says beside each setting
+  whether a change applies at once or at the next start, and fourteen that waited for a restart
+  now apply at once.
+- **Named API keys** for the infrastructure API and the cert-manager issuer, generated, shown
+  once, scoped, time-limited and revoked one at a time. **The JWT secret can be rotated** from the
+  console.
+- **SSH:** a review date on each SSH CA key, the time of each revocation, a KRL that answers 304
+  while nothing changed, a user or host type on SSH profiles, a way to find a certificate from a
+  host's log line, and SSH login names on the user and group pages.
+- **Certificate profiles:** four purpose-specific ones (`TLS Server`, `Device Client`,
+  `User Authentication and Email`, `Code Signing`) that the seeded request profiles default to.
+  A CA chooses the profiles its OCSP responder, TSA signer and CMP signer are issued under, and
+  the profiles the application depends on keep their names and the usages their certificates
+  need.
+- **The request form asks for the profiles first**, offers only the keys they accept, and says
+  beside them what the profiles allow.
+- **Approvals:** the request page and form say how many approvals a request needs and whether
+  anyone can give them. Answering "Just me" in setup lets a system super-administrator approve
+  their own requests, and the console says when that outlives a single administrator.
+- **Log tables refresh**, by hand or every 30 seconds.
+- `scripts/test-enrollment-protocols.sh --enforcement` checks that each protocol refuses what its
+  request profile forbids.
+
+### Changed
+
+- **SSH lives in tabs** on Authorities, All Certificates and Request Certificate, and in
+  self-service on Request Certificate and My Certificates. The SSH CA menu is gone; the old
+  addresses redirect.
+- **An SSH certificate carries exactly the extensions its profiles name**; `ssh-keygen` used to
+  add five. Its validity starts five minutes before issue, and a KRL download always answers 200
+  with a valid KRL.
+- **New SSH CA keys are user or host, not both**, with a longest certificate of 24 hours for
+  users and one year for hosts.
+
+### Fixed
+
+- **ACME: certbot and Caddy can finalize an order.** Their request has an empty subject, which the
+  seeded request profile refused.
+- **The SAN rules of the seeded request profiles were never enforced**, "at least one SAN" could
+  not trigger on the protocols, and a profile listing no SAN type allowed every type.
+- **Opening the host name from outside the network answered 403** instead of redirecting to the
+  public portal.
+- A CA that named a profile shorter than ten years could not issue its infrastructure
+  certificates, and the admin request profile pages misread and could overwrite a seeded
+  profile's SAN rules.
+
+### Removed
+
+- The `ssh-keygen` dependency, the `SshCa` settings, `PUT /api/v1/admin/config/ssh-ca`, the SSH CA
+  card on the Settings page, and `openssh-client` from the container image.
+
+### The builds on the way
+
+#### 0.4.2-dev.1.12 — 2026-10-19
 
 One fix on top of `0.4.2-dev.1.11`.
 
@@ -21,7 +143,7 @@ One fix on top of `0.4.2-dev.1.11`.
   (private ranges and loopback by default). It follows the Public Portal rule now: open wherever
   the portal is open, closed where an operator closed the portal.
 
-### 0.4.2-dev.1.11 — 2026-10-16
+#### 0.4.2-dev.1.11 — 2026-10-16
 
 Fixes from a review of the request profile enforcement and the per-CA infrastructure profiles,
 self-approval wired to the single-administrator setup answer, an upgrade-check note about
@@ -103,7 +225,7 @@ enrollment clients, and two build fixes, on top of `0.4.2-dev.1.10`.
   requests the seeded profile refuses (EST without a SAN and with an email SAN, CMP with a DNS
   SAN). The EST HTTP Basic request carries `DNS:<username>`, which the seeded EST profile requires.
 
-### 0.4.2-dev.1.10 — 2026-10-10
+#### 0.4.2-dev.1.10 — 2026-10-10
 
 The profile pickers get a second column that says what the chosen profiles impose, on top of
 `0.4.2-dev.1.9`. The new layout has not been seen in a browser yet.
@@ -149,7 +271,7 @@ The profile pickers get a second column that says what the chosen profiles impos
   usages and validity range, each role's default profile id, and `subjectKey`, `lifetimeYears`
   and `caNotAfter`.
 
-### 0.4.2-dev.1.9 — 2026-10-10
+#### 0.4.2-dev.1.9 — 2026-10-10
 
 The request profile is enforced by the server at every step, and four purpose-specific
 certificate profiles are added, on top of `0.4.2-dev.1.8`. Nothing here has been seen in a
@@ -227,7 +349,7 @@ browser or tried against a live protocol client yet.
 - Not covered: automatic renewals, the API-key integration route and requests stored before
   this build carry no request profile and are not checked against one.
 
-### 0.4.2-dev.1.8 — 2026-10-09
+#### 0.4.2-dev.1.8 — 2026-10-09
 
 A CA names the certificate profile its own certificates are issued under, and the profiles the
 application depends on can no longer be renamed or deleted from under it, on top of
@@ -275,7 +397,7 @@ application depends on can no longer be renamed or deleted from under it, on top
   only recorded against the default profiles; the key algorithm of these certificates still
   follows the CA's key, and their validity is still ten years capped at the CA's.
 
-### 0.4.2-dev.1.7 — 2026-10-09
+#### 0.4.2-dev.1.7 — 2026-10-09
 
 The X.509 request form asks for the profiles first and then offers only the keys they accept,
 on top of `0.4.2-dev.1.6`. The form has not been seen in a browser yet.
@@ -305,7 +427,7 @@ on top of `0.4.2-dev.1.6`. The form has not been seen in a browser yet.
 - The self-service request profile list names each profile's certificate profiles
   (`certProfiles`, id and name).
 
-### 0.4.2-dev.1.6 — 2026-10-09
+#### 0.4.2-dev.1.6 — 2026-10-09
 
 SSH leaves its own menu and becomes tabs on the pages that already exist, on top of
 `0.4.2-dev.1.5`. None of the moved pages has been seen in a browser yet.
@@ -350,7 +472,7 @@ SSH leaves its own menu and becomes tabs on the pages that already exist, on top
 - A self-service user who may request from no SSH CA no longer has the SSH tabs, and so no
   longer sees SSH certificates issued for them earlier.
 
-### 0.4.2-dev.1.5 — 2026-10-09
+#### 0.4.2-dev.1.5 — 2026-10-09
 
 A default SSH CA setup, on top of `0.4.2-dev.1.4`. An existing install keeps the profiles and
 the limits it has; only what is created from now on follows the new defaults.
@@ -397,7 +519,7 @@ the limits it has; only what is created from now on follows the new defaults.
   profiles that name fewer permits than certificates once carried. That is accurate and not
   a problem to fix.
 
-### 0.4.2-dev.1.4 — 2026-10-08
+#### 0.4.2-dev.1.4 — 2026-10-08
 
 Getting the SSH revocation list to hosts, on top of `0.4.2-dev.1.3`. Nothing here has run on a
 Linux host yet: the fetcher was exercised under Git Bash, and its systemd units were never started.
@@ -435,7 +557,7 @@ Linux host yet: the fetcher was exercised under Git Bash, and its systemd units 
 - After the CA's database is restored from a backup, its KRL has a lower version and hosts
   refuse it until the fetcher is run once with `--allow-lower-version`.
 
-### 0.4.2-dev.1.3 — 2026-10-08
+#### 0.4.2-dev.1.3 — 2026-10-08
 
 Losing the right to request revokes, on top of `0.4.2-dev.1.2`.
 
@@ -467,7 +589,7 @@ Losing the right to request revokes, on top of `0.4.2-dev.1.2`.
   still requests today keeps theirs.
 - A script that signs through the admin route for a user who cannot request gets 400.
 
-### 0.4.2-dev.1.2 — 2026-10-07
+#### 0.4.2-dev.1.2 — 2026-10-07
 
 Three tightenings of SSH login names, on top of `0.4.2-dev.1.1`.
 
@@ -493,7 +615,7 @@ Three tightenings of SSH login names, on top of `0.4.2-dev.1.1`.
 - The first sweep after the upgrade revokes the live SSH certificates of users who are already
   disabled, where the certificate records that user. Nothing else that exists today is revoked.
 
-### 0.4.2-dev.1.1 — 2026-10-07
+#### 0.4.2-dev.1.1 — 2026-10-07
 
 SSH login names: the CA decides who may log in as which account, and writes the name hosts
 log. **This changes the sign API**, so scripts that send `keyId`, or that sign for an account
@@ -567,7 +689,7 @@ console pages have not been seen in a browser yet.
 - Existing certificates are untouched and expire on their own. A user certificate whose key id
   is its requester's username is recorded as that user's; the others record no subject.
 
-### 0.4.2-dev.1.0 — 2026-10-07
+#### 0.4.2-dev.1.0 — 2026-10-07
 
 The first build of the 0.4.2 line, on top of `0.4.1-dev.1.7`. SSH CA keys move into the signer.
 **Upgrade the signer before the node.** Installing it is one-way for an install with SSH CAs: the
@@ -634,7 +756,7 @@ key files are imported and deleted at first start. It has not run on Linux yet.
 
 - The admin SSH key list's `publicKeyUrl` pointed at a route that does not exist.
 
-### 0.4.1-dev.1.7 — 2026-10-07
+#### 0.4.1-dev.1.7 — 2026-10-07
 
 **Changed**
 
@@ -642,7 +764,7 @@ key files are imported and deleted at first start. It has not run on Linux yet.
   settings marked Restart, a rotated JWT secret, and a restored backup. It named logging and
   HTTP, most of which apply without one.
 
-### 0.4.1-dev.1.6 — 2026-10-07
+#### 0.4.1-dev.1.6 — 2026-10-07
 
 **Changed**
 
@@ -671,7 +793,7 @@ key files are imported and deleted at first start. It has not run on Linux yet.
 - The answers to `PUT /api/v1/admin/config/http`, `/scheduler` and `/ip-whitelist` no longer
   say a restart is required for what now applies at once.
 
-### 0.4.1-dev.1.5 — 2026-10-06
+#### 0.4.1-dev.1.5 — 2026-10-06
 
 **Added**
 
@@ -698,7 +820,7 @@ key files are imported and deleted at first start. It has not run on Linux yet.
   could be reached by then, stored it over the real one. It is no longer stored; the start
   log says to rotate the secret if the stored one is lost for good.
 
-### 0.4.1-dev.1.4 — 2026-10-06
+#### 0.4.1-dev.1.4 — 2026-10-06
 
 **Fixed**
 
@@ -720,7 +842,7 @@ key files are imported and deleted at first start. It has not run on Linux yet.
   The stored mode was never changed by this: saving the group sent back what the server had
   sent. The field has its badge now (Restart).
 
-### 0.4.1-dev.1.3 — 2026-10-06
+#### 0.4.1-dev.1.3 — 2026-10-06
 
 **Changed**
 
@@ -758,7 +880,7 @@ key files are imported and deleted at first start. It has not run on Linux yet.
   required paths, the EST trust anchor refresh, RSA signature padding and the scheduler's
   missed-run policy. New endpoint `GET /api/v1/admin/settings`.
 
-### 0.4.1-dev.1.2 — 2026-10-06
+#### 0.4.1-dev.1.2 — 2026-10-06
 
 **Fixed**
 
@@ -769,7 +891,7 @@ key files are imported and deleted at first start. It has not run on Linux yet.
   and the control role's next start clears it where it was stored, with a history entry saying
   why. An address an operator set for their own fork is stored as before.
 
-### 0.4.1-dev.1.1 — 2026-10-06
+#### 0.4.1-dev.1.1 — 2026-10-06
 
 **Added**
 
@@ -781,7 +903,7 @@ key files are imported and deleted at first start. It has not run on Linux yet.
   - Auto-refresh is remembered per table, like its columns. It pauses while rows are ticked,
     while a row's drawer is open, and while the page is in the background.
 
-### 0.4.1-dev.1.0 — 2026-10-06
+#### 0.4.1-dev.1.0 — 2026-10-06
 
 Installing this build adds five tables in two migrations (`SettingsStore`, `ApiKeys`) and, at
 the control role's first start, moves the instance-wide settings out of `config.yaml` into the
