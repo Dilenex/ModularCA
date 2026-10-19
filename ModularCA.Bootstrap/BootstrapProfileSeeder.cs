@@ -727,7 +727,7 @@ public static class BootstrapProfileSeeder
             new WhitelistEntity
             {
                 Name = "Public Portal",
-                Description = "The relying-party portal (/public) and the public info endpoint its footer reads. Open by default because the people it serves are outside the network by definition — someone fetching the CA certificate has no trust in this CA yet. Protocol endpoints under /api/v1/public/ are NOT covered here; they keep their own per-protocol rules. Tighten this to internal CIDRs on an air-gapped or internal-only deployment.",
+                Description = "The relying-party portal (/public), the public info endpoint its footer reads, and the bare root (/), which only redirects to the portal. Open by default because the people it serves are outside the network by definition — someone fetching the CA certificate has no trust in this CA yet. Protocol endpoints under /api/v1/public/ are NOT covered here; they keep their own per-protocol rules. Tighten this to internal CIDRs on an air-gapped or internal-only deployment.",
                 Scope = WhitelistScope.Public,
                 CertificateAuthorityId = null,
                 Protocol = null,
