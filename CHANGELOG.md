@@ -10,6 +10,17 @@ Builds between releases are numbered after the line they belong to: `0.4.1-dev.1
 `0.4.1-dev.1.1` and so on. They go to test hosts, and are neither tagged nor published. What they
 change is listed here and becomes the release's section.
 
+### 0.4.2-dev.1.12 — 2026-10-19
+
+One fix on top of `0.4.2-dev.1.11`.
+
+**Fixed**
+
+- **Opening the host name from outside the network answered 403 instead of the portal.** The bare
+  root `/` only redirects to `/public/`, but the IP allowlist put it under the System rule
+  (private ranges and loopback by default). It follows the Public Portal rule now: open wherever
+  the portal is open, closed where an operator closed the portal.
+
 ### 0.4.2-dev.1.11 — 2026-10-16
 
 Fixes from a review of the request profile enforcement and the per-CA infrastructure profiles,

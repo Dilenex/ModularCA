@@ -1,6 +1,6 @@
 {
     "name": "modularca-publicui",
-    "version": "0.4.2-dev.1.11",
+    "version": "0.4.2-dev.1.12",
     "private": true,
     "type": "module",
     "scripts": {
