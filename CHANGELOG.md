@@ -10,6 +10,38 @@ Builds between release candidates are numbered after the candidate they follow: 
 `0.4.2-rc.1.2` and so on. They go to test hosts, and are neither tagged nor published. What they
 change is listed here and becomes the next candidate's section.
 
+### 0.4.2-rc.1.1 — 2026-10-21
+
+Fixes found on the test hosts and in a production install of `0.4.2-rc.1.0`, on top of it.
+
+**Changed**
+
+- **The CMP request profile a new install seeds no longer requires approval.** CMP refuses a
+  request whose request profile requires approval, because a CMP client cannot come back for a
+  certificate approved later, so on a default install CMP refused every request. `Enterprise User
+  (CMP)` is now auto-approved, like the EST and SCEP profiles. An existing install keeps its
+  profile: where CMP is used, untick Require approval on it, or the client keeps seeing
+  "Certificate issuance failed" and the CMP audit tab says why.
+
+**Fixed**
+
+- **The protocol audit tabs listed old entries first.** Opening a protocol tab (EST, SCEP, CMP,
+  ACME, MSAE, Network) after the General tab sorted its page by the displayed date as text, so
+  "Sep 18" came before "Oct 21".
+- **A sign-in refused at the second factor was audited as OK.** An account locked or disabled by
+  the time it completed TOTP, WebAuthn or mTLS was refused, but the `UserLoginFailed` entry was
+  written as a success, so the audit log's Failed filter left it out.
+- **The request form's Not After started past the certificate profile's limit**, with a red
+  warning before anything was typed under a short-lived profile. It now starts at a year or the
+  limit, whichever is sooner, and a limit under a day bounds the date picker too.
+- **SSH:** an enabled SSH CA key showed "CA Key" as its status, the Sign key form offered a host
+  for a key that signs user certificates only (and the reverse), and beside each login name the
+  forms showed the key's limit ("up to 720 h") above the profile's smaller one.
+- **Wording:** the request profile list said "Optional" for SANs on a profile that allows none;
+  the drawer of an issued request offered to approve or issue it; a request's page showed its
+  profiles, and profile pages their CA, as ids. They now say None, offer only what can still be
+  done, and give names with links.
+
 ## [0.4.2-rc.1.0] — 2026-10-19
 
 The first release candidate of 0.4.2. It carries everything since 0.4.0: the settings work that
