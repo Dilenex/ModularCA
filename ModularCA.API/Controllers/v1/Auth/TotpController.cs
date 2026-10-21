@@ -430,7 +430,8 @@ public class TotpController : ControllerBase
                 Shared.Enums.AuditActionType.UserLoginFailed,
                 user.Id, user.Username,
                 sourceIp: sourceIp,
-                details: new { Reason = blockedAtIssue, Flow = "totp-verify" });
+                details: new { Reason = blockedAtIssue, Flow = "totp-verify" },
+                success: false);
             return StatusCode(403, new { error = AccountStateGate.ClientMessage });
         }
 

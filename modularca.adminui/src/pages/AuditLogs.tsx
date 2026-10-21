@@ -66,7 +66,7 @@ const networkBadge = (log: any) =>
 /// </summary>
 export function buildColumns(tab: Tab): DataTableColumn<any>[] {
     const cat = tabCategory(tab);
-    const timeCol: DataTableColumn<any> = { key: 'timestamp', header: 'Timestamp', defaultWidth: 170, minWidth: 140, sortable: tab === 'General', exportValue: (l) => formatDate(l.timestamp), render: (l) => <span className="text-xs text-ink-muted">{formatDate(l.timestamp)}</span> };
+    const timeCol: DataTableColumn<any> = { key: 'timestamp', header: 'Timestamp', defaultWidth: 170, minWidth: 140, sortable: tab === 'General', sortValue: (l) => (l.timestamp ? new Date(l.timestamp) : null), exportValue: (l) => formatDate(l.timestamp), render: (l) => <span className="text-xs text-ink-muted">{formatDate(l.timestamp)}</span> };
 
     if (cat === 'network') {
         return [
@@ -352,6 +352,7 @@ const AuditLogs: React.FC = () => {
             <SavedViews tableId="audit" current={currentView} onApply={applyView} />
 
             <DataTable<any>
+                key={activeTab}
                 tableId={`audit-${activeTab.toLowerCase()}`}
                 title={`${activeTab} Audit Logs`}
                 rows={logs}
