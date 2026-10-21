@@ -165,11 +165,11 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
 
     const keyStatusLabel = (key: any) => key.isEnabled === false
         ? 'Disabled'
-        : (pendingCeremonies.some((c: any) => c.targetEntityId === key.id && c.operationType === 'DeleteSshCa') ? 'Disable Pending' : 'CA Key');
+        : (pendingCeremonies.some((c: any) => c.targetEntityId === key.id && c.operationType === 'DeleteSshCa') ? 'Disable Pending' : 'Enabled');
     const keyStatusBadge = (key: any) => {
         if (key.isEnabled === false) return <StatusBadge status="revoked" label="Disabled" />;
         if (pendingCeremonies.some((c: any) => c.targetEntityId === key.id && c.operationType === 'DeleteSshCa')) return <StatusBadge status="pending" label="Disable Pending" />;
-        return <Tag label="CA Key" />;
+        return <StatusBadge status="active" label="Enabled" />;
     };
 
     const columns: DataTableColumn<any>[] = [

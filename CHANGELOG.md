@@ -67,8 +67,10 @@ after this summary, for anyone who ran one.
 - **Hosts can follow revocation.** `modularca-krl-fetch`, a script with a systemd timer that
   ships with the CA, installs each SSH CA key's KRL on a server every minute, only ever replacing
   it with a complete list of a version no lower than the installed one.
-- **A new user certificate permits a terminal and nothing else.** Agent and port forwarding are
-  in a separate seeded profile, attached to nothing until an administrator attaches it.
+- **A new user certificate permits a terminal and nothing else.** On a new install, agent and
+  port forwarding are in a separate seeded profile, attached to nothing until an administrator
+  attaches it. An upgraded instance keeps its SSH profiles as they were; the signing profile
+  created with each new SSH CA key grants a terminal only.
 - **The request profile is enforced by the server** when a request is submitted, approved and
   issued, on the names the certificate will carry, overrides included. A child request profile
   is never looser than its parent, and renewals and reissues keep the profile the request was

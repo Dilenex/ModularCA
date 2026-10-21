@@ -7,8 +7,9 @@ import {
 
 /// <summary>
 /// The login names someone holds on an SSH CA key, as a tick list: each name with where it comes
-/// from and how long a certificate carrying it may last. A name with a reason in
-/// <c>unavailable</c> is shown disabled with that reason.
+/// from and how long a certificate carrying it may last, never more than <c>ceilingHours</c>, the
+/// limit of the profiles and the key. A name with a reason in <c>unavailable</c> is shown disabled
+/// with that reason.
 /// </summary>
 export const LoginNameTicks: React.FC<{
     idPrefix: string;
@@ -21,7 +22,8 @@ export const LoginNameTicks: React.FC<{
     /** The name that sets the validity limit, shown in the stronger ink. */
     limitedBy?: string | null;
     disabled?: boolean;
-}> = ({ idPrefix, names, ticked, onChange, whose, unavailable = {}, limitedBy, disabled }) => {
+    ceilingHours?: number;
+}> = ({ idPrefix, names, ticked, onChange, whose, unavailable = {}, limitedBy, disabled, ceilingHours }) => {
     const toggle = (name: string) => onChange(ticked.includes(name) ? ticked.filter((n) => n !== name) : [...ticked, name]);
     return (
         <div className="max-w-3xl border border-line rounded bg-raised divide-y divide-line">
@@ -35,7 +37,7 @@ export const LoginNameTicks: React.FC<{
                             onChange={() => toggle(n.name)} className="h-4 w-4 rounded border-line-strong accent-accent" />
                         <span className={`data-mono truncate ${reason ? 'text-ink-faint' : 'text-ink'}`} title={n.name}>{n.name}</span>
                         <span className={reason ? 'text-warn' : 'text-ink-muted'}>{reason || heldSourceText(n, whose)}</span>
-                        <span className={`text-right tabular-nums whitespace-nowrap ${limitedBy === n.name ? 'text-ink font-medium' : 'text-ink-muted'}`}>up to {n.maxValidityHours} h</span>
+                        <span className={`text-right tabular-nums whitespace-nowrap ${limitedBy === n.name ? 'text-ink font-medium' : 'text-ink-muted'}`}>up to {ceilingHours != null && ceilingHours > 0 ? Math.min(n.maxValidityHours, ceilingHours) : n.maxValidityHours} h</span>
                     </label>
                 );
             })}

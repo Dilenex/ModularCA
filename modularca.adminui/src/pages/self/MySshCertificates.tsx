@@ -198,7 +198,8 @@ const RequestForm: React.FC<{
                         : `You hold no login name on ${caKey?.name ?? 'this SSH CA'}: logging in as your own username is turned off for it, and nothing has been granted to you. An administrator of the SSH CA grants login names.`} />
                 ) : (
                     <LoginNameTicks idPrefix="ssh-req-name" names={held} ticked={ticked} onChange={(next) => { setTicked(next); setValidity(null); }}
-                        whose="you" unavailable={unavailable} limitedBy={limit.loginName} />
+                        whose="you" unavailable={unavailable} limitedBy={limit.loginName}
+                        ceilingHours={combination?.maxValidityHours ?? caKey?.maxValidityHours} />
                 )}
                 <FieldHint>
                     These are the only accounts you may ask for. An administrator of the SSH CA grants more. A login name is the SSH principal: the account on the host that you log in to.

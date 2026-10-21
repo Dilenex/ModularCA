@@ -11,7 +11,7 @@ import {
     activeKindTab, kindTabs, sshCaKeyPath, sshCertificatePath, sshScopeSentence, withKindTab,
 } from '@adminui/pages/sshPlaces';
 import {
-    SSH_PROFILE_TYPE_OPTIONS, certificateTypeFor, defaultSignFor, profileTypeChoice, profileTypeLabel, profilesForCertificateType, servesCertificateType,
+    SSH_PROFILE_TYPE_OPTIONS, certificateTypeFor, defaultSignFor, keySignsFor, profileTypeChoice, profileTypeLabel, profilesForCertificateType, servesCertificateType,
 } from '@adminui/pages/sshProfileType';
 import { sshKeyChoices } from '@adminui/pages/sshLoginNames';
 
@@ -265,6 +265,15 @@ describe('the profiles a form offers', () => {
         expect(defaultSignFor({ isUserCa: true, isHostCa: false })).toBe('user');
         expect(defaultSignFor({ isUserCa: true, isHostCa: true })).toBe('user');
         expect(defaultSignFor({})).toBe('user');
+    });
+
+    it('offer only the answers the key signs', () => {
+        const userOnly = { isUserCa: true, isHostCa: false };
+        expect(keySignsFor(userOnly, 'user')).toBe(true);
+        expect(keySignsFor(userOnly, 'service')).toBe(true);
+        expect(keySignsFor(userOnly, 'host')).toBe(false);
+        expect(keySignsFor({ isUserCa: false, isHostCa: true }, 'service')).toBe(false);
+        expect(keySignsFor({}, 'host')).toBe(true);
     });
 
     it('show a stored type as User, Host or Either', () => {

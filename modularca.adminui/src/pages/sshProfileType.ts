@@ -53,3 +53,8 @@ export const certificateTypeFor = (signFor: SshSignFor): SshCertificateType => (
 export function defaultSignFor(caKey: { isUserCa?: boolean; isHostCa?: boolean }): SshSignFor {
     return caKey.isUserCa === false && caKey.isHostCa ? 'host' : 'user';
 }
+
+/** Whether an SSH CA key signs the certificate an answer comes to; a key that does not say signs both. */
+export function keySignsFor(caKey: { isUserCa?: boolean; isHostCa?: boolean }, signFor: SshSignFor): boolean {
+    return certificateTypeFor(signFor) === 'host' ? caKey.isHostCa !== false : caKey.isUserCa !== false;
+}

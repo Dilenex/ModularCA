@@ -6,7 +6,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPut, apiDeleteWithMfa, apiBlob } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
-import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
+import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
@@ -207,7 +207,7 @@ const SshCaKeyDetail: React.FC = () => {
             breadcrumbs={[{ label: 'Authorities', to: SSH_CA_KEYS_PATH }, { label: key.name || 'Unnamed' }]}
             title={key.name || 'Unnamed'}
             status={<>
-                {enabled ? <Tag label="CA Key" /> : <StatusBadge status="revoked" label="Disabled" />}
+                {enabled ? <StatusBadge status="active" label="Enabled" /> : <StatusBadge status="revoked" label="Disabled" />}
                 {custody.state !== 'held' && custodyBadge}
                 {reviewBadge && <StatusBadge status={reviewBadge.status} label={reviewBadge.label} />}
             </>}

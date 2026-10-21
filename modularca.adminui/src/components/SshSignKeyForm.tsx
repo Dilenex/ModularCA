@@ -15,7 +15,7 @@ import {
     defaultValidity, jsonList, serviceKeyId, serviceLabelError, validityLimit, validityLimitText, validityProblem,
     type SshHeldLoginName,
 } from '../pages/sshLoginNames';
-import { certificateTypeFor, defaultSignFor, profilesForCertificateType, type SshSignFor } from '../pages/sshProfileType';
+import { certificateTypeFor, defaultSignFor, keySignsFor, profilesForCertificateType, type SshSignFor } from '../pages/sshProfileType';
 import { sshCaKeyPath } from '../pages/sshPlaces';
 
 /** What the Sign key form hands back: the API's answer and who the certificate is for. */
@@ -210,7 +210,7 @@ export const SshSignKeyForm: React.FC<{
 
             <div className="space-y-2" role="radiogroup" aria-labelledby="ssh-sign-for">
                 <span id="ssh-sign-for" className={labelClass}>This certificate is for</span>
-                <div className={card('user')}>
+                {keySignsFor(caKey, 'user') && <div className={card('user')}>
                     <label htmlFor="ssh-sign-for-user" className="flex items-center gap-2 text-sm font-medium text-ink">
                         <input id="ssh-sign-for-user" type="radio" name="ssh-sign-for" checked={signFor === 'user'} onChange={() => chooseSignFor('user')} className="h-4 w-4 accent-accent" />
                         A user of this console
@@ -228,8 +228,8 @@ export const SshSignKeyForm: React.FC<{
                             )}
                         </div>
                     )}
-                </div>
-                <div className={card('service')}>
+                </div>}
+                {keySignsFor(caKey, 'service') && <div className={card('service')}>
                     <label htmlFor="ssh-sign-for-service" className="flex items-center gap-2 text-sm font-medium text-ink">
                         <input id="ssh-sign-for-service" type="radio" name="ssh-sign-for" checked={signFor === 'service'} onChange={() => chooseSignFor('service')} className="h-4 w-4 accent-accent" />
                         A service identity with no account
@@ -248,8 +248,8 @@ export const SshSignKeyForm: React.FC<{
                             </span>
                         </div>
                     )}
-                </div>
-                <div className={card('host')}>
+                </div>}
+                {keySignsFor(caKey, 'host') && <div className={card('host')}>
                     <label htmlFor="ssh-sign-for-host" className="flex items-center gap-2 text-sm font-medium text-ink">
                         <input id="ssh-sign-for-host" type="radio" name="ssh-sign-for" checked={signFor === 'host'} onChange={() => chooseSignFor('host')} className="h-4 w-4 accent-accent" />
                         A host
@@ -257,7 +257,7 @@ export const SshSignKeyForm: React.FC<{
                     <p className="pl-6 text-xs text-ink-muted">
                         A host certificate, which a server presents to the clients that connect to it. It carries the server's hostnames.
                     </p>
-                </div>
+                </div>}
                 <FieldHint>Only the request and certificate profiles for a {certType} certificate, and those that serve either type, are offered below.</FieldHint>
             </div>
 
@@ -326,7 +326,8 @@ export const SshSignKeyForm: React.FC<{
                         )}
                         {held && mayRequest && held.length > 0 && (
                             <LoginNameTicks idPrefix="ssh-sign-name" names={held} ticked={ticked} onChange={(next) => { setTicked(next); setValidity(null); }}
-                                whose={subjectUser?.username ?? 'the user'} unavailable={unavailable} limitedBy={limit.loginName} />
+                                whose={subjectUser?.username ?? 'the user'} unavailable={unavailable} limitedBy={limit.loginName}
+                                ceilingHours={Number.isFinite(ceiling) ? ceiling : undefined} />
                         )}
                         {subjectUserId && (
                             <FieldHint>
