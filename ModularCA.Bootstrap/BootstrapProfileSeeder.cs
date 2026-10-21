@@ -434,11 +434,11 @@ public static class BootstrapProfileSeeder
         db.RequestProfiles.Add(mdmDevice);
         profiles["MdmDevice"] = mdmDevice;
 
-        // 4. Enterprise User (CMP) — manual approval required
+        // 4. Enterprise User (CMP) — auto-approved: CMP refuses a profile that requires approval
         var enterpriseUser = new RequestProfileEntity
         {
             Name = "Enterprise User (CMP)",
-            Description = "User certificates for authentication and email. Requires manual admin approval before issuance.",
+            Description = "User certificates for authentication and email. Auto-approved via CMP message protection (shared secret or signature).",
             SubjectDnRules = JsonSerializer.Serialize(new SubjectDnFieldRule[]
             {
                 new() { Field = "CN", Requirement = "Required", MaxLength = 64 },
@@ -456,7 +456,7 @@ public static class BootstrapProfileSeeder
                 }
             }),
             AllowedCertProfileIds = "[]",
-            RequireApproval = true,
+            RequireApproval = false,
         };
         db.RequestProfiles.Add(enterpriseUser);
         profiles["EnterpriseUser"] = enterpriseUser;
