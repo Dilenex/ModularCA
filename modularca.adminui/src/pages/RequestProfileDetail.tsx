@@ -18,6 +18,7 @@ import { RequestProfileForm } from './profiles/RequestProfileForm';
 import { emptyForm, formFromProfile, formToCreateBody, formToUpdateBody, validate } from './profiles/requestProfile';
 import { PROFILE_TYPES, profileDetailPath } from './profiles/profileRoutes';
 import { actionButtonDanger } from '@shared/components/actionButtons';
+import { CaScopeName } from '../components/CaScopeName';
 
 const REQUEST_TAB = PROFILE_TYPES.request.listPath;
 
@@ -200,7 +201,7 @@ const RequestProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) 
                         <DetailField label="Default Cert Profile" value={p.defaultCertProfileId ? resolveProfileName(p.defaultCertProfileId) : 'None'} />
                         <DetailField label="Created" value={p.createdAt ? new Date(p.createdAt).toLocaleString() : undefined} />
                         <DetailField label="Updated" value={p.updatedAt ? new Date(p.updatedAt).toLocaleString() : undefined} />
-                        <DetailField label="CA Scope" value={p.certificateAuthorityId ? String(p.certificateAuthorityId) : 'System-wide'} />
+                        <DetailField label="CA Scope" value={<CaScopeName caId={p.certificateAuthorityId} fallback="System-wide" />} />
                         {p.inheritanceEnabled && <DetailField label="Inherits From" value={resolveParentName(p.inheritsFromId) || 'None'} />}
                     </div>
                     {p.allowedCertProfileIds && p.allowedCertProfileIds.length > 0 && (

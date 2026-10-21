@@ -520,6 +520,17 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
     const ceilingNotice = ceiling ? describeCeiling(ceiling) : null;
     const notAfterExceedsCeiling = exceedsCeiling(notAfter, ceiling);
 
+    // Until the operator picks a Not After, it is a year after Not Before, or the ceiling when that is sooner.
+    const [notAfterEdited, setNotAfterEdited] = useState(false);
+    useEffect(() => {
+        if (notAfterEdited || !notBefore) return;
+        const oneYear = new Date(notBefore);
+        oneYear.setFullYear(oneYear.getFullYear() + 1);
+        const yearOn = toDatetimeLocalValue(oneYear);
+        const max = ceiling ? describeCeiling(ceiling).maxInputValue : '';
+        setNotAfter(max && exceedsCeiling(yearOn, ceiling) ? max : yearOn);
+    }, [ceiling]); // eslint-disable-line react-hooks/exhaustive-deps
+
     // --- Keys the profiles accept ---
     // Asked of the server, which runs the checks submission and issuance run, whenever the
     // profile pair changes. The answer feeds the key pickers and, with what the pair imposes
@@ -1307,7 +1318,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                             <input
                                 type="datetime-local"
                                 value={notAfter}
-                                onChange={(e) => setNotAfter(e.target.value)}
+                                onChange={(e) => { setNotAfter(e.target.value); setNotAfterEdited(true); }}
                                 // Bound to the effective ceiling so the picker cannot offer a date
                                 // issuance would shorten. Browsers differ on whether they block an
                                 // out-of-range value or merely flag it, so the explicit check below

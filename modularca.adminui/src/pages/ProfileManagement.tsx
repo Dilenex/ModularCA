@@ -22,6 +22,7 @@ import { PROFILE_TABS as TABS, type ProfileTab as Tab } from './profiles/profile
 import { periodRangeText, periodText } from '@shared/periodText';
 import { profileTypeLabel } from './sshProfileType';
 import { certProfileInUse, certProfileUseText } from './infrastructureProfiles';
+import { CaScopeName } from '../components/CaScopeName';
 
 /* ─── Certificate Profiles Tab ─── */
 const CertProfilesTab: React.FC = () => {
@@ -104,7 +105,7 @@ const CertProfilesTab: React.FC = () => {
             <DetailField label="Validity Max" value={periodText(p.validityPeriodMax)} />
             <DetailField label="CT Enabled" value={p.ctEnabled ? 'Yes' : 'No'} />
             {p.inheritanceEnabled && <DetailField label="Inherits From" value={resolveParentName(p.inheritsFromId) || 'None'} />}
-            <DetailField label="CA Scope" value={p.certificateAuthorityId ? String(p.certificateAuthorityId) : 'System-wide'} />
+            <DetailField label="CA Scope" value={<CaScopeName caId={p.certificateAuthorityId} fallback="System-wide" />} />
             <p className="text-[11px] text-ink-muted pt-3">Open the full page to view all rules or edit.</p>
         </div>
     );

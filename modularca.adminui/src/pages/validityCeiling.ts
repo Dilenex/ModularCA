@@ -28,9 +28,9 @@ export interface CeilingNotice {
     /** One sentence: the ceiling, the layer that set it, and what the other layers allowed. */
     text: string;
     /**
-     * Local wall-clock value for the Not After picker's `max` attribute, or '' when there is no
-     * usable ceiling (an already-expired issuing CA), in which case the picker stays unbounded and
-     * the server remains the authority.
+     * Local wall-clock value for the Not After picker's `max` attribute, also for a ceiling of hours,
+     * or '' when the ceiling is not after the start (an already-expired issuing CA), in which case
+     * the picker stays unbounded and the server remains the authority.
      */
     maxInputValue: string;
     /**
@@ -120,7 +120,8 @@ export function describeCeiling(p: ValidityCeilingPreflight): CeilingNotice {
 
     return {
         text,
-        maxInputValue: days > 0 ? toDatetimeLocalValue(new Date(p.resolution.effectiveNotAfter)) : '',
+        maxInputValue: new Date(p.resolution.effectiveNotAfter).getTime() > new Date(p.resolution.notBefore).getTime()
+            ? toDatetimeLocalValue(new Date(p.resolution.effectiveNotAfter)) : '',
         tone: refuses ? 'warn' : 'info',
     };
 }

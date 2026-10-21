@@ -12,6 +12,8 @@ import { Capabilities, StepUpOps } from '@shared/generated';
 import { useAuth } from '../context/AuthContext';
 import { isUnboundRequestProfile, mayChangeProfile } from './profiles/instanceWide';
 import { NewProfileButton } from './profiles/NewProfileButton';
+import { sanRequirementLabel } from '../components/requestProfileRules';
+import { CaScopeName } from '../components/CaScopeName';
 
 /* read-only drawer for a request profile row */
 const RequestProfileDrawer: React.FC<{ profile: any; parentName: (id?: string | null) => string | undefined }> = ({ profile: p, parentName }) => (
@@ -21,9 +23,9 @@ const RequestProfileDrawer: React.FC<{ profile: any; parentName: (id?: string | 
         <DetailField label="Require Approval" value={p.requireApproval ? 'Yes' : 'No'} />
         <DetailField label="Max Validity" value={p.maxValidityPeriod} />
         <DetailField label="Subject DN Rules" value={`${p.subjectDnRules?.length || 0} rule(s)`} />
-        <DetailField label="SAN Required" value={p.sanRules?.required ? 'Yes' : 'No'} />
+        <DetailField label="SANs" value={sanRequirementLabel(p.sanRules)} />
         {p.inheritanceEnabled && <DetailField label="Inherits From" value={parentName(p.inheritsFromId) || 'None'} />}
-        <DetailField label="CA Scope" value={p.certificateAuthorityId ? String(p.certificateAuthorityId) : 'System-wide'} />
+        <DetailField label="CA Scope" value={<CaScopeName caId={p.certificateAuthorityId} fallback="System-wide" />} />
         <p className="text-[11px] text-ink-muted pt-3">Open the full page to view rules or edit.</p>
     </div>
 );
@@ -90,8 +92,8 @@ const RequestProfiles: React.FC = () => {
             ),
         },
         { key: 'approval', header: 'Approval', defaultWidth: 110, truncate: false, exportValue: (p) => (p.requireApproval ? 'Required' : 'Auto'), render: (p) => <Tag label={p.requireApproval ? 'Required' : 'Auto'} /> },
-        { key: 'dnRules', header: 'DN Rules', defaultWidth: 100, exportValue: (p) => (p.subjectDnRules?.length || 0), render: (p) => <span className="text-xs text-ink">{p.subjectDnRules?.length || 0} rules</span> },
-        { key: 'san', header: 'SAN', defaultWidth: 110, truncate: false, exportValue: (p) => (p.sanRules?.required ? 'Required' : 'Optional'), render: (p) => <Tag label={p.sanRules?.required ? 'Required' : 'Optional'} /> },
+        { key: 'dnRules', header: 'DN Rules', defaultWidth: 100, exportValue: (p) => (p.subjectDnRules?.length || 0), render: (p) => { const n = p.subjectDnRules?.length || 0; return <span className="text-xs text-ink">{n} {n === 1 ? 'rule' : 'rules'}</span>; } },
+        { key: 'san', header: 'SAN', defaultWidth: 110, truncate: false, exportValue: (p) => sanRequirementLabel(p.sanRules), render: (p) => <Tag label={sanRequirementLabel(p.sanRules)} /> },
         { key: 'maxValidity', header: 'Max Validity', defaultWidth: 130, exportValue: (p) => p.maxValidityPeriod || '', render: (p) => <span className="text-xs text-ink-muted">{p.maxValidityPeriod || '-'}</span> },
     ];
 

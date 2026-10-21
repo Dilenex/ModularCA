@@ -1,7 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
-    DEFAULT_SAN_MAX_COUNT, checkRulesImport, emptyRules, parseRules, rulesToJsonText, serializeRules,
+    DEFAULT_SAN_MAX_COUNT, checkRulesImport, emptyRules, parseRules, rulesToJsonText, sanRequirementLabel, serializeRules,
 } from '@adminui/components/requestProfileRules';
+
+describe('sanRequirementLabel', () => {
+    it('says None for a profile that allows no SAN type', () => {
+        expect(sanRequirementLabel({ allowedTypes: [], required: false })).toBe('None');
+    });
+
+    it('says Required or Optional when a type is allowed', () => {
+        expect(sanRequirementLabel({ allowedTypes: ['DNS'], required: true })).toBe('Required');
+        expect(sanRequirementLabel({ allowedTypes: ['Email'], required: false })).toBe('Optional');
+    });
+
+    it('reads missing rules as DNS and IP allowed', () => {
+        expect(sanRequirementLabel(null)).toBe('Optional');
+    });
+});
 
 /**
  * The conversions behind the request-profile rules editor.

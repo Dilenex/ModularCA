@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
-import { useParams, useNavigate } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPost, apiPostWithMfa } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -77,6 +77,11 @@ interface ApprovalOutlook {
     canComplete: boolean;
     selfApproved: boolean;
 }
+
+/** A profile named and linked to its page, or its id while the name is unknown. */
+const ProfileLink: React.FC<{ kind: 'request' | 'cert' | 'signing'; id: string; name?: string }> = ({ kind, id, name }) => (
+    <Link to={`/profiles/${kind}/${id}`} className={`text-accent-ink hover:underline ${name ? '' : 'data-mono break-all'}`}>{name || id}</Link>
+);
 
 const REJECT_REASONS = ['Policy violation', 'Invalid subject', 'Weak key', 'Duplicate request', 'Unauthorized requestor', 'Incorrect profile', 'Other'];
 const CANCEL_REASONS = ['No longer needed', 'Superseded by new request', 'Incorrect parameters', 'Requestor withdrew', 'Other'];
@@ -167,6 +172,22 @@ const CertificateRequestDetail: React.FC = () => {
             .catch(() => { if (!cancelled) setCertProfile(null); });
         return () => { cancelled = true; };
     }, [csr?.certificateProfileId, csr?.certProfileId]);
+
+    // Names for the request and signing profiles the request was made under.
+    const [profileNames, setProfileNames] = useState<Record<string, string>>({});
+    useEffect(() => {
+        if (!csr?.signingProfileId && !csr?.requestProfileId) return;
+        let cancelled = false;
+        const named = (d: any) => (Array.isArray(d) ? d : (d?.items || []))
+            .map((p: any) => [p.id || p.signingProfileId, p.name] as [string, string]).filter(([pid, name]: [string, string]) => pid && name);
+        Promise.all([
+            apiGet<any>('/api/v1/admin/signing-profiles').catch(() => []),
+            apiGet<any>('/api/v1/admin/request-profiles').catch(() => []),
+        ]).then(([signing, request]) => {
+            if (!cancelled) setProfileNames(Object.fromEntries([...named(signing), ...named(request)]));
+        });
+        return () => { cancelled = true; };
+    }, [csr?.signingProfileId, csr?.requestProfileId]);
 
     const handleApprove = async () => {
         if (!csr) return;
@@ -270,6 +291,7 @@ const CertificateRequestDetail: React.FC = () => {
             title={title}
             status={<StatusBadge status={csrStatus(csr)} label={csrStatusLabel(csr)} />}
             backTo="/certificates/requests"
+            modeToggle={false}
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
                     {canCancel(csr) && <button onClick={() => { setCancelReason(''); setCancelCustom(''); setCancelOpen(true); }} disabled={busyAny} className={actionButtonDanger}>Cancel Request</button>}
@@ -321,8 +343,9 @@ const CertificateRequestDetail: React.FC = () => {
                     <DetailField label="Submitted" value={formatDate(csr.submittedAt)} />
                     {csr.requestorUsername && <DetailField label="Requested by" value={csr.requestorUsername} />}
                     {csr.renewalOfCertificateId && <DetailField label="Renews certificate" value={csr.renewalOfCertificateId} mono />}
-                    {csr.certProfileId && <DetailField label="Cert Profile ID" value={csr.certProfileId} mono />}
-                    {csr.signingProfileId && <DetailField label="Signing Profile ID" value={csr.signingProfileId} mono />}
+                    {csr.requestProfileId && <DetailField label="Request Profile" value={<ProfileLink kind="request" id={csr.requestProfileId} name={profileNames[csr.requestProfileId]} />} />}
+                    {(csr.certificateProfileId || csr.certProfileId) && <DetailField label="Certificate Profile" value={<ProfileLink kind="cert" id={csr.certificateProfileId || csr.certProfileId} name={certProfile?.name} />} />}
+                    {csr.signingProfileId && <DetailField label="Signing Profile" value={<ProfileLink kind="signing" id={csr.signingProfileId} name={profileNames[csr.signingProfileId]} />} />}
                     <DetailField label="Request ID" value={csrId(csr)} mono />
                 </DetailSection>
 

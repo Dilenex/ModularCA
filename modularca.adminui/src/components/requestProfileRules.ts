@@ -104,6 +104,13 @@ export function parseRules(profile: { subjectDnRules?: unknown; sanRules?: unkno
     };
 }
 
+/** The request profile list's SAN column: None when no SAN type is allowed, else Required or Optional. */
+export function sanRequirementLabel(sanRules: unknown): 'None' | 'Required' | 'Optional' {
+    const san = parseRules({ sanRules }).sanRules;
+    if (san.allowedTypes.length === 0) return 'None';
+    return san.required ? 'Required' : 'Optional';
+}
+
 /**
  * Strips the editor's empty-string placeholders back to the optional fields the API expects.
  *

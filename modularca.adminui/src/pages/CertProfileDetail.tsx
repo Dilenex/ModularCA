@@ -22,6 +22,7 @@ import { type CtLogChoice, ctLogChoicesFromResponse, ctLogDisplay, ctLogIdsFromS
 import { actionButtonDanger } from '@shared/components/actionButtons';
 import { periodText } from '@shared/periodText';
 import { certProfileInUse } from './infrastructureProfiles';
+import { CaScopeName } from '../components/CaScopeName';
 
 const CERT_TAB = PROFILE_TYPES.cert.listPath;
 
@@ -235,7 +236,7 @@ const CertProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => 
                     {p.ctEnabled && <div className="py-1"><span className="text-xs text-ink-muted">CT Logs</span><CtLogList stored={p.ctLogIds} logs={ctLogs} /></div>}
                     <DetailField label="Allow Wildcard SAN/CN" value={p.allowWildcard ? 'Yes' : 'No'} />
                     {p.inheritanceEnabled && <DetailField label="Inherits From" value={resolveParentName(p.inheritsFromId) || 'None'} />}
-                    <DetailField label="CA Scope" value={p.certificateAuthorityId ? String(p.certificateAuthorityId) : 'System-wide'} />
+                    <DetailField label="CA Scope" value={<CaScopeName caId={p.certificateAuthorityId} fallback="System-wide" />} />
                 </DetailSection>
 
                 {p.inheritanceEnabled && p.inheritsFromId && (
