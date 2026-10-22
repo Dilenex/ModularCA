@@ -253,6 +253,12 @@ public static class AuditActionType
     // Certificate renewal
     public const string CertificateRenewalInitiated = "CertificateRenewalInitiated";
 
+    // Expiry handling: retiring a certificate, dismissing its expiry warning, and undoing either
+    public const string CertificateRetired = "CertificateRetired";
+    public const string CertificateRetirementUndone = "CertificateRetirementUndone";
+    public const string CertificateExpiryWarningDismissed = "CertificateExpiryWarningDismissed";
+    public const string CertificateExpiryWarningRestored = "CertificateExpiryWarningRestored";
+
     // Quota management
     public const string QuotaUpdated = "QuotaUpdated";
 

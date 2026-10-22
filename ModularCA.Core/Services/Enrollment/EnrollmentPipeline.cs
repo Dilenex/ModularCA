@@ -118,6 +118,12 @@ public class EnrollmentPipeline : IEnrollmentPipeline
             request = settled.Request;
             renewal = settled.Renewal;
         }
+        if (renewal != null && await _db.Certificates.AsNoTracking()
+                .AnyAsync(c => c.CertificateId == renewal.RenewedCertificateId && c.RetiredAt != null, cancellationToken))
+        {
+            return await RefuseAsync(submission, request, ca, EnrollmentRefusalReason.CertificateRetired,
+                $"Certificate {renewal.SerialNumber ?? renewal.RenewedCertificateId.ToString()} was retired and is not renewed; enroll a new certificate.");
+        }
 
         // 5. The effective profiles: the CA's protocol configuration chooses them, or the protocol
         //    supplied them along with the CA; the request profile's allowed list bounds what a

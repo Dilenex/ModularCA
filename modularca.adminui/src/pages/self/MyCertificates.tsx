@@ -304,7 +304,8 @@ const MyX509Certificates: React.FC = () => {
                     <div className={`border rounded p-2 text-xs ${toneBannerClass(lifecycleTone(cert.notAfter, !!cert.replaced))}`}>
                         <span className={`font-semibold ${toneTextClass(lifecycleTone(cert.notAfter, !!cert.replaced))}`}>{capitalize(expiryPhrase(cert.notAfter))}</span>
                         <span className="text-ink"> · {replacementText(cert)}</span>
-                        {!cert.replaced && <span className="text-ink-muted">. Use Renew to request a replacement, or renew it the way you obtained it.</span>}
+                        {!cert.replaced && !cert.retiredAt && <span className="text-ink-muted">. Use Renew to request a replacement, or renew it the way you obtained it.</span>}
+                        {!cert.replaced && cert.retiredAt && <span className="text-ink-muted">. An administrator retired it, so it is not renewed; request a new certificate instead.</span>}
                     </div>
                 )}
 
@@ -334,7 +335,7 @@ const MyX509Certificates: React.FC = () => {
                             Export PFX
                         </button>
                     )}
-                    {status !== 'revoked' && (
+                    {status !== 'revoked' && !cert.retiredAt && (
                         <button onClick={() => handleRenew(cert)}
                             className="px-3 py-1.5 text-xs bg-ok text-on-accent rounded hover:bg-ok-hover transition-colors">
                             Renew

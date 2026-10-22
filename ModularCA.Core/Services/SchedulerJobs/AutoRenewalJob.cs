@@ -14,8 +14,9 @@ using ModularCA.Shared.Utils;
 namespace ModularCA.Core.Services.SchedulerJobs;
 
 /// <summary>
-/// Scheduled job that finds non-revoked, non-CA certificates approaching expiration
-/// and automatically creates renewal CSR requests. When auto-approve is enabled and
+/// Scheduled job that finds non-revoked, non-retired, non-CA certificates approaching expiration
+/// and automatically creates renewal CSR requests. A certificate whose expiry warning was only
+/// dismissed is still renewed. When auto-approve is enabled and
 /// the certificate's profile does not require manual approval, the renewed certificate
 /// is issued immediately. Duplicate renewal requests are suppressed and failures are
 /// reported via the security alert service.
@@ -117,10 +118,11 @@ public class AutoRenewalJob : SingletonCronJob
         var now = TimeProvider.GetUtcNow().UtcDateTime;
         var renewalCutoff = now.AddDays(_config.AutoRenewal.RenewDaysBeforeExpiry);
 
-        // Find all non-revoked, non-CA certificates expiring within the renewal window
+        // Find all non-revoked, non-retired, non-CA certificates expiring within the renewal window
         var expiringCerts = await _db.Certificates
             .AsNoTracking()
             .Where(c => !c.Revoked
+                         && c.RetiredAt == null
                          && !c.IsCA
                          && c.NotAfter <= renewalCutoff
                          && c.NotAfter > now)

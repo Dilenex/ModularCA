@@ -92,6 +92,24 @@ export default function AdminUiGuide() {
                     <li>System health summary (scheduler, database, OCSP responder)</li>
                     <li>Quick-action buttons for common tasks (issue certificate, create CA)</li>
                 </ul>
+                <h3 className="text-lg font-semibold text-ink mb-2">Clearing an expiry warning</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    A certificate that expires within 30 days, or expired in the last 30, with no replacement is listed
+                    under Needs attention. A reissue or renewal clears it. When none is coming, there are two other ways,
+                    and neither revokes the certificate or changes the CRL and OCSP answers:
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li><span className="font-semibold">Dismiss</span>, on the dashboard row or the certificate&apos;s page,
+                        silences the warning and the expiry e-mails. The certificate can still be renewed by hand, by
+                        auto-renewal or by its client.</li>
+                    <li><span className="font-semibold">Retire</span>, on the certificate&apos;s page, also stops every
+                        renewal from it: the console, the user portal, auto-renewal and protocol renewals refuse it, and its
+                        subject needs a new enrollment. Use it for a host or device that is gone.</li>
+                </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    Both need cert.revoke on the issuing CA, are audited, and can be undone from the certificate&apos;s page.
+                    Revoke a certificate only when it must stop being trusted, for example when its key may have leaked.
+                </p>
                 <h3 className="text-lg font-semibold text-ink mb-2">Related API Endpoints</h3>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/admin/certificates?pageSize=10<br />

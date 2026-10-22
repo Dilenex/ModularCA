@@ -9,7 +9,9 @@ namespace ModularCA.Shared.Models;
 /// unrevoked, unexpired certificate from the same issuing CA carries the same subject DN and the
 /// same SAN set. Replacement is only evaluated for certificates that expired within
 /// <see cref="ReplacementWindowDays"/>; older expired certificates are counted in
-/// <see cref="ExpiredUnchecked"/>.
+/// <see cref="ExpiredUnchecked"/>. A certificate that was retired or whose expiry warning was
+/// dismissed, and is not replaced, counts in <see cref="RetiredOrDismissed"/> and in none of the
+/// <c>NotReplaced</c> counts.
 /// </remarks>
 public class CertificateLifecycleSummaryModel
 {
@@ -37,22 +39,28 @@ public class CertificateLifecycleSummaryModel
     /// <summary>Active certificates that expire within 30 days (includes the 7-day ones).</summary>
     public int ExpiringWithin30Days { get; set; }
 
-    /// <summary>Active certificates expiring within 7 days with no replacement.</summary>
+    /// <summary>Active certificates expiring within 7 days with no replacement, not retired or dismissed.</summary>
     public int ExpiringWithin7DaysNotReplaced { get; set; }
 
-    /// <summary>Active certificates expiring within 30 days with no replacement.</summary>
+    /// <summary>Active certificates expiring within 30 days with no replacement, not retired or dismissed.</summary>
     public int ExpiringWithin30DaysNotReplaced { get; set; }
 
     /// <summary>Certificates that expired within the replacement window and were replaced.</summary>
     public int ExpiredReplaced { get; set; }
 
-    /// <summary>Certificates that expired within the replacement window and were not replaced.</summary>
+    /// <summary>Certificates that expired within the replacement window, were not replaced, and were not retired or dismissed.</summary>
     public int ExpiredNotReplaced { get; set; }
+
+    /// <summary>
+    /// Certificates in the replacement band (expiring within 30 days, or expired within the window)
+    /// that are not replaced but were retired or had their expiry warning dismissed.
+    /// </summary>
+    public int RetiredOrDismissed { get; set; }
 
     /// <summary>Expired certificates older than the replacement window, not checked for a replacement.</summary>
     public int ExpiredUnchecked { get; set; }
 
-    /// <summary>Certificates that expired in the last 30 days and were not replaced.</summary>
+    /// <summary>Certificates that expired in the last 30 days, were not replaced, and were not retired or dismissed.</summary>
     public int RecentlyExpiredNotReplaced { get; set; }
 
     /// <summary>Number of certificates needing attention; <see cref="Attention"/> holds at most the first few.</summary>

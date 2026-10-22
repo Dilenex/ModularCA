@@ -361,6 +361,11 @@ export interface CertificateInfoModel {
     replaced: boolean;
     replacedBySerial?: string | null;
     issuanceChannel?: string | null;
+    retiredAt?: string | null;
+    retiredBy?: string | null;
+    retiredReason?: string | null;
+    expiryWarningDismissedAt?: string | null;
+    expiryWarningDismissedBy?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/CertificateLifecycleSummaryModel.cs`. */
@@ -377,6 +382,7 @@ export interface CertificateLifecycleSummaryModel {
     expiringWithin30DaysNotReplaced: number;
     expiredReplaced: number;
     expiredNotReplaced: number;
+    retiredOrDismissed: number;
     expiredUnchecked: number;
     recentlyExpiredNotReplaced: number;
     attentionTotal: number;

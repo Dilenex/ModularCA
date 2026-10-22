@@ -184,6 +184,12 @@ public static class ErrorCodes
     /// </summary>
     public const string CertProfileInUse = "MCA-RES-007";
 
+    /// <summary>
+    /// The certificate was retired, so nothing is renewed or reissued from it; its subject needs a
+    /// new enrollment.
+    /// </summary>
+    public const string CertificateRetired = "MCA-RES-008";
+
     // ---- POL: deliberate certificate-policy limits ------------------------------------------
 
     /// <summary>One or more certificate-policy rules were violated.</summary>

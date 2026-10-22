@@ -33,6 +33,9 @@ namespace ModularCA.Core.Services
     /// </summary>
     public class CertificateIssuanceService : ICertificateIssuanceService
     {
+        /// <summary>Why nothing is renewed or reissued from a retired certificate (<see cref="ErrorCodes.CertificateRetired"/>).</summary>
+        public const string RetiredMessage = "This certificate was retired, so it is not renewed or reissued. Enroll a new certificate for its subject.";
+
         private readonly ModularCADbContext _db;
         private readonly IEffectivePolicyResolver _policies;
         private readonly IKeystoreCertificates _keystore;
@@ -173,6 +176,10 @@ namespace ModularCA.Core.Services
 
             if (ValidateCsrStatus(csrEntity) == false)
                 throw new ResourceConflictException("CSR is not in a valid state for issuance", ErrorCodes.CsrStateNotEligible);
+
+            if (csrEntity.RenewalOfCertificateId is Guid renewedId
+                && await _db.Certificates.AsNoTracking().AnyAsync(c => c.CertificateId == renewedId && c.RetiredAt != null, cancellationToken))
+                throw new ResourceConflictException(RetiredMessage, ErrorCodes.CertificateRetired);
 
             if (!csrEntity.IsInfrastructureCert)
                 await new RequestProfileEnforcement(_db, _profileResolver).EnsureApprovedAsync(csrEntity);
@@ -609,6 +616,9 @@ namespace ModularCA.Core.Services
 
             if (prevCert.IsReissued)
                 throw new ResourceConflictException("Certificate has already been reissued", ErrorCodes.AlreadyReissued);
+
+            if (prevCert.RetiredAt != null)
+                throw new ResourceConflictException(RetiredMessage, ErrorCodes.CertificateRetired);
 
             if (csrEntity == null)
                 throw new ResourceNotFoundException("CSR", "CSR not found.");

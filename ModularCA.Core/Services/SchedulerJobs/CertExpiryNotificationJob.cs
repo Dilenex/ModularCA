@@ -11,7 +11,8 @@ namespace ModularCA.Core.Services.SchedulerJobs;
 
 /// <summary>
 /// Scheduled job that checks for non-revoked, non-CA certificates approaching expiration
-/// and sends grouped notifications to administrators via email and security alerts.
+/// and sends grouped notifications to administrators via email and security alerts. Retired
+/// certificates, and those whose expiry warning was dismissed, are left out.
 /// <para>
 /// De-dup is backed by the <c>NotificationLog</c> table with a unique composite index on
 /// <c>(EventType, TargetEntityId, NotificationDate)</c>. Duplicate inserts fail atomically
@@ -202,10 +203,13 @@ public class CertExpiryNotificationJob : SingletonCronJob
         var queryNow = TimeProvider.GetUtcNow().UtcDateTime;
         var targetDate = queryNow.AddDays(days);
 
-        // Find non-revoked, non-CA certs that expire within this window but haven't expired yet
+        // Find non-revoked, non-CA certs that expire within this window but haven't expired yet,
+        // leaving out retired ones and those whose expiry warning was dismissed
         var expiringCerts = await _db.Certificates
             .AsNoTracking()
             .Where(c => !c.Revoked
+                         && c.RetiredAt == null
+                         && c.ExpiryWarningDismissedAt == null
                          && !c.IsCA
                          && c.NotAfter <= targetDate
                          && c.NotAfter > queryNow)

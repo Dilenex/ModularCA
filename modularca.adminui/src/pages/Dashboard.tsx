@@ -181,6 +181,21 @@ const Dashboard: React.FC = () => {
         setSummaryKey((k) => k + 1);
     };
 
+    // Silences one certificate's expiry warning; it can still be renewed. Undone from its page.
+    const [dismissingSerial, setDismissingSerial] = useState<string | null>(null);
+    const dismissWarning = async (serial: string) => {
+        setDismissingSerial(serial);
+        try {
+            await apiPost(`/api/v1/admin/certificates/${encodeURIComponent(serial)}/expiry-warning/dismiss`, {});
+            showToast('success', 'Expiry warning dismissed. Restore it from the certificate’s page.');
+            setSummaryKey((k) => k + 1);
+        } catch (err: any) {
+            showToast('error', err?.message || 'Could not dismiss the warning');
+        } finally {
+            setDismissingSerial(null);
+        }
+    };
+
     const [summary, setSummary] = useState<CertificateLifecycleSummaryModel | null>(null);
     const [certStatsLoading, setCertStatsLoading] = useState(true);
     const [certStatsError, setCertStatsError] = useState<string | null>(null);
@@ -435,7 +450,11 @@ const Dashboard: React.FC = () => {
                                         </div>
                                     </div>
                                     <div className="flex items-center gap-2 flex-shrink-0">
-                                        <Link to={`/certificates/${item.serialNumber}`} className={actionButton}>View</Link>
+                                        <Link to={`/certificates/${item.serialNumber}`} className={actionButton} title="Retire it from its page">View</Link>
+                                        <button onClick={() => dismissWarning(item.serialNumber)} disabled={dismissingSerial === item.serialNumber}
+                                            title="Silence this warning; the certificate can still be renewed" className={actionButton}>
+                                            {dismissingSerial === item.serialNumber ? 'Dismissing…' : 'Dismiss'}
+                                        </button>
                                         <button onClick={() => openReissueForSerial(item.serialNumber)} disabled={reissueLoadingId === item.serialNumber}
                                             className={actionButton}>
                                             {reissueLoadingId === item.serialNumber ? 'Loading...' : 'Reissue'}

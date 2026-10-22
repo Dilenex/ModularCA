@@ -17,7 +17,7 @@ import { StepUpOps } from '@shared/generated';
 import { FieldHint } from '@shared/components/forms';
 import { FilterBar, FilterField, filterControlClass } from '@shared/components/FilterBar';
 import { Link } from 'react-router-dom';
-import { capitalize, expiryPhrase, expiryState, isoDay, lifecycleTone, toneTextClass } from './certLifecycle';
+import { capitalize, expiryHandling, expiryPhrase, expiryState, isoDay, lifecycleTone, toneTextClass } from './certLifecycle';
 import { KindTabStrip, useKindTabs } from '../components/KindTabs';
 import { useAuth } from '../context/AuthContext';
 import { canUseSshTab } from '../authz';
@@ -59,7 +59,8 @@ function ExpiryCell({ cert }: { cert: any }) {
     const now = new Date();
     const state = expiryState(cert, now);
     const show = state === 'expired' || state === 'expiring';
-    const tone = lifecycleTone(cert.notAfter, !!cert.replaced, now);
+    const handling = expiryHandling(cert);
+    const tone = lifecycleTone(cert.notAfter, !!cert.replaced || handling !== null, now);
     return (
         <div className="flex flex-col min-w-0">
             <span className="text-xs text-ink-muted">{formatDate(cert.notAfter)}</span>
@@ -71,7 +72,7 @@ function ExpiryCell({ cert }: { cert: any }) {
                         ? (cert.replacedBySerial
                             ? <Link to={`/certificates/${cert.replacedBySerial}`} onClick={(e) => e.stopPropagation()} className="text-accent-ink hover:underline">Replaced by <span className="font-mono">{cert.replacedBySerial}</span></Link>
                             : <span className="text-ink-muted">Replaced</span>)
-                        : <span className="text-ink-muted">Not replaced</span>}
+                        : <span className="text-ink-muted">{handling === 'retired' ? 'Retired' : handling === 'dismissed' ? 'Warning dismissed' : 'Not replaced'}</span>}
                 </span>
             )}
         </div>
@@ -89,11 +90,11 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const expiringWithin = (days: number, now: Date = new Date()) =>
     ({ status: 'active', notAfterFrom: '', notAfterTo: isoDay(new Date(now.getTime() + (days + 1) * DAY_MS)) });
 
-const CSV_HEADERS = ['Serial', 'Subject', 'Issuer', 'Status', 'Not Before', 'Not After', 'Key Algorithm', 'Revoked', 'Revocation Reason', 'Replaced', 'Replaced By'];
+const CSV_HEADERS = ['Serial', 'Subject', 'Issuer', 'Status', 'Not Before', 'Not After', 'Key Algorithm', 'Revoked', 'Revocation Reason', 'Replaced', 'Replaced By', 'Retired', 'Expiry Warning Dismissed'];
 const csvCells = (c: any): (string | number)[] => [
     c.serialNumber || '', c.subjectDN || '', c.issuer || '', certStatus(c),
     c.notBefore || '', c.notAfter || '', c.keyAlgorithm || '', c.revoked ? 'Yes' : 'No', c.revocationReason || '',
-    c.replaced ? 'Yes' : 'No', c.replacedBySerial || '',
+    c.replaced ? 'Yes' : 'No', c.replacedBySerial || '', c.retiredAt || '', c.expiryWarningDismissedAt || '',
 ];
 function downloadCsv(rows: any[], filename: string) {
     const esc = (v: unknown) => {

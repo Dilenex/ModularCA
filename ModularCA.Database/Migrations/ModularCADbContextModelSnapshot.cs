@@ -1129,6 +1129,13 @@ namespace ModularCA.Database.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)");
 
+                    b.Property<DateTime?>("ExpiryWarningDismissedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ExpiryWarningDismissedBy")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
                     b.Property<string>("ExtendedKeyUsagesJson")
                         .IsRequired()
                         .HasColumnType("text");
@@ -1165,6 +1172,17 @@ namespace ModularCA.Database.Migrations
 
                     b.Property<byte[]>("RawCertificate")
                         .HasColumnType("bytea");
+
+                    b.Property<DateTime?>("RetiredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RetiredBy")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<string>("RetiredReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
 
                     b.Property<DateTime?>("RevocationDate")
                         .HasColumnType("timestamp with time zone");

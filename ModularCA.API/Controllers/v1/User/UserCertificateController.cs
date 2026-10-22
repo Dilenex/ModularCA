@@ -363,6 +363,9 @@ public class UserCertificateController(
         if (certInfo.Revoked)
             return BadRequest(new { error = "Cannot renew a revoked certificate." });
 
+        if (certInfo.RetiredAt != null)
+            return Conflict(new { error = CertificateIssuanceService.RetiredMessage, code = ModularCA.Shared.Errors.ErrorCodes.CertificateRetired });
+
         // Load the certificate entity to get profile IDs
         var certEntity = await _dbContext.Certificates
             .AsNoTracking()

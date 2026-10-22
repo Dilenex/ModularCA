@@ -12,7 +12,7 @@ export const adminCertificates: ApiEndpoint[] = [
             { name: 'serial', type: 'string', required: false, description: 'Partial match filter on the certificate serial number' },
             { name: 'issuer', type: 'string', required: false, description: 'Partial match filter on the certificate issuer' },
             { name: 'status', type: 'string', required: false, description: 'Status filter: "active" (not revoked, not expired), "revoked", or "expired" (expired and not revoked)' },
-            { name: 'replaced', type: 'string', required: false, description: '"yes" or "no": certificates that have, or have not, been replaced (see lifecycle-summary). Either value only matches certificates still valid or expired within the last 90 days.' },
+            { name: 'replaced', type: 'string', required: false, description: '"yes" or "no": certificates that have, or have not, been replaced (see lifecycle-summary); "no" also leaves out retired certificates and those whose expiry warning was dismissed. Either value only matches certificates still valid or expired within the last 90 days.' },
             { name: 'keyAlgorithm', type: 'string', required: false, description: 'Filter on key algorithm (e.g., "RSA", "ECDSA", "Ed25519")' },
             { name: 'san', type: 'string', required: false, description: 'Partial match filter on subject alternative names' },
             { name: 'notAfterFrom', type: 'DateTime', required: false, description: 'Minimum expiry date (NotAfter)' },
@@ -25,7 +25,7 @@ export const adminCertificates: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Paginated result with total, totalPages, page, pageSize, and items array of certificate info models. Each item carries replaced and, when the caller may view the successor, replacedBySerial.',
+        responseDescription: 'Paginated result with total, totalPages, page, pageSize, and items array of certificate info models. Each item carries replaced and, when the caller may view the successor, replacedBySerial; and retiredAt, retiredBy, retiredReason, expiryWarningDismissedAt and expiryWarningDismissedBy.',
     },
     {
         method: 'GET',
@@ -36,7 +36,7 @@ export const adminCertificates: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Full certificate info model, with replaced, replacedBySerial (when the caller may view the successor) and issuanceChannel (ACME, EST, SCEP, CMP, MSAE or Manual; null when nothing on record says).',
+        responseDescription: 'Full certificate info model, with replaced, replacedBySerial (when the caller may view the successor), issuanceChannel (ACME, EST, SCEP, CMP, MSAE or Manual; null when nothing on record says), and the retire and dismiss fields.',
     },
     {
         method: 'GET',
@@ -78,6 +78,58 @@ export const adminCertificates: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Renewal request ID and confirmation.',
+        notes: '409 (MCA-RES-008) when the certificate was retired.',
+    },
+    {
+        method: 'POST',
+        path: '/api/v1/admin/certificates/{serial}/retire',
+        summary: 'Retire a certificate: it stays valid until it expires, raises no expiry warning, and is never renewed, reissued or re-enrolled from.',
+        auth: 'Authorize (CaOperator)',
+        category: 'Admin Certificates',
+        requestBody: [
+            { name: 'reason', type: 'string', required: false, description: 'Why it is retired; at most 500 characters. The body may be omitted.' },
+        ],
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: 'serialNumber, retiredAt, retiredBy, retiredReason, expiryWarningDismissedAt and expiryWarningDismissedBy.',
+        notes: 'Not a revocation: CRLs and OCSP are unchanged. Afterwards the console, the user portal, the Infra API, auto-renewal and protocol renewals (EST re-enrollment and EST with the certificate as its credential, SCEP, CMP, Windows autoenrollment) all refuse to renew from it, with MCA-RES-008 or the CertificateRetired refusal; its subject needs a new enrollment. Needs cert.revoke on the issuing CA. 400 for a revoked certificate; repeating it changes nothing. Audited as CertificateRetired.',
+    },
+    {
+        method: 'DELETE',
+        path: '/api/v1/admin/certificates/{serial}/retire',
+        summary: 'Undo a retirement: the certificate can be renewed again and warns before it expires.',
+        auth: 'Authorize (CaOperator)',
+        category: 'Admin Certificates',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: 'The same fields as retiring.',
+        notes: 'Audited as CertificateRetirementUndone.',
+    },
+    {
+        method: 'POST',
+        path: '/api/v1/admin/certificates/{serial}/expiry-warning/dismiss',
+        summary: 'Dismiss a certificate\'s expiry warning: it leaves the dashboard warnings and the expiry notifications, and can still be renewed.',
+        auth: 'Authorize (CaOperator)',
+        category: 'Admin Certificates',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: 'The same fields as retiring.',
+        notes: 'Auto-renewal, the console and protocol clients still renew it. Needs cert.revoke on the issuing CA; 400 for a revoked certificate. Audited as CertificateExpiryWarningDismissed.',
+    },
+    {
+        method: 'DELETE',
+        path: '/api/v1/admin/certificates/{serial}/expiry-warning/dismiss',
+        summary: 'Bring a dismissed expiry warning back.',
+        auth: 'Authorize (CaOperator)',
+        category: 'Admin Certificates',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: 'The same fields as retiring.',
+        notes: 'Audited as CertificateExpiryWarningRestored.',
     },
     {
         method: 'GET',
@@ -192,7 +244,7 @@ export const adminCertificates: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'generatedAt, replacementWindowDays (90); counts total, active, revoked, expired (expired and not revoked); expiringWithin7Days and expiringWithin30Days with their NotReplaced counterparts; expiredReplaced, expiredNotReplaced and expiredUnchecked (expired before the window, not checked); recentlyExpiredNotReplaced (last 30 days); attentionTotal and attention, at most 20 items, each with certificateId, serialNumber, subjectDN, commonName, notBefore, notAfter, state ("expired" or "expiring"), caId, caLabel, caName, issuanceChannel, autoRenewal and renewalPending; byCa, the certificate count per issuing CA.',
-        notes: 'Scoped exactly like the certificate list, and counted on the server, so the numbers never depend on a list page. A certificate is replaced when it was reissued (flag or renewal link), or when a newer certificate from the same issuing CA, not revoked and not expired, has the same subject DN and the same SAN set (order and case ignored). Replacement is checked for certificates that expired within the last 90 days or expire within 30; older expired ones are counted in expiredUnchecked. Attention lists expired-in-the-last-30-days ones first, most recent first, then expiring ones, soonest first. The issuance channel comes from ACME orders, SCEP transactions and the protocol audit; when the audit database is unavailable it is left unknown rather than failing the call.',
+        responseDescription: 'generatedAt, replacementWindowDays (90); counts total, active, revoked, expired (expired and not revoked); expiringWithin7Days and expiringWithin30Days with their NotReplaced counterparts; expiredReplaced, expiredNotReplaced and expiredUnchecked (expired before the window, not checked); retiredOrDismissed (not replaced, but retired or with the expiry warning dismissed, which then count in no NotReplaced figure); recentlyExpiredNotReplaced (last 30 days); attentionTotal and attention, at most 20 items, each with certificateId, serialNumber, subjectDN, commonName, notBefore, notAfter, state ("expired" or "expiring"), caId, caLabel, caName, issuanceChannel, autoRenewal and renewalPending; byCa, the certificate count per issuing CA.',
+        notes: 'Scoped exactly like the certificate list, and counted on the server, so the numbers never depend on a list page. A certificate is replaced when it was reissued (flag or renewal link), or when a newer certificate from the same issuing CA, not revoked and not expired, has the same subject DN and the same SAN set (order and case ignored). Replacement is checked for certificates that expired within the last 90 days or expire within 30; older expired ones are counted in expiredUnchecked. A retired certificate, or one whose expiry warning was dismissed, needs no attention. Attention lists expired-in-the-last-30-days ones first, most recent first, then expiring ones, soonest first. The issuance channel comes from ACME orders, SCEP transactions and the protocol audit; when the audit database is unavailable it is left unknown rather than failing the call.',
     },
 ];
