@@ -12,6 +12,8 @@
  */
 import { type TypedEntry, hasTypedEntryProblems } from '@shared/components/typedEntryList';
 import { SAN_RESTRICTION_TYPES, SUBJECT_RESTRICTION_TYPES, restrictionFromRows } from './enrollmentRestriction';
+import { can, canAtSpace, consoleCas, spacesOf, type EffectiveCapabilities } from '../authz';
+import type { Scope } from '../scope';
 
 /** How a chosen protocol is created and what it hands back. */
 export type EnrollmentKind =
@@ -70,10 +72,12 @@ export interface EnrollmentFormState {
     sanRestriction: TypedEntry[];
     referenceValue: string;
     signingProfileId: string;
+    /** Where a token is accepted: a {@link TokenScopeOption} value, or empty when not chosen. */
+    tokenScope: string;
 }
 
 /** A blank form. Expiry defaults to a day for tokens; CMP overrides to 30 days when selected. */
-export function emptyEnrollmentForm(): EnrollmentFormState {
+export function emptyEnrollmentForm(tokenScope = ''): EnrollmentFormState {
     return {
         protocol: '',
         expiresInHours: 24,
@@ -82,7 +86,90 @@ export function emptyEnrollmentForm(): EnrollmentFormState {
         sanRestriction: [],
         referenceValue: '',
         signingProfileId: '',
+        tokenScope,
     };
+}
+
+/** A place a token can be accepted, as the scope select offers it. */
+export interface TokenScopeOption {
+    /** `instance`, `space:<id>` or `ca:<id>`. */
+    value: string;
+    label: string;
+    group: 'Instance' | 'Spaces' | 'CAs';
+    /** The CAs the token would be accepted at, which the signing profiles are filtered to. */
+    caIds: string[];
+}
+
+/**
+ * The places a token can be accepted from the console's current scope, among those the caller
+ * holds cert.revoke across: under all CAs, the instance's CAs, each space and each CA; under a
+ * space, the space and its CAs; under a CA, that CA. SSH CAs take no enrollment tokens.
+ */
+export function tokenScopeOptions(scope: Scope, caps: EffectiveCapabilities | null | undefined): TokenScopeOption[] {
+    const cas = consoleCas(caps).filter(ca => !ca.isSshCa && can(caps, 'cert.revoke', ca.id));
+    const caOption = (ca: typeof cas[number]): TokenScopeOption => ({
+        value: `ca:${ca.id}`, label: ca.spaceId ? `${ca.label} (${ca.spaceName || ca.spaceSlug})` : ca.label, group: 'CAs', caIds: [ca.id],
+    });
+    const spaceOption = (space: { id: string; name: string }): TokenScopeOption => ({
+        value: `space:${space.id}`, label: `${space.name}: any of its CAs`, group: 'Spaces', caIds: cas.filter(ca => ca.spaceId === space.id).map(ca => ca.id),
+    });
+    switch (scope.kind) {
+        case 'all': {
+            const instance: TokenScopeOption[] = can(caps, 'cert.revoke')
+                ? [{ value: 'instance', label: 'CAs not in a space', group: 'Instance', caIds: cas.filter(ca => ca.spaceId == null).map(ca => ca.id) }]
+                : [];
+            const spaces = spacesOf(caps).filter(s => canAtSpace(caps, 'cert.revoke', s.id)).map(spaceOption);
+            return [...instance, ...spaces, ...cas.map(caOption)];
+        }
+        case 'space': {
+            const space = canAtSpace(caps, 'cert.revoke', scope.spaceId) ? [spaceOption({ id: scope.spaceId, name: scope.name })] : [];
+            return [...space, ...cas.filter(ca => ca.spaceId === scope.spaceId).map(caOption)];
+        }
+        case 'ca':
+            return cas.filter(ca => ca.id === scope.caId).map(caOption);
+        case 'mine':
+            return [];
+    }
+}
+
+/** The scope the form starts on: the view's own space or CA when it is offered, or the only option. */
+export function defaultTokenScope(scope: Scope, options: TokenScopeOption[]): string {
+    const own = scope.kind === 'space' ? `space:${scope.spaceId}` : scope.kind === 'ca' ? `ca:${scope.caId}` : null;
+    if (own && options.some(o => o.value === own)) return own;
+    return options.length === 1 ? options[0].value : '';
+}
+
+/** Where a stored token or credential is accepted, by the CA label or space name the caller can see. */
+export function tokenAcceptedAt(
+    row: { certificateAuthorityId?: string | null; spaceId?: string | null },
+    cas: { id: string; label: string }[], spaces: { id: string; name: string }[],
+): string {
+    if (row.certificateAuthorityId) return cas.find(c => c.id === row.certificateAuthorityId)?.label ?? `CA ${row.certificateAuthorityId.slice(0, 8)}…`;
+    if (row.spaceId) return `${spaces.find(s => s.id === row.spaceId)?.name ?? `Space ${row.spaceId.slice(0, 8)}…`}: any of its CAs`;
+    return 'CAs not in a space';
+}
+
+/** The `scope` and `scopeId` a token scope value sends, or nulls when none is chosen. */
+export function tokenScopeRequest(value: string): { scope: 'Instance' | 'Space' | 'Ca' | null; scopeId: string | null } {
+    if (value === 'instance') return { scope: 'Instance', scopeId: null };
+    if (value.startsWith('space:')) return { scope: 'Space', scopeId: value.slice('space:'.length) };
+    if (value.startsWith('ca:')) return { scope: 'Ca', scopeId: value.slice('ca:'.length) };
+    return { scope: null, scopeId: null };
+}
+
+/**
+ * The signing profiles a token in `option` can carry: those issued by one of its CAs, plus those
+ * bound to no CA. `caIdOfIssuer` maps a profile's issuer (a CA certificate id) to the CA id.
+ */
+export function signingProfilesForTokenScope<P extends { issuerId?: string | null }>(
+    profiles: P[], option: TokenScopeOption | undefined, caIdOfIssuer: (issuerId: string) => string | undefined,
+): P[] {
+    if (!option) return [];
+    return profiles.filter(p => {
+        if (!p.issuerId) return true;
+        const caId = caIdOfIssuer(p.issuerId);
+        return !!caId && option.caIds.includes(caId);
+    });
 }
 
 /**
@@ -103,6 +190,8 @@ export function validateEnrollmentForm(
         if (!form.signingProfileId) return 'Choose the signing profile; it decides which CA the credential belongs to.';
     }
 
+    if (kind === 'token' && !form.tokenScope) return TOKEN_SCOPE_REASON;
+
     if (kind === 'token' && (
         hasTypedEntryProblems(form.subjectRestriction, SUBJECT_RESTRICTION_TYPES)
         || hasTypedEntryProblems(form.sanRestriction, SAN_RESTRICTION_TYPES, { allowedTypes: ['DNS'] }))) {
@@ -113,10 +202,17 @@ export function validateEnrollmentForm(
 }
 
 export const RESTRICTIONS_REASON = 'Fix the restrictions marked above.';
+export const TOKEN_SCOPE_REASON = 'Choose where the token is accepted.';
 
-/** The POST body for the bearer-token endpoint. Only called for token-kind protocols. */
+/**
+ * The POST body for the bearer-token endpoint. Only called for token-kind protocols. The chosen
+ * scope decides where the token is accepted; the signing profile is optional and must issue from
+ * inside it.
+ */
 export function buildTokenRequest(form: EnrollmentFormState): Record<string, unknown> {
     return {
+        ...tokenScopeRequest(form.tokenScope),
+        signingProfileId: form.signingProfileId || null,
         expiresInHours: form.expiresInHours || null,
         maxUses: form.maxUses || 0,
         subjectRestriction: restrictionFromRows(form.subjectRestriction) || null,

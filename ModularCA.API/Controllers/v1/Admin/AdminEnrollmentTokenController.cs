@@ -25,7 +25,8 @@ public class AdminEnrollmentTokenController(
     IEnrollmentTokenService tokenService,
     ICurrentUserService currentUser,
     IAuditService audit,
-    ModularCADbContext db) : ControllerBase
+    ModularCADbContext db,
+    ICaGroupAuthorizationService auth) : ControllerBase
 {
     /// <summary>
     /// Whether the caller may see or revoke <paramref name="token"/>: a token of a space or of an
@@ -197,32 +198,50 @@ public class AdminEnrollmentTokenController(
     }
 
     /// <summary>
-    /// Generates an enrollment token for the target the selected profiles resolve to. A subject or
-    /// SAN restriction <see cref="ModularCA.Shared.Utils.EnrollmentNameRestriction.RestrictionError"/>
+    /// Generates an enrollment token. With <see cref="GenerateEnrollmentTokenRequest.Scope"/> the
+    /// token is accepted at the instance's CAs, a space's CAs or one CA, and the caller needs
+    /// cert.revoke across that scope; without it the selected profiles decide, as before. A subject
+    /// or SAN restriction <see cref="ModularCA.Shared.Utils.EnrollmentNameRestriction.RestrictionError"/>
     /// refuses is a 400.
     /// </summary>
     [HttpPost]
     [Authorize]
-    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SigningProfile, "request.SigningProfileId")]
     [RequireStepUp(StepUpOps.CreateEnrollmentSecret)]
     public async Task<IActionResult> GenerateToken([FromBody] GenerateEnrollmentTokenRequest request)
     {
         await currentUser.EnsureLoadedAsync();
         if (currentUser.User == null) return Unauthorized();
+        var userId = currentUser.User.Id;
+        var refused = new ObjectResult(new { error = $"You need {Capabilities.CertRevoke} where this token is accepted." }) { StatusCode = 403 };
 
-        // Resolve the target CA/space from the selected profiles and
-        // enforce the caller's SpaceFence. A SystemOperator can no longer mint tokens against
-        // another space's CA.
-        var caInfo = await ResolveCaFromProfilesAsync(request.SigningProfileId, request.CertProfileId, request.RequestProfileId);
-        if (caInfo == null)
+        Guid? targetCaId, targetSpaceId;
+        if (request.Scope is EnrollmentTokenScope scope)
         {
-            // System-wide token — require SystemOperator / SystemAdmin.
-            if (HttpContext.Items["IsSystemAdmin"] is not true)
+            var target = await EnrollmentTokenTarget.ResolveAsync(db, scope, request.ScopeId, request.SigningProfileId);
+            if (target.NotFound)
                 return NotFound(new { error = "Enrollment target not found." });
+            if (target.Error != null)
+                return BadRequest(new { error = target.Error });
+            var allowed = target.CaId is Guid boundCa
+                ? await auth.HasCaCapabilityAsync(userId, boundCa, Capabilities.CertRevoke)
+                : await auth.HasScopeCapabilityAsync(userId, target.SpaceId, Capabilities.CertRevoke);
+            if (!allowed)
+                return refused;
+            (targetCaId, targetSpaceId) = (target.CaId, target.SpaceId);
         }
-        else if (HttpContext.Items["IsSystemAdmin"] is not true)
+        else
         {
-            if (!SpaceFence.From(HttpContext, Capabilities.CertRevoke).Allows(caInfo.Value.SpaceId))
+            if (!await BodyTargetAuthorization.IsAllowedAsync(auth, new CaTargetResolver(db), userId, Capabilities.CertRevoke, CaTarget.SigningProfile, request.SigningProfileId))
+                return refused;
+            var caInfo = await ResolveCaFromProfilesAsync(request.SigningProfileId, request.CertProfileId, request.RequestProfileId);
+            (targetCaId, targetSpaceId) = (caInfo?.CaId, caInfo?.SpaceId);
+        }
+
+        // An instance token needs an instance-wide caller; any other, the caller's SpaceFence.
+        if (HttpContext.Items["IsSystemAdmin"] is not true)
+        {
+            var unbound = targetCaId == null && targetSpaceId == null;
+            if (unbound || !SpaceFence.From(HttpContext, Capabilities.CertRevoke).Allows(targetSpaceId))
                 return NotFound(new { error = "Enrollment target not found." });
         }
 
@@ -241,14 +260,14 @@ public class AdminEnrollmentTokenController(
             request.RequestProfileId,
             request.CertProfileId,
             request.SigningProfileId,
-            caInfo?.CaId,
-            caInfo?.SpaceId);
+            targetCaId,
+            targetSpaceId);
 
         await audit.LogAsync(AuditActionType.EnrollmentTokenGenerated, currentUser.User.Id, currentUser.User.Username,
             "EnrollmentToken", null,
-            new { request.Protocol, request.MaxUses, ExpiresInHours = expiresIn.TotalHours, TargetCaId = caInfo?.CaId, TargetSpaceId = caInfo?.SpaceId },
+            new { request.Protocol, request.MaxUses, ExpiresInHours = expiresIn.TotalHours, request.Scope, TargetCaId = targetCaId, TargetSpaceId = targetSpaceId },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
-            certificateAuthorityId: caInfo?.CaId, spaceId: caInfo?.SpaceId);
+            certificateAuthorityId: targetCaId, spaceId: targetSpaceId);
 
         return Ok(new { token, expiresIn = expiresIn.TotalHours });
     }
@@ -308,4 +327,8 @@ public class GenerateEnrollmentTokenRequest
     public Guid? CertProfileId { get; set; }
     /// <summary>Pre-selected signing profile for QR/link enrollment.</summary>
     public Guid? SigningProfileId { get; set; }
+    /// <summary>Where the token is accepted. Null leaves it to the selected profiles.</summary>
+    public EnrollmentTokenScope? Scope { get; set; }
+    /// <summary>The space id for <see cref="EnrollmentTokenScope.Space"/>, the CA id for <see cref="EnrollmentTokenScope.Ca"/>.</summary>
+    public Guid? ScopeId { get; set; }
 }

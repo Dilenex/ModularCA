@@ -27,14 +27,16 @@ export const adminEnrollmentTokens: ApiEndpoint[] = [
             { name: 'protocol', type: 'string', required: false, description: 'Protocol this token is for (e.g., EST, SCEP, ACME)' },
             { name: 'requestProfileId', type: 'guid', required: false, description: 'Pre-selected request profile' },
             { name: 'certProfileId', type: 'guid', required: false, description: 'Pre-selected certificate profile' },
-            { name: 'signingProfileId', type: 'guid', required: false, description: 'Pre-selected signing profile' },
+            { name: 'signingProfileId', type: 'guid', required: false, description: 'Pre-selected signing profile. With scope, it must issue from a CA inside that scope.' },
+            { name: 'scope', type: 'string', required: false, description: 'Where the token is accepted: Instance (the CAs not in a space), Space (every CA of one space) or Ca (one CA). Omitted, the selected profiles decide, and with none the token is an instance token.' },
+            { name: 'scopeId', type: 'guid', required: false, description: 'The space id for scope Space, the CA id for scope Ca; omitted for Instance.' },
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
             { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for create-enrollment-secret. Required for this operation.' },
         ],
         responseDescription: 'Object with token (plaintext) and expiresIn (hours).',
-        notes: 'Enforces space isolation via the selected profiles. System-wide tokens require SystemOperator/SystemAdmin.',
+        notes: 'The caller needs cert.revoke across the scope: on the CA, space-wide for a space, at instance scope for an instance token. A token is refused at any CA outside its scope. 404 when the scope or signing profile names nothing; 400 when the signing profile issues from outside the scope.',
     },
     {
         method: 'POST',
