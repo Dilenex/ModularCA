@@ -10,6 +10,18 @@ Builds between release candidates are numbered after the candidate they follow: 
 `0.4.2-rc.1.2` and so on. They go to test hosts, and are neither tagged nor published. What they
 change is listed here and becomes the next candidate's section.
 
+### 0.4.2-rc.1.4 — 2026-10-21
+
+On top of `0.4.2-rc.1.3`.
+
+**Fixed**
+
+- **No SCEP client could verify a reply from an RSA CA.** The reply's signature named the
+  algorithm the CA certificate was signed with, while the CA key signs with RSA-PSS by default:
+  a PSS reply without the parameters PSS requires, or a PKCS#1 name over a PSS signature. sscep,
+  OpenSSL and BouncyCastle refuse such a reply, so a client that checks it, as most do, could not
+  enroll. It now names the algorithm used, with its parameters. This predates 0.4.
+
 ### 0.4.2-rc.1.3 — 2026-10-21
 
 On top of `0.4.2-rc.1.2`.
