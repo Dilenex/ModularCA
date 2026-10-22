@@ -10,6 +10,30 @@ Builds between release candidates are numbered after the candidate they follow: 
 `0.4.2-rc.1.2` and so on. They go to test hosts, and are neither tagged nor published. What they
 change is listed here and becomes the next candidate's section.
 
+### 0.4.2-rc.1.6 — 2026-10-22
+
+On top of `0.4.2-rc.1.5`.
+
+**Added**
+
+- **An expiry warning can be cleared without revoking the certificate.** A certificate that
+  expires within 30 days, or expired in the last 30, with no replacement stayed on the
+  dashboard's Needs attention list, and the only way off it was to revoke the certificate. Two
+  ways now, both needing cert.revoke on the issuing CA, both audited and both undone from the
+  certificate's page. Neither revokes anything or changes the CRL and OCSP answers.
+  - **Dismiss**, on the dashboard row or the certificate's page, silences the warning and the
+    expiry e-mails. The certificate can still be renewed by hand, by auto-renewal or by its
+    client.
+  - **Retire**, on the certificate's page, with an optional reason, also stops every renewal
+    from it. The console, the user portal, the Infra API, auto-renewal and protocol renewals
+    (EST re-enrollment and EST with the certificate as its credential, SCEP, CMP, Windows
+    autoenrollment) refuse it, with `MCA-RES-008` or the `CertificateRetired` refusal. Its
+    subject needs a new enrollment.
+
+  The certificate list shows either state in place of "Not replaced", and its `replaced=no`
+  filter leaves both out, as the lifecycle summary does; the summary counts them in a new
+  `retiredOrDismissed`. The upgrade adds five nullable columns to `Certificates`.
+
 ### 0.4.2-rc.1.5 — 2026-10-21
 
 On top of `0.4.2-rc.1.4`.
