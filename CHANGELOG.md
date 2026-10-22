@@ -10,6 +10,20 @@ Builds between release candidates are numbered after the candidate they follow: 
 `0.4.2-rc.1.2` and so on. They go to test hosts, and are neither tagged nor published. What they
 change is listed here and becomes the next candidate's section.
 
+### 0.4.2-rc.1.5 — 2026-10-21
+
+On top of `0.4.2-rc.1.4`.
+
+**Fixed**
+
+- **An EST, SCEP or QR token created in the console was refused at every CA in a space.** The
+  form sent a signing profile only for CMP, so every other token was an instance token, which a
+  space's CA refuses. The form now asks where the token is accepted, offering what the console
+  scope covers: under all CAs the CAs not in a space, each space and each CA; under a space the
+  space and its CAs; under a CA that CA. Its signing profile is optional and limited to that
+  scope, and the token list shows where each token is accepted. The create endpoint takes
+  `scope` and `scopeId` for the same; without them the selected profiles decide, as before.
+
 ### 0.4.2-rc.1.4 — 2026-10-21
 
 On top of `0.4.2-rc.1.3`.
