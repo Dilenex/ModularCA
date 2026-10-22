@@ -196,7 +196,7 @@ It exits 0 when both databases are sound and 3 when not, and prints what it foun
 
 ### Upgrading to 0.4.2
 
-0.4.2 is the first release after 0.4.0; the 0.4.1 work ships in it. It adds twelve migrations to
+0.4.2 is the first release after 0.4.0; the 0.4.1 work ships in it. It adds thirteen migrations to
 the application database, moves the instance-wide settings and the node's secrets into the
 database, and moves SSH CA keys into the signer. The last two cannot be undone except by restoring
 a backup.
@@ -226,7 +226,8 @@ a backup.
    - with one administrator, turn on Settings, Security, Allow System Super Self-Approval, or
      requests under profiles that require approval cannot be completed;
    - give SSH users the login names they use before their certificates are due again, and copy
-     `/usr/share/modularca/ssh-krl/` to each SSH server so hosts follow revocation.
+     each SSH CA key's KRL to each SSH server, where `RevokedKeys` names it, so hosts follow
+     revocation.
 
 ### Upgrading to 0.4.0
 

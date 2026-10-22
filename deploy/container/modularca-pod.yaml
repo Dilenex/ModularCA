@@ -52,7 +52,7 @@ spec:
 
   initContainers:
     - name: bootstrap
-      image: ghcr.io/dilenex/modularca:0.4.2-rc.1.0
+      image: ghcr.io/dilenex/modularca:0.4.2
       # The entrypoint bootstraps when there is no config.yaml and, told --bootstrap-only, stops
       # there instead of serving. A configured install makes this a no-op.
       args: ["--bootstrap-only"]
@@ -61,14 +61,14 @@ spec:
         - { name: keystores, mountPath: /opt/modularca/keystores }
 
     - name: signer-init
-      image: ghcr.io/dilenex/modularca:0.4.2-rc.1.0
+      image: ghcr.io/dilenex/modularca:0.4.2
       command: ["/opt/modularca/ModularCA.API"]
       args: ["--role", "signer", "--init-identity"]
       volumeMounts:
         - { name: config, mountPath: /opt/modularca/config }
 
     - name: node-identity
-      image: ghcr.io/dilenex/modularca:0.4.2-rc.1.0
+      image: ghcr.io/dilenex/modularca:0.4.2
       command: ["/opt/modularca/ModularCA.API"]
       args: ["--role", "signer", "--issue-node-identity", "--apply", "/opt/modularca/config/config.yaml"]
       volumeMounts:
@@ -76,7 +76,7 @@ spec:
 
   containers:
     - name: signer
-      image: ghcr.io/dilenex/modularca:0.4.2-rc.1.0
+      image: ghcr.io/dilenex/modularca:0.4.2
       args: ["--role", "signer"]
       volumeMounts:
         - { name: config, mountPath: /opt/modularca/config, readOnly: true }
@@ -94,7 +94,7 @@ spec:
         limits: { memory: "512Mi" }
 
     - name: node
-      image: ghcr.io/dilenex/modularca:0.4.2-rc.1.0
+      image: ghcr.io/dilenex/modularca:0.4.2
       args: ["--role", "node"]
       ports:
         - { containerPort: 8443, hostPort: 8443, protocol: TCP }

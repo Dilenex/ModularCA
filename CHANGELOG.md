@@ -6,137 +6,23 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
-Builds between release candidates are numbered after the candidate they follow: `0.4.2-rc.1.1`,
-`0.4.2-rc.1.2` and so on. They go to test hosts, and are neither tagged nor published. What they
-change is listed here and becomes the next candidate's section.
+Nothing yet.
 
-### 0.4.2-rc.1.6 — 2026-10-22
+## [0.4.2] — 2026-10-22
 
-On top of `0.4.2-rc.1.5`.
+Everything since 0.4.0: the settings work that was built as 0.4.1, which is not released on its
+own, and the SSH work that takes SSH CA keys out of plaintext files the node could read. It also
+holds every request to its request profile on the server, at each step.
 
-**Added**
-
-- **An expiry warning can be cleared without revoking the certificate.** A certificate that
-  expires within 30 days, or expired in the last 30, with no replacement stayed on the
-  dashboard's Needs attention list, and the only way off it was to revoke the certificate. Two
-  ways now, both needing cert.revoke on the issuing CA, both audited and both undone from the
-  certificate's page. Neither revokes anything or changes the CRL and OCSP answers.
-  - **Dismiss**, on the dashboard row or the certificate's page, silences the warning and the
-    expiry e-mails. The certificate can still be renewed by hand, by auto-renewal or by its
-    client.
-  - **Retire**, on the certificate's page, with an optional reason, also stops every renewal
-    from it. The console, the user portal, the Infra API, auto-renewal and protocol renewals
-    (EST re-enrollment and EST with the certificate as its credential, SCEP, CMP, Windows
-    autoenrollment) refuse it, with `MCA-RES-008` or the `CertificateRetired` refusal. Its
-    subject needs a new enrollment.
-
-  The certificate list shows either state in place of "Not replaced", and its `replaced=no`
-  filter leaves both out, as the lifecycle summary does; the summary counts them in a new
-  `retiredOrDismissed`. The upgrade adds five nullable columns to `Certificates`.
-
-### 0.4.2-rc.1.5 — 2026-10-21
-
-On top of `0.4.2-rc.1.4`.
-
-**Fixed**
-
-- **An EST, SCEP or QR token created in the console was refused at every CA in a space.** The
-  form sent a signing profile only for CMP, so every other token was an instance token, which a
-  space's CA refuses. The form now asks where the token is accepted, offering what the console
-  scope covers: under all CAs the CAs not in a space, each space and each CA; under a space the
-  space and its CAs; under a CA that CA. Its signing profile is optional and limited to that
-  scope, and the token list shows where each token is accepted. The create endpoint takes
-  `scope` and `scopeId` for the same; without them the selected profiles decide, as before.
-
-### 0.4.2-rc.1.4 — 2026-10-21
-
-On top of `0.4.2-rc.1.3`.
-
-**Fixed**
-
-- **No SCEP client could verify a reply from an RSA CA.** The reply's signature named the
-  algorithm the CA certificate was signed with, while the CA key signs with RSA-PSS by default:
-  a PSS reply without the parameters PSS requires, or a PKCS#1 name over a PSS signature. sscep,
-  OpenSSL and BouncyCastle refuse such a reply, so a client that checks it, as most do, could not
-  enroll. It now names the algorithm used, with its parameters. This predates 0.4.
-
-### 0.4.2-rc.1.3 — 2026-10-21
-
-On top of `0.4.2-rc.1.2`.
-
-**Changed**
-
-- **The console no longer offers the KRL fetcher.** It is not yet proven on a host, so the SSH
-  CA key page drops "Set up a host" and says to copy the revocation list to each host by hand,
-  before `RevokedKeys` names it. The Admin UI guide's "Getting the revocation list to hosts" does
-  the same and notes that the list is binary, in OpenSSH's KRL format. The fetcher's files still
-  ship in `share/ssh-krl`.
-
-### 0.4.2-rc.1.2 — 2026-10-21
-
-On top of `0.4.2-rc.1.1`.
-
-**Changed**
-
-- **A signed SSH certificate opens on its own page.** Signing a key on the SSH tab of Request
-  Certificate showed the certificate above the form, where the next signature replaced it. The
-  certificate's page now opens instead, with the certificate to copy or download, where to save
-  it and a link to sign another. Self-service does the same: requesting a certificate opens a
-  new page for it, which My Certificates also links from each row of its SSH tab.
-
-**Fixed**
-
-- **A host certificate was explained as a user's.** The signed-certificate notice said to save
-  every certificate as `~/.ssh/id_…-cert.pub`. A host certificate is now named for its host key in
-  `/etc/ssh`, with the `HostCertificate` line `sshd_config` needs, and downloads under that name.
-
-### 0.4.2-rc.1.1 — 2026-10-21
-
-Fixes found on the test hosts and in a production install of `0.4.2-rc.1.0`, on top of it.
-
-**Changed**
-
-- **The CMP request profile a new install seeds no longer requires approval.** CMP refuses a
-  request whose request profile requires approval, because a CMP client cannot come back for a
-  certificate approved later, so on a default install CMP refused every request. `Enterprise User
-  (CMP)` is now auto-approved, like the EST and SCEP profiles. An existing install keeps its
-  profile: where CMP is used, untick Require approval on it, or the client keeps seeing
-  "Certificate issuance failed" and the CMP audit tab says why.
-
-**Fixed**
-
-- **The protocol audit tabs listed old entries first.** Opening a protocol tab (EST, SCEP, CMP,
-  ACME, MSAE, Network) after the General tab sorted its page by the displayed date as text, so
-  "Sep 18" came before "Oct 21".
-- **A sign-in refused at the second factor was audited as OK.** An account locked or disabled by
-  the time it completed TOTP, WebAuthn or mTLS was refused, but the `UserLoginFailed` entry was
-  written as a success, so the audit log's Failed filter left it out.
-- **The request form's Not After started past the certificate profile's limit**, with a red
-  warning before anything was typed under a short-lived profile. It now starts at a year or the
-  limit, whichever is sooner, and a limit under a day bounds the date picker too.
-- **SSH:** an enabled SSH CA key showed "CA Key" as its status, the Sign key form offered a host
-  for a key that signs user certificates only (and the reverse), and beside each login name the
-  forms showed the key's limit ("up to 720 h") above the profile's smaller one.
-- **Wording:** the request profile list said "Optional" for SANs on a profile that allows none;
-  the drawer of an issued request offered to approve or issue it; a request's page showed its
-  profiles, and profile pages their CA, as ids. They now say None, offer only what can still be
-  done, and give names with links.
-
-## [0.4.2-rc.1.0] — 2026-10-19
-
-The first release candidate of 0.4.2. It carries everything since 0.4.0: the settings work that
-was built as 0.4.1, which is not released on its own, and the SSH work that takes SSH CA keys out
-of plaintext files the node could read. It also holds every request to its request profile on the
-server, at each step. A release candidate is for trying, not for a CA you depend on.
-
-The builds that went to test hosts on the way, `0.4.1-dev.1.0` to `0.4.2-dev.1.12`, are listed
-after this summary, for anyone who ran one.
+One release candidate, `0.4.2-rc.1.0`, went to test hosts and was not published; "Changes since
+0.4.2-rc.1.0" below is for anyone who installed it. The builds before it, `0.4.1-dev.1.0` to
+`0.4.2-dev.1.12`, are listed at the end of this section.
 
 ### Upgrading from 0.4.0
 
 "Upgrading to 0.4.2" in `packaging/README-DEPLOY.md` is the checklist. In short:
 
-- **Check before installing.** `--upgrade-check` (which `install.sh` runs) rehearses the twelve
+- **Check before installing.** `--upgrade-check` (which `install.sh` runs) rehearses the thirteen
   new migrations, lists the SSH CA keys the first start will import, and refuses when the key
   file of an enabled SSH CA is missing or is not its key. Its notes, which never refuse, list the
   enrollment clients the request profiles will now refuse, from the last 90 days of the audit
@@ -161,8 +47,72 @@ after this summary, for anyone who ran one.
   certificates of users who are disabled or may no longer request from the SSH CA.
 - **There is no downgrade.** Take a backup and dump both databases first; going back means
   restoring them.
-- **Containers.** A release candidate is never `latest`. Name it:
-  `MODULARCA_IMAGE=ghcr.io/dilenex/modularca:0.4.2-rc.1.0`.
+- **Containers.** `latest` is this release. To stay on it, name it:
+  `MODULARCA_IMAGE=ghcr.io/dilenex/modularca:0.4.2`.
+
+### Changes since 0.4.2-rc.1.0
+
+**Added**
+
+- **An expiry warning can be cleared without revoking the certificate.** A certificate that
+  expires within 30 days, or expired in the last 30, with no replacement stayed on the
+  dashboard's Needs attention list, and the only way off it was to revoke the certificate. Two
+  ways now, both needing cert.revoke on the issuing CA, both audited and both undone from the
+  certificate's page. Neither revokes anything or changes the CRL and OCSP answers.
+  - **Dismiss**, on the dashboard row or the certificate's page, silences the warning and the
+    expiry e-mails. The certificate can still be renewed by hand, by auto-renewal or by its
+    client.
+  - **Retire**, on the certificate's page, with an optional reason, also stops every renewal
+    from it. The console, the user portal, the Infra API, auto-renewal and protocol renewals
+    (EST re-enrollment and EST with the certificate as its credential, SCEP, CMP, Windows
+    autoenrollment) refuse it, with `MCA-RES-008` or the `CertificateRetired` refusal. Its
+    subject needs a new enrollment.
+
+  The certificate list shows either state in place of "Not replaced", and its `replaced=no`
+  filter leaves both out, as the lifecycle summary does; the summary counts them in a new
+  `retiredOrDismissed`. The upgrade adds five nullable columns to `Certificates`.
+
+**Changed**
+
+- **The CMP request profile a new install seeds no longer requires approval.** CMP refuses a
+  request whose request profile requires approval, because a CMP client cannot come back for a
+  certificate approved later, so on a default install CMP refused every request. `Enterprise User
+  (CMP)` is now auto-approved, like the EST and SCEP profiles. An existing install keeps its
+  profile: where CMP is used, untick Require approval on it, or the client keeps seeing
+  "Certificate issuance failed" and the CMP audit tab says why.
+- **The console no longer offers the KRL fetcher.** It is not yet proven on a host, so the SSH
+  CA key page says to copy the revocation list to each host by hand, before `RevokedKeys` names
+  it, and so does the Admin UI guide. The fetcher's files still ship in `share/ssh-krl`.
+- **A signed SSH certificate opens on its own page**, in the console and in self-service, with
+  the certificate to copy or download, where to save it and a link to sign another. My
+  Certificates links each SSH certificate's page.
+
+**Fixed**
+
+- **No SCEP client could verify a reply from an RSA CA.** The reply's signature named the
+  algorithm the CA certificate was signed with, while the CA key signs with RSA-PSS by default.
+  sscep, OpenSSL and BouncyCastle refuse such a reply. It now names the algorithm used, with its
+  parameters. This predates 0.4.
+- **An EST, SCEP or QR token created in the console was refused at every CA in a space.** The
+  form sent a signing profile only for CMP, so every other token was an instance token. The form
+  now asks where the token is accepted, offering what the console scope covers, and the token
+  list shows it. The create endpoint takes `scope` and `scopeId` for the same; without them the
+  selected profiles decide, as before.
+- **A sign-in refused at the second factor was audited as OK.** An account locked or disabled by
+  the time it completed TOTP, WebAuthn or mTLS was refused, but the `UserLoginFailed` entry was
+  written as a success, so the audit log's Failed filter left it out.
+- **The protocol audit tabs listed old entries first** after the General tab had been opened.
+- **The request form's Not After started past the certificate profile's limit**, with a red
+  warning before anything was typed under a short-lived profile. It now starts at a year or the
+  limit, whichever is sooner.
+- **A host certificate was explained as a user's.** It is now named for its host key in
+  `/etc/ssh`, with the `HostCertificate` line `sshd_config` needs, and downloads under that name.
+- **SSH:** an enabled SSH CA key showed "CA Key" as its status, the Sign key form offered a host
+  for a key that signs user certificates only (and the reverse), and beside each login name the
+  forms showed the key's limit above the profile's smaller one.
+- **Wording:** the request profile list said "Optional" for SANs on a profile that allows none;
+  the drawer of an issued request offered to approve or issue it; a request's page showed its
+  profiles, and profile pages their CA, as ids.
 
 ### Security
 
@@ -176,9 +126,10 @@ after this summary, for anyone who ran one.
   their groups on that SSH CA key. The CA writes every key id, which `sshd` logs with each login.
   Taking a name or the right to request away revokes the certificates that depended on it, at
   once, and a sweep every 15 minutes catches what a missed step left live.
-- **Hosts can follow revocation.** `modularca-krl-fetch`, a script with a systemd timer that
-  ships with the CA, installs each SSH CA key's KRL on a server every minute, only ever replacing
-  it with a complete list of a version no lower than the installed one.
+- **Hosts can follow revocation.** Each SSH CA key publishes its KRL, with the time of each
+  revocation, for `sshd`'s `RevokedKeys`; copy it to each host. `modularca-krl-fetch`, a script
+  with a systemd timer that installs the KRL on a server every minute, ships in `share/ssh-krl`
+  but is not yet proven on a host, and the console does not offer it.
 - **A new user certificate permits a terminal and nothing else.** On a new install, agent and
   port forwarding are in a separate seeded profile, attached to nothing until an administrator
   attaches it. An upgraded instance keeps its SSH profiles as they were; the signing profile
