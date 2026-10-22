@@ -10,6 +10,18 @@ Builds between release candidates are numbered after the candidate they follow: 
 `0.4.2-rc.1.2` and so on. They go to test hosts, and are neither tagged nor published. What they
 change is listed here and becomes the next candidate's section.
 
+### 0.4.2-rc.1.3 — 2026-10-21
+
+On top of `0.4.2-rc.1.2`.
+
+**Changed**
+
+- **The console no longer offers the KRL fetcher.** It is not yet proven on a host, so the SSH
+  CA key page drops "Set up a host" and says to copy the revocation list to each host by hand,
+  before `RevokedKeys` names it. The Admin UI guide's "Getting the revocation list to hosts" does
+  the same and notes that the list is binary, in OpenSSH's KRL format. The fetcher's files still
+  ship in `share/ssh-krl`.
+
 ### 0.4.2-rc.1.2 — 2026-10-21
 
 On top of `0.4.2-rc.1.1`.
