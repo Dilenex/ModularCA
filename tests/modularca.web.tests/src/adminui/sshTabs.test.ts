@@ -7,8 +7,8 @@ import { AUTHORITIES, CA_MANAGE_SPACE, CERTIFICATES, CERTIFICATE_REQUEST, CERT_R
 import { ALL_SCOPE, MINE_SCOPE, gateAllows, type Scope } from '@adminui/scope';
 import { legacySelfSshPath, legacySshPath } from '@adminui/legacyPaths';
 import {
-    KIND_TABS, SELF_SSH_CERTIFICATES_PATH, SELF_SSH_REQUEST_PATH, SSH_CA_KEYS_PATH, SSH_CA_KEY_ROUTE, SSH_CERTIFICATES_PATH, SSH_CERTIFICATE_ROUTE, SSH_SIGN_PATH, TAB_PARAM,
-    activeKindTab, kindTabs, sshCaKeyPath, sshCertificatePath, sshScopeSentence, withKindTab,
+    KIND_TABS, SELF_SSH_CERTIFICATE_ROUTE, SELF_SSH_CERTIFICATES_PATH, SELF_SSH_REQUEST_PATH, SSH_CA_KEYS_PATH, SSH_CA_KEY_ROUTE, SSH_CERTIFICATES_PATH, SSH_CERTIFICATE_ROUTE, SSH_SIGN_PATH, TAB_PARAM,
+    activeKindTab, kindTabs, selfSshCertificatePath, signedHandOver, sshCaKeyPath, sshCertificatePath, sshScopeSentence, withKindTab,
 } from '@adminui/pages/sshPlaces';
 import {
     SSH_PROFILE_TYPE_OPTIONS, certificateTypeFor, defaultSignFor, keySignsFor, profileTypeChoice, profileTypeLabel, profilesForCertificateType, servesCertificateType,
@@ -181,6 +181,17 @@ describe('the addresses', () => {
         expect(sshCertificatePath({ id: 'c1', sshCaKeyId: 'k1' })).toBe('/certificates/ssh/c1?caKey=k1');
         expect(sshCertificatePath({ id: 'c1', sshCaKeyId: 'k1' }, 'root')).toBe('/certificates/ssh/c1?caKey=k1&used=root');
         expect(sshCertificatePath({ id: 'c1' })).toBe('/certificates/ssh/c1');
+        expect(SELF_SSH_CERTIFICATE_ROUTE).toBe('/certificates/ssh/:id');
+        expect(selfSshCertificatePath('c1')).toBe('/certificates/ssh/c1');
+    });
+
+    it('hand a signed certificate only to the page of that certificate', () => {
+        const signed = { id: 'c1', signedCertificate: 'ssh-ed25519-cert-v01@openssh.com AAAA', publicKey: 'ssh-ed25519 AAAA', forUser: 'alice' };
+        expect(signedHandOver({ signed }, 'c1')).toEqual(signed);
+        expect(signedHandOver({ signed }, 'c2')).toBeNull();
+        expect(signedHandOver({ signed: { ...signed, signedCertificate: '' } }, 'c1')).toBeNull();
+        expect(signedHandOver(null, 'c1')).toBeNull();
+        expect(signedHandOver({ signed: { id: 'c1', signedCertificate: 'x' } }, 'c1')).toEqual({ id: 'c1', signedCertificate: 'x', publicKey: '', forUser: null });
     });
 
     it('redirect the old administration addresses to their new homes, query string kept', () => {

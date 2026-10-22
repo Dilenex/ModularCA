@@ -587,6 +587,15 @@ export function defaultKeyFile(publicKeyLine: string | null | undefined): string
     }
 }
 
+/** The file in /etc/ssh that holds a host's private key of the type a public key line names. */
+export function defaultHostKeyFile(publicKeyLine: string | null | undefined): string {
+    switch (sshdKeyType(publicKeyLine)) {
+        case 'ECDSA': return 'ssh_host_ecdsa_key';
+        case 'RSA': return 'ssh_host_rsa_key';
+        default: return 'ssh_host_ed25519_key';
+    }
+}
+
 /* ── the key filter of the certificate list ──────────────────────────────── */
 
 /**

@@ -65,6 +65,25 @@ export function sshCertificatePath(cert: { id: string; sshCaKeyId?: string | nul
     return `/certificates/ssh/${encodeURIComponent(cert.id)}${text ? `?${text}` : ''}`;
 }
 
+/**
+ * A certificate just signed, handed from the form to the certificate's page in the navigation
+ * state, so the page can offer it for copy and download as the signer answered it.
+ */
+export interface SshSignedHandOver {
+    id: string;
+    signedCertificate: string;
+    publicKey: string;
+    /** The username the certificate was signed for, when it was for a user of the console. */
+    forUser?: string | null;
+}
+
+/** The hand-over in a page's navigation state, when it is for the certificate the page shows. */
+export function signedHandOver(state: unknown, id: string | undefined): SshSignedHandOver | null {
+    const signed = (state as { signed?: Partial<SshSignedHandOver> } | null)?.signed;
+    if (!signed || !id || signed.id !== id || typeof signed.signedCertificate !== 'string' || !signed.signedCertificate) return null;
+    return { id: signed.id, signedCertificate: signed.signedCertificate, publicKey: signed.publicKey ?? '', forUser: signed.forUser ?? null };
+}
+
 /** Request Certificate, where the SSH tab signs a key. */
 export const CERTIFICATE_REQUEST_PATH = '/certificates/request';
 export const SSH_SIGN_PATH = sshTab(CERTIFICATE_REQUEST_PATH);
@@ -78,6 +97,10 @@ export const SELF_SSH_REQUEST_PATH = sshTab(SELF_REQUEST_PATH);
 /** Self-service My Certificates, where the SSH tab lists the reader's SSH certificates. */
 export const SELF_CERTIFICATES_PATH = '/certificates';
 export const SELF_SSH_CERTIFICATES_PATH = sshTab(SELF_CERTIFICATES_PATH);
+
+/** The route pattern of one of the reader's SSH certificates. */
+export const SELF_SSH_CERTIFICATE_ROUTE = '/certificates/ssh/:id';
+export const selfSshCertificatePath = (id: string): string => `/certificates/ssh/${encodeURIComponent(id)}`;
 
 /* ── the console's scope ─────────────────────────────────────────────────── */
 

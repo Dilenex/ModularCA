@@ -176,7 +176,7 @@ export default function UserUiGuide() {
                     each with their own key and their own certificate, and the host log still names the person.
                 </p>
                 <p className="text-ink leading-relaxed mb-3">
-                    After signing, the certificate is shown once with Copy and Download. Save it beside the private key,
+                    After signing, the certificate opens on its own page with Copy and Download. Save it beside the private key,
                     under the key file&apos;s name with <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">-cert.pub</code> added:
                     for <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">~/.ssh/id_ed25519</code> that is
                     <code className="text-sm bg-sunken px-1.5 py-0.5 rounded"> ~/.ssh/id_ed25519-cert.pub</code>. ssh then presents it by

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
-import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, useLocation, Link } from 'react-router-dom';
 import { apiGet, apiBlob, apiPostWithMfa } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
@@ -12,12 +12,12 @@ import { DetailPage, DetailSection } from '../components/DetailPage';
 import { actionButton, actionButtonDanger } from '@shared/components/actionButtons';
 import { StepUpOps } from '@shared/generated';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { LoginNameGrounds } from '../components/SshCertificateParts';
+import { LoginNameGrounds, SignedCertificateHandOver } from '../components/SshCertificateParts';
 import {
     certificateBadge, certificateStatus, dayTimeText, isUserCertificate, issuedByDetail, issuedToDetail, issuedToText, jsonList, sshdKeyType,
     type SshCertificateView,
 } from './sshLoginNames';
-import { SSH_CERTIFICATES_PATH, sshCaKeyPath } from './sshPlaces';
+import { SSH_CERTIFICATES_PATH, SSH_SIGN_PATH, signedHandOver, sshCaKeyPath } from './sshPlaces';
 
 function downloadText(content: string, filename: string) {
     const blob = new Blob([content], { type: 'text/plain' });
@@ -31,12 +31,15 @@ function downloadText(content: string, filename: string) {
 /// Read-only detail page for a single issued SSH certificate, under Certificates: who it was issued to and by, the
 /// name hosts log for it, and for a user certificate each login name with why its holder had it.
 /// A <c>used</c> query param, set when the page is opened from a host log line, marks the login
-/// name that line shows. The page is View-only (Edit disabled); download and revoke live in the
-/// action bar.
+/// name that line shows. The Sign key form opens this page with the certificate it signed in the
+/// navigation state, which the page hands over for copy and download until dismissed. The page
+/// is View-only (Edit disabled); download and revoke live in the action bar.
 /// </summary>
 const SshCertDetail: React.FC = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
+    const location = useLocation();
+    const handOver = signedHandOver(location.state, id);
     const { showToast } = useToast();
     const { requireStepUp } = useStepUp();
     const [searchParams] = useSearchParams();
@@ -133,6 +136,18 @@ const SshCertDetail: React.FC = () => {
             }
         >
             {() => (<>
+                {handOver && (
+                    <SignedCertificateHandOver
+                        title="Certificate signed"
+                        signedCertificate={handOver.signedCertificate}
+                        publicKey={handOver.publicKey || cert.publicKey || ''}
+                        forHost={!isUser}
+                        onDismiss={() => navigate(`${location.pathname}${location.search}`, { replace: true, state: null })}
+                    >
+                        {handOver.forUser && <>{handOver.forUser} also finds it under My Certificates, on the SSH tab, in their own portal. </>}
+                        <Link to={SSH_SIGN_PATH} className="text-accent-ink hover:underline">Sign another key</Link>.
+                    </SignedCertificateHandOver>
+                )}
                 <DetailSection title="Certificate">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
                         <DetailField label="Issued to" value={subject?.kind === 'user' && subject.userId

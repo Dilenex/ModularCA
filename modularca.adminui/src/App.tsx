@@ -16,7 +16,7 @@ import { PORTAL, BASENAME, LOGIN_PATH } from './portal';
 import { ScopeProvider } from './context/ScopeContext';
 import { legacySelfSshPath, legacySpacePath, legacySshPath } from './legacyPaths';
 import { profileDetailRoute, profileNewRoute } from './pages/profiles/profileRoutes';
-import { SELF_SSH_CERTIFICATES_PATH, SSH_CA_KEY_ROUTE, SSH_CERTIFICATES_PATH, SSH_CERTIFICATE_ROUTE } from './pages/sshPlaces';
+import { SELF_SSH_CERTIFICATE_ROUTE, SELF_SSH_CERTIFICATES_PATH, SSH_CA_KEY_ROUTE, SSH_CERTIFICATES_PATH, SSH_CERTIFICATE_ROUTE } from './pages/sshPlaces';
 import { SYSTEM_ADMIN, SYSTEM_OPERATOR, CA_MANAGE, CA_MANAGE_SPACE, CA_AUDIT, GROUP_MANAGE, USER_MANAGE, TOKEN_MANAGE, CERT_VIEW, AUTHORITIES, CERTIFICATES, CERTIFICATE_REQUEST } from './gates';
 
 // Auth pages — eagerly loaded (entry points, must render immediately)
@@ -87,6 +87,7 @@ const NotFound = React.lazy(() => import('./pages/NotFound'));
 const SelfDashboard = React.lazy(() => import('./pages/self/Dashboard'));
 const SelfRequestCertificate = React.lazy(() => import('./pages/self/RequestCertificate'));
 const SelfMyCertificates = React.lazy(() => import('./pages/self/MyCertificates'));
+const SelfSshCertificate = React.lazy(() => import('./pages/self/MySshCertificate'));
 const SelfCertificateRequests = React.lazy(() => import('./pages/self/CertificateRequests'));
 const SelfCaInformation = React.lazy(() => import('./pages/self/CaInformation'));
 
@@ -172,6 +173,7 @@ const UserRoutes: React.FC = () => (
         <Route path="/dashboard" element={<SelfDashboard />} />
         <Route path="/request" element={<SelfRequestCertificate />} />
         <Route path="/certificates" element={<SelfMyCertificates />} />
+        <Route path={SELF_SSH_CERTIFICATE_ROUTE} element={<SelfSshCertificate />} />
         <Route path="/requests" element={<SelfCertificateRequests />} />
         {/* SSH moved into tabs in 0.4.2; remove this redirect in 0.5. */}
         <Route path="/ssh" element={<LegacySelfSshRedirect />} />

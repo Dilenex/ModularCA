@@ -1,9 +1,62 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { actionButton } from '@shared/components/actionButtons';
+import { copyText } from '@shared/clipboard';
 import {
-    BEFORE_LOGIN_NAMES, groundWords, heldSourceText, jsonList,
+    BEFORE_LOGIN_NAMES, defaultHostKeyFile, defaultKeyFile, groundWords, heldSourceText, jsonList,
     type SshCertificateView, type SshHeldLoginName,
 } from '../pages/sshLoginNames';
+
+function downloadText(content: string, filename: string) {
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+}
+
+/// <summary>
+/// A certificate just signed, on its own page: the certificate with copy and download, named for
+/// the key file it certifies, and where to save it beside that private key. A host certificate
+/// goes in /etc/ssh and is named in sshd_config. <c>children</c> says where else it can be found.
+/// </summary>
+export const SignedCertificateHandOver: React.FC<{
+    title: string;
+    signedCertificate: string;
+    publicKey: string;
+    forHost?: boolean;
+    onDismiss: () => void;
+    children?: React.ReactNode;
+}> = ({ title, signedCertificate, publicKey, forHost, onDismiss, children }) => {
+    const [copied, setCopied] = useState(false);
+    const keyFile = forHost ? defaultHostKeyFile(publicKey) : defaultKeyFile(publicKey);
+    const copy = async () => {
+        if (await copyText(signedCertificate)) {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1500);
+        }
+    };
+    return (
+        <div className="bg-raised border border-line border-l-4 border-l-ok rounded-lg p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="text-ok font-semibold text-sm">{title}</span>
+                <button type="button" onClick={onDismiss} className="text-xs text-ink-muted hover:text-ink transition-colors">Dismiss</button>
+            </div>
+            <textarea readOnly rows={3} aria-label="Signed certificate" value={signedCertificate}
+                className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink data-mono focus:outline-none" />
+            <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={copy} className={actionButton}>{copied ? 'Copied' : 'Copy'}</button>
+                <button type="button" onClick={() => downloadText(signedCertificate, `${keyFile}-cert.pub`)} className={actionButton}>Download as {keyFile}-cert.pub</button>
+            </div>
+            <p className="text-xs text-ink-muted max-w-3xl">
+                {forHost
+                    ? <>On the host, save it as <code className="text-accent-ink">/etc/ssh/{keyFile}-cert.pub</code>, beside the host key <code className="text-accent-ink">/etc/ssh/{keyFile}</code>, add <code className="text-accent-ink">HostCertificate /etc/ssh/{keyFile}-cert.pub</code> to <code className="text-accent-ink">sshd_config</code> and reload sshd.</>
+                    : <>Save it as <code className="text-accent-ink">~/.ssh/{keyFile}-cert.pub</code>, beside the private key <code className="text-accent-ink">~/.ssh/{keyFile}</code>. If the key file has another name, use that name with <code className="text-accent-ink">-cert.pub</code> added. ssh then presents the certificate by itself.</>}
+                {children && <> {children}</>}
+            </p>
+        </div>
+    );
+};
 
 /// <summary>
 /// The login names someone holds on an SSH CA key, as a tick list: each name with where it comes

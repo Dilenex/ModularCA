@@ -23,11 +23,12 @@ const AUTH_ROUTE_TITLES: Array<[string, string]> = [
     ['/banner', 'Login Banner'],
 ];
 
-// Self-service portal (/user). Flat: every page is one segment deep.
+// Self-service portal (/user).
 const USER_ROUTE_TITLES: Array<[string, string]> = [
     ['/dashboard', 'Dashboard'],
     ['/request', 'Request Certificate'],
     ['/requests', 'My Requests'],
+    ['/certificates/ssh/:id', 'SSH Certificate'],
     ['/certificates', 'My Certificates'],
     ['/ssh', 'My Certificates'], // legacy path → redirects to the SSH tab of /certificates
     ['/authorities', 'CA Information'],

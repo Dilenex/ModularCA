@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
     BEFORE_LOGIN_NAMES, NOT_RECORDED, canOnSshCa, certProfileChoices, certificateBadge, certificateStatus, chosenCombination, dateFieldValue,
-    defaultKeyFile, defaultValidity, endOfDayIso, existingGrants, findQuery, grantEnd, grantEndToSend, grantTermProblems, grantTermsBody,
+    defaultHostKeyFile, defaultKeyFile, defaultValidity, endOfDayIso, existingGrants, findQuery, grantEnd, grantEndToSend, grantTermProblems, grantTermsBody,
     groundText, groundWords, heldSourceText, issuedByDetail, issuedByText, issuedToDetail, issuedToText, jsonList, logLineProblem, loginNameError,
     longestCertificateText, parseSshdLogLine, removeGrantQuestion, requestProfileChoices, revokeAllSentence, revokedSentence, serviceKeyId,
     serviceLabelError, signingProfileChoices, sshdKeyType, validityLimit, validityLimitText, validityProblem,
@@ -444,6 +444,13 @@ describe('key types and key files', () => {
         expect(defaultKeyFile('ecdsa-sha2-nistp384 AAAA')).toBe('id_ecdsa');
         expect(defaultKeyFile('sk-ssh-ed25519@openssh.com AAAA')).toBe('id_ed25519_sk');
         expect(defaultKeyFile(undefined)).toBe('id_ed25519');
+    });
+
+    it('names the host key file in /etc/ssh, defaulting to ed25519', () => {
+        expect(defaultHostKeyFile('ssh-ed25519 AAAA')).toBe('ssh_host_ed25519_key');
+        expect(defaultHostKeyFile('ssh-rsa AAAA')).toBe('ssh_host_rsa_key');
+        expect(defaultHostKeyFile('ecdsa-sha2-nistp256 AAAA')).toBe('ssh_host_ecdsa_key');
+        expect(defaultHostKeyFile(undefined)).toBe('ssh_host_ed25519_key');
     });
 });
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
@@ -15,7 +15,6 @@ import { Capabilities, StepUpOps } from '@shared/generated';
 import { useAuth } from '../context/AuthContext';
 import { FieldHint } from '@shared/components/forms';
 import { actionButton } from '@shared/components/actionButtons';
-import { copyText } from '@shared/clipboard';
 import { type CeremonyRefusal, readCeremonyRefusal } from './ceremonyRefusal';
 import { CeremonyRefusalNotice } from '../components/CeremonyRefusalNotice';
 import { runWithOneStepUp } from '@shared-auth/api/stepUpBatch';
@@ -25,14 +24,14 @@ import { SshSignKeyForm, type SshSignResult } from '../components/SshSignKeyForm
 import { SshLogLineLookup } from '../components/SshLogLineLookup';
 import { LoginNameGrounds } from '../components/SshCertificateParts';
 import {
-    canOnSshCa, certificateBadge, certificateStatus, dayText, dayTimeText, defaultKeyFile, isUserCertificate, issuedByDetail, issuedByText, issuedToDetail, issuedToText, jsonList,
+    canOnSshCa, certificateBadge, certificateStatus, dayText, dayTimeText, isUserCertificate, issuedByDetail, issuedByText, issuedToDetail, issuedToText, jsonList,
     sshKeyChoices,
     type SshCaKeyRef, type SshCertificateView,
 } from './sshLoginNames';
 import { FilterBar, FilterField, filterControlClass } from '@shared/components/FilterBar';
 import { SshScopeSentence } from '../components/KindTabs';
 import type { Scope } from '../scope';
-import { SSH_CA_KEYS_PATH, sshCaKeyPath, sshCertificatePath, sshScopeSentence } from './sshPlaces';
+import { SSH_CA_KEYS_PATH, sshCaKeyPath, sshCertificatePath, sshScopeSentence, type SshSignedHandOver } from './sshPlaces';
 import {
     REVIEW_DATE_ACTS_ON_NOTHING, SSH_CA_MAX_VALIDITY_HOURS, WHY_ONE_TYPE, emptySshCaKeyForm, hoursProblem, hoursText, sshCaKeyBody, sshCaKeyReview, withHours, withKind,
     type SshCaKeyForm,
@@ -617,10 +616,12 @@ const SshCertificateList: React.FC = () => {
 
 /* ─── Sign key ─── */
 /// <summary>
-/// The SSH tab of Request Certificate: the SSH CA key to sign with, the Sign key form, and the
-/// signed certificate once, with copy and download and where to save it.
+/// The SSH tab of Request Certificate: the SSH CA key to sign with and the Sign key form. A signed
+/// certificate opens on its own page, which hands it over with copy and download and where to
+/// save it.
 /// </summary>
 const SshSign: React.FC = () => {
+    const navigate = useNavigate();
     const [caKeys, setCaKeys] = useState<any[]>([]);
     const [signingProfiles, setSigningProfiles] = useState<any[]>([]);
     const [certProfiles, setCertProfiles] = useState<any[]>([]);
@@ -628,9 +629,7 @@ const SshSign: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
     const [selectedCaKeyId, setSelectedCaKeyId] = useState<string>('');
-    const [signResult, setSignResult] = useState<SshSignResult | null>(null);
-    const [copied, setCopied] = useState(false);
-    /** Bumped after each signature, so the form starts empty for the next one. */
+    /** Bumped on Clear, so the form starts empty. */
     const [formRound, setFormRound] = useState(0);
 
     useEffect(() => {
@@ -670,14 +669,10 @@ const SshSign: React.FC = () => {
     const signBlocked = selectedCaKey ? signBlockedReason(selectedCaKey) : null;
     const signerStateUnknown = !!selectedCaKey && sshSignerState(selectedCaKey) === 'unknown';
 
-    const copyResult = async () => {
-        if (signResult && await copyText(signResult.signedCertificate)) {
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 1500);
-        }
+    const openSigned = (result: SshSignResult) => {
+        const signed: SshSignedHandOver = { id: result.id, signedCertificate: result.signedCertificate, publicKey: result.publicKey, forUser: result.forUser };
+        navigate(sshCertificatePath({ id: result.id, sshCaKeyId: selectedCaKeyId }), { state: { signed } });
     };
-
-    const keyFile = defaultKeyFile(signResult?.publicKey);
 
     if (loading) return <p className="text-sm text-ink-muted">Loading…</p>;
     if (error) return <InlineNotice notice={error} />;
@@ -690,7 +685,7 @@ const SshSign: React.FC = () => {
                 <select
                     id="ssh-ca-key"
                     value={selectedCaKeyId}
-                    onChange={(e) => { setSelectedCaKeyId(e.target.value); setSignResult(null); }}
+                    onChange={(e) => setSelectedCaKeyId(e.target.value)}
                     className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
                 >
                     {enabledKeys.length === 0 && <option value="">No CA keys available</option>}
@@ -719,42 +714,6 @@ const SshSign: React.FC = () => {
                 <FieldHint tone="warn">The signer could not be asked whether it holds this key. Signing is refused while the signer is locked or out of reach.</FieldHint>
             )}
 
-            {signResult && (
-                <div className="bg-raised border border-line border-l-4 border-l-ok rounded-lg p-4 space-y-3">
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <span className="text-ok font-semibold text-sm">Certificate signed</span>
-                        <button type="button" onClick={() => setSignResult(null)} className="text-xs text-ink-muted hover:text-ink transition-colors">Dismiss</button>
-                    </div>
-                    <div className="max-w-3xl">
-                        <DetailField label="Name in host logs" value={signResult.keyId} mono />
-                        <DetailField label="Serial" value={String(signResult.serialNumber)} mono />
-                        <DetailField label="Valid" value={`${dayTimeText(signResult.validAfter)} to ${dayTimeText(signResult.validBefore)}`} />
-                    </div>
-                    {signResult.signedCertificate && (
-                        <>
-                            <textarea
-                                readOnly
-                                rows={3}
-                                aria-label="Signed certificate"
-                                value={signResult.signedCertificate}
-                                className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-ink data-mono focus:outline-none"
-                            />
-                            <div className="flex flex-wrap gap-2">
-                                <button type="button" onClick={copyResult} className={actionButton}>{copied ? 'Copied' : 'Copy'}</button>
-                                <button type="button" onClick={() => downloadText(signResult.signedCertificate, `${keyFile}-cert.pub`)} className={actionButton}>
-                                    Download certificate
-                                </button>
-                                <Link to={sshCertificatePath({ id: signResult.id, sshCaKeyId: selectedCaKeyId })} className={actionButton}>Open the certificate's page</Link>
-                            </div>
-                        </>
-                    )}
-                    <p className="text-xs text-ink-muted max-w-3xl">
-                        It belongs beside the private key it certifies, under that key file's name with <code className="text-accent-ink">-cert.pub</code> added: for a key in <code className="text-accent-ink">~/.ssh/{keyFile}</code>, save it as <code className="text-accent-ink">~/.ssh/{keyFile}-cert.pub</code>.
-                        {signResult.forUser && ` ${signResult.forUser} also finds it under My Certificates, on the SSH tab, in their own portal, and can download it there.`}
-                    </p>
-                </div>
-            )}
-
             {selectedCaKey && (
                 <SshSignKeyForm
                     key={`${selectedCaKey.id}:${formRound}`}
@@ -763,7 +722,7 @@ const SshSign: React.FC = () => {
                     signingProfiles={signingProfiles}
                     certProfiles={certProfiles}
                     requestProfiles={requestProfiles}
-                    onSigned={(result) => { setSignResult(result); setCopied(false); setFormRound((r) => r + 1); }}
+                    onSigned={openSigned}
                     onCancel={() => setFormRound((r) => r + 1)}
                 />
             )}
