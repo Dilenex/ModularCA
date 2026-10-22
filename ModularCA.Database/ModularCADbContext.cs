@@ -91,12 +91,28 @@ public class ModularCADbContext : DbContext
     // Runtime-tunable policy tables (moved out of config.yaml so admins can
     // change them via the admin API without a restart).
     public DbSet<SecurityPolicyEntity> SecurityPolicies { get; set; }
+
+    /// <summary>The named API keys of the integrations, each as the hash of a key shown once.</summary>
+    public DbSet<ApiKeyEntity> ApiKeys { get; set; }
+
+    /// <summary>The instance-wide settings that have been set, one row each. See <c>docs/architecture/settings-store.md</c>.</summary>
+    public DbSet<SettingEntity> Settings { get; set; }
+    /// <summary>The secret settings that have been set, each wrapped by the signer or hashed.</summary>
+    public DbSet<SettingSecretEntity> SettingsSecrets { get; set; }
+    /// <summary>Every change to a setting, append-only.</summary>
+    public DbSet<SettingHistoryEntity> SettingsHistory { get; set; }
+    /// <summary>The one row that orders settings writes.</summary>
+    public DbSet<SettingsStateEntity> SettingsState { get; set; }
     public DbSet<LdapPublisherPolicyEntity> LdapPublisherPolicies { get; set; }
     public DbSet<ProtocolRateLimitEntity> ProtocolRateLimits { get; set; }
     public DbSet<EnrollmentTokenEntity> EnrollmentTokens { get; set; }
     public DbSet<CtLogEntity> CtLogs { get; set; }
     public DbSet<SshCaKeyEntity> SshCaKeys { get; set; }
+    /// <summary>The SSH CA keys that were plaintext files on the node and have been imported into the signer.</summary>
+    public DbSet<SshKeyImportEntity> SshKeyImports { get; set; }
     public DbSet<SshCertificateEntity> SshCertificates { get; set; }
+    /// <summary>The login names granted on SSH CA keys to users and to groups.</summary>
+    public DbSet<SshLoginNameGrantEntity> SshLoginNameGrants { get; set; }
     public DbSet<SshSigningProfileEntity> SshSigningProfiles { get; set; }
     public DbSet<SshCertProfileEntity> SshCertProfiles { get; set; }
     public DbSet<SshRequestProfileEntity> SshRequestProfiles { get; set; }
@@ -247,6 +263,12 @@ public class ModularCADbContext : DbContext
                   .WithMany()
                   .HasForeignKey(c => c.IssuedCertificateId)
                   .OnDelete(DeleteBehavior.SetNull);
+            // RequestProfileService refuses to delete a profile open requests were made under;
+            // a finished request merely forgets a profile that is deleted later.
+            entity.HasOne<RequestProfileEntity>()
+                  .WithMany()
+                  .HasForeignKey(c => c.RequestProfileId)
+                  .OnDelete(DeleteBehavior.SetNull);
         });
         modelBuilder.Entity<CertificateEntity>(c =>
         {
@@ -334,6 +356,18 @@ public class ModularCADbContext : DbContext
         modelBuilder.Entity<OIDOptionEntity>().HasIndex(o => o.OID).IsUnique();
 
         modelBuilder.Entity<FeatureFlagEntity>().HasIndex(f => f.Name).IsUnique();
+
+        modelBuilder.Entity<ApiKeyEntity>(entity =>
+        {
+            entity.HasIndex(k => k.KeyHash).IsUnique();
+            entity.HasIndex(k => k.Integration);
+        });
+
+        modelBuilder.Entity<SettingHistoryEntity>(entity =>
+        {
+            entity.HasIndex(h => new { h.Key, h.Version }).IsUnique();
+            entity.HasIndex(h => h.Revision);
+        });
         modelBuilder.Entity<CrlConfigurationEntity>().HasIndex(c => c.Name).IsUnique();
 
         // CRL history must not be deletable as a side effect.
@@ -436,6 +470,19 @@ public class ModularCADbContext : DbContext
             entity.HasOne(e => e.Space)
                   .WithMany()
                   .HasForeignKey(e => e.SpaceId)
+                  .OnDelete(DeleteBehavior.Restrict);
+            // A profile a CA issues its own signers from stays until the CA names another.
+            entity.HasOne<CertProfileEntity>()
+                  .WithMany()
+                  .HasForeignKey(e => e.TsaCertProfileId)
+                  .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<CertProfileEntity>()
+                  .WithMany()
+                  .HasForeignKey(e => e.OcspResponderCertProfileId)
+                  .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<CertProfileEntity>()
+                  .WithMany()
+                  .HasForeignKey(e => e.CmpSignerCertProfileId)
                   .OnDelete(DeleteBehavior.Restrict);
         });
 
@@ -810,6 +857,54 @@ public class ModularCADbContext : DbContext
                   .HasForeignKey(e => e.CertificateAuthorityId)
                   .OnDelete(DeleteBehavior.SetNull);
             entity.HasOne(e => e.GrantedByUser)
+                  .WithMany()
+                  .HasForeignKey(e => e.GrantedByUserId)
+                  .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        // SSH CA keys: a row that names no storage is a key the signer holds.
+        modelBuilder.Entity<SshCaKeyEntity>()
+            .Property(e => e.KeyStorage).HasDefaultValue(SshCaKeyStorage.Signer);
+        modelBuilder.Entity<SshCaKeyEntity>()
+            .Property(e => e.AllowOwnUsername).HasDefaultValue(true);
+
+        // SSH certificates: the subject goes null when its user is deleted; the row stays. The
+        // partial index is what a KRL's version and newest revocation are read from on every poll;
+        // the index on the key alone is named so that the partial one does not stand in for it.
+        modelBuilder.Entity<SshCertificateEntity>(entity =>
+        {
+            entity.HasIndex(e => e.SubjectUserId);
+            entity.HasIndex(e => e.SshCaKeyId);
+            entity.HasIndex(e => new { e.SshCaKeyId, e.RevokedAt }).HasFilter("\"IsRevoked\"");
+            entity.HasOne<UserEntity>()
+                  .WithMany()
+                  .HasForeignKey(e => e.SubjectUserId)
+                  .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        // SSH login name grants: to one user or one group, once per key and name; a grant goes
+        // with its user, its group or its key.
+        modelBuilder.Entity<SshLoginNameGrantEntity>(entity =>
+        {
+            entity.ToTable(t => t.HasCheckConstraint(
+                SshLoginNameGrantConstraints.ExactlyOneTarget, "(\"UserId\" IS NULL) <> (\"GroupId\" IS NULL)"));
+            entity.HasIndex(e => new { e.SshCaKeyId, e.LoginName, e.UserId }).IsUnique().HasFilter("\"UserId\" IS NOT NULL");
+            entity.HasIndex(e => new { e.SshCaKeyId, e.LoginName, e.GroupId }).IsUnique().HasFilter("\"GroupId\" IS NOT NULL");
+            entity.HasIndex(e => e.UserId);
+            entity.HasIndex(e => e.GroupId);
+            entity.HasOne(e => e.SshCaKey)
+                  .WithMany()
+                  .HasForeignKey(e => e.SshCaKeyId)
+                  .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.User)
+                  .WithMany()
+                  .HasForeignKey(e => e.UserId)
+                  .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.Group)
+                  .WithMany()
+                  .HasForeignKey(e => e.GroupId)
+                  .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<UserEntity>()
                   .WithMany()
                   .HasForeignKey(e => e.GrantedByUserId)
                   .OnDelete(DeleteBehavior.SetNull);

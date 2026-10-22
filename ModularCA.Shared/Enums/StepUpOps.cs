@@ -247,6 +247,19 @@ public static class StepUpOps
     /// <summary>Rejecting a certificate request.</summary>
     public const string RejectRequest = "reject-request";
 
+    /// <summary>Creating an API key for an integration.</summary>
+    public const string CreateApiKey = "create-api-key";
+    /// <summary>Revoking an integration's API key.</summary>
+    public const string RevokeApiKey = "revoke-api-key";
+    /// <summary>Replacing the JWT secret with a newly generated one.</summary>
+    public const string RotateJwtSecret = "rotate-jwt-secret";
+
+    /// <summary>Granting, changing or removing SSH login names on an SSH CA key, or switching its own-username rule.</summary>
+    public const string ManageSshLoginNames = "manage-ssh-login-names";
+
+    /// <summary>Signing an SSH certificate through the admin routes: a user certificate for a user or a service identity, or a host certificate.</summary>
+    public const string SignSshCert = "sign-ssh-cert";
+
     /// <summary>
     /// The canonical allow-list consulted by <c>IssueStepUpTokenAsync</c>. Any operation
     /// string not present here is rejected at issuance time with
@@ -289,6 +302,7 @@ public static class StepUpOps
         UpdateCaServiceUrl, DeleteCaServiceUrl,
         UpdateFeatureFlag,
         DeleteEabKey,
+        CreateApiKey, RevokeApiKey, RotateJwtSecret,
         CreateSshProfile, UpdateSshProfile, DeleteSshProfile,
         TotpSetup, TotpVerifySetup, TotpRemove,
         WebAuthnRegister, WebAuthnDelete,
@@ -296,6 +310,7 @@ public static class StepUpOps
         EnableSpace, DisableSpace, UpdateSpaceSettings,
         RestartAuditChain, ManageTrustAnchor, RevokeSshCert, CreateEnrollmentSecret, CreateEabKey, ManageUserBadge,
         CreateSpace, CreateCertProfile, CreateRequestProfile, CreateSigningProfile, ManageSshTemplate, ApproveRequest, RejectRequest,
+        ManageSshLoginNames, SignSshCert,
     };
 
     /// <summary>

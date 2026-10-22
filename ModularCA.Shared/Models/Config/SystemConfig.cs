@@ -2,6 +2,7 @@
 using System.Text.Json.Serialization;
 using YamlDotNet.Core;
 using YamlDotNet.Serialization;
+using ModularCA.Shared.Settings;
 
 namespace ModularCA.Shared.Models.Config
 {
@@ -16,7 +17,6 @@ namespace ModularCA.Shared.Models.Config
         public HttpConfig Http { get; set; } = new();
         public SchedulerConfig Scheduler { get; set; } = new();
         public TokenConfig Tokens { get; set; } = new();
-        public SshCaConfig SshCa { get; set; } = new();
         public MetricsConfig Metrics { get; set; } = new();
         public EmailConfig Email { get; set; } = new();
         public HttpsConfig Https { get; set; } = new();
@@ -40,6 +40,7 @@ namespace ModularCA.Shared.Models.Config
         /// <c>node</c> or <c>all</c>. Empty means every role. <c>--role</c> on the command line
         /// wins outright.
         /// </summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public string Roles { get; set; } = string.Empty;
         public IpWhitelistConfig IpWhitelist { get; set; } = new();
         public NetworkAuditConfig NetworkAudit { get; set; } = new();
@@ -48,6 +49,7 @@ namespace ModularCA.Shared.Models.Config
         public AcmeConfig Acme { get; set; } = new();
         public EstConfig Est { get; set; } = new();
         public ProtocolCleanupConfig ProtocolCleanup { get; set; } = new();
+        public SshLoginNameSweepConfig SshLoginNameSweep { get; set; } = new();
         public BackupConfig Backup { get; set; } = new();
         public WebAuthnConfig WebAuthn { get; set; } = new();
         public AlertConfig Alert { get; set; } = new();
@@ -98,12 +100,14 @@ namespace ModularCA.Shared.Models.Config
         /// migration another process is applying, or (a non-control role) for the control role to
         /// apply this build's migrations, before it exits with status 75 so its supervisor retries.
         /// </summary>
+        [Setting(SettingClass.Bootstrap, SettingReload.Restart)]
         public int WaitSeconds { get; set; } = 900;
 
         /// <summary>
         /// The longest one migration statement may run, in seconds. 0 means no limit. A statement
         /// that exceeds it stops the start with status 3.
         /// </summary>
+        [Setting(SettingClass.Bootstrap, SettingReload.Restart)]
         public int MigrationCommandTimeoutSeconds { get; set; } = 3600;
 
         /// <summary>
@@ -112,6 +116,7 @@ namespace ModularCA.Shared.Models.Config
         /// only then does the process exit with status 75. 0 means wait indefinitely, which
         /// blocks every reader of that table while it waits.
         /// </summary>
+        [Setting(SettingClass.Bootstrap, SettingReload.Restart)]
         public int MigrationLockTimeoutSeconds { get; set; } = 30;
     }
 
@@ -138,6 +143,7 @@ namespace ModularCA.Shared.Models.Config
         /// deployments can flip to <see cref="AuditFailMode.FailClosed"/> to refuse the
         /// business operation when the audit row cannot be written.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public AuditFailMode FailMode { get; set; } = AuditFailMode.LogAndAlert;
 
         /// <summary>
@@ -145,6 +151,7 @@ namespace ModularCA.Shared.Models.Config
         /// raised to <see cref="ModularCA.Core.Services.ISecurityAlertService"/>. Prevents
         /// alert storms when the audit DB is down. Default 600 s (10 min).
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int FailureAlertCooldownSeconds { get; set; } = 600;
 
     }
@@ -161,6 +168,7 @@ namespace ModularCA.Shared.Models.Config
         /// the archive step is also skipped — audit tables grow unbounded. Only
         /// flip this to false in short-lived forensic investigations.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Enabled { get; set; } = true;
 
         /// <summary>
@@ -169,6 +177,7 @@ namespace ModularCA.Shared.Models.Config
         /// full year of forensics online while still bounding disk. Set to 0 to
         /// disable retention for these tables without touching the job itself.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int GeneralRetentionDays { get; set; } = 365;
 
         /// <summary>
@@ -177,6 +186,7 @@ namespace ModularCA.Shared.Models.Config
         /// Default 90 days — busy CAs (ACME / OCSP fan-out) can easily produce
         /// millions of rows per week so the shorter window is load-bearing.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int NetworkRetentionDays { get; set; } = 90;
 
         /// <summary>
@@ -185,6 +195,7 @@ namespace ModularCA.Shared.Models.Config
         /// deleted, giving operators an off-path record for compliance export.
         /// Default false — no archive is produced and rows are deleted directly.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool ArchiveBeforeDelete { get; set; } = false;
 
         /// <summary>
@@ -192,6 +203,7 @@ namespace ModularCA.Shared.Models.Config
         /// Required when <see cref="ArchiveBeforeDelete"/> is true. Relative paths
         /// are resolved against <c>AppContext.BaseDirectory</c>.
         /// </summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Live)]
         public string ArchivePath { get; set; } = "backups/audit-archive";
 
         /// <summary>
@@ -199,6 +211,7 @@ namespace ModularCA.Shared.Models.Config
         /// Default <c>0 3 * * *</c> — daily at 03:00 UTC. Keep this off-peak so
         /// the chunked delete doesn't overlap with CRL / OCSP traffic bursts.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string Schedule { get; set; } = "0 3 * * *";
 
         /// <summary>
@@ -207,6 +220,7 @@ namespace ModularCA.Shared.Models.Config
         /// writers. Default 10 000. The job loops until no rows remain or the
         /// per-cycle cancellation deadline fires.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int DeleteBatchSize { get; set; } = 10_000;
     }
 
@@ -249,6 +263,7 @@ namespace ModularCA.Shared.Models.Config
     public class IpWhitelistConfig
     {
         /// <summary>Whether IP whitelisting is enforced. Enabled by default — only private IPs can access protocol endpoints.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Enabled { get; set; } = true;
 
         /// <summary>
@@ -264,6 +279,7 @@ namespace ModularCA.Shared.Models.Config
         /// actually uses, stayed reachable from anywhere. Reachability now comes from the rules,
         /// where it can be seen and changed.
         /// </remarks>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public List<string> ExemptPaths { get; set; } = new();
     }
 
@@ -273,22 +289,29 @@ namespace ModularCA.Shared.Models.Config
     public class NetworkAuditConfig
     {
         /// <summary>Whether request audit logging is enabled.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Enabled { get; set; } = true;
 
         /// <summary>When false, only log protocol/admin endpoints. When true, log everything.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool LogAllRequests { get; set; } = false;
 
         /// <summary>Paths to exclude from logging (e.g., health checks, metrics).</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public List<string> ExcludePaths { get; set; } = new() { "/health", "/metrics" };
     }
 
     public class LoggingConfig
     {
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string MinLevel { get; set; } = "Information";
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public string FilePath { get; set; } = "logs/modularca-.log";
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public int RetentionDays { get; set; } = 30;
 
         /// <summary>Maximum log file size in megabytes before rolling to a new file. Default 100 MB.</summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public int MaxFileSizeMb { get; set; } = 100;
 
         /// <summary>
@@ -298,6 +321,7 @@ namespace ModularCA.Shared.Models.Config
         /// one-liner instead of a multi-page stack trace. Can also be set via the
         /// <c>MODULARCA_VERBOSE_ERRORS</c> environment variable.
         /// </summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public bool VerboseErrors { get; set; } = false;
 
         /// <summary>
@@ -312,6 +336,7 @@ namespace ModularCA.Shared.Models.Config
         /// whose journal is scraped into Loki, which wants <c>"Json"</c>. The file sink is
         /// always CLEF JSON regardless of this setting.
         /// </remarks>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public string? ConsoleFormat { get; set; } = "Auto";
 
         public SyslogConfig Syslog { get; set; } = new();
@@ -330,12 +355,16 @@ namespace ModularCA.Shared.Models.Config
     public class SyslogConfig
     {
         /// <summary>Target syslog relay host (IP or DNS name).</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string Host { get; set; } = string.Empty;
         /// <summary>Target syslog port. Default 514 (RFC 5424 UDP).</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public int Port { get; set; } = 514;
         /// <summary>Transport: <c>"UDP"</c> (default) or <c>"TCP"</c>.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string Protocol { get; set; } = "UDP";
         /// <summary>App-name field embedded in each RFC 5424 record. Default <c>"ModularCA"</c>.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string AppName { get; set; } = "ModularCA";
         /// <summary>
         /// RFC 5424 syslog facility label. Parsed against
@@ -346,6 +375,7 @@ namespace ModularCA.Shared.Models.Config
         /// <c>LogAlert</c>, <c>Cron2</c>, and <c>Local0</c>..<c>Local7</c>.
         /// Malformed or unknown values fall back to <c>Local0</c>.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string Facility { get; set; } = "Local0";
     }
 
@@ -358,8 +388,10 @@ namespace ModularCA.Shared.Models.Config
     public class EventLogConfig
     {
         /// <summary>Event source name registered in the Windows Event Log.</summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public string Source { get; set; } = "ModularCA";
         /// <summary>Log name to write records into. Default <c>"Application"</c>.</summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public string LogName { get; set; } = "Application";
     }
 
@@ -380,17 +412,22 @@ namespace ModularCA.Shared.Models.Config
         /// — this is the sole gate for the forwarder, there is no corresponding
         /// row in the <c>FeatureFlags</c> table.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Enabled { get; set; } = false;
         /// <summary>Target SIEM host (IP or DNS name).</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string Host { get; set; } = string.Empty;
         /// <summary>Target SIEM port. Default 5514.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int Port { get; set; } = 5514;
         /// <summary>Transport: <c>"TCP"</c> (default) or <c>"UDP"</c>.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string Protocol { get; set; } = "TCP";
     }
 
     public class HttpConfig
     {
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public int Port { get; set; } = 8080;
 
         /// <summary>
@@ -398,13 +435,16 @@ namespace ModularCA.Shared.Models.Config
         /// May differ from <see cref="Port"/> when behind a reverse proxy (e.g., proxy
         /// on 80, Kestrel on 8080). When null, falls back to <see cref="Port"/>.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int? PublicPort { get; set; }
 
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string CorsOrigins { get; set; } = "";
         /// <summary>
         /// ICF-02: Swagger UI enable flag. Default <c>false</c> — Swagger is not
         /// exposed in production unless the operator explicitly opts in.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public bool SwaggerEnabled { get; set; } = false;
 
         /// <summary>
@@ -419,6 +459,7 @@ namespace ModularCA.Shared.Models.Config
         /// X-CSRF-Token, X-Correlation-Id</c>. <c>AllowCredentials</c> is NEVER
         /// attached to this policy.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool EnableCors { get; set; } = false;
 
         /// <summary>
@@ -431,6 +472,7 @@ namespace ModularCA.Shared.Models.Config
         /// <see cref="SecurityConfig.BehindReverseProxy"/>=true falls back to
         /// loopback-only (the old RFC1918 default has been removed).
         /// </summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public string TrustedProxyCidrs { get; set; } = string.Empty;
 
         /// <summary>
@@ -461,6 +503,7 @@ namespace ModularCA.Shared.Models.Config
         /// forge the header and choose their own source address.
         /// </para>
         /// </remarks>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public int ForwardedHeaderHopLimit { get; set; } = 1;
 
         /// <summary>
@@ -475,7 +518,8 @@ namespace ModularCA.Shared.Models.Config
     /// <summary>
     /// Operator-tunable HSTS knobs. These values feed
     /// <see cref="ModularCA.API.Middleware.SecurityHeadersMiddleware"/> and
-    /// ASP.NET Core's <c>UseHsts</c> builder when the HTTPS listener is active.
+    /// <see cref="ModularCA.API.Middleware.HstsHeaderMiddleware"/>, which read them on every
+    /// HTTPS request.
     /// </summary>
     public class HstsConfig
     {
@@ -483,9 +527,11 @@ namespace ModularCA.Shared.Models.Config
         /// <c>max-age</c> in seconds. Default <c>31536000</c> (1 year). Lower to
         /// e.g. <c>86400</c> during certificate rollovers. 0 disables HSTS entirely.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int MaxAgeSeconds { get; set; } = 31536000;
 
         /// <summary>Emit <c>includeSubDomains</c>. Default <c>true</c>.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool IncludeSubDomains { get; set; } = true;
 
         /// <summary>
@@ -493,7 +539,21 @@ namespace ModularCA.Shared.Models.Config
         /// <c>true</c> only after the operator has verified they want the
         /// public hostname submitted to the HSTS preload list.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Preload { get; set; } = false;
+
+        /// <summary>
+        /// The <c>Strict-Transport-Security</c> header value these settings give, in the form
+        /// ASP.NET Core's HSTS middleware writes: <c>max-age</c> (never below 0), then
+        /// <c>includeSubDomains</c> and <c>preload</c> when set.
+        /// </summary>
+        public string HeaderValue()
+        {
+            var value = $"max-age={Math.Max(0, MaxAgeSeconds)}";
+            if (IncludeSubDomains) value += "; includeSubDomains";
+            if (Preload) value += "; preload";
+            return value;
+        }
     }
 
     /// <summary>
@@ -509,14 +569,17 @@ namespace ModularCA.Shared.Models.Config
         /// refreshes the lease on every poll cycle. A non-leader process checks the lease
         /// and skips the cycle. Default 60s — long enough to survive one missed poll.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int LeaseTtlSeconds { get; set; } = 60;
 
         /// <summary>
         /// Startup missed-run behaviour. <c>SkipMissed</c> ignores
         /// all past-due cron occurrences. <c>RunOnce</c> (default) runs one catch-up
         /// per job whose <c>NextRunUtc</c> is in the past. <c>RunAll</c> emulates
-        /// the legacy "run every cron-gated job on first boot" behaviour.
+        /// the legacy "run every cron-gated job on first boot" behaviour. Each job reads it
+        /// on the tick it finds no earlier run of its own.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string MissedRunPolicy { get; set; } = "RunOnce";
 
         /// <summary>
@@ -531,6 +594,7 @@ namespace ModularCA.Shared.Models.Config
         /// are thread-safe so existing call-sites compile unchanged.
         /// </para>
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public ConcurrentDictionary<string, int> JobTimeouts { get; set; } = new(new Dictionary<string, int>
         {
             ["LdapGroupSync"] = 120,
@@ -542,17 +606,20 @@ namespace ModularCA.Shared.Models.Config
             ["CertExpire"] = 120,
             ["AcmeCleanup"] = 120,
             ["ProtocolCleanup"] = 120,
+            ["SshLoginNameSweep"] = 120,
             ["CertExpiryNotification"] = 120,
             ["TlsRenewal"] = 300,
         });
 
         /// <summary>Fallback timeout in seconds for any job not present in <see cref="JobTimeouts"/>.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int DefaultJobTimeoutSeconds { get; set; } = 120;
 
         /// <summary>
         /// Number of consecutive failures before the scheduler escalates
         /// the <c>SchedulerJobFailed</c> alert from Warning to Critical. Default 3.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int ConsecutiveFailureAlertThreshold { get; set; } = 3;
     }
 
@@ -565,13 +632,17 @@ namespace ModularCA.Shared.Models.Config
         /// </summary>
         public const int MaxRefreshTokenDays = 30;
 
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int RefreshTokenDays { get; set; } = 7;
     }
 
     public class LdapAuthConfig
     {
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Enabled { get; set; } = false;
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string Host { get; set; } = string.Empty;
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int Port { get; set; } = 389;
         /// <summary>
         /// Whether to connect over LDAPS. Defaults to true: the bind is a simple bind, which sends
@@ -579,10 +650,15 @@ namespace ModularCA.Shared.Models.Config
         /// there is no StartTLS path. A deployment that must use plaintext sets this explicitly
         /// and gets the startup warning.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool UseSsl { get; set; } = true;
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string SearchBaseDn { get; set; } = string.Empty;
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string SearchFilter { get; set; } = "(&(objectClass=user)(sAMAccountName={0}))";
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string? BindDn { get; set; }
+        [Setting(SettingClass.Secret, SettingReload.Live, Secret = SettingSecretKind.Wrapped)]
         public string? BindPassword { get; set; }
 
         /// <summary>
@@ -592,18 +668,25 @@ namespace ModularCA.Shared.Models.Config
         /// is safe; default is loose because LDAP membership rarely changes more than once
         /// per business hour in practice.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string GroupSyncSchedule { get; set; } = "*/10 * * * *";
 
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool GroupSyncEnabled { get; set; } = false;
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool AutoProvisionUsers { get; set; } = false;
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string GroupSearchBaseDn { get; set; } = string.Empty;
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string GroupSearchFilter { get; set; } = "(&(objectClass=group)(member={0}))";
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string GroupMemberAttribute { get; set; } = "memberOf";
         /// <summary>
         /// JSON dict mapping LDAP group DNs to CaGroup names.
         /// Example: {"CN=CA-Admins,DC=example,DC=com": "my-ca-admin", "CN=Auditors,DC=example,DC=com": "system-auditor"}
         /// A pre-0.4.0 <c>org-&lt;slug&gt;-*</c> target resolves, with a warning, to its renamed <c>space-&lt;slug&gt;-*</c> group.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string? GroupToRoleMappings { get; set; }
 
         /// <summary>
@@ -611,6 +694,7 @@ namespace ModularCA.Shared.Models.Config
         /// Defaults to true, matching <see cref="UseSsl"/>; a configuration that enables LDAP
         /// with UseSsl off must also set this false, deliberately.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool RequireTls { get; set; } = true;
     }
 
@@ -629,15 +713,19 @@ namespace ModularCA.Shared.Models.Config
         /// IP to match exactly on every request. <c>Subnet24</c> allows clients to
         /// move within a /24 (IPv4) or /64 (IPv6) — friendly for mobile NAT reroutes.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public JwtIpBindingMode BindJwtToIp { get; set; } = JwtIpBindingMode.Off;
 
         /// <summary>Whether to reject refresh token usage from a different IP than where it was issued.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool BindRefreshTokenToIp { get; set; } = true;
 
         /// <summary>Whether to reject refresh token usage from a different User-Agent than where it was issued.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool BindRefreshTokenToFingerprint { get; set; } = true;
 
         /// <summary>When true, log IP/fingerprint mismatches but allow the refresh (forensic mode).</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool AllowRefreshTokenMismatch { get; set; } = false;
 
         /// <summary>
@@ -647,6 +735,7 @@ namespace ModularCA.Shared.Models.Config
         /// but allow the refresh (rebinding to the presented key), so the binding can be validated in
         /// production before enforcement is switched on. The theft defense is only active once enforced.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool EnforceRefreshTokenPoP { get; set; } = false;
 
         /// <summary>
@@ -655,11 +744,13 @@ namespace ModularCA.Shared.Models.Config
         /// normalized username within the configured window. Complements per-IP limiting
         /// so botnet stuffing with many IPs against one account gets caught. Default 20.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int MaxPerUsernameLoginFailures { get; set; } = 20;
 
         /// <summary>
         /// Window in minutes for the per-username failure bucket.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int PerUsernameLoginFailureWindowMinutes { get; set; } = 30;
 
         /// <summary>
@@ -670,6 +761,7 @@ namespace ModularCA.Shared.Models.Config
         /// Set this to true in reverse-proxy topologies after you've narrowed
         /// <see cref="HttpConfig.TrustedProxyCidrs"/> to the actual proxy subnet.
         /// </summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public bool BehindReverseProxy { get; set; } = false;
     }
 
@@ -704,11 +796,17 @@ namespace ModularCA.Shared.Models.Config
         /// via the standard CSR pipeline, then transitions to <c>SelfIssued</c></item>
         /// </list>
         /// </summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public string Mode { get; set; } = "SelfIssued";
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public string ListenAddress { get; set; } = "0.0.0.0";
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public string CertificatePath { get; set; } = string.Empty;
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public string CertificatePassword { get; set; } = string.Empty;
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public int Port { get; set; } = 8443;
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string RenewalWindow { get; set; } = "P30D";
 
         /// <summary>
@@ -717,21 +815,27 @@ namespace ModularCA.Shared.Models.Config
         /// when the cert is within <see cref="RenewalWindow"/> of expiry, so the cron is
         /// just a wake-up cadence; setting it tighter doesn't shorten the renewal window.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string RenewalCheckSchedule { get; set; } = "0 5 * * *";
 
         /// <summary>Subject DN for the pending web TLS cert. Set during bootstrap, consumed by Stage 2.</summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public string? PendingSubjectDn { get; set; }
 
         /// <summary>SAN list for the pending web TLS cert (e.g. "DNS:example.com", "IP:10.0.0.1"). Set during bootstrap.</summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public List<string>? PendingSans { get; set; }
 
         /// <summary>Validity in days for the pending web TLS cert. Defaults to 365.</summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public int? PendingValidityDays { get; set; }
 
         /// <summary>Key algorithm for the pending web TLS cert (e.g., ECDSA, RSA). Defaults to ECDSA.</summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public string? PendingKeyAlgorithm { get; set; }
 
         /// <summary>Key size for the pending web TLS cert (e.g., 256, 2048). Defaults to 256.</summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public int? PendingKeySize { get; set; }
 
         /// <summary>
@@ -739,11 +843,13 @@ namespace ModularCA.Shared.Models.Config
         /// ACME directory endpoints, and JWS URL binding. Must be a bare hostname or IP — no
         /// scheme, no port, no trailing slash. Example: <c>ca.example.com</c>.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string PublicDomain { get; set; } = string.Empty;
 
         /// <summary>
         /// Public HTTPS port. When null or 443 the port is omitted from built URLs.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public int? PublicPort { get; set; }
 
         /// <summary>
@@ -787,35 +893,46 @@ namespace ModularCA.Shared.Models.Config
 
     public class EmailConfig
     {
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Enabled { get; set; } = false;
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string SmtpHost { get; set; } = string.Empty;
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int SmtpPort { get; set; } = 587;
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool UseTls { get; set; } = true;
 
         /// <summary>
         /// Authentication method: "Password" (default), "OAuth2Token", or "OAuth2ClientCredentials".
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string AuthMethod { get; set; } = "Password";
 
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string Username { get; set; } = string.Empty;
+        [Setting(SettingClass.Secret, SettingReload.Live, Secret = SettingSecretKind.Wrapped)]
         public string Password { get; set; } = string.Empty;
 
         /// <summary>
         /// Pre-obtained OAuth2 access token. Used when AuthMethod = "OAuth2Token".
         /// </summary>
+        [Setting(SettingClass.Secret, SettingReload.Live, Secret = SettingSecretKind.Wrapped)]
         public string OAuth2AccessToken { get; set; } = string.Empty;
 
         /// <summary>
         /// OAuth2 client credentials for automatic token acquisition.
         /// Used when AuthMethod = "OAuth2ClientCredentials".
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string OAuth2ClientId { get; set; } = string.Empty;
+        [Setting(SettingClass.Secret, SettingReload.Live, Secret = SettingSecretKind.Wrapped)]
         public string OAuth2ClientSecret { get; set; } = string.Empty;
 
         /// <summary>
         /// OAuth2 token endpoint URL. For Microsoft 365: https://login.microsoftonline.com/{space}/oauth2/v2.0/token
         /// For Google: https://oauth2.googleapis.com/token
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string OAuth2TokenUrl { get; set; } = string.Empty;
 
         /// <summary>
@@ -823,10 +940,14 @@ namespace ModularCA.Shared.Models.Config
         /// Microsoft 365: "https://outlook.office365.com/.default"
         /// Google: "https://mail.google.com/"
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string OAuth2Scopes { get; set; } = string.Empty;
 
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string FromAddress { get; set; } = string.Empty;
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string FromName { get; set; } = "ModularCA";
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string AdminRecipients { get; set; } = string.Empty;
     }
 
@@ -838,6 +959,7 @@ namespace ModularCA.Shared.Models.Config
 
     public class DbInstance
     {
+        [Setting(SettingClass.Bootstrap, SettingReload.Restart)]
         public string Host { get; set; } = "localhost";
 
         /// <summary>
@@ -845,7 +967,9 @@ namespace ModularCA.Shared.Models.Config
         /// taken as evidence that it was written for MariaDB and is refused at startup by
         /// <see cref="ModularCA.Shared.Utils.LegacyDatabaseGuard"/>.
         /// </summary>
+        [Setting(SettingClass.Bootstrap, SettingReload.Restart)]
         public int Port { get; set; } = 5432;
+        [Setting(SettingClass.Bootstrap, SettingReload.Restart)]
         public string Username { get; set; } = string.Empty;
         /// <summary>
         /// The account password. Always written double-quoted: a generated password is
@@ -855,7 +979,9 @@ namespace ModularCA.Shared.Models.Config
         /// refused with no indication that the file is the reason.
         /// </summary>
         [YamlMember(ScalarStyle = ScalarStyle.DoubleQuoted)]
+        [Setting(SettingClass.Bootstrap, SettingReload.Restart)]
         public string Password { get; set; } = string.Empty;
+        [Setting(SettingClass.Bootstrap, SettingReload.Restart)]
         public string Database { get; set; } = string.Empty;
 
         /// <summary>
@@ -876,11 +1002,13 @@ namespace ModularCA.Shared.Models.Config
         /// <c>SslMode.Require</c> rather than to anything weaker.
         /// </para>
         /// </summary>
+        [Setting(SettingClass.Bootstrap, SettingReload.Restart)]
         public string SslMode { get; set; } = "Require";
     }
 
     public class JwtConfig
     {
+        [Setting(SettingClass.Secret, SettingReload.Restart, Secret = SettingSecretKind.Wrapped)]
         public string Secret { get; set; } = string.Empty;
 
         /// <summary>
@@ -889,9 +1017,12 @@ namespace ModularCA.Shared.Models.Config
         /// disable/lock/password-reset before the <c>stamp</c>/<c>ghash</c> claim validation
         /// kicks in. Refresh-token rotation handles session extension.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int ExpirationMinutes { get; set; } = 15;
 
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string Issuer { get; set; } = "ModularCA";
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string Audience { get; set; } = "ModularCA-API";
     }
 
@@ -905,6 +1036,7 @@ namespace ModularCA.Shared.Models.Config
     public class MetricsConfig
     {
         /// <summary>HTTP route the metrics endpoint is mapped to. Default <c>/metrics</c>.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string Path { get; set; } = "/metrics";
     }
 
@@ -914,15 +1046,19 @@ namespace ModularCA.Shared.Models.Config
     public class WebhookConfig
     {
         /// <summary>Whether webhook notifications are enabled.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Enabled { get; set; } = false;
 
         /// <summary>List of webhook endpoints to deliver events to.</summary>
+        [Setting(SettingClass.Secret, SettingReload.Live, Secret = SettingSecretKind.Wrapped)]
         public List<WebhookEndpoint> Endpoints { get; set; } = new();
 
         /// <summary>Maximum number of retry attempts for failed webhook deliveries.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int MaxRetries { get; set; } = 3;
 
         /// <summary>Base delay in seconds between retries. Actual delay uses exponential backoff.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int RetryDelaySeconds { get; set; } = 5;
     }
 
@@ -939,15 +1075,6 @@ namespace ModularCA.Shared.Models.Config
 
         /// <summary>List of event types this endpoint subscribes to. An empty list means all events.</summary>
         public List<string> Events { get; set; } = new();
-    }
-
-    /// <summary>
-    /// SSH CA configuration. SSH CA is always available — no feature flag needed.
-    /// </summary>
-    public class SshCaConfig
-    {
-        public string SshKeygenPath { get; set; } = "ssh-keygen";
-        public string KeyStoragePath { get; set; } = "config/ssh-ca-keys";
     }
 
     /// <summary>
@@ -973,6 +1100,7 @@ namespace ModularCA.Shared.Models.Config
         /// certificate it has no way to validate.
         /// </para>
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public bool Enabled { get; set; } = false;
 
         /// <summary>
@@ -982,6 +1110,7 @@ namespace ModularCA.Shared.Models.Config
         /// JWT-authenticated request. Only useful behind a reverse proxy that requires a
         /// client cert on the frontend and forwards the verified cert to this app.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public List<string> RequiredPaths { get; set; } = new();
 
         /// <summary>
@@ -1000,6 +1129,7 @@ namespace ModularCA.Shared.Models.Config
         /// as an empty list.
         /// </para>
         /// </summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public List<string> TrustedCaCertPaths { get; set; } = new();
 
         /// <summary>
@@ -1011,6 +1141,7 @@ namespace ModularCA.Shared.Models.Config
         /// server-auth handshake with no cert prompt. Requires DNS pointing the
         /// subdomain to this server and the Web TLS cert SAN covering both hostnames.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string AuthSubdomain { get; set; } = string.Empty;
     }
 
@@ -1055,6 +1186,7 @@ namespace ModularCA.Shared.Models.Config
         /// this rather than leaving it to be discovered by a client.
         /// </para>
         /// </remarks>
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string AuthSubdomain { get; set; } = string.Empty;
 
         /// <summary>
@@ -1069,6 +1201,7 @@ namespace ModularCA.Shared.Models.Config
         /// refresh runs off the handshake path, so a stale-but-present set answers the connection
         /// and the next one sees the new anchors.
         /// </remarks>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int TrustAnchorRefreshSeconds { get; set; } = 60;
     }
 
@@ -1080,6 +1213,7 @@ namespace ModularCA.Shared.Models.Config
     public class ProtocolCleanupConfig
     {
         /// <summary>Cron expression for the sweep. Default every 15 minutes.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string Schedule { get; set; } = "*/15 * * * *";
 
         /// <summary>
@@ -1087,7 +1221,21 @@ namespace ModularCA.Shared.Models.Config
         /// in seconds; the window exists so a request still being issued is never touched.
         /// Default 60 minutes.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int OrphanRequestGraceMinutes { get; set; } = 60;
+    }
+
+    /// <summary>
+    /// Settings for the SSH login name sweep, which revokes the live SSH certificates whose user
+    /// is not active, was deleted or renamed, or may no longer request from the SSH CA, and
+    /// those that carry a login name their subject no longer holds. It is the backstop for the
+    /// revocation that normally follows such a change at once.
+    /// </summary>
+    public class SshLoginNameSweepConfig
+    {
+        /// <summary>Cron expression for the sweep. Default every 15 minutes.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        public string Schedule { get; set; } = "*/15 * * * *";
     }
 
     public class AcmeConfig
@@ -1099,12 +1247,14 @@ namespace ModularCA.Shared.Models.Config
         /// something stale to clean, so a tighter cadence is safe; default is loose because
         /// the scheduler poll loop already wakes every 30s.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string CleanupSchedule { get; set; } = "*/5 * * * *";
 
         /// <summary>
         /// When true, new ACME account registrations must include a valid externalAccountBinding
         /// field signed with a pre-shared HMAC key (RFC 8555 section 7.3.4).
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool ExternalAccountRequired { get; set; } = false;
 
         /// <summary>
@@ -1121,6 +1271,7 @@ namespace ModularCA.Shared.Models.Config
         /// they see terms to agree to, so registration failed with "Must agree to terms of
         /// service." and no way to comply.
         /// </remarks>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string TermsOfServiceUrl { get; set; } = string.Empty;
 
         /// <summary>
@@ -1134,6 +1285,7 @@ namespace ModularCA.Shared.Models.Config
             string.IsNullOrWhiteSpace(TermsOfServiceUrl) ? null : TermsOfServiceUrl.Trim();
 
         /// <summary>Whether to enforce CAA DNS record checking before ACME certificate issuance.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool EnforceCaa { get; set; } = false;
 
         /// <summary>
@@ -1141,6 +1293,7 @@ namespace ModularCA.Shared.Models.Config
         /// RFC 8555 operational guidance. Clamped to [60, 900] at runtime; values
         /// outside that range fall back to 300.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int NonceLifetimeSeconds { get; set; } = 300;
 
         /// <summary>
@@ -1152,12 +1305,14 @@ namespace ModularCA.Shared.Models.Config
         /// Max time in minutes a challenge is allowed to stay in
         /// <c>Processing</c> before the cleanup job reclaims it. Default 10.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int ChallengeProcessingTimeoutMinutes { get; set; } = 10;
 
         /// <summary>
         /// Max automatic retry attempts for a stuck challenge
         /// before it is transitioned to <c>Invalid</c>. Default 3.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int ChallengeMaxAttempts { get; set; } = 3;
     }
 
@@ -1171,9 +1326,11 @@ namespace ModularCA.Shared.Models.Config
     public class AcmeHttp01Config
     {
         /// <summary>Maximum number of resolved A/AAAA addresses the validator contacts per challenge (default 4).</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int MaxAddresses { get; set; } = 4;
 
         /// <summary>Per-request timeout in seconds for the http-01 fetch. Default 10.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int TimeoutSeconds { get; set; } = 10;
     }
 
@@ -1197,21 +1354,27 @@ namespace ModularCA.Shared.Models.Config
         /// (both default <c>true</c>). Defaults to <c>true</c> so existing
         /// deployments that predate this field keep running daily backups.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Enabled { get; set; } = true;
 
         /// <summary>Directory where backup archives are stored. Relative paths resolve from the application base directory.</summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Live)]
         public string OutputPath { get; set; } = "backups";
 
         /// <summary>Maximum number of backup archives to retain. Older backups are deleted when this limit is exceeded.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int RetentionCount { get; set; } = 10;
 
         /// <summary>Cron expression for the automatic backup schedule. Default is daily at 2 AM UTC.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string Schedule { get; set; } = "0 2 * * *";
 
         /// <summary>Maximum age in days before a missing-backup alert is raised. Default is 7 days.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int MaxBackupAgeDays { get; set; } = 7;
 
         /// <summary>Whether to run automatic backup verification on the scheduler cycle.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool VerifyOnSchedule { get; set; } = true;
 
         /// <summary>
@@ -1221,6 +1384,7 @@ namespace ModularCA.Shared.Models.Config
         /// just verification passes. Flip to <c>false</c> to keep verification-only
         /// behaviour (e.g. when an external backup tool owns archive creation).
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool CreateOnSchedule { get; set; } = true;
 
         /// <summary>
@@ -1228,21 +1392,25 @@ namespace ModularCA.Shared.Models.Config
         /// Defaults to 3 so the scheduler catches corruption in the prior archive even if
         /// the latest one is intact. Set to 1 to preserve legacy "latest only" behaviour.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int VerifyCount { get; set; } = 3;
 
         /// <summary>Path to the backup encryption key file. Generated during bootstrap.</summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Live)]
         public string EncryptionKeyPath { get; set; } = "config/backup.key";
 
         /// <summary>
         /// Backup encryption mode. <c>RandomKey</c> (default): uses a random 32-byte key at <see cref="EncryptionKeyPath"/>.
         /// <c>StoredPassword</c>: uses a scrypt-derived KEK at <see cref="PasswordFilePath"/>, enabling password-only disaster recovery.
         /// </summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Live)]
         public string EncryptionMode { get; set; } = "RandomKey";
 
         /// <summary>
         /// Path to the password-derived KEK file used in StoredPassword mode. Generated when an admin sets a backup
         /// password via the admin API/UI. Contains scrypt params + derived KEK, not the password itself.
         /// </summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Live)]
         public string PasswordFilePath { get; set; } = "config/backup-password.key";
 
         /// <summary>
@@ -1252,12 +1420,14 @@ namespace ModularCA.Shared.Models.Config
         /// calls that would otherwise purge weeks of legitimate backups in seconds. Default is
         /// 3 days; set to 0 to disable the floor.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int MinimumRetentionDays { get; set; } = 3;
 
         /// <summary>
         /// How long one <c>pg_dump</c> or <c>pg_restore</c> run may take before a backup or a
         /// restore gives up on it, in minutes. Default 60; values below 1 are read as 1.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int DatabaseTimeoutMinutes { get; set; } = 60;
     }
 
@@ -1281,9 +1451,11 @@ namespace ModularCA.Shared.Models.Config
     public class WebAuthnConfig
     {
         /// <summary>Whether WebAuthn 2FA is enabled globally.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public bool Enabled { get; set; } = true;
 
         /// <summary>Human-readable relying party name shown to users during registration.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public string RelyingPartyName { get; set; } = "ModularCA";
 
         /// <summary>
@@ -1292,6 +1464,7 @@ namespace ModularCA.Shared.Models.Config
         /// or specific <see cref="ModularCA.Shared.Entities.CaGroupEntity.Name"/> values
         /// (e.g., "system-admin", "my-ca-operator"). An empty list means WebAuthn is optional for all users.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public List<string> EnforceForGroups { get; set; } = new();
     }
 
@@ -1301,12 +1474,15 @@ namespace ModularCA.Shared.Models.Config
     public class AlertConfig
     {
         /// <summary>Whether security alerting is enabled.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Enabled { get; set; } = true;
 
         /// <summary>Minimum severity to trigger alerts: Critical, Warning, or Info.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string MinimumSeverity { get; set; } = "Warning";
 
         /// <summary>Cooldown in minutes between duplicate alerts of the same event type to prevent alert fatigue.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int CooldownMinutes { get; set; } = 5;
     }
 
@@ -1316,12 +1492,15 @@ namespace ModularCA.Shared.Models.Config
     public class CertExpiryNotificationConfig
     {
         /// <summary>Whether expiry notifications are enabled.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Enabled { get; set; } = true;
 
         /// <summary>Days before expiry to send warnings. Checked in order — first match triggers.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public List<int> WarningDaysBeforeExpiry { get; set; } = new() { 90, 60, 30, 14, 7, 3, 1 };
 
         /// <summary>Cron expression for how often to check. Default: daily at 6 AM UTC.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string Schedule { get; set; } = "0 6 * * *";
     }
 
@@ -1332,15 +1511,19 @@ namespace ModularCA.Shared.Models.Config
     public class ComplianceScanConfig
     {
         /// <summary>Whether the compliance scanner is enabled.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Enabled { get; set; } = true;
 
         /// <summary>Cron expression for the scan schedule. Default: daily at 3 AM UTC.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string Schedule { get; set; } = "0 3 * * *";
 
         /// <summary>Minimum acceptable RSA key size in bits. Keys smaller than this are flagged as weak.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int MinRsaKeySize { get; set; } = 2048;
 
         /// <summary>Signature algorithms considered deprecated. Certificates using these are flagged.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public List<string> DeprecatedAlgorithms { get; set; } = new() { "SHA1WithRSA", "MD5WithRSA" };
 
         /// <summary>
@@ -1353,12 +1536,14 @@ namespace ModularCA.Shared.Models.Config
         /// space may legitimately issue past a compliance baseline it is not claiming to meet.
         /// Default tracks the CA/Browser Forum baseline at 825 days.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int WarnOverValidityDays { get; set; } = 825;
 
         /// <summary>
         /// Days before expiry within which a certificate is flagged as
         /// "expiring soon" by the compliance scan job. Previously hardcoded to 30.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int ExpiringWithinDays { get; set; } = 30;
     }
 
@@ -1370,9 +1555,11 @@ namespace ModularCA.Shared.Models.Config
     public class CertPolicyConfig
     {
         /// <summary>Whether the certificate policy engine is enabled.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Enabled { get; set; } = true;
 
         /// <summary>Minimum acceptable RSA key size in bits. Keys smaller than this block issuance.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int MinRsaKeySize { get; set; } = 2048;
 
         // MaxValidityDays used to live here, defaulting to 825 and blocking every leaf in the
@@ -1384,9 +1571,11 @@ namespace ModularCA.Shared.Models.Config
         // failing the load — but it is also no longer honoured, which is the point.
 
         /// <summary>Signature algorithms that are forbidden. Certificates using these are blocked at issuance.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public List<string> ForbiddenAlgorithms { get; set; } = new() { "SHA1WithRSA", "MD5WithRSA" };
 
         /// <summary>Whether Subject Alternative Names are required on all issued certificates.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool RequireSans { get; set; } = true;
 
         /// <summary>
@@ -1396,6 +1585,7 @@ namespace ModularCA.Shared.Models.Config
         /// algorithms are unaffected. When "PSS", BouncyCastle uses SHA-{n}withRSAandMGF1
         /// signers (RSASSA-PSS with MGF1 and matching hash).
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string RsaSignaturePadding { get; set; } = "PSS";
 
         /// <summary>
@@ -1403,6 +1593,7 @@ namespace ModularCA.Shared.Models.Config
         /// After the specified date the algorithm is forbidden. For example,
         /// "RSA-2048:2030-01-01" means RSA-2048 keys are forbidden after 1 Jan 2030.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public List<string> AlgorithmSunsetRules { get; set; } = new();
 
         /// <summary>
@@ -1412,6 +1603,7 @@ namespace ModularCA.Shared.Models.Config
         /// emitted an <c>ExpiredCertificatesRevoked</c> audit row every 30 seconds while
         /// any expired cert was sitting on disk.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string ExpireCheckSchedule { get; set; } = "0 1 * * *";
     }
 
@@ -1423,18 +1615,22 @@ namespace ModularCA.Shared.Models.Config
     public class AutoRenewalConfig
     {
         /// <summary>Whether the automatic renewal engine is enabled.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Enabled { get; set; } = false;
 
         /// <summary>Cron expression for the renewal schedule. Default: daily at 4 AM UTC.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string Schedule { get; set; } = "0 4 * * *";
 
         /// <summary>Number of days before expiry to trigger automatic renewal.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int RenewDaysBeforeExpiry { get; set; } = 30;
 
         /// <summary>
         /// When true, renewal requests are auto-issued without admin approval
         /// (unless the associated request profile explicitly requires approval).
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool AutoApprove { get; set; } = true;
 
         /// <summary>
@@ -1445,6 +1641,7 @@ namespace ModularCA.Shared.Models.Config
         /// preserve the legacy "same key, new cert" behaviour for compatibility with
         /// devices that cannot rotate keys.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool RequireKeyRotation { get; set; } = true;
     }
 
@@ -1455,12 +1652,14 @@ namespace ModularCA.Shared.Models.Config
     public class IntegrationApiConfig
     {
         /// <summary>Whether the integration API endpoints are enabled.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Enabled { get; set; } = false;
 
         /// <summary>
         /// Shared secret API key that clients must present in the X-API-Key header.
         /// Must be a strong, randomly generated value in production.
         /// </summary>
+        [Setting(SettingClass.Secret, SettingReload.Live, Secret = SettingSecretKind.Hashed)]
         public string ApiKey { get; set; } = string.Empty;
 
         /// <summary>
@@ -1469,6 +1668,7 @@ namespace ModularCA.Shared.Models.Config
         /// unset (the default) grants every CA. Requests targeting a CA outside the scope are
         /// rejected with 403. Any other value matches no CA. Read through <see cref="SpaceScope"/>.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string? SpaceId { get; set; }
 
         /// <summary>The parsed <see cref="SpaceId"/>.</summary>
@@ -1482,12 +1682,15 @@ namespace ModularCA.Shared.Models.Config
     public class PolicySyncConfig
     {
         /// <summary>Whether policy sync is enabled.</summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public bool Enabled { get; set; } = false;
 
         /// <summary>Directory path containing YAML policy files. Relative paths resolve from the application base directory.</summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public string PolicyDirectory { get; set; } = "config/policies";
 
         /// <summary>Whether to automatically sync policies from the directory on application startup.</summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public bool SyncOnStartup { get; set; } = false;
     }
 
@@ -1499,22 +1702,26 @@ namespace ModularCA.Shared.Models.Config
     public class CertManagerConfig
     {
         /// <summary>Whether the cert-manager integration endpoints are enabled.</summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public bool Enabled { get; set; } = false;
 
         /// <summary>
         /// Shared secret API key that cert-manager must present in the <c>X-API-Key</c> header.
         /// Must be a strong, randomly generated value in production.
         /// </summary>
+        [Setting(SettingClass.Secret, SettingReload.Live, Secret = SettingSecretKind.Hashed)]
         public string ApiKey { get; set; } = string.Empty;
 
         /// <summary>
         /// Default certificate profile ID used when the signing request does not specify one.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public Guid? DefaultCertProfileId { get; set; }
 
         /// <summary>
         /// Default signing profile ID that determines which CA signs the certificates.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public Guid? DefaultSigningProfileId { get; set; }
 
         /// <summary>
@@ -1524,6 +1731,7 @@ namespace ModularCA.Shared.Models.Config
         /// CA outside the scope, or to no CA, are rejected with 403. Any other value matches no
         /// CA. Read through <see cref="SpaceScope"/>.
         /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string? SpaceId { get; set; }
 
         /// <summary>The parsed <see cref="SpaceId"/>.</summary>
@@ -1539,12 +1747,15 @@ namespace ModularCA.Shared.Models.Config
     public class RedisConfig
     {
         /// <summary>Whether Redis is used as the distributed cache and Data Protection backend.</summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public bool Enabled { get; set; } = false;
 
         /// <summary>StackExchange.Redis connection string (e.g. "redis:6379,password=secret").</summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public string ConnectionString { get; set; } = "localhost:6379";
 
         /// <summary>Key prefix for all cache entries. Prevents collisions in shared Redis instances.</summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public string? InstanceName { get; set; } = "ModularCA:";
     }
 }

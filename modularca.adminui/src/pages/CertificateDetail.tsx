@@ -3,7 +3,7 @@ import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { Link, useParams, useNavigate } from 'react-router-dom';
-import { apiGet, apiPostWithMfa, apiBlob } from '../api/client';
+import { apiGet, apiPost, apiDelete, apiPostWithMfa, apiBlob } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -15,7 +15,7 @@ import { StepUpOps } from '@shared/generated';
 import { FieldHint } from '@shared/components/forms';
 import { type CeremonyRefusal, readCeremonyRefusal } from './ceremonyRefusal';
 import { CeremonyRefusalNotice } from '../components/CeremonyRefusalNotice';
-import { canReissue, capitalize, channelNote, expiryPhrase, expiryState, lifecycleTone, toneBannerClass, toneTextClass } from './certLifecycle';
+import { canReissue, capitalize, channelNote, expiryHandling, expiryHandlingNote, expiryPhrase, expiryState, lifecycleTone, toneBannerClass, toneTextClass } from './certLifecycle';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -112,6 +112,12 @@ const CertificateDetail: React.FC = () => {
 
     const [reissueOpen, setReissueOpen] = useState(false);
 
+    // Retire (no renewal from this certificate) and dismiss (no expiry warning); either can be undone.
+    const [retireOpen, setRetireOpen] = useState(false);
+    const [retireReason, setRetireReason] = useState('');
+    const [handlingBusy, setHandlingBusy] = useState(false);
+    const [handlingError, setHandlingError] = useState<NoticeInput | null>(null);
+
     // Per-certificate ACL (supplementary grants on top of RBAC).
     const [acl, setAcl] = useState<{ entries: any[]; requestorUserId: string | null; rbac?: any } | null>(null);
     const [aclLoading, setAclLoading] = useState(false);
@@ -196,6 +202,29 @@ const CertificateDetail: React.FC = () => {
     };
     const handleCopySerial = () => navigator.clipboard.writeText(cert?.serialNumber || '').then(() => showToast('success', 'Serial copied')).catch(() => {});
 
+    const changeExpiryHandling = async (call: () => Promise<unknown>, done: string) => {
+        setHandlingBusy(true); setHandlingError(null);
+        try {
+            await call();
+            showToast('success', done);
+            setRetireOpen(false);
+            setRefresh((r) => r + 1);
+        } catch (err: any) {
+            setHandlingError(errorNotice(err, 'The change was not saved'));
+        } finally {
+            setHandlingBusy(false);
+        }
+    };
+    const retire = () => changeExpiryHandling(
+        () => apiPost(`/api/v1/admin/certificates/${serial}/retire`, { reason: retireReason.trim() || null }),
+        'Certificate retired. It is no longer renewed and raises no expiry warning.');
+    const undoRetire = () => changeExpiryHandling(
+        () => apiDelete(`/api/v1/admin/certificates/${serial}/retire`), 'Retirement undone. The certificate can be renewed again.');
+    const dismissWarning = () => changeExpiryHandling(
+        () => apiPost(`/api/v1/admin/certificates/${serial}/expiry-warning/dismiss`, {}), 'Expiry warning dismissed.');
+    const restoreWarning = () => changeExpiryHandling(
+        () => apiDelete(`/api/v1/admin/certificates/${serial}/expiry-warning/dismiss`), 'Expiry warning restored.');
+
     const handleRevokeConfirm = async () => {
         if (!cert) return;
         setRevokeLoading(true); setRevokeError(null); setRevokeRefusal(null);
@@ -247,7 +276,9 @@ const CertificateDetail: React.FC = () => {
         }
     };
     const lifecycle = expiryState(cert);
-    const lifecycleToneValue = lifecycleTone(cert.notAfter, !!cert.replaced);
+    const handling = expiryHandling(cert);
+    const handlingNote = expiryHandlingNote(cert);
+    const lifecycleToneValue = lifecycleTone(cert.notAfter, !!cert.replaced || handling !== null);
     const thumbprints = parseThumbprints(cert.thumbprints);
     const sans = parseSans(cert.subjectAlternativeNames);
     const cn = (cert.subjectDN || '').match(/CN=([^,]+)/)?.[1] || cert.serialNumber;
@@ -271,7 +302,9 @@ const CertificateDetail: React.FC = () => {
                     <button onClick={handleDownloadChain} className={actionButton}>Full Chain</button>
                     <button onClick={handleCopySerial} className={actionButton}>Copy Serial</button>
                     {/* Reissue builds a fresh request from the old subject, so an expired certificate can be replaced too; a revoked one only while it is merely on hold. */}
-                    {(status === 'active' || status === 'expired' || isOnHold) && <button onClick={() => setReissueOpen(true)} title={status === 'expired' ? 'Request a replacement with the same subject and names' : undefined} className={actionButton}>Reissue</button>}
+                    {(status === 'active' || status === 'expired' || isOnHold) && !cert.retiredAt && <button onClick={() => setReissueOpen(true)} title={status === 'expired' ? 'Request a replacement with the same subject and names' : undefined} className={actionButton}>Reissue</button>}
+                    {status !== 'revoked' && !cert.isCA && !cert.retiredAt && <button onClick={() => { setRetireReason(''); setHandlingError(null); setRetireOpen(true); }}
+                        title="Stop renewals from this certificate and its expiry warning; it stays valid until it expires" className={actionButton}>Retire</button>}
                     {status === 'active' && <button onClick={() => { setRevokeReason('Unspecified'); setRevokeError(null); setRevokeOpen(true); }} className={actionButtonDanger}>Revoke</button>}
                 </div>
             }
@@ -301,17 +334,30 @@ const CertificateDetail: React.FC = () => {
                                         : 'Replaced')
                                     : 'Not replaced'}
                             </span>
-                            {!cert.replaced && canReissue(cert) && (
-                                <button onClick={() => setReissueOpen(true)} className={`ml-auto ${actionButtonPrimary}`}>Reissue</button>
+                            {!cert.replaced && handling === null && (
+                                <div className="ml-auto flex items-center gap-2">
+                                    <button onClick={dismissWarning} disabled={handlingBusy} title="Silence this warning; the certificate can still be renewed" className={actionButton}>Dismiss warning</button>
+                                    {canReissue(cert) && <button onClick={() => setReissueOpen(true)} className={actionButtonPrimary}>Reissue</button>}
+                                </div>
                             )}
                         </div>
-                        {!cert.replaced && (
+                        {!cert.replaced && handling === null && (
                             <p className="text-xs text-ink-muted">
-                                {channelNote(cert.issuanceChannel)}
+                                {channelNote(cert.issuanceChannel)} If it is not coming back, retire it; if it renews some other way, dismiss the warning.
                             </p>
                         )}
                     </div>
                 )}
+                {handlingNote && (
+                    <div className="px-3 py-2 bg-sunken border border-line rounded-md flex items-center gap-x-3 gap-y-1 flex-wrap">
+                        <span className="text-sm text-ink">{handlingNote}</span>
+                        <span className="text-xs text-ink-muted">{formatDate(handling === 'retired' ? cert.retiredAt : cert.expiryWarningDismissedAt)}</span>
+                        <button onClick={handling === 'retired' ? undoRetire : restoreWarning} disabled={handlingBusy} className={`ml-auto ${actionButton}`}>
+                            {handling === 'retired' ? 'Undo retire' : 'Restore warning'}
+                        </button>
+                    </div>
+                )}
+                {handlingError && !retireOpen && <InlineNotice notice={handlingError} variant="line" />}
                 {isOnHold && (
                     <p className="text-xs text-ink-muted -mt-1">Certificate Hold is the one revocation reason that can be reversed. Lifting it returns the certificate to good standing on the next CRL and OCSP answer.</p>
                 )}
@@ -440,6 +486,32 @@ const CertificateDetail: React.FC = () => {
                             <div className="px-6 py-4 border-t border-line flex justify-end gap-3">
                                 <button onClick={() => setRevokeOpen(false)} disabled={revokeLoading} className="px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover transition-colors disabled:opacity-50">Cancel</button>
                                 <button onClick={handleRevokeConfirm} disabled={revokeLoading} className="px-4 py-2 text-sm bg-crit text-on-accent rounded hover:bg-crit-hover transition-colors disabled:opacity-50">{revokeLoading ? 'Revoking...' : 'Revoke'}</button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Retire modal */}
+                {retireOpen && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim" onClick={() => !handlingBusy && setRetireOpen(false)}>
+                        <div role="dialog" aria-labelledby="retire-title" className="bg-raised border border-line rounded-lg shadow-xl w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
+                            <div className="px-6 py-4 border-b border-line"><h2 id="retire-title" className="text-lg font-semibold text-ink">Retire Certificate</h2></div>
+                            <div className="px-6 py-4 space-y-4">
+                                <div className="space-y-1"><div className="text-xs text-ink-muted">Subject</div><div className="text-sm text-ink break-all">{cert.subjectDN}</div></div>
+                                <p className="text-sm text-ink">
+                                    The certificate stays valid until it expires and is not revoked. It raises no expiry warning, and nothing renews or reissues it:
+                                    not the console, not auto-renewal, not its client. Its subject needs a new enrollment. You can undo this.
+                                </p>
+                                <div className="space-y-1">
+                                    <label htmlFor="retire-reason" className="block text-xs text-ink-muted">Reason (optional)</label>
+                                    <input id="retire-reason" type="text" maxLength={500} value={retireReason} onChange={(e) => setRetireReason(e.target.value)} disabled={handlingBusy}
+                                        placeholder="e.g., host decommissioned" className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent disabled:opacity-50" />
+                                </div>
+                                {handlingError && <InlineNotice notice={handlingError} />}
+                            </div>
+                            <div className="px-6 py-4 border-t border-line flex justify-end gap-3">
+                                <button onClick={() => setRetireOpen(false)} disabled={handlingBusy} className="px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover transition-colors disabled:opacity-50">Cancel</button>
+                                <button onClick={retire} disabled={handlingBusy} className={actionButtonPrimary}>{handlingBusy ? 'Retiring…' : 'Retire'}</button>
                             </div>
                         </div>
                     </div>

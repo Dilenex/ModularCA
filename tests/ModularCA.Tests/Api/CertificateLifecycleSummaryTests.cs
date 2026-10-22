@@ -52,6 +52,13 @@ public sealed class CertificateLifecycleSummaryTests
     }
 
     [Fact]
+    public async Task A_retired_or_dismissed_certificate_needs_no_attention()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        await CertificateLifecycleScenarios.A_retired_or_dismissed_certificate_needs_no_attention(db);
+    }
+
+    [Fact]
     public void San_set_key_ignores_order_case_and_duplicates()
     {
         Assert.Equal(
@@ -273,6 +280,49 @@ internal static class CertificateLifecycleScenarios
 
         var (expiredTotal, _) = await ListAsync(controller, "expired", null, pageSize: 5);
         Assert.Equal(summary.Expired, expiredTotal);
+    }
+
+    /// <summary>
+    /// The scenario behind <c>CertificateLifecycleSummaryTests.A_retired_or_dismissed_certificate_needs_no_attention</c>,
+    /// on any provider: retiring a certificate and dismissing another's expiry warning through the
+    /// controller take both off the attention list and out of the not-replaced counts and the
+    /// <c>replaced=no</c> list; undoing either brings it back; a revoked certificate is refused.
+    /// </summary>
+    internal static async Task A_retired_or_dismissed_certificate_needs_no_attention(ModularCADbContext db)
+    {
+        var ca = SeedCa(db, "Handled");
+        var retired = Leaf(db, ca, "retired.example", -100, -2);
+        var dismissed = Leaf(db, ca, "dismissed.example", -60, 3);
+        var open = Leaf(db, ca, "open.example", -60, 5);
+        var revoked = Leaf(db, ca, "revoked.example", -60, 4, revoked: true);
+
+        var controller = NewController(db, new GroupAuthStub([], system: true));
+        Task<IActionResult> Call(string action, params object?[] args)
+            => (Task<IActionResult>)controller.GetType().GetMethod(action)!.Invoke(controller, args)!;
+
+        Assert.IsType<OkObjectResult>(await Call("RetireCertificate", retired.SerialNumber, null));
+        Assert.IsType<OkObjectResult>(await Call("DismissExpiryWarning", dismissed.SerialNumber));
+        Assert.IsType<BadRequestObjectResult>(await Call("RetireCertificate", revoked.SerialNumber, null));
+        Assert.IsType<NotFoundObjectResult>(await Call("DismissExpiryWarning", "00"));
+
+        var summary = await SummaryAsync(controller);
+        Assert.Equal(open.CertificateId, Assert.Single(summary.Attention).CertificateId);
+        Assert.Equal(0, summary.ExpiredNotReplaced);
+        Assert.Equal(1, summary.ExpiringWithin30DaysNotReplaced);
+        Assert.Equal(2, summary.ExpiringWithin30Days);
+        Assert.Equal(2, summary.RetiredOrDismissed);
+
+        var (_, notReplaced) = await ListAsync(controller, null, "no");
+        Assert.Equal(new[] { open.CertificateId, revoked.CertificateId }.Order(), notReplaced.Select(i => i.CertificateId).Order());
+        var (_, all) = await ListAsync(controller, null, null);
+        Assert.NotNull(all.Single(i => i.CertificateId == retired.CertificateId).RetiredAt);
+        Assert.Equal("operator", all.Single(i => i.CertificateId == dismissed.CertificateId).ExpiryWarningDismissedBy);
+
+        Assert.IsType<OkObjectResult>(await Call("UndoRetireCertificate", retired.SerialNumber));
+        Assert.IsType<OkObjectResult>(await Call("RestoreExpiryWarning", dismissed.SerialNumber));
+        var restored = await SummaryAsync(controller);
+        Assert.Equal(3, restored.AttentionTotal);
+        Assert.Equal(0, restored.RetiredOrDismissed);
     }
 
     private sealed class CurrentUserStub(Guid id) : ICurrentUserService

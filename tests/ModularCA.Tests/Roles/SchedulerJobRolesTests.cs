@@ -88,6 +88,7 @@ public sealed class SchedulerJobRolesTests
     [InlineData(typeof(BackupVerificationJob), "Control")]
     [InlineData(typeof(AuditRetentionJob), "Control")]
     [InlineData(typeof(TlsRenewalJob), "Control")]
+    [InlineData(typeof(SshLoginNameSweepJob), "Control")]
     public void The_decisions_hold(Type job, string owner)
     {
         Assert.Equal(owner, Owners()[job.FullName!]);

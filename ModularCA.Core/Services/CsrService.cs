@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
@@ -34,6 +35,11 @@ public class CsrService : ICsrService
         _dbContext = dbContext;
         _heldKeys = heldKeys;
     }
+
+    /// <summary>The status a request made under <paramref name="requestProfileId"/> starts in (<see cref="RequestProfileEnforcement.InitialStatusAsync"/>).</summary>
+    private Task<string> InitialStatusAsync(Guid? requestProfileId)
+        => new RequestProfileEnforcement(_dbContext, new ProfileResolutionService(_dbContext, NullLogger<ProfileResolutionService>.Instance))
+            .InitialStatusAsync(requestProfileId);
 
     /// <summary>
     /// Generates a new CSR with a fresh key pair based on the requested parameters, validates the key
@@ -149,7 +155,9 @@ public class CsrService : ICsrService
             SigningProfileId = signingProfile.Id,
             SigningProfile = signingProfile,
             RequestorUserId = user.Id,
-            RequestorUser = user
+            RequestorUser = user,
+            RequestProfileId = request.RequestProfileId,
+            Status = await InitialStatusAsync(request.RequestProfileId),
         };
 
         // The key is held on the row, wrapped, until the certificate is issued and the holder
@@ -349,11 +357,13 @@ public class CsrService : ICsrService
     /// Uploads an externally-generated PEM-encoded CSR with optional subject and SAN overrides,
     /// validates its key parameters against the signing and certificate profiles, and stores the
     /// CSR entity in the database with override metadata for use during issuance. A profile
-    /// outside the issuing CA's scope is refused.
+    /// outside the issuing CA's scope is refused. <paramref name="requestProfileId"/> is recorded
+    /// as the request profile the request was made under; the caller has checked the request
+    /// against it (<see cref="RequestProfileEnforcement"/>), and issuance checks again.
     /// </summary>
     public async Task<string> UploadCsrAsync(string pem, Guid certProfileId, Guid signingProfileId, Guid userId,
         Dictionary<string, string>? subjectOverrides, List<Shared.Models.Csr.SanOverride>? sanOverrides,
-        DateTime? requestedNotBefore = null, DateTime? requestedNotAfter = null)
+        DateTime? requestedNotBefore = null, DateTime? requestedNotAfter = null, Guid? requestProfileId = null)
     {
         // Load cert and signing profiles
         var certProfile = await _dbContext.CertProfiles.FindAsync(certProfileId);
@@ -409,7 +419,9 @@ public class CsrService : ICsrService
             RequestorUserId = user.Id,
             RequestorUser = user,
             RequestedNotBefore = requestedNotBefore,
-            RequestedNotAfter = requestedNotAfter
+            RequestedNotAfter = requestedNotAfter,
+            RequestProfileId = requestProfileId,
+            Status = await InitialStatusAsync(requestProfileId),
         };
 
         // Store overrides if provided
@@ -535,6 +547,8 @@ public class CsrService : ICsrService
     /// Returns all pending (unapproved) certificate signing requests. When
     /// <paramref name="accessibleCaIds"/> is provided, results are filtered to CSRs whose
     /// signing profile's issuer certificate belongs to one of the accessible CAs (CLM-022).
+    /// A request waiting for approval carries the approvals it needs
+    /// (<see cref="RequestApprovals.RequiredCountAsync"/>).
     /// </summary>
     public async Task<List<CertRequestDto>> GetPendingRequests(List<Guid>? accessibleCaIds = null)
     {
@@ -576,6 +590,7 @@ public class CsrService : ICsrService
             .OrderByDescending(r => r.SubmittedAt)
             .ToListAsync();
 
+        var profiles = new ProfileResolutionService(_dbContext, NullLogger<ProfileResolutionService>.Instance);
         var results = new List<CertRequestDto>();
         foreach (var pendingRequest in pendingRequests)
         {
@@ -613,6 +628,12 @@ public class CsrService : ICsrService
                 IssuedCertificateId = pendingRequest.IssuedCertificateId,
                 KeyHeld = pendingRequest.HeldPrivateKey != null,
                 HeldKeyDeliveredAt = pendingRequest.HeldKeyDeliveredAt,
+                RequestProfileId = pendingRequest.RequestProfileId,
+                ApprovalCount = pendingRequest.ApprovalCount,
+                RequiredCount = pendingRequest.Status is "PendingApproval" or "PartiallyApproved"
+                    ? await RequestApprovals.RequiredCountAsync(_dbContext, profiles, pendingRequest)
+                    : null,
+                RenewalOfCertificateId = pendingRequest.RenewalOfCertificateId,
             };
 
             results.Add(request);

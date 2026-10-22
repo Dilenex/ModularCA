@@ -130,6 +130,28 @@ public class DeploymentFileTests
         Assert.Contains("runuser -u \"$PG_OS_USER\" -- env -i", script);
     }
 
+    /// <summary>
+    /// The image build empties the tarball's <c>share/</c> into <c>/usr/share/modularca</c> and
+    /// then removes it with <c>rmdir</c>, which fails on anything left behind: every directory the
+    /// distribution script stages under <c>share/</c> has to be moved by the Containerfile.
+    /// </summary>
+    [Fact]
+    public void The_image_moves_every_directory_the_tarball_stages_under_share()
+    {
+        var staged = Regex.Matches(Read("scripts/build-linux-dist.sh"), @"mkdir -p [^\n]*")
+            .SelectMany(m => Regex.Matches(m.Value, @"\$STAGE/share/([A-Za-z0-9._-]+)"))
+            .Select(m => m.Groups[1].Value)
+            .Distinct()
+            .ToList();
+        Assert.Contains("sql", staged);
+        Assert.Contains("ssh-krl", staged);
+
+        var image = string.Join("\n", CodeLines(Read("deploy/container/Containerfile")));
+        Assert.Contains("rmdir /opt/modularca/share", image);
+        foreach (var directory in staged)
+            Assert.Contains($"mv /opt/modularca/share/{directory} /usr/share/modularca/{directory}", image);
+    }
+
     /// <summary>The non-blank, non-comment lines of a unit, trimmed.</summary>
     private static List<string> Directives(string relativePath) =>
         CodeLines(Read(relativePath)).Select(l => l.Trim()).ToList();

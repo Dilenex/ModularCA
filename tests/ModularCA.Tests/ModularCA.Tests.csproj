@@ -62,6 +62,7 @@
          under test is reachable without per-suite csproj edits. ModularCA.API is intentionally
          omitted — it's the host executable, not a library; controller tests will get a separate
          ModularCA.IntegrationTests project with WebApplicationFactory<>. -->
+    <ProjectReference Include="..\..\ModularCA.Ssh\ModularCA.Ssh.csproj" />
     <ProjectReference Include="..\..\ModularCA.Shared\ModularCA.Shared.csproj" />
     <ProjectReference Include="..\..\ModularCA.Database\ModularCA.Database.csproj" />
     <ProjectReference Include="..\..\ModularCA.Keystore\ModularCA.Keystore.csproj" />
@@ -74,6 +75,6 @@
 
   <ItemGroup>
     <None Include="Core\Services\Msae\Fixtures\*" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="Shared\Ssh\Fixtures\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Ssh\Fixtures\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

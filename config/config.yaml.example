@@ -133,10 +133,6 @@ Http:
 Tokens:
   RefreshTokenDays: 7
 
-SshCa:
-  SshKeygenPath: "ssh-keygen"
-  KeyStoragePath: "config/ssh-ca-keys"
-
 Metrics:
   Enabled: true
   Path: "/metrics"

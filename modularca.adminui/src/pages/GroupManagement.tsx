@@ -311,7 +311,7 @@ const GroupManagement: React.FC = () => {
                 loading={loading}
                 error={error}
                 empty={scopeCaId || scopeSpaceId
-                    ? `No groups in ${scopeLabel(scope)}${search || filterTemplate || filterType ? ' match these filters' : ''}. Change the scope in the sidebar to see others.`
+                    ? `No groups in ${scopeLabel(scope)}${search || filterTemplate || filterType ? ' match these filters' : ''}. Change the scope in the top bar to see others.`
                     : search || filterCa || filterTemplate || filterType ? 'No groups match these filters' : 'No groups found'}
                 columns={columns}
                 selectable

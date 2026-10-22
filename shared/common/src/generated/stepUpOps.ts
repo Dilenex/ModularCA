@@ -127,6 +127,11 @@ export const StepUpOps = {
     ManageSshTemplate: 'manage-ssh-template',
     ApproveRequest: 'approve-request',
     RejectRequest: 'reject-request',
+    CreateApiKey: 'create-api-key',
+    RevokeApiKey: 'revoke-api-key',
+    RotateJwtSecret: 'rotate-jwt-secret',
+    ManageSshLoginNames: 'manage-ssh-login-names',
+    SignSshCert: 'sign-ssh-cert',
 } as const;
 
 /** Union of every valid step-up operation string. */

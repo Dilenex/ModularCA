@@ -126,4 +126,10 @@ public enum EnrollmentRefusalReason
     /// left waiting.
     /// </summary>
     IssuanceRefusedByProfile = 23,
+
+    /// <summary>
+    /// The certificate the request renews, or presents as its credential, was retired: nothing is
+    /// renewed from it, and its subject needs a new enrollment.
+    /// </summary>
+    CertificateRetired = 24,
 }

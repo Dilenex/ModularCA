@@ -146,6 +146,23 @@ public static class TextCaseSensitivity
     public static IReadOnlyDictionary<Column, string> CaseSensitiveByDesign { get; } =
         new Dictionary<Column, string>
         {
+            [new(typeof(SettingEntity), nameof(SettingEntity.Key))] =
+                "A settings catalog key. It is written from the catalog, never typed into the "
+                + "column, and the catalog refuses two keys that differ only in case, so one "
+                + "casing is ever stored and it is looked up exactly.",
+
+            [new(typeof(SettingHistoryEntity), nameof(SettingHistoryEntity.Key))] =
+                "The settings catalog key of the row above, copied from it, under the same rule.",
+
+            [new(typeof(SettingSecretEntity), nameof(SettingSecretEntity.Key))] =
+                "A settings catalog key, as SettingEntity.Key. It is also the name the wrapped "
+                + "value is bound to, byte for byte, so it is never folded.",
+
+            [new(typeof(SshLoginNameGrantEntity), nameof(SshLoginNameGrantEntity.LoginName))] =
+                "An account name on a host, written into an SSH certificate as a principal. sshd "
+                + "matches a principal byte for byte, so Deploy and deploy are two accounts and "
+                + "a grant of one is not a grant of the other.",
+
             [new(typeof(RefreshTokenEntity), nameof(RefreshTokenEntity.Token))] =
                 "A bearer secret. Comparing it without regard to case collapses the alphabet the "
                 + "token was drawn from, which is a straight reduction in the work needed to "

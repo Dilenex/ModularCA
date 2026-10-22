@@ -371,9 +371,10 @@ public class WhitelistService : IWhitelistService
         // Relying-party surface. MUST stay below the CRL / CA / OCSP / TSA checks above:
         // those are also under /api/v1/public/, and matching them here first would strip their
         // per-protocol rules and hand every one of them whatever the Public rule says. Narrow on
-        // purpose — the portal SPA and the info endpoint its footer reads, nothing else.
+        // purpose — the portal SPA, the info endpoint its footer reads, and the bare root, which
+        // only redirects to the portal.
         if (StartsWith(path, "/public/") || Equals(path, "/public")
-            || Equals(path, "/api/v1/public/info"))
+            || Equals(path, "/api/v1/public/info") || Equals(path, "/"))
         {
             return new PathBucket(WhitelistScope.Public, null, null, false);
         }
@@ -386,7 +387,7 @@ public class WhitelistService : IWhitelistService
             return new PathBucket(WhitelistScope.Api, null, null, true);
         }
 
-        // Anything else — SPA assets, favicon, static files, root path,
+        // Anything else — SPA assets, favicon, static files,
         // uncategorized frontend routes — falls under the System scope so
         // every request is subject to the operator's ACL. The System rule is
         // seeded with RFC1918 + loopback by default; operators can relax it

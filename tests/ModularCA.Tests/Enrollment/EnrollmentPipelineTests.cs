@@ -451,6 +451,34 @@ public class EnrollmentPipelineTests
     }
 
     /// <summary>
+    /// A renewal of a retired certificate is refused, whichever protocol proved it: retiring a
+    /// certificate means its subject enrolls anew. Nothing is written but the refusal's audit row.
+    /// </summary>
+    [Fact]
+    public async Task A_renewal_of_a_retired_certificate_is_refused()
+    {
+        var h = Build();
+        var retired = new CertificateEntity
+        {
+            CertificateId = Guid.NewGuid(), SerialNumber = "01AC", SubjectDN = "CN=ws-043.lab.test",
+            NotBefore = DateTime.UtcNow.AddDays(-30), NotAfter = DateTime.UtcNow.AddDays(2), RetiredAt = DateTime.UtcNow,
+        };
+        h.Db.Certificates.Add(retired);
+        await h.Db.SaveChangesAsync();
+        var submission = Submission(h) with
+        {
+            AfterAuthorization = authorized => Task.FromResult(authorized with { Renewal = new EnrollmentRenewal(retired.CertificateId, "01AC") }),
+        };
+
+        var outcome = Assert.IsType<EnrollmentOutcome.Refused>(await h.Pipeline.SubmitAsync(submission));
+
+        Assert.Equal(EnrollmentRefusalReason.CertificateRetired, outcome.Reason);
+        Assert.Contains("01AC", outcome.Message);
+        Assert.Empty(await h.Db.CertificateRequests.ToListAsync());
+        Assert.Equal(EnrollmentRefusalReason.CertificateRetired, Assert.Single(h.Audit).Reason);
+    }
+
+    /// <summary>
     /// Issuance refusing the request on the profile's rules is a refusal only for a protocol that
     /// asked for that; for every other protocol the exception propagates, as it always has.
     /// </summary>

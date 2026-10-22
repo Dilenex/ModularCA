@@ -48,3 +48,16 @@ export const certExpiryNotificationBody = (section: { enabled?: boolean } | null
     warningDays: days.map((d) => Number(d)),
     schedule: '',
 });
+
+/** JwtIpBindingMode on the server, in its order. */
+export const JWT_IP_BINDING_MODES = ['Off', 'Exact', 'Subnet24'] as const;
+
+/**
+ * The JWT IP binding mode by name. The server sends the name and older builds sent the number;
+ * anything else reads as Off, which is the server's default.
+ */
+export function jwtIpBindingMode(value: unknown): typeof JWT_IP_BINDING_MODES[number] {
+    if (typeof value === 'number') return JWT_IP_BINDING_MODES[value] ?? 'Off';
+    const name = String(value ?? '').toLowerCase();
+    return JWT_IP_BINDING_MODES.find((mode) => mode.toLowerCase() === name) ?? 'Off';
+}

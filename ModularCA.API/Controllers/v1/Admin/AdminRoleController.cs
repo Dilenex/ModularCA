@@ -16,6 +16,9 @@ namespace ModularCA.API.Controllers.v1.Admin;
 
 /// <summary>
 /// Admin endpoints for managing roles (named bundles of capabilities) and their capability bindings.
+/// Taking a capability from a role, or deleting one, revokes through
+/// <see cref="ISshLoginNameService"/> the SSH certificates of every user who could request from
+/// an SSH CA only through that role.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/roles")]
@@ -25,12 +28,24 @@ public class AdminRoleController(
     ModularCADbContext db,
     ICurrentUserService currentUser,
     IAuditService audit,
-    IControlledUserCeremonyService controlledUserSvc) : ControllerBase
+    IControlledUserCeremonyService controlledUserSvc,
+    ISshLoginNameService? sshLoginNames = null) : ControllerBase
 {
     private readonly ModularCADbContext _db = db;
     private readonly ICurrentUserService _currentUser = currentUser;
     private readonly IAuditService _audit = audit;
     private readonly IControlledUserCeremonyService _controlledUserSvc = controlledUserSvc;
+
+    /// <summary>
+    /// Reconciles every SSH user certificate after a role lost a capability or was deleted:
+    /// anyone who held the role, directly or through a group, may have lost the right to request.
+    /// </summary>
+    private async Task ReconcileSshAsync(string reason)
+    {
+        if (sshLoginNames != null)
+            await sshLoginNames.ReconcileAllAsync(reason,
+                new SshCaActor(_currentUser.User?.Id, _currentUser.User?.Username, HttpContext.Connection.RemoteIpAddress?.ToString()));
+    }
 
     /// <summary>
     /// Lists all roles with their capability counts.
@@ -139,6 +154,8 @@ public class AdminRoleController(
     /// Updates a role's name and description. Built-in roles cannot be renamed. Requires
     /// step-up MFA because every assignment that references this role inherits the change.
     /// Adding or removing a controlled capability on an assigned role is system-super only (403 otherwise).
+    /// When a capability is removed, the SSH certificates of users who may no longer request from
+    /// their SSH CA are revoked.
     /// </summary>
     [HttpPut("{id:guid}")]
     [RequireStepUp(StepUpOps.UpdateRole, "id")]
@@ -222,6 +239,8 @@ public class AdminRoleController(
 
         await _db.SaveChangesAsync();
         await tx.CommitAsync();
+        if (capsRemoved > 0)
+            await ReconcileSshAsync($"role '{role.Name}' lost a capability");
 
         await _audit.LogAsync(AuditActionType.ConfigUpdated, _currentUser.User?.Id, _currentUser.User?.Username,
             "Role", role.Id.ToString(),
@@ -304,6 +323,7 @@ public class AdminRoleController(
     /// Requires step-up MFA because revoking a capability from a role can lock assigned principals
     /// out of resources mid-session.
     /// Removing a controlled capability from an assigned role is system-super only, and never orphans a scope.
+    /// The SSH certificates of users who may no longer request from their SSH CA are revoked.
     /// </summary>
     [HttpDelete("{id:guid}/capabilities/{capabilityId:guid}")]
     [RequireStepUp(StepUpOps.UpdateRole, "id")]
@@ -337,6 +357,7 @@ public class AdminRoleController(
         _db.RoleCapabilities.Remove(capability);
         await _db.SaveChangesAsync();
         await tx.CommitAsync();
+        await ReconcileSshAsync($"role '{role.Name}' lost a capability");
 
         await _audit.LogAsync(AuditActionType.ConfigUpdated, _currentUser.User?.Id, _currentUser.User?.Username,
             "RoleCapability", capabilityId.ToString(),
@@ -351,6 +372,7 @@ public class AdminRoleController(
     /// Requires step-up MFA because deletion cascades through every assignment, potentially
     /// dropping authorization for many users and groups at once.
     /// Deleting an assigned role that carries a controlled capability is system-super only, and never orphans a scope.
+    /// The SSH certificates of users who may no longer request from their SSH CA are revoked.
     /// </summary>
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.DeleteRole, "id")]
@@ -381,6 +403,7 @@ public class AdminRoleController(
         _db.Roles.Remove(role);
         await _db.SaveChangesAsync();
         await tx.CommitAsync();
+        await ReconcileSshAsync($"role '{role.Name}' was deleted");
 
         await _audit.LogAsync(AuditActionType.ConfigUpdated, _currentUser.User?.Id, _currentUser.User?.Username,
             "Role", id.ToString(),

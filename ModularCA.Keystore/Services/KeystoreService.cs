@@ -242,10 +242,71 @@ public class KeystoreService : IDisposable
         }
     }
 
-    private static List<CertKey> LoadCertKeysInner(string keystorePath, string yamlPath, ModularCADbContext db, string keystoreName)
+    /// <summary>
+    /// Loads and verifies the SSH CA private keys from <c>ssh-ca.keystore</c>, through the same
+    /// verify-and-decrypt path as <see cref="LoadCertKeys"/> and under the secondary passphrase
+    /// of <c>ca-certs.keystore</c>. An install with no SSH CA has neither the file nor its
+    /// <c>Keystores</c> row, and that returns nothing. One without the other cannot be read and
+    /// throws: <see cref="FileNotFoundException"/> for a row with no file,
+    /// <see cref="InvalidOperationException"/> for a file with no row. The file postdates SPKI
+    /// pins, so it gets no legacy allowance: a row with no pin, or a pin with no MAC, is a
+    /// <see cref="SecurityException"/>. A creation that stopped between writing its row and
+    /// putting its file in place is finished first (<see cref="CompleteInterruptedCreation"/>).
+    /// </summary>
+    internal static List<CertKey> LoadSshKeys(string keystorePath, string yamlPath, ModularCADbContext db)
+    {
+        const string keystoreName = ModularCA.Shared.Signing.KeyRef.SshKeystore;
+        var hasRow = db.Keystores.AsNoTracking().Any(k => k.Name == keystoreName);
+        CompleteInterruptedCreation(keystorePath, hasRow);
+        var hasFile = File.Exists(keystorePath);
+        if (!hasFile && !hasRow)
+            return new List<CertKey>();
+        if (!hasFile)
+            throw new FileNotFoundException(
+                $"The database records the keystore '{keystoreName}', but its file is missing, so the SSH CA keys in it cannot be loaded and the "
+                + "signer stays locked. Put the file back in the signer's keystore directory, from the newest backup archive (keystores/"
+                + $"{keystoreName}) or from a '{keystoreName}.bak.<timestamp>' beside it. If the file is lost for good, disable the SSH CAs "
+                + $"whose keys it held and delete the Keystores row named '{keystoreName}'; the signer then starts without an SSH keystore.", keystorePath);
+        if (!hasRow)
+            throw new InvalidOperationException(
+                $"'{keystorePath}' exists, but the database has no Keystores row for '{keystoreName}', so it cannot be decrypted or verified and "
+                + "the signer stays locked while it is there. This is what a database from before the first SSH CA key leaves when it is "
+                + "restored without the product's restore, which moves the file aside itself. If the database is the one you mean to run, "
+                + $"move the file aside (for example to '{keystoreName}.bak.<date>') and start again: SSH CA keys that are still files on the "
+                + "node are imported again, and an SSH CA whose key was only in that file signs nothing. Otherwise restore the database the file belongs to.");
+
+        try
+        {
+            return LoadCertKeysInner(keystorePath, yamlPath, db, keystoreName, requireAuthenticatedPin: true);
+        }
+        catch (SecurityException ex)
+        {
+            var action = ex.Message.Contains("SPKI pin MAC", StringComparison.OrdinalIgnoreCase)
+                ? AuditActionType.KeystorePinMacFailed
+                : AuditActionType.KeystoreSignatureFailed;
+            EmitKeystoreAudit(action, keystoreName, success: false, detail: ex.Message);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Refuses a keystore whose pin cannot be authenticated: no pinned signer, or a pin with no
+    /// MAC. Older keystores are allowed both, with a warning; a keystore created after pins and
+    /// their MACs existed never legitimately has either.
+    /// </summary>
+    private static void RequireAuthenticatedPin(string? pinnedSpki, byte[]? pinMac, string keystoreName)
+    {
+        if (string.IsNullOrEmpty(pinnedSpki) || pinMac == null || pinMac.Length == 0)
+            throw new SecurityException(
+                $"Keystore '{keystoreName}': the signer pin or its SPKI pin MAC is missing. This keystore is never without both; refusing to use it.");
+    }
+
+    private static List<CertKey> LoadCertKeysInner(string keystorePath, string yamlPath, ModularCADbContext db, string keystoreName, bool requireAuthenticatedPin = false)
     {
         var secondary = KeystoreYamlLoader.LoadSecondaryPassphrase(yamlPath, keystoreName);
         var (pinnedSpki, pinMac) = LoadPinnedSignerSpkiWithMac(db, keystoreName);
+        if (requireAuthenticatedPin)
+            RequireAuthenticatedPin(pinnedSpki, pinMac, keystoreName);
         VerifySpkiPinMac(pinnedSpki, pinMac, secondary, keystoreName);
         var keystore = KeystoreFileParser.Parse(keystorePath);
         VerifyFileSignature(keystore, db, pinnedSpki);
@@ -1162,20 +1223,240 @@ public class KeystoreService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Appends entries to a keystore that is created the first time something is written to it,
+    /// which is how <c>ssh-ca.keystore</c> comes to exist: an install with no SSH CA has neither
+    /// the file nor its <c>Keystores</c> row. With both present the entries are appended as
+    /// <see cref="AppendEntries"/> appends them, except that the pin and its MAC must exist and
+    /// the pin must be <paramref name="signerSpkiSha256Hex"/>, checked before anything is
+    /// written. With neither present the file is created under a random main passphrase
+    /// generated here, and its row is written with its own salt, scrypt parameters, wrapped main
+    /// passphrase, pin and pin MAC. One without the other is refused with an
+    /// <see cref="InvalidOperationException"/> and nothing is written: a file with no row cannot
+    /// be read, and a row with no file means keys have gone missing.
+    /// </summary>
+    /// <param name="keystorePath">The keystore file.</param>
+    /// <param name="yamlPath">The keystore configuration file the secondary passphrase falls back to.</param>
+    /// <param name="keystoreName">The keystore's name, as its <c>Keystores</c> row carries it.</param>
+    /// <param name="newPayloads">The entries to add.</param>
+    /// <param name="signer">The private key of the system signer that signs the file.</param>
+    /// <param name="signerSpkiSha256Hex">The SPKI SHA-256 of <paramref name="signer"/>'s certificate: the pin a new file gets, and the pin an existing file must have.</param>
+    /// <param name="db">The application database.</param>
+    internal static KeystoreSaveResult AppendOrCreateEntries(
+        string keystorePath,
+        string yamlPath,
+        string keystoreName,
+        IReadOnlyCollection<byte[]> newPayloads,
+        AsymmetricKeyParameter signer,
+        string signerSpkiSha256Hex,
+        ModularCADbContext db)
+    {
+        if (newPayloads == null || newPayloads.Count == 0)
+            throw new ArgumentException("At least one payload must be supplied.", nameof(newPayloads));
+        ArgumentException.ThrowIfNullOrEmpty(signerSpkiSha256Hex);
+
+        var fileLock = GetFileLock(keystorePath);
+        fileLock.Wait();
+        try
+        {
+            try
+            {
+                var hasRow = db.Keystores.AsNoTracking().Any(k => k.Name == keystoreName);
+                CompleteInterruptedCreation(keystorePath, hasRow);
+                var hasFile = File.Exists(keystorePath);
+                if (hasFile && !hasRow)
+                    throw new InvalidOperationException(
+                        $"'{keystorePath}' exists, but the database has no Keystores row for '{keystoreName}', so it cannot be read or extended. "
+                        + "Move the file aside if the database is the one you mean to run, or restore the database the file belongs to. Nothing was written.");
+                if (!hasFile && hasRow)
+                    throw new InvalidOperationException(
+                        $"The database records the keystore '{keystoreName}', but '{keystorePath}' is missing. Restore the file; a new one is not started over keys that are gone. Nothing was written.");
+
+                return hasFile
+                    ? AppendEntriesInner(keystorePath, yamlPath, keystoreName, newPayloads, signer, db, signerSpkiSha256Hex)
+                    : CreateKeystoreInner(keystorePath, yamlPath, keystoreName, newPayloads, signer, signerSpkiSha256Hex, db);
+            }
+            catch (SecurityException ex)
+            {
+                var action = ex.Message.Contains("SPKI pin MAC", StringComparison.OrdinalIgnoreCase)
+                    ? AuditActionType.KeystorePinMacFailed
+                    : AuditActionType.KeystoreSignatureFailed;
+                EmitKeystoreAudit(action, keystoreName, success: false, detail: ex.Message);
+                throw;
+            }
+        }
+        finally
+        {
+            fileLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Creates a keystore file with <paramref name="payloads"/> and its <c>Keystores</c> row.
+    /// The main passphrase is 256 random bits, generated here and kept only wrapped under a key
+    /// derived from the secondary passphrase, as the bootstrap wraps the other keystores'. The
+    /// written file is verified against <paramref name="signerSpkiSha256Hex"/> before the row
+    /// pins it, and the file is removed again if the row cannot be written, so a failure leaves
+    /// neither.
+    /// </summary>
+    /// <remarks>
+    /// The file is written beside its place, as <c>name.creating</c>, and takes its name only
+    /// once the row is in the database. A process that stops before the row is written leaves
+    /// a staged file nothing loads and the next creation replaces; one that stops after it
+    /// leaves a row and a staged file, which the next load or write puts in place
+    /// (<see cref="CompleteInterruptedCreation"/>). At no point is there a keystore file under
+    /// its own name without its row, which is the state that keeps the signer locked.
+    /// </remarks>
+    private static KeystoreSaveResult CreateKeystoreInner(
+        string keystorePath,
+        string yamlPath,
+        string keystoreName,
+        IReadOnlyCollection<byte[]> payloads,
+        AsymmetricKeyParameter signer,
+        string signerSpkiSha256Hex,
+        ModularCADbContext db)
+    {
+        var secondary = KeystoreYamlLoader.LoadSecondaryPassphrase(yamlPath, keystoreName);
+        var mainBytes = GenerateMainPassphrase();
+        var finalPath = keystorePath;
+        keystorePath = finalPath + CreatingSuffix;
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(keystorePath))!);
+            if (File.Exists(keystorePath))
+                File.Delete(keystorePath);
+            using var service = new KeystoreService(keystorePath, (byte[])mainBytes.Clone(), secondary, signer);
+            try
+            {
+                var policy = db.SecurityPolicies.AsNoTracking().FirstOrDefault();
+                if (policy != null)
+                    service.SetTargetScryptParams(policy.KeystoreScryptN, policy.KeystoreScryptR, policy.KeystoreScryptP);
+            }
+            catch { /* leave defaults */ }
+
+            foreach (var payload in payloads)
+                service.AddEntry(payload, secondary);
+
+            var result = service.Save();
+            try
+            {
+                VerifyFileSignature(KeystoreFileParser.Parse(keystorePath), db, signerSpkiSha256Hex);
+
+                var wrapParams = new KeystoreFile
+                {
+                    ScryptSalt = Convert.ToBase64String(result.Salt),
+                    ScryptN = result.Params.N,
+                    ScryptR = result.Params.R,
+                    ScryptP = result.Params.P,
+                };
+                var kek = ScryptKeyDeriver.DeriveFileKey(KeystorePasswordWrapping.WrapDomainTag, secondary, wrapParams);
+                byte[] passblob;
+                try
+                {
+                    var (nonce, ciphertext, tag) = AesGcmEncryptor.Encrypt(mainBytes, kek);
+                    passblob = nonce.Concat(ciphertext).Concat(tag).ToArray();
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(kek);
+                }
+
+                db.Keystores.Add(new ModularCA.Shared.Entities.KeystoreEntryEntity
+                {
+                    Name = keystoreName,
+                    Passblob = passblob,
+                    Salt = wrapParams.ScryptSalt,
+                    ScryptN = wrapParams.ScryptN,
+                    ScryptR = wrapParams.ScryptR,
+                    ScryptP = wrapParams.ScryptP,
+                    CreatedAt = DateTime.UtcNow,
+                    Enabled = true,
+                    SigningCaSpkiSha256 = signerSpkiSha256Hex.ToLowerInvariant(),
+                    SigningCaSpkiSha256Mac = ComputeSpkiPinMac(signerSpkiSha256Hex, secondary),
+                });
+                db.SaveChanges();
+            }
+            catch
+            {
+                try { File.Delete(keystorePath); } catch { /* a staged file with no row is replaced by the next creation */ }
+                throw;
+            }
+
+            // The row is written: from here a stop is finished by the next load or write.
+            File.Move(keystorePath, finalPath);
+
+            EmitKeystoreAudit(AuditActionType.KeystoreInitialized, keystoreName, success: true,
+                detail: $"entries={payloads.Count} format=v{KeystoreFileWriter.CurrentFormatVersion}");
+            return result;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(mainBytes);
+        }
+    }
+
+    /// <summary>What a keystore file is named while it is being created, after its own name.</summary>
+    public const string CreatingSuffix = ".creating";
+
+    /// <summary>
+    /// Finishes the creation of a keystore that stopped between writing its <c>Keystores</c> row
+    /// and giving its file its name: with the row there, no file under the name and the staged
+    /// file beside it, the staged file takes the name. It is then loaded like any other, so it
+    /// is verified against the row's pin and opened with the row's passphrase before any key in
+    /// it is used. In every other state nothing is touched: a staged file with no row was never
+    /// recorded, cannot be opened, and is replaced by the next creation.
+    /// </summary>
+    /// <param name="keystorePath">The keystore file's own path.</param>
+    /// <param name="hasRow">Whether the database has a <c>Keystores</c> row for the keystore.</param>
+    internal static void CompleteInterruptedCreation(string keystorePath, bool hasRow)
+    {
+        var staged = keystorePath + CreatingSuffix;
+        if (!hasRow || File.Exists(keystorePath) || !File.Exists(staged))
+            return;
+        File.Move(staged, keystorePath);
+        Console.WriteLine($"[KEYSTORE] The creation of '{Path.GetFileName(keystorePath)}' had stopped after its database row was written; its file was put in place.");
+    }
+
+    /// <summary>
+    /// A main passphrase for a keystore the signer creates itself: 32 random bytes as 64
+    /// lowercase hex characters, in a buffer the caller zeroes.
+    /// </summary>
+    private static byte[] GenerateMainPassphrase()
+    {
+        const string hex = "0123456789abcdef";
+        Span<byte> raw = stackalloc byte[32];
+        RandomNumberGenerator.Fill(raw);
+        var text = new byte[raw.Length * 2];
+        for (var i = 0; i < raw.Length; i++)
+        {
+            text[2 * i] = (byte)hex[raw[i] >> 4];
+            text[2 * i + 1] = (byte)hex[raw[i] & 0x0F];
+        }
+        CryptographicOperations.ZeroMemory(raw);
+        return text;
+    }
+
     private static KeystoreSaveResult AppendEntriesInner(
         string keystorePath,
         string yamlPath,
         string keystoreName,
         IReadOnlyCollection<byte[]> newPayloads,
         AsymmetricKeyParameter signer,
-        ModularCADbContext db)
+        ModularCADbContext db,
+        string? requiredSignerSpkiSha256Hex = null)
     {
         {
             // Load existing keystore. Verify the SPKI-pin MAC
             // against the secondary passphrase before trusting the pin at all.
             var secondary = KeystoreYamlLoader.LoadSecondaryPassphrase(yamlPath, keystoreName);
             var (pinnedSpki, pinMac) = LoadPinnedSignerSpkiWithMac(db, keystoreName);
+            if (requiredSignerSpkiSha256Hex != null)
+                RequireAuthenticatedPin(pinnedSpki, pinMac, keystoreName);
             VerifySpkiPinMac(pinnedSpki, pinMac, secondary, keystoreName);
+            // Re-signing with another key than the pinned one would leave a file that no longer loads.
+            if (requiredSignerSpkiSha256Hex != null && !string.Equals(pinnedSpki, requiredSignerSpkiSha256Hex, StringComparison.OrdinalIgnoreCase))
+                throw new SecurityException(
+                    $"Keystore '{keystoreName}' is pinned to another signer than the one offered to re-sign it. Nothing was written.");
             var keystore = KeystoreFileParser.Parse(keystorePath);
             VerifyFileSignature(keystore, db, pinnedSpki);
 

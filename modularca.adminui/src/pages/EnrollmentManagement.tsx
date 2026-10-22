@@ -19,10 +19,11 @@ import {
     tokenColumnLabel, validateReferenceValue,
 } from '../components/cmpCredential';
 import {
-    buildCmpRequest, buildTokenRequest, ENROLLMENT_PROTOCOLS, emptyEnrollmentForm,
+    buildCmpRequest, buildTokenRequest, defaultTokenScope, ENROLLMENT_PROTOCOLS, emptyEnrollmentForm,
     enrollmentKind, enrollmentProtocolMeta, EnrollmentFormState, showsQrResult,
-    validateEnrollmentForm,
+    signingProfilesForTokenScope, tokenAcceptedAt, tokenScopeOptions, validateEnrollmentForm,
 } from '../components/enrollmentForm';
+import { useAuth } from '../context/AuthContext';
 import { SAN_RESTRICTION_TYPES, SUBJECT_RESTRICTION_TYPES, restrictionRowsFromText } from '../components/enrollmentRestriction';
 import { TypedEntryListEditor, TypedEntryListView, type TypedEntryType } from '@shared/components/TypedEntryListEditor';
 import { StepUpOps } from '@shared/generated';
@@ -53,11 +54,14 @@ interface CreatedCmp {
 }
 
 const EnrollmentManagement: React.FC = () => {
-    const { caId: scopeCaId, inScope, scope } = useScope();
+    const { caId: scopeCaId, inScope, scope, cas, spaces } = useScope();
+    const { capabilities } = useAuth();
     const [tokens, setTokens] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
     const [signingProfiles, setSigningProfiles] = useState<any[]>([]);
+    const [authorities, setAuthorities] = useState<any[]>([]);
+    const scopeOptions = useMemo(() => tokenScopeOptions(scope, capabilities), [scope, capabilities]);
 
     // One form, one button. The selected protocol decides which fields show and which endpoint
     // the Generate button calls; see components/enrollmentForm for the branching.
@@ -92,10 +96,25 @@ const EnrollmentManagement: React.FC = () => {
         apiGet<any>('/api/v1/admin/signing-profiles')
             .then(data => setSigningProfiles(Array.isArray(data) ? data : (data?.items || [])))
             .catch(() => setSigningProfiles([]));
+        apiGet<any>('/api/v1/admin/authorities')
+            .then(data => setAuthorities(Array.isArray(data) ? data : (data?.items || [])))
+            .catch(() => setAuthorities([]));
     }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+    const tokenScopeOption = scopeOptions.find(o => o.value === form.tokenScope);
+    const tokenSigningProfiles = useMemo(
+        () => signingProfilesForTokenScope(signingProfiles, tokenScopeOption, issuerId => authorities.find(a => a.certificateId === issuerId)?.id),
+        [signingProfiles, tokenScopeOption, authorities]);
+
+    const selectTokenScope = (tokenScope: string) => {
+        const option = scopeOptions.find(o => o.value === tokenScope);
+        const keeps = signingProfilesForTokenScope(signingProfiles, option, issuerId => authorities.find(a => a.certificateId === issuerId)?.id)
+            .some(p => p.id === form.signingProfileId);
+        setForm({ ...form, tokenScope, signingProfileId: keeps ? form.signingProfileId : '' });
+    };
+
     const openCreate = () => {
-        setForm(emptyEnrollmentForm());
+        setForm(emptyEnrollmentForm(defaultTokenScope(scope, scopeOptions)));
         setFormError(null);
         setNewToken(null);
         setNewCmp(null);
@@ -184,6 +203,8 @@ const EnrollmentManagement: React.FC = () => {
                 render: (t) => <span className="text-ink-muted">{t.usesRemaining}/{t.maxUses || '∞'}</span> },
             { key: 'protocol', header: 'Protocol', defaultWidth: 100, truncate: false, sortable: true, exportValue: (t) => t.protocol || '',
                 render: (t) => (t.protocol ? <Tag label={t.protocol} /> : <span className="text-ink-muted">Any</span>) },
+            { key: 'acceptedAt', header: 'Accepted at', defaultWidth: 180, sortable: true, sortValue: (t) => tokenAcceptedAt(t, cas, spaces),
+                exportValue: (t) => tokenAcceptedAt(t, cas, spaces), render: (t) => tokenAcceptedAt(t, cas, spaces) },
             { key: 'created', header: 'Created', defaultWidth: 150, sortable: true, sortValue: (t) => t.createdAt ? new Date(t.createdAt) : null, exportValue: (t) => t.createdAt, render: (t) => formatDate(t.createdAt) },
             { key: 'expires', header: 'Expires', defaultWidth: 150, sortable: true, sortValue: (t) => t.expiresAt ? new Date(t.expiresAt) : null, exportValue: (t) => t.expiresAt, render: (t) => formatDate(t.expiresAt) },
         ],
@@ -196,6 +217,7 @@ const EnrollmentManagement: React.FC = () => {
                 { label: 'Token ID', value: (t) => t.id, mono: true, copyable: true },
                 { label: 'Uses Remaining', value: (t) => `${t.usesRemaining}/${t.maxUses || '∞'}` },
                 { label: 'Protocol', value: (t) => t.protocol || 'Any' },
+                { label: 'Accepted at', value: (t) => tokenAcceptedAt(t, cas, spaces) },
             ] },
             { title: 'Validity', fields: [
                 { label: 'Created', value: (t) => formatDate(t.createdAt) },
@@ -211,7 +233,7 @@ const EnrollmentManagement: React.FC = () => {
             { label: 'Revoke', tone: 'danger', enabled: (t) => !t.isRevoked, run: (t) => { setConfirmBulk([t]); } },
         ],
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }), []);
+    }), [cas, spaces]);
 
     const bulkActions: DataTableBulkAction<any>[] = [
         { label: 'Revoke', variant: 'danger', enabledFor: (t) => !t.isRevoked, onClick: (rows) => setConfirmBulk(rows) },
@@ -248,11 +270,43 @@ const EnrollmentManagement: React.FC = () => {
                                         <input type="text" value={form.referenceValue} onChange={e => setForm({ ...form, referenceValue: e.target.value })}
                                             className={`${inputClass} font-mono`} placeholder="e.g., printer-fleet" />
                                     </div>
+                                </>
+                            )}
+
+                            {kind === 'cmp' ? (
+                                <div>
+                                    <label htmlFor="enroll-signing-profile" className="text-xs text-ink-muted">Signing profile (decides the CA)</label>
+                                    <select id="enroll-signing-profile" value={form.signingProfileId} onChange={e => setForm({ ...form, signingProfileId: e.target.value })} className={inputClass}>
+                                        <option value="">Choose…</option>
+                                        {signingProfiles.map((p: any) => (
+                                            <option key={p.id} value={p.id}>{signingProfileLabel(p)}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            ) : (
+                                <>
                                     <div>
-                                        <label className="text-xs text-ink-muted">Signing profile (decides the CA)</label>
-                                        <select value={form.signingProfileId} onChange={e => setForm({ ...form, signingProfileId: e.target.value })} className={inputClass}>
-                                            <option value="">Choose…</option>
-                                            {signingProfiles.map((p: any) => (
+                                        <label htmlFor="enroll-token-scope" className="text-xs text-ink-muted">Accepted at</label>
+                                        <select id="enroll-token-scope" value={form.tokenScope} onChange={e => selectTokenScope(e.target.value)} className={inputClass}
+                                            disabled={scopeOptions.length === 0}>
+                                            {scopeOptions.length !== 1 && <option value="">{scopeOptions.length === 0 ? 'Nowhere you hold cert.revoke' : 'Choose…'}</option>}
+                                            {(['Instance', 'Spaces', 'CAs'] as const).map(group => {
+                                                const inGroup = scopeOptions.filter(o => o.group === group);
+                                                return inGroup.length === 0 ? null : (
+                                                    <optgroup key={group} label={group}>
+                                                        {inGroup.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                                    </optgroup>
+                                                );
+                                            })}
+                                        </select>
+                                        <p className="text-[11px] text-ink-muted mt-1">Offered from the console scope ({scopeLabel(scope)}). A token is refused at any CA outside it.</p>
+                                    </div>
+                                    <div>
+                                        <label htmlFor="enroll-signing-profile" className="text-xs text-ink-muted">Signing profile (optional)</label>
+                                        <select id="enroll-signing-profile" value={form.signingProfileId} onChange={e => setForm({ ...form, signingProfileId: e.target.value })} className={inputClass}
+                                            disabled={!tokenScopeOption}>
+                                            <option value="">None</option>
+                                            {tokenSigningProfiles.map((p: any) => (
                                                 <option key={p.id} value={p.id}>{signingProfileLabel(p)}</option>
                                             ))}
                                         </select>
@@ -379,7 +433,7 @@ const EnrollmentManagement: React.FC = () => {
                 rows={tokens}
                 loading={loading}
                 error={error}
-                empty={scopeCaId ? `No active tokens in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No active tokens'}
+                empty={scopeCaId ? `No active tokens in ${scopeLabel(scope)}. Change the scope in the top bar to see others.` : 'No active tokens'}
                 {...recordTableProps(record)}
                 selectable
                 bulkActions={bulkActions}

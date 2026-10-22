@@ -555,8 +555,8 @@ public class AdminBackupController(
             var configYamlPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
             if (!System.IO.File.Exists(configYamlPath))
                 return;
-            _envOverlay.WithSecretsProtected(_config,
-                () => ModularCA.Shared.Utils.ConfigYamlWriter.Write(configYamlPath, _config));
+            // The encryption mode names a key file on this host, so the file alone is written.
+            ConfigSave.WriteFile(HttpContext, _config, _envOverlay);
         }
         catch (Exception ex)
         {

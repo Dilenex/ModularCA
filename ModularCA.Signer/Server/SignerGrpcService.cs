@@ -43,6 +43,22 @@ public sealed class SignerGrpcService : Wire.Signer.SignerBase
             return new SignResponse { Signature = ByteString.CopyFrom(signature) };
         }, "Sign");
 
+    /// <summary>
+    /// Has the signer build and sign an SSH certificate from the request's fields. A request
+    /// with no key reference or no context is <see cref="StatusCode.InvalidArgument"/>, as for
+    /// every call; fields that make no certificate (an unknown type, a subject key that does not
+    /// parse, a rule broken) reach the signer and come back as its refusal, audited there.
+    /// </summary>
+    public override Task<SignSshCertificateResponse> SignSshCertificate(SignSshCertificateRequest request, ServerCallContext context)
+        => GuardAsync(async () =>
+        {
+            var certificate = await _signer.SignSshCertificateAsync(
+                WireMapping.FromWire(request),
+                ContextFrom(request.Context, context),
+                context.CancellationToken);
+            return new SignSshCertificateResponse { Certificate = ByteString.CopyFrom(certificate) };
+        }, "SignSshCertificate");
+
     /// <inheritdoc />
     public override Task<DecryptResponse> Decrypt(DecryptRequest request, ServerCallContext context)
         => GuardAsync(async () =>
@@ -131,11 +147,11 @@ public sealed class SignerGrpcService : Wire.Signer.SignerBase
     public override Task<WrapSecretResponse> WrapSecret(WrapSecretRequest request, ServerCallContext context)
         => GuardAsync(async () =>
         {
-            var wrapped = await _signer.WrapSecretAsync(
-                WireMapping.ToSecretKind(request.Kind),
-                request.Secret.ToByteArray(),
-                ContextFrom(request.Context, context),
-                context.CancellationToken);
+            var kind = WireMapping.ToSecretKind(request.Kind);
+            var signingContext = ContextFrom(request.Context, context);
+            var wrapped = request.Binding.Length == 0
+                ? await _signer.WrapSecretAsync(kind, request.Secret.ToByteArray(), signingContext, context.CancellationToken)
+                : await _signer.WrapBoundSecretAsync(kind, request.Binding, request.Secret.ToByteArray(), signingContext, context.CancellationToken);
             return new WrapSecretResponse { Wrapped = ByteString.CopyFrom(wrapped) };
         }, "WrapSecret");
 
@@ -143,10 +159,10 @@ public sealed class SignerGrpcService : Wire.Signer.SignerBase
     public override Task<UnwrapSecretResponse> UnwrapSecret(UnwrapSecretRequest request, ServerCallContext context)
         => GuardAsync(async () =>
         {
-            var secret = await _signer.UnwrapSecretAsync(
-                request.Wrapped.ToByteArray(),
-                ContextFrom(request.Context, context),
-                context.CancellationToken);
+            var signingContext = ContextFrom(request.Context, context);
+            var secret = request.Binding.Length == 0
+                ? await _signer.UnwrapSecretAsync(request.Wrapped.ToByteArray(), signingContext, context.CancellationToken)
+                : await _signer.UnwrapBoundSecretAsync(request.Wrapped.ToByteArray(), request.Binding, signingContext, context.CancellationToken);
             return new UnwrapSecretResponse { Secret = ByteString.CopyFrom(secret) };
         }, "UnwrapSecret");
 

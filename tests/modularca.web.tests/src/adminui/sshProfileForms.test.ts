@@ -20,9 +20,9 @@ import { bodyKeys, dtoKeys, jsonList } from './profileFormKit';
 // CreateSshSigningProfileRequest / UpdateSshSigningProfileRequest (AdminSshProfileController.cs).
 const SSH_SIGNING_KEYS = ['name', 'description', 'sshCaKeyId', 'maxValidityHours', 'allowUserCerts', 'allowHostCerts', 'forceCommand', 'sourceAddressRestrictions', 'defaultExtensions'].sort();
 // CreateSshCertProfileRequest / UpdateSshCertProfileRequest (AdminSshProfileController.cs).
-const SSH_CERT_KEYS = ['name', 'description', 'allowedPrincipalPatterns', 'maxPrincipals', 'allowedExtensions', 'requiredExtensions', 'maxValidityHours'].sort();
+const SSH_CERT_KEYS = ['name', 'description', 'allowedPrincipalPatterns', 'maxPrincipals', 'allowedExtensions', 'requiredExtensions', 'maxValidityHours', 'certificateType'].sort();
 // CreateSshRequestProfileRequest / UpdateSshRequestProfileRequest (AdminSshProfileController.cs).
-const SSH_REQUEST_KEYS = ['name', 'description', 'allowedSshSigningProfileIds', 'allowedSshCertProfileIds', 'requireApproval', 'maxValidityHours', 'certificateAuthorityId'].sort();
+const SSH_REQUEST_KEYS = ['name', 'description', 'allowedSshSigningProfileIds', 'allowedSshCertProfileIds', 'requireApproval', 'maxValidityHours', 'certificateAuthorityId', 'certificateType'].sort();
 
 describe('the SSH body mirrors match the C# DTO lists', () => {
     it('signing', () => {
@@ -30,12 +30,12 @@ describe('the SSH body mirrors match the C# DTO lists', () => {
         expect(dtoKeys<signing.UpdateSshSigningProfileBody>({ name: true, description: true, sshCaKeyId: true, maxValidityHours: true, allowUserCerts: true, allowHostCerts: true, forceCommand: true, sourceAddressRestrictions: true, defaultExtensions: true })).toEqual(SSH_SIGNING_KEYS);
     });
     it('cert', () => {
-        expect(dtoKeys<cert.CreateSshCertProfileBody>({ name: true, description: true, allowedPrincipalPatterns: true, maxPrincipals: true, allowedExtensions: true, requiredExtensions: true, maxValidityHours: true })).toEqual(SSH_CERT_KEYS);
-        expect(dtoKeys<cert.UpdateSshCertProfileBody>({ name: true, description: true, allowedPrincipalPatterns: true, maxPrincipals: true, allowedExtensions: true, requiredExtensions: true, maxValidityHours: true })).toEqual(SSH_CERT_KEYS);
+        expect(dtoKeys<cert.CreateSshCertProfileBody>({ name: true, description: true, allowedPrincipalPatterns: true, maxPrincipals: true, allowedExtensions: true, requiredExtensions: true, maxValidityHours: true, certificateType: true })).toEqual(SSH_CERT_KEYS);
+        expect(dtoKeys<cert.UpdateSshCertProfileBody>({ name: true, description: true, allowedPrincipalPatterns: true, maxPrincipals: true, allowedExtensions: true, requiredExtensions: true, maxValidityHours: true, certificateType: true })).toEqual(SSH_CERT_KEYS);
     });
     it('request', () => {
-        expect(dtoKeys<request.CreateSshRequestProfileBody>({ name: true, description: true, allowedSshSigningProfileIds: true, allowedSshCertProfileIds: true, requireApproval: true, maxValidityHours: true, certificateAuthorityId: true })).toEqual(SSH_REQUEST_KEYS);
-        expect(dtoKeys<request.UpdateSshRequestProfileBody>({ name: true, description: true, allowedSshSigningProfileIds: true, allowedSshCertProfileIds: true, requireApproval: true, maxValidityHours: true, certificateAuthorityId: true })).toEqual(SSH_REQUEST_KEYS);
+        expect(dtoKeys<request.CreateSshRequestProfileBody>({ name: true, description: true, allowedSshSigningProfileIds: true, allowedSshCertProfileIds: true, requireApproval: true, maxValidityHours: true, certificateAuthorityId: true, certificateType: true })).toEqual(SSH_REQUEST_KEYS);
+        expect(dtoKeys<request.UpdateSshRequestProfileBody>({ name: true, description: true, allowedSshSigningProfileIds: true, allowedSshCertProfileIds: true, requireApproval: true, maxValidityHours: true, certificateAuthorityId: true, certificateType: true })).toEqual(SSH_REQUEST_KEYS);
     });
 });
 
@@ -128,7 +128,19 @@ describe('SSH cert profile form', () => {
         expect(body).toEqual({
             name: '', description: null, allowedPrincipalPatterns: '[]', maxPrincipals: 10,
             allowedExtensions: JSON.stringify(cert.DEFAULT_ALLOWED_EXTENSIONS), requiredExtensions: '[]', maxValidityHours: 720,
+            certificateType: 'either',
         });
+    });
+
+    it('loads the certificate type, sends it on create and update, and sends either to clear it', () => {
+        expect(cert.formFromProfile(stored).certificateType).toBe('either');
+        expect(cert.formFromProfile({ ...stored, certificateType: null }).certificateType).toBe('either');
+        expect(cert.formFromProfile({ ...stored, certificateType: 'host' }).certificateType).toBe('host');
+        const user = { ...cert.formFromProfile(stored), certificateType: 'user' as const };
+        expect(cert.formToCreateBody(user).certificateType).toBe('user');
+        expect(cert.formToUpdateBody(user).certificateType).toBe('user');
+        // The update is a patch, where null leaves the type alone: clearing it has to send the word.
+        expect(cert.formToUpdateBody({ ...cert.formFromProfile({ ...stored, certificateType: 'host' }), certificateType: 'either' }).certificateType).toBe('either');
     });
 
     it('puts exactly the update DTO fields', () => {
@@ -207,7 +219,17 @@ describe('SSH request profile form', () => {
         expect(body).toEqual({
             name: '', description: null, allowedSshSigningProfileIds: '[]', allowedSshCertProfileIds: '[]',
             requireApproval: false, maxValidityHours: 720, certificateAuthorityId: null,
+            certificateType: 'either',
         });
+    });
+
+    it('loads the certificate type, sends it on create and update, and sends either to clear it', () => {
+        expect(request.formFromProfile(stored).certificateType).toBe('either');
+        expect(request.formFromProfile({ ...stored, certificateType: 'user' }).certificateType).toBe('user');
+        const host = { ...request.formFromProfile(stored), certificateType: 'host' as const };
+        expect(request.formToCreateBody(host).certificateType).toBe('host');
+        expect(request.formToUpdateBody(host).certificateType).toBe('host');
+        expect(request.formToUpdateBody({ ...request.formFromProfile({ ...stored, certificateType: 'user' }), certificateType: 'either' }).certificateType).toBe('either');
     });
 
     it('never sends the bound-CA bookkeeping field', () => {

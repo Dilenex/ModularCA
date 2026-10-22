@@ -1,5 +1,7 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using ModularCA.Database;
 using ModularCA.Keystore.Adapters;
 using ModularCA.Keystore.Hsm;
 using ModularCA.Keystore.Utils;
@@ -12,7 +14,7 @@ namespace ModularCA.Keystore.Signing;
 /// <summary>
 /// The startup unlock, behind the signer. <see cref="Unlock"/> decrypts the keystore files
 /// with the main and secondary passphrases the keystore configuration holds, pairs the keys
-/// with their certificates and keeps the handles in a registry that only this object and the
+/// with their certificates, binds the SSH CA keys to their rows and keeps the handles in a registry that only this object and the
 /// signer it creates can reach; <see cref="Locked"/> is the state of setup mode and of a load
 /// that failed. The node holds the bootstrap, registers <see cref="Certificates"/> for the
 /// services that need CA certificates, and asks <see cref="CreateSigner"/> for the one door to
@@ -43,15 +45,32 @@ public sealed class SignerBootstrap
     /// as fatal; anything else for a file or database that could not be read.
     /// </summary>
     /// <param name="yamlPath">The keystore configuration file.</param>
-    /// <param name="keystorePath">The directory holding <c>ca-certs.keystore</c> and <c>ca-trust.keystore</c>.</param>
+    /// <param name="keystorePath">The directory holding <c>ca-certs.keystore</c> and <c>ca-trust.keystore</c>, and <c>ssh-ca.keystore</c> once an SSH CA key exists.</param>
     /// <param name="dbConnectionString">The application database, for the pinned signer.</param>
     public static SignerBootstrap Unlock(string yamlPath, string keystorePath, string dbConnectionString)
+        => Unlock(yamlPath, keystorePath, new DbContextOptionsBuilder<ModularCADbContext>().UseNpgsql(dbConnectionString).Options);
+
+    /// <summary>
+    /// Unlocks the keystores under <paramref name="keystorePath"/> against the application
+    /// database <paramref name="database"/> describes. The three files unlock together or not
+    /// at all: <c>ssh-ca.keystore</c>, when the install has one, is verified and decrypted
+    /// beside the other two, and a failure in it fails the unlock as theirs would. Each SSH CA
+    /// key is bound to the <c>SshCaKeys</c> row that carries its public key; a key no row
+    /// carries is left out.
+    /// </summary>
+    /// <param name="yamlPath">The keystore configuration file.</param>
+    /// <param name="keystorePath">The directory holding the keystore files.</param>
+    /// <param name="database">The application database, for the pinned signers, the main passphrases and the SSH CA key rows.</param>
+    public static SignerBootstrap Unlock(string yamlPath, string keystorePath, DbContextOptions<ModularCADbContext> database)
     {
-        var loaded = StartupKeystoreLoader.LoadAll(keystorePath, yamlPath, dbConnectionString);
+        ArgumentNullException.ThrowIfNull(database);
+        using var db = new ModularCADbContext(database);
+        var loaded = StartupKeystoreLoader.LoadAll(keystorePath, yamlPath, db);
+        var sshKeys = StartupKeystoreLoader.LoadSshKeys(keystorePath, yamlPath, db);
         var signers = loaded.FullCAs
             .Select(x => (x.Cert, (IPrivateKeyHandle)new SoftwarePrivateKeyHandle(x.PrivateKey)))
             .ToList();
-        return new SignerBootstrap(new MultiCARegistry(signers, loaded.TrustedCAs), unlocked: true);
+        return new SignerBootstrap(new MultiCARegistry(signers, loaded.TrustedCAs, sshKeys), unlocked: true);
     }
 
     /// <summary>A bootstrap that holds nothing and reports locked: setup mode, or a keystore that could not be read.</summary>

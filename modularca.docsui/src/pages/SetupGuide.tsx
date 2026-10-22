@@ -93,8 +93,9 @@ export default function SetupGuide() {
                             If only one person will administer this CA, set{' '}
                             <code className="px-1.5 py-0.5 bg-sunken rounded data-mono">Administration.MultipleAdministrators: false</code>{' '}
                             in <code className="px-1.5 py-0.5 bg-sunken rounded data-mono">bootstrap.yaml</code>. Key ceremonies
-                            then start off for the instance and the first space; left out, they start on, and a
-                            lone administrator could never get one approved.
+                            then start off for the instance and the first space, and a system super-administrator may
+                            approve their own certificate requests; left out, ceremonies start on, and a lone
+                            administrator could never get one approved.
                         </p>
                     </Step>
                     <Step number={2} title="Run bootstrap">

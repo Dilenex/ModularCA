@@ -38,9 +38,12 @@ public sealed record ServiceIdentitySpec(
 /// Service identities: user rows that hold group memberships and capability grants for a
 /// non-person caller such as a Kerberos realm binding, and that can never sign in. Every
 /// existing authorization check works on them unchanged because they are users; every sign-in
-/// path refuses them because <see cref="UserEntity.IsServiceIdentity"/> is set.
+/// path refuses them because <see cref="UserEntity.IsServiceIdentity"/> is set. Disabling or
+/// deleting one, or taking it out of a group, revokes SSH certificates issued for it as for any
+/// user, through <paramref name="sshLoginNames"/>.
 /// </summary>
-public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthorizationService auth, IControlledUserCeremonyService? controlledUsers = null)
+public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthorizationService auth, IControlledUserCeremonyService? controlledUsers = null,
+    ModularCA.Shared.Interfaces.ISshLoginNameService? sshLoginNames = null)
 {
     /// <summary>The synthetic mail domain given to service identities, which have no mailbox.</summary>
     public const string MailDomain = "service-identity.invalid";
@@ -138,23 +141,30 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
         return user;
     }
 
-    /// <summary>Changes the display name, description and active flag. Scope and username are fixed.</summary>
+    /// <summary>
+    /// Changes the display name, description and active flag. Scope and username are fixed.
+    /// Disabling the identity revokes every live SSH certificate issued for it.
+    /// </summary>
     public async Task<UserEntity> UpdateAsync(Guid callerId, Guid id, string? displayName, string? description, bool isActive)
     {
         var user = await LoadAsync(id);
         if (!await MayManageAsync(callerId, ScopeOf(user)))
             throw new UnauthorizedAccessException("You need ca.manage at the identity's scope.");
+        var wasActive = user.IsActive;
         user.DisplayName = string.IsNullOrWhiteSpace(displayName) ? user.Username : displayName.Trim();
         user.Description = description?.Trim();
         user.IsActive = isActive;
         await db.SaveChangesAsync();
+        if (wasActive && !isActive && sshLoginNames != null)
+            await sshLoginNames.RevokeAllOfUserAsync(id, "the user was disabled");
         return user;
     }
 
     /// <summary>
     /// Replaces the identity's group memberships. Every group added or removed must fit the
     /// identity's scope and be one the caller administers; adding or removing a controlled group
-    /// needs system-super.
+    /// needs system-super. SSH certificates that carried a login name the identity held through a
+    /// group it leaves are revoked.
     /// </summary>
     public async Task<UserEntity> SetGroupsAsync(Guid callerId, Guid id, IReadOnlyList<Guid> groupIds)
     {
@@ -171,20 +181,28 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
             current.Where(m => !wantedIds.Contains(m.GroupId) && m.Group != null).Select(m => m.Group!)
                 .Concat(wanted.Where(g => !currentIds.Contains(g.Id))));
 
+        var left = false;
         foreach (var m in current.Where(m => !wantedIds.Contains(m.GroupId)))
         {
             if (m.Group != null && !await MayAssignGroupAsync(callerId, m.Group))
                 throw new UnauthorizedAccessException($"You cannot remove membership of '{m.Group.DisplayName}'.");
             db.CaGroupMembers.Remove(m);
+            left = true;
         }
         foreach (var g in wanted.Where(g => !currentIds.Contains(g.Id)))
             db.CaGroupMembers.Add(new CaGroupMemberEntity { GroupId = g.Id, UserId = id, AddedByUserId = callerId });
 
         await db.SaveChangesAsync();
+        if (left && sshLoginNames != null)
+            await sshLoginNames.ReconcileUsersAsync([id], "the user left a group");
         return (await GetAsync(id))!;
     }
 
-    /// <summary>Deletes the identity. Refused while a Kerberos realm binding acts as it, and for non-super callers while it holds a controlled group.</summary>
+    /// <summary>
+    /// Deletes the identity. Refused while a Kerberos realm binding acts as it, and for non-super
+    /// callers while it holds a controlled group. Every live SSH certificate issued for it is
+    /// revoked first, and the SSH login names granted to it are removed.
+    /// </summary>
     public async Task DeleteAsync(Guid callerId, Guid id)
     {
         var user = await LoadAsync(id);
@@ -195,6 +213,8 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
             throw new InvalidOperationException($"Kerberos realm {string.Join(", ", realms)} acts as this identity; point the realm elsewhere first.");
         var memberships = await db.CaGroupMembers.Include(m => m.Group).Where(m => m.UserId == id).ToListAsync();
         await EnsureMayChangeControlledMembershipAsync(callerId, memberships.Where(m => m.Group != null).Select(m => m.Group!));
+        if (sshLoginNames != null)
+            await sshLoginNames.UserDeletingAsync(id);
         db.CaGroupMembers.RemoveRange(memberships);
         db.Users.Remove(user);
         await db.SaveChangesAsync();

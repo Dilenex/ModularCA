@@ -67,15 +67,34 @@ public static class AuditActionType
     public const string AcmeOrderFinalized = "AcmeOrderFinalized";
 
     // SSH CA
+    /// <summary>An SSH CA was created and its key committed to the signer, or the attempt failed.</summary>
+    public const string SshCaKeyCreated = "SshCaKeyCreated";
+    /// <summary>
+    /// An SSH CA key that was a plaintext file on the node was imported into the signer; the
+    /// details name the key, its fingerprint and the file. Written once per key.
+    /// </summary>
+    public const string SshCaKeyImported = "SshCaKeyImported";
     public const string SshCertIssued = "SshCertIssued";
     public const string SshCertRevoked = "SshCertRevoked";
     public const string SshCaKeyDisabled = "SshCaKeyDisabled";
+    /// <summary>A login name was granted on an SSH CA key to a user or a group; the details name the key, the name and the target.</summary>
+    public const string SshLoginNameGranted = "SshLoginNameGranted";
+    /// <summary>A login name grant's limit, end or note was changed.</summary>
+    public const string SshLoginNameGrantChanged = "SshLoginNameGrantChanged";
+    /// <summary>A login name grant was removed, by an administrator or with its user or group.</summary>
+    public const string SshLoginNameGrantRemoved = "SshLoginNameGrantRemoved";
+    /// <summary>Whether everyone may log in as their own username was changed on an SSH CA key.</summary>
+    public const string SshOwnUsernameChanged = "SshOwnUsernameChanged";
+    /// <summary>The advisory review date of an SSH CA key was moved; the details name the key, the new date and the one before.</summary>
+    public const string SshCaKeyReviewDateChanged = "SshCaKeyReviewDateChanged";
 
     // Scheduled jobs
     public const string TlsCertificateRenewed = "TlsCertificateRenewed";
     public const string CrlExported = "CrlExported";
     public const string AcmeCleanupCompleted = "AcmeCleanupCompleted";
     public const string ProtocolCleanupCompleted = "ProtocolCleanupCompleted";
+    /// <summary>A periodic SSH login name sweep revoked at least one certificate; the details count them per reason.</summary>
+    public const string SshLoginNameSweepCompleted = "SshLoginNameSweepCompleted";
     public const string ExpiredCertificatesRevoked = "ExpiredCertificatesRevoked";
     // Emitted by SchedulerService.RunJobAsync when a scheduled
     // job's outer catch fires. Distinct from the individual job's own audit event
@@ -95,7 +114,13 @@ public static class AuditActionType
 
     // Configuration changes
     public const string ConfigUpdated = "ConfigUpdated";
+    /// <summary>A settings change that was recorded and then not saved; names the revision of the <see cref="ConfigUpdated"/> record it cancels.</summary>
+    public const string ConfigUpdateAborted = "ConfigUpdateAborted";
     public const string ApplicationRestarted = "ApplicationRestarted";
+
+    // Integration API keys
+    public const string ApiKeyCreated = "ApiKeyCreated";
+    public const string ApiKeyRevoked = "ApiKeyRevoked";
 
     // Profile management
     public const string CertProfileCreated = "CertProfileCreated";
@@ -227,6 +252,12 @@ public static class AuditActionType
 
     // Certificate renewal
     public const string CertificateRenewalInitiated = "CertificateRenewalInitiated";
+
+    // Expiry handling: retiring a certificate, dismissing its expiry warning, and undoing either
+    public const string CertificateRetired = "CertificateRetired";
+    public const string CertificateRetirementUndone = "CertificateRetirementUndone";
+    public const string CertificateExpiryWarningDismissed = "CertificateExpiryWarningDismissed";
+    public const string CertificateExpiryWarningRestored = "CertificateExpiryWarningRestored";
 
     // Quota management
     public const string QuotaUpdated = "QuotaUpdated";

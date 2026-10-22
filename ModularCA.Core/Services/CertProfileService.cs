@@ -2,8 +2,10 @@
 using ModularCA.Core.Helpers;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
+using ModularCA.Shared.Errors;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.CertProfiles;
+using ModularCA.Shared.Utils;
 using System.Text.Json;
 
 namespace ModularCA.Core.Services
@@ -22,14 +24,18 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
-        /// Returns all certificate profiles with resolved EKU friendly names.
+        /// Returns all certificate profiles with resolved EKU friendly names. With
+        /// <paramref name="caVisible"/>, a profile's uses by CAs the caller may not see are
+        /// counted rather than named.
         /// </summary>
-        public async Task<List<CertProfileDto>> GetAllAsync()
+        /// <param name="caVisible">Whether the caller may see a CA of the given space (null for the instance); null to name every CA.</param>
+        public async Task<List<CertProfileDto>> GetAllAsync(Func<Guid?, bool>? caVisible = null)
         {
             var profiles = await _db.CertProfiles
                 .AsNoTracking()
                 .ToListAsync();
 
+            var usedBy = await InfrastructureUsesAsync(null, caVisible);
             var profilesDto = new List<CertProfileDto>();
             foreach (var profile in profiles)
             {
@@ -37,7 +43,10 @@ namespace ModularCA.Core.Services
                 var ekuFriendlyNames = ekuList.Count > 0
                     ? await OidHelper.ResolveOidFriendlyNamesAsync(_db, ekuList)
                     : new List<string>();
-                profilesDto.Add(MapToDto(profile, ekuFriendlyNames));
+                var dto = MapToDto(profile, ekuFriendlyNames);
+                if (usedBy.TryGetValue(profile.Id, out var uses))
+                    dto.InfrastructureUses = uses;
+                profilesDto.Add(dto);
             }
 
             return profilesDto;
@@ -88,6 +97,7 @@ namespace ModularCA.Core.Services
             if (profile == null) throw new KeyNotFoundException("Profile not found");
             if (request.InheritsFromId != profile.InheritsFromId || request.CertificateAuthorityId != profile.CertificateAuthorityId)
                 await EnsureParentAllowedAsync(request.InheritsFromId, id, profile.SpaceId, request.CertificateAuthorityId, parentAllowed);
+            await EnsureUsesSurviveAsync(profile, request);
 
             profile.Name = request.Name;
             profile.Description = request.Description;
@@ -140,12 +150,74 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
-        /// Deletes a certificate profile by its integer ID. No-op if not found.
+        /// Refuses a change that would leave something unable to be issued
+        /// (<see cref="ResourceConflictException"/>, <see cref="ErrorCodes.CertProfileInUse"/>). A
+        /// profile the application finds by name (<see cref="SystemCertProfiles"/>) keeps its
+        /// name, its kind and its instance-wide scope. A profile a CA issues its timestamp signer,
+        /// OCSP responder or CMP signer from, by name as the default or because the CA names it,
+        /// stays an end-entity profile that lists the usage that certificate exists for, and is
+        /// not bound to another CA. Usages are judged after inheritance, as issuance reads them,
+        /// and a profile that inherits from this one is judged with this change in place.
+        /// </summary>
+        private async Task EnsureUsesSurviveAsync(CertProfileEntity profile, UpdateCertProfileRequest request)
+        {
+            var purpose = SystemCertProfiles.PurposeOf(profile.Name);
+            if (purpose != null)
+            {
+                var refused = request.Name != profile.Name ? "renamed"
+                    : request.IsCaProfile != profile.IsCaProfile ? (profile.IsCaProfile ? "turned into an end-entity profile" : "turned into a CA profile")
+                    : request.CertificateAuthorityId != null && request.CertificateAuthorityId != profile.CertificateAuthorityId ? "bound to one CA"
+                    : null;
+                if (refused != null)
+                    throw new ResourceConflictException(
+                        $"The certificate profile '{profile.Name}' cannot be {refused}: {purpose}, and it is found by this name.",
+                        ErrorCodes.CertProfileInUse, "Create a certificate profile of your own for any other use.");
+            }
+
+            var uses = await InfrastructureCertProfiles.UsesAsync(_db, profile.Id);
+            if (request.CertificateAuthorityId is Guid boundTo && boundTo != profile.CertificateAuthorityId)
+            {
+                var others = uses.Where(u => u.CaId != boundTo).Select(u => u.CaName).Distinct().ToList();
+                if (others.Count > 0)
+                    throw new ResourceConflictException(
+                        $"The certificate profile '{profile.Name}' cannot be bound to that CA: {string.Join(", ", others)} "
+                        + (others.Count == 1 ? "issues a certificate of its own from it." : "issue certificates of their own from it."),
+                        ErrorCodes.CertProfileInUse, "Name another profile on the CA's page first.");
+            }
+
+            var changed = new CertProfileEntity
+            {
+                Id = profile.Id,
+                Name = profile.Name,
+                IsCaProfile = request.IsCaProfile,
+                KeyUsages = EnforceCaKeyUsages(NormalizeJsonStringArray(request.KeyUsages), request.IsCaProfile),
+                ExtendedKeyUsages = NormalizeJsonStringArray(request.ExtendedKeyUsages),
+                InheritsFromId = request.InheritsFromId,
+                InheritanceEnabled = request.InheritanceEnabled,
+            };
+            if (await InfrastructureCertProfiles.WhyUsagesWouldBeLostAsync(_db, profile, changed) is string why)
+                throw new ResourceConflictException(why, ErrorCodes.CertProfileInUse);
+        }
+
+        /// <summary>
+        /// Deletes a certificate profile by ID. No-op if not found. A profile the application
+        /// finds by name, or one a CA names for a certificate of its own, is refused
+        /// (<see cref="ResourceConflictException"/>, <see cref="ErrorCodes.CertProfileInUse"/>).
         /// </summary>
         public async Task DeleteAsync(Guid id)
         {
             var profile = await _db.CertProfiles.FindAsync(id);
             if (profile == null) return;
+
+            if (SystemCertProfiles.PurposeOf(profile.Name) is string purpose)
+                throw new ResourceConflictException(
+                    $"The certificate profile '{profile.Name}' cannot be deleted: {purpose}.", ErrorCodes.CertProfileInUse);
+            var uses = await InfrastructureCertProfiles.UsesAsync(_db, id);
+            if (uses.Count > 0)
+                throw new ResourceConflictException(
+                    $"The certificate profile '{profile.Name}' cannot be deleted: "
+                    + string.Join("; ", uses.Select(u => $"{u.CaName} issues its {u.Role.CertType} certificate from it")) + ".",
+                    ErrorCodes.CertProfileInUse, "Name another profile on the CA's page first.");
 
             _db.CertProfiles.Remove(profile);
             await _db.SaveChangesAsync();
@@ -155,7 +227,9 @@ namespace ModularCA.Core.Services
         /// Retrieves a single certificate profile by GUID, including resolved EKU names.
         /// Returns null if not found.
         /// </summary>
-        public async Task<CertProfileDto?> GetByIdAsync(Guid id)
+        /// <param name="id">The profile.</param>
+        /// <param name="caVisible">Whether the caller may see a CA of the given space (null for the instance); null to name every CA.</param>
+        public async Task<CertProfileDto?> GetByIdAsync(Guid id, Func<Guid?, bool>? caVisible = null)
         {
             var profile = await _db.CertProfiles.FindAsync(id);
             if (profile == null)
@@ -165,7 +239,47 @@ namespace ModularCA.Core.Services
             var ekuFriendlyNames = ekuList.Count > 0
                 ? await OidHelper.ResolveOidFriendlyNamesAsync(_db, ekuList)
                 : new List<string>();
-            return MapToDto(profile, ekuFriendlyNames);
+            var dto = MapToDto(profile, ekuFriendlyNames);
+            if ((await InfrastructureUsesAsync(id, caVisible)).TryGetValue(id, out var uses))
+                dto.InfrastructureUses = uses;
+            return dto;
+        }
+
+        /// <summary>
+        /// For each certificate profile a CA names for a certificate of its own (one profile when
+        /// <paramref name="profileId"/> is given), a line per use: the CA and the certificate. Uses
+        /// by CAs <paramref name="caVisible"/> refuses are counted in one last line, unnamed.
+        /// </summary>
+        private async Task<Dictionary<Guid, List<string>>> InfrastructureUsesAsync(Guid? profileId, Func<Guid?, bool>? caVisible)
+        {
+            var cas = await _db.CertificateAuthorities.AsNoTracking()
+                .Where(ca => profileId == null
+                    ? ca.TsaCertProfileId != null || ca.OcspResponderCertProfileId != null || ca.CmpSignerCertProfileId != null
+                    : ca.TsaCertProfileId == profileId || ca.OcspResponderCertProfileId == profileId || ca.CmpSignerCertProfileId == profileId)
+                .OrderBy(ca => ca.Name)
+                .ToListAsync();
+            var uses = new Dictionary<Guid, List<string>>();
+            var hidden = new Dictionary<Guid, int>();
+            foreach (var ca in cas)
+                foreach (var role in InfrastructureCertProfiles.All)
+                    if (InfrastructureCertProfiles.ChosenId(ca, role) is Guid used && (profileId == null || used == profileId))
+                    {
+                        if (caVisible != null && !caVisible(ca.SpaceId))
+                        {
+                            hidden[used] = hidden.GetValueOrDefault(used) + 1;
+                            continue;
+                        }
+                        if (!uses.TryGetValue(used, out var lines))
+                            uses[used] = lines = new List<string>();
+                        lines.Add($"{ca.Name}: {role.CertType}");
+                    }
+            foreach (var (used, count) in hidden)
+            {
+                if (!uses.TryGetValue(used, out var lines))
+                    uses[used] = lines = new List<string>();
+                lines.Add(count == 1 ? "1 use by a CA outside your scope" : $"{count} uses by CAs outside your scope");
+            }
+            return uses;
         }
 
         /// <summary>
@@ -252,7 +366,8 @@ namespace ModularCA.Core.Services
             CertificateAuthorityId = profile.CertificateAuthorityId,
             SpaceId = profile.SpaceId,
             InheritsFromId = profile.InheritsFromId,
-            InheritanceEnabled = profile.InheritanceEnabled
+            InheritanceEnabled = profile.InheritanceEnabled,
+            SystemPurpose = SystemCertProfiles.PurposeOf(profile.Name)
         };
     }
 }

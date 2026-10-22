@@ -104,6 +104,22 @@ public class SignerAuditEntity
     [MaxLength(64)]
     public string? WrappingKeyId { get; set; }
 
+    /// <summary>
+    /// What a <c>SignSsh</c> decision was asked to certify, allowed or refused: one JSON object
+    /// with the certificate's <c>type</c>, <c>serial</c> (a decimal string, since it is 64 bits
+    /// unsigned), <c>key_id</c>, the number of <c>principals</c>, and <c>valid_after</c> and
+    /// <c>valid_before</c> in Unix seconds. Principals are counted and never named, so this
+    /// table does not become a directory of user names. The key id and the type are the caller's
+    /// text: they are cut to a fixed length (<c>key_id_truncated</c> says when) and escaped to
+    /// ASCII, so neither can alter the object or outgrow the column. Null for every other
+    /// operation and on rows written before the column existed.
+    /// </summary>
+    [MaxLength(SummaryMaxLength)]
+    public string? Summary { get; set; }
+
+    /// <summary>The length of <see cref="Summary"/>.</summary>
+    public const int SummaryMaxLength = 1024;
+
     /// <summary>The policy allowed the operation.</summary>
     public const string AllowedOutcome = "allowed";
 

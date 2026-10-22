@@ -1,6 +1,7 @@
 # Settings store
 
-Status: draft, for owner review (2026-10-05). Nothing here is built.
+Status: design from 2026-10-05, with the owner's decisions since. Building started 2026-10-06 for
+0.4.1; "Built so far" under section 10 says what exists.
 
 ## Why
 
@@ -39,9 +40,10 @@ streaming replication, so anything in the database reaches the standby for free.
 - Every `SystemConfig` property gets one of five classes (below). Only *instance-wide* settings
   and *secrets* move to the database. Bootstrap, host-local and signer-local settings stay in
   files.
-- Storage is **one JSONB document per section**, holding only the values that were set. Each
-  document has a schema version. A global revision number orders every change. History is
-  append-only, and every change is audited before it commits.
+- Storage is **one row per setting**, for the settings that were set, under a key that is the
+  property path joined by underscores (`Acme_Http01_MaxAddresses`). The value is JSON of the
+  setting's type. A global revision number orders every change. History is append-only, and
+  every change is audited before it commits.
 - Secrets live in a separate table. Secrets the node has to *use* are wrapped by the signer, as
   `signer-hardening.md` (in progress) specifies. API keys, which the node only has to *verify*,
   are stored as hashes.
@@ -71,6 +73,12 @@ streaming replication, so anything in the database reaches the standby for free.
   by environment", they cannot be edited there, and a change of value is audited.
 - The other open questions in section 11 are still open.
 
+## Owner decisions (2026-10-06)
+
+- **One row per setting, named with underscores.** "Items can be split with underscores", for
+  example `Acme_Http01_MaxAddresses`. Section 2 is rewritten for it. The database connection is
+  not among them: a setting needed to reach the database cannot live in it.
+
 ## 1. Classification
 
 | Class | Meaning | Lives in |
@@ -87,15 +95,21 @@ Counts, by leaf property, with each list element type counted once:
 |---|---|---|
 | a. Bootstrap | 15 | DB, Schema |
 | b. Signer-local | 11 | Hsm, Signer (signer side) |
-| c. Host-local | 47 | Roles, Signer (node side), Ingress, Redis, SshCa, PolicySync, Https, Http, Logging, Security, Mtls, Backup, Audit |
+| c. Host-local | 47 | Roles, Signer (node side), Ingress, Redis, SshCa (removed in 0.4.2), PolicySync, Https, Http, Logging, Security, Mtls, Backup, Audit |
 | d. Instance-wide | 142 | 28 sections |
 | e. Secret | 8 | JWT, LdapAuth, Email, Webhook, IntegrationApi, CertManager |
 | **Total** | **223** | 37 sections |
 
-Nine sections stay in files entirely: DB, Schema, Roles, Hsm, Signer, Ingress, Redis, SshCa and
+Eight sections stay in files entirely: DB, Schema, Roles, Hsm, Signer, Ingress, Redis and
 PolicySync. Twenty-eight have instance-wide content. Seven of those (Security, Logging, Http,
 Https, Mtls, Backup, Audit) also keep some host-local properties in the file under the same
 section name, so the API keeps its section shape.
+
+The table counts the `SshCa` section as it was drawn: two host-local properties,
+`SshKeygenPath` and `KeyStoragePath`. 0.4.2 removed the section with the SSH keystore
+(`ssh-keystore.md`): the signer builds SSH certificates itself and holds the keys, so there is no
+program to name and no key directory to configure. Without it the counts are 45 host-local
+properties, 221 in all, in 36 sections. A leftover `SshCa` section in a `config.yaml` is ignored.
 
 Some secrets stay in files, because their class decides where they live, not their secrecy:
 `DB.*.Password` (a), `Https.CertificatePassword` and `Signer.ClientCertificatePassword` (c), and
@@ -103,7 +117,9 @@ Some secrets stay in files, because their class decides where they live, not the
 
 "Reload today" describes the host that served the PUT. Other hosts reload nothing until their own
 file is edited and they restart. **Live** means the next call sees the new value. **Component**
-means one component rebuilds itself. **Restart** means the process must restart.
+means one component rebuilds itself. **Restart** means the process must restart. The column is
+the state when this was drawn (2026-10-05); the readers made live since are listed under
+"Making restart items live" in section 3.
 
 | Setting | Class | Read by | Reload today | Reload after |
 |---|---|---|---|---|
@@ -156,6 +172,7 @@ means one component rebuilds itself. **Restart** means the process must restart.
 | `Est.AuthSubdomain` | d | Kestrel SNI callback | restart | restart |
 | `Est.TrustAnchorRefreshSeconds` | d | `EstTrustAnchorCache` (captured) | restart | live |
 | `ProtocolCleanup.Schedule`, `OrphanRequestGraceMinutes` | d | `ProtocolCleanupJob` | live | live |
+| `SshLoginNameSweep.Schedule` | d | `SshLoginNameSweepJob`, registry | live | live |
 | `Backup.Enabled`, `RetentionCount`, `Schedule`, `MaxBackupAgeDays`, `VerifyOnSchedule`, `CreateOnSchedule`, `VerifyCount`, `MinimumRetentionDays` | d | backup creation and verification jobs, registry, `AdminBackupController` | live | live |
 | `Backup.OutputPath`, `EncryptionKeyPath`, `EncryptionMode`, `PasswordFilePath` | c | backup jobs, `BackupRestore`, the backup static-file mapping at startup | live; restart for the mapping | same |
 | `WebAuthn.Enabled`, `RelyingPartyName` | d | `AddFido2` at startup, `AuthController` | restart | restart |
@@ -171,7 +188,7 @@ means one component rebuilds itself. **Restart** means the process must restart.
 | `CertManager.Enabled`, `DefaultCertProfileId`, `DefaultSigningProfileId`, `SpaceId` | d | `CertManagerApiKeyFilter`, `CertManagerController`, `IntegrationScopeCheck` | live (the console says restart) | live |
 | `CertManager.ApiKey` | e, hashed | `CertManagerApiKeyFilter` | live | live |
 | `PolicySync.Enabled`, `PolicyDirectory`, `SyncOnStartup` | c | startup sync, `AdminPolicySyncController` | startup | startup; removed from the admin API |
-| `SshCa.SshKeygenPath`, `KeyStoragePath` | c | `SshCaService`, `BackupRestore` | live | live; removed from the admin API |
+| `SshCa.SshKeygenPath`, `KeyStoragePath` | c | none since 0.4.2: both settings were removed with the SSH keystore (`ssh-keystore.md`) | none | none |
 | `SourceCode.Url`, `License` | d | `PublicInfoController` | live | live |
 | `Audit.Retention.Enabled`, `GeneralRetentionDays`, `NetworkRetentionDays`, `ArchiveBeforeDelete`, `Schedule`, `DeleteBatchSize` | d | `AuditRetentionJob`, registry | live | live |
 | `Audit.Retention.ArchivePath` | c | `AuditRetentionJob` | live | live |
@@ -201,11 +218,13 @@ host-local key in it holds the default.
 - **Network position is host-local.** `TrustedProxyCidrs`, `ForwardedHeaderHopLimit` and
   `BehindReverseProxy` describe what sits in front of *this* host. A different value on the
   ingress host and on a node is correct, not drift.
-- **Paths are host-local, and two of them leave the API.** `SshCa.SshKeygenPath` lets a holder of
-  config rights choose the binary the node executes. `ssh-keystore.md` found that and called it
-  code execution one step removed. `PolicySync.PolicyDirectory` lets them point the server at a
-  directory of YAML that rewrites profiles. Both become host-local and read-only in the console,
-  so changing them needs the host.
+- **Paths are host-local, and one of them leaves the API.** `PolicySync.PolicyDirectory` lets a
+  holder of config rights point the server at a directory of YAML that rewrites profiles. It
+  becomes host-local and read-only in the console, so changing it needs the host. A second such
+  path, `SshCa.SshKeygenPath`, let them choose the binary the node executed; `ssh-keystore.md`
+  found that and called it code execution one step removed. It was to leave the API the same
+  way, and 0.4.2 removed it altogether, with `SshCa.KeyStoragePath`: the node runs no program
+  for SSH and holds no SSH key file.
 - **`Backup.EncryptionMode` is host-local.** It names which key file on this host encrypts
   archives (`backup.key` or `backup-password.key`). Those files are host-local and deny-listed from
   archives, so the mode goes with them.
@@ -217,60 +236,103 @@ host-local key in it holds the default.
 
 ### Classification in code
 
-Each leaf property carries `[Setting(SettingClass.X, Reload.Y)]`. An architecture test fails the
-build when a property has no class or no reload mode, the same way the `NodeRole` convention test
-fails on an undeclared controller. The table above is generated from those attributes for the
-console and the docs, so the two cannot drift.
+Each leaf property carries `[Setting(SettingClass.X, SettingReload.Y)]`, and a secret says how it
+is kept (`Secret = SettingSecretKind.Wrapped` or `Hashed`). `SettingsCatalog` builds the list of
+settings from those attributes and refuses to build when a leaf has none, so the test that builds
+it fails on an undeclared setting, the same way the `NodeRole` convention test fails on an
+undeclared controller. The reload mode is the one in the "Reload after" column: what the setting
+does once its reader takes it from the store. The catalog is also what the console and the docs
+will list settings from, so they cannot drift from the code.
+
+A list or a dictionary is one setting. The element types (`WebhookEndpoint`, `IngressRouteConfig`,
+`HsmKeyMapping`) declare nothing, so the catalog holds 216 settings where the table above counts
+223 properties. `Backup.DatabaseTimeoutMinutes`, added after the table was drawn, is
+instance-wide and live. So is `SshLoginNameSweep.Schedule`, added in 0.4.2.
 
 ## 2. Storage model
 
-### JSONB per section, sparse
+### One row per setting
 
-One row per section, holding a JSONB document of **only the values that were set**. Defaults
-come from the C# type. Lists replace the default whole and are not merged.
+One row per setting **that has been set**, under a key made of the property path joined by
+underscores: `Acme.Http01.MaxAddresses` is stored as `Acme_Http01_MaxAddresses`. The value is the
+JSON of the setting's own type. A setting nobody has set has no row, and its default comes from
+the C# type.
 
-| Option | Why not |
+The draft proposed one JSON document per section and argued against rows. The owner chose rows
+with underscore-separated names (2026-10-06). Each objection the draft raised has an answer in
+the row model:
+
+| Objection to rows | Answer |
 |---|---|
-| Typed columns | A migration for every new setting, about 220 columns, and every release has to touch the schema to add a knob. `SecurityPolicy` already shows the cost. |
-| Key/value rows | No types, awkward lists and dictionaries (`JobTimeouts`, `Webhook.Endpoints`), and a multi-key change needs care to stay atomic. A one-line change produces a history that is a scatter of rows. |
-| **JSONB per section** | A section is already the unit of the API (one PUT per card), of validation, of reload (a consumer binds a section) and of a readable diff. It maps 1:1 onto the existing C# types through `System.Text.Json`. Schema evolution is per section. |
+| No types | The value is JSON, checked against the property's CLR type at write (`SettingsCatalog.Problem`) and again at load. |
+| Awkward lists and dictionaries | A list or a dictionary is one setting and one row, stored whole (`IpWhitelist_ExemptPaths`, `Scheduler_JobTimeouts`). It replaces the default and is never merged into it. |
+| A multi-key change has to stay atomic | One write sets any number of settings in one transaction under one revision. A reader sees all of the change or none. |
+| History is a scatter of rows | History is one row per changed setting, grouped by the write's revision. A diff is the rows of a revision, and "who last changed this setting" is a lookup by key. |
+
+Rows also give what a document could not: a version and a last-changed-by per setting, so two
+admins changing different settings on one card do not conflict, and a key that maps one to one
+onto the environment variable that overrides it (`MODULARCA__ACME__HTTP01__MAXADDRESSES`).
 
 Sparse storage matters. A default that a new build changes reaches every install that never set
 the value, as it does with YAML today. The console can show "default" as a source, and the history
-shows what someone chose rather than a wall of defaults.
+shows what someone chose rather than a wall of defaults. Clearing a setting keeps its row with a
+null value, so its version keeps counting; the setting is back on its default.
+
+One value has one stored spelling: through the setting's type and back, with the members of
+every object in name order. "The same value again" is then a text comparison and changes nothing.
+
+The sections below were written for the document model and describe stages that are not built.
+Where they say a section's document, read the rows of that section's settings: the API still
+takes and returns a section, the import still writes one revision per section, and a ceremony
+still carries one section's proposed values.
 
 ### Tables
 
 ```
-"Settings"            Section text PK, SchemaVersion int, Version int, Revision bigint,
-                      Document jsonb, ContentHash bytea, AuditLogId text,
+"Settings"            Key varchar(200) PK, ValueJson text null, Version int, Revision bigint,
                       UpdatedAt timestamptz, ActorId uuid null, ActorName text, Source text
-"SettingsHistory"     Revision bigint PK, Section text, Version int, SchemaVersion int,
-                      Document jsonb, ContentHash bytea, ChangedPaths text[],
-                      RestartPaths text[], ActorId uuid null, ActorName text,
-                      Source text, Reason text null, CeremonyId uuid null, AuditLogId text,
-                      ChangedAt timestamptz;  UNIQUE (Section, Version)
-"SettingsSecrets"     Section text, Path text, PK (Section, Path), Version int, Revision bigint,
-                      Kind text ('wrapped' | 'hash'), Value bytea, WrappingKeyId bytea null,
-                      UpdatedAt, ActorId, ActorName
-"SettingsNodes"       NodeId text PK, Host text, Roles text, Build text, StartedRevision bigint,
-                      AppliedRevision bigint, PendingRestart jsonb, EnvPaths text[],
-                      Problems jsonb, LastSeenAt timestamptz
-"SettingsImports"     Id uuid PK, Host text, FileHash bytea, SectionHashes jsonb,
-                      ImportedAt timestamptz, Revision bigint
-sequence "SettingsRevision"
+"SettingsHistory"     Id bigint PK, Revision bigint, Key varchar(200), Version int,
+                      ValueJson text null, PreviousValueJson text null, ChangedAt timestamptz,
+                      ActorId uuid null, ActorName text, Source text, Reason text null;
+                      UNIQUE (Key, Version); INDEX (Revision)
+"SettingsState"       Id int PK (always 1), Revision bigint
+"SettingsSecrets"     Key varchar(200) PK, Kind text ('wrapped' | 'hash'), Value bytea null,
+                      Version int, Revision bigint, UpdatedAt timestamptz,
+                      ActorId uuid null, ActorName text, Source text
 ```
 
-- `Version` counts per section and is the concurrency token. `Revision` comes from one sequence
-  across all sections, so a node's state is a single number.
+`SettingsHistory` also has `SecretDigest varchar(64) null`. These four exist (migration
+`SettingsStore`). Still to come, with the stage that needs each:
+
+```
+"SettingsNodes"       NodeId text PK, Host text, Roles text, Build text, StartedRevision bigint,
+                      AppliedRevision bigint, PendingRestart jsonb, EnvKeys text[],
+                      Problems jsonb, LastSeenAt timestamptz
+"SettingsImports"     Id uuid PK, Host text, FileHash bytea, KeyHashes jsonb,
+                      ImportedAt timestamptz, Revision bigint
+```
+
+- Values are `text` holding JSON, as every other JSON column in the schema is. Nothing queries
+  inside a value.
+- `Version` counts per setting and is what a writer names to detect a concurrent change.
+  `Revision` is one number across all settings, so a node's state is a single number.
+- `SettingsState` is one row whose `Revision` is a concurrency token. A write raises it in the
+  same save as its changes, so two writes cannot take the same revision: the second fails whole,
+  reads again and retries. This replaces the sequence the draft proposed; it needs no raw SQL
+  and no explicit lock.
 - `Source` is `Api`, `Import`, `Cli`, `Bootstrap`, `Rollback`, `Ceremony`, `Restore` or `Upgrade`.
-- History is append-only. A rollback is a new revision whose document is an old one.
-- `ChangedPaths` and `RestartPaths` are computed at write. The second is the subset whose reload
-  mode is restart, and it drives the pending-restart display.
-- A secret never appears in `Document` or `SettingsHistory`. History records that a secret
-  changed, with the SHA-256 of the **wrapped** blob. A hash of the plaintext would turn the
-  history into a guessing oracle, the reason `signer-separation.md` gives for hashing the wrapped
-  blob in the signer's audit.
+- History is append-only. A rollback is a new revision whose values are old ones.
+- Which changed settings need a restart is read from the catalog by key, not stored.
+- A secret never appears in `Settings` or `SettingsHistory`. History records that a secret
+  changed, with the SHA-256 of what was stored for it (`SecretDigest`): the **wrapped** blob,
+  or the stored hash. A hash of the plaintext would turn the history into a guessing oracle,
+  the reason `signer-separation.md` gives for hashing the wrapped blob in the signer's audit.
+  The audit record carries less still: the key and "set", "replaced" or "cleared".
+- The key that wrapped a blob is named in the blob's own header, so the table has no column
+  for it.
+- `Webhook_Endpoints` is one setting whose elements each carry a secret. The whole list is kept
+  as one wrapped secret; splitting it into a readable list and per-element secrets is not worth
+  the bookkeeping.
 
 ### Secrets
 
@@ -282,44 +344,68 @@ sequence "SettingsRevision"
 When a secret comes from the environment, the store holds nothing for it. The node uses the
 environment value, and an environment API key is hashed in memory at load.
 
-### Schema versions
+As built:
 
-Each section type declares `SchemaVersion`. Renames and reshapes are upgraders registered per
-section, the same shape as `YamlConfigLoader.RenamedKeys`. The store upgrades a document when it
-reads it. The control role persists the upgrade once, as a revision with source `Upgrade`. An
-unknown key is refused at write and ignored with a warning at read.
+- **A secret is written like any setting**, by its value, through `ISettingsStore.WriteAsync`.
+  The store wraps or hashes it before anything is stored. The value is in no row, no history
+  entry, no audit record and no refusal message.
+- **A wrapped secret is bound to its key.** The store asks the signer to wrap it for
+  `setting:<key>` (`setting:JWT_Secret`), and the signer returns a version 2 envelope that
+  unwraps only for that name (`signer-hardening.md`, "The wrap: envelope v2"). A blob copied to
+  another setting's row is refused there.
+- **When the signer will not wrap, the write is refused whole.** Nothing is held in the clear
+  to be wrapped later, and the other settings in the same write are not saved either.
+- **Setting a wrapped secret again always replaces it**, even with the same value: two wraps of
+  one value differ, so the stored blob cannot say whether the value changed.
+- **A hashed secret is SHA-256 of the key**, and only of a key of at least 32 characters. A
+  plain hash protects nothing that can be guessed, so a shorter key is refused. This is new:
+  `config.yaml` accepts any API key today. The import has to decide what it does with an
+  existing shorter key (open question 11).
+- **Reading back**: `ISettingsStore.ApplySecretsAsync` unwraps each wrapped secret onto a
+  `SystemConfig` and reports the ones it could not. A hashed secret is never set on the
+  configuration; a presented key is checked with `SettingsSnapshot.HashedSecretMatches`.
+
+### Renamed and reshaped settings
+
+A rename is a pair of keys, old and new, registered the way `YamlConfigLoader.RenamedKeys` is;
+a reshape is a function from the old value to the new. The control role applies them once at
+start, as a revision with source `Upgrade`. An unknown key is refused at write and ignored with
+a warning at read (`SettingsSnapshot.ApplyTo` reports it).
 
 ### Write path and concurrency
 
 ```
-read Settings row FOR UPDATE
-If-Match given and Version differs          -> 409, current version and a diff
-apply the change policy (below)             -> 403, or 202 with a ceremony
-validate the merged effective section       -> 400
-revision = nextval('SettingsRevision')
-append the audit row: section, revision, ContentHash, changed paths with before
-  and after (secrets as "changed"), source, reason, ceremony     -> AuditLogId
-UPDATE Settings; INSERT SettingsHistory; pg_notify('modularca_settings', revision)
-COMMIT
-on a failed commit: append ConfigUpdateAborted naming the revision
+read SettingsState and the Settings rows the write names
+an expected version given and the row differs   -> 409, current version and a diff
+apply the change policy (below)                 -> 403, or 202 with a ceremony
+check each value's type; validate the section with the change applied   -> 400
+drop settings whose value would not change; nothing left -> done, no revision
+revision = SettingsState.Revision + 1
+append the audit row: revision, each changed key with before and after
+  (secrets as "changed"), source, reason, ceremony
+save in one transaction: the Settings rows, one SettingsHistory row per changed
+  key, SettingsState raised to the revision; pg_notify('modularca_settings', revision)
+on a save lost to another writer: append ConfigUpdateAborted naming the revision,
+  read again and retry
 ```
 
-The audit row is written **before** the commit, so `Audit.FailMode=FailClosed` holds: no change
-without its record. The cost is an occasional "aborted" row. The existing PUT endpoints send no
-`If-Match`. For them the server does the read-modify-write under the row lock, which also fixes
-today's lost updates between two partial PUTs. The new console sends `If-Match`.
+The audit row is written **before** the save, so `Audit.FailMode=FailClosed` holds: no change
+without its record. The cost is an occasional "aborted" row. The existing PUT endpoints name no
+expected versions. A write of theirs changes only the settings whose value differs, so two
+partial PUTs to one card no longer overwrite each other's fields, which they do today. The new
+console sends the versions it read, as `If-Match`.
 
 ### Integrity: detect what cannot be prevented
 
 The runtime role owns its tables (the 0.4.0 ownership model), and an owner can `UPDATE` anything,
 so privileges cannot stop a direct edit. The store detects one instead. At load, a node checks
-that `SHA-256(canonical JSON of Document)` equals `ContentHash`, and that the audit row
-`AuditLogId` names the same hash. That audit row sits in the hash chain, so forging it means
-rewriting the chain. The hash is taken over canonical JSON (sorted keys, no whitespace), because
-`jsonb` normalises text and the stored bytes are not a stable input.
+each row against the audit record of the revision that wrote it: the record carries the key and
+the value after the change, in the canonical spelling the row stores, so the two are compared as
+text. That audit row sits in the hash chain, so forging it means rewriting the chain. This needs
+the row to name its audit record, which the store does not do yet (see "Built so far").
 
-A mismatch raises a Critical `SettingsIntegrity` alert, and the node loads the newest revision of
-that section that does verify. If none verifies, it loads the defaults. If the audit database
+A mismatch raises a Critical `SettingsIntegrity` alert, and the node loads the newest value of
+that setting in the history that does verify. If none verifies, it loads the default. If the audit database
 cannot be reached at load, the node loads without verifying and says so in `/health/ready`.
 Under `FailMode=FailClosed` it waits and retries instead, as for the schema check.
 
@@ -354,7 +440,7 @@ Then the generic section endpoint and the CLI cannot get around them:
 
 | Tier | Sections | Gate |
 |---|---|---|
-| Routine | Logging (level and targets), Scheduler, Tokens, Metrics, Email (non-secret), Https renewal, Webhook retries, Acme (cleanup, nonce, http-01, challenge limits, terms URL), Est, ProtocolCleanup, Backup schedule and retention counts, CertExpiryNotification, ComplianceScan, SourceCode, Msae | step-up (`UpdateConfig`), as today |
+| Routine | Logging (level and targets), Scheduler, Tokens, Metrics, Email (non-secret), Https renewal, Webhook retries, Acme (cleanup, nonce, http-01, challenge limits, terms URL), Est, ProtocolCleanup, SshLoginNameSweep, Backup schedule and retention counts, CertExpiryNotification, ComplianceScan, SourceCode, Msae | step-up (`UpdateConfig`), as today |
 | Security | JWT, Security, LdapAuth, Http (CORS, Swagger, HSTS), IpWhitelist, NetworkAudit, Mtls, WebAuthn, Audit, CertPolicy, `Acme.ExternalAccountRequired` and `EnforceCaa`, `AutoRenewal.AutoApprove` and `RequireKeyRotation`, `Backup.Enabled` and `MinimumRetentionDays`, Alert, IntegrationApi, CertManager, every secret | step-up always. A **weakening** change needs a `SettingsChange` ceremony when the instance requires settings ceremonies. The LDAP identity fields stay super-only. |
 
 Each property in the security tier declares which direction weakens. Some examples:
@@ -462,6 +548,47 @@ Some items are cheap to make live and worth it:
 - `Est.TrustAnchorRefreshSeconds`.
 - `CertPolicy.RsaSignaturePadding`, replacing the static with a monitor read in `KeyAlgorithmPolicy`.
 - The syslog sink, behind a swappable wrapper.
+
+**Done (2026-10-06), on the `SystemConfig` singleton rather than on monitors.** Each reader below
+reads the configuration at use, so a change is live on the node that saved it, and its
+`[Setting]` says Live. The monitors are still stage 3; these readers already re-read the
+section from the singleton each time, so the stage 2 swap does not strand them.
+
+| Setting | Was kept by | Now read by |
+|---|---|---|
+| `Security.BindJwtToIp` | `JwtIpBindingMiddleware`, in its constructor | the same, per request |
+| `IpWhitelist.Enabled` | `IpWhitelistMiddleware`, in its constructor | the same, per request |
+| `NetworkAudit.Enabled`, `LogAllRequests`, `ExcludePaths` | `RequestAuditMiddleware`, in its constructor (the list by reference, which the endpoint replaces) | the same, per request |
+| `Mtls.RequiredPaths` | `MtlsMiddleware`, in its constructor (by reference) | the same, per request. `Mtls.Enabled` and the anchors stay as they were at start, so the paths are live only where mTLS was on at start. |
+| `Est.TrustAnchorRefreshSeconds` | `EstTrustAnchorCache`, as a fixed interval | the cache asks for the interval on every read and measures it from the last attempt, so a shorter one applies to the snapshot already held |
+| `CertPolicy.RsaSignaturePadding` | the static `KeyAlgorithmPolicy.UseRsaPss`, set twice at startup | `UseRsaPss` asks the setting on every use (`KeyAlgorithmPolicy.FollowRsaPadding`) |
+| `Scheduler.MissedRunPolicy` | nothing: `SingletonCronJob` already read it on the tick. Only the start-up log line read it once. | unchanged; the declaration was wrong |
+| `Http.Hsts.*` | `AddHsts` options, read by `UseHsts` | `HstsHeaderMiddleware`, in the place `UseHsts` had, per request. `SecurityHeadersMiddleware` already read the settings per request. Two writers remain, not the one this list asked for: the early one is what puts the header on a response the ingress proxies, which never reaches the other. Both build it with `HstsConfig.HeaderValue`. |
+| `Http.EnableCors`, `Http.CorsOrigins` | a named policy built by `AddCors`, and `UseCors` registered only when CORS was on at start | `SettingsCorsPolicyProvider` (an `ICorsPolicyProvider`), behind `UseWhen`: while CORS is off or no origin is allowed the request skips the CORS middleware, as when it was not registered. A list that breaks the startup rules allows nothing. |
+
+Left as Restart, with what each needs:
+
+- **`JWT.Secret`.** Bearer validation takes its key once, in `AddJwtBearer`. Making it live is
+  an `IssuerSigningKeyResolver` that returns the current key and, for one access-token
+  lifetime, the previous one. It is also a decision the owner has not made: the rotate action
+  (`SettingsPersistence.RotateJwtSecretAsync`) promises the new secret from the next start and
+  deliberately leaves the one in memory alone. Live on one node while another still signs with
+  the old key splits sessions between them until stage 2 carries the change to every node.
+- **`JWT.Issuer`, `JWT.Audience`.** `ValidIssuer` and `ValidAudience` are fixed in the same
+  options, while `JwtTokenService` already stamps new tokens with the current values. Live
+  validation (an `IssuerValidator` and `AudienceValidator` over the configuration, or clearing
+  the scheme's options cache on a save) refuses every access token issued before the change at
+  once. No endpoint changes them today.
+- **`Logging.Syslog.*`.** The sink is built inside the Serilog pipeline, for one host, port,
+  protocol, app name and facility, and only when the `Syslog.Enabled` flag was on at start.
+  It cannot be re-pointed; it has to be replaced. That does not need the pipeline rebuilt, but
+  it needs the wrapper this list names, and three decisions: what happens to events when the
+  new relay cannot be resolved or reached (keep the old sink, or drop), whether the flag is
+  read live too (otherwise the settings are live only where the sink was on at start), and
+  whether a setting whose reader rebuilds itself is shown as Live or as its own state
+  (`SettingReload.Component` exists and the console shows it as Restart). Nothing on a
+  running node changes these five settings yet (no endpoint, no reload), so there is no path
+  to prove it on.
 
 These stay restart, and are declared so:
 
@@ -679,7 +806,7 @@ Before the import, against a file-only install:
 Settings: config.yaml moves to the database at the control role's first start.
   23 sections, 7 secrets (2 from the environment, not imported).
   Kept in this host's config.yaml: Https.Port, Https.ListenAddress, ... (19 keys)
-  Leaving the admin API: SshCa.SshKeygenPath, PolicySync.PolicyDirectory
+  Leaving the admin API: PolicySync.PolicyDirectory
   Section fingerprints (compare across hosts): Email 3f2a..., Security 9c1d..., ...
 ```
 
@@ -744,7 +871,8 @@ store. They gain:
 - 202 with a ceremony id when the change needs approval;
 - 409 for a conflict or an environment-sourced key.
 
-`PUT /config/ssh-ca` and `PUT /config/policy-sync` answer 410 and point at the host file. The
+`PUT /config/policy-sync` answers 410 and points at the host file. `PUT /config/ssh-ca` was to do
+the same; 0.4.2 removed the route with the settings it set (`ssh-keystore.md`). The
 messages that say "restart required" are generated from the reload attributes, which fixes the
 integration API and cert-manager cards, whose changes are in fact live.
 
@@ -834,6 +962,87 @@ silently loses a per-host value, and an unwrap problem stops the control role. T
 The second risk is the new dependency: a control start now needs the signer to unwrap the JWT
 secret.
 
+### Built so far
+
+As of 2026-10-06. The instance-wide settings and the secrets the node uses are read from the
+store and saved to it.
+
+- `[Setting]` on every leaf of `SystemConfig`, and `SettingsCatalog`: the keys, the classes, and
+  the check and canonical spelling of a value.
+- The `Settings`, `SettingsSecrets`, `SettingsHistory` and `SettingsState` tables (migration
+  `SettingsStore`).
+- `ISettingsStore`: load, write (set and clear, expected versions, one revision per write,
+  history, audit before save, retry on a lost race) and per-setting history. It refuses a key
+  that is unknown, host-local, signer-local or bootstrap, and a value of the wrong type.
+- Secrets in the store: wrapping through the signer bound to the setting's key, hashing for
+  the two API keys, and `ApplySecretsAsync` to read wrapped secrets back. In the signer:
+  envelope version 2, the `SettingSecret` kind and the `Configuration` purpose.
+- **The move** (`SettingsRuntime.ImportAsync`): at the control role's first start, every
+  instance-wide setting that differs from its default is written to the store with source
+  `Import` and actor `host:<name>:import`, and `SettingsState.ImportedAt` is set. It runs once.
+- **The read path** (`SettingsRuntime.Apply`, from `SettingsStartup` after the schema check):
+  once the settings are moved, each instance-wide setting is put back to its default and the
+  stored values are applied, so the file cannot decide one. A value the file still gives is
+  reported in the log. The few settings startup reads before the database is reachable (the
+  log level, the cron checks) are read again afterwards.
+- **The save path** (`SettingsPersistence`, called through `ConfigSave` by every settings
+  endpoint): the endpoints still change `SystemConfig` in memory; saving then writes whatever
+  differs from the store to the store, and the file with host-local settings only.
+- **The file** (`ConfigYamlWriter.Serialize(config, withoutPaths)`): the control role rewrites
+  its `config.yaml` without the stored settings whenever the file still sets one, keeping a
+  copy as `config.yaml.pre-settings-<time>.bak`.
+- **`--settings`** (`SettingsCommand`): `list`, `get`, `set`, `clear` and `history`, over the
+  same store, with the `db.yaml` credentials and a host actor.
+
+Where this differs from the sections above:
+
+- **The six wrapped secrets are moved; the two hashed API keys are not.** `SettingsStartup`
+  opens a signer before the web host is built: the node's own keystore, unlocked as the node
+  unlocks it (`MaintenanceSigner.CreateUnlocked`), or the remote signer it is configured for.
+  The control role stores each secret the file holds and nothing has stored yet; every role
+  reads the stored ones back. A secret is taken out of the file once it is stored, so one
+  that could not be wrapped stays there and keeps working. The copy of the file kept at the
+  rewrite has the stored secrets removed.
+- **A node that cannot read its JWT secret runs on a temporary one.** The design had it answer
+  503 to every sign-in until the signer returned. It signs sessions with a secret made up for
+  that start and says so, which keeps the console reachable to put things right; the sessions
+  end with the process. The other secrets wait, as designed.
+- **The single integration API keys stay in `config.yaml`** (open question 11): named API keys
+  replace them, so they are neither hashed into the store nor refused for being short.
+- **The JWT secret is not rotated at the move**, which `signer-hardening.md` asks for because
+  earlier archives hold it in the clear. The log says that earlier copies and archives still
+  hold the moved secrets.
+- **Reload is declared as it is today**, not as designed. The console shows it to the person
+  saving, so `[Setting]` says Restart for a setting something reads once at start, and each
+  moves to Live when its reader is made to follow changes. Fourteen of the twenty-two that
+  were to become live have (the "Making restart items live" list in section 3 says how);
+  the JWT secret, issuer and audience and the five syslog settings have not, for the reasons
+  given there. `SettingsCatalogTests` lists the stored settings that still wait for a restart.
+- **Sparse by value, not by presence in the file.** The console has always written the whole
+  configuration back, so a key being present in `config.yaml` says nothing about whether
+  anyone chose its value. What is stored is what differs from the default.
+- **No `SettingsImports` table.** The move is marked on `SettingsState`. The file's hash and
+  per-section fingerprints are not recorded.
+- **Other hosts do not compare or refuse.** A non-control host leaves its file alone and
+  ignores, with a warning, an instance-wide value in it. Refusing to start on a difference,
+  `--settings adopt` and `--settings import` are not built.
+- **No reload while running.** A change reaches the node that saved it at once, because the
+  endpoint changed its memory, and every other process at its next start. The listener, the
+  poll and `SettingsNodes` are stage 2.
+- **The host command checks a value's type and nothing more.** The per-section validators are
+  still inside the controllers, so `--settings set` can store a value the console would have
+  refused. The cron expressions are the exception: a start refuses a stored one that does not
+  parse.
+- **Two audit records per console save.** The endpoint still writes its own `ConfigUpdated`
+  record naming the section, and the store writes one naming each key with its value before
+  and after.
+- **`--upgrade-check` does not yet report** what will move.
+
+Not built: per-section validators and change policies as their own types,
+bootstrap seeding the store directly, the generic section endpoint, the rest of the host
+command (`rollback`, `export`, `import`, `adopt`), and stages 2 to 6. The store does not link
+a row to its audit record, so the integrity check in section 2 has nothing to check against.
+
 ## 11. Open questions for the owner
 
 1. **Member names.** Is `Https.PublicDomain` the instance's one public name (instance-wide, as
@@ -863,6 +1072,17 @@ secret.
    be debugged alone?
 10. **Visor.** When the visor changes settings through the API, is its scoped role allowed
     security-tier changes at all, or only routine ones?
+11. **Existing short API keys.** The store hashes an API key and refuses one under 32
+    characters. An install whose `IntegrationApi.ApiKey` or `CertManager.ApiKey` is shorter
+    cannot have it imported as it is. Should the import refuse to start until the operator
+    sets a longer key, or generate a new key and show it once, or leave the short key working
+    from `config.yaml` with a warning until it is replaced?
+
+    Named API keys (the `ApiKeys` table, 2026-10-06) change the weight of this question. They
+    are generated by the server, so they are always long enough, and each client can be moved
+    to one before the single configured key is touched. A fourth answer is then available:
+    the import leaves the configured key out of the store entirely, tells the operator to
+    issue named keys, and the single key is retired in a later release.
 
 ## Found along the way
 

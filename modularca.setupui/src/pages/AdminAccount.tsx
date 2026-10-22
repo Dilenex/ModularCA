@@ -18,12 +18,12 @@ const ADMINISTRATOR_CHOICES: { value: boolean; label: string; effect: string }[]
     {
         value: false,
         label: 'Just me',
-        effect: 'Key ceremonies start off. With one administrator there is nobody to approve one.',
+        effect: 'Key ceremonies start off, and you may approve your own certificate requests. With one administrator there is nobody else to approve either.',
     },
     {
         value: true,
         label: 'Several people',
-        effect: 'Key ceremonies start on. Add the other administrators after setup.',
+        effect: 'Key ceremonies start on, and certificate requests need someone else to approve them. Add the other administrators after setup.',
     },
 ];
 
@@ -209,7 +209,8 @@ const AdminAccount: React.FC<AdminAccountProps> = ({ data, onChange }) => {
                 </p>
                 <p id="administrators-help" className="text-sm text-ink-muted mb-3">
                     A key ceremony makes a second administrator approve before a CA is created, revoked or
-                    deleted, and whoever starts one can never approve it. You can turn key ceremonies on
+                    deleted, and whoever starts one can never approve it. A certificate request whose profile
+                    requires approval likewise needs someone other than the requester. You can change both
                     later in Settings, once a second administrator exists.
                 </p>
                 <div className="grid gap-3 sm:grid-cols-2">

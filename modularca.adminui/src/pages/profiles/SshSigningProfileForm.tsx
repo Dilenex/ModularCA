@@ -61,7 +61,7 @@ export const SshSigningProfileForm: React.FC<{
             </div>
             <GroupedCheckboxList id="ssh-sp-default-ext" legend="Default Extensions" value={f.defaultExtensions} onChange={(next) => set('defaultExtensions', next)}
                 groups={groupSshExtensions(SSH_EXTENSION_OPTIONS, sshExtensionTitle)}
-                hint="Applied only when a request names no extensions of its own; a request that lists any extension replaces this set entirely. These are defaults, not a ceiling: the SSH cert profile's Allowed Extensions decide what a request may ask for." />
+                hint="Applied only when a request names no extensions of its own; a request that lists any extension replaces this set entirely. These are defaults, not a ceiling: the SSH cert profile's Allowed Extensions decide what a request may ask for. A certificate carries exactly the extensions that result, plus the cert profile's required ones. None is added by default, so with nothing ticked here a user certificate allows no terminal and no forwarding. The names under Withhold put nothing into a certificate; each only withholds the permit-* of the same name." />
         </div>
     );
 };

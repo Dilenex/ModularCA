@@ -66,7 +66,7 @@ const networkBadge = (log: any) =>
 /// </summary>
 export function buildColumns(tab: Tab): DataTableColumn<any>[] {
     const cat = tabCategory(tab);
-    const timeCol: DataTableColumn<any> = { key: 'timestamp', header: 'Timestamp', defaultWidth: 170, minWidth: 140, sortable: tab === 'General', exportValue: (l) => formatDate(l.timestamp), render: (l) => <span className="text-xs text-ink-muted">{formatDate(l.timestamp)}</span> };
+    const timeCol: DataTableColumn<any> = { key: 'timestamp', header: 'Timestamp', defaultWidth: 170, minWidth: 140, sortable: tab === 'General', sortValue: (l) => (l.timestamp ? new Date(l.timestamp) : null), exportValue: (l) => formatDate(l.timestamp), render: (l) => <span className="text-xs text-ink-muted">{formatDate(l.timestamp)}</span> };
 
     if (cat === 'network') {
         return [
@@ -220,6 +220,9 @@ const AuditLogs: React.FC = () => {
             });
     }, []);
 
+    // Raised by the table's Refresh button and its auto-refresh: the same load, asked for again.
+    const [refreshTick, setRefreshTick] = useState(0);
+
     useEffect(() => {
         let cancelled = false;
         setLoading(true);
@@ -260,7 +263,7 @@ const AuditLogs: React.FC = () => {
             });
 
         return () => { cancelled = true; };
-    }, [activeTab, page, pageSize, dateFrom, dateTo, filterCaId, filterActionType, q.user, q.sort, caQuery]);
+    }, [activeTab, page, pageSize, dateFrom, dateTo, filterCaId, filterActionType, q.user, q.sort, caQuery, refreshTick]);
 
     const handleTabChange = (tab: Tab) => setQ({ tab, sort: QUERY_DEFAULTS.sort });
 
@@ -349,16 +352,18 @@ const AuditLogs: React.FC = () => {
             <SavedViews tableId="audit" current={currentView} onApply={applyView} />
 
             <DataTable<any>
+                key={activeTab}
                 tableId={`audit-${activeTab.toLowerCase()}`}
                 title={`${activeTab} Audit Logs`}
                 rows={logs}
                 rowKey={(l) => l.id || `${l.timestamp}-${l.actionType || l.operation || l.messageType || ''}`}
                 loading={loading}
                 error={error}
-                empty={scopeCaId ? `No audit entries in ${scopeLabel(scope)}. Change the scope in the sidebar to see others.` : 'No audit entries found'}
+                empty={scopeCaId ? `No audit entries in ${scopeLabel(scope)}. Change the scope in the top bar to see others.` : 'No audit entries found'}
                 columns={columns}
                 selectable
                 exportFileName={`audit-${activeTab.toLowerCase()}`}
+                onRefresh={() => setRefreshTick((t) => t + 1)}
                 renderDrawer={(l) => <AuditDrawer log={l} tab={activeTab} />}
                 drawerTitle={(l) => l.actionType || l.operation || l.messageType || (l.requestPath ? `${l.httpMethod} ${l.requestPath}` : 'Audit entry')}
                 detailPath={(l) => `/audit/${activeTab.toLowerCase()}/${l.id}`}

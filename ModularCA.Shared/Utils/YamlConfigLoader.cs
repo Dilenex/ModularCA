@@ -22,11 +22,21 @@ public static class YamlConfigLoader
         ("CertManager", "TenantId", "SpaceId"),
     ];
 
-    /// <summary>Retired keys: the section and the key, with what the operator should know.</summary>
-    private static readonly (string Section, string Key, string Note)[] RetiredKeys =
+    /// <summary>
+    /// Retired keys: the section and the key, with what the operator should know. A key is
+    /// passed over without a warning while it holds <c>WrittenDefault</c>, the value an earlier
+    /// build wrote into the file itself: nobody chose it, so there is nothing to tell. Null
+    /// warns whatever the value.
+    /// </summary>
+    private static readonly (string Section, string Key, string Note, string? WrittenDefault)[] RetiredKeys =
     [
         ("Features", "AllowMultipleOrganizations",
-            "is retired and ignored: creating spaces is always allowed, and past four a licence is recommended. Remove the key."),
+            "is retired and ignored: creating spaces is always allowed, and past four a licence is recommended. Remove the key.", null),
+        ("SshCa", "SshKeygenPath",
+            "is retired and ignored: SSH certificates are signed by the signer, and no program is run for them. Remove the key.", "ssh-keygen"),
+        ("SshCa", "KeyStoragePath",
+            "is retired and ignored: SSH CA keys are held by the signer, and a key file from before is found by the path its SSH CA key row records. Remove the key.",
+            "config/ssh-ca-keys"),
     ];
 
     /// <summary>
@@ -72,10 +82,13 @@ public static class YamlConfigLoader
         if (stream.Documents.Count == 0 || stream.Documents[0].RootNode is not YamlMappingNode root)
             return yaml;
 
-        foreach (var (section, key, note) in RetiredKeys)
+        foreach (var (section, key, note, writtenDefault) in RetiredKeys)
         {
-            if (Section(root, section) is { } mapping && mapping.Children.ContainsKey(new YamlScalarNode(key)))
-                warn($"[CONFIG] WARNING: {section}.{key} in {path} {note}");
+            if (Section(root, section) is not { } mapping || !mapping.Children.TryGetValue(new YamlScalarNode(key), out var value))
+                continue;
+            if (writtenDefault != null && (!IsSet(value) || string.Equals(((YamlScalarNode)value).Value!.Trim(), writtenDefault, StringComparison.Ordinal)))
+                continue;
+            warn($"[CONFIG] WARNING: {section}.{key} in {path} {note}");
         }
 
         var changed = false;

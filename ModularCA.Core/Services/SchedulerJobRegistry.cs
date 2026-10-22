@@ -184,6 +184,20 @@ public sealed class SchedulerJobRegistry : ISchedulerJobRegistry
                     return job.RunAsync(ct);
                 }),
 
+            // ---- SshLoginNameSweep: SshLoginNameSweep.Schedule (no master Enabled gate) -----
+            // The backstop for the SSH login name revocation hooks. A pass that finds nothing
+            // writes nothing, so always safe to fire.
+            ["SshLoginNameSweep"] = new JobEntry(
+                getCron: cfg => cfg.SshLoginNameSweep.Schedule,
+                setCron: (cfg, value) => cfg.SshLoginNameSweep.Schedule = value,
+                isEnabled: _ => true,
+                setEnabled: null,
+                invokeAsync: (sp, ct) =>
+                {
+                    var job = sp.GetRequiredService<SshLoginNameSweepJob>();
+                    return job.RunAsync(ct);
+                }),
+
             // ---- LdapGroupSync: LdapAuth.GroupSyncSchedule + LdapAuth.GroupSyncEnabled ------
             ["LdapGroupSync"] = new JobEntry(
                 getCron: cfg => cfg.LdapAuth.GroupSyncSchedule,

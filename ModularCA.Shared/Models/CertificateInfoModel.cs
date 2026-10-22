@@ -79,5 +79,20 @@ namespace ModularCA.Shared.Models
         /// <summary>How the certificate was issued (ACME, EST, SCEP, CMP, MSAE, Manual), when recorded. Detail reads only.</summary>
         public string? IssuanceChannel { get; set; }
 
+        /// <summary>When the certificate was retired, or null. Filled by the certificate list and detail reads only.</summary>
+        public DateTime? RetiredAt { get; set; }
+
+        /// <summary>Who retired it.</summary>
+        public string? RetiredBy { get; set; }
+
+        /// <summary>Why it was retired.</summary>
+        public string? RetiredReason { get; set; }
+
+        /// <summary>When its expiry warning was dismissed, or null. Filled by the certificate list and detail reads only.</summary>
+        public DateTime? ExpiryWarningDismissedAt { get; set; }
+
+        /// <summary>Who dismissed the expiry warning.</summary>
+        public string? ExpiryWarningDismissedBy { get; set; }
+
     }
 }

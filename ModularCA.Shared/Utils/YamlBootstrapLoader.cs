@@ -51,8 +51,9 @@ namespace ModularCA.Shared.Utils
             /// <summary>
             /// Whether more than one person will administer this CA. False starts key ceremonies
             /// off for the instance policy and the first space, because a lone administrator could
-            /// never get one approved; true starts them on. Null (the key is absent) keeps the
-            /// default: on.
+            /// never get one approved, and lets a system super-administrator approve their own
+            /// certificate requests; true starts ceremonies on and self-approval off. Null (the key
+            /// is absent) keeps the defaults: ceremonies on, self-approval off.
             /// </summary>
             public bool? MultipleAdministrators { get; set; }
         }

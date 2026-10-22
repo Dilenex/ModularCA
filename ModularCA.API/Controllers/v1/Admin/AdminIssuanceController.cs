@@ -177,6 +177,41 @@ namespace ModularCA.API.Controllers.v1.Admin
         }
 
         /// <summary>
+        /// Pre-flight: the keys the CA may generate for a request under a signing profile and
+        /// certificate profile, and the ones the pair refuses with the reason for each. Same
+        /// space fence and <c>profile.use</c> checks as <see cref="GetValidityCeiling"/>.
+        /// </summary>
+        /// <param name="signingProfileId">The signing profile the request would name.</param>
+        /// <param name="certProfileId">The certificate profile the request would name.</param>
+        /// <param name="keyOptions">Resolves the answer.</param>
+        [HttpGet("key-options")]
+        [Authorize(Policy = "CaOperator")]
+        public async Task<IActionResult> GetKeyOptions(
+            [FromQuery] Guid signingProfileId,
+            [FromQuery] Guid certProfileId,
+            [FromServices] IServerKeyOptionsService keyOptions)
+        {
+            await _currentUser.EnsureLoadedAsync();
+            if (!_currentUser.IsAuthenticated || _currentUser.User == null)
+                return Unauthorized();
+
+            var fence = EnforceSpaceFence(await ResolveCaFromSigningProfileAsync(signingProfileId));
+            if (fence != null)
+                return fence;
+
+            if (!await _authService.HasResourceCapabilityAsync(_currentUser.User.Id, Capabilities.ProfileUse, "SigningProfile", signingProfileId))
+                return StatusCode(403, new { error = "You do not have profile.use access on this signing profile." });
+            if (!await _authService.HasResourceCapabilityAsync(_currentUser.User.Id, Capabilities.ProfileUse, "CertProfile", certProfileId))
+                return StatusCode(403, new { error = "You do not have profile.use access on this certificate profile." });
+
+            var options = await keyOptions.ResolveAsync(signingProfileId, certProfileId, HttpContext.RequestAborted);
+            if (options == null)
+                return NotFound(new { error = "Signing profile or certificate profile not found." });
+
+            return Ok(options);
+        }
+
+        /// <summary>
         /// Issues a certificate from an approved CSR. Enforces space access and profile.use
         /// capability checks before delegating to the issuance service.
         /// </summary>
@@ -308,6 +343,11 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (!await _authService.HasResourceCapabilityAsync(_currentUser.User.Id, Capabilities.ProfileUse, "SigningProfile", req.SigningProfileId))
                 return StatusCode(403, new { error = "You do not have profile.use access on this signing profile." });
 
+            if (req.RequestProfileId is not Guid requestProfileId)
+                return BadRequest(new { error = "A request profile is required: name the one this request is made under as requestProfileId." });
+            req.Subject = await new RequestProfileEnforcement(_dbContext, HttpContext.RequestServices.GetRequiredService<IProfileResolutionService>())
+                .SettleKeyRequestAsync(requestProfileId, req.CertProfileId, req.SigningProfileId, selfService: false, req.Subject, req.Sans);
+
             // Determine the signature algorithm from the key algorithm
             var signatureAlgorithm = ResolveSignatureAlgorithm(req.KeyAlgorithm, req.KeySize);
             if (signatureAlgorithm == null)
@@ -382,7 +422,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                 // from the Requests page, so without persisting these the operator's Not Before
                 // / Not After choices were accepted by the DTO and then discarded.
                 req.NotBefore,
-                req.NotAfter);
+                req.NotAfter,
+                requestProfileId);
 
             // Find the CSR entity that was just created
             var csrEntity = await _dbContext.CertificateRequests

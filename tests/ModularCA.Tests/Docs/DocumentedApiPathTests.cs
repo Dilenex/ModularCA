@@ -153,6 +153,47 @@ public class DocumentedApiPathTests
     }
 
     /// <summary>
+    /// SSH moved out of a page of its own in 0.4.2. The list route its certificate tab reads is
+    /// one the API serves and the API reference and the admin guide document, and the two UI
+    /// guides name the console addresses the pieces moved to, which are the ones the console
+    /// routes, and give no old address as a route.
+    /// </summary>
+    [Fact]
+    public void The_ssh_certificate_list_route_and_the_addresses_ssh_moved_to_are_documented()
+    {
+        var root = RepoRoot();
+        string Read(params string[] parts) => WebUtility.HtmlDecode(File.ReadAllText(Path.Combine([root, .. parts])));
+
+        const string listRoute = "/api/v1/admin/ssh/certificates";
+        Assert.Contains(("GET", listRoute), RealRoutes());
+        Assert.Contains(EndpointEntry.Matches(Read("modularca.docsui", "src", "data", "endpoints", "admin", "ssh.ts")),
+            m => m.Groups[1].Value == "GET" && m.Groups[2].Value == listRoute);
+        var adminGuide = Read("modularca.docsui", "src", "pages", "AdminUiGuide.tsx");
+        Assert.Contains(DocumentedPath.Matches(adminGuide), m => m.Groups[1].Value == "GET" && m.Groups[2].Value == listRoute);
+
+        // The console's own routes, from the module App.tsx takes them from.
+        var places = Read("modularca.adminui", "src", "pages", "sshPlaces.ts");
+        Assert.Contains("SSH_CA_KEY_ROUTE = '/authorities/ssh/:id'", places);
+        Assert.Contains("SSH_CERTIFICATE_ROUTE = '/certificates/ssh/:id'", places);
+        var app = Read("modularca.adminui", "src", "App.tsx");
+        Assert.Contains("path={SSH_CA_KEY_ROUTE}", app);
+        Assert.Contains("path={SSH_CERTIFICATE_ROUTE}", app);
+
+        foreach (var address in new[]
+                 {
+                     "/admin/authorities/manage?tab=SSH", "/admin/authorities/ssh/{id}", "/admin/certificates?tab=SSH",
+                     "/admin/certificates/ssh/{id}", "/admin/certificates/request?tab=SSH",
+                 })
+            Assert.Contains(address, adminGuide);
+        Assert.DoesNotContain("Route: /admin/ssh", adminGuide);
+
+        var userGuide = Read("modularca.docsui", "src", "pages", "UserUiGuide.tsx");
+        Assert.Contains("/user/request?tab=SSH", userGuide);
+        Assert.Contains("/user/certificates?tab=SSH", userGuide);
+        Assert.DoesNotContain("Route: /user/ssh", userGuide);
+    }
+
+    /// <summary>
     /// A documented path resolves if it matches a route exactly, or — when it ends in a slash,
     /// which is how the ASCII sequence diagrams wrap a long path across two cells — if it is a
     /// prefix of one. The prefix rule still fails for a namespace that does not exist at all,

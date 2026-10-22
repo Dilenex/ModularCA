@@ -17,6 +17,7 @@ namespace ModularCA.Keystore.Signing;
 /// <param name="DataHash">SHA-256 over what was signed, for a signature; for a wrap or an unwrap, over the wrapped blob, never over the secret.</param>
 /// <param name="SecretKind">What kind of secret a wrap or an unwrap was for, including a refused one; null for every other operation.</param>
 /// <param name="WrappingKeyId">The id of the key that wrapped, or was asked to unwrap, as the blob names it: lower-case hex. Null for every other operation.</param>
+/// <param name="Summary">What a <c>SignSsh</c> decision was asked to certify, as <see cref="SshAuditSummary"/> writes it. Null for every other operation.</param>
 public sealed record SignerDecision(
     DateTime At,
     string Operation,
@@ -27,7 +28,8 @@ public sealed record SignerDecision(
     string? Reason,
     byte[]? DataHash,
     SecretKind? SecretKind = null,
-    string? WrappingKeyId = null);
+    string? WrappingKeyId = null,
+    string? Summary = null);
 
 /// <summary>
 /// Where the signer writes its decisions. The signer records every decision through this before

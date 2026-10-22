@@ -146,6 +146,12 @@ public static class ErrorCodes
     /// </summary>
     public const string CeremonyQuorumUnreachable = "MCA-CFG-021";
 
+    /// <summary>
+    /// The request profile a certificate request was made under does not permit it: its names,
+    /// its certificate profile or its CA. Raised when the request is submitted, approved or issued.
+    /// </summary>
+    public const string RequestProfileRefused = "MCA-CFG-022";
+
     // ---- RES: missing resource, or collision with existing state ---------------------------
 
     /// <summary>A resource the request named does not exist or is not of the required kind.</summary>
@@ -171,6 +177,18 @@ public static class ErrorCodes
     /// cannot change.
     /// </summary>
     public const string CaLabelLocked = "MCA-RES-006";
+
+    /// <summary>
+    /// The certificate profile is one the application finds by name, or one a CA issues its own
+    /// signers from, so the change asked for would leave something unable to be issued.
+    /// </summary>
+    public const string CertProfileInUse = "MCA-RES-007";
+
+    /// <summary>
+    /// The certificate was retired, so nothing is renewed or reissued from it; its subject needs a
+    /// new enrollment.
+    /// </summary>
+    public const string CertificateRetired = "MCA-RES-008";
 
     // ---- POL: deliberate certificate-policy limits ------------------------------------------
 

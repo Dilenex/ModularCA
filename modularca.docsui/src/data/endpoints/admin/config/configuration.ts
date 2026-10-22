@@ -111,18 +111,6 @@ export const adminConfiguration: ApiEndpoint[] = [
     },
     {
         method: 'PUT',
-        path: '/api/v1/admin/config/ssh-ca',
-        summary: 'Update SSH CA configuration.',
-        auth: 'Authorize (SystemAdmin)',
-        category: 'Admin Configuration',
-        headers: [
-            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
-            { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token scoped to update-config.' },
-        ],
-        responseDescription: 'Update confirmation.',
-    },
-    {
-        method: 'PUT',
         path: '/api/v1/admin/config/https',
         summary: 'Update HTTPS/TLS configuration.',
         auth: 'Authorize (SystemAdmin)',
@@ -191,7 +179,7 @@ export const adminConfiguration: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token scoped to update-config.' },
         ],
         responseDescription: 'Update confirmation with the refreshed mTLS config.',
-        notes: 'requiredPaths and trustedCaCertPaths left out (or null) keep their current value; an empty array clears them. With requiredPaths cleared, no API path requires a client certificate after the next restart (mTLS login on the auth subdomain is unaffected). The audit record carries both lists before and after, and clearing either raises a security alert. Listed trusted CA paths must load or the request is refused with 400.',
+        notes: 'requiredPaths and trustedCaCertPaths left out (or null) keep their current value; an empty array clears them. requiredPaths applies from the next request on the node that saved it: with it cleared, no API path requires a client certificate (mTLS login on the auth subdomain is unaffected). The audit record carries both lists before and after, and clearing either raises a security alert. Listed trusted CA paths must load or the request is refused with 400.',
     },
     {
         method: 'PUT',

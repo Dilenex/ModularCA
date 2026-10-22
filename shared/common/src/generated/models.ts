@@ -361,6 +361,11 @@ export interface CertificateInfoModel {
     replaced: boolean;
     replacedBySerial?: string | null;
     issuanceChannel?: string | null;
+    retiredAt?: string | null;
+    retiredBy?: string | null;
+    retiredReason?: string | null;
+    expiryWarningDismissedAt?: string | null;
+    expiryWarningDismissedBy?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/CertificateLifecycleSummaryModel.cs`. */
@@ -377,6 +382,7 @@ export interface CertificateLifecycleSummaryModel {
     expiringWithin30DaysNotReplaced: number;
     expiredReplaced: number;
     expiredNotReplaced: number;
+    retiredOrDismissed: number;
     expiredUnchecked: number;
     recentlyExpiredNotReplaced: number;
     attentionTotal: number;
@@ -474,6 +480,8 @@ export interface CertProfileDto {
     spaceId?: string | null;
     inheritsFromId?: string | null;
     inheritanceEnabled: boolean;
+    systemPurpose?: string | null;
+    infrastructureUses: string[];
 }
 
 /** From `ModularCA.Shared/Models/Csr/CertRequestDto.cs`. */
@@ -496,6 +504,10 @@ export interface CertRequestDto {
     requestedNotAfter?: string | null;
     keyHeld: boolean;
     heldKeyDeliveredAt?: string | null;
+    requestProfileId?: string | null;
+    approvalCount: number;
+    requiredCount?: number | null;
+    renewalOfCertificateId?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
@@ -652,6 +664,7 @@ export interface CreateCsrRequest {
     keySize: string;
     signingProfileId: string;
     certificateProfileId: string;
+    requestProfileId?: string | null;
     requestorUserId: string;
 }
 
@@ -935,6 +948,7 @@ export interface IssueWithKeyRequest {
     keySize: string;
     certProfileId: string;
     signingProfileId: string;
+    requestProfileId?: string | null;
     notBefore?: string | null;
     notAfter?: string | null;
 }
@@ -1078,6 +1092,12 @@ export interface MtlsConfig {
     authSubdomain: string;
 }
 
+/** From `ModularCA.Shared/Models/Issuance/ServerKeyOptions.cs`. */
+export interface NamedUsage {
+    value: string;
+    name: string;
+}
+
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
 export interface NetworkAuditConfig {
     enabled: boolean;
@@ -1116,6 +1136,18 @@ export interface PolicySyncConfig {
     enabled: boolean;
     policyDirectory: string;
     syncOnStartup: boolean;
+}
+
+/** From `ModularCA.Shared/Models/Issuance/ServerKeyOptions.cs`. */
+export interface ProfilePairConstraints {
+    issuingCaName?: string | null;
+    nameConstraintsPermitted: string[];
+    nameConstraintsExcluded: string[];
+    keyUsages: string[];
+    extendedKeyUsages: NamedUsage[];
+    validityPeriodMin?: string | null;
+    validityPeriodMax?: string | null;
+    allowWildcard: boolean;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
@@ -1281,6 +1313,29 @@ export interface SecurityUpdateRequest {
     maxPerUsernameLoginFailures?: number | null;
     perUsernameLoginFailureWindowMinutes?: number | null;
     behindReverseProxy?: boolean | null;
+}
+
+/** From `ModularCA.Shared/Models/Issuance/ServerKeyOptions.cs`. */
+export interface ServerKeyOption {
+    algorithm: string;
+    keySize?: string | null;
+    signatureAlgorithm: string;
+}
+
+/** From `ModularCA.Shared/Models/Issuance/ServerKeyOptions.cs`. */
+export interface ServerKeyOptions {
+    signingProfileName: string;
+    certProfileName: string;
+    options: ServerKeyOption[];
+    refused: ServerKeyRefusal[];
+    constraints?: ProfilePairConstraints | null;
+}
+
+/** From `ModularCA.Shared/Models/Issuance/ServerKeyOptions.cs`. */
+export interface ServerKeyRefusal {
+    algorithm: string;
+    keySize?: string | null;
+    reason: string;
 }
 
 /** From `ModularCA.Shared/Models/Management/PermissionChangeRequest.cs`. */
@@ -1486,12 +1541,6 @@ export interface SpacePolicyChangeCeremonyParameters {
     caUserQuorums: CaUserQuorumChange[];
 }
 
-/** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
-export interface SshCaConfig {
-    sshKeygenPath: string;
-    keyStoragePath: string;
-}
-
 /** From `ModularCA.Shared/Models/SshKeyCeremonyParameters.cs`. */
 export interface SshKeyCeremonyParameters {
     name: string;
@@ -1502,6 +1551,11 @@ export interface SshKeyCeremonyParameters {
     maxValidityHours: number;
     spaceId?: string | null;
     sshCaKeyId?: string | null;
+}
+
+/** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
+export interface SshLoginNameSweepConfig {
+    schedule: string;
 }
 
 /** From `ModularCA.Shared/Models/RequestProfiles/SubjectDnFieldRule.cs`. */
@@ -1539,7 +1593,6 @@ export interface SystemConfig {
     http: HttpConfig;
     scheduler: SchedulerConfig;
     tokens: TokenConfig;
-    sshCa: SshCaConfig;
     metrics: MetricsConfig;
     email: EmailConfig;
     https: HttpsConfig;
@@ -1554,6 +1607,7 @@ export interface SystemConfig {
     acme: AcmeConfig;
     est: EstConfig;
     protocolCleanup: ProtocolCleanupConfig;
+    sshLoginNameSweep: SshLoginNameSweepConfig;
     backup: BackupConfig;
     webAuthn: WebAuthnConfig;
     alert: AlertConfig;
@@ -1649,6 +1703,7 @@ export interface UploadCsrRequest {
     pem: string;
     certificateProfileId: string;
     signingProfileId: string;
+    requestProfileId?: string | null;
     requestorUserId: string;
     subjectOverrides?: Record<string, string> | null;
     sanOverrides?: SanOverride[] | null;

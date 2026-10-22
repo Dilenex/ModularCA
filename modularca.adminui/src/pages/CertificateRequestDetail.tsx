@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
-import { useParams, useNavigate } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPost, apiPostWithMfa } from '../api/client';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -68,6 +68,21 @@ export function serialFromPem(pem: unknown): string | null {
     return hex.replace(/^0+(?=.)/, '') || null;
 }
 
+/** How a request's approval stands (GET /api/v1/admin/requests/{id}/approval-outlook). */
+interface ApprovalOutlook {
+    requiredCount: number;
+    approvalCount: number;
+    othersWhoCanApprove: number;
+    requesterMaySelfApprove: boolean;
+    canComplete: boolean;
+    selfApproved: boolean;
+}
+
+/** A profile named and linked to its page, or its id while the name is unknown. */
+const ProfileLink: React.FC<{ kind: 'request' | 'cert' | 'signing'; id: string; name?: string }> = ({ kind, id, name }) => (
+    <Link to={`/profiles/${kind}/${id}`} className={`text-accent-ink hover:underline ${name ? '' : 'data-mono break-all'}`}>{name || id}</Link>
+);
+
 const REJECT_REASONS = ['Policy violation', 'Invalid subject', 'Weak key', 'Duplicate request', 'Unauthorized requestor', 'Incorrect profile', 'Other'];
 const CANCEL_REASONS = ['No longer needed', 'Superseded by new request', 'Incorrect parameters', 'Requestor withdrew', 'Other'];
 
@@ -89,6 +104,7 @@ const CertificateRequestDetail: React.FC = () => {
 
     const [approvals, setApprovals] = useState<ApprovalRecord[]>([]);
     const [approvalsLoading, setApprovalsLoading] = useState(false);
+    const [outlook, setOutlook] = useState<ApprovalOutlook | null>(null);
 
     const [approveComment, setApproveComment] = useState('');
     const [busy, setBusy] = useState<null | 'approve' | 'issue' | 'reject' | 'cancel'>(null);
@@ -129,6 +145,13 @@ const CertificateRequestDetail: React.FC = () => {
                 if (found) {
                     const s = (found.status || '').toLowerCase();
                     if (['pendingapproval', 'partiallyapproved', 'approved', 'rejected', 'issued'].includes(s) || found.issuedCertificateId) loadApprovals(id!);
+                    if (s === 'pendingapproval' || s === 'partiallyapproved') {
+                        apiGet<ApprovalOutlook>(`/api/v1/admin/requests/${id}/approval-outlook`)
+                            .then((o) => { if (!cancelled) setOutlook(o); })
+                            .catch(() => { if (!cancelled) setOutlook(null); });
+                    } else {
+                        setOutlook(null);
+                    }
                 }
             })
             .catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load request')); setLoading(false); } });
@@ -150,11 +173,27 @@ const CertificateRequestDetail: React.FC = () => {
         return () => { cancelled = true; };
     }, [csr?.certificateProfileId, csr?.certProfileId]);
 
+    // Names for the request and signing profiles the request was made under.
+    const [profileNames, setProfileNames] = useState<Record<string, string>>({});
+    useEffect(() => {
+        if (!csr?.signingProfileId && !csr?.requestProfileId) return;
+        let cancelled = false;
+        const named = (d: any) => (Array.isArray(d) ? d : (d?.items || []))
+            .map((p: any) => [p.id || p.signingProfileId, p.name] as [string, string]).filter(([pid, name]: [string, string]) => pid && name);
+        Promise.all([
+            apiGet<any>('/api/v1/admin/signing-profiles').catch(() => []),
+            apiGet<any>('/api/v1/admin/request-profiles').catch(() => []),
+        ]).then(([signing, request]) => {
+            if (!cancelled) setProfileNames(Object.fromEntries([...named(signing), ...named(request)]));
+        });
+        return () => { cancelled = true; };
+    }, [csr?.signingProfileId, csr?.requestProfileId]);
+
     const handleApprove = async () => {
         if (!csr) return;
         setBusy('approve');
         try {
-            const result = await apiPostWithMfa<{ message: string; status: string; approvalCount: number; requiredCount: number }>(`/api/v1/admin/requests/${id}/approve`, { comment: approveComment }, requireStepUp, StepUpOps.ApproveRequest, id);
+            const result = await apiPostWithMfa<{ message: string; status: string; approvalCount: number; requiredCount: number; selfApproved?: boolean }>(`/api/v1/admin/requests/${id}/approve`, { comment: approveComment }, requireStepUp, StepUpOps.ApproveRequest, id);
             showToast('success', result.message || `Approval recorded (${result.approvalCount}/${result.requiredCount})`);
             setApproveComment('');
             setRefresh((r) => r + 1);
@@ -241,6 +280,9 @@ const CertificateRequestDetail: React.FC = () => {
 
     const s = (csr.status || '').toLowerCase();
     const busyAny = busy !== null;
+    const requiredCount: number | undefined = outlook?.requiredCount ?? csr.requiredCount ?? undefined;
+    const isSelfApproval = (a: ApprovalRecord) =>
+        a.decision?.toLowerCase() === 'approved' && !!a.approverId && a.approverId === csr.requestorUserId;
     const title = csr.subjectName || csr.subject || 'Certificate Request';
 
     return (
@@ -249,6 +291,7 @@ const CertificateRequestDetail: React.FC = () => {
             title={title}
             status={<StatusBadge status={csrStatus(csr)} label={csrStatusLabel(csr)} />}
             backTo="/certificates/requests"
+            modeToggle={false}
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
                     {canCancel(csr) && <button onClick={() => { setCancelReason(''); setCancelCustom(''); setCancelOpen(true); }} disabled={busyAny} className={actionButtonDanger}>Cancel Request</button>}
@@ -266,11 +309,21 @@ const CertificateRequestDetail: React.FC = () => {
                     <div className="bg-warn-soft border border-warn/40 rounded px-3 py-3">
                         <div className="flex items-center justify-between mb-2">
                             <span className="text-xs font-semibold text-warn">Approval Progress</span>
-                            <span className="text-xs font-bold text-warn">{csr.approvalCount ?? 0} / {csr.requiredCount ?? '?'}</span>
+                            <span className="text-xs font-bold text-warn">{csr.approvalCount ?? 0} / {requiredCount ?? '?'}</span>
                         </div>
                         <div className="w-full bg-sunken rounded-full h-2">
-                            <div className="bg-warn h-2 rounded-full transition-all duration-300" style={{ width: csr.requiredCount ? `${Math.min(100, ((csr.approvalCount ?? 0) / csr.requiredCount) * 100)}%` : '0%' }} />
+                            <div className="bg-warn h-2 rounded-full transition-all duration-300" style={{ width: requiredCount ? `${Math.min(100, ((csr.approvalCount ?? 0) / requiredCount) * 100)}%` : '0%' }} />
                         </div>
+                        {outlook?.requesterMaySelfApprove && (
+                            <p className="text-xs text-ink-muted mt-2">
+                                Self-approval allowed: {csr.requestorUsername ? <span className="font-medium text-ink">{csr.requestorUsername}</span> : 'the requester'} may approve this request alone, which completes it (Settings › Allow System Super Self-Approval).
+                            </p>
+                        )}
+                        {outlook && !outlook.canComplete && (
+                            <p className="text-xs text-crit mt-2">
+                                Nobody can complete this approval. It needs {Math.max(0, outlook.requiredCount - outlook.approvalCount)} more, and {outlook.othersWhoCanApprove === 1 ? '1 other account' : `${outlook.othersWhoCanApprove} other accounts`} can approve requests on this CA. Reject it, or give another account cert.revoke on the CA and profile.use on its profiles.
+                            </p>
+                        )}
                     </div>
                 )}
                 {s === 'approved' && (
@@ -288,8 +341,11 @@ const CertificateRequestDetail: React.FC = () => {
                     <DetailField label="Signature Algorithm" value={csr.signatureAlgorithm} />
                     <DetailField label="SANs" value={parseJsonSafe(csr.subjectAlternativeNames)} />
                     <DetailField label="Submitted" value={formatDate(csr.submittedAt)} />
-                    {csr.certProfileId && <DetailField label="Cert Profile ID" value={csr.certProfileId} mono />}
-                    {csr.signingProfileId && <DetailField label="Signing Profile ID" value={csr.signingProfileId} mono />}
+                    {csr.requestorUsername && <DetailField label="Requested by" value={csr.requestorUsername} />}
+                    {csr.renewalOfCertificateId && <DetailField label="Renews certificate" value={csr.renewalOfCertificateId} mono />}
+                    {csr.requestProfileId && <DetailField label="Request Profile" value={<ProfileLink kind="request" id={csr.requestProfileId} name={profileNames[csr.requestProfileId]} />} />}
+                    {(csr.certificateProfileId || csr.certProfileId) && <DetailField label="Certificate Profile" value={<ProfileLink kind="cert" id={csr.certificateProfileId || csr.certProfileId} name={certProfile?.name} />} />}
+                    {csr.signingProfileId && <DetailField label="Signing Profile" value={<ProfileLink kind="signing" id={csr.signingProfileId} name={profileNames[csr.signingProfileId]} />} />}
                     <DetailField label="Request ID" value={csrId(csr)} mono />
                 </DetailSection>
 
@@ -338,7 +394,7 @@ const CertificateRequestDetail: React.FC = () => {
                             <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-2 mb-0.5">
                                     <span className="text-xs font-medium text-ink">{a.approverUsername}</span>
-                                    <StatusBadge status={decisionBadgeStatus(a.decision)} label={a.decision} />
+                                    <StatusBadge status={decisionBadgeStatus(a.decision)} label={isSelfApproval(a) ? 'Self-approved' : a.decision} />
                                 </div>
                                 {a.comment && <div className="text-xs text-ink-muted mt-1">{a.comment}</div>}
                             </div>

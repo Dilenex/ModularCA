@@ -35,6 +35,10 @@ public class PostgresLifecycleQueryTests
     public Task Counts_do_not_depend_on_the_list_page() =>
         OnPostgresAsync(CertificateLifecycleScenarios.Counts_do_not_depend_on_the_list_page);
 
+    [RequiresEnvironmentFact(ServerVariable)]
+    public Task A_retired_or_dismissed_certificate_needs_no_attention() =>
+        OnPostgresAsync(CertificateLifecycleScenarios.A_retired_or_dismissed_certificate_needs_no_attention);
+
     /// <summary>
     /// The lifecycle indexes the <c>CertificateLifecycleIndexes</c> migration creates are present
     /// once every migration has applied.

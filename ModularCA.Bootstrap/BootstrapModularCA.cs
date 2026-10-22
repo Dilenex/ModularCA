@@ -29,6 +29,9 @@ public class BootstrapModularCA
     /// Factory reset: drops all tables and recreates the schema, deletes keystores and policy files.
     /// The tables are dropped first, in one transaction and only after a catalog check that the
     /// app role owns them; a refusal or a failed drop returns 1 with every keystore still in place.
+    /// The keystores deleted are all three: the CA keystore, the trust keystore and the SSH keystore.
+    /// SSH CA key files still on the host in plaintext are overwritten and deleted too: the default
+    /// key directory, and the files the key rows named, read before the tables are dropped.
     /// Deletes config.yaml, db.yaml, and keystore.yaml (regenerated during setup). Preserves bootstrap.yaml as reference.
     /// Called via <c>dotnet run --reset --force</c>. After reset, a normal <c>dotnet run</c> will
     /// trigger the web setup wizard since no CAs exist.
@@ -152,6 +155,10 @@ public class BootstrapModularCA
             // drops would fail with 42501, and must do so while the keys still exist.
             Console.WriteLine("\nDropping all tables...");
 
+            // Where SSH CA keys are still files on this host is in the key rows, which the
+            // drop below removes: read before it, used after the keystores are deleted.
+            IReadOnlyList<string> legacySshKeyFiles = [];
+
             // Check if app database exists before attempting to drop tables
             if (!string.IsNullOrWhiteSpace(appDatabase))
             {
@@ -182,6 +189,15 @@ public class BootstrapModularCA
                         Console.WriteLine("   " + SchemaOwnership.RepairCommand(DatabaseKind.Application, appDatabase, ownership.Role, appPort));
                         Console.WriteLine("   then re-run the reset.");
                         return 1;
+                    }
+
+                    try
+                    {
+                        legacySshKeyFiles = BackupRestore.LegacySshKeyFilesAsync(appConnStr).GetAwaiter().GetResult();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"(i) The SSH CA key rows could not be read ({SchemaFailure.Describe(ex)}); only the default SSH CA key directory is cleared.");
                     }
 
                     var tables = new List<string>();
@@ -224,17 +240,11 @@ public class BootstrapModularCA
                 }
             }
 
+            // The three keystore files go together: ssh-ca.keystore has lost its Keystores row
+            // with the tables, and a file without its row leaves the signer locked.
             Console.WriteLine("\nDeleting keystore files...");
             DeleteArtifacts(certPath, trustPath);
-
-            if (Directory.Exists(keystoreDir))
-            {
-                foreach (var sshKey in Directory.GetFiles(keystoreDir, "ssh-ca-*"))
-                {
-                    File.Delete(sshKey);
-                    Console.WriteLine($"✓ Deleted SSH key: {Path.GetFileName(sshKey)}");
-                }
-            }
+            DeleteLegacySshKeyFiles(configDir, legacySshKeyFiles);
 
             // The audit database is left alone by design, not for lack of rights: on installs
             // built by 0.4.0 bootstrap or ModularCA.Migrate the audit role owns its tables and could
@@ -309,7 +319,8 @@ public class BootstrapModularCA
     /// are applied and the data seeded as the runtime roles, the ownership rule is proved, and
     /// only then is the configuration written. No migration ever runs as SqlRoot.
     /// <c>Administration.MultipleAdministrators</c> in bootstrap.yaml decides whether key
-    /// ceremonies start on (<see cref="ApplyAdministratorChoice"/>); absent, they do.
+    /// ceremonies start on and whether self-approval is allowed (<see cref="ApplyAdministratorChoice"/>);
+    /// absent, ceremonies are on and self-approval off.
     /// <c>Acme.AllowPrivateAddressValidation</c> lets the first CA's http-01 validator reach
     /// private addresses when ACME is on; absent, it does not.
     /// Returns 0 on success, 1 on a refusal, a failure or an abort. A refusal (a SqlRoot that is
@@ -638,6 +649,7 @@ public class BootstrapModularCA
         BootstrapProfileSeeder.LinkCertProfileToSigningProfile(dbContext, tsaCertProfile, signingProfile);
         BootstrapProfileSeeder.LinkCertProfileToSigningProfile(dbContext, ocspCertProfile, signingProfile);
         BootstrapProfileSeeder.LinkCertProfileToSigningProfile(dbContext, webTlsCertProfile, signingProfile);
+        BootstrapProfileSeeder.SeedStandardCertProfiles(dbContext, signingProfile);
 
         BootstrapProfileSeeder.AddFeatureFlagsToDb(dbContext, defaultFlags);
 
@@ -909,7 +921,9 @@ public class BootstrapModularCA
     /// Applies the setup answer to "Will more than one person administer this CA?", for both
     /// bootstrap paths, after the security policy is seeded. False turns the key ceremony
     /// requirement off for the instance policy and for <paramref name="firstSpace"/>, where a lone
-    /// administrator could never get a ceremony approved; true sets both on. Null (the wizard
+    /// administrator could never get a ceremony approved, and allows a system super-administrator
+    /// to approve their own certificate requests, which nobody else could; true sets ceremonies on
+    /// and self-approval off. Null (the wizard
     /// field or the <c>Administration.MultipleAdministrators</c> key was absent) changes nothing,
     /// so both keep the entity default, on. An explicit answer is written to the bootstrap audit
     /// log (<see cref="BootstrapAuditLog.LogSetupDecision"/>).
@@ -924,6 +938,7 @@ public class BootstrapModularCA
 
         var space = dbContext.Spaces.First(s => s.Id == firstSpace.Id);
         policy.RequireKeyCeremony = several;
+        policy.AllowSystemSuperSelfApproval = !several;
         space.RequireKeyCeremony = several;
         dbContext.SaveChanges();
 
@@ -936,12 +951,13 @@ public class BootstrapModularCA
                 MultipleAdministrators = several,
                 CeremoniesRequired = several,
                 CeremonyRequirementDisabled = !several,
+                SelfApprovalAllowed = !several,
                 AppliedTo = new[] { "instance", $"space:{space.Slug}" },
                 SpaceId = space.Id,
             });
         Console.WriteLine(several
             ? "✓ Several administrators: key ceremonies are required for the instance and the first space."
-            : "✓ Single administrator: key ceremonies are off for the instance and the first space. Turn them on in Settings once a second administrator exists.");
+            : "✓ Single administrator: key ceremonies are off for the instance and the first space, and you may approve your own certificate requests. Turn ceremonies on and self-approval off in Settings once a second administrator exists.");
         return several;
     }
 
@@ -1142,7 +1158,11 @@ public class BootstrapModularCA
     }
 
     /// <summary>
-    /// Deletes existing keystore files from disk.
+    /// Deletes the keystore files from disk: the CA keystore, the trust keystore and, beside the
+    /// CA keystore, the SSH keystore (<c>ssh-ca.keystore</c>) with a file left by a creation of
+    /// it that did not finish. Every caller replaces or drops the database that holds their
+    /// <c>Keystores</c> rows, and an SSH keystore left behind without its row would leave the
+    /// signer locked at the next start.
     /// </summary>
     public static void DeleteArtifacts(string certPath, string trustPath)
     {
@@ -1158,6 +1178,75 @@ public class BootstrapModularCA
         else
         {
             Console.WriteLine($"(i) {trustPath} not found. Skipping deletion.");
+        }
+
+        var sshPath = Path.Combine(Path.GetDirectoryName(certPath) ?? string.Empty, ModularCA.Shared.Signing.KeyRef.SshKeystore);
+        foreach (var path in new[] { sshPath, sshPath + CreatingSuffix })
+        {
+            if (!File.Exists(path))
+                continue;
+            File.Delete(path);
+            Console.WriteLine($"✓ Deleted {Path.GetFileName(path)}");
+        }
+    }
+
+    /// <summary>
+    /// Removes the SSH CA key files a factory reset would otherwise leave on the host in
+    /// plaintext, for SSH CAs that no longer exist: everything in the default key directory
+    /// (<c>config/ssh-ca-keys</c>) and the directory itself, and each key file, with its
+    /// <c>.pub</c>, that a key row named elsewhere. Every file is overwritten with zeros and
+    /// flushed before it is deleted. A file outside the default directory is touched only when
+    /// it is an OpenSSH private key file by its first line, so that a row cannot point the
+    /// reset at some other file, and its directory is removed only when that leaves it empty.
+    /// A file that cannot be removed is named and left; it does not fail the reset.
+    /// </summary>
+    /// <param name="configDir">The <c>config/</c> directory.</param>
+    /// <param name="legacyKeyFiles">The key file paths the key rows gave, read before the tables were dropped.</param>
+    internal static void DeleteLegacySshKeyFiles(string configDir, IEnumerable<string> legacyKeyFiles)
+    {
+        var defaultDir = Path.GetFullPath(Path.Combine(configDir, BackupWrappedSecrets.DefaultSshKeyDirectory));
+        if (Directory.Exists(defaultDir))
+        {
+            try
+            {
+                foreach (var file in Directory.GetFiles(defaultDir, "*", SearchOption.AllDirectories))
+                    ModularCA.Core.Services.SshKeyFileImport.EraseFile(file);
+                Directory.Delete(defaultDir, recursive: true);
+                Console.WriteLine($"✓ Deleted SSH CA key files: {defaultDir}");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.WriteLine($"⚠ SSH CA key files under {defaultDir} could not all be removed ({ex.Message}). Remove them by hand: they are private keys in plaintext.");
+            }
+        }
+
+        var baseDir = Path.GetDirectoryName(Path.GetFullPath(configDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)) ?? configDir;
+        foreach (var keyFile in legacyKeyFiles)
+        {
+            if (string.IsNullOrWhiteSpace(keyFile))
+                continue;
+            try
+            {
+                var full = Path.GetFullPath(Path.IsPathRooted(keyFile) ? keyFile : Path.Combine(baseDir, keyFile));
+                if (BackupRestore.PathIsContainedIn(full, defaultDir) || !File.Exists(full))
+                    continue;
+                if (!ModularCA.Core.Services.SshKeyFileImport.LooksLikeKeyFile(full))
+                {
+                    Console.WriteLine($"(i) {full} was named as an SSH CA key file and is not one; left as it is.");
+                    continue;
+                }
+                ModularCA.Core.Services.SshKeyFileImport.EraseFile(full);
+                if (File.Exists(full + ".pub"))
+                    File.Delete(full + ".pub");
+                Console.WriteLine($"✓ Deleted SSH CA key file: {full}");
+                var directory = Path.GetDirectoryName(full);
+                if (directory != null && !Directory.EnumerateFileSystemEntries(directory).Any())
+                    Directory.Delete(directory);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                Console.WriteLine($"⚠ The SSH CA key file {keyFile} could not be removed ({ex.Message}). Remove it by hand: it is a private key in plaintext.");
+            }
         }
     }
 }

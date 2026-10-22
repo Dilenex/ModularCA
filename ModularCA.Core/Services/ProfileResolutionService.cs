@@ -82,11 +82,46 @@ public class ProfileResolutionService : IProfileResolutionService
             _logger.LogWarning(
                 "Request profile '{ChildId}' references non-existent parent '{ParentId}'. Treating as standalone.",
                 requestProfileId, child.InheritsFromId);
-            return MapRequestProfileStandalone(child);
         }
 
-        return MergeRequestProfiles(child, parent);
+        return ResolveLoaded(child, parent);
     }
+
+    /// <summary>
+    /// The effective profile of <paramref name="child"/> from rows already loaded, as
+    /// <see cref="ResolveRequestProfileAsync"/> resolves it: merged with <paramref name="parent"/>
+    /// when the child inherits from it, standalone otherwise or when the parent is missing.
+    /// Reads nothing from the database.
+    /// </summary>
+    /// <param name="child">The request profile to resolve.</param>
+    /// <param name="parent">The row <paramref name="child"/> inherits from, or null when there is none.</param>
+    internal EffectiveRequestProfile ResolveLoaded(RequestProfileEntity child, RequestProfileEntity? parent)
+        => !child.InheritanceEnabled || child.InheritsFromId == null || parent == null || parent.Id != child.InheritsFromId
+            ? MapRequestProfileStandalone(child)
+            : MergeRequestProfiles(child, parent);
+
+    /// <summary>
+    /// The effective certificate profile of <paramref name="child"/> from rows already loaded, as
+    /// <see cref="ResolveCertProfileAsync"/> resolves it: merged with <paramref name="parent"/>
+    /// when the child inherits from it, standalone otherwise or when the parent is missing.
+    /// Reads nothing from the database.
+    /// </summary>
+    /// <param name="child">The certificate profile to resolve.</param>
+    /// <param name="parent">The row <paramref name="child"/> inherits from, or null when there is none.</param>
+    internal EffectiveCertProfile ResolveLoaded(CertProfileEntity child, CertProfileEntity? parent)
+        => !child.InheritanceEnabled || child.InheritsFromId == null || parent == null || parent.Id != child.InheritsFromId
+            ? MapCertProfileStandalone(child)
+            : MergeCertProfiles(child, parent);
+
+    /// <summary>
+    /// A resolver for <see cref="ResolveLoaded(RequestProfileEntity, RequestProfileEntity?)"/> and
+    /// <see cref="ResolveLoaded(CertProfileEntity, CertProfileEntity?)"/> only, for code that reads the rows itself (the
+    /// upgrade check reads them by column name, before the model applies). It has no database:
+    /// its other methods must not be called, and certificate profile usages are compared by
+    /// spelling alone, without the usage catalog.
+    /// </summary>
+    /// <param name="logger">Where the inheritance clamps log what they override.</param>
+    internal static ProfileResolutionService ForLoadedRows(ILogger<ProfileResolutionService> logger) => new(null!, logger);
 
     /// <inheritdoc />
     public async Task<List<string>> ValidateCertProfileInheritanceAsync(Guid childProfileId)
@@ -412,13 +447,13 @@ public class ProfileResolutionService : IProfileResolutionService
             // Boolean fields — clamped above
             RequireApproval = effectiveRequireApproval,
 
-            // JSON fields
-            SubjectDnRules = MergeJsonArray(child.SubjectDnRules, parent.SubjectDnRules, nameof(EffectiveRequestProfile.SubjectDnRules), sources),
-            SanRules = MergeJsonObject(child.SanRules, parent.SanRules, nameof(EffectiveRequestProfile.SanRules), sources),
+            // Name rules: merged, never looser than the parent's
+            SubjectDnRules = RequestProfileInheritance.MergeSubjectRules(child.SubjectDnRules, parent.SubjectDnRules),
+            SanRules = RequestProfileInheritance.MergeSanRules(child.SanRules, parent.SanRules),
             AllowedCertProfileIds = mergedCertProfileIds,
 
-            // Guid? field: use child if set, else parent
-            DefaultCertProfileId = child.DefaultCertProfileId ?? parent.DefaultCertProfileId,
+            // Guid? field: use child if set and the parent allows it, else parent
+            DefaultCertProfileId = ClampDefaultCertProfile(child, parent),
 
             // Int field — clamped above
             RequiredApprovalCount = effectiveApprovalCount,
@@ -433,15 +468,36 @@ public class ProfileResolutionService : IProfileResolutionService
         // Mark boolean fields
         sources[nameof(EffectiveRequestProfile.RequireApproval)] = "overridden";
 
-        // Mark DefaultCertProfileId
+        // Mark the name rules and DefaultCertProfileId
+        sources[nameof(EffectiveRequestProfile.SubjectDnRules)] = IsEmptyJsonArray(child.SubjectDnRules) ? "inherited" : "overridden";
+        sources[nameof(EffectiveRequestProfile.SanRules)] =
+            string.IsNullOrWhiteSpace(child.SanRules) || child.SanRules.Trim() == "{}" ? "inherited" : "overridden";
         sources[nameof(EffectiveRequestProfile.DefaultCertProfileId)] =
-            child.DefaultCertProfileId != null ? "overridden" : "inherited";
+            result.DefaultCertProfileId == child.DefaultCertProfileId && child.DefaultCertProfileId != null ? "overridden" : "inherited";
 
         // Mark RequiredApprovalCount
         sources[nameof(EffectiveRequestProfile.RequiredApprovalCount)] =
             child.RequiredApprovalCount > 0 ? "overridden" : "inherited";
 
         return result;
+    }
+
+    /// <summary>
+    /// CLM-002: the child's default certificate profile when the parent designates it or
+    /// designates none, otherwise the parent's: a child's default would otherwise add a
+    /// certificate profile the parent does not allow.
+    /// </summary>
+    private Guid? ClampDefaultCertProfile(RequestProfileEntity child, RequestProfileEntity parent)
+    {
+        if (child.DefaultCertProfileId is not Guid childDefault)
+            return parent.DefaultCertProfileId;
+        var designated = Helpers.RequestProfileCertProfiles.DesignatedIds(parent.DefaultCertProfileId, parent.AllowedCertProfileIds);
+        if (designated.Count == 0 || designated.Contains(childDefault))
+            return childDefault;
+        _logger.LogWarning(
+            "CLM-002: Request profile '{ChildId}' default certificate profile '{ChildVal}' is not one parent '{ParentId}' designates. Using parent value.",
+            child.Id, childDefault, parent.Id);
+        return parent.DefaultCertProfileId;
     }
 
     // ── Field merge primitives ───────────────────────────────────────────
@@ -526,21 +582,6 @@ public class ProfileResolutionService : IProfileResolutionService
         {
             return false;
         }
-    }
-
-    /// <summary>
-    /// Merges a JSON object field. Treats "{}" or null/empty as "not set" (inherit from parent).
-    /// Any non-empty object in the child is treated as an override.
-    /// </summary>
-    private static string MergeJsonObject(string child, string parent, string fieldName, Dictionary<string, string> sources)
-    {
-        if (!string.IsNullOrEmpty(child) && child != "{}")
-        {
-            sources[fieldName] = "overridden";
-            return child;
-        }
-        sources[fieldName] = "inherited";
-        return parent;
     }
 
     // ── Validation helpers ───────────────────────────────────────────────
@@ -666,6 +707,8 @@ public class ProfileResolutionService : IProfileResolutionService
     /// <param name="keyUsageKind">The OIDOptions discriminator: "Standard" or "Extended".</param>
     private Func<string, string> BuildUsageComparisonKey(string keyUsageKind)
     {
+        if (_db == null)
+            return raw => UsageCatalogResolver.Canonicalize(raw);
         var catalog = _db.OIDOptions
             .Where(o => o.KeyUsage == keyUsageKind)
             .Select(o => new { o.OID, o.FriendlyName })

@@ -1,3 +1,5 @@
+using ModularCA.Shared.Settings;
+
 namespace ModularCA.Shared.Models.Config;
 
 /// <summary>
@@ -43,12 +45,14 @@ public class SourceCodeConfig
     /// Set this to your own repository if you have modified ModularCA. Leave it alone if you are
     /// running an unmodified release.
     /// </remarks>
+    [Setting(SettingClass.InstanceWide, SettingReload.Live)]
     public string Url { get; set; } = UpstreamUrl;
 
     /// <summary>
     /// SPDX identifier shown alongside the link. Only change this if you hold a commercial
     /// licence for the core, in which case the AGPL notice does not describe your terms.
     /// </summary>
+    [Setting(SettingClass.InstanceWide, SettingReload.Live)]
     public string License { get; set; } = "AGPL-3.0-only";
 
     /// <summary>Returns <see cref="Url"/>, falling back to upstream when it is blank.</summary>
@@ -86,6 +90,18 @@ public class SourceCodeConfig
         // carry this and cannot be reached by a code change to UpstreamUrl.
         "https://github.com/Ephemeral-Intel/ModularCA",
     ];
+
+    /// <summary>
+    /// Whether <paramref name="url"/> is one of <see cref="SupersededUpstreamUrls"/>, give or take
+    /// case and a trailing slash: a default of an earlier build, which nobody chose.
+    /// </summary>
+    public static bool IsSuperseded(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return false;
+        var trimmed = url.Trim().TrimEnd('/');
+        return SupersededUpstreamUrls.Any(s => string.Equals(trimmed, s.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
+    }
 
     /// <summary>
     /// The URL to publish, resolving an unset or superseded value to <see cref="UpstreamUrl"/>.

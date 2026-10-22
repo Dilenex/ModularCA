@@ -108,6 +108,14 @@ describe('describeCeiling', () => {
         expect(notice.tone).toBe('info');
     });
 
+    it('does not call a ceiling of hours "0 days"', () => {
+        // The server counts whole days, so a ten-hour profile arrives as 0.
+        const hours = describeCeiling(preflight({ resolution: { effectiveMaxDays: 0, boundBy: 'CertProfile' }, certProfileValidityPeriodMax: 'PT10H' }));
+        expect(hours.text).toContain('Max less than a day');
+        expect(hours.text).not.toContain('0 days');
+        expect(describeCeiling(preflight({ resolution: { effectiveMaxDays: 1 } })).text).toContain('Max 1 day —');
+    });
+
     it('names the issuing CA and its expiry when the CA binds', () => {
         // A different remedy from the other two — renew the CA — so it must not be reported as a
         // policy ceiling.
@@ -164,9 +172,17 @@ describe('describeCeiling', () => {
     it('leaves the picker unbounded when the ceiling has already passed', () => {
         // An expired issuing CA yields zero usable days. A `max` of the current instant would make
         // every value invalid with no explanation; the server is still the authority.
-        const notice = describeCeiling(preflight({ resolution: { effectiveMaxDays: 0 } }));
+        const notice = describeCeiling(preflight({ resolution: { effectiveMaxDays: 0, effectiveNotAfter: '2026-01-01T00:00:00Z' } }));
 
         expect(notice.maxInputValue).toBe('');
+    });
+
+    it('bounds the picker for a ceiling of hours', () => {
+        // A short-lived profile arrives as zero whole days; the picker still stops at its end.
+        const notice = describeCeiling(preflight({ resolution: { effectiveMaxDays: 0, effectiveNotAfter: '2026-01-01T10:00:00Z' } }));
+
+        expect(notice.text).toContain('less than a day');
+        expect(notice.maxInputValue).toBe(toDatetimeLocalValue(new Date('2026-01-01T10:00:00Z')));
     });
 
     it('bounds the picker with a local wall-clock value, not a UTC one', () => {

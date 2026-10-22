@@ -370,6 +370,70 @@ namespace ModularCA.Database.Migrations
                     b.ToTable("AllowedCertProfileSigningProfiles");
                 });
 
+            modelBuilder.Entity("ModularCA.Shared.Entities.ApiKeyEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedByName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Hint")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<string>("Integration")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<byte[]>("KeyHash")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("bytea");
+
+                    b.Property<DateTime?>("LastUsedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTime?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RevokedByName")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("SpaceScope")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Integration");
+
+                    b.HasIndex("KeyHash")
+                        .IsUnique();
+
+                    b.ToTable("ApiKeys");
+                });
+
             modelBuilder.Entity("ModularCA.Shared.Entities.CaGroupEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -822,6 +886,9 @@ namespace ModularCA.Database.Migrations
                     b.Property<Guid?>("RenewalOfCertificateId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("RequestProfileId")
+                        .HasColumnType("uuid");
+
                     b.Property<DateTime?>("RequestedNotAfter")
                         .HasColumnType("timestamp with time zone");
 
@@ -874,6 +941,8 @@ namespace ModularCA.Database.Migrations
 
                     b.HasIndex("RenewalOfCertificateId");
 
+                    b.HasIndex("RequestProfileId");
+
                     b.HasIndex("RequestorUserId");
 
                     b.HasIndex("SigningProfileId");
@@ -925,6 +994,9 @@ namespace ModularCA.Database.Migrations
                     b.Property<Guid?>("CertificateId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("CmpSignerCertProfileId")
+                        .HasColumnType("uuid");
+
                     b.Property<Guid?>("CmpSigningCertificateId")
                         .HasColumnType("uuid");
 
@@ -963,6 +1035,9 @@ namespace ModularCA.Database.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("citext");
 
+                    b.Property<Guid?>("OcspResponderCertProfileId")
+                        .HasColumnType("uuid");
+
                     b.Property<Guid?>("OcspResponderCertificateId")
                         .HasColumnType("uuid");
 
@@ -976,6 +1051,9 @@ namespace ModularCA.Database.Migrations
                         .HasColumnType("uuid");
 
                     b.Property<Guid?>("SpaceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("TsaCertProfileId")
                         .HasColumnType("uuid");
 
                     b.Property<Guid?>("TsaCertificateId")
@@ -1000,6 +1078,8 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("CertificateId")
                         .IsUnique();
 
+                    b.HasIndex("CmpSignerCertProfileId");
+
                     b.HasIndex("IsDeleted");
 
                     b.HasIndex("Label")
@@ -1008,9 +1088,13 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("Name")
                         .IsUnique();
 
+                    b.HasIndex("OcspResponderCertProfileId");
+
                     b.HasIndex("ParentCaId");
 
                     b.HasIndex("SpaceId");
+
+                    b.HasIndex("TsaCertProfileId");
 
                     b.ToTable("CertificateAuthorities", t =>
                         {
@@ -1042,6 +1126,13 @@ namespace ModularCA.Database.Migrations
                         .HasColumnType("bytea");
 
                     b.Property<string>("EncryptionCertSerialNumber")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<DateTime?>("ExpiryWarningDismissedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ExpiryWarningDismissedBy")
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)");
 
@@ -1081,6 +1172,17 @@ namespace ModularCA.Database.Migrations
 
                     b.Property<byte[]>("RawCertificate")
                         .HasColumnType("bytea");
+
+                    b.Property<DateTime?>("RetiredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RetiredBy")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<string>("RetiredReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
 
                     b.Property<DateTime?>("RevocationDate")
                         .HasColumnType("timestamp with time zone");
@@ -2704,6 +2806,163 @@ namespace ModularCA.Database.Migrations
                     b.ToTable("SecurityPolicy");
                 });
 
+            modelBuilder.Entity("ModularCA.Shared.Entities.SettingEntity", b =>
+                {
+                    b.Property<string>("Key")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<Guid?>("ActorId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ActorName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ValueJson")
+                        .HasColumnType("text");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Key");
+
+                    b.ToTable("Settings");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.SettingHistoryEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<Guid?>("ActorId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ActorName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<DateTime>("ChangedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("PreviousValueJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("SecretDigest")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("ValueJson")
+                        .HasColumnType("text");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Revision");
+
+                    b.HasIndex("Key", "Version")
+                        .IsUnique();
+
+                    b.ToTable("SettingsHistory");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.SettingSecretEntity", b =>
+                {
+                    b.Property<string>("Key")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<Guid?>("ActorId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ActorName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<byte[]>("Value")
+                        .HasColumnType("bytea");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Key");
+
+                    b.ToTable("SettingsSecrets");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.SettingsStateEntity", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("ImportedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ImportedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("SettingsState");
+                });
+
             modelBuilder.Entity("ModularCA.Shared.Entities.SignerAuditEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2772,6 +3031,10 @@ namespace ModularCA.Database.Migrations
 
                     b.Property<Guid?>("SpaceId")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("Summary")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
 
                     b.Property<string>("WrappingKeyId")
                         .HasMaxLength(64)
@@ -2950,6 +3213,11 @@ namespace ModularCA.Database.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<bool>("AllowOwnUsername")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
+
                     b.Property<Guid>("CertificateAuthorityId")
                         .HasColumnType("uuid");
 
@@ -2968,6 +3236,13 @@ namespace ModularCA.Database.Migrations
                     b.Property<int?>("KeySize")
                         .HasColumnType("integer");
 
+                    b.Property<string>("KeyStorage")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("Signer");
+
                     b.Property<string>("KeyType")
                         .IsRequired()
                         .HasMaxLength(20)
@@ -2982,13 +3257,15 @@ namespace ModularCA.Database.Migrations
                         .HasColumnType("character varying(255)");
 
                     b.Property<string>("PrivateKeyPath")
-                        .IsRequired()
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
 
                     b.Property<string>("PublicKey")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<DateTime?>("ReviewBy")
+                        .HasColumnType("timestamp with time zone");
 
                     b.HasKey("Id");
 
@@ -3010,6 +3287,10 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("AllowedPrincipalPatterns")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<string>("CertificateType")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -3072,6 +3353,9 @@ namespace ModularCA.Database.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)");
 
+                    b.Property<string>("LoginNameGrounds")
+                        .HasColumnType("text");
+
                     b.Property<string>("Principals")
                         .IsRequired()
                         .HasColumnType("text");
@@ -3079,6 +3363,9 @@ namespace ModularCA.Database.Migrations
                     b.Property<string>("PublicKey")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<DateTime?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<long>("SerialNumber")
                         .HasColumnType("bigint");
@@ -3094,6 +3381,9 @@ namespace ModularCA.Database.Migrations
                     b.Property<Guid>("SshCaKeyId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("SubjectUserId")
+                        .HasColumnType("uuid");
+
                     b.Property<DateTime>("ValidAfter")
                         .HasColumnType("timestamp with time zone");
 
@@ -3103,6 +3393,11 @@ namespace ModularCA.Database.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("SshCaKeyId");
+
+                    b.HasIndex("SubjectUserId");
+
+                    b.HasIndex("SshCaKeyId", "RevokedAt")
+                        .HasFilter("\"IsRevoked\"");
 
                     b.ToTable("SshCertificates");
                 });
@@ -3159,6 +3454,103 @@ namespace ModularCA.Database.Migrations
                         });
                 });
 
+            modelBuilder.Entity("ModularCA.Shared.Entities.SshKeyImportEntity", b =>
+                {
+                    b.Property<Guid>("SshCaKeyId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("AuditedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FilePath")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
+                    b.Property<DateTime?>("FileRemovedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Fingerprint")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTime>("ImportedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.HasKey("SshCaKeyId");
+
+                    b.ToTable("SshKeyImports");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.SshLoginNameGrantEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("GrantedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("GrantedByUsername")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<Guid?>("GroupId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("LoginName")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<int?>("MaxValidityHours")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<Guid>("SshCaKeyId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("GrantedByUserId");
+
+                    b.HasIndex("GroupId");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("SshCaKeyId", "LoginName", "GroupId")
+                        .IsUnique()
+                        .HasFilter("\"GroupId\" IS NOT NULL");
+
+                    b.HasIndex("SshCaKeyId", "LoginName", "UserId")
+                        .IsUnique()
+                        .HasFilter("\"UserId\" IS NOT NULL");
+
+                    b.ToTable("SshLoginNameGrants", t =>
+                        {
+                            t.HasCheckConstraint("CK_SshLoginNameGrants_ExactlyOneTarget", "(\"UserId\" IS NULL) <> (\"GroupId\" IS NULL)");
+                        });
+                });
+
             modelBuilder.Entity("ModularCA.Shared.Entities.SshRequestProfileEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3175,6 +3567,10 @@ namespace ModularCA.Database.Migrations
 
                     b.Property<Guid?>("CertificateAuthorityId")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("CertificateType")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -3875,6 +4271,11 @@ namespace ModularCA.Database.Migrations
                         .HasForeignKey("IssuedCertificateId")
                         .OnDelete(DeleteBehavior.SetNull);
 
+                    b.HasOne("ModularCA.Shared.Entities.RequestProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("RequestProfileId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("ModularCA.Shared.Entities.UserEntity", "RequestorUser")
                         .WithMany()
                         .HasForeignKey("RequestorUserId");
@@ -3924,6 +4325,16 @@ namespace ModularCA.Database.Migrations
                         .WithOne("CertificateAuthority")
                         .HasForeignKey("ModularCA.Shared.Entities.CertificateAuthorityEntity", "CertificateId");
 
+                    b.HasOne("ModularCA.Shared.Entities.CertProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("CmpSignerCertProfileId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("ModularCA.Shared.Entities.CertProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("OcspResponderCertProfileId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("ModularCA.Shared.Entities.CertificateAuthorityEntity", "ParentCa")
                         .WithMany("ChildCAs")
                         .HasForeignKey("ParentCaId")
@@ -3932,6 +4343,11 @@ namespace ModularCA.Database.Migrations
                     b.HasOne("ModularCA.Shared.Entities.SpaceEntity", "Space")
                         .WithMany()
                         .HasForeignKey("SpaceId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("ModularCA.Shared.Entities.CertProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("TsaCertProfileId")
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Certificate");
@@ -4296,6 +4712,11 @@ namespace ModularCA.Database.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("ModularCA.Shared.Entities.UserEntity", null)
+                        .WithMany()
+                        .HasForeignKey("SubjectUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.Navigation("SshCaKey");
                 });
 
@@ -4331,6 +4752,36 @@ namespace ModularCA.Database.Migrations
                     b.Navigation("SshRequestProfile");
 
                     b.Navigation("SshSigningProfile");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.SshLoginNameGrantEntity", b =>
+                {
+                    b.HasOne("ModularCA.Shared.Entities.UserEntity", null)
+                        .WithMany()
+                        .HasForeignKey("GrantedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("ModularCA.Shared.Entities.CaGroupEntity", "Group")
+                        .WithMany()
+                        .HasForeignKey("GroupId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.HasOne("ModularCA.Shared.Entities.SshCaKeyEntity", "SshCaKey")
+                        .WithMany()
+                        .HasForeignKey("SshCaKeyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("ModularCA.Shared.Entities.UserEntity", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.Navigation("Group");
+
+                    b.Navigation("SshCaKey");
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.SshSigningProfileEntity", b =>

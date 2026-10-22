@@ -95,14 +95,26 @@ namespace ModularCA.Core.Services
             return MapToDto(entity);
         }
 
+        /// <summary>The request statuses that still lead to approval or issuance.</summary>
+        private static readonly string[] OpenStatuses = ["Pending", "PendingApproval", "PartiallyApproved", "Approved"];
+
         /// <summary>
-        /// Deletes a request profile by ID. Returns true if deleted, false if not found.
+        /// Deletes a request profile by ID. Returns true if deleted, false if not found. A
+        /// profile that requests still waiting for approval or issuance were made under is
+        /// refused (<see cref="ModularCA.Shared.Errors.ResourceConflictException"/>): deleting it
+        /// would release them from its rules.
         /// </summary>
         public async Task<bool> DeleteAsync(Guid id)
         {
             var entity = await _db.RequestProfiles.FindAsync(id);
             if (entity == null)
                 return false;
+
+            var open = await _db.CertificateRequests.CountAsync(r => r.RequestProfileId == id && OpenStatuses.Contains(r.Status));
+            if (open > 0)
+                throw new ModularCA.Shared.Errors.ResourceConflictException(
+                    $"The request profile '{entity.Name}' cannot be deleted: {open} request{(open == 1 ? " is" : "s are")} still waiting "
+                    + "for approval or issuance under it.", remediation: "Issue, reject or cancel those requests first.");
 
             _db.RequestProfiles.Remove(entity);
             await _db.SaveChangesAsync();
@@ -111,14 +123,18 @@ namespace ModularCA.Core.Services
 
         /// <summary>
         /// Maps a <see cref="RequestProfileEntity"/> (JSON strings) to a <see cref="RequestProfileDto"/> (strongly-typed objects).
+        /// The rules are read whatever the case of their keys: bootstrap writes the SAN rules in
+        /// camel case, and read case-sensitively a seeded profile showed "DNS and IP, none
+        /// required" on its page whatever it held, and an edit saved that back over its rules.
         /// </summary>
-        private static RequestProfileDto MapToDto(RequestProfileEntity entity) => new()
+        internal static RequestProfileDto MapToDto(RequestProfileEntity entity) => new()
         {
             Id = entity.Id,
             Name = entity.Name,
             Description = entity.Description,
-            SubjectDnRules = JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(entity.SubjectDnRules) ?? new(),
-            SanRules = JsonSerializer.Deserialize<SanRules>(entity.SanRules) ?? new(),
+            SubjectDnRules = JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(
+                string.IsNullOrWhiteSpace(entity.SubjectDnRules) ? "[]" : entity.SubjectDnRules, ModularCA.Shared.Utils.SafeJsonOptions.Stored) ?? new(),
+            SanRules = RequestProfileValidationService.ReadSanRules(entity.SanRules) ?? new(),
             AllowedCertProfileIds = JsonSerializer.Deserialize<List<Guid>>(entity.AllowedCertProfileIds) ?? new(),
             DefaultCertProfileId = entity.DefaultCertProfileId,
             RequireApproval = entity.RequireApproval,

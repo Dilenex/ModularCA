@@ -62,8 +62,9 @@ export const groupEkuOptions = (oids: readonly string[], label: (oid: string) =>
 };
 
 /**
- * Splits SSH extensions into the permit-* names OpenSSH writes into a certificate and the no-*
- * names that mean "issue without the matching permit-*".
+ * Splits SSH extensions into the names a certificate carries and the no-* names, which add
+ * nothing and only withhold the matching permit-*. no-touch-required is an extension in its own
+ * right, so it sits with the names a certificate carries.
  */
 export const groupSshExtensions = (
     extensions: readonly string[],
@@ -71,10 +72,11 @@ export const groupSshExtensions = (
     tone?: (ext: string) => 'warn' | undefined,
 ): CheckboxGroup[] => {
     const option = (ext: string): CheckboxOption => ({ value: ext, label: ext, description: describe(ext), tone: tone?.(ext) });
-    const permit = extensions.filter((e) => !e.startsWith('no-'));
-    const deny = extensions.filter((e) => e.startsWith('no-'));
+    const withholds = (e: string) => e.startsWith('no-') && e !== 'no-touch-required';
+    const permit = extensions.filter((e) => !withholds(e));
+    const deny = extensions.filter(withholds);
     return [
         { id: 'permit', label: 'Permit', options: permit.map(option) },
-        { id: 'deny', label: 'Deny', options: deny.map(option) },
+        { id: 'deny', label: 'Withhold', options: deny.map(option) },
     ].filter((g) => g.options.length > 0);
 };

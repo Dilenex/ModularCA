@@ -5,6 +5,7 @@ import {
 } from './profileFormCore';
 import { hoursOrDefault } from './sshSigningProfile';
 import { type CeilingMode, ceilingEmptyOnly, ceilingListOut, ceilingModeFromList } from '@shared/components/checkboxListModel';
+import { type SshProfileTypeChoice, profileTypeChoice } from '../sshProfileType';
 
 /**
  * Form model for an SSH cert profile, shared by /profiles/ssh-cert/new and /profiles/ssh-cert/:id.
@@ -21,6 +22,8 @@ export interface CreateSshCertProfileBody {
     allowedExtensions: string | null;
     requiredExtensions: string | null;
     maxValidityHours: number | null;
+    /** `user`, `host` or `either`; the server stores `either` as no type. */
+    certificateType: SshProfileTypeChoice | null;
 }
 
 /** Mirrors UpdateSshCertProfileRequest in AdminSshProfileController.cs (every member optional). */
@@ -32,6 +35,8 @@ export interface UpdateSshCertProfileBody {
     allowedExtensions: string | null;
     requiredExtensions: string | null;
     maxValidityHours: number | null;
+    /** `either` clears the type; null would leave it unchanged, so the form always sends one of the three. */
+    certificateType: SshProfileTypeChoice | null;
 }
 
 export interface SshCertProfileFormState {
@@ -45,6 +50,8 @@ export interface SshCertProfileFormState {
     allowedExtensionsMode: CeilingMode;
     requiredExtensions: string[];
     maxValidityHours: string;
+    /** The certificate type the profile is for; `either` for a stored profile with none. */
+    certificateType: SshProfileTypeChoice;
 }
 
 export const DEFAULT_MAX_PRINCIPALS = 10;
@@ -58,6 +65,7 @@ export const emptyForm = (): SshCertProfileFormState => ({
     maxPrincipals: String(DEFAULT_MAX_PRINCIPALS),
     allowedExtensions: [...DEFAULT_ALLOWED_EXTENSIONS], allowedExtensionsMode: 'only', requiredExtensions: [],
     maxValidityHours: '720',
+    certificateType: 'either',
 });
 
 /** Seeds the form from a stored profile. */
@@ -70,6 +78,7 @@ export const formFromProfile = (p: any): SshCertProfileFormState => ({
     allowedExtensionsMode: ceilingModeFromList(parseJsonArray(p?.allowedExtensions)),
     requiredExtensions: parseJsonArray(p?.requiredExtensions),
     maxValidityHours: String(p?.maxValidityHours ?? 720),
+    certificateType: profileTypeChoice(p?.certificateType),
 });
 
 /** The Allowed Extensions list as saved: empty (unrestricted) in Any mode. */
@@ -81,6 +90,7 @@ const sharedBody = (f: SshCertProfileFormState) => ({
     allowedExtensions: JSON.stringify(effectiveAllowed(f)),
     requiredExtensions: JSON.stringify(f.requiredExtensions),
     maxValidityHours: hoursOrDefault(f.maxValidityHours),
+    certificateType: f.certificateType,
 });
 
 export const formToCreateBody = (f: SshCertProfileFormState): CreateSshCertProfileBody => ({
@@ -95,7 +105,7 @@ export const formToUpdateBody = (f: SshCertProfileFormState): UpdateSshCertProfi
     ...sharedBody(f),
 });
 
-export const PRINCIPAL_PATTERN_REASON = 'Fix the principal patterns marked invalid; each must be a regular expression that compiles.';
+export const PRINCIPAL_PATTERN_REASON = 'Fix the login name patterns marked invalid; each must be a regular expression that compiles.';
 
 /** How one pattern treats a test principal: matched, not matched, or the pattern does not compile. */
 export interface PatternMatch {

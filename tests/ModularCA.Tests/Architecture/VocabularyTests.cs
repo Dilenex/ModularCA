@@ -121,6 +121,8 @@ public sealed class VocabularyTests
         new("ModularCA.Shared/Licensing/License.cs", Reason.Pinned, Text: "maxTenants"),
         new("ModularCA.Shared/Signing/SigningRefusedException.cs", Reason.Pinned, Text: "TenantMismatch"),
         new("ModularCA.Keystore/Signing/InProcessSigningService.cs", Reason.Pinned, Text: "TenantMismatch"),
+        new("ModularCA.Keystore/Signing/InProcessSigningService.SshKeys.cs", Reason.Pinned, Text: "TenantMismatch"),
+        new("ModularCA.Keystore/Signing/InProcessSigningService.SshCertificates.cs", Reason.Pinned, Text: "TenantMismatch"),
         new("ModularCA.Shared/Entities/SignerAuditEntity.cs", Reason.Pinned, Text: "TenantScope = \"tenant\""),
         new("ModularCA.Shared/Entities/SignerAuditEntity.cs", Reason.Pinned, Text: "TenantScope"),
         new(Tests + "Core/AuditHashGoldenVectorTests.cs", Reason.Pinned),
@@ -128,6 +130,8 @@ public sealed class VocabularyTests
         new(Tests + "Shared/Licensing/EntitlementTests.cs", Reason.Pinned, Text: "MaxTenants"),
         new(Tests + "Signer/SigningServiceContractTests.cs", Reason.Pinned, Text: "TenantMismatch"),
         new(Tests + "Signer/SigningServiceContractTests.cs", Reason.Pinned, Text: "TenantScope"),
+        new(Tests + "Signer/SigningServiceContractTests.Ssh.cs", Reason.Pinned, Text: "TenantMismatch"),
+        new(Tests + "Signer/SigningServiceContractTests.SshCertificates.cs", Reason.Pinned, Text: "TenantMismatch"),
 
         new("ModularCA.Shared/Utils/YamlConfigLoader.cs", Reason.Legacy, Text: "\"TenantId\""),
         new("ModularCA.Shared/Models/CeremonyParametersJson.cs", Reason.Legacy, Text: "TenantId"),

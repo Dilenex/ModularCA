@@ -3,8 +3,9 @@ namespace ModularCA.Keystore.Signing;
 /// <summary>
 /// Where the signer writes a key it has committed: the private key and the certificate it now
 /// belongs to, as a pair, since the keystore pairs keys with certificates by public key when it
-/// loads. The file-backed implementation appends to the keystore files through the existing
-/// append path; a test implementation keeps the pairs in memory.
+/// loads. An SSH CA key has no certificate and is written alone, to a keystore of its own. The
+/// file-backed implementation appends to the keystore files through the existing append path;
+/// a test implementation keeps what it is given in memory.
 /// </summary>
 /// <remarks>
 /// The persistence is also the only thing that reads or replaces a keystore file whole, which
@@ -20,6 +21,13 @@ public interface ISignerKeyPersistence
     /// between the two leaves a key that pairs with nothing and is never loaded.
     /// </summary>
     void Append(byte[] privateKeyPkcs8Der, byte[] certificateDer);
+
+    /// <summary>
+    /// Persists an SSH CA key durably in <c>ssh-ca.keystore</c> and nowhere else: the key has no
+    /// certificate, and nothing is written to the trust keystore. The first key creates the
+    /// keystore; an install that never commits or imports an SSH key never has one.
+    /// </summary>
+    void AppendSshKey(byte[] privateKeyPkcs8Der);
 
     /// <summary>
     /// The names of the keystore files the persistence holds, for a backup to walk.
@@ -38,7 +46,17 @@ public interface ISignerKeyPersistence
     /// file beside it so the operator can go back. Throws
     /// <see cref="System.Security.SecurityException"/>, <see cref="System.Security.Cryptography.CryptographicException"/>
     /// or <see cref="InvalidDataException"/> when the bytes do not verify, in which case nothing
-    /// in place has changed.
+    /// in place has changed. The SSH keystore is never without a pinned signer: a file offered
+    /// for it where the database has no pin for it is a
+    /// <see cref="System.Security.SecurityException"/> too, so its <c>Keystores</c> row has to be
+    /// in the database before the file.
     /// </summary>
     void ImportKeystoreFile(string name, byte[] bytes);
+
+    /// <summary>
+    /// Moves the keystore file <paramref name="name"/> aside, to <c>name.bak.&lt;timestamp&gt;</c>
+    /// beside it, so that nothing loads it and nothing is lost. Returns the name it was moved
+    /// to, or null when there was no such file.
+    /// </summary>
+    string? MoveKeystoreFileAside(string name);
 }

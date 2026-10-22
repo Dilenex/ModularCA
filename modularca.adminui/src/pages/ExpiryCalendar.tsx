@@ -260,7 +260,7 @@ const ExpiryCalendar: React.FC = () => {
                     <p className="text-sm text-ink-muted mt-1">Renewal load over time — find the cliffs before they hit.</p>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
-                    <select value={caId} onChange={(e) => setCaId(e.target.value)} className={selControl} disabled={scopeLocked} title={scopeLocked ? 'Set by the scope in the sidebar' : 'Filter by issuing CA'}>
+                    <select value={caId} onChange={(e) => setCaId(e.target.value)} className={selControl} disabled={scopeLocked} title={scopeLocked ? 'Set by the scope in the top bar' : 'Filter by issuing CA'}>
                         <option value="">{scopeSpaceId ? 'All CAs in this space' : 'All CAs'}</option>
                         {authorities.map((ca) => (
                             <option key={ca.id} value={ca.id}>{ca.label || ca.name || ca.commonName || ca.subjectDN || ca.id}</option>

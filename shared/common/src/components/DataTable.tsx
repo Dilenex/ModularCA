@@ -16,6 +16,7 @@ import type { NoticeInput } from '../notifications/notice';
 import { useNavigate } from 'react-router-dom';
 import { useTablePrefs } from '../context/TablePrefsContext';
 import { renameColumnKeys } from '../tablePrefsKeys';
+import { AUTO_REFRESH_SECONDS, autoRefreshDue, autoRefreshLabel } from '../tableRefresh';
 import { Chevron } from './Chevron';
 import { Drawer } from './Drawer';
 import { sortRows } from '../tableSort';
@@ -83,8 +84,16 @@ export interface DataTableProps<Row> {
     findable?: boolean;
     /** The table's own "+ New" button. Sits at the right end of the header's second line. */
     toolbarAction?: React.ReactNode;
+    /** Asks the parent to load the rows again. When given, the header shows a Refresh button and
+     *  an auto-refresh switch, and the rows stay on screen while they reload. For tables whose
+     *  rows appear without the reader doing anything: logs. */
+    onRefresh?: () => void;
+    /** Seconds between automatic refreshes while the switch is on. */
+    autoRefreshSeconds?: number;
     /** Show selection checkboxes + bulk-action toolbar. */
     selectable?: boolean;
+    /** With `selectable`: which rows can be ticked. A row that cannot shows no checkbox and is left out of "select all". */
+    rowSelectable?: (row: Row) => boolean;
     bulkActions?: DataTableBulkAction<Row>[];
     /** Base filename for CSV export (without extension). Defaults to tableId. */
     exportFileName?: string;
@@ -143,7 +152,7 @@ export interface DataTableProps<Row> {
     onPageSizeChange?: (size: number) => void;
 }
 
-interface Prefs { widths: Record<string, number>; hidden: string[]; }
+interface Prefs { widths: Record<string, number>; hidden: string[]; autoRefresh?: boolean; }
 
 /** Stable empty set so controlled selection has a constant identity when no keys are passed. */
 const EMPTY_SET: Set<string> = new Set();
@@ -151,7 +160,8 @@ const EMPTY_SET: Set<string> = new Set();
 /* ── component ────────────────────────────────────────────────────────────── */
 export function DataTable<Row>({
     tableId, renamedColumns, columns, rows: loadedRows, rowKey, loading, error, empty, title, findable, toolbarAction, onRowClick: onRowOpen,
-    selectable, bulkActions, exportFileName, disableExport, renderExpanded,
+    onRefresh, autoRefreshSeconds = AUTO_REFRESH_SECONDS,
+    selectable, rowSelectable, bulkActions, exportFileName, disableExport, renderExpanded,
     renderDrawer, drawerTitle, detailPath,
     selectedKeys, onSelectedKeysChange, totalCount, allMatchingSelected,
     onSelectAllMatching, onClearSelection, onExport, exporting,
@@ -222,7 +232,7 @@ export function DataTable<Row>({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [rows, controlled]);
 
-    const allKeys = useMemo(() => sortedRows.map(rowKey), [sortedRows, rowKey]);
+    const allKeys = useMemo(() => (rowSelectable ? sortedRows.filter(rowSelectable) : sortedRows).map(rowKey), [sortedRows, rowKey, rowSelectable]);
     const allSelected = allKeys.length > 0 && allKeys.every((k) => selected.has(k));
     const someSelected = selected.size > 0 && !allSelected;
     const selectAllRef = useRef<HTMLInputElement>(null);
@@ -238,6 +248,24 @@ export function DataTable<Row>({
     const selectedRows = useMemo(() => sortedRows.filter((r) => selected.has(rowKey(r))), [sortedRows, selected, rowKey]);
     // When the parent has flagged "all matching" selected, the count reflects the server-wide total.
     const selectionCount = allMatchingSelected && totalCount != null ? totalCount : selected.size;
+
+    // A table that can be refreshed keeps its rows on screen while they reload; any other shows
+    // "Loading…" in their place, as does a refreshable one that has no rows yet.
+    const busy = !!loading && (!onRefresh || loadedRows.length === 0);
+
+    /* auto-refresh: the reader's choice per table, kept with the table's layout */
+    const refreshRef = useRef(onRefresh); refreshRef.current = onRefresh;
+    const refreshState = useRef({ selectedCount: 0, drawerOpen: false });
+    refreshState.current = { selectedCount: selected.size, drawerOpen: drawerRow != null };
+    const autoRefresh = !!onRefresh && !!prefs.autoRefresh;
+    useEffect(() => {
+        if (!autoRefresh) return;
+        const timer = setInterval(() => {
+            if (autoRefreshDue({ enabled: true, pageHidden: document.hidden, ...refreshState.current }))
+                refreshRef.current?.();
+        }, Math.max(5, autoRefreshSeconds) * 1000);
+        return () => clearInterval(timer);
+    }, [autoRefresh, autoRefreshSeconds]);
 
     /* column resize */
     const headerRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -355,6 +383,20 @@ export function DataTable<Row>({
             <div className="px-3 py-2 border-b border-line flex items-center justify-between gap-2 flex-wrap">
                 <h3 className="text-sm font-semibold text-ink min-h-[28px] flex items-center gap-1">{title}<span className="text-ink-muted font-normal">({narrowed ? `${rows.length} of ${loadedRows.length}` : (totalCount ?? rows.length)})</span></h3>
                 <div className="flex items-center gap-2">
+                    {onRefresh && (
+                        <>
+                            <label className="inline-flex items-center gap-1.5 text-xs text-ink-muted cursor-pointer select-none"
+                                title={`Reload every ${autoRefreshSeconds} seconds. Pauses while rows are ticked, a row is open, or the page is in the background.`}>
+                                <input type="checkbox" checked={!!prefs.autoRefresh}
+                                    onChange={(e) => setPrefs({ ...prefsRef.current, autoRefresh: e.target.checked })} />
+                                {autoRefreshLabel(autoRefreshSeconds)}
+                            </label>
+                            <button type="button" onClick={onRefresh} disabled={!!loading}
+                                className="px-2.5 py-1 text-xs rounded border border-line-strong bg-raised text-ink hover:bg-hover disabled:opacity-50 transition-colors">
+                                {loading ? 'Refreshing…' : 'Refresh'}
+                            </button>
+                        </>
+                    )}
                     {findable && (
                         <input type="search" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Find in this table"
                             aria-label={title ? `Find in ${title}` : 'Find in this table'}
@@ -447,17 +489,17 @@ export function DataTable<Row>({
             )}
 
             {/* states */}
-            {loading && <div className="p-4 text-sm text-ink-muted text-center">Loading…</div>}
+            {busy && <div className="p-4 text-sm text-ink-muted text-center">Loading…</div>}
             {error && <div className="p-3"><InlineNotice notice={error} /></div>}
-            {!loading && !error && rows.length === 0 && (
+            {!busy && !loading && !error && rows.length === 0 && (
                 <div className="p-6 text-sm text-ink-muted text-center">
                     {loadedRows.length > 0 ? <>Nothing here matches "{typed}". <button onClick={() => setTyped('')} className="text-accent-ink hover:underline">Clear</button></> : (empty || 'No rows')}
                 </div>
             )}
 
             {/* grid */}
-            {!loading && !error && rows.length > 0 && (
-                <div className="overflow-x-auto">
+            {!busy && !error && rows.length > 0 && (
+                <div className="overflow-x-auto" aria-busy={!!loading}>
                     {/* header */}
                     <div className="grid items-center border-b border-line bg-sunken" style={{ gridTemplateColumns: gridTemplate, minWidth: tableMinWidth }}>
                         {hasRowOpen && <div className="py-2" />}
@@ -513,8 +555,10 @@ export function DataTable<Row>({
                                     )}
                                     {selectable && (
                                         <div className="flex items-center justify-center py-2">
-                                            <input type="checkbox" checked={isSel} onChange={() => toggleRow(k)}
-                                                className="h-3.5 w-3.5 rounded border-line-strong accent-accent" />
+                                            {(!rowSelectable || rowSelectable(r)) && (
+                                                <input type="checkbox" checked={isSel} onChange={() => toggleRow(k)}
+                                                    className="h-3.5 w-3.5 rounded border-line-strong accent-accent" />
+                                            )}
                                         </div>
                                     )}
                                     {visibleCols.map((c) => (
@@ -539,8 +583,8 @@ export function DataTable<Row>({
             {paged && (
                 <div className="px-3 py-2 border-t border-line flex items-center justify-between gap-3 flex-wrap text-xs text-ink-muted">
                     <span>
-                        {totalCount != null ? `${totalCount} row${totalCount === 1 ? '' : 's'}` : ''}
-                        {totalPages != null ? ` · page ${page} of ${totalPages}` : ` · page ${page}`}
+                        {totalCount != null ? `${totalCount} row${totalCount === 1 ? '' : 's'} · ` : ''}
+                        {totalPages != null ? `page ${page} of ${totalPages}` : `page ${page}`}
                     </span>
                     <span className="flex items-center gap-2">
                         {pageSizeOptions && onPageSizeChange && pageSize != null && (

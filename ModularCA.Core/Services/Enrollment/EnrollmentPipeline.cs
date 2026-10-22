@@ -118,6 +118,12 @@ public class EnrollmentPipeline : IEnrollmentPipeline
             request = settled.Request;
             renewal = settled.Renewal;
         }
+        if (renewal != null && await _db.Certificates.AsNoTracking()
+                .AnyAsync(c => c.CertificateId == renewal.RenewedCertificateId && c.RetiredAt != null, cancellationToken))
+        {
+            return await RefuseAsync(submission, request, ca, EnrollmentRefusalReason.CertificateRetired,
+                $"Certificate {renewal.SerialNumber ?? renewal.RenewedCertificateId.ToString()} was retired and is not renewed; enroll a new certificate.");
+        }
 
         // 5. The effective profiles: the CA's protocol configuration chooses them, or the protocol
         //    supplied them along with the CA; the request profile's allowed list bounds what a
@@ -147,6 +153,16 @@ public class EnrollmentPipeline : IEnrollmentPipeline
         //    subject, which is why the row below is written from the result and not from the CSR.
         var subject = request.Subject ?? string.Empty;
 
+        // See EnrollmentSubmission.CommonNameIfProfileRequiresOne.
+        if (context.RequestProfileId != null
+            && !string.IsNullOrEmpty(submission.CommonNameIfProfileRequiresOne)
+            && !RequestProfileValidationService.ParseSubjectDn(subject).ContainsKey("CN")
+            && await _requestProfileValidation.RequiresSubjectFieldAsync(context.RequestProfileId.Value, "CN"))
+        {
+            var commonName = $"CN={submission.CommonNameIfProfileRequiresOne}";
+            subject = string.IsNullOrWhiteSpace(subject) ? commonName : $"{commonName}, {subject}";
+        }
+
         // Every component within the limits the certificate will be held to, before the name
         // reaches the ASN.1 library. Since BouncyCastle 2.7.0 an over-long common name is refused
         // when the name is constructed, deep inside issuance, where the exception is a server
@@ -163,6 +179,7 @@ public class EnrollmentPipeline : IEnrollmentPipeline
 
         var sanJson = JsonSerializer.Serialize(request.SubjectAlternativeNames);
         var requireApproval = false;
+        string? subjectOverrides = null;
         if (context.RequestProfileId != null)
         {
             var (isValid, error, modifiedSubject) = await _requestProfileValidation
@@ -180,6 +197,12 @@ public class EnrollmentPipeline : IEnrollmentPipeline
             // never runs.
             var effective = await _profileResolution.ResolveRequestProfileAsync(context.RequestProfileId.Value);
             requireApproval = effective.RequireApproval;
+
+            // The certificate is built from the CSR's own subject, so what the profile settled
+            // above (a fixed value, a default, the common name added for it) reaches it only as
+            // an override. Without this the row said one subject and the certificate another.
+            subjectOverrides = RequestProfileEnforcement.ProtocolSubjectOverrides(
+                effective, request.CsrPem, sanJson, subject);
         }
 
         // 7. The protocol's own check, now that the profile is known.
@@ -208,6 +231,8 @@ public class EnrollmentPipeline : IEnrollmentPipeline
             CertProfile = certProfile,
             SigningProfileId = signingProfile.Id,
             SigningProfile = signingProfile,
+            RequestProfileId = context.RequestProfileId,
+            SubjectOverrides = subjectOverrides,
         };
         _db.CertificateRequests.Add(csrEntity);
         await _db.SaveChangesAsync(cancellationToken);

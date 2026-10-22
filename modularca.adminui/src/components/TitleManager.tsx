@@ -23,13 +23,14 @@ const AUTH_ROUTE_TITLES: Array<[string, string]> = [
     ['/banner', 'Login Banner'],
 ];
 
-// Self-service portal (/user). Flat: every page is one segment deep.
+// Self-service portal (/user).
 const USER_ROUTE_TITLES: Array<[string, string]> = [
     ['/dashboard', 'Dashboard'],
     ['/request', 'Request Certificate'],
     ['/requests', 'My Requests'],
+    ['/certificates/ssh/:id', 'SSH Certificate'],
     ['/certificates', 'My Certificates'],
-    ['/ssh', 'SSH Certificates'],
+    ['/ssh', 'My Certificates'], // legacy path → redirects to the SSH tab of /certificates
     ['/authorities', 'CA Information'],
     ['/account', 'My Account'],
     ['/security', 'My Account'], // legacy path → redirects to /account
@@ -57,6 +58,7 @@ const ADMIN_ROUTE_TITLES: Array<[string, string]> = [
     ['/certificates/request', 'Request Certificate'],
     ['/certificates/search', 'Certificate Search'],
     ['/certificates/expiry', 'Expiry Calendar'],
+    ['/certificates/ssh/:id', 'SSH Certificate'],
     ['/certificates/:serial', 'Certificate Detail'],
     ['/certificates', 'All Certificates'],
 
@@ -68,6 +70,7 @@ const ADMIN_ROUTE_TITLES: Array<[string, string]> = [
     // CA management
     ['/authorities/manage/:id', 'CA Detail'],
     ['/authorities/manage', 'Authorities'],
+    ['/authorities/ssh/:id', 'SSH CA Key'],
     ['/authorities/protocols', 'Protocol Config'],
     ['/authorities/:caId/ldap', 'LDAP Publishers'],
 
@@ -80,10 +83,10 @@ const ADMIN_ROUTE_TITLES: Array<[string, string]> = [
     ['/profiles/ssh-signing/:id', 'SSH Signing Profile'],
     ['/profiles', 'Profiles'],
 
-    // SSH
+    // SSH: legacy paths → redirect to /authorities/ssh/:id, /certificates/ssh/:id and the SSH tab of /certificates
     ['/ssh/ca-keys/:id', 'SSH CA Key'],
     ['/ssh/certs/:id', 'SSH Certificate'],
-    ['/ssh', 'SSH CA'],
+    ['/ssh', 'All Certificates'],
 
     // Distribution
     ['/distribution/crl/:id', 'CRL Schedule'],

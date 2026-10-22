@@ -58,6 +58,55 @@ internal sealed class SignerTestWorld
     public InMemorySignerKeyPersistence Persistence { get; } = new();
     public IReadOnlyDictionary<string, SignerTestKey> Keys { get; }
 
+    /// <summary>
+    /// What tells one world from another over the same database: a world and the world it
+    /// becomes after <see cref="Restart"/> share a database and get a signer each.
+    /// </summary>
+    public Guid Instance { get; } = Guid.NewGuid();
+
+    /// <summary>
+    /// The real keystore files of a world made by <see cref="CreateWithKeystoreFiles"/>, unlocked
+    /// as the signer role unlocks them; null for a world whose keystore and persistence are in memory.
+    /// </summary>
+    public SignerKeystoreFiles? Files { get; private init; }
+
+    /// <summary>
+    /// The in-process signer over this world: over the unlocked keystore files and their
+    /// file-backed persistence when the world has them, otherwise over <see cref="Keystore"/>
+    /// and <see cref="Persistence"/>.
+    /// </summary>
+    public ISigningService CreateInProcessSigner(ModularCA.Keystore.Signing.ISignerAuditSink? audit = null, bool failClosedOnAuditFailure = false)
+    {
+        audit ??= new ModularCA.Keystore.Signing.DatabaseSignerAuditSink(Scopes);
+        var logger = Microsoft.Extensions.Logging.Abstractions.NullLogger<ModularCA.Keystore.Signing.InProcessSigningService>.Instance;
+        return Files != null
+            ? Files.Bootstrap.CreateSigner(Files.Directory, Files.YamlPath, Scopes, audit, logger, keyWrapping: null, failClosedOnAuditFailure)
+            : new ModularCA.Keystore.Signing.InProcessSigningService(Keystore, Scopes, audit, Persistence, logger, unlocked: true, failClosedOnAuditFailure: failClosedOnAuditFailure);
+    }
+
+    /// <summary>
+    /// A world like <see cref="Create"/>, whose keys are also written to real keystore files in
+    /// a directory of its own and unlocked from them: <c>ca-certs.keystore</c> and
+    /// <c>ca-trust.keystore</c>, signed by and pinned to <c>ca-rsa</c> as the system signer.
+    /// There is no <c>ssh-ca.keystore</c> until the signer under test makes one. The instance
+    /// of such a world waives key ceremonies.
+    /// </summary>
+    public static SignerTestWorld CreateWithKeystoreFiles()
+    {
+        var world = Create();
+        return world.With(SignerKeystoreFiles.Write(world));
+    }
+
+    /// <summary>
+    /// The same files and database unlocked again, as a signer that restarted would find them.
+    /// Throws what the unlock throws when a file does not verify.
+    /// </summary>
+    public SignerTestWorld Restart()
+        => With((Files ?? throw new InvalidOperationException("Only a world with keystore files restarts.")).Reopen(this));
+
+    private SignerTestWorld With(SignerKeystoreFiles files)
+        => new(DatabaseName, new Ids(SpaceA, SpaceB, CaRsaId, CaEcId, KeylessCaId), Keystore, Scopes, Keys) { Files = files };
+
     /// <summary>The names of the materials the keystore holds no private key for.</summary>
     private static readonly HashSet<string> Unheld = new() { "keyless", "leaf-unheld" };
 
@@ -83,6 +132,33 @@ internal sealed class SignerTestWorld
 
     /// <summary>Opens a context over the world's database, for seeding and for reading the audit back.</summary>
     public ModularCADbContext OpenDb() => InMemoryDbContextFactory.Create(DatabaseName);
+
+    /// <summary>
+    /// Seeds an enabled SSH CA of the instance with its key row, and binds a fresh Ed25519
+    /// software key to the row in <see cref="Keystore"/> as a commit would have. For the tests
+    /// whose signer cannot commit a key itself: one that is locked, or cannot write its audit.
+    /// </summary>
+    public (Guid CaId, KeyRef Key, ModularCA.Ssh.SshPublicKey PublicKey) SeedBoundSshKey()
+    {
+        var pair = KeyAlgorithmPolicy.GenerateKeyPair("Ed25519", "");
+        var publicKey = ModularCA.Ssh.SshPublicKey.FromKeyParameter(pair.Public);
+        var caId = Guid.NewGuid();
+        var keyId = Guid.NewGuid();
+        using (var db = OpenDb())
+        {
+            db.CertificateAuthorities.Add(new CertificateAuthorityEntity
+            {
+                Id = caId, Name = $"ssh-{caId:N}", Label = $"ssh-{caId:N}", Type = "SSH", IsSshCa = true, SpaceId = null,
+            });
+            db.SshCaKeys.Add(new SshCaKeyEntity
+            {
+                Id = keyId, Name = $"ssh-{keyId:N}", CertificateAuthorityId = caId, PublicKey = publicKey.ToAuthorizedKey(),
+            });
+            db.SaveChanges();
+        }
+        Keystore.RegisterSshKey(new ModularCA.Keystore.Signing.SshKeyBinding(keyId, publicKey, new ModularCA.Keystore.Adapters.SoftwarePrivateKeyHandle(pair.Private)));
+        return (caId, new KeyRef(keyId, KeyRef.SshKeystore), publicKey);
+    }
 
     /// <summary>Builds the material, seeds the rows and returns the world.</summary>
     public static SignerTestWorld Create()

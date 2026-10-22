@@ -14,6 +14,12 @@ namespace ModularCA.Shared.Models.Csr
         public Guid CertificateProfileId { get; set; }
         public Guid SigningProfileId { get; set; }
 
+        /// <summary>
+        /// The request profile the request is made under. The console routes require it; the
+        /// names, with the overrides applied, must satisfy its rules.
+        /// </summary>
+        public Guid? RequestProfileId { get; set; }
+
         public Guid RequestorUserId { get; set; }
 
         /// <summary>

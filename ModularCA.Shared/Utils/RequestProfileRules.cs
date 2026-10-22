@@ -139,8 +139,8 @@ public static class RequestProfileRules
         return upper != null && SubjectFields.Contains(upper) ? upper : null;
     }
 
-    /// <summary><paramref name="type"/> in its stored spelling, or null when it is not one of <see cref="SanTypes"/>.</summary>
-    private static string? CanonicalSanType(string? type)
+    /// <summary><paramref name="type"/> in its stored spelling (RFC822 as Email), or null when it is not one of <see cref="SanTypes"/>.</summary>
+    public static string? CanonicalSanType(string? type)
     {
         var trimmed = type?.Trim();
         if (string.Equals(trimmed, "RFC822", StringComparison.OrdinalIgnoreCase))

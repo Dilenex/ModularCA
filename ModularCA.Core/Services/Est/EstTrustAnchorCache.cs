@@ -47,23 +47,23 @@ public sealed record EstTrustAnchorSet(
 public sealed class EstTrustAnchorCache
 {
     private readonly Func<ModularCADbContext> _dbFactory;
-    private readonly TimeSpan _refreshInterval;
+    private readonly Func<TimeSpan> _refreshInterval;
     private readonly Action<string>? _onError;
 
     private volatile EstTrustAnchorSet _current = EstTrustAnchorSet.Empty;
     private int _refreshInFlight;
 
-    // When the next refresh may be attempted, in UTC ticks. Tracked separately from the
+    // When a refresh was last attempted, in UTC ticks. Tracked separately from the
     // snapshot's LoadedUtc so that a failed refresh throttles the next attempt without
     // pretending the snapshot is fresh. An earlier version re-stamped LoadedUtc on failure,
     // which made a CA whose EST was disabled during a database outage look freshly trusted.
-    private long _nextRefreshTicks;
+    private long _lastAttemptTicks;
 
     /// <summary>Shortest honoured refresh interval, so a misconfigured zero cannot hammer the database.</summary>
     public static readonly TimeSpan MinimumRefreshInterval = TimeSpan.FromSeconds(5);
 
     /// <summary>
-    /// Creates the cache.
+    /// Creates the cache with a fixed refresh interval.
     /// </summary>
     /// <param name="dbFactory">Creates a short-lived context for each refresh.</param>
     /// <param name="refreshInterval">How long a snapshot is used before a refresh is triggered.</param>
@@ -72,14 +72,33 @@ public sealed class EstTrustAnchorCache
         Func<ModularCADbContext> dbFactory,
         TimeSpan refreshInterval,
         Action<string>? onError = null)
+        : this(dbFactory, () => refreshInterval, onError)
     {
-        _dbFactory = dbFactory;
-        _refreshInterval = refreshInterval < MinimumRefreshInterval ? MinimumRefreshInterval : refreshInterval;
-        _onError = onError;
     }
 
     /// <summary>
-    /// Returns the current snapshot, triggering a background refresh when it has aged out.
+    /// Creates the cache with a refresh interval that is asked for each time the snapshot is
+    /// read, so a change to it applies to the snapshot already held.
+    /// </summary>
+    /// <param name="dbFactory">Creates a short-lived context for each refresh.</param>
+    /// <param name="refreshInterval">How long a snapshot is used before a refresh is triggered, as it stands now. Must not block or throw.</param>
+    /// <param name="onError">Receives a message when a refresh fails; the previous snapshot is kept.</param>
+    public EstTrustAnchorCache(
+        Func<ModularCADbContext> dbFactory,
+        Func<TimeSpan> refreshInterval,
+        Action<string>? onError = null)
+    {
+        _dbFactory = dbFactory;
+        _refreshInterval = refreshInterval;
+        _onError = onError;
+    }
+
+    /// <summary>The refresh interval in force now, in ticks, never below <see cref="MinimumRefreshInterval"/>.</summary>
+    private long IntervalTicks => Math.Max(_refreshInterval().Ticks, MinimumRefreshInterval.Ticks);
+
+    /// <summary>
+    /// Returns the current snapshot, triggering a background refresh when the last attempt is
+    /// older than the refresh interval in force now.
     /// </summary>
     /// <remarks>
     /// Safe to call from the TLS handshake callback: it never blocks and never throws.
@@ -89,7 +108,7 @@ public sealed class EstTrustAnchorCache
         get
         {
             var snapshot = _current;
-            if (DateTime.UtcNow.Ticks >= Interlocked.Read(ref _nextRefreshTicks))
+            if (DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastAttemptTicks) >= IntervalTicks)
                 TriggerRefresh();
             return snapshot;
         }
@@ -102,7 +121,7 @@ public sealed class EstTrustAnchorCache
     /// <returns>The number of EST-enabled CA certificates loaded.</returns>
     public int LoadNow()
     {
-        Interlocked.Exchange(ref _nextRefreshTicks, (DateTime.UtcNow + _refreshInterval).Ticks);
+        Interlocked.Exchange(ref _lastAttemptTicks, DateTime.UtcNow.Ticks);
         var loaded = Read();
         if (loaded != null)
             _current = loaded;
@@ -122,7 +141,7 @@ public sealed class EstTrustAnchorCache
         // Throttle the next attempt whether or not this one succeeds, so a database that is down
         // does not produce a refresh attempt per connection for as long as it stays down. The
         // snapshot's own timestamp is left alone: an old snapshot is still old.
-        Interlocked.Exchange(ref _nextRefreshTicks, (DateTime.UtcNow + _refreshInterval).Ticks);
+        Interlocked.Exchange(ref _lastAttemptTicks, DateTime.UtcNow.Ticks);
 
         _ = Task.Run(() =>
         {

@@ -4,6 +4,7 @@ import { caDisplayName, caRowId } from '../profileHelpers';
 import type { ProfileFormMode } from './profileFormCore';
 import { type SshRequestProfileFormState, unbindsCa } from './sshRequestProfile';
 import { checkboxClass } from './CertProfileForm';
+import { SSH_PROFILE_TYPE_HINT, SSH_PROFILE_TYPE_OPTIONS, type SshProfileTypeChoice } from '../sshProfileType';
 
 type IdListKey = 'allowedSshSigningProfileIds' | 'allowedSshCertProfileIds';
 
@@ -55,6 +56,13 @@ export const SshRequestProfileForm: React.FC<{
                             This profile is bound to a CA, and the server cannot move a bound profile back to Any CA. Another CA can be chosen; for no CA, create a new profile.
                         </FieldHint>
                     )}
+                </div>
+                <div>
+                    <label htmlFor="ssh-rp-type" className={labelClass}>Certificate type</label>
+                    <select id="ssh-rp-type" value={f.certificateType} onChange={(e) => set('certificateType', e.target.value as SshProfileTypeChoice)} className={inputClass} aria-describedby="ssh-rp-type-hint">
+                        {SSH_PROFILE_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    </select>
+                    <FieldHint id="ssh-rp-type-hint">{SSH_PROFILE_TYPE_HINT} The self-service request form offers a profile only when its type is User or Either.</FieldHint>
                 </div>
             </div>
             <div className="flex flex-wrap gap-4">

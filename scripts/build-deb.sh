@@ -93,6 +93,10 @@ mv "$STAGE/ModularCA.API" "$STAGE/ModularCA.Keystore.Unlocker" "$STAGE/modularca
 # (config/, keystores/, logs/, backups/), so a file kept there could be rewritten by it.
 SHAREDIR="$WORK/share"
 [[ -f "$STAGE/share/sql/adopt-ownership.sql" ]] || die "payload is missing share/sql/adopt-ownership.sql"
+# The KRL fetcher for SSH servers travels in share/ too, to /usr/share/modularca/ssh-krl. A tarball
+# built before it existed has none, and nfpm's own message for a missing source names a temporary path.
+[[ -f "$STAGE/share/ssh-krl/modularca-krl-fetch.sh" ]] \
+    || die "payload is missing share/ssh-krl (an older tarball: drop --from-tarball to build one)"
 mv "$STAGE/share" "$SHAREDIR"
 
 # Refuse to ship a maintainer script with CRLF line endings.

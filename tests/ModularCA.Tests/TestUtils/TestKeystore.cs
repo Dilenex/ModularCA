@@ -48,6 +48,31 @@ internal sealed class TestKeystore : ISignerKeyRegistry
         if (!_trusted.Any(t => t.SerialNumber.Equals(cert.SerialNumber)))
             _trusted.Add(cert);
     }
+
+    private readonly List<SshKeyBinding> _sshKeys = new();
+
+    public SshKeyBinding? GetSshKey(Guid sshCaKeyId)
+    {
+        lock (_sshKeys) return _sshKeys.FirstOrDefault(k => k.KeyId == sshCaKeyId);
+    }
+
+    public IReadOnlyList<SshKeyBinding> GetSshKeys()
+    {
+        lock (_sshKeys) return _sshKeys.ToList();
+    }
+
+    /// <summary>Binds an SSH CA key to its row the way the runtime registry does: a row never changes key.</summary>
+    public void RegisterSshKey(SshKeyBinding binding)
+    {
+        lock (_sshKeys)
+        {
+            var bound = _sshKeys.FirstOrDefault(k => k.KeyId == binding.KeyId);
+            if (bound == null)
+                _sshKeys.Add(binding);
+            else if (!bound.PublicKey.Equals(binding.PublicKey))
+                throw new InvalidOperationException($"SSH CA key row {binding.KeyId} is already bound to another key.");
+        }
+    }
 }
 
 /// <summary>
@@ -81,7 +106,19 @@ internal sealed class InMemorySignerKeyPersistence : ModularCA.Keystore.Signing.
         _appended.Add(((byte[])privateKeyPkcs8Der.Clone(), (byte[])certificateDer.Clone()));
     }
 
-    public IReadOnlyList<string> ListKeystoreFiles() => KeystoreFiles.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList();
+    private readonly List<byte[]> _sshAppended = new();
+
+    /// <summary>The SSH CA keys appended so far, as PKCS#8, oldest first: what the SSH keystore would hold.</summary>
+    public IReadOnlyList<byte[]> SshAppended => _sshAppended;
+
+    public void AppendSshKey(byte[] privateKeyPkcs8Der)
+    {
+        if (FailWith != null) throw FailWith;
+        _sshAppended.Add((byte[])privateKeyPkcs8Der.Clone());
+    }
+
+    public IReadOnlyList<string> ListKeystoreFiles()
+        => KeystoreFiles.Keys.Where(k => k.EndsWith(".keystore", StringComparison.Ordinal)).OrderBy(k => k, StringComparer.Ordinal).ToList();
 
     public byte[] ReadKeystoreFile(string name)
         => KeystoreFiles.TryGetValue(name, out var bytes) ? (byte[])bytes.Clone() : throw new FileNotFoundException(name);
@@ -91,6 +128,19 @@ internal sealed class InMemorySignerKeyPersistence : ModularCA.Keystore.Signing.
         if (!Verifies(name, bytes))
             throw new System.Security.SecurityException($"Keystore file '{name}' does not verify.");
         KeystoreFiles[name] = (byte[])bytes.Clone();
+    }
+
+    /// <summary>The keystore files moved aside so far: the name each had, and the name it was kept under.</summary>
+    public List<(string Name, string MovedTo)> MovedAside { get; } = new();
+
+    public string? MoveKeystoreFileAside(string name)
+    {
+        if (!KeystoreFiles.Remove(name, out var bytes))
+            return null;
+        var aside = $"{name}.bak.{MovedAside.Count + 1}";
+        KeystoreFiles[aside] = bytes;
+        MovedAside.Add((name, aside));
+        return aside;
     }
 }
 

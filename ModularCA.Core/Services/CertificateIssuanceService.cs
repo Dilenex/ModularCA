@@ -33,6 +33,9 @@ namespace ModularCA.Core.Services
     /// </summary>
     public class CertificateIssuanceService : ICertificateIssuanceService
     {
+        /// <summary>Why nothing is renewed or reissued from a retired certificate (<see cref="ErrorCodes.CertificateRetired"/>).</summary>
+        public const string RetiredMessage = "This certificate was retired, so it is not renewed or reissued. Enroll a new certificate for its subject.";
+
         private readonly ModularCADbContext _db;
         private readonly IEffectivePolicyResolver _policies;
         private readonly IKeystoreCertificates _keystore;
@@ -173,6 +176,13 @@ namespace ModularCA.Core.Services
 
             if (ValidateCsrStatus(csrEntity) == false)
                 throw new ResourceConflictException("CSR is not in a valid state for issuance", ErrorCodes.CsrStateNotEligible);
+
+            if (csrEntity.RenewalOfCertificateId is Guid renewedId
+                && await _db.Certificates.AsNoTracking().AnyAsync(c => c.CertificateId == renewedId && c.RetiredAt != null, cancellationToken))
+                throw new ResourceConflictException(RetiredMessage, ErrorCodes.CertificateRetired);
+
+            if (!csrEntity.IsInfrastructureCert)
+                await new RequestProfileEnforcement(_db, _profileResolver).EnsureApprovedAsync(csrEntity);
 
             if (csrEntity.SigningProfile == null)
                 throw new ConfigurationValidationException("No signing profile associated with CSR");
@@ -403,6 +413,10 @@ namespace ModularCA.Core.Services
             // Re-validate overridden subject DN and SANs against profile rules
             ValidateOverridesAgainstProfile(subjectDn, effectiveSans, csrEntity.SubjectOverrides, csrEntity.SanOverrides, effectiveCertProfile.AllowWildcard);
 
+            // The names are final here, overrides included: hold them to the request profile
+            // the request was made under.
+            await new RequestProfileEnforcement(_db, _profileResolver).EnsureSatisfiedAsync(csrEntity, subjectDn, effectiveSans);
+
             // Evaluate system-wide certificate policy rules before building the certificate
             EnforceCertPolicy(csrEntity.KeyAlgorithm, csrEntity.KeySize, csrEntity.SignatureAlgorithm,
                 validFrom, validTo, subjectDn.ToString(), ParseSanJson(effectiveSans),
@@ -554,7 +568,8 @@ namespace ModularCA.Core.Services
                 csrEntity = await _db.CertificateRequests
                     .Include(c => c.SigningProfile)
                     .Include(c => c.CertProfile)
-                    .FirstOrDefaultAsync(c => c.IssuedCertificateId == certId);
+                    .ThatIssued(certId.Value)
+                    .FirstOrDefaultAsync();
                 if (csrEntity == null)
                     throw new Exception("Certificate not found.");
             }
@@ -567,7 +582,7 @@ namespace ModularCA.Core.Services
                 csrEntity = await _db.CertificateRequests
                     .Include(c => c.SigningProfile)
                     .Include(c => c.CertProfile)
-                    .Where(c => c.IssuedCertificateId == certEntity.CertificateId)
+                    .ThatIssued(certEntity.CertificateId)
                     .FirstOrDefaultAsync();
                 if (csrEntity == null)
                     throw new Exception("Certificate not found.");
@@ -601,6 +616,9 @@ namespace ModularCA.Core.Services
 
             if (prevCert.IsReissued)
                 throw new ResourceConflictException("Certificate has already been reissued", ErrorCodes.AlreadyReissued);
+
+            if (prevCert.RetiredAt != null)
+                throw new ResourceConflictException(RetiredMessage, ErrorCodes.CertificateRetired);
 
             if (csrEntity == null)
                 throw new ResourceNotFoundException("CSR", "CSR not found.");
@@ -856,6 +874,9 @@ namespace ModularCA.Core.Services
             // Re-validate overridden subject DN and SANs against profile rules
             ValidateOverridesAgainstProfile(reissueSubjectDn, reissueEffectiveSans, csrEntity.SubjectOverrides, csrEntity.SanOverrides, effectiveCertProfile.AllowWildcard);
 
+            // A reissue under new names is held to the original request's profile as well.
+            await new RequestProfileEnforcement(_db, _profileResolver).EnsureSatisfiedAsync(csrEntity, reissueSubjectDn, reissueEffectiveSans);
+
             // Evaluate system-wide certificate policy rules before building the certificate
             EnforceCertPolicy(csrEntity.KeyAlgorithm, csrEntity.KeySize, csrEntity.SignatureAlgorithm,
                 validFrom, validTo, reissueSubjectDn.ToString(), ParseSanJson(reissueEffectiveSans),
@@ -926,6 +947,7 @@ namespace ModularCA.Core.Services
                 var reissueCsr = new CertRequestEntity
                 {
                     Subject = csrEntity.Subject,
+                    SubjectAlternativeNames = csrEntity.SubjectAlternativeNames,
                     CSR = csrEntity.CSR,
                     KeyAlgorithm = csrEntity.KeyAlgorithm,
                     KeySize = csrEntity.KeySize,
@@ -939,6 +961,7 @@ namespace ModularCA.Core.Services
                     SubmittedAt = DateTime.UtcNow,
                     RenewalOfCertificateId = prevCert.CertificateId,
                 };
+                CertificateRequestLineage.CarryForward(csrEntity, reissueCsr, reusesCsr: true);
                 _db.CertificateRequests.Add(reissueCsr);
                 await _db.SaveChangesAsync();
             }
@@ -1074,7 +1097,7 @@ namespace ModularCA.Core.Services
         /// <param name="originalSubject">The original subject DN resolved from the CSR.</param>
         /// <param name="subjectOverridesJson">JSON dictionary of subject field overrides, or null.</param>
         /// <returns>The subject DN with overrides applied.</returns>
-        private static X509Name ApplySubjectOverrides(X509Name originalSubject, string? subjectOverridesJson)
+        internal static X509Name ApplySubjectOverrides(X509Name originalSubject, string? subjectOverridesJson)
         {
             if (string.IsNullOrWhiteSpace(subjectOverridesJson))
                 return originalSubject;

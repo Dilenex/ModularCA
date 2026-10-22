@@ -105,7 +105,8 @@ public class UserCertSignRequestController(
     /// <summary>
     /// Generates a certificate signing request with a key pair the server generates. The
     /// private key is held on the request until the certificate is issued and downloaded as
-    /// PKCS#12 from <c>{id}/pkcs12</c>; it is not in this response.
+    /// PKCS#12 from <c>{id}/pkcs12</c>; it is not in this response. The request names its
+    /// request profile (400 without one) and is held to it (<see cref="RequestProfileEnforcement"/>).
     /// </summary>
     [HttpPost]
     [Authorize]
@@ -115,10 +116,22 @@ public class UserCertSignRequestController(
         await _currentUser.EnsureLoadedAsync();
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
             return Unauthorized();
+        if (request.RequestProfileId is not Guid requestProfileId)
+            return BadRequest(new { error = RequestProfileRequired });
+        request.SubjectName = await new RequestProfileEnforcement(_db, profiles).SettleSubjectNameAsync(
+            requestProfileId, request.CertificateProfileId, request.SigningProfileId, selfService: true,
+            request.SubjectName, request.SubjectAlternativeNames);
         var generated = await _csrService.GenerateCsrAsync(request, _currentUser.User.Id);
         return Ok(new { csrId = generated.RequestId, csr = generated.CsrPem, keyHeld = generated.KeyHeld });
     }
 
+    private const string RequestProfileRequired = "A request profile is required: name the one this request is made under as requestProfileId.";
+
+    /// <summary>
+    /// Submits a CSR the requester generated. The request names its request profile (400 without
+    /// one); the CSR's names, with the overrides applied, are held to it, and the fields it
+    /// fixes or gives a default for are added to the overrides.
+    /// </summary>
     [HttpPost("upload")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRequest, CaTarget.SigningProfile, "request.SigningProfileId")]
@@ -127,8 +140,13 @@ public class UserCertSignRequestController(
         await _currentUser.EnsureLoadedAsync();
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
             return Unauthorized();
+        if (request.RequestProfileId is not Guid requestProfileId)
+            return BadRequest(new { error = RequestProfileRequired });
+        var subjectOverrides = await new RequestProfileEnforcement(_db, profiles).SettleUploadAsync(
+            requestProfileId, request.CertificateProfileId, request.SigningProfileId, selfService: true,
+            request.Pem, request.SubjectOverrides, request.SanOverrides);
         var pem = await _csrService.UploadCsrAsync(request.Pem, request.CertificateProfileId, request.SigningProfileId, _currentUser.User.Id,
-            request.SubjectOverrides, request.SanOverrides);
+            subjectOverrides, request.SanOverrides, requestProfileId: requestProfileId);
         if (pem == null)
             return BadRequest(new { error = "Failed to upload CSR" });
         return Ok();
@@ -173,6 +191,11 @@ public class UserCertSignRequestController(
                     return BadRequest(new { error = "You do not have access to the CA associated with this signing profile." });
             }
         }
+
+        if (req.RequestProfileId is not Guid requestProfileId)
+            return BadRequest(new { error = RequestProfileRequired });
+        req.Subject = await new RequestProfileEnforcement(_db, profiles).SettleKeyRequestAsync(
+            requestProfileId, req.CertProfileId, req.SigningProfileId, selfService: true, req.Subject, req.Sans);
 
         string? signatureAlgorithm;
         try
@@ -232,7 +255,7 @@ public class UserCertSignRequestController(
 
         // Upload through the standard CSR pipeline (validates, stores entity)
         await _csrService.UploadCsrAsync(csrPem, req.CertProfileId, req.SigningProfileId,
-            _currentUser.User.Id, req.Subject, sanOverrides);
+            _currentUser.User.Id, req.Subject, sanOverrides, requestProfileId: requestProfileId);
 
         var csrEntity = await _db.CertificateRequests
             .Where(c => c.CSR == csrPem && c.RequestorUserId == _currentUser.User.Id)
@@ -253,6 +276,41 @@ public class UserCertSignRequestController(
             certificateIssued = false,
             csr = csrPem,
         });
+    }
+
+    /// <summary>
+    /// Pre-flight: the keys the CA may generate for a request under a signing profile and
+    /// certificate profile, and the ones the pair refuses with the reason for each. Needs
+    /// <c>cert.request</c> on the signing profile's CA, inside the caller's space fence.
+    /// </summary>
+    /// <param name="signingProfileId">The signing profile the request would name.</param>
+    /// <param name="certProfileId">The certificate profile the request would name.</param>
+    /// <param name="keyOptions">Resolves the answer.</param>
+    [HttpGet("key-options")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRequest, CaTarget.SigningProfile, "signingProfileId")]
+    public async Task<IActionResult> GetKeyOptions(
+        [FromQuery] Guid signingProfileId,
+        [FromQuery] Guid certProfileId,
+        [FromServices] IServerKeyOptionsService keyOptions)
+    {
+        var issuerId = await _db.SigningProfiles.AsNoTracking()
+            .Where(sp => sp.Id == signingProfileId)
+            .Select(sp => sp.IssuerId)
+            .FirstOrDefaultAsync();
+        if (issuerId != null)
+        {
+            var ca = await _db.CertificateAuthorities.AsNoTracking()
+                .FirstOrDefaultAsync(c => c.CertificateId == issuerId);
+            if (ca != null && !SpaceFence.From(HttpContext, Capabilities.CertRequest).Allows(ca.SpaceId))
+                return NotFound(new { error = "Signing profile or certificate profile not found." });
+        }
+
+        var options = await keyOptions.ResolveAsync(signingProfileId, certProfileId, HttpContext.RequestAborted);
+        if (options == null)
+            return NotFound(new { error = "Signing profile or certificate profile not found." });
+
+        return Ok(options);
     }
 
     /// <summary>
@@ -302,8 +360,9 @@ public class UserCertSignRequestController(
         try { profile = await profiles.ResolveRequestProfileAsync(request.RequestProfileId); }
         catch (InvalidOperationException) { return NotFound(new { error = "Request profile not found." }); }
 
-        var dnRules = JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(profile.SubjectDnRules) ?? new();
-        var sanRules = JsonSerializer.Deserialize<SanRules>(profile.SanRules) ?? new();
+        // Read whatever the case of the stored keys: bootstrap writes camel case, the console Pascal case.
+        var dnRules = JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(profile.SubjectDnRules, SafeJsonOptions.Stored) ?? new();
+        var sanRules = JsonSerializer.Deserialize<SanRules>(profile.SanRules, SafeJsonOptions.Stored) ?? new();
 
         var response = new ValidateAgainstProfileResponse { Valid = true };
 

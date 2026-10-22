@@ -96,8 +96,8 @@ public sealed class InstanceCeremonyEndpointTests
         var token = Guid.NewGuid().ToString("N");
         cache.SetString($"mfa-stepup:{actor}:{StepUpOps.DisableSshCa}:{key.Id}", token);
         var controller = New(Ns + "AdminSshController", actor,
-            null, new CurrentUserStub(actor), new RecordingAuditService(), db, new SystemConfig(),
-            new KeyCeremonyService(db, new RecordingAuditService(), quorumGuard: new OpenQuorumGuard()), cache);
+            null, new CurrentUserStub(actor), db, new SystemConfig(),
+            new KeyCeremonyService(db, new RecordingAuditService(), quorumGuard: new OpenQuorumGuard()), cache, null, null, null);
 
         var result = await (Task<IActionResult>)controller.GetType().GetMethod("DisableSshCaKey")!.Invoke(controller, [key.Id, token])!;
 

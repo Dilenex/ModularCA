@@ -53,6 +53,13 @@ public class CertRequestEntity
     public SigningProfileEntity? SigningProfile { get; set; }
 
     /// <summary>
+    /// The request profile the request was made under, or null when it was made under none (a
+    /// CA's own certificates, renewals, a protocol with no request profile, and requests older
+    /// than the column). Approval and issuance hold the request's final names to this profile.
+    /// </summary>
+    public Guid? RequestProfileId { get; set; }
+
+    /// <summary>
     /// Reason the CSR was rejected. Only set when Status is "Rejected".
     /// </summary>
     [MaxLength(500)]

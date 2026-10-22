@@ -85,6 +85,38 @@ export function canSpaceWide(caps: EffectiveCapabilities | null | undefined, cap
     return (caps.spaces ?? []).some(s => s.capabilities.includes(capability));
 }
 
+/**
+ * Whether `capability` is held at system scope or on at least one SSH CA. SSH CAs belong to the
+ * instance, so this never depends on the console's scope.
+ */
+export function canOnAnySshCa(caps: EffectiveCapabilities | null | undefined, capability: Capability): boolean {
+    if (!caps) return false;
+    return caps.system.includes(capability) || caps.cas.some(c => c.isSshCa && c.capabilities.includes(capability));
+}
+
+/**
+ * The SSH tabs of the pages that carry SSH beside X.509: the SSH CA keys on Authorities, the SSH
+ * certificates on All Certificates, signing a key on Request Certificate, and in self-service
+ * the request form and the list of the reader's own certificates.
+ */
+export type SshTabPlace = 'keys' | 'certificates' | 'sign' | 'selfRequest' | 'selfCertificates';
+
+/**
+ * Whether the caller can use an SSH tab, by the right its routes ask: listing the keys and
+ * signing need cert.revoke on an SSH CA, the certificate list cert.view, and the self-service
+ * tabs cert.request. A holder of system-scoped ca.manage also has the keys tab, where a new SSH
+ * CA key is generated.
+ */
+export function canUseSshTab(caps: EffectiveCapabilities | null | undefined, place: SshTabPlace): boolean {
+    switch (place) {
+        case 'keys': return canOnAnySshCa(caps, Capabilities.CertRevoke) || can(caps, Capabilities.CaManage);
+        case 'certificates': return canOnAnySshCa(caps, Capabilities.CertView);
+        case 'sign': return canOnAnySshCa(caps, Capabilities.CertRevoke);
+        case 'selfRequest':
+        case 'selfCertificates': return canOnAnySshCa(caps, Capabilities.CertRequest);
+    }
+}
+
 /** The capabilities a Requester holds: the self-service pair. */
 const SELF_SERVICE_ONLY: ReadonlySet<Capability> = new Set([Capabilities.CertRequest, Capabilities.CertView]);
 

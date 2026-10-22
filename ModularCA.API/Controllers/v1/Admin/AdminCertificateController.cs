@@ -66,7 +66,8 @@ public class AdminCertificateController(
     /// <param name="caId">Filter to certificates issued by this certificate authority.</param>
     /// <param name="spaceId">Filter to certificates issued by CAs of this space. The pre-0.4.0 <c>tenantId</c> is refused (400), here and on the histogram and health summary.</param>
     /// <param name="status">Status filter: "active" (not revoked and not expired), "revoked", or "expired" (expired and not revoked).</param>
-    /// <param name="replaced">"yes" or "no": certificates that have, or have not, been replaced (<see cref="CertificateLifecycle"/>).
+    /// <param name="replaced">"yes" or "no": certificates that have, or have not, been replaced (<see cref="CertificateLifecycle"/>);
+    /// "no" leaves out retired certificates and those whose expiry warning was dismissed, as the lifecycle summary does.
     /// Only certificates still valid or expired within <see cref="CertificateLifecycle.ReplacementWindowDays"/> days match either value.</param>
     /// <param name="keyAlgorithm">Filter on key algorithm by searching the KeyUsagesJson column (e.g. "RSA", "ECDSA", "Ed25519").</param>
     /// <param name="san">Partial match filter on subject alternative names JSON.</param>
@@ -193,7 +194,7 @@ public class AdminCertificateController(
                 .Keys.ToList();
             query = replacedFilter == "yes"
                 ? query.Where(c => replacedIds.Contains(c.CertificateId))
-                : query.Where(c => !replacedIds.Contains(c.CertificateId));
+                : query.Where(c => !replacedIds.Contains(c.CertificateId) && c.RetiredAt == null && c.ExpiryWarningDismissedAt == null);
         }
 
         List<ModularCA.Shared.Entities.CertificateEntity> entities;
@@ -265,6 +266,11 @@ public class AdminCertificateController(
                     : JsonSerializer.Deserialize<List<string>>(c.ExtendedKeyUsagesJson)!,
                 Replaced = replacement != null,
                 ReplacedBySerial = replacement?.SuccessorSerial,
+                RetiredAt = c.RetiredAt,
+                RetiredBy = c.RetiredBy,
+                RetiredReason = c.RetiredReason,
+                ExpiryWarningDismissedAt = c.ExpiryWarningDismissedAt,
+                ExpiryWarningDismissedBy = c.ExpiryWarningDismissedBy,
             });
         }
 
@@ -567,7 +573,7 @@ public class AdminCertificateController(
         // window or expire within 30 days.
         var band = query.Where(c => !c.Revoked && c.NotAfter >= windowStart && c.NotAfter <= in30);
         var rows = await band
-            .Select(c => new { c.CertificateId, c.SerialNumber, c.SubjectDN, c.NotBefore, c.NotAfter, c.IssuerCertificateId, c.SigningProfileId })
+            .Select(c => new { c.CertificateId, c.SerialNumber, c.SubjectDN, c.NotBefore, c.NotAfter, c.IssuerCertificateId, c.SigningProfileId, c.RetiredAt, c.ExpiryWarningDismissedAt })
             .ToListAsync();
         var caMap = await IssuingCaMapAsync();
         var replaced = rows.Count == 0
@@ -576,7 +582,8 @@ public class AdminCertificateController(
 
         var expiredInBand = rows.Where(r => r.NotAfter < now).ToList();
         var expiringInBand = rows.Where(r => r.NotAfter >= now).ToList();
-        bool NotReplaced(Guid id) => !replaced.ContainsKey(id);
+        var silenced = rows.Where(r => r.RetiredAt != null || r.ExpiryWarningDismissedAt != null).Select(r => r.CertificateId).ToHashSet();
+        bool NotReplaced(Guid id) => !replaced.ContainsKey(id) && !silenced.Contains(id);
 
         var attentionRows = expiredInBand
             .Where(r => r.NotAfter >= recentStart && NotReplaced(r.CertificateId))
@@ -630,7 +637,7 @@ public class AdminCertificateController(
             .OrderByDescending(g => g.Total)
             .ToList();
 
-        var expiredReplaced = expiredInBand.Count(r => !NotReplaced(r.CertificateId));
+        var expiredReplaced = expiredInBand.Count(r => replaced.ContainsKey(r.CertificateId));
         var total = counts?.Total ?? 0;
         var revoked = counts?.Revoked ?? 0;
         var expiredTotal = counts?.Expired ?? 0;
@@ -647,7 +654,8 @@ public class AdminCertificateController(
             ExpiringWithin7DaysNotReplaced = expiringInBand.Count(r => r.NotAfter <= in7 && NotReplaced(r.CertificateId)),
             ExpiringWithin30DaysNotReplaced = expiringInBand.Count(r => NotReplaced(r.CertificateId)),
             ExpiredReplaced = expiredReplaced,
-            ExpiredNotReplaced = expiredInBand.Count - expiredReplaced,
+            ExpiredNotReplaced = expiredInBand.Count(r => NotReplaced(r.CertificateId)),
+            RetiredOrDismissed = rows.Count(r => silenced.Contains(r.CertificateId) && !replaced.ContainsKey(r.CertificateId)),
             ExpiredUnchecked = expiredTotal - (counts?.ExpiredInWindow ?? 0),
             RecentlyExpiredNotReplaced = expiredInBand.Count(r => r.NotAfter >= recentStart && NotReplaced(r.CertificateId)),
             AttentionTotal = attentionRows.Count,
@@ -838,6 +846,9 @@ public class AdminCertificateController(
         if (certInfo.Revoked)
             return BadRequest(new { error = "Cannot renew a revoked certificate." });
 
+        if (certInfo.RetiredAt != null)
+            return Conflict(new { error = CertificateIssuanceService.RetiredMessage, code = ModularCA.Shared.Errors.ErrorCodes.CertificateRetired });
+
         // Load the certificate entity to get profile IDs
         var certEntity = await _dbContext.Certificates
             .AsNoTracking()
@@ -848,7 +859,8 @@ public class AdminCertificateController(
         // Load the original CSR request that produced this certificate
         var originalRequest = await _dbContext.CertificateRequests
             .AsNoTracking()
-            .FirstOrDefaultAsync(r => r.IssuedCertificateId == certEntity.CertificateId);
+            .ThatIssued(certEntity.CertificateId)
+            .FirstOrDefaultAsync();
 
         // Use subject and SANs from the certificate itself (may have overrides from the original CSR)
         var subjectDn = certEntity.SubjectDN;
@@ -884,6 +896,9 @@ public class AdminCertificateController(
             RequestorUserId = _currentUser.User.Id,
             RenewalOfCertificateId = certEntity.CertificateId
         };
+        CertificateRequestLineage.CarryForward(originalRequest, renewalRequest, reusesCsr: true);
+        renewalRequest.Status = await new RequestProfileEnforcement(_dbContext,
+            HttpContext.RequestServices.GetRequiredService<IProfileResolutionService>()).InitialStatusAsync(renewalRequest.RequestProfileId);
 
         _dbContext.CertificateRequests.Add(renewalRequest);
         await _dbContext.SaveChangesAsync();
@@ -904,6 +919,107 @@ public class AdminCertificateController(
             HttpContext.Connection.RemoteIpAddress?.ToString());
 
         return Ok(new { requestId = renewalRequest.Id, message = "Renewal request submitted" });
+    }
+
+    /// <summary>
+    /// Retires a certificate: it stays valid until it expires, raises no expiry warning, and is
+    /// never renewed, reissued or re-enrolled from; its subject needs a new enrollment. Not a
+    /// revocation: CRLs and OCSP are unchanged. Repeating it changes nothing.
+    /// </summary>
+    /// <param name="serial">The certificate's serial number.</param>
+    /// <param name="request">An optional reason, kept with the certificate and in the audit row.</param>
+    [HttpPost("{serial}/retire")]
+    [Authorize(Policy = "CaOperator")]
+    public Task<IActionResult> RetireCertificate(string serial,
+        [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] RetireCertificateRequest? request)
+    {
+        var reason = string.IsNullOrWhiteSpace(request?.Reason) ? null : request.Reason.Trim();
+        if (reason is { Length: > 500 })
+            return Task.FromResult<IActionResult>(BadRequest(new { error = "The reason is longer than 500 characters." }));
+        return ChangeExpiryHandlingAsync(serial, AuditActionType.CertificateRetired, (cert, by) =>
+        {
+            if (cert.RetiredAt != null) return false;
+            (cert.RetiredAt, cert.RetiredBy, cert.RetiredReason) = (DateTime.UtcNow, by, reason);
+            return true;
+        }, reason);
+    }
+
+    /// <summary>Undoes <see cref="RetireCertificate"/>: the certificate can be renewed again and warns before it expires.</summary>
+    /// <param name="serial">The certificate's serial number.</param>
+    [HttpDelete("{serial}/retire")]
+    [Authorize(Policy = "CaOperator")]
+    public Task<IActionResult> UndoRetireCertificate(string serial)
+        => ChangeExpiryHandlingAsync(serial, AuditActionType.CertificateRetirementUndone, (cert, _) =>
+        {
+            if (cert.RetiredAt == null) return false;
+            (cert.RetiredAt, cert.RetiredBy, cert.RetiredReason) = (null, null, null);
+            return true;
+        });
+
+    /// <summary>
+    /// Dismisses a certificate's expiry warning: it leaves the dashboard's warnings and the expiry
+    /// notifications, and can still be renewed, by hand, by auto-renewal or by its client.
+    /// </summary>
+    /// <param name="serial">The certificate's serial number.</param>
+    [HttpPost("{serial}/expiry-warning/dismiss")]
+    [Authorize(Policy = "CaOperator")]
+    public Task<IActionResult> DismissExpiryWarning(string serial)
+        => ChangeExpiryHandlingAsync(serial, AuditActionType.CertificateExpiryWarningDismissed, (cert, by) =>
+        {
+            if (cert.ExpiryWarningDismissedAt != null) return false;
+            (cert.ExpiryWarningDismissedAt, cert.ExpiryWarningDismissedBy) = (DateTime.UtcNow, by);
+            return true;
+        });
+
+    /// <summary>Undoes <see cref="DismissExpiryWarning"/>.</summary>
+    /// <param name="serial">The certificate's serial number.</param>
+    [HttpDelete("{serial}/expiry-warning/dismiss")]
+    [Authorize(Policy = "CaOperator")]
+    public Task<IActionResult> RestoreExpiryWarning(string serial)
+        => ChangeExpiryHandlingAsync(serial, AuditActionType.CertificateExpiryWarningRestored, (cert, _) =>
+        {
+            if (cert.ExpiryWarningDismissedAt == null) return false;
+            (cert.ExpiryWarningDismissedAt, cert.ExpiryWarningDismissedBy) = (null, null);
+            return true;
+        });
+
+    /// <summary>
+    /// Applies <paramref name="change"/> to a visible, unrevoked end-entity certificate and audits
+    /// it under its CA when it changed anything. Answers the certificate's retire and dismiss state.
+    /// </summary>
+    private async Task<IActionResult> ChangeExpiryHandlingAsync(
+        string serial, string auditAction, Func<CertificateEntity, string, bool> change, string? reason = null)
+    {
+        await _currentUser.EnsureLoadedAsync();
+        if (!_currentUser.IsAuthenticated || _currentUser.User == null)
+            return Unauthorized();
+
+        var cert = await _dbContext.Certificates.ResolveBySerialOrNullAsync(serial);
+        if (cert == null || cert.IsCA || !_certificateAccessEvaluator.CanViewCertificate(_currentUser.User.Id, cert.CertificateId))
+            return NotFound(new { error = "Certificate not found." });
+        if (cert.Revoked)
+            return BadRequest(new { error = "The certificate is revoked, so there is no expiry to handle." });
+
+        if (change(cert, _currentUser.User.Username))
+        {
+            await _dbContext.SaveChangesAsync();
+            var caId = (await IssuingCaMapAsync()).CaOf(cert.IssuerCertificateId, cert.SigningProfileId);
+            var spaceId = caId == null ? null : await _dbContext.CertificateAuthorities.AsNoTracking()
+                .Where(c => c.Id == caId).Select(c => c.SpaceId).FirstOrDefaultAsync();
+            await _audit.LogAsync(auditAction, _currentUser.User.Id, _currentUser.User.Username,
+                "Certificate", cert.SerialNumber, new { cert.SubjectDN, cert.NotAfter, Reason = reason },
+                HttpContext.Connection.RemoteIpAddress?.ToString(), certificateAuthorityId: caId, spaceId: spaceId);
+        }
+
+        return Ok(new
+        {
+            cert.SerialNumber,
+            cert.RetiredAt,
+            cert.RetiredBy,
+            cert.RetiredReason,
+            cert.ExpiryWarningDismissedAt,
+            cert.ExpiryWarningDismissedBy,
+        });
     }
 
     /// <summary>
@@ -1351,6 +1467,13 @@ public class AdminCertificateController(
         });
     }
 
+}
+
+/// <summary>Request body for retiring a certificate.</summary>
+public class RetireCertificateRequest
+{
+    /// <summary>Why the certificate is retired; optional, at most 500 characters.</summary>
+    public string? Reason { get; set; }
 }
 
 public class CertExportRequest

@@ -564,7 +564,8 @@ public class MtlsController : ControllerBase
                 Shared.Enums.AuditActionType.UserLoginFailed,
                 user.Id, user.Username,
                 sourceIp: sourceIp,
-                details: new { Reason = blockedAtIssue, Flow = "mtls-verify" });
+                details: new { Reason = blockedAtIssue, Flow = "mtls-verify" },
+                success: false);
             return StatusCode(403, new { error = AccountStateGate.ClientMessage });
         }
 
@@ -817,7 +818,8 @@ public class MtlsController : ControllerBase
                 Shared.Enums.AuditActionType.UserLoginFailed,
                 user.Id, user.Username,
                 sourceIp: sourceIp,
-                details: new { Reason = blockedAtIssue, Flow = "mtls-verify-redirect" });
+                details: new { Reason = blockedAtIssue, Flow = "mtls-verify-redirect" },
+                success: false);
             return Redirect($"{mainOrigin}/login?error=account_locked");
         }
 
@@ -945,7 +947,8 @@ public class MtlsController : ControllerBase
                 Shared.Enums.AuditActionType.UserLoginFailed,
                 user.Id, user.Username,
                 sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
-                details: new { Reason = blockedReason, Flow = "login-redirect", Thumbprint = thumbprint });
+                details: new { Reason = blockedReason, Flow = "login-redirect", Thumbprint = thumbprint },
+                success: false);
             return Redirect($"{mainOrigin}/login?error=account_locked");
         }
 

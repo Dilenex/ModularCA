@@ -52,6 +52,9 @@ STAGE="$(mktemp -d)/${NAME}"
 OUT="${DIST_OUT:-$ROOT/dist}"   # DIST_OUT overrides, e.g. when the default archive is held open by a transfer tool
 mkdir -p "$OUT"
 TARBALL="$OUT/${NAME}.tar.gz"
+# The KRL fetcher an administrator copies to each SSH server; packaging/install.sh and
+# packaging/nfpm.yaml name the same four files.
+SSH_KRL_FILES=(modularca-krl-fetch.sh modularca-krl-fetch.service modularca-krl-fetch.timer modularca-krl-fetch.env.example)
 
 note() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 
@@ -92,6 +95,20 @@ cp config/*.example "$STAGE/config/" 2>/dev/null || true
 cp ModularCA.Database/Sql/adopt-ownership.sql "$STAGE/share/sql/adopt-ownership.sql"
 cmp -s ModularCA.Database/Sql/adopt-ownership.sql "$STAGE/share/sql/adopt-ownership.sql" \
     || { echo "REFUSING: the staged adopt-ownership.sql differs from ModularCA.Database/Sql" >&2; exit 1; }
+# The KRL fetcher for SSH servers: a script, its systemd service and timer, and its settings.
+# None of it runs on the CA. install.sh and the .deb put it root-owned under
+# /usr/share/modularca/ssh-krl, where an administrator copies it from to each server. A carriage
+# return in any of them breaks it on the server (the shebang, the unit, the URL), so one is refused
+# here; -U because git-bash's grep otherwise strips the CR before matching.
+mkdir -p "$STAGE/share/ssh-krl"
+for krl_file in "${SSH_KRL_FILES[@]}"; do
+    cp "deploy/ssh-krl/$krl_file" "$STAGE/share/ssh-krl/$krl_file" \
+        || { echo "REFUSING: deploy/ssh-krl/$krl_file is missing" >&2; exit 1; }
+    if LC_ALL=C grep -qU "$(printf '\r')" "$STAGE/share/ssh-krl/$krl_file"; then
+        echo "REFUSING: deploy/ssh-krl/$krl_file has CRLF line endings. Convert it to LF." >&2
+        exit 1
+    fi
+done
 # The two systemd units are required (the payload check below refuses an archive without them:
 # install.sh installs both). The nginx and nftables templates and the drop-ins are examples, so a
 # missing one is tolerated.
@@ -129,6 +146,7 @@ note "verifying payload"
 for required in ModularCA.API ModularCA.Keystore.Unlocker LICENSE THIRD-PARTY-NOTICES.md wwwroot/admin/index.html \
                 wwwroot/public/index.html \
                 wwwroot/setup/index.html wwwroot/docs/index.html share/sql/adopt-ownership.sql \
+                "${SSH_KRL_FILES[@]/#/share/ssh-krl/}" \
                 deploy/modularca.service deploy/modularca-signer.service; do
     [[ -e "$STAGE/$required" ]] || { echo "MISSING from payload: $required" >&2; exit 1; }
 done

@@ -177,7 +177,7 @@ public class CertManagerController : ControllerBase
         {
             _logger.LogError(ex, "cert-manager certificate issuance failed for CSR {CsrId}", csrEntity.Id);
 
-            await _audit.LogAsync(AuditActionType.CertManagerSignFailed, null, "cert-manager",
+            await _audit.LogAsync(AuditActionType.CertManagerSignFailed, null, Caller.Actor("cert-manager"),
                 "CertificateRequest", csrEntity.Id.ToString(),
                 new { Subject = parsedCsr.SubjectName, Namespace = request.Namespace, Name = request.Name, Error = "Certificate issuance failed" },
                 sourceIp, success: false, errorMessage: "Certificate issuance failed");
@@ -198,7 +198,7 @@ public class CertManagerController : ControllerBase
             .Select(c => c.IssuedCertificate)
             .FirstOrDefaultAsync();
 
-        await _audit.LogAsync(AuditActionType.CertManagerSignCompleted, null, "cert-manager",
+        await _audit.LogAsync(AuditActionType.CertManagerSignCompleted, null, Caller.Actor("cert-manager"),
             "Certificate", issuedCert?.SerialNumber,
             new { Subject = parsedCsr.SubjectName, Namespace = request.Namespace, Name = request.Name },
             sourceIp);
@@ -226,6 +226,13 @@ public class CertManagerController : ControllerBase
     }
 
     /// <summary>
+    /// The key this request was admitted with, and the CAs it reaches: a named key's own scope
+    /// within the integration's, or the integration's (<see cref="CertManagerConfig.SpaceScope"/>).
+    /// </summary>
+    private ModularCA.Core.Services.IntegrationCaller Caller =>
+        ModularCA.API.Filters.IntegrationKeyGate.CallerOf(HttpContext, _config.CertManager.SpaceScope());
+
+    /// <summary>
     /// AUTH-06: verifies that the signing profile's issuing CA is inside the configured space
     /// scope (<see cref="CertManagerConfig.SpaceScope"/>). Returns null if the check passes (or no
     /// space restriction is configured), or an <see cref="IActionResult"/> to short-circuit the
@@ -234,7 +241,7 @@ public class CertManagerController : ControllerBase
     /// </summary>
     private async Task<IActionResult?> VerifySigningProfileSpaceAsync(SigningProfileEntity signingProfile)
     {
-        var scope = _config.CertManager.SpaceScope();
+        var scope = Caller.Scope;
         if (!scope.IsRestricted)
             return null;
 

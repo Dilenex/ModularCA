@@ -14,6 +14,7 @@ Self-contained `linux-x64` build. No .NET runtime is required on the target.
 | `config/*.example` | Templates. `install.sh` copies them in only on a first install and never over a real config. |
 | `deploy/` | systemd units, per-role unit drop-ins (`dropins/`), plus nginx and nftables templates. `install.sh` installs both units in `/etc/systemd/system/` (`modularca-signer.service` is not enabled); the rest are examples to apply by hand from the extracted archive. |
 | `share/sql/adopt-ownership.sql` | The one-time schema-ownership repair for installs made before 0.4.0, run as the PostgreSQL superuser. `install.sh` installs it root-owned to `/usr/share/modularca/sql/`, never into `/opt/modularca`. |
+| `share/ssh-krl/` | The KRL fetcher for SSH servers: `modularca-krl-fetch.sh`, its systemd service and timer, and an example of its settings. Nothing here runs on the CA. `install.sh` installs it root-owned to `/usr/share/modularca/ssh-krl/`; see "SSH servers: fetching the revocation list". |
 
 ## Permissions are set by the installer, not the archive
 
@@ -27,7 +28,8 @@ flags. `install.sh` sets them explicitly (the `.deb`'s `postinst` sets the same)
   signer runs the same binaries as the node.
 - **The service account owns only the runtime directories**, the four the service writes:
   `config/` (`0700`; configuration, credentials, the web TLS certificate, the data-protection keys
-  in `config/dp-keys/`, SSH CA keys, backup keys), `keystores/` (`0700`; the CA private keys),
+  in `config/dp-keys/`, backup keys), `keystores/` (`0700`; the CA private keys, and the SSH CA
+  keys in `ssh-ca.keystore`),
   `logs/` (`0750`) and `backups/` (`0700`; scheduled backups and the audit archive). The unit's
   `ReadWritePaths=` names the same four, and everything else under `/opt/modularca` is read-only
   to the service.
@@ -42,8 +44,11 @@ flags. `install.sh` sets them explicitly (the `.deb`'s `postinst` sets the same)
   `ReadWritePaths=`.
 - `/usr/share/modularca/sql/adopt-ownership.sql` → `root:root 0644`. It is run as the PostgreSQL
   superuser, so it must not live where the service account can rewrite it.
+- `/usr/share/modularca/ssh-krl/` → `root:root`, the script `0755` and the rest `0644`. It is
+  copied from here to SSH servers and run there as root, so the service account must not be able
+  to rewrite it either.
 
-If you point `Backup.OutputPath`, `AuditRetention.ArchivePath`, `SshCa.KeyStoragePath` or
+If you point `Backup.OutputPath`, `AuditRetention.ArchivePath` or
 `Logging.FilePath` at a directory outside these four, create it owned by `modularca` and add it to
 `ReadWritePaths=` in a drop-in (`/etc/systemd/system/modularca.service.d/paths.conf`). `install.sh`
 warns about any top-level entry in `/opt/modularca` that `modularca` owns and the build does not
@@ -143,6 +148,16 @@ had to skip a statement or could not reach one, it exits 3. The other wording:
 
 The service's own dry run at start (below) lists the same, in the journal.
 
+The check also prints notes, which never change the verdict. One of them, **Request profiles**,
+replays the certificates each enrollment protocol (ACME, EST, SCEP, CMP, Windows autoenrollment)
+issued in the last 90 days against the request profile that protocol uses on its CA now, with the
+rules issuance applies from 0.4.2, and lists the ones whose next request would be refused: by
+protocol, CA and request profile, with a few examples and the reason. Before 0.4.2 the subject
+alternative name rules of the seeded request profiles were not read, so every profile allowed DNS
+and IP names and required none; a client that relied on that is refused from its next request.
+A refusal stops a renewal, not a certificate already issued. Which protocol issued a certificate is
+known only from the audit database, so without one the note is left out.
+
 ### What the service checks when it starts
 
 Before it serves anything, the service reads both databases as its own roles and decides; see
@@ -178,6 +193,41 @@ To check schema ownership read-only at any time, as the service user and never a
     sudo -u modularca /opt/modularca/ModularCA.API --db-ownership check
 
 It exits 0 when both databases are sound and 3 when not, and prints what it found and the repair.
+
+### Upgrading to 0.4.2
+
+0.4.2 is the first release after 0.4.0; the 0.4.1 work ships in it. It adds thirteen migrations to
+the application database, moves the instance-wide settings and the node's secrets into the
+database, and moves SSH CA keys into the signer. The last two cannot be undone except by restoring
+a backup.
+
+1. **Back up**, and dump both databases (`pg_dump -Fc`). Going back means restoring them.
+2. **Run the new build's `--upgrade-check`** (above), or let `install.sh` run it. Besides the
+   migrations it lists the SSH CA keys the first start will import, and refuses when the key file
+   of an enabled SSH CA is missing or is not its key. Read its notes: **Request profiles** lists the
+   enrollment clients of the last 90 days whose next request will be refused, and the SSH note
+   lists profiles that will issue fewer permits than `ssh-keygen` added.
+3. **Upgrade the signer first.** On one host `install.sh` upgrades both units and the node waits
+   for the signer. On an install split across hosts, upgrade and start the signer's host before
+   any node.
+4. **At the control role's first start:**
+   - each SSH CA key file under `config/ssh-ca-keys` is imported into `keystores/ssh-ca.keystore`,
+     once the signer is unlocked, then overwritten and deleted. The console shows a notice that
+     these keys were stored in plaintext; archives made before still hold them;
+   - the instance-wide settings and the node's secrets move into the database, and `config.yaml`
+     is rewritten with this host's settings. The old file is kept as
+     `config.yaml.pre-settings-<time>.bak` with its secrets in the clear: delete it, and any
+     backup archive made before the upgrade that may have left your hands is a reason to rotate
+     those secrets. From now on change instance-wide settings in the console or with `--settings`.
+5. **After it starts:**
+   - check each enrollment client against its request profile
+     (`scripts/test-enrollment-protocols.sh --enforcement`), and widen a profile where a client
+     legitimately needs what it now refuses;
+   - with one administrator, turn on Settings, Security, Allow System Super Self-Approval, or
+     requests under profiles that require approval cannot be completed;
+   - give SSH users the login names they use before their certificates are due again, and copy
+     each SSH CA key's KRL to each SSH server, where `RevokedKeys` names it, so hosts follow
+     revocation.
 
 ### Upgrading to 0.4.0
 
@@ -1066,8 +1116,10 @@ fingerprint with the one in the log before going on. The wizard asks for:
   left on "Require". The superuser is used once, to create the two databases and their roles.
 - **The public name** clients will use for this host. ACME, passkeys and the web certificate are
   all bound to it, so choose the real one.
-- **Whether more than one person will administer the CA.** "Just me" starts key ceremonies off,
-  since a lone administrator could never get one approved.
+- **Whether more than one person will administer the CA.** "Just me" starts key ceremonies off
+  and lets you approve your own certificate requests, since a lone administrator could never get
+  either approved by someone else. Settings and the dashboard say so once a second system
+  super-administrator exists.
 - **Ports.** Keep 8443 and 8080, or change the `ports:` mappings in `compose.yaml` to match.
 
 The wizard stops the process after the database step and again at the end. The `restart:` line
@@ -1127,7 +1179,8 @@ hostname clients will use; bootstrap writes `config.yaml` itself and replaces on
 already there. If one person will administer the
 instance, set `Administration.MultipleAdministrators: false` in `bootstrap.yaml`: key ceremonies
 then start off for the instance and the first space, where a lone administrator could never get
-one approved. Left out, they start on. Three init containers run every start and find their work
+one approved, and a system super-administrator may approve their own certificate requests. Left
+out, ceremonies start on and self-approval off. Three init containers run every start and find their work
 done after the first:
 
 1. **bootstrap** completes the first install as a single process, because bootstrap writes the
@@ -1228,6 +1281,69 @@ upstream for them, and the ingress running in the same process as control), or t
 process must be reached directly. `X-Forwarded-For`, `-Proto` and `-Host` are added on the
 way to a node; `Authorization: Negotiate` and `WWW-Authenticate` pass through untouched.
 
+## SSH servers: fetching the revocation list
+
+A certificate revoked at the CA is refused by an SSH server only once that server has the SSH CA
+key's new key revocation list (KRL). `sshd` reads the list from the file `RevokedKeys` names, and
+nothing in OpenSSH fetches it. The fetcher in `/usr/share/modularca/ssh-krl/` (the tarball's
+`share/ssh-krl/`) does, once a minute. It runs on each SSH server, not on the CA.
+
+| File | Goes on the server as |
+|---|---|
+| `modularca-krl-fetch.sh` | `/usr/local/sbin/modularca-krl-fetch`, mode `0755` |
+| `modularca-krl-fetch.service`, `modularca-krl-fetch.timer` | `/etc/systemd/system/` |
+| `modularca-krl-fetch.env.example` | `/etc/default/modularca-krl-fetch`, with the key's KRL URL |
+
+The server needs `curl`, `ssh-keygen` from OpenSSH 8.0 or later, and coreutils. Copy the four files
+to it (for example `scp /usr/share/modularca/ssh-krl/* root@server:/root/ssh-krl/`), then, on the
+server, in this order:
+
+    cd /root/ssh-krl
+    install -m 0755 modularca-krl-fetch.sh /usr/local/sbin/modularca-krl-fetch
+    install -m 0644 modularca-krl-fetch.service modularca-krl-fetch.timer /etc/systemd/system/
+    install -m 0644 modularca-krl-fetch.env.example /etc/default/modularca-krl-fetch
+    # set MODULARCA_KRL_URL in /etc/default/modularca-krl-fetch: the KRL URL on the key's console page
+    systemctl daemon-reload
+    systemctl start modularca-krl-fetch.service      # the first fetch; it must succeed
+    ssh-keygen -Q -l -f /etc/ssh/revoked_keys.krl    # prints the list's version
+    systemctl enable --now modularca-krl-fetch.timer
+    # only now, in /etc/ssh/sshd_config:  RevokedKeys /etc/ssh/revoked_keys.krl
+    sshd -t && systemctl reload ssh                  # the unit is named sshd on some distributions
+
+**Fetch first, then name the file.** `sshd` refuses every public-key login while the file
+`RevokedKeys` names is missing or cannot be read, so the list has to be in place before
+`sshd_config` names it. Keep a session open while you reload.
+
+What the fetcher does, and will not do:
+
+- It sends the ETag of the installed list, and the CA answers `304 Not Modified` while nothing was
+  revoked. A minute's poll of an unchanged list costs the CA one small query.
+- A new list is downloaded to a temporary file beside the destination. An empty answer is refused,
+  and so is anything `ssh-keygen -Q -l` does not read as a KRL. Only then is the file given mode
+  `0644` and renamed over the installed one.
+- On any failure the installed file is not removed, truncated or replaced, the script exits
+  non-zero and the unit is left failed: `systemctl --failed`, `journalctl -u modularca-krl-fetch`.
+  The timer tries again the next minute. A server that cannot reach the CA keeps the last list it
+  fetched, so revocations made meanwhile do not reach it; watch for the failed unit.
+- It refuses a list whose version is lower than the installed one's, since that is normally an
+  older list. **After the CA's database is restored from a backup** the version can legitimately
+  be lower (it is the number of revoked certificates, and the restored database may hold fewer).
+  Run it once on each server with `--allow-lower-version`, or with
+  `MODULARCA_KRL_ALLOW_LOWER_VERSION=1` in the settings file for one run. Know what that drops:
+  the restored list does not name the certificates revoked after the backup was taken. One that
+  was issued before the backup can be revoked again at the CA. One issued after it is unknown to
+  the restored CA and stays valid until it expires. Until the lower version is allowed the
+  server keeps its old list, and learns of no revocation made since the restore.
+- The URL must be `https`. A KRL is not signed, so TLS is all that protects it. When the server's
+  trust store does not hold the issuer of the CA's web certificate, name a PEM bundle in
+  `MODULARCA_KRL_CACERT`.
+- `sshd` reads the file at each login, so a new list needs no reload.
+
+`RevokedKeys` takes one file, so one server follows one SSH CA key's list this way. The unit may
+write only under `/etc/ssh` (`ProtectSystem=strict`); another destination needs its directory in
+`ReadWritePaths=`, in a drop-in. The script has no systemd dependency of its own: on a host
+without systemd, run it from cron with the same variables or with `--url`, `--dest` and `--cacert`.
+
 ## Break-glass
 
     cd /opt/modularca
@@ -1238,6 +1354,18 @@ It verifies the keystore's file signature and each entry's signature against the
 CA, then prints the entries as PEM. `--insecure-no-verify` skips the database-backed checks for
 the case where the database is what you have lost; it is also required before the tool will
 write decrypted keys to disk.
+
+The SSH CA keys are in a third file, `keystores/ssh-ca.keystore`, which exists only on an install
+that has an SSH CA. The tool opens it the same way, with one difference: it asks for no main
+passphrase. The signer generated that passphrase, and it is kept only in the application database
+(the file's `Keystores` row), wrapped under the secondary passphrase the file shares with
+`ca-certs.keystore`. Without the application database this file cannot be opened, by this tool or
+any other, so a backup that holds the SSH keystore is only as good as the database dump beside it.
+
+`ssh-ca.keystore` and its `Keystores` row exist together. A restore keeps them together: an archive
+without an SSH keystore moves the live file aside as `ssh-ca.keystore.bak.<timestamp>`, and a reset
+deletes it. If the signer ever reports the file without its row (a database restored by other
+means than `--restore`), it stays locked and says so; move the file aside and start it again.
 
 ### A locked account no one can unlock
 

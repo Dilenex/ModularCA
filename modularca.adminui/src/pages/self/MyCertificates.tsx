@@ -12,6 +12,11 @@ import { StepUpOps } from '@shared/generated';
 import { inputClassNarrow as inputClass } from '@shared/components/forms';
 import { RevocationReasonHint } from '../CertificateDetail';
 import { capitalize, expiryPhrase, expiryState, lifecycleTone, toneBannerClass, toneTextClass } from '../certLifecycle';
+import { KindTabStrip, useKindTabs } from '../../components/KindTabs';
+import { useAuth } from '../../context/AuthContext';
+import { canUseSshTab } from '../../authz';
+import { SELF_REQUEST_PATH, SELF_SSH_REQUEST_PATH } from '../sshPlaces';
+import { MySshCertificatesTab } from './MySshCertificates';
 
 /** "Replaced by <serial>", "Replaced" or "Not replaced". */
 function replacementText(cert: any): string {
@@ -48,7 +53,8 @@ function statusBadgeType(s: string): 'active' | 'disabled' | 'pending' {
     return 'pending';
 }
 
-const MyCertificates: React.FC = () => {
+/** The X.509 tab of My Certificates: the reader's certificates, with download, renewal and revocation. */
+const MyX509Certificates: React.FC = () => {
     const navigate = useNavigate();
     const { showToast } = useToast();
     const { requireStepUp } = useStepUp();
@@ -298,7 +304,8 @@ const MyCertificates: React.FC = () => {
                     <div className={`border rounded p-2 text-xs ${toneBannerClass(lifecycleTone(cert.notAfter, !!cert.replaced))}`}>
                         <span className={`font-semibold ${toneTextClass(lifecycleTone(cert.notAfter, !!cert.replaced))}`}>{capitalize(expiryPhrase(cert.notAfter))}</span>
                         <span className="text-ink"> · {replacementText(cert)}</span>
-                        {!cert.replaced && <span className="text-ink-muted">. Use Renew to request a replacement, or renew it the way you obtained it.</span>}
+                        {!cert.replaced && !cert.retiredAt && <span className="text-ink-muted">. Use Renew to request a replacement, or renew it the way you obtained it.</span>}
+                        {!cert.replaced && cert.retiredAt && <span className="text-ink-muted">. An administrator retired it, so it is not renewed; request a new certificate instead.</span>}
                     </div>
                 )}
 
@@ -328,7 +335,7 @@ const MyCertificates: React.FC = () => {
                             Export PFX
                         </button>
                     )}
-                    {status !== 'revoked' && (
+                    {status !== 'revoked' && !cert.retiredAt && (
                         <button onClick={() => handleRenew(cert)}
                             className="px-3 py-1.5 text-xs bg-ok text-on-accent rounded hover:bg-ok-hover transition-colors">
                             Renew
@@ -346,14 +353,7 @@ const MyCertificates: React.FC = () => {
     };
 
     return (
-        <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <div className="flex items-center justify-between">
-                <h1 className="text-xl font-semibold text-ink">My Certificates</h1>
-                <Link to="/request" className="px-4 py-2 text-sm font-medium bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
-                    Request New
-                </Link>
-            </div>
-
+        <div className="space-y-4 sm:space-y-6">
             {/* Filter */}
             <div>
                 <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as any)} className={inputClass}>
@@ -464,6 +464,29 @@ const MyCertificates: React.FC = () => {
                     </div>
                 </div>
             )}
+        </div>
+    );
+};
+
+/**
+ * The self-service My Certificates page: the reader's X.509 certificates, and for a reader who
+ * may request from an SSH CA an SSH tab with their SSH certificates. Request New opens the
+ * request form of the tab in view. A reader with no SSH tab sees no tab strip.
+ */
+const MyCertificates: React.FC = () => {
+    const { capabilities } = useAuth();
+    const { tabs, active, setActive } = useKindTabs({ x509: true, ssh: canUseSshTab(capabilities, 'selfCertificates') });
+    return (
+        <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
+            <div className="flex items-center justify-between">
+                <h1 className="text-xl font-semibold text-ink">My Certificates</h1>
+                <Link to={active === 'SSH' ? SELF_SSH_REQUEST_PATH : SELF_REQUEST_PATH} className="px-4 py-2 text-sm font-medium bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors">
+                    Request New
+                </Link>
+            </div>
+            <KindTabStrip tabs={tabs} active={active} onChange={setActive} />
+            {active === 'X.509' && <MyX509Certificates />}
+            {active === 'SSH' && <MySshCertificatesTab />}
         </div>
     );
 };

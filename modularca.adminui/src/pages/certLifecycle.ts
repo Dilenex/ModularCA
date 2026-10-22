@@ -135,7 +135,9 @@ export function lifecycleHealth(s: CertificateLifecycleSummaryModel, now: Date =
             detail: `${certs(s.expiringWithin30DaysNotReplaced)} expire within 30 days with no replacement` });
     } else if (s.expiringWithin30Days > 0) {
         items.push({ key: 'expiring', label: 'Expiring', tone: 'ok', to: `/certificates?status=active&notAfterTo=${isoDay(new Date(now.getTime() + 31 * DAY))}`,
-            detail: `${certs(s.expiringWithin30Days)} expire within 30 days, all already replaced` });
+            detail: s.retiredOrDismissed > 0
+                ? `${certs(s.expiringWithin30Days)} expire within 30 days, each replaced, retired or dismissed`
+                : `${certs(s.expiringWithin30Days)} expire within 30 days, all already replaced` });
     } else {
         items.push({ key: 'expiring', label: 'Expiring', tone: 'ok', to: '/certificates?status=active',
             detail: 'Nothing expires within 30 days' });
@@ -149,8 +151,8 @@ export function lifecycleHealth(s: CertificateLifecycleSummaryModel, now: Date =
             detail: `${certs(s.expiredNotReplaced)} expired in the last ${s.replacementWindowDays} days with no replacement` });
     } else if (s.expired > 0) {
         items.push({ key: 'expired', label: 'Expired', tone: 'neutral', to: '/certificates?status=expired',
-            detail: s.expiredReplaced > 0
-                ? `${certs(s.expired)} expired; every one from the last ${s.replacementWindowDays} days was replaced`
+            detail: s.expiredReplaced > 0 || s.retiredOrDismissed > 0
+                ? `${certs(s.expired)} expired; every one from the last ${s.replacementWindowDays} days was replaced, retired or dismissed`
                 : `${certs(s.expired)} expired more than ${s.replacementWindowDays} days ago` });
     } else {
         items.push({ key: 'expired', label: 'Expired', tone: 'ok', to: '/certificates?status=expired', detail: 'No expired certificates' });
@@ -209,7 +211,32 @@ export function channelLabel(channel: string | null | undefined): string {
  * Whether the console offers Reissue, as on the certificate page: an active or expired
  * certificate, or one revoked only by Certificate Hold.
  */
-export function canReissue(cert: { revoked?: boolean; revocationReason?: string | null }): boolean {
+export function canReissue(cert: { revoked?: boolean; revocationReason?: string | null; retiredAt?: string | null }): boolean {
+    if (cert.retiredAt) return false;
     if (!cert.revoked) return true;
     return /hold/i.test(String(cert.revocationReason ?? ''));
+}
+
+/**
+ * How an operator has handled a certificate's expiry: retired (nothing renews it, its subject
+ * enrolls anew), its warning dismissed (it renews as before, quietly), or neither.
+ */
+export function expiryHandling(cert: { retiredAt?: string | null; expiryWarningDismissedAt?: string | null }): 'retired' | 'dismissed' | null {
+    if (cert.retiredAt) return 'retired';
+    if (cert.expiryWarningDismissedAt) return 'dismissed';
+    return null;
+}
+
+/** The sentence the certificate page shows for a retired certificate or a dismissed warning. */
+export function expiryHandlingNote(cert: { retiredAt?: string | null; retiredBy?: string | null; retiredReason?: string | null;
+    expiryWarningDismissedAt?: string | null; expiryWarningDismissedBy?: string | null }): string | null {
+    const by = (who: string | null | undefined) => (who ? ` by ${who}` : '');
+    switch (expiryHandling(cert)) {
+        case 'retired':
+            return `Retired${by(cert.retiredBy)}${cert.retiredReason ? `: ${cert.retiredReason}` : ''}. It stays valid until it expires, but is not renewed or reissued; its subject needs a new enrollment.`;
+        case 'dismissed':
+            return `Expiry warning dismissed${by(cert.expiryWarningDismissedBy)}. It can still be renewed, by hand, by auto-renewal or by its client.`;
+        default:
+            return null;
+    }
 }

@@ -41,17 +41,20 @@ public class StepUpGuardTests
         ["AdminIssuanceController.IssueCertificate"] = "follows through on an approval, which is gated (owner, 2026-10-06)",
         ["AdminIssuanceController.IssueWithServerKey"] = RoutineIssuance,
         ["AdminCertificateController.RenewCertificate"] = RoutineIssuance,
-        ["AdminSshController.SignHostKey"] = RoutineIssuance,
-        ["AdminSshController.SignUserKey"] = RoutineIssuance,
 
         ["AdminEnrollmentTokenController.RevokeToken"] = "takes an enrollment credential away",
         ["AdminCertificateController.AddCertificateTag"] = "a label on a certificate; trust is unchanged",
         ["AdminCertificateController.RemoveCertificateTag"] = "a label on a certificate; trust is unchanged",
+        ["AdminCertificateController.RetireCertificate"] = "stops renewals from a certificate and its expiry warning; trust is unchanged",
+        ["AdminCertificateController.UndoRetireCertificate"] = "lets a certificate be renewed again; trust is unchanged",
+        ["AdminCertificateController.DismissExpiryWarning"] = "silences an expiry warning; trust is unchanged",
+        ["AdminCertificateController.RestoreExpiryWarning"] = "brings an expiry warning back; trust is unchanged",
         ["AdminComplianceController.Resolve"] = "marks a compliance finding resolved",
         ["AdminLdapController.SyncAll"] = "re-reads the directory; grants nothing the directory does not",
         ["AdminLdapController.SyncUser"] = "re-reads the directory; grants nothing the directory does not",
         ["AdminNotificationController.UpdatePreference"] = "who is told about an event",
         ["AdminQuotaController.UpdateQuota"] = "a group's issuance quota",
+        ["AdminSshController.SetReviewBy"] = "moves an SSH CA key's advisory review date: a reminder that signs, refuses and revokes nothing (owner, 2026-10-08)",
     };
 
     /// <summary>Admin mutations with neither the step-up filter nor a step-up check in their body, as Controller.Action → route.</summary>

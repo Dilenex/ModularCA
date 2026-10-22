@@ -1,13 +1,17 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
+using ModularCA.Keystore.Adapters;
 using ModularCA.Keystore.Hsm;
 using ModularCA.Keystore.Services;
+using ModularCA.Keystore.Signing;
+using ModularCA.Shared.Signing;
+using ModularCA.Ssh;
 using Org.BouncyCastle.X509;
 
 namespace ModularCA.Keystore.Utils;
 
 /// <summary>
-/// Loads keystore files (CA private keys and trusted certificates) at application startup, for
+/// Loads keystore files (CA private keys, trusted certificates and SSH CA keys) at application startup, for
 /// <see cref="Signing.SignerBootstrap"/>. Internal: the key parameters it returns never leave
 /// the keystore project.
 /// </summary>
@@ -36,20 +40,77 @@ internal static class StartupKeystoreLoader
     /// </summary>
     public static (List<KeystoreService.CertKey> Signers, List<KeystoreService.CertWithKey> FullCAs, List<X509Certificate> TrustedCAs) LoadAll(string keystorePath, string yamlPath, string dbConnStr)
     {
-        var certPath = Path.Combine(keystorePath, "ca-certs.keystore");
-        var trustPath = Path.Combine(keystorePath, "ca-trust.keystore");
-
         var db = new ModularCADbContext(
             new DbContextOptionsBuilder<ModularCADbContext>()
                 .UseNpgsql(dbConnStr)
                 .Options
         );
 
+        return LoadAll(keystorePath, yamlPath, db);
+    }
+
+    /// <summary>
+    /// Loads all keystore data, as the connection-string overload does, through a database the
+    /// caller opened.
+    /// </summary>
+    public static (List<KeystoreService.CertKey> Signers, List<KeystoreService.CertWithKey> FullCAs, List<X509Certificate> TrustedCAs) LoadAll(string keystorePath, string yamlPath, ModularCADbContext db)
+    {
+        var certPath = Path.Combine(keystorePath, "ca-certs.keystore");
+        var trustPath = Path.Combine(keystorePath, "ca-trust.keystore");
+
         var privKeys = KeystoreService.LoadCertKeys(certPath, yamlPath, db);
         var trustCAs = KeystoreService.LoadTrustedCerts(trustPath, yamlPath, db);
         var fullCAs = KeystoreService.MatchCertsWithKeys(privKeys, trustCAs);
 
         return (privKeys, fullCAs, trustCAs);
+    }
+
+    /// <summary>
+    /// Loads the SSH CA keys from <c>ssh-ca.keystore</c> and binds each to the <c>SshCaKeys</c>
+    /// rows that carry its public key. A key no row carries is not returned, so it is never
+    /// served; the signer checks the binding again each time a key is used. An install with no
+    /// SSH keystore returns nothing. Throws what <see cref="KeystoreService.LoadSshKeys"/> throws.
+    /// </summary>
+    public static List<SshKeyBinding> LoadSshKeys(string keystorePath, string yamlPath, ModularCADbContext db)
+    {
+        var keys = KeystoreService.LoadSshKeys(Path.Combine(keystorePath, KeyRef.SshKeystore), yamlPath, db);
+        var bindings = new List<SshKeyBinding>();
+        if (keys.Count == 0)
+            return bindings;
+
+        var rows = db.SshCaKeys.AsNoTracking()
+            .Select(k => new { k.Id, k.PublicKey })
+            .ToList()
+            .Select(r => (r.Id, Key: SshRowKey.Parse(r.PublicKey)))
+            .Where(r => r.Key != null)
+            .ToList();
+
+        foreach (var key in keys)
+        {
+            SshPublicKey publicKey;
+            try
+            {
+                publicKey = SshPublicKey.FromKeyParameter(KeystoreService.GetPublicFromPrivate(key.PrivateKey));
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or FormatException)
+            {
+                Console.WriteLine($"[WARNING] {KeyRef.SshKeystore} holds a key that is not an SSH key ({ex.Message}); it is not served.");
+                continue;
+            }
+
+            var handle = new SoftwarePrivateKeyHandle(key.PrivateKey);
+            var bound = 0;
+            foreach (var row in rows)
+            {
+                if (!row.Key!.Equals(publicKey) || bindings.Any(b => b.KeyId == row.Id))
+                    continue;
+                bindings.Add(new SshKeyBinding(row.Id, publicKey, handle));
+                bound++;
+            }
+            if (bound == 0)
+                Console.WriteLine($"[WARNING] {KeyRef.SshKeystore} holds the key {publicKey.Fingerprint}, which no SSH CA key row carries; it is not served.");
+        }
+        return bindings;
     }
 
     /// <summary>

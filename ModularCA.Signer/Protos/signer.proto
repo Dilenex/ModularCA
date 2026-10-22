@@ -25,9 +25,14 @@ service Signer {
   rpc WrapSecret (WrapSecretRequest) returns (WrapSecretResponse);
   rpc UnwrapSecret (UnwrapSecretRequest) returns (UnwrapSecretResponse);
   rpc Health (HealthRequest) returns (HealthResponse);
+  // Added with the SSH keystore. A signer that predates it answers UNIMPLEMENTED, which the
+  // client reports as a refusal saying the signer must be upgraded first.
+  rpc SignSshCertificate (SignSshCertificateRequest) returns (SignSshCertificateResponse);
 }
 
-// A reference to a stored key: the certificate id and the keystore name.
+// A reference to a stored key: the certificate id and the keystore name. An SSH CA key has no
+// certificate: in ssh-ca.keystore, certificate_id carries its SshCaKeys row id, here and in
+// CommitKeyRequest and KeyMaterial.
 message KeyRef {
   string certificate_id = 1;
   string keystore = 2;
@@ -62,6 +67,35 @@ message SignResponse {
   bytes signature = 1;
 }
 
+// A critical option or an extension of an SSH certificate.
+message SshOption {
+  string name = 1;
+  string value = 2;           // empty for flag extensions
+}
+
+// An SSH certificate for the signer to build and sign. There is no field for the nonce, the
+// signature key or the signature algorithm: the signer makes the first, writes its own public
+// key as the second and derives the third from it. The signer refuses fields that are malformed
+// or break a rule of the SSH CA key (UntypedData), and audits every call with the type, serial,
+// key id, validity and the number of principals.
+message SignSshCertificateRequest {
+  KeyRef key = 1;             // (SshCaKeys.Id, "ssh-ca.keystore")
+  bytes subject_public_key = 2;   // OpenSSH wire-format public key blob
+  string cert_type = 3;       // "user" | "host"
+  uint64 serial = 4;
+  string key_id = 5;
+  repeated string principals = 6;
+  int64 valid_after = 7;      // Unix seconds
+  int64 valid_before = 8;
+  repeated SshOption critical_options = 9;
+  repeated SshOption extensions = 10;
+  SigningContext context = 11;    // purpose SshCertificate, ca_id = the SSH CA's row, instance scope
+}
+
+message SignSshCertificateResponse {
+  bytes certificate = 1;      // the full certificate blob; the node renders "type base64 comment"
+}
+
 message DecryptRequest {
   KeyRef key = 1;
   bytes enveloped = 2;
@@ -76,6 +110,11 @@ message KeySpec {
   string algorithm = 1;
   string size_or_curve = 2;
   optional string label = 3;
+  // What the key is for: empty for a key that will belong to an X.509 certificate, which is
+  // what a client older than this field sends; "ssh" for an SSH CA key, minted in
+  // ssh-ca.keystore. A signer older than this field ignores it and returns a key reference in
+  // ca-certs.keystore, so a client that asked for "ssh" tells by the keystore of the reference.
+  string usage = 4;
 }
 
 message GenerateKeyRequest {
@@ -161,6 +200,9 @@ message WrapSecretRequest {
   string kind = 1;
   bytes secret = 2;
   SigningContext context = 3;
+  // Where the blob will be kept, for a secret that is bound to its place. Set, the signer
+  // returns a blob that unwraps only for the same binding; empty, one with no binding.
+  string binding = 4;
 }
 
 message WrapSecretResponse {
@@ -173,6 +215,9 @@ message WrapSecretResponse {
 message UnwrapSecretRequest {
   bytes wrapped = 1;
   SigningContext context = 2;
+  // Where the caller read the blob from. It has to be the binding the blob was wrapped under,
+  // and empty for a blob that has none.
+  string binding = 3;
 }
 
 message UnwrapSecretResponse {

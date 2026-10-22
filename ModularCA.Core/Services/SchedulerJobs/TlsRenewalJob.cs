@@ -214,7 +214,7 @@ public class TlsRenewalJob : SingletonCronJob
 
         // Look up the Web TLS cert profile (or fall back to the cert's existing profile)
         var certProfile = await _db.CertProfiles
-            .FirstOrDefaultAsync(cp => cp.Name == "Web TLS Certificate Profile", cancellationToken);
+            .FirstOrDefaultAsync(cp => cp.Name == ModularCA.Shared.Utils.SystemCertProfiles.WebTls, cancellationToken);
         var certProfileId = certProfile?.Id ?? dbCert.CertProfileId
             ?? throw new InvalidOperationException("No cert profile available for TLS renewal");
 

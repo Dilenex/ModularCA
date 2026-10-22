@@ -5,12 +5,14 @@ using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Models.Config;
+using ModularCA.Shared.Utils;
 
 namespace ModularCA.Core.Services.SchedulerJobs;
 
 /// <summary>
 /// Scheduled job that checks for non-revoked, non-CA certificates approaching expiration
-/// and sends grouped notifications to administrators via email and security alerts.
+/// and sends grouped notifications to administrators via email and security alerts. Retired
+/// certificates, and those whose expiry warning was dismissed, are left out.
 /// <para>
 /// De-dup is backed by the <c>NotificationLog</c> table with a unique composite index on
 /// <c>(EventType, TargetEntityId, NotificationDate)</c>. Duplicate inserts fail atomically
@@ -25,6 +27,10 @@ namespace ModularCA.Core.Services.SchedulerJobs;
 /// it directly when an operator clicks "Run Now" in the admin Schedules page — bypassing
 /// the cron past-due gate that <see cref="SingletonCronJob.TickAsync"/> evaluates so the
 /// work fires immediately regardless of schedule.
+/// </para>
+/// <para>
+/// The same run reminds administrators of SSH CA keys due for review. An SSH CA key has no
+/// expiry; its review date is advisory, and the reminder is all this job does about it.
 /// </para>
 /// </summary>
 public class CertExpiryNotificationJob : SingletonCronJob
@@ -83,7 +89,9 @@ public class CertExpiryNotificationJob : SingletonCronJob
     /// threshold, queries non-revoked, non-CA certificates expiring within that window
     /// and sends grouped notifications. Already-expired certificates are excluded.
     /// Duplicate alerts for the same cert on the same calendar day are suppressed via
-    /// <c>NotificationLogEntity</c>'s unique index.
+    /// <c>NotificationLogEntity</c>'s unique index. The same run then sends the SSH CA key
+    /// review reminders (<see cref="ProcessSshCaKeyReviewsAsync"/>), whether or not any
+    /// certificate threshold is configured.
     /// </summary>
     protected override async Task ExecuteAsync(CancellationToken cancellationToken)
     {
@@ -100,9 +108,7 @@ public class CertExpiryNotificationJob : SingletonCronJob
         // timeout to 5 minutes for this run so the scheduler job never throws on 30s.
         _db.Database.SetCommandTimeout(TimeSpan.FromMinutes(5));
 
-        var thresholds = _config.CertExpiryNotification.WarningDaysBeforeExpiry;
-        if (thresholds == null || thresholds.Count == 0)
-            return;
+        var thresholds = _config.CertExpiryNotification.WarningDaysBeforeExpiry ?? [];
 
         // Sort descending so we process the largest window first
         var sortedThresholds = thresholds.OrderByDescending(d => d).ToList();
@@ -112,6 +118,80 @@ public class CertExpiryNotificationJob : SingletonCronJob
             cancellationToken.ThrowIfCancellationRequested();
             await ProcessThresholdAsync(days, cancellationToken);
         }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        await ProcessSshCaKeyReviewsAsync(cancellationToken);
+    }
+
+    /// <summary>The event type of the SSH CA key review reminder, in the notification log and to webhooks.</summary>
+    public const string SshCaKeyReviewDueEvent = "SshCaKeyReviewDue";
+
+    /// <summary>
+    /// Tells administrators once about each enabled SSH CA key whose advisory review date is
+    /// within <see cref="SshCaKeyDefaults.ReviewWarningDays"/> days or has passed. One message
+    /// per key and review date: the <c>NotificationLog</c> row is keyed by the review date, so
+    /// moving the date allows the next reminder. It reads the key rows and writes only that log.
+    /// No key is disabled and nothing is refused or revoked.
+    /// </summary>
+    /// <returns>How many reminders were sent.</returns>
+    internal async Task<int> ProcessSshCaKeyReviewsAsync(CancellationToken cancellationToken)
+    {
+        var now = TimeProvider.GetUtcNow().UtcDateTime;
+        var horizon = now.AddDays(SshCaKeyDefaults.ReviewWarningDays);
+        var due = await _db.SshCaKeys.AsNoTracking()
+            .Where(k => k.IsEnabled && k.ReviewBy != null && k.ReviewBy <= horizon)
+            .OrderBy(k => k.Name)
+            .Select(k => new { k.Id, k.Name, k.IsUserCa, k.IsHostCa, ReviewBy = k.ReviewBy!.Value })
+            .ToListAsync(cancellationToken);
+
+        var sent = 0;
+        foreach (var key in due)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var target = key.Id.ToString();
+            var reviewDay = DateTime.SpecifyKind(key.ReviewBy.Date, DateTimeKind.Utc);
+            if (await _db.NotificationLogs.AsNoTracking().AnyAsync(
+                    n => n.EventType == SshCaKeyReviewDueEvent && n.TargetEntityId == target && n.NotificationDate == reviewDay, cancellationToken))
+                continue;
+
+            var logRow = new NotificationLogEntity
+            {
+                EventType = SshCaKeyReviewDueEvent,
+                TargetEntityId = target,
+                NotificationDate = reviewDay,
+                CreatedAtUtc = now
+            };
+            _db.NotificationLogs.Add(logRow);
+            try
+            {
+                await _db.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateException ex) when (PostgresErrorUtil.IsUniqueViolation(ex))
+            {
+                _db.Entry(logRow).State = EntityState.Detached;
+                continue;
+            }
+
+            var signs = key.IsUserCa && key.IsHostCa ? "user and host" : key.IsHostCa ? "host" : "user";
+            var when = key.ReviewBy <= now ? "was due for review on" : "is due for review on";
+            try
+            {
+                await _notifications.NotifyAsync(SshCaKeyReviewDueEvent,
+                    $"The SSH CA key '{key.Name}' ({signs} certificates) {when} {key.ReviewBy:yyyy-MM-dd} UTC.\n\n"
+                    + "This is a reminder only. The key keeps signing, its certificates stay valid and its revocation list is still served.\n\n"
+                    + "Decide whether the key should still be in use, then move the review date on the key's page in the console (Authorities, the SSH tab, the key, Review by).");
+                sent++;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to send the review reminder for SSH CA key {KeyId}", key.Id);
+            }
+        }
+
+        if (sent > 0)
+            _logger.LogInformation("Sent {Count} SSH CA key review reminder(s)", sent);
+        return sent;
     }
 
     /// <summary>
@@ -123,10 +203,13 @@ public class CertExpiryNotificationJob : SingletonCronJob
         var queryNow = TimeProvider.GetUtcNow().UtcDateTime;
         var targetDate = queryNow.AddDays(days);
 
-        // Find non-revoked, non-CA certs that expire within this window but haven't expired yet
+        // Find non-revoked, non-CA certs that expire within this window but haven't expired yet,
+        // leaving out retired ones and those whose expiry warning was dismissed
         var expiringCerts = await _db.Certificates
             .AsNoTracking()
             .Where(c => !c.Revoked
+                         && c.RetiredAt == null
+                         && c.ExpiryWarningDismissedAt == null
                          && !c.IsCA
                          && c.NotAfter <= targetDate
                          && c.NotAfter > queryNow)

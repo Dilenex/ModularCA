@@ -22,7 +22,11 @@ namespace ModularCA.Auth.Authorization;
 /// <paramref name="badges"/>; a target account's tiers never do. A promotion reads recent
 /// credential resets from <paramref name="auditDb"/>; when it is null or unreadable the ceremony
 /// says so instead. Approval and execute read them again to bar the resetters from approving,
-/// falling back to those recorded at initiation.
+/// falling back to those recorded at initiation. A group membership removed on execute revokes,
+/// through <paramref name="sshLoginNames"/>, the SSH certificates that carried a login name the
+/// user held through that group; a membership, a role or a capability removed on execute
+/// revokes those on an SSH CA the user may then no longer request from. A deletion or a
+/// disabling goes through the user service, which revokes for itself.
 /// </summary>
 public class ControlledUserCeremonyService(
     ModularCADbContext db,
@@ -30,7 +34,8 @@ public class ControlledUserCeremonyService(
     IUserManagementService userService,
     ILogger<ControlledUserCeremonyService> logger,
     IAccessBadgeContext? badges = null,
-    AuditDbContext? auditDb = null) : IControlledUserCeremonyService
+    AuditDbContext? auditDb = null,
+    ISshLoginNameService? sshLoginNames = null) : IControlledUserCeremonyService
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
@@ -598,7 +603,9 @@ public class ControlledUserCeremonyService(
     /// lock that would leave its scope without a dominating user is refused the same way but stays
     /// Approved. Otherwise the ceremony is marked Executed in the same transaction as the change.
     /// A password reset generates the temporary password now and returns it only in
-    /// <see cref="ControlledUserChangeResult.TemporaryPassword"/>.
+    /// <see cref="ControlledUserChangeResult.TemporaryPassword"/>. A group membership removed here
+    /// revokes, in the same transaction, the SSH certificates that carried a login name the user
+    /// held through that group.
     /// </summary>
     public async Task<ControlledUserChangeResult> ApplyApprovedAsync(Guid ceremonyId)
     {
@@ -744,6 +751,8 @@ public class ControlledUserCeremonyService(
                         {
                             db.UserCapabilityGrants.Remove(grant);
                             await db.SaveChangesAsync();
+                            if (sshLoginNames != null)
+                                await sshLoginNames.ReconcileUsersAsync([grant.UserId], "a capability was taken from the user");
                         }
                     }
                     break;
@@ -757,6 +766,8 @@ public class ControlledUserCeremonyService(
                         {
                             db.RoleAssignments.Remove(assignment);
                             await db.SaveChangesAsync();
+                            if (sshLoginNames != null)
+                                await sshLoginNames.RoleUnassignedAsync(assignment.UserId, assignment.GroupId);
                         }
                     }
                     break;
@@ -771,6 +782,8 @@ public class ControlledUserCeremonyService(
                         {
                             db.CaGroupMembers.Remove(membership);
                             await db.SaveChangesAsync();
+                            if (sshLoginNames != null)
+                                await sshLoginNames.ReconcileUsersAsync([p.TargetUserId], "the user left a group");
                         }
                     }
                     break;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { certExpiryNotificationBody, warningDaysFromConfig, type CertExpiryNotificationBody } from '@adminui/pages/settingsLists';
+import { certExpiryNotificationBody, jwtIpBindingMode, warningDaysFromConfig, type CertExpiryNotificationBody } from '@adminui/pages/settingsLists';
 import { bodyKeys, dtoKeys } from './profileFormKit';
 
 /**
@@ -33,5 +33,26 @@ describe('cert expiry notification settings', () => {
     it('round-trips a loaded section unchanged', () => {
         const section = { enabled: false, warningDaysBeforeExpiry: [90, 30] };
         expect(certExpiryNotificationBody(section, warningDaysFromConfig(section)).warningDays).toEqual([90, 30]);
+    });
+});
+
+describe('the JWT IP binding mode as the server sends it', () => {
+    it('is read by name, whatever its case', () => {
+        expect(jwtIpBindingMode('Exact')).toBe('Exact');
+        expect(jwtIpBindingMode('subnet24')).toBe('Subnet24');
+        expect(jwtIpBindingMode('Off')).toBe('Off');
+    });
+
+    it('is read by number, as older builds sent it', () => {
+        expect(jwtIpBindingMode(0)).toBe('Off');
+        expect(jwtIpBindingMode(1)).toBe('Exact');
+        expect(jwtIpBindingMode(2)).toBe('Subnet24');
+    });
+
+    it('reads as Off when it is missing or unknown', () => {
+        expect(jwtIpBindingMode(undefined)).toBe('Off');
+        expect(jwtIpBindingMode(null)).toBe('Off');
+        expect(jwtIpBindingMode('Strict')).toBe('Off');
+        expect(jwtIpBindingMode(7)).toBe('Off');
     });
 });

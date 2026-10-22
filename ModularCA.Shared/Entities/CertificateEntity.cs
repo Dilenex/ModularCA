@@ -79,6 +79,31 @@ public class CertificateEntity
     public DateTime? InvalidityDate { get; set; }
 
     /// <summary>
+    /// When an operator dismissed this certificate's expiry warning, or null. A dismissed
+    /// certificate leaves the expiry warnings and notifications and can still be renewed.
+    /// </summary>
+    public DateTime? ExpiryWarningDismissedAt { get; set; }
+
+    /// <summary>Who dismissed the expiry warning.</summary>
+    [MaxLength(255)]
+    public string? ExpiryWarningDismissedBy { get; set; }
+
+    /// <summary>
+    /// When an operator retired this certificate, or null. A retired certificate stays valid until
+    /// it expires, raises no expiry warning, and is never the basis of a renewal, reissue or
+    /// protocol re-enrollment: its subject needs a new enrollment.
+    /// </summary>
+    public DateTime? RetiredAt { get; set; }
+
+    /// <summary>Who retired the certificate.</summary>
+    [MaxLength(255)]
+    public string? RetiredBy { get; set; }
+
+    /// <summary>Why it was retired, as the operator wrote it.</summary>
+    [MaxLength(500)]
+    public string? RetiredReason { get; set; }
+
+    /// <summary>
     /// FK to the CA certificate that issued this certificate. Preferred over the
     /// free-text <see cref="Issuer"/> DN for revocation lookup so two CAs that share a SubjectDN
     /// (renewal, cross-certification) can't have their revoked certs lumped together on the CRL.
@@ -132,4 +157,12 @@ public static class CertificateEntityExtensions
         entity.EncryptedPrivateKey != null
         && entity.AesKeyEncryptionIv != null
         && entity.EncryptedAesForPrivateKey != null;
+
+    /// <summary>
+    /// True when the certificate's expiry raises no warning: it was retired, or its warning was
+    /// dismissed. The lifecycle summary, the certificate list and the expiry notifications all
+    /// ask this, so they cannot disagree.
+    /// </summary>
+    public static bool ExpiryWarningSilenced(this CertificateEntity entity) =>
+        entity.RetiredAt != null || entity.ExpiryWarningDismissedAt != null;
 }

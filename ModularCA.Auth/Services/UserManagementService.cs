@@ -20,22 +20,27 @@ namespace ModularCA.Auth.Services
         private readonly SystemConfig _config;
         private readonly ISecurityPolicyService _securityPolicy;
         private readonly IPasswordPolicyService _passwordPolicy;
+        private readonly ISshLoginNameService? _sshLoginNames;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="UserManagementService"/> class.
+        /// <paramref name="sshLoginNames"/> revokes SSH certificates when a user is disabled,
+        /// renamed, deleted or leaves a group; without it nothing is revoked.
         /// </summary>
         public UserManagementService(
             ModularCADbContext dbContext,
             ILogger<UserManagementService> logger,
             SystemConfig config,
             ISecurityPolicyService securityPolicy,
-            IPasswordPolicyService passwordPolicy)
+            IPasswordPolicyService passwordPolicy,
+            ISshLoginNameService? sshLoginNames = null)
         {
             _dbContext = dbContext;
             _logger = logger;
             _config = config;
             _securityPolicy = securityPolicy;
             _passwordPolicy = passwordPolicy;
+            _sshLoginNames = sshLoginNames;
         }
 
         /// <summary>
@@ -128,7 +133,9 @@ namespace ModularCA.Auth.Services
         /// is never applied; passwords change only through reset or the user's own change. An empty
         /// or whitespace username or email is left unchanged. A username or email change, enabling,
         /// disabling, locking or unlocking rotates the security stamp; an unlock (IsLocked false)
-        /// also clears the failed-login count and any temporary lockout.
+        /// also clears the failed-login count and any temporary lockout. Disabling revokes every
+        /// live SSH certificate issued for the user, and so does a username change, since their
+        /// key id is the old username.
         /// </summary>
         /// <remarks>
         /// The uniqueness checks exclude the user being updated. Without that exclusion a PUT
@@ -163,6 +170,7 @@ namespace ModularCA.Auth.Services
             }
             var wasActive = user.IsActive;
             var wasLocked = user.IsLocked;
+            var previousUsername = user.Username;
             var identityChanged = (!string.IsNullOrWhiteSpace(request.Username) && request.Username != user.Username)
                                   || (!string.IsNullOrWhiteSpace(request.Email) && request.Email != user.Email);
             if (!string.IsNullOrWhiteSpace(request.Username)) user.Username = request.Username;
@@ -213,12 +221,23 @@ namespace ModularCA.Auth.Services
                 }
             }
 
+            var renamed = !string.Equals(previousUsername, user.Username, StringComparison.Ordinal);
             _dbContext.Users.Update(user);
-            return await _dbContext.SaveChangesAsync() > 0;
+            var saved = await _dbContext.SaveChangesAsync() > 0;
+            if (saved && _sshLoginNames != null)
+            {
+                if (wasActive && !user.IsActive)
+                    await _sshLoginNames.RevokeAllOfUserAsync(userId, "the user was disabled");
+                else if (renamed)
+                    await _sshLoginNames.RevokeAllOfUserAsync(userId, "the user was renamed");
+            }
+            return saved;
         }
 
         /// <summary>
-        /// Deletes a user by ID and all associated group memberships (via cascade).
+        /// Deletes a user by ID and all associated group memberships (via cascade). Every live SSH
+        /// certificate issued for the user is revoked first, and the SSH login names granted to
+        /// the user are removed.
         /// </summary>
         public async Task<bool> DeleteUser(Guid userId)
         {
@@ -228,6 +247,8 @@ namespace ModularCA.Auth.Services
                 _logger.LogWarning("User {UserId} not found for deletion", userId);
                 return false;
             }
+            if (_sshLoginNames != null)
+                await _sshLoginNames.UserDeletingAsync(userId);
             _dbContext.Users.Remove(user);
             return await _dbContext.SaveChangesAsync() > 0;
         }
@@ -351,7 +372,8 @@ namespace ModularCA.Auth.Services
         }
 
         /// <summary>
-        /// Removes a user from a CA group. Returns false if the membership does not exist.
+        /// Removes a user from a CA group. Returns false if the membership does not exist. SSH
+        /// certificates that carried a login name the user held through the group are revoked.
         /// </summary>
         public async Task<bool> RemoveUserFromGroup(Guid userId, Guid groupId)
         {
@@ -371,7 +393,10 @@ namespace ModularCA.Auth.Services
                 removeUser.SecurityStamp = Guid.NewGuid().ToString();
                 _dbContext.Users.Update(removeUser);
             }
-            return await _dbContext.SaveChangesAsync() > 0;
+            var removed = await _dbContext.SaveChangesAsync() > 0;
+            if (removed && _sshLoginNames != null)
+                await _sshLoginNames.ReconcileUsersAsync([userId], "the user left a group");
+            return removed;
         }
 
         /// <summary>

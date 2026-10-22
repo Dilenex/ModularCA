@@ -434,11 +434,11 @@ public static class BootstrapProfileSeeder
         db.RequestProfiles.Add(mdmDevice);
         profiles["MdmDevice"] = mdmDevice;
 
-        // 4. Enterprise User (CMP) — manual approval required
+        // 4. Enterprise User (CMP) — auto-approved: CMP refuses a profile that requires approval
         var enterpriseUser = new RequestProfileEntity
         {
             Name = "Enterprise User (CMP)",
-            Description = "User certificates for authentication and email. Requires manual admin approval before issuance.",
+            Description = "User certificates for authentication and email. Auto-approved via CMP message protection (shared secret or signature).",
             SubjectDnRules = JsonSerializer.Serialize(new SubjectDnFieldRule[]
             {
                 new() { Field = "CN", Requirement = "Required", MaxLength = 64 },
@@ -456,7 +456,7 @@ public static class BootstrapProfileSeeder
                 }
             }),
             AllowedCertProfileIds = "[]",
-            RequireApproval = true,
+            RequireApproval = false,
         };
         db.RequestProfiles.Add(enterpriseUser);
         profiles["EnterpriseUser"] = enterpriseUser;
@@ -483,6 +483,18 @@ public static class BootstrapProfileSeeder
         };
         db.RequestProfiles.Add(codeSigning);
         profiles["CodeSigning"] = codeSigning;
+
+        // Each seeded request profile defaults to the certificate profile made for it. Only the
+        // default is set, not an allowed list: a list would also override the certificate
+        // profile a protocol is configured with.
+        foreach (var profile in profiles.Values)
+        {
+            if (StandardCertProfiles.DefaultForRequestProfile.TryGetValue(profile.Name, out var certProfileName))
+                profile.DefaultCertProfileId = db.CertProfiles
+                    .Where(c => c.Name == certProfileName && !c.IsCaProfile)
+                    .Select(c => (Guid?)c.Id)
+                    .FirstOrDefault();
+        }
 
         db.SaveChanges();
         Console.WriteLine($"✓ {profiles.Count} default request profiles seeded (Web Server, Enterprise Server, MDM Device, Enterprise User, Code Signing).");
@@ -715,7 +727,7 @@ public static class BootstrapProfileSeeder
             new WhitelistEntity
             {
                 Name = "Public Portal",
-                Description = "The relying-party portal (/public) and the public info endpoint its footer reads. Open by default because the people it serves are outside the network by definition — someone fetching the CA certificate has no trust in this CA yet. Protocol endpoints under /api/v1/public/ are NOT covered here; they keep their own per-protocol rules. Tighten this to internal CIDRs on an air-gapped or internal-only deployment.",
+                Description = "The relying-party portal (/public), the public info endpoint its footer reads, and the bare root (/), which only redirects to the portal. Open by default because the people it serves are outside the network by definition — someone fetching the CA certificate has no trust in this CA yet. Protocol endpoints under /api/v1/public/ are NOT covered here; they keep their own per-protocol rules. Tighten this to internal CIDRs on an air-gapped or internal-only deployment.",
                 Scope = WhitelistScope.Public,
                 CertificateAuthorityId = null,
                 Protocol = null,
@@ -860,6 +872,45 @@ public static class BootstrapProfileSeeder
         db.NotificationPreferences.AddRange(prefs);
         db.SaveChanges();
         Console.WriteLine($"✓ {prefs.Length} notification preferences seeded.");
+    }
+
+    /// <summary>
+    /// Seeds the purpose-specific end-entity certificate profiles
+    /// (<see cref="StandardCertProfiles"/>: TLS server, device client, user authentication and
+    /// email, code signing) and links each to <paramref name="signingProfile"/>. Idempotent: a
+    /// profile whose name exists is left as it is. An install that predates these gets them from
+    /// migration <c>StandardCertProfiles</c>.
+    /// </summary>
+    public static void SeedStandardCertProfiles(ModularCADbContext db, SigningProfileEntity signingProfile)
+    {
+        var keyAlgorithms = JsonSerializer.Serialize(new[] { "RSA", "ECDSA", "Ed25519", "Ed448", "ML-DSA-44", "ML-DSA-65", "ML-DSA-87", "SLH-DSA-SHA2-128F" });
+        var keySizes = JsonSerializer.Serialize(new[] { "2048", "3072", "4096", "7680", "8192", "P-256", "P-384", "P-521" });
+        var sigAlgorithms = JsonSerializer.Serialize(new[] { "SHA256withRSA", "SHA384withRSA", "SHA512withRSA", "SHA256withRSAandMGF1", "SHA384withRSAandMGF1", "SHA512withRSAandMGF1", "SHA256withECDSA", "SHA384withECDSA", "SHA512withECDSA", "Ed25519", "Ed448", "ML-DSA-44", "ML-DSA-65", "ML-DSA-87", "SLH-DSA-SHA2-128F" });
+
+        foreach (var standard in StandardCertProfiles.All)
+        {
+            if (db.CertProfiles.Any(c => c.Name == standard.Name))
+                continue;
+            var profile = new CertProfileEntity
+            {
+                Name = standard.Name,
+                Description = standard.Description,
+                IsCaProfile = false,
+                KeyUsages = SetupAllowedStandardOidsJson(standard.KeyUsages, db),
+                ExtendedKeyUsages = SetupAllowedExtendedOidsJson(standard.ExtendedKeyUsages, db),
+                AllowedKeyAlgorithms = keyAlgorithms,
+                AllowedKeySizes = keySizes,
+                AllowedSignatureAlgorithms = sigAlgorithms,
+                ValidityPeriodMin = StandardCertProfiles.ValidityPeriodMin,
+                ValidityPeriodMax = standard.ValidityPeriodMax,
+                CanBeDeleted = true,
+                CreatedAt = DateTime.UtcNow,
+            };
+            db.CertProfiles.Add(profile);
+            db.SaveChanges();
+            LinkCertProfileToSigningProfile(db, profile, signingProfile);
+            Console.WriteLine($"✓ Certificate profile '{profile.Name}' seeded.");
+        }
     }
 
     /// <summary>
@@ -1166,11 +1217,33 @@ public static class BootstrapProfileSeeder
         }
     }
 
+    /// <summary>The name of the seeded user certificate profile that permits no forwarding.</summary>
+    public const string SshUserCertStandardName = "SSH User Cert - Standard";
+
+    /// <summary>The name of the seeded user certificate profile that adds agent and port forwarding.</summary>
+    public const string SshUserCertForwardingName = "SSH User Cert - Forwarding";
+
+    /// <summary>The name of the seeded request profile for user certificates.</summary>
+    public const string SshUserRequestDefaultName = "SSH User Request - Default";
+
     /// <summary>
-    /// Seeds default SSH CA profiles (signing, cert, and request profiles) if none exist.
-    /// Creates one user signing profile, one host signing profile, one cert profile for each type,
-    /// and a default request profile.
+    /// Seeds the default SSH certificate and request profiles on an install that has no SSH
+    /// certificate profile; an install that has one is left exactly as it is. The lifetimes
+    /// follow one rule (<c>docs/architecture/ssh-defaults.md</c>): the key holds the hard
+    /// ceiling, the request profile the everyday number, and the signing and certificate
+    /// profiles in between are left at the ceiling.
     /// </summary>
+    /// <remarks>
+    /// Two user certificate profiles of 24 hours, both taking any valid login name
+    /// (<see cref="SshLoginNameRules.Pattern"/>) and at most three: Standard allows
+    /// <c>permit-pty</c> and <c>permit-user-rc</c>; Forwarding allows the five <c>permit-*</c>
+    /// extensions and requires agent and port forwarding. One host certificate profile of 8760
+    /// hours. A user request profile of 12 hours over Standard only, and a host request profile
+    /// of 8760 hours. Forwarding is attached to no request profile: an administrator adds it
+    /// where forwarding is wanted. Signing profiles are created with each SSH CA key. Each of
+    /// the five carries its certificate type (<see cref="SshProfileCertificateType"/>): the user
+    /// profiles <c>user</c>, the host profiles <c>host</c>.
+    /// </remarks>
     public static void SeedDefaultSshProfiles(ModularCADbContext db)
     {
         if (db.SshCertProfiles.Any())
@@ -1179,18 +1252,33 @@ public static class BootstrapProfileSeeder
             return;
         }
 
-        // SSH Cert Profiles (signing profiles are auto-created when SSH CA keys are generated)
+        var readable = new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+        var loginNames = JsonSerializer.Serialize(new[] { SshLoginNameRules.Pattern }, readable);
+
         var userCertProfile = new SshCertProfileEntity
         {
-            Name = "SSH User Cert - Standard",
-            Description = "Standard user certificate profile. Allows common principals, standard extensions.",
-            AllowedPrincipalPatterns = "[\"^[a-z_][a-z0-9_-]{0,31}$\"]", // POSIX username pattern
-            MaxPrincipals = 5,
-            AllowedExtensions = "[\"permit-pty\",\"permit-agent-forwarding\",\"permit-port-forwarding\",\"permit-X11-forwarding\",\"permit-user-rc\"]",
+            Name = SshUserCertStandardName,
+            Description = "Standard user certificate profile. Any valid login name, a terminal, no forwarding.",
+            AllowedPrincipalPatterns = loginNames,
+            MaxPrincipals = 3,
+            AllowedExtensions = "[\"permit-pty\",\"permit-user-rc\"]",
             RequiredExtensions = "[]",
             MaxValidityHours = 24,
+            CertificateType = SshProfileCertificateType.User,
         };
         db.SshCertProfiles.Add(userCertProfile);
+
+        db.SshCertProfiles.Add(new SshCertProfileEntity
+        {
+            Name = SshUserCertForwardingName,
+            Description = "As Standard, with agent and port forwarding on every certificate. Not attached to a request profile: add it where forwarding is wanted.",
+            AllowedPrincipalPatterns = loginNames,
+            MaxPrincipals = 3,
+            AllowedExtensions = "[\"permit-pty\",\"permit-agent-forwarding\",\"permit-port-forwarding\",\"permit-X11-forwarding\",\"permit-user-rc\"]",
+            RequiredExtensions = "[\"permit-port-forwarding\",\"permit-agent-forwarding\"]",
+            MaxValidityHours = 24,
+            CertificateType = SshProfileCertificateType.User,
+        });
 
         var hostCertProfile = new SshCertProfileEntity
         {
@@ -1201,16 +1289,17 @@ public static class BootstrapProfileSeeder
             AllowedExtensions = "[]",
             RequiredExtensions = "[]",
             MaxValidityHours = 8760,
+            CertificateType = SshProfileCertificateType.Host,
         };
         db.SshCertProfiles.Add(hostCertProfile);
 
-        // SSH Request Profiles
         var userRequestProfile = new SshRequestProfileEntity
         {
-            Name = "SSH User Request - Default",
+            Name = SshUserRequestDefaultName,
             Description = "Default request profile for SSH user certificates. No approval required.",
             RequireApproval = false,
-            MaxValidityHours = 24,
+            MaxValidityHours = 12,
+            CertificateType = SshProfileCertificateType.User,
         };
         db.SshRequestProfiles.Add(userRequestProfile);
 
@@ -1220,16 +1309,16 @@ public static class BootstrapProfileSeeder
             Description = "Default request profile for SSH host certificates. No approval required.",
             RequireApproval = false,
             MaxValidityHours = 8760, // 1 year
+            CertificateType = SshProfileCertificateType.Host,
         };
         db.SshRequestProfiles.Add(hostRequestProfile);
         db.SaveChanges();
 
-        // Set allowed cert profile IDs (signing profiles are created when SSH CA keys are generated)
         userRequestProfile.AllowedSshCertProfileIds = JsonSerializer.Serialize(new[] { userCertProfile.Id });
         hostRequestProfile.AllowedSshCertProfileIds = JsonSerializer.Serialize(new[] { hostCertProfile.Id });
         db.SaveChanges();
 
-        Console.WriteLine("✓ Default SSH CA profiles seeded (2 cert, 2 request). Signing profiles are created with SSH CA keys.");
+        Console.WriteLine("✓ Default SSH CA profiles seeded (3 cert, 2 request). Signing profiles are created with SSH CA keys.");
     }
 
     /// <summary>

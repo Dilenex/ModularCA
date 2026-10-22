@@ -85,8 +85,9 @@ public class SetupAdmin
     /// <summary>
     /// The answer to "Will more than one person administer this CA?", which the wizard requires.
     /// False (just this administrator) starts key ceremonies off for the instance policy and the
-    /// first space, because nobody else could approve one; true starts them on. Null is refused
-    /// by the setup endpoint.
+    /// first space, because nobody else could approve one, and lets a system super-administrator
+    /// approve their own certificate requests; true starts ceremonies on and self-approval off.
+    /// Null is refused by the setup endpoint.
     /// </summary>
     public bool? MultipleAdministrators { get; set; }
 }

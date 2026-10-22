@@ -35,13 +35,32 @@ public sealed class RequireUnlockedSignerAttribute : ActionFilterAttribute
         var health = await signer.HealthAsync(context.HttpContext.RequestAborted);
         if (!health.Unlocked)
         {
-            context.HttpContext.Response.Headers.RetryAfter = "30";
-            context.Result = new ObjectResult(new { error = MessageFor(health), signer = new { unlocked = false, backend = health.Backend } })
-            {
-                StatusCode = StatusCodes.Status503ServiceUnavailable,
-            };
+            context.Result = Unavailable(context.HttpContext, new { error = MessageFor(health), signer = new { unlocked = false, backend = health.Backend } }, retry: true);
             return;
         }
         await next();
+    }
+
+    /// <summary>
+    /// The answer for a key the signer cannot serve now, which an action learns only once it
+    /// has asked: an SSH CA key the signer refused as locked or unsupported, or one still
+    /// awaiting its import into the signer. It is the 503 this filter gives, with
+    /// <paramref name="reason"/> as the error, so a client treats both the same way.
+    /// </summary>
+    /// <param name="http">The request being answered.</param>
+    /// <param name="reason">Why the key cannot be used, as the caller is shown it.</param>
+    /// <param name="retry">
+    /// Whether to tell the client to try again in thirty seconds, as for a locked signer. False
+    /// where trying again changes nothing until an operator acts: a key awaiting import, a
+    /// signer that has to be upgraded.
+    /// </param>
+    public static ObjectResult Unavailable(HttpContext http, string reason, bool retry) => Unavailable(http, new { error = reason }, retry);
+
+    /// <summary>A 503 with <paramref name="body"/>, with <c>Retry-After: 30</c> when <paramref name="retry"/> is set.</summary>
+    private static ObjectResult Unavailable(HttpContext http, object body, bool retry)
+    {
+        if (retry)
+            http.Response.Headers.RetryAfter = "30";
+        return new ObjectResult(body) { StatusCode = StatusCodes.Status503ServiceUnavailable };
     }
 }

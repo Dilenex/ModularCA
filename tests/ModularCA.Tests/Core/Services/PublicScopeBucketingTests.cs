@@ -1,4 +1,13 @@
+using System.Net;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using ModularCA.Core.Services;
+using ModularCA.Database;
+using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
+using ModularCA.Shared.Interfaces;
+using ModularCA.Shared.Utils;
 using Xunit;
 
 namespace ModularCA.Tests.Core.Services;
@@ -43,8 +52,8 @@ public class PublicScopeBucketingTests
         if (Starts("/api/v1/public/ocsp")) return (WhitelistScope.Api, "OCSP");
         if (Starts("/api/v1/public/tsa")) return (WhitelistScope.Api, "TSA");
 
-        // The portal and the one endpoint its footer reads.
-        if (Starts("/public/") || Is("/public") || Is("/api/v1/public/info"))
+        // The portal, the one endpoint its footer reads, and the root that redirects to it.
+        if (Starts("/public/") || Is("/public") || Is("/api/v1/public/info") || Is("/"))
             return (WhitelistScope.Public, null);
 
         return (WhitelistScope.System, null);
@@ -55,6 +64,7 @@ public class PublicScopeBucketingTests
     [InlineData("/public")]
     [InlineData("/public/assets/index-abc123.js")]
     [InlineData("/api/v1/public/info")]
+    [InlineData("/")]
     public void The_portal_and_its_info_endpoint_are_public(string path)
     {
         Assert.Equal(WhitelistScope.Public, Bucket(path).Scope);
@@ -95,7 +105,54 @@ public class PublicScopeBucketingTests
     {
         // The catch-all must stay closed. Adding an open scope must not widen the default.
         Assert.Equal(WhitelistScope.System, Bucket("/favicon.ico").Scope);
-        Assert.Equal(WhitelistScope.System, Bucket("/").Scope);
+        Assert.Equal(WhitelistScope.System, Bucket("/index.html").Scope);
+    }
+
+    /// <summary>
+    /// The real matcher, with the seeded defaults: the bare root only redirects to the portal, so
+    /// it follows the Public Portal rule. It used to fall to System, and a browser outside the
+    /// network that opened the host name got 403 instead of the portal.
+    /// </summary>
+    [Theory]
+    [InlineData("/", true)]
+    [InlineData("/public/", true)]
+    [InlineData("/favicon.ico", false)]
+    [InlineData("/index.html", false)]
+    public async Task An_outside_address_reaches_the_root_as_it_reaches_the_portal(string path, bool allowed)
+    {
+        var whitelist = await SeededAsync(portalOpen: true);
+        Assert.Equal(allowed ? WhitelistDecision.Allow : WhitelistDecision.Deny, whitelist.Evaluate(path, IPAddress.Parse("203.0.113.7")));
+    }
+
+    [Fact]
+    public async Task Closing_the_portal_closes_the_root_too()
+    {
+        var whitelist = await SeededAsync(portalOpen: false);
+        Assert.Equal(WhitelistDecision.Deny, whitelist.Evaluate("/", IPAddress.Parse("203.0.113.7")));
+        Assert.Equal(WhitelistDecision.Allow, whitelist.Evaluate("/", IPAddress.Parse("10.1.2.3")));
+    }
+
+    private static async Task<WhitelistService> SeededAsync(bool portalOpen)
+    {
+        var databaseName = $"whitelist-{Guid.NewGuid():N}";
+        var services = new ServiceCollection();
+        services.AddDbContext<ModularCADbContext>(o => o.UseInMemoryDatabase(databaseName));
+        var scopes = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+        using (var scope = scopes.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+            db.Whitelists.AddRange(
+                new WhitelistEntity { Name = "System", Scope = WhitelistScope.System, CidrList = WhitelistDefaults.InternalOnlyCidrs.ToList(), IsEnabled = true },
+                new WhitelistEntity
+                {
+                    Name = "Public Portal", Scope = WhitelistScope.Public, IsEnabled = true,
+                    CidrList = (portalOpen ? WhitelistDefaults.AllAddressesCidrs : WhitelistDefaults.InternalOnlyCidrs).ToList(),
+                });
+            await db.SaveChangesAsync();
+        }
+        var whitelist = new WhitelistService(scopes, NullLogger<WhitelistService>.Instance);
+        await whitelist.ReloadAsync();
+        return whitelist;
     }
 
     [Fact]

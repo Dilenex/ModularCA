@@ -10,7 +10,9 @@ namespace ModularCA.API.Startup;
 /// Reads <c>db.yaml</c> (the runtime roles, as the control role uses them) and the <c>Schema</c>
 /// budgets in <c>config.yaml</c> from the config directory, then runs
 /// <see cref="SchemaStartup.UpgradeCheckAsync"/> with the integration keys' configured space
-/// scopes, so a key fenced to a scope the upgrade deletes is refused too. Applies nothing: its only write is
+/// scopes, so a key fenced to a scope the upgrade deletes is refused too, and with the installed
+/// application directory (the config directory's parent), so the SSH CA key files the first start
+/// imports into the signer are looked for where the install keeps them. Applies nothing: its only write is
 /// a dry run it rolls back.
 /// </summary>
 public static class UpgradeCheckCommand
@@ -60,7 +62,12 @@ public static class UpgradeCheckCommand
         var targets = new List<SchemaTarget> { new("application", DatabaseKind.Application, config.DB.App) };
         if (!string.IsNullOrWhiteSpace(config.DB.Audit.Database))
             targets.Add(new("audit", DatabaseKind.Audit, config.DB.Audit));
+        // A key path a row gives relative is relative to the installed application directory,
+        // which is the config directory's parent, not to where this build was unpacked.
+        var installDirectory = Path.GetDirectoryName(Path.GetFullPath(configDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            ?? Path.GetFullPath(configDir);
         return await SchemaStartup.UpgradeCheckAsync(targets, config.Schema,
-            scopes: ModularCA.Core.Services.IntegrationScopeCheck.Configured(config));
+            scopes: ModularCA.Core.Services.IntegrationScopeCheck.Configured(config),
+            installDirectory: installDirectory);
     }
 }

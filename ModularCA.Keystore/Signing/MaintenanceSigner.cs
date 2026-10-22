@@ -89,5 +89,12 @@ public static class MaintenanceSigner
 
         public void RegisterTrustedCert(X509Certificate cert)
             => throw new InvalidOperationException("The maintenance signer holds no certificates.");
+
+        public SshKeyBinding? GetSshKey(Guid sshCaKeyId) => null;
+
+        public IReadOnlyList<SshKeyBinding> GetSshKeys() => Array.Empty<SshKeyBinding>();
+
+        public void RegisterSshKey(SshKeyBinding binding)
+            => throw new InvalidOperationException("The maintenance signer holds no keys.");
     }
 }

@@ -117,6 +117,40 @@ public class EstTrustAnchorCacheTests
         Assert.Equal(loadedAt, settled.LoadedUtc);
     }
 
+    /// <summary>
+    /// <c>Est.TrustAnchorRefreshSeconds</c> is marked Live: the interval is asked for when the
+    /// snapshot is read, so shortening it applies to the snapshot already held instead of after
+    /// the wait that was scheduled under the old value.
+    /// </summary>
+    [Fact]
+    public void A_shortened_refresh_interval_applies_to_the_snapshot_already_held()
+    {
+        var name = $"interval-{Guid.NewGuid():N}";
+        using (var seed = InMemoryDbContextFactory.Create(name))
+        {
+            AddCaWithCert(seed, "est-on", caEnabled: true, estEnabled: true);
+            seed.SaveChanges();
+        }
+
+        var reads = 0;
+        var interval = TimeSpan.FromHours(1);
+        var cache = new EstTrustAnchorCache(
+            () => { Interlocked.Increment(ref reads); return InMemoryDbContextFactory.Create(name); },
+            () => interval);
+
+        Assert.Equal(1, cache.LoadNow());
+        Thread.Sleep(EstTrustAnchorCache.MinimumRefreshInterval + TimeSpan.FromMilliseconds(200));
+        _ = cache.Current;
+        Thread.Sleep(300);
+        Assert.Equal(1, Volatile.Read(ref reads));
+
+        interval = EstTrustAnchorCache.MinimumRefreshInterval;
+        _ = cache.Current;   // triggers a background refresh under the new interval
+        SpinWait.SpinUntil(() => Volatile.Read(ref reads) == 2, TimeSpan.FromSeconds(30));
+
+        Assert.Equal(2, Volatile.Read(ref reads));
+    }
+
     [Fact]
     public void The_refresh_interval_has_a_floor()
     {

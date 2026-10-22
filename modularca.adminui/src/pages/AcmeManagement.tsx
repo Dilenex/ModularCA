@@ -370,12 +370,15 @@ const AcmeAuditSection: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
 
-    useEffect(() => {
+    const load = useCallback(() => {
+        setLoading(true);
         apiGet<any>('/api/v1/admin/audit/acme?pageSize=20')
-            .then((data) => setEntries(Array.isArray(data) ? data : (data.items || data.entries || data.logs || [])))
+            .then((data) => { setEntries(Array.isArray(data) ? data : (data.items || data.entries || data.logs || [])); setError(null); })
             .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     }, []);
+
+    useEffect(() => { load(); }, [load]);
 
     const columns: DataTableColumn<any>[] = [
         { key: 'time', header: 'Time', defaultWidth: 180, minWidth: 140, exportValue: (e) => formatDate(e.timestamp || e.createdAt), render: (e) => <span className="text-xs text-ink-muted">{formatDate(e.timestamp || e.createdAt)}</span> },
@@ -396,6 +399,7 @@ const AcmeAuditSection: React.FC = () => {
             <DataTable<any>
                 tableId="acme-audit"
                 title="ACME Audit"
+                onRefresh={load}
                 rows={entries}
                 rowKey={(e) => e.id || e.auditId || `${e.timestamp || e.createdAt}-${acmeAuditAction(e)}`}
                 loading={loading}

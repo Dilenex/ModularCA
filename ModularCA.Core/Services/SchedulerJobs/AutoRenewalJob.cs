@@ -2,6 +2,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using ModularCA.Core.Services;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
@@ -13,8 +14,9 @@ using ModularCA.Shared.Utils;
 namespace ModularCA.Core.Services.SchedulerJobs;
 
 /// <summary>
-/// Scheduled job that finds non-revoked, non-CA certificates approaching expiration
-/// and automatically creates renewal CSR requests. When auto-approve is enabled and
+/// Scheduled job that finds non-revoked, non-retired, non-CA certificates approaching expiration
+/// and automatically creates renewal CSR requests. A certificate whose expiry warning was only
+/// dismissed is still renewed. When auto-approve is enabled and
 /// the certificate's profile does not require manual approval, the renewed certificate
 /// is issued immediately. Duplicate renewal requests are suppressed and failures are
 /// reported via the security alert service.
@@ -116,10 +118,11 @@ public class AutoRenewalJob : SingletonCronJob
         var now = TimeProvider.GetUtcNow().UtcDateTime;
         var renewalCutoff = now.AddDays(_config.AutoRenewal.RenewDaysBeforeExpiry);
 
-        // Find all non-revoked, non-CA certificates expiring within the renewal window
+        // Find all non-revoked, non-retired, non-CA certificates expiring within the renewal window
         var expiringCerts = await _db.Certificates
             .AsNoTracking()
             .Where(c => !c.Revoked
+                         && c.RetiredAt == null
                          && !c.IsCA
                          && c.NotAfter <= renewalCutoff
                          && c.NotAfter > now)
@@ -173,7 +176,8 @@ public class AutoRenewalJob : SingletonCronJob
             // Find the original CSR that produced this certificate
             var originalRequest = await _db.CertificateRequests
                 .AsNoTracking()
-                .FirstOrDefaultAsync(r => r.IssuedCertificateId == cert.CertificateId, cancellationToken);
+                .ThatIssued(cert.CertificateId)
+                .FirstOrDefaultAsync(cancellationToken);
 
             // Determine profile IDs from the certificate entity; fall back to the original request
             var certProfileId = cert.CertProfileId ?? originalRequest?.CertProfileId;
@@ -226,6 +230,7 @@ public class AutoRenewalJob : SingletonCronJob
                 // Retrieve the generated CSR entity and stamp it as a renewal
                 renewalRequest = await _db.CertificateRequests.FirstAsync(r => r.Id == csrId, cancellationToken);
                 renewalRequest.RenewalOfCertificateId = cert.CertificateId;
+                CertificateRequestLineage.CarryForward(originalRequest, renewalRequest, reusesCsr: false);
                 await _db.SaveChangesAsync(cancellationToken);
             }
             else
@@ -244,6 +249,7 @@ public class AutoRenewalJob : SingletonCronJob
                     SigningProfileId = signingProfileId.Value,
                     RenewalOfCertificateId = cert.CertificateId
                 };
+                CertificateRequestLineage.CarryForward(originalRequest, renewalRequest, reusesCsr: true);
 
                 _db.CertificateRequests.Add(renewalRequest);
                 await _db.SaveChangesAsync(cancellationToken);
@@ -268,8 +274,20 @@ public class AutoRenewalJob : SingletonCronJob
                     KeyRotated = rekey
                 });
 
-            // Determine whether to auto-issue or leave as pending for admin approval
-            bool requiresApproval = await CheckProfileRequiresApprovalAsync(certProfileId.Value, cancellationToken);
+            // Determine whether to auto-issue or leave as pending for admin approval. A renewal
+            // made under a request profile waits for approval exactly when that profile requires it.
+            bool requiresApproval;
+            if (renewalRequest.RequestProfileId != null)
+            {
+                renewalRequest.Status = await new RequestProfileEnforcement(_db,
+                    new ProfileResolutionService(_db, NullLogger<ProfileResolutionService>.Instance)).InitialStatusAsync(renewalRequest.RequestProfileId);
+                await _db.SaveChangesAsync(cancellationToken);
+                requiresApproval = renewalRequest.Status != "Pending";
+            }
+            else
+            {
+                requiresApproval = await CheckProfileRequiresApprovalAsync(certProfileId.Value, cancellationToken);
+            }
 
             if (_config.AutoRenewal.AutoApprove && !requiresApproval)
             {

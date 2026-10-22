@@ -357,6 +357,33 @@ public class ScepPkiOperationTests
     }
 
     /// <summary>
+    /// A client checks the CertRep's signature before it trusts anything in it. The SignerInfo
+    /// named the algorithm the CA certificate was signed with, as a bare OID, while the signer
+    /// signed with RSASSA-PSS, so no client could verify a reply from an RSA CA. It names the
+    /// algorithm the signer used, with its parameters.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task The_cert_rep_verifies_against_the_ca_certificate(bool fail)
+    {
+        var h = Build(requireApproval: false);
+        var key = Rsa();
+        var signerCert = SelfSigned(key, "CN=printer3.lab.test");
+        var payload = fail ? [0x30, 0x00] : Csr(key, "CN=printer3.lab.test");
+
+        var response = await h.Service.PkiOperationAsync(
+            Message(h.Ca, key, signerCert, "19", $"tx-verify-{fail}", payload), "lab", "10.0.0.5");
+
+        var signer = new CmsSignedData(response).GetSignerInfos().GetSigners().Cast<SignerInformation>().Single();
+        var algorithm = signer.ToSignerInfo().SignatureAlgorithm;
+        if (algorithm.Algorithm.Equals(PkcsObjectIdentifiers.IdRsassaPss))
+            Assert.IsType<RsassaPssParameters>(RsassaPssParameters.GetInstance(algorithm.Parameters));
+        Assert.True(signer.Verify(h.Ca.Certificate));
+        Assert.Equal(fail ? "2" : "0", Read(response).PkiStatus);
+    }
+
+    /// <summary>
     /// The gate SCEP never read, rendered. A request profile that requires an approver is answered
     /// PENDING — pkiStatus 3, the status this responder declared a constant for and never sent —
     /// and no certificate comes back.

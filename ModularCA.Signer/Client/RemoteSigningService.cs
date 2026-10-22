@@ -126,6 +126,35 @@ public sealed class RemoteSigningService : ISigningService, IDisposable
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The call was added with the SSH keystore. A signer that predates it has no such method
+    /// and answers gRPC <see cref="StatusCode.Unimplemented"/>; that comes back as a refusal,
+    /// <see cref="SigningRefusalReason.OperationUnsupported"/>, whose message says the signer
+    /// predates the SSH keystore and is upgraded first. It is not reported as unavailable: the
+    /// signer answered, and retrying will not help.
+    /// </remarks>
+    public async Task<byte[]> SignSshCertificateAsync(SshCertificateRequest request, SigningContext context, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(context);
+        if (request.Key == null)
+            throw new ArgumentException("The request names no key.", nameof(request));
+        try
+        {
+            return await CallAsync(async options =>
+            {
+                var response = await _client.SignSshCertificateAsync(Wire.WireMapping.ToWire(request, context), options);
+                return response.Certificate.ToByteArray();
+            }, _options.CallTimeout, cancellationToken);
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.Unimplemented)
+        {
+            throw new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
+                $"The signer at {_options.Endpoint} predates the SSH keystore: it has no call that signs an SSH certificate. Upgrade the signer first, then the node.");
+        }
+    }
+
+    /// <inheritdoc />
     public Task<byte[]> DecryptAsync(KeyRef key, byte[] enveloped, SigningContext context, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(key);
@@ -160,10 +189,32 @@ public sealed class RemoteSigningService : ISigningService, IDisposable
     }
 
     /// <inheritdoc />
-    public Task<KeyRef> ImportKeyAsync(KeyMaterial material, SigningContext context, CancellationToken cancellationToken = default)
+    /// <remarks>
+    /// <see cref="SigningPurpose.SshKeyMigration"/> was added with the SSH keystore. A signer
+    /// that predates it cannot read a context that names it and answers gRPC
+    /// <see cref="StatusCode.InvalidArgument"/>; for the import of an SSH CA key that comes back
+    /// as a refusal, <see cref="SigningRefusalReason.OperationUnsupported"/>, whose message says
+    /// the signer predates the SSH keystore and is upgraded first.
+    /// </remarks>
+    public async Task<KeyRef> ImportKeyAsync(KeyMaterial material, SigningContext context, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(material);
         ArgumentNullException.ThrowIfNull(context);
+        try
+        {
+            return await ImportAsync(material, context, cancellationToken);
+        }
+        catch (RpcException ex) when (ex.StatusCode is StatusCode.InvalidArgument or StatusCode.Unimplemented
+                                      && context.Purpose == SigningPurpose.SshKeyMigration)
+        {
+            throw new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
+                $"The signer at {_options.Endpoint} predates the SSH keystore: it does not take the import of an SSH CA key ({ex.Status.Detail}). Upgrade the signer first, then the node.");
+        }
+    }
+
+    /// <summary>The import call itself, with the node's copy of a bare key zeroed once the signer has answered.</summary>
+    private Task<KeyRef> ImportAsync(KeyMaterial material, SigningContext context, CancellationToken cancellationToken)
+    {
         return CallAsync(async options =>
         {
             var response = await _client.ImportKeyAsync(new Wire.ImportKeyRequest
@@ -244,6 +295,17 @@ public sealed class RemoteSigningService : ISigningService, IDisposable
 
     /// <inheritdoc />
     public Task<byte[]> WrapSecretAsync(SecretKind kind, byte[] secret, SigningContext context, CancellationToken cancellationToken = default)
+        => WrapAsync(kind, string.Empty, secret, context, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<byte[]> WrapBoundSecretAsync(SecretKind kind, string binding, byte[] secret, SigningContext context, CancellationToken cancellationToken = default)
+    {
+        // An empty binding is how the wire says "none", so it cannot also be a binding.
+        ArgumentException.ThrowIfNullOrEmpty(binding);
+        return WrapAsync(kind, binding, secret, context, cancellationToken);
+    }
+
+    private Task<byte[]> WrapAsync(SecretKind kind, string binding, byte[] secret, SigningContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(secret);
         ArgumentNullException.ThrowIfNull(context);
@@ -254,6 +316,7 @@ public sealed class RemoteSigningService : ISigningService, IDisposable
                 Kind = Wire.WireMapping.ToWire(kind),
                 Secret = ByteString.CopyFrom(secret),
                 Context = Wire.WireMapping.ToWire(context),
+                Binding = binding,
             }, options);
             return response.Wrapped.ToByteArray();
         }, _options.CallTimeout, cancellationToken);
@@ -266,6 +329,16 @@ public sealed class RemoteSigningService : ISigningService, IDisposable
     /// off the wire; nothing keeps it out of the node.
     /// </remarks>
     public Task<byte[]> UnwrapSecretAsync(byte[] wrapped, SigningContext context, CancellationToken cancellationToken = default)
+        => UnwrapAsync(wrapped, string.Empty, context, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<byte[]> UnwrapBoundSecretAsync(byte[] wrapped, string binding, SigningContext context, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(binding);
+        return UnwrapAsync(wrapped, binding, context, cancellationToken);
+    }
+
+    private Task<byte[]> UnwrapAsync(byte[] wrapped, string binding, SigningContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(wrapped);
         ArgumentNullException.ThrowIfNull(context);
@@ -275,6 +348,7 @@ public sealed class RemoteSigningService : ISigningService, IDisposable
             {
                 Wrapped = ByteString.CopyFrom(wrapped),
                 Context = Wire.WireMapping.ToWire(context),
+                Binding = binding,
             }, options);
             return response.Secret.ToByteArray();
         }, _options.CallTimeout, cancellationToken);

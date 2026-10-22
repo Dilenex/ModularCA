@@ -84,8 +84,8 @@ export const adminCsr: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
             { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for approve-request, issued for the request id. Required for this operation.' },
         ],
-        responseDescription: 'Approval status including message, status (Approved or PartiallyApproved), approvalCount, and requiredCount.',
-        notes: 'Prevents self-approval of own requests (unless system-super with AllowSystemSuperSelfApproval). Prevents duplicate approvals. Enforces profile.use capability and space isolation.',
+        responseDescription: 'Approval status including message, status (Approved or PartiallyApproved), approvalCount, requiredCount, and selfApproved.',
+        notes: 'Prevents self-approval of own requests unless the caller is a system-super and AllowSystemSuperSelfApproval is on; such a self-approval completes the request whatever its count, and is audited as SelfApproved. Prevents duplicate approvals. Enforces profile.use capability and space isolation.',
     },
     {
         method: 'GET',
@@ -98,6 +98,34 @@ export const adminCsr: ApiEndpoint[] = [
         ],
         responseDescription: 'Array of approval records with id, approverId, approverUsername, decision, comment, and timestamp.',
         notes: 'Enforces space isolation via the CSR signing profile.',
+    },
+    {
+        method: 'GET',
+        path: '/api/v1/admin/requests/{id}/approval-outlook',
+        summary: 'How the request’s approval stands, and whether the people who can approve it are enough to complete it.',
+        auth: 'Authorize (CaAuditor)',
+        category: 'Admin CSR',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: 'requiredCount, approvalCount, othersWhoCanApprove (active accounts other than the requester with cert.revoke on the CA and profile.use on its profiles, that have not approved yet), requesterMaySelfApprove, canComplete, and selfApproved.',
+        notes: 'Enforces space isolation via the CSR signing profile.',
+    },
+    {
+        method: 'GET',
+        path: '/api/v1/admin/requests/approval-outlook',
+        summary: 'How a request the caller is about to make would be approved, so a request nobody could approve is known before it is made.',
+        auth: 'Authorize, plus cert.revoke on the signing profile’s CA',
+        category: 'Admin CSR',
+        queryParams: [
+            { name: 'requestProfileId', type: 'guid', required: true, description: 'The request profile the request would be made under' },
+            { name: 'signingProfileId', type: 'guid', required: true, description: 'The signing profile it would name' },
+            { name: 'certProfileId', type: 'guid', required: false, description: 'The certificate profile it would name' },
+        ],
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: 'requiresApproval, requiredCount, othersWhoCanApprove, requesterMaySelfApprove (the caller), and canComplete.',
     },
     {
         method: 'POST',

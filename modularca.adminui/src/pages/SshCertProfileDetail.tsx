@@ -15,12 +15,13 @@ import { SshCertProfileForm } from './profiles/SshCertProfileForm';
 import { emptyForm, formFromProfile, formToCreateBody, formToUpdateBody, validate } from './profiles/sshCertProfile';
 import { PROFILE_TYPES, profileDetailPath } from './profiles/profileRoutes';
 import { actionButtonDanger } from '@shared/components/actionButtons';
+import { profileTypeLabel } from './sshProfileType';
 
 const SSH_CERT_TAB = PROFILE_TYPES['ssh-cert'].listPath;
 
 /// <summary>
 /// Detail page for a single SSH cert profile (a tab on Profile Management), and with <c>isNew</c>
-/// the page that creates one. View shows the principal patterns, limits and allowed/required
+/// the page that creates one. View shows the login name patterns, limits and allowed/required
 /// extensions; edit and create share SshCertProfileForm. Both create and update need step-up MFA.
 /// </summary>
 const SshCertProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => {
@@ -117,7 +118,7 @@ const SshCertProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) 
         <DetailPage
             breadcrumbs={[{ label: 'Profile Management', to: SSH_CERT_TAB }, { label: 'SSH Cert Profiles', to: SSH_CERT_TAB }, { label: title }]}
             title={title}
-            subtitle={isNew ? undefined : `Max ${p.maxPrincipals} principals · ${p.maxValidityHours}h`}
+            subtitle={isNew ? undefined : `Up to ${p.maxPrincipals} login names · ${p.maxValidityHours}h`}
             backTo={SSH_CERT_TAB}
             editable
             initialMode={isNew ? 'edit' : 'view'}
@@ -138,9 +139,10 @@ const SshCertProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) 
                     <DetailField label="ID" value={p.id} mono />
                     <DetailField label="Name" value={p.name} />
                     <DetailField label="Description" value={p.description} />
-                    <DetailField label="Max Principals" value={String(p.maxPrincipals)} />
+                    <DetailField label="Most login names" value={String(p.maxPrincipals)} />
                     <DetailField label="Max Validity Hours" value={String(p.maxValidityHours)} />
-                    <div className="py-1"><span className="text-xs text-ink-muted">Allowed Principal Patterns</span><CeilingList items={p.allowedPrincipalPatterns} noun="principal" /></div>
+                    <DetailField label="Certificate type" value={profileTypeLabel(p.certificateType)} />
+                    <div className="py-1"><span className="text-xs text-ink-muted">Login name patterns (the outer limit; who may use which name is set on the SSH CA key)</span><CeilingList items={p.allowedPrincipalPatterns} noun="login name" /></div>
                     <div className="py-1"><span className="text-xs text-ink-muted">Allowed Extensions</span><CeilingList items={p.allowedExtensions} noun="extension" /></div>
                     <div className="py-1"><span className="text-xs text-ink-muted">Required Extensions</span><BadgeList items={p.requiredExtensions} /></div>
                     {p.createdAt && <DetailField label="Created" value={new Date(p.createdAt).toLocaleString()} />}

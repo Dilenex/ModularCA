@@ -35,13 +35,17 @@ namespace ModularCA.Keystore.Config
         /// Environment variable wins over the on-disk YAML file. Returns the literal
         /// string assigned to the keystore name in the YAML file, or the env var value
         /// if it is a single literal. Throws <see cref="KeyNotFoundException"/> if no
-        /// source contains a passphrase for the keystore.
+        /// source contains a passphrase for the keystore. <c>ssh-ca.keystore</c> has no entry of
+        /// its own in either source: it shares the secondary passphrase of
+        /// <c>ca-certs.keystore</c>, and that is the entry looked up for it.
         /// </summary>
         /// <param name="yamlPath">Filesystem path to the keystore.yaml fallback file.</param>
         /// <param name="keystoreName">The keystore identifier (file name) to look up.</param>
         public static string LoadSecondaryPassphrase(string yamlPath, string keystoreName)
         {
             var key = Path.GetFileName(keystoreName);
+            if (string.Equals(key, ModularCA.Shared.Signing.KeyRef.SshKeystore, StringComparison.Ordinal))
+                key = ModularCA.Shared.Signing.KeyRef.DefaultKeystore;
 
             // Source 1: environment variable
             var envValue = Environment.GetEnvironmentVariable(SecondaryPassphraseEnvVar);

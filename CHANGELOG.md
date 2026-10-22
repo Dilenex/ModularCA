@@ -8,6 +8,1042 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 Nothing yet.
 
+## [0.4.2] — 2026-10-22
+
+Everything since 0.4.0: the settings work that was built as 0.4.1, which is not released on its
+own, and the SSH work that takes SSH CA keys out of plaintext files the node could read. It also
+holds every request to its request profile on the server, at each step.
+
+One release candidate, `0.4.2-rc.1.0`, went to test hosts and was not published; "Changes since
+0.4.2-rc.1.0" below is for anyone who installed it. The builds before it, `0.4.1-dev.1.0` to
+`0.4.2-dev.1.12`, are listed at the end of this section.
+
+### Upgrading from 0.4.0
+
+"Upgrading to 0.4.2" in `packaging/README-DEPLOY.md` is the checklist. In short:
+
+- **Check before installing.** `--upgrade-check` (which `install.sh` runs) rehearses the thirteen
+  new migrations, lists the SSH CA keys the first start will import, and refuses when the key
+  file of an enabled SSH CA is missing or is not its key. Its notes, which never refuse, list the
+  enrollment clients the request profiles will now refuse, from the last 90 days of the audit
+  database, and the SSH profiles that will issue fewer permits than before.
+- **Upgrade the signer before the node.** The upgrade is one-way for an install with SSH CAs:
+  each key file is imported into the signer's new `ssh-ca.keystore`, then overwritten and
+  deleted. Archives and snapshots made before still hold those keys in plaintext; rotate an SSH
+  CA whose old archives may have left your hands.
+- **Instance-wide settings move into the database** at the control role's first start, and the
+  node's secrets with them, wrapped by the signer. `config.yaml` is rewritten with this host's
+  settings, and the old file is kept as `config.yaml.pre-settings-<time>.bak`, secrets and all:
+  delete it once the instance runs. From then on a node needs its signer at start to read its
+  secrets.
+- **Requests are held to their request profile, also from the console.** On a default install
+  an EST request without a SAN, a SCEP request with a SAN other than DNS and a CMP request with a
+  SAN other than email are refused from this release. Scripts that call the console request
+  routes must send `requestProfileId`. Requests under a profile that requires approval wait for
+  approval on every route; on an install with one administrator, turn on Allow System Super
+  Self-Approval in Settings, Security.
+- **SSH scripts.** A `keyId` in a sign request is refused, `sign-user` names who the certificate
+  is for, and both admin sign routes ask step-up. The first SSH sweep revokes the live
+  certificates of users who are disabled or may no longer request from the SSH CA.
+- **There is no downgrade.** Take a backup and dump both databases first; going back means
+  restoring them.
+- **Containers.** `latest` is this release. To stay on it, name it:
+  `MODULARCA_IMAGE=ghcr.io/dilenex/modularca:0.4.2`.
+
+### Changes since 0.4.2-rc.1.0
+
+**Added**
+
+- **An expiry warning can be cleared without revoking the certificate.** A certificate that
+  expires within 30 days, or expired in the last 30, with no replacement stayed on the
+  dashboard's Needs attention list, and the only way off it was to revoke the certificate. Two
+  ways now, both needing cert.revoke on the issuing CA, both audited and both undone from the
+  certificate's page. Neither revokes anything or changes the CRL and OCSP answers.
+  - **Dismiss**, on the dashboard row or the certificate's page, silences the warning and the
+    expiry e-mails. The certificate can still be renewed by hand, by auto-renewal or by its
+    client.
+  - **Retire**, on the certificate's page, with an optional reason, also stops every renewal
+    from it. The console, the user portal, the Infra API, auto-renewal and protocol renewals
+    (EST re-enrollment and EST with the certificate as its credential, SCEP, CMP, Windows
+    autoenrollment) refuse it, with `MCA-RES-008` or the `CertificateRetired` refusal. Its
+    subject needs a new enrollment.
+
+  The certificate list shows either state in place of "Not replaced", and its `replaced=no`
+  filter leaves both out, as the lifecycle summary does; the summary counts them in a new
+  `retiredOrDismissed`. The upgrade adds five nullable columns to `Certificates`.
+
+**Changed**
+
+- **The CMP request profile a new install seeds no longer requires approval.** CMP refuses a
+  request whose request profile requires approval, because a CMP client cannot come back for a
+  certificate approved later, so on a default install CMP refused every request. `Enterprise User
+  (CMP)` is now auto-approved, like the EST and SCEP profiles. An existing install keeps its
+  profile: where CMP is used, untick Require approval on it, or the client keeps seeing
+  "Certificate issuance failed" and the CMP audit tab says why.
+- **The console no longer offers the KRL fetcher.** It is not yet proven on a host, so the SSH
+  CA key page says to copy the revocation list to each host by hand, before `RevokedKeys` names
+  it, and so does the Admin UI guide. The fetcher's files still ship in `share/ssh-krl`.
+- **A signed SSH certificate opens on its own page**, in the console and in self-service, with
+  the certificate to copy or download, where to save it and a link to sign another. My
+  Certificates links each SSH certificate's page.
+
+**Fixed**
+
+- **No SCEP client could verify a reply from an RSA CA.** The reply's signature named the
+  algorithm the CA certificate was signed with, while the CA key signs with RSA-PSS by default.
+  sscep, OpenSSL and BouncyCastle refuse such a reply. It now names the algorithm used, with its
+  parameters. This predates 0.4.
+- **An EST, SCEP or QR token created in the console was refused at every CA in a space.** The
+  form sent a signing profile only for CMP, so every other token was an instance token. The form
+  now asks where the token is accepted, offering what the console scope covers, and the token
+  list shows it. The create endpoint takes `scope` and `scopeId` for the same; without them the
+  selected profiles decide, as before.
+- **A sign-in refused at the second factor was audited as OK.** An account locked or disabled by
+  the time it completed TOTP, WebAuthn or mTLS was refused, but the `UserLoginFailed` entry was
+  written as a success, so the audit log's Failed filter left it out.
+- **The protocol audit tabs listed old entries first** after the General tab had been opened.
+- **The request form's Not After started past the certificate profile's limit**, with a red
+  warning before anything was typed under a short-lived profile. It now starts at a year or the
+  limit, whichever is sooner.
+- **A host certificate was explained as a user's.** It is now named for its host key in
+  `/etc/ssh`, with the `HostCertificate` line `sshd_config` needs, and downloads under that name.
+- **SSH:** an enabled SSH CA key showed "CA Key" as its status, the Sign key form offered a host
+  for a key that signs user certificates only (and the reverse), and beside each login name the
+  forms showed the key's limit above the profile's smaller one.
+- **Wording:** the request profile list said "Optional" for SANs on a profile that allows none;
+  the drawer of an issued request offered to approve or issue it; a request's page showed its
+  profiles, and profile pages their CA, as ids.
+
+### Security
+
+- **SSH CA private keys are held by the signer**, which builds and signs every SSH certificate
+  from its fields. The node holds no SSH CA key and runs no program; `ssh-keygen` is no longer
+  used. The signer checks the ceremony before it generates an SSH CA key, and refuses a
+  certificate of the wrong type, one valid for longer than the key allows, one without a
+  principal and one with an option it does not know.
+- **SSH login names.** A certificate for a user carries only the login names that user holds:
+  their own username where the key allows it (never `root`), and the names granted to them or
+  their groups on that SSH CA key. The CA writes every key id, which `sshd` logs with each login.
+  Taking a name or the right to request away revokes the certificates that depended on it, at
+  once, and a sweep every 15 minutes catches what a missed step left live.
+- **Hosts can follow revocation.** Each SSH CA key publishes its KRL, with the time of each
+  revocation, for `sshd`'s `RevokedKeys`; copy it to each host. `modularca-krl-fetch`, a script
+  with a systemd timer that installs the KRL on a server every minute, ships in `share/ssh-krl`
+  but is not yet proven on a host, and the console does not offer it.
+- **A new user certificate permits a terminal and nothing else.** On a new install, agent and
+  port forwarding are in a separate seeded profile, attached to nothing until an administrator
+  attaches it. An upgraded instance keeps its SSH profiles as they were; the signing profile
+  created with each new SSH CA key grants a terminal only.
+- **The request profile is enforced by the server** when a request is submitted, approved and
+  issued, on the names the certificate will carry, overrides included. A child request profile
+  is never looser than its parent, and renewals and reissues keep the profile the request was
+  made under.
+- **The node's secrets** (the JWT secret, the LDAP bind password, the mail credentials and the
+  webhook endpoints) are stored wrapped by the signer, and the integration API keys as hashes.
+
+### Added
+
+- **Settings in the database**, versioned and audited, with `--settings` on the host as the way
+  back in when a setting locks the administrators out. The Settings page says beside each setting
+  whether a change applies at once or at the next start, and fourteen that waited for a restart
+  now apply at once.
+- **Named API keys** for the infrastructure API and the cert-manager issuer, generated, shown
+  once, scoped, time-limited and revoked one at a time. **The JWT secret can be rotated** from the
+  console.
+- **SSH:** a review date on each SSH CA key, the time of each revocation, a KRL that answers 304
+  while nothing changed, a user or host type on SSH profiles, a way to find a certificate from a
+  host's log line, and SSH login names on the user and group pages.
+- **Certificate profiles:** four purpose-specific ones (`TLS Server`, `Device Client`,
+  `User Authentication and Email`, `Code Signing`) that the seeded request profiles default to.
+  A CA chooses the profiles its OCSP responder, TSA signer and CMP signer are issued under, and
+  the profiles the application depends on keep their names and the usages their certificates
+  need.
+- **The request form asks for the profiles first**, offers only the keys they accept, and says
+  beside them what the profiles allow.
+- **Approvals:** the request page and form say how many approvals a request needs and whether
+  anyone can give them. Answering "Just me" in setup lets a system super-administrator approve
+  their own requests, and the console says when that outlives a single administrator.
+- **Log tables refresh**, by hand or every 30 seconds.
+- `scripts/test-enrollment-protocols.sh --enforcement` checks that each protocol refuses what its
+  request profile forbids.
+
+### Changed
+
+- **SSH lives in tabs** on Authorities, All Certificates and Request Certificate, and in
+  self-service on Request Certificate and My Certificates. The SSH CA menu is gone; the old
+  addresses redirect.
+- **An SSH certificate carries exactly the extensions its profiles name**; `ssh-keygen` used to
+  add five. Its validity starts five minutes before issue, and a KRL download always answers 200
+  with a valid KRL.
+- **New SSH CA keys are user or host, not both**, with a longest certificate of 24 hours for
+  users and one year for hosts.
+
+### Fixed
+
+- **ACME: certbot and Caddy can finalize an order.** Their request has an empty subject, which the
+  seeded request profile refused.
+- **The SAN rules of the seeded request profiles were never enforced**, "at least one SAN" could
+  not trigger on the protocols, and a profile listing no SAN type allowed every type.
+- **Opening the host name from outside the network answered 403** instead of redirecting to the
+  public portal.
+- A CA that named a profile shorter than ten years could not issue its infrastructure
+  certificates, and the admin request profile pages misread and could overwrite a seeded
+  profile's SAN rules.
+
+### Removed
+
+- The `ssh-keygen` dependency, the `SshCa` settings, `PUT /api/v1/admin/config/ssh-ca`, the SSH CA
+  card on the Settings page, and `openssh-client` from the container image.
+
+### The builds on the way
+
+#### 0.4.2-dev.1.12 — 2026-10-19
+
+One fix on top of `0.4.2-dev.1.11`.
+
+**Fixed**
+
+- **Opening the host name from outside the network answered 403 instead of the portal.** The bare
+  root `/` only redirects to `/public/`, but the IP allowlist put it under the System rule
+  (private ranges and loopback by default). It follows the Public Portal rule now: open wherever
+  the portal is open, closed where an operator closed the portal.
+
+#### 0.4.2-dev.1.11 — 2026-10-16
+
+Fixes from a review of the request profile enforcement and the per-CA infrastructure profiles,
+self-approval wired to the single-administrator setup answer, an upgrade-check note about
+enrollment clients, and two build fixes, on top of `0.4.2-dev.1.10`.
+
+**Changed**
+
+- **A request profile that requires approval now holds on the console too.** A request made from
+  the console (Generate Key Pair, a pasted or uploaded CSR, a key the CA generates) or a renewal,
+  under a profile that requires approval, starts as Pending Approval, and issuance refuses any
+  request whose profile requires approval until it is Approved, whatever route it came by. Before,
+  only the enrollment protocols waited, and an operator could issue a console request that no one
+  had approved. Approving one's own request is refused unless Allow System Super Self-Approval is
+  on (below).
+- **The single-administrator setup answer allows self-approval, and a self-approval completes the
+  request.** Answering "Just me" in setup (or `Administration.MultipleAdministrators: false`) now
+  also turns on Allow System Super Self-Approval, as it turns key ceremonies off; "Several people"
+  turns it off. With it on, a system-super's approval of their own request completes it whatever
+  the profile's count, since nobody else could add to it; it is still an explicit, step-up approval,
+  never automatic, audited with `SelfApproved` and shown as Self-approved in the request's history.
+  Existing installs keep their current setting: a single-administrator instance turns it on in
+  Settings › Security.
+- **A request profile that inherits is never looser than its parent.** Subject rules merge field
+  by field, keeping the stricter requirement (Optional, Required, Forbidden), the parent's fixed
+  value and pattern, and the shorter maximum length. SAN rules allow only the types both allow,
+  require a SAN when either does, and keep the parent's pattern and the lower count. A default
+  certificate profile the parent does not designate gives way to the parent's. Before, a child's
+  own rules replaced the parent's, and a child created in the console never took the parent's
+  SAN rules at all.
+
+**Fixed**
+
+- **Renewals dropped the request profile and what it settled.** Self-service renewal, admin
+  renewal and automatic renewal copied the original CSR but not the request profile, the subject
+  and SAN overrides or the requested extensions, and issuance builds the names from the CSR: a
+  value the profile fixed (since `0.4.2-dev.1.9` delivered as an override) went back to what the
+  CSR said, and nothing checked the renewal against the profile. They carry all of it now, and an
+  automatic renewal under a profile that requires approval waits for approval.
+- **A reissue's second request row carried no request profile, overrides or SANs**, so the next
+  reissue of that certificate was not checked against the profile, and could be issued without its
+  SANs when the lookup found that row. The row carries them, and reissue and renewal read the
+  original request first.
+- **The infrastructure profile checks read a profile's own usages; issuance uses them after
+  inheritance.** A seeded or CA-named profile that inherited from one without the usage passed the
+  checks and issued a responder or TSA certificate without it. The CA page, its save, CA creation
+  and the profile edit guard judge the usages after inheritance, an edit to a parent is refused when
+  a profile that inherits from it would lose the usage, and CA creation checks the issued TSA and
+  OCSP certificates as reissue does.
+- **Policy import and sync bypassed the name lock and the usage guard.** A YAML entry could turn a
+  name-bound profile into a CA profile or strip the usage from one a CA issues from. Such an entry
+  is skipped with an error now.
+- **The certificate profile list named CAs of other spaces.** A profile's "In Use" lines name only
+  the CAs the caller can see and count the rest.
+- **The container image had not built since `0.4.2-dev.1.4`.** It moved only `share/sql` out of the
+  unpacked tarball, and `share/` also holds the KRL fetcher; it moves both now.
+- **Every build stopped at restore**: `System.Security.Cryptography.Pkcs` 10.0.0, which Kerberos.NET
+  and MimeKit bring, has a high-severity advisory (GHSA-846f-f764-76mx). The build references the
+  patched 10.0.13.
+
+**Added**
+
+- **The console says whether a request can be approved.** The request page shows the approvals a
+  request needs (it showed "?" before), whether its requester may approve it alone, and warns when
+  fewer people can approve it than it needs. The request form says the same before a request is
+  made, under profiles that require approval. New endpoints:
+  `GET /api/v1/admin/requests/{id}/approval-outlook` and `GET /api/v1/admin/requests/approval-outlook`.
+  The request list carries `approvalCount`, `requiredCount`, `requestProfileId` and
+  `renewalOfCertificateId`, and the dashboard marks pending renewals.
+- **Settings and the dashboard say when single-administrator settings outlive one administrator.**
+  With more than one system super-administrator and self-approval still on, or key ceremonies still
+  off, the dashboard shows a banner and Settings a hint (`GET /api/v1/admin/security-policy/administrators`).
+  The request profile page says when self-approval applies.
+- **`--upgrade-check` notes which enrollment clients the request profiles will refuse.** It replays
+  the certificates each protocol issued in the last 90 days, found in the audit database, against
+  the request profile that protocol uses now, with the rules issuance applies, and lists the ones
+  whose next request would be refused, by protocol, CA and profile, with examples and the reason.
+  It never changes the verdict.
+- `scripts/test-enrollment-protocols.sh --enforcement` follows each enrolment that issues with
+  requests the seeded profile refuses (EST without a SAN and with an email SAN, CMP with a DNS
+  SAN). The EST HTTP Basic request carries `DNS:<username>`, which the seeded EST profile requires.
+
+#### 0.4.2-dev.1.10 — 2026-10-10
+
+The profile pickers get a second column that says what the chosen profiles impose, on top of
+`0.4.2-dev.1.9`. The new layout has not been seen in a browser yet.
+
+**Changed**
+
+- **Request Certificate, step 1, is two cards.** On the left the request, signing and certificate
+  profile, one under the other and each as wide as the card. On the right, "What These Profiles
+  Allow": the names the request profile permits (required and forbidden subject fields, values
+  it sets or fills in, patterns, SAN types, approval), the issuing CA and its name constraints,
+  the certificate's key usage, extended key usage, validity range and wildcard setting, and the
+  keys the pair accepts. The key list used to appear only under Generate Key Pair; it now shows
+  for a pasted or uploaded CSR too. The same on the self-service form.
+- **The CA page's Infrastructure Certificate Profiles section is two columns.** The three pickers
+  on the left; on the right, what the profile each picker holds gives its certificate (key usage,
+  extended key usage, validity range, and the problem when it has one), and what all three get
+  whatever their profile: the key, which follows the CA's key, and the lifetime. The right side
+  follows the pickers before anything is saved.
+- A picker on the CA page no longer offers the default profiles of the other two certificates.
+
+**Fixed**
+
+- **A CA that named a profile shorter than ten years could not issue that certificate.** The
+  OCSP responder, TSA signer and CMP signer were always asked for ten years, and issuance
+  refuses a date past the profile's longest validity. The lifetime is now ten years, or the
+  profile's longest validity, or the CA's own expiry, whichever is soonest. Found in
+  `0.4.2-dev.1.8`, where naming a profile became possible.
+- **The admin Request Profiles pages showed a seeded profile's SAN rules wrongly, and saving
+  the page wrote the wrong ones back.** The same case-sensitive reading that `0.4.2-dev.1.9`
+  fixed for enforcement was still in the admin view: a seeded profile showed "DNS and IP, SAN
+  optional" whatever it held, so from `0.4.2-dev.1.9` the page and the enforcement disagreed,
+  and editing a seeded profile replaced its SAN rules with those misread ones. The page reads
+  the rules as stored now. A seeded profile already saved from the console before this build
+  holds whatever was written then; check its SAN rules.
+- The validity hint called a ceiling of hours "Max 0 days". It says "less than a day".
+
+**Added**
+
+- The `key-options` answer of both portals carries `constraints`: the issuing CA's name and
+  name constraints, and the certificate profile's usages, validity range and wildcard setting
+  after inheritance.
+- `GET /api/v1/admin/authorities/{caId}/infrastructure-profiles` lists each candidate profile's
+  usages and validity range, each role's default profile id, and `subjectKey`, `lifetimeYears`
+  and `caNotAfter`.
+
+#### 0.4.2-dev.1.9 — 2026-10-10
+
+The request profile is enforced by the server at every step, and four purpose-specific
+certificate profiles are added, on top of `0.4.2-dev.1.8`. Nothing here has been seen in a
+browser or tried against a live protocol client yet.
+
+**Changed**
+
+- **A request is held to its request profile when it is submitted, approved and issued.** Until
+  now only the enrollment protocols checked it; the console's request routes took a signing and a
+  certificate profile and never saw the request profile, which only the form applied. Every
+  request now records the request profile it was made under, and the names checked are the ones
+  the certificate would carry, with any subject or SAN override applied. An override used to
+  bypass the request profile entirely.
+- **Console and API request routes require `requestProfileId`.** `POST` on
+  `/api/v1/user/requests`, `.../requests/upload`, `.../requests/request-with-key`,
+  `/api/v1/admin/requests`, `/api/v1/admin/requests/upload` and
+  `/api/v1/admin/certificates/issue-with-key` answer 400 without it. A script that calls these
+  routes must send it. The refusal of a request the profile does not permit is 400 with
+  `MCA-CFG-022` and the reason.
+- **The certificate profile must be one the request profile allows:** its default or one in its
+  allowed list. A request profile that names none takes any certificate profile for an operator
+  and cannot be used for a self-service request. The admin form's certificate profile picker
+  now offers only the allowed ones when the request profile names any.
+- **Approval re-checks the request and counts approvals from the request's own profile.** A
+  request that no longer satisfies its profile is refused with 409 and the reason. The number of
+  approvals needed used to be read from whichever request profile the CA's protocol
+  configuration named.
+- **The server supplies what a profile fixes or defaults.** A subject field with a fixed value
+  carries that value, and one with a default carries the default when the request left it out.
+  On EST, SCEP and ACME these values were checked and then left out of the certificate, which was
+  built from the CSR's own subject; they are now carried into it.
+- **A request profile with requests still waiting under it cannot be deleted** (409).
+
+**Fixed**
+
+- **The SAN rules of the seeded request profiles were never enforced.** Bootstrap stores them
+  with lower-case keys and the server read them case-sensitively, so each seeded profile was read
+  as "DNS and IP allowed, no SAN required, no per-type limit" whatever it said. They are read as
+  written now, by the protocols and by the form's preview.
+- **"At least one SAN is required" could not trigger** on the enrollment protocols: a request
+  with no SAN arrived as an empty list, which skipped the check.
+- **A profile that lists no SAN type allowed every type** on the server, while the console showed
+  "None" and the form's preview refused them. It now allows none.
+
+**Added**
+
+- **Four certificate profiles:** `TLS Server` (server authentication, up to 397 days),
+  `Device Client` (client authentication, up to 2 years), `User Authentication and Email`
+  (client authentication and email protection, up to 1 year) and `Code Signing` (code signing,
+  digitalSignature only, up to 1 year). Each seeded request profile defaults to the one made for
+  it, and `Web TLS (Internal)` to `Web TLS Certificate Profile`. The seeded "Code Signing"
+  request profile used to issue certificates that could not sign code.
+
+**Upgrade**
+
+- Two migrations. `RequestProfileOnRequests` adds a nullable column to `CertificateRequests`;
+  existing requests are left without a request profile and are not held to one.
+  `StandardCertProfiles` adds the four profiles and sets a seeded request profile's default
+  only where it has neither a default nor an allowed list. A profile of yours whose name matches
+  one of the four in any letter case is left alone, and its request profile gets no default.
+- **Protocol configurations are not changed.** ACME, EST, SCEP and CMP keep the certificate
+  profile they are configured with (`Main Certificate Profile` on a default install). Only the
+  default is set on the request profiles, not an allowed list, because a list would override the
+  protocol's own profile.
+- **Protocol requests that used to pass may now be refused, as their profile says they should
+  be.** On a default install: an EST request with no SAN (`Enterprise Server (EST)` requires
+  one), a SCEP request with a SAN other than DNS, a CMP request with a SAN other than email, and
+  any SAN under `Code Signing`. A Windows autoenrollment template is held to the request profile
+  it names in the same way, so that profile must allow the SAN types the template's certificates
+  carry (UPN, DNS). Check your clients against the request profile of each protocol before
+  upgrading a host that serves them.
+- Where a profile fixes or defaults a subject field, a protocol request now carries that value
+  as a subject override, and requests with overrides get the override checks: standard subject
+  fields only, and the certificate profile's wildcard setting on DNS SANs.
+- Not covered: automatic renewals, the API-key integration route and requests stored before
+  this build carry no request profile and are not checked against one.
+
+#### 0.4.2-dev.1.8 — 2026-10-09
+
+A CA names the certificate profile its own certificates are issued under, and the profiles the
+application depends on can no longer be renamed or deleted from under it, on top of
+`0.4.2-dev.1.7`. The new pages have not been seen in a browser yet.
+
+**Added**
+
+- **A CA chooses the profile of its OCSP responder, its TSA signer and its CMP signer.** The CA
+  page has a new section, "Infrastructure Certificate Profiles", with a picker for each. Each
+  starts on the seeded default, which is what every CA used before. A picker offers the
+  end-entity profiles the CA may issue under that list the usage the certificate exists for.
+  Saving reissues nothing: the choice applies the next time that certificate is issued, from
+  "Reissue Infrastructure Certificates" below it. A profile that can no longer do the job is
+  flagged under its picker.
+- `GET` and `PUT /api/v1/admin/authorities/{caId}/infrastructure-profiles`. The `PUT` takes
+  `ocspResponderCertProfileId`, `tsaCertProfileId` and `cmpSignerCertProfileId`, null for the
+  default, and needs `ca.manage` on the CA and step-up.
+- Certificate profiles carry `systemPurpose` and `infrastructureUses` in the API, and the
+  console marks such a profile "In use".
+
+**Changed**
+
+- **Five seeded certificate profiles are found by name, and their names are now fixed.**
+  `TSA Certificate Profile`, `OCSP Responder Certificate Profile`,
+  `CMP Signer Certificate Profile`, `Web TLS Certificate Profile` and
+  `Main CA Certificate Profile` cannot be renamed, deleted, bound to one CA or changed between
+  a CA profile and an end-entity profile (409, `MCA-RES-007`). Before, a rename made the next
+  CA creation, infrastructure reissue or console TLS certificate issue fail with "profile not
+  found", and nothing stopped a delete. Everything else on them can still be edited.
+- **A profile a CA's own certificate is issued from keeps what that certificate needs.** The
+  three default profiles, and any profile a CA names, cannot be saved without the usage their
+  certificate exists for (time stamping, OCSP signing, the digitalSignature key usage), cannot
+  become a CA profile, and cannot be bound to a different CA. A profile a CA names cannot be
+  deleted until the CA names another.
+- A CMP signer is refused before anything is issued when its profile lacks digitalSignature.
+  It used to be issued first and refused afterwards.
+- Empty lists that said "Change the scope in the sidebar" say "in the top bar", where the scope
+  switcher is.
+
+**Upgrade**
+
+- One migration, `CaInfrastructureCertProfiles`: three nullable columns on
+  `CertificateAuthorities`. No row changes; every existing CA keeps the default profiles.
+- Not changed: the first CA's TSA and OCSP certificates are still built by bootstrap itself and
+  only recorded against the default profiles; the key algorithm of these certificates still
+  follows the CA's key, and their validity is still ten years capped at the CA's.
+
+#### 0.4.2-dev.1.7 — 2026-10-09
+
+The X.509 request form asks for the profiles first and then offers only the keys they accept,
+on top of `0.4.2-dev.1.6`. The form has not been seen in a browser yet.
+
+**Changed**
+
+- **Request Certificate (X.509) starts with the profiles.** Step 1 is the request profile, the
+  signing profile and the certificate profile, side by side. Step 2 is the key: paste a CSR,
+  upload one, or have the CA generate the key pair. The fields follow, then the validity window.
+  The signing and certificate profiles used to be the last step, under "Issuance Options".
+- **Generate Key Pair offers only the keys the chosen profiles accept.** It used to list every
+  algorithm the certificate profile named and every size, and a key the signing profile, the
+  size list or the signature list refused was only found out on submit. The list now comes from
+  the server, which runs the checks submission and issuance run. Under it, "Keys not offered"
+  gives the reason for each key left out, and the line above it names the signature the CA
+  signs the request with.
+- **Self-service chooses the certificate profile.** The form used to take the request profile's
+  default silently. It now lists the certificate profiles the request profile names, default
+  first, and a request profile that names several lets the requester pick.
+
+**Added**
+
+- `GET /api/v1/admin/certificates/key-options` and `GET /api/v1/user/requests/key-options`,
+  each with `signingProfileId` and `certProfileId`: the keys the CA may generate for a request
+  under that pair, and the ones the pair refuses with the reason. The admin route asks what
+  the validity pre-flight asks; the user route asks `cert.request` on the signing profile's CA.
+- The self-service request profile list names each profile's certificate profiles
+  (`certProfiles`, id and name).
+
+#### 0.4.2-dev.1.6 — 2026-10-09
+
+SSH leaves its own menu and becomes tabs on the pages that already exist, on top of
+`0.4.2-dev.1.5`. None of the moved pages has been seen in a browser yet.
+
+**Changed**
+
+- **The "SSH CA" menu entry and the self-service "SSH" group are gone.** Each piece is now an
+  SSH tab beside the X.509 one:
+
+  | What | Where |
+  |---|---|
+  | SSH CA keys, generating one, the plaintext notice | Authorities |
+  | SSH certificates, revoking, finding one from a host log line | All Certificates |
+  | Signing a key for a user, a service identity or a host | Request Certificate |
+  | Self-service: requesting a certificate | Request Certificate |
+  | Self-service: the certificates issued for you | My Certificates |
+
+  A tab is shown only to someone who can use it, and each piece keeps the right it asked
+  before. A page with an SSH tab also opens for someone who can use only that tab. The old
+  addresses redirect.
+- **The SSH certificate list covers every key.** It used to list one key at a time, chosen from
+  a drop-down. It now lists the certificates of every SSH CA key the reader may view, with the
+  key as a column and as a filter, and includes the certificates of disabled keys.
+- **Sign key asks first what the certificate is for**, a user, a service identity or a host,
+  and then offers only the profiles that fit.
+
+**Added**
+
+- **A type on SSH request and certificate profiles**: user, host, or either. A profile with a
+  type is refused, with a 400 that names it, for a certificate of the other type. The
+  self-service form no longer offers host profiles; it used to list the host request profile
+  first and select it. The profile forms have the field.
+- `GET /api/v1/admin/ssh/certificates`: the SSH certificates of every key the caller holds
+  `cert.view` on, a page at a time, optionally for one key.
+
+**Upgrade**
+
+- One migration adds the type and sets it on the five profiles a new install seeds, found by
+  their exact names. Every other profile stays "either" and works as before.
+- A script that signs a user key through the seeded host profiles, or a host key through a
+  seeded user certificate profile, is refused from this build on.
+- A self-service user who may request from no SSH CA no longer has the SSH tabs, and so no
+  longer sees SSH certificates issued for them earlier.
+
+#### 0.4.2-dev.1.5 — 2026-10-09
+
+A default SSH CA setup, on top of `0.4.2-dev.1.4`. An existing install keeps the profiles and
+the limits it has; only what is created from now on follows the new defaults.
+
+**Security**
+
+- **A new user certificate no longer permits forwarding by default.** The signing profile
+  created with a new SSH CA key grants a terminal and nothing else. It used to add agent and
+  port forwarding, and agent forwarding lets a compromised server use its visitor's access
+  elsewhere. A new install seeds a second certificate profile, `SSH User Cert - Forwarding`,
+  for where forwarding is wanted; it is attached to no request profile until an administrator
+  attaches it.
+
+**Added**
+
+- **A review date on each SSH CA key.** An SSH CA key does not expire, and nothing reminded
+  anyone to look at one. Each key now has a "Review by" date: two years after its creation for
+  a key that signs user certificates, five for a key that signs host certificates only. The
+  console warns from 90 days ahead, and the daily expiry notification job sends one reminder
+  per key and date. The date can be moved on the key's page. Nothing is disabled, refused or
+  revoked because of it.
+- `PUT /api/v1/admin/ssh/ca-keys/{caKeyId}/review-by`, and `reviewBy` in the key list.
+
+**Changed**
+
+- **The form for a new SSH CA key asks for one type**, user or host, and no longer offers a key
+  that signs both. It pre-fills the longest certificate as 24 hours for a user key and one year
+  for a host key; it used to pre-fill 30 days. The API still accepts both flags.
+- **A key's maximum, left out of an API request, is 24 hours for a key that signs user
+  certificates and one year for a host-only key.** It was 24 hours for both.
+- **The signing profiles created with a key take the key's maximum.** The user one used to be
+  capped at 24 hours whatever the key allowed. The key holds the hard ceiling, the request
+  profile the everyday number, and the profiles in between are left at the ceiling.
+- **On a new install** the user request profile is 12 hours, down from 24, and the standard
+  user certificate profile takes any valid login name, three at most, with no forwarding. It
+  used to take five lower-case POSIX names, which refused names a grant allows.
+
+**Upgrade**
+
+- One migration adds the review date and sets it for existing keys from their creation time.
+  A key whose date is already past gets one reminder on the first notification run, where
+  expiry notifications are switched on.
+- `--upgrade-check` lists a user signing profile created from this build on in its note about
+  profiles that name fewer permits than certificates once carried. That is accurate and not
+  a problem to fix.
+
+#### 0.4.2-dev.1.4 — 2026-10-08
+
+Getting the SSH revocation list to hosts, on top of `0.4.2-dev.1.3`. Nothing here has run on a
+Linux host yet: the fetcher was exercised under Git Bash, and its systemd units were never started.
+
+**Security**
+
+- **A fetcher for SSH servers ships with the CA.** A host refuses a revoked certificate only
+  once it has the SSH CA key's new KRL, and the product gave a host nothing to fetch it with.
+  `modularca-krl-fetch` is a shell script with a systemd service and timer that fetches the
+  list every minute. It replaces the installed list only with a complete one that
+  `ssh-keygen` reads as a KRL, by renaming a finished file over it, because `sshd` refuses
+  every public-key login while that file cannot be read. It refuses a list with a lower
+  version than the installed one, and takes HTTPS only. The four files install under
+  `/usr/share/modularca/ssh-krl/`; an administrator copies them to each server.
+
+**Added**
+
+- **The time an SSH certificate was revoked is recorded** (`SshCertificates.RevokedAt`) and
+  shown on the certificate's page. A certificate revoked before this build shows none.
+- **The KRL routes answer conditional requests.** A KRL is now the same bytes until a
+  certificate of its key is revoked, and both routes send a strong `ETag` and answer 304 to a
+  matching `If-None-Match` without building the list, so a host can poll every minute.
+- The SSH CA key's page shows the KRL's version and last revocation, with the commands that
+  set up a host.
+
+**Changed**
+
+- A KRL's generation time is the time of its newest revocation, not the time it was asked for.
+- `GET /api/v1/admin/ssh/ca-keys` also answers `krlVersion`, `krlRevokedCertificates` and
+  `krlLastRevokedAt`; a certificate also answers `revokedAt`.
+
+**Upgrade**
+
+- One migration adds the column and an index. No existing row is changed.
+- After the CA's database is restored from a backup, its KRL has a lower version and hosts
+  refuse it until the fetcher is run once with `--allow-lower-version`.
+
+#### 0.4.2-dev.1.3 — 2026-10-08
+
+Losing the right to request revokes, on top of `0.4.2-dev.1.2`.
+
+**Security**
+
+- **A user who may no longer request from an SSH CA loses their certificates on it.** A
+  certificate used to outlive the right it was issued on: a user taken out of the group that
+  let them request kept every certificate they had until it expired. Every live certificate
+  issued for a user on an SSH CA is now revoked once that user no longer holds `cert.request`
+  on it. That happens at once when the right goes with a group membership, a group, a role
+  assignment or a capability grant, or when a role loses a capability or is deleted. The
+  `SshLoginNameSweep` job checks the same thing every 15 minutes, so a right lost any other
+  way revokes within one period.
+- **The admin sign route no longer signs for a user who may not request.** It asked only that
+  the user be active and known to the SSH CA, so an operator could issue a certificate for
+  someone who held no right to one. The user must now hold `cert.request` on the SSH CA. The
+  Sign key form says so when the chosen user does not.
+
+**Changed**
+
+- `GET /api/v1/admin/ssh/ca-keys/{caKeyId}/users/{userId}/login-names` also answers
+  `mayRequest`.
+- The `SshLoginNameSweepCompleted` audit entry counts `RequestRightLost` beside the other rules.
+
+**Upgrade**
+
+- The first sweep after the upgrade also revokes the live SSH certificates of users who no
+  longer hold `cert.request` on the SSH CA, where the certificate records that user. A user who
+  still requests today keeps theirs.
+- A script that signs through the admin route for a user who cannot request gets 400.
+
+#### 0.4.2-dev.1.2 — 2026-10-07
+
+Three tightenings of SSH login names, on top of `0.4.2-dev.1.1`.
+
+**Security**
+
+- **`root` is never an own username.** A user named `root`, in any case, no longer holds `root`
+  on an SSH CA key just because the key allows own usernames: `root` always needs a grant.
+  Whoever may create or rename a user decides that user's username, and this keeps that right
+  from handing out `root`.
+- **Signing a host key through the admin route asks step-up MFA**, as signing a user key does.
+  A host certificate lets its holder answer as that host. The operation for both is now
+  `sign-ssh-cert`; `0.4.2-dev.1.1` called it `sign-ssh-user-cert`.
+- **A periodic sweep revokes what a missed hook left live.** Revocation follows a change at
+  once, but as a second step: a node that stopped between the two left a certificate valid
+  until its user or SSH CA was next looked at. The `SshLoginNameSweep` job now checks every
+  live certificate on a schedule, every 15 minutes unless `SshLoginNameSweep.Schedule` says
+  otherwise. It revokes a certificate whose user is not active, was deleted or was renamed,
+  and one that carries a login name its holder no longer has. It cannot be turned off, and it
+  writes nothing when it finds nothing.
+
+**Upgrade**
+
+- The first sweep after the upgrade revokes the live SSH certificates of users who are already
+  disabled, where the certificate records that user. Nothing else that exists today is revoked.
+
+#### 0.4.2-dev.1.1 — 2026-10-07
+
+SSH login names: the CA decides who may log in as which account, and writes the name hosts
+log. **This changes the sign API**, so scripts that send `keyId`, or that sign for an account
+the requester was never given, get 400. No existing certificate is revoked by the upgrade. The
+console pages have not been seen in a browser yet.
+
+**Security**
+
+- **The CA writes the key id of every SSH certificate.** `sshd` logs it with each login, so it
+  is the record of who logged in to a shared account. It was taken from the request. It is now
+  the username of the user the certificate is for, `svc:` and a label for a service identity
+  with no account, or the first hostname of a host certificate. A `keyId` in a sign request is
+  refused.
+- **A certificate for a user carries only login names that user holds.** A login name is the
+  SSH principal: the account the certificate may log in as. Principals were checked only
+  against the certificate profile's patterns, and the seeded profile allows any account name,
+  so anyone who could request could issue themselves a certificate for `root`. A user now
+  holds their own username, where the SSH CA key allows it, and the names granted on that key
+  to them or to a group they are in.
+- **Login names are granted per SSH CA key**, to a user or a group, with an optional longest
+  certificate and an optional end. Granting, changing and removing a grant, and the
+  own-username switch, need `ca.manage` on the SSH CA and step-up MFA, and each is audited.
+- **A certificate lasts no longer than its login names allow**: the smallest limit among the
+  names asked for, and never past the earliest end of a grant used.
+- **Taking a name away revokes the certificates that carried it.** That covers removing a
+  grant, moving its end earlier, turning own usernames off, leaving a group and deleting a
+  group, unless the holder still has the name another way. Disabling, renaming or deleting a
+  user revokes every live certificate issued for them.
+- **Each certificate records who it is for, who asked for it, and why its holder had each
+  login name** at the time it was issued.
+
+**Added**
+
+- **Login names on the SSH CA key page**: the own-username switch and the grants, with how many
+  live certificates each grant carries.
+- **SSH login names and live SSH certificates on the user page**, with "Revoke all", and the
+  login names granted to a group on the group page.
+- **A request form on the self-service SSH Certificates page.** The API existed; the console had
+  only the list. It offers the requester's login names as a tick list and shows the name hosts
+  will log.
+- **Find a certificate from a host log line**: paste the `sshd` line of a login and the console
+  finds the certificate by its serial, key id and CA fingerprint.
+- `GET /api/v1/user/ssh/request-options`, `GET /api/v1/admin/ssh/certificates/find`,
+  `GET /api/v1/admin/ssh/certificates/{id}`, and the login name routes under
+  `/api/v1/admin/ssh/ca-keys/{caKeyId}/login-names`, `/api/v1/admin/ssh/users/{userId}` and
+  `/api/v1/admin/ssh/groups/{groupId}`.
+- **The upgrade check notes what changes for requests** and counts the live user certificates
+  that carry a name other than their key id. It informs and never refuses.
+
+**Changed**
+
+- **The admin sign route signs for a named subject.** `sign-user` takes exactly one of
+  `subjectUserId` and `serviceLabel`. For a user, only names that user holds can be asked for:
+  an administrator grants a name first, so the grant is on record. For a service identity the
+  names are typed and checked against the certificate profile, as before. The route now asks
+  step-up MFA, since whoever signs decides whose name a public key is certified under; signing
+  a host key does not.
+- **The Sign key form has no "Identity (Key ID)" field.** It asks who the certificate is for and
+  shows what the CA will write.
+- **A user's own SSH certificate list shows the certificates issued for them**, whoever asked.
+  One an administrator signs for a user appears in that user's list.
+- **An omitted validity means the most allowed**: the smallest of the profiles', the key's and
+  the login names' limits. It used to mean the signing profile's maximum.
+- **"Login names" replaces "Principals"** on the SSH pages. The API field is still `principals`.
+- `GET /api/v1/admin/ssh/ca-keys` also answers each key's `certificateAuthorityId`.
+
+**Upgrade**
+
+- Every existing SSH CA key allows own usernames until that is turned off on the key. Grant the
+  other login names people use before their certificates are due again.
+- Existing certificates are untouched and expire on their own. A user certificate whose key id
+  is its requester's username is recorded as that user's; the others record no subject.
+
+#### 0.4.2-dev.1.0 — 2026-10-07
+
+The first build of the 0.4.2 line, on top of `0.4.1-dev.1.7`. SSH CA keys move into the signer.
+**Upgrade the signer before the node.** Installing it is one-way for an install with SSH CAs: the
+key files are imported and deleted at first start. It has not run on Linux yet.
+
+**Security**
+
+- **SSH CA private keys are held by the signer.** Each was an unencrypted file under
+  `config/ssh-ca-keys`, and the node ran `ssh-keygen` to sign with it. The keys now live in a
+  third keystore file, `ssh-ca.keystore`, and the signer builds and signs every SSH certificate
+  itself. It takes the certificate's fields, never bytes to sign, so an SSH CA key cannot be
+  made to sign anything that is not a certificate. The node holds no SSH CA key and runs no
+  program.
+- **Existing key files are imported at first start**, by the node with the control role, once
+  the signer is unlocked. Each file is then overwritten with zeros and deleted. A key whose
+  file is missing, protected by a passphrase or not its key stays "awaiting import" with the
+  reason; it signs nothing, and stops neither the other keys nor the start.
+- **A notice says these keys were stored in plaintext.** Archives and snapshots made before the
+  import still hold them, and an overwrite does not guarantee erasure. Rotating an SSH CA is
+  the only remedy; this release informs and does not rotate.
+- **The signer enforces what the node used to be trusted with.** It checks the ceremony, or
+  the instance's waiver, before it generates an SSH CA key. It refuses a certificate of a type
+  the key does not sign, one valid for longer than the key allows, one with no principal, and
+  one with an option it does not know.
+- **What was approved is what is certified.** Principals, key id and options reach the
+  certificate exactly as given. The old path rewrote them for a command line after the profile
+  checks had passed the originals.
+- **Self-service SSH signing is audited.** It wrote no audit entry before.
+
+**Changed**
+
+- **A certificate carries exactly the extensions its profiles and request name.** `ssh-keygen`
+  added five permits to every user certificate by default; none is added now. A profile that
+  names only `permit-pty` issued all five and now issues that one. The upgrade check lists the
+  profiles this narrows.
+- **A certificate needs at least one principal**, and "Allow any principal" is gone from the
+  sign form. A DSA public key is refused.
+- **`valid_after` is five minutes before issue**, for servers whose clock runs behind, and the
+  validity is counted from there.
+- **A KRL download always answers 200 with a valid KRL**, also with nothing revoked, and works
+  on a validation-only host. The public route answered 204 before.
+- **SSH signing answers 503** while the signer is locked or a key awaits import, and 400 with
+  the signer's reason for a certificate it refuses.
+- **Backup carries `ssh-ca.keystore`.** A key file still awaiting import travels wrapped by the
+  signer. Restoring an older archive brings its key files back, and the next start imports
+  them. Reset deletes the SSH keystore and any key files.
+- **`--upgrade-check` reports the SSH CA keys** the first start will import, and refuses when
+  the file of an enabled SSH CA is missing or is not its key.
+- **`/health/ready` and the admin key list say where each SSH CA key is held.** An SSH key
+  that is not held never makes the node unready.
+- **Console.** A Storage column and state on the SSH pages, signing disabled for a key that
+  cannot sign, the plaintext notice, SSH keys on System Health, and the API's own error text
+  in the create and sign forms.
+- **The break-glass unlocker opens the SSH keystore**, and needs the application database for
+  it: that keystore's passphrase exists only there.
+
+**Removed**
+
+- The `ssh-keygen` dependency, the `SshCa` settings, `PUT /api/v1/admin/config/ssh-ca` and the
+  SSH CA card on the Settings page. A leftover `SshCa` section in `config.yaml` is ignored.
+- `openssh-client` from the container image.
+
+**Fixed**
+
+- The admin SSH key list's `publicKeyUrl` pointed at a route that does not exist.
+
+#### 0.4.1-dev.1.7 — 2026-10-07
+
+**Changed**
+
+- The Restart Application card on the Settings page says what a restart is for now: the
+  settings marked Restart, a rotated JWT secret, and a restored backup. It named logging and
+  HTTP, most of which apply without one.
+
+#### 0.4.1-dev.1.6 — 2026-10-07
+
+**Changed**
+
+- **Fourteen settings that waited for a restart now apply to the next request**, on the node
+  that saves them. Each was copied once at start by whatever uses it, and is now read when it
+  is used. The Settings page shows them as Live. Other nodes still take a change at their
+  next start.
+  - **IP whitelist switch.** Turning it on with rules that exclude your own address locks you
+    out at once, where it used to wait for a restart.
+  - **mTLS required paths**, where mTLS was on at start (turning mTLS itself on or off, and
+    its trusted CAs, still need a restart). Adding `/api/v1/admin` without a way to present a
+    client certificate refuses the console immediately.
+  - **JWT IP binding.** New tokens already carried the binding at once; it is now also
+    enforced, or stops being enforced, at once.
+  - **Network audit**: on or off, log all requests, and the excluded paths.
+  - **CORS**: on or off, and the allowed origins.
+  - **HSTS, the EST trust anchor refresh interval and RSA signature padding** are read live as
+    well. Nothing in the console changes them on a running node yet, so nothing is seen.
+  - **The scheduler's missed-run policy** was already read on every tick and was only
+    labelled Restart.
+- Eight settings still wait for a restart on purpose:
+  - **The JWT secret, issuer and audience.** Changing any of them live ends every session at
+    once, and on more than one node the nodes would refuse each other's sessions until all
+    had restarted. A rotated JWT secret is still used from each node's next start.
+  - **The five syslog settings.** The syslog sink is built with the logging pipeline.
+- The answers to `PUT /api/v1/admin/config/http`, `/scheduler` and `/ip-whitelist` no longer
+  say a restart is required for what now applies at once.
+
+#### 0.4.1-dev.1.5 — 2026-10-06
+
+**Added**
+
+- **The JWT secret can be rotated from the console.** Settings, Security, JWT has a Rotate
+  secret button: the server generates a new secret and stores it wrapped by the signer.
+  Nothing is typed and nothing is shown. Since the secret moved to the database there was no
+  way to replace it but an environment variable.
+  - **The new secret is used from each node's next start.** Until then the node keeps the one
+    it started with, and the card says a new one is waiting. From the restart on, access
+    tokens signed with the old secret are refused, so everyone signed in signs in again.
+  - With more than one node, restart them together: a node on the old secret and one on the
+    new do not accept each other's sessions.
+  - Refused where an environment variable supplies the secret, and when the signer is locked
+    or out of reach. Step-up is required (`rotate-jwt-secret`), and the change is audited as
+    a settings change that names the secret and holds no value.
+  - New endpoint `POST /api/v1/admin/settings/jwt-secret/rotate`.
+    `GET /api/v1/admin/settings` gains `waitingForRestart`.
+
+**Fixed**
+
+- **A node running on a temporary JWT secret stored it at the next settings save.** A start
+  that cannot read the stored secret makes one up for that start (dev.1.3). The first save of
+  any setting from the console then took the made-up secret for a change and, if the signer
+  could be reached by then, stored it over the real one. It is no longer stored; the start
+  log says to rotate the secret if the stored one is lost for good.
+
+#### 0.4.1-dev.1.4 — 2026-10-06
+
+**Fixed**
+
+- **On the Settings page, a card's tag and the headings inside it now say what their fields
+  say.** dev.1.3 put a badge on each field and left some of the older labels around them
+  disagreeing with it.
+  - A card's tag is taken from the fields the card shows, where it was taken from every
+    setting of the section. Logging and Certificate Policy read "Live and restart" over fields
+    that are all live.
+  - **Per-Username Rate Limit and the refresh token binding rules were headed Restart and are
+    live**: both are read on each request. The headings follow their fields, and the notes
+    above them no longer say when a change applies.
+  - Login Protection and Token Binding & Lifetime had no tag.
+  - The JWT card said its settings are managed in `config.yaml`. They are in the database, and
+    changed on the host with `--settings`.
+  - A badge inside a field label was set in capitals; beside a switch it was not.
+- **JWT IP Binding showed Off whatever the mode was**, and the card's summary read "JWT IP
+  binding: undefined". The server sends the mode by name and the page read it as a number.
+  The stored mode was never changed by this: saving the group sent back what the server had
+  sent. The field has its badge now (Restart).
+
+#### 0.4.1-dev.1.3 — 2026-10-06
+
+**Changed**
+
+- **The secrets the node uses move to the database, wrapped by the signer.** The JWT secret,
+  the LDAP bind password, the mail password and OAuth2 secrets, and the webhook endpoints leave
+  `config.yaml` at the control role's next start. Each is stored as a blob only the signer can
+  open, bound to its own setting. `config.yaml` then holds this host's settings and nothing
+  secret but what belongs to the host (the web TLS and signer-channel passwords).
+  - The copy of `config.yaml` kept at the rewrite no longer holds the moved secrets.
+    **Copies kept by dev.1.0 to dev.1.2 (`config.yaml.pre-settings-*.bak`) and backup archives
+    made before this build still hold them in the clear.** Delete those copies; rotate the
+    secrets if an old archive may have left your hands.
+  - **A node now needs its signer at start to read them.** When the signer is locked or out of
+    reach, the secrets cannot be read: sign-in still works, on a JWT secret made up for that
+    start (everyone is signed out at the next restart, and another node will not accept those
+    sessions), and LDAP sign-in, mail and webhooks wait. The log says which secret could not
+    be read. Supplying a secret through the environment still wins.
+  - When the signer cannot be reached at the move itself, the secrets stay in `config.yaml`,
+    where they keep working, and move at a later start.
+  - **The two single integration API keys stay in `config.yaml`.** Named API keys replace
+    them; the single keys keep working as they are.
+  - `--settings` can clear a secret from the host. Setting one needs the signer, so it is done
+    in the console.
+- **The Settings page says, beside each setting, when a saved change takes effect and where
+  the setting is kept.**
+  - **Live**: at once on this node. Other nodes take it at their next start.
+  - **Restart**: when this node next starts.
+  - **This host**: kept in this host's `config.yaml`, not in the database.
+  - **Environment**: decided by an environment variable; the field cannot be changed.
+
+  A card's tag is now what its settings say, so it cannot disagree with them. Twenty-two
+  settings that were shown, or assumed, to apply at once are marked Restart, because
+  something reads them once at start: CORS, HSTS, the JWT issuer and audience, binding a
+  session to an address, the syslog target, the IP whitelist switch, network audit, the mTLS
+  required paths, the EST trust anchor refresh, RSA signature padding and the scheduler's
+  missed-run policy. New endpoint `GET /api/v1/admin/settings`.
+
+#### 0.4.1-dev.1.2 — 2026-10-06
+
+**Fixed**
+
+- **The move no longer stores a default an earlier build wrote.** A `config.yaml` written
+  before the project's repository moved carries the old address as `SourceCode.Url`. Nobody
+  chose it: it was that build's default, and the page already publishes the new address for
+  it. dev.1.0 stored it in the database as if it had been chosen. The move now leaves it out,
+  and the control role's next start clears it where it was stored, with a history entry saying
+  why. An address an operator set for their own fork is stored as before.
+
+#### 0.4.1-dev.1.1 — 2026-10-06
+
+**Added**
+
+- **Log tables can be refreshed.** A log shows what had happened when the page was opened, so
+  a new entry did not appear until the page was reloaded. The table header now has a Refresh
+  button and an "Auto 30s" switch, on the Audit Logs page (every tab), the ACME audit section
+  and the audit tables on record pages.
+  - Rows stay on screen while they reload.
+  - Auto-refresh is remembered per table, like its columns. It pauses while rows are ticked,
+    while a row's drawer is open, and while the page is in the background.
+
+#### 0.4.1-dev.1.0 — 2026-10-06
+
+Installing this build adds five tables in two migrations (`SettingsStore`, `ApiKeys`) and, at
+the control role's first start, moves the instance-wide settings out of `config.yaml` into the
+database. As for any schema change, going back to 0.4.0 afterwards means restoring a backup.
+
+**Added**
+
+- **Named API keys for the integrations.** The infrastructure API and the cert-manager issuer
+  each had one key, typed by an administrator into `config.yaml` and shared by every client,
+  so replacing it broke all of them at once. Each client can now hold its own.
+  - **Generated, shown once, stored as a hash.** A key is created under Settings, Integrations,
+    in the integration's card. It is 256 random bits starting `mca_`, shown once, and only its
+    SHA-256 is kept, so nobody can read it back, from the console or the database.
+  - **Revoked one at a time.** A revoked key stops working at once and stays listed. The table
+    shows each key's name, last four characters, status, scope, expiry and when it was last
+    used.
+  - **Scoped and time-limited if you want.** A key can be limited to one space's CAs or to the
+    instance's, and can expire. Its scope narrows the integration's and never widens it.
+  - **The old key keeps working.** The single key in the integration's settings is accepted
+    beside the named ones, so nothing changes for a client until you give it a key of its own.
+  - cert-manager audit records name the key that was used, as `cert-manager:<name>`.
+  - Creating and revoking a key need step-up MFA. API: `GET`, `POST` and
+    `DELETE /api/v1/admin/api-keys`. A new table, `ApiKeys`.
+
+**Changed**
+
+- **Instance-wide settings are kept in the database.** About 140 settings that are the same
+  for the whole instance (ACME, certificate policy, scheduler, mail, LDAP, audit retention,
+  alerting, the public name, and so on) move out of `config.yaml`. A change made in the console
+  is now versioned, has a history, and is audited with the value before and after. Each
+  setting is one row, named by its path joined with underscores (`Acme_Http01_MaxAddresses`).
+  See `docs/architecture/settings-store.md`.
+
+  **Upgrading: what happens at the first start.**
+  - The control role moves every instance-wide setting that differs from its default into the
+    database, then rewrites `config.yaml` with this host's settings only. The file as it was
+    is kept beside it as `config.yaml.pre-settings-<time>.bak`, readable by its owner only. It
+    holds the same secrets the file held; delete it once you are satisfied.
+  - **From then on `config.yaml` does not decide an instance-wide setting.** A value for one
+    written there is ignored, and every start says so in the log, naming the setting. Change
+    it in the console, or with `--settings` on the host.
+  - What stays in files, for good: the database connection (`db.yaml`), the signer's settings,
+    and each host's listeners, ports, paths, certificates and proxy settings.
+  - **The eight secrets stay in `config.yaml` for now**: the JWT secret, the LDAP bind
+    password, the mail credentials, the webhook endpoints and the two integration API keys.
+    They move in a later build.
+  - Environment variables still win over both.
+  - **On an install split across hosts**, only the control host's file is rewritten. Another
+    host's file is left as it is; an instance-wide value in it is ignored with the same
+    warning. A setting changed in the console reaches the other hosts at their next start,
+    not while they run.
+- **`--settings` on the host**, for reading and changing a stored setting without the console.
+  It is the way back in when a setting has locked the administrators out, which editing
+  `config.yaml` used to be. Run as the service user:
+  `--settings list`, `get <Key>`, `set <Key> <value> [--reason <text>]`, `clear <Key>` and
+  `history <Key>`. A change is recorded in the setting's history and the audit trail under a
+  host actor, and a running service takes it at its next start.
+- **Secret settings will be stored wrapped by the signer, or hashed.** The store keeps the JWT
+  secret, the LDAP bind password, the mail credentials and the webhook endpoints as blobs only
+  the signer can open, each bound to its own setting so that a blob copied to another row does
+  not open there. The two API keys are kept as SHA-256 hashes, which the node can check and
+  nobody can read back. The signer gains a second wrapped-secret format for this; secrets it
+  wrapped before are read as before. A node and a signer run as separate processes have to be
+  upgraded together, as for any release.
+
+**Fixed**
+
+- **ACME: certbot and Caddy can finalize an order.** Both send a certification request with an
+  empty subject and the names as subject alternative names only, which RFC 8555 allows. The
+  request profile bootstrap seeds requires a common name, and it was asked about the empty
+  subject, so every finalize from those clients was refused; the client saw only "the
+  certificate order failed". Issuance has always named such a certificate after its first DNS
+  name, and the request profile is now asked about that subject. acme.sh and Traefik send a
+  common name and were not affected. Found by the ACME client matrix on its first complete run.
+
 ## [0.4.0] — 2026-10-06
 
 Everything since 0.3.0, including the work that was numbered 0.3.1 and 0.3.2 and never

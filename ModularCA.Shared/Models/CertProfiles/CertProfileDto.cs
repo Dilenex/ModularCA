@@ -79,4 +79,16 @@ public class CertProfileDto
     /// When true, this profile merges with its parent profile via inheritance.
     /// </summary>
     public bool InheritanceEnabled { get; set; }
+
+    /// <summary>
+    /// What the application uses this profile for when it finds it by name, or null. A profile
+    /// with a purpose cannot be renamed, deleted, bound to one CA or changed in kind.
+    /// </summary>
+    public string? SystemPurpose { get; set; }
+
+    /// <summary>
+    /// The CAs that name this profile for a certificate of their own, one line each
+    /// ("CA name: TSA"). A profile with any cannot be deleted.
+    /// </summary>
+    public List<string> InfrastructureUses { get; set; } = new();
 }

@@ -18,8 +18,9 @@ namespace ModularCA.Tests.Signer;
 /// table row by row, the audit row every decision leaves, the health report, and signatures
 /// that verify under the key's public half. Written against the interface so the remote
 /// implementation runs the same suite by binding <see cref="CreateSignerAsync"/> to itself.
+/// The SSH keystore's part of the contract is in <c>SigningServiceContractTests.Ssh.cs</c>.
 /// </summary>
-public abstract class SigningServiceContractTests
+public abstract partial class SigningServiceContractTests
 {
     private const string Caller = "contract-test";
 
@@ -1125,11 +1126,21 @@ public abstract class SigningServiceContractTests
     [Fact]
     public async Task What_a_backup_exported_restores_byte_for_byte()
     {
+        // A backup carries three keystore files: the two every install has, and the SSH keystore of an install with an SSH CA.
+        Assert.Equal(new[] { KeyRef.DefaultKeystore, KeyRef.TrustKeystore, KeyRef.SshKeystore }, KeyRef.BackupKeystores);
+        var backup = new SigningContext(Caller, SigningPurpose.Backup, null, null);
+
+        // A signer that keeps no SSH keystore has none to give, and says so with the refusal a backup skips a file on.
+        var without = await CreateSignerAsync(WorldWithKeystoreFiles());
+        await RefusedAsync(SigningRefusalReason.UnknownKey,
+            () => without.ExportKeyAsync(KeyRef.ForKeystore(KeyRef.SshKeystore), ExportWrap.ForKeystoreFile(), backup), "export an SSH keystore that is not kept");
+
         var source = WorldWithKeystoreFiles();
+        source.Persistence.KeystoreFiles[KeyRef.SshKeystore] = Encoding.ASCII.GetBytes("ssh-ca.keystore bytes as the persistence keeps them");
         var exported = new List<(string Name, byte[] Bytes)>();
         var sourceSigner = await CreateSignerAsync(source);
         foreach (var name in KeyRef.BackupKeystores)
-            exported.Add((name, await sourceSigner.ExportKeyAsync(KeyRef.ForKeystore(name), ExportWrap.ForKeystoreFile(), new SigningContext(Caller, SigningPurpose.Backup, null, null))));
+            exported.Add((name, await sourceSigner.ExportKeyAsync(KeyRef.ForKeystore(name), ExportWrap.ForKeystoreFile(), backup)));
 
         var target = SignerTestWorld.Create();
         var signer = await CreateSignerAsync(target);
@@ -1865,6 +1876,90 @@ public abstract class SigningServiceContractTests
         var ex = await Assert.ThrowsAsync<SigningRefusedException>(
             () => signer.UnwrapSecretAsync(blob, Context(SigningPurpose.Export, null, null)));
         Assert.Equal(SigningRefusalReason.IntegrityFailure, ex.Reason);
+    }
+
+    [Fact]
+    public async Task A_setting_secret_is_wrapped_for_its_setting_and_comes_back_only_there()
+    {
+        var signer = await CreateSignerAsync(SharedWorld);
+        var context = Context(SigningPurpose.Configuration, null, null);
+
+        var blob = await signer.WrapBoundSecretAsync(SecretKind.SettingSecret, "setting:JWT_Secret", WrappableSecret, context);
+
+        Assert.True(WrappedSecretEnvelope.TryRead(blob, out var header));
+        Assert.Equal((SecretKind.SettingSecret, "setting:JWT_Secret"), (header.Kind, header.Binding));
+        Assert.Equal(WrappedSecretEnvelope.Version2, blob[4]);
+        Assert.DoesNotContain(Convert.ToHexStringLower(WrappableSecret), Convert.ToHexStringLower(blob));
+        Assert.Equal(WrappableSecret, await signer.UnwrapBoundSecretAsync(blob, "setting:JWT_Secret", context));
+
+        // The same blob read from another setting's row, which is what copying it there would be.
+        var moved = await Assert.ThrowsAsync<SigningRefusedException>(
+            () => signer.UnwrapBoundSecretAsync(blob, "setting:LdapAuth_BindPassword", context));
+        Assert.Equal(SigningRefusalReason.IntegrityFailure, moved.Reason);
+
+        // And asked for as a secret that belongs nowhere.
+        var unnamed = await Assert.ThrowsAsync<SigningRefusedException>(() => signer.UnwrapSecretAsync(blob, context));
+        Assert.Equal(SigningRefusalReason.OperationUnsupported, unnamed.Reason);
+    }
+
+    [Fact]
+    public async Task A_blob_whose_binding_was_rewritten_does_not_authenticate()
+    {
+        var signer = await CreateSignerAsync(SharedWorld);
+        var context = Context(SigningPurpose.Configuration, null, null);
+        var blob = await signer.WrapBoundSecretAsync(SecretKind.SettingSecret, "setting:Email_Password", WrappableSecret, context);
+
+        // The binding sits in the clear in the header. Editing it to the row the blob was moved
+        // to makes the names agree, and the decryption still refuses: the binding is in the
+        // associated data and in the key derivation.
+        var rewritten = Encoding.ASCII.GetBytes("setting:Email_Passw0rd");
+        Assert.Equal(Encoding.ASCII.GetByteCount("setting:Email_Password"), rewritten.Length);
+        rewritten.CopyTo(blob, WrappedSecretEnvelope.HeaderLength + 2);
+
+        var ex = await Assert.ThrowsAsync<SigningRefusedException>(
+            () => signer.UnwrapBoundSecretAsync(blob, "setting:Email_Passw0rd", context));
+        Assert.Equal(SigningRefusalReason.IntegrityFailure, ex.Reason);
+    }
+
+    [Fact]
+    public async Task Only_the_configuration_purpose_handles_setting_secrets_and_it_handles_nothing_else()
+    {
+        var signer = await CreateSignerAsync(SharedWorld);
+        var configuration = Context(SigningPurpose.Configuration, null, null);
+        var blob = await signer.WrapBoundSecretAsync(SecretKind.SettingSecret, "setting:JWT_Secret", WrappableSecret, configuration);
+
+        foreach (var purpose in new[] { SigningPurpose.Cmp, SigningPurpose.Certificate, SigningPurpose.Backup, SigningPurpose.Restore, SigningPurpose.Export })
+        {
+            var wrap = await Assert.ThrowsAsync<SigningRefusedException>(
+                () => signer.WrapBoundSecretAsync(SecretKind.SettingSecret, "setting:JWT_Secret", WrappableSecret, Context(purpose, null, null)));
+            Assert.Equal(SigningRefusalReason.PurposeNotPermitted, wrap.Reason);
+            var unwrap = await Assert.ThrowsAsync<SigningRefusedException>(
+                () => signer.UnwrapBoundSecretAsync(blob, "setting:JWT_Secret", Context(purpose, null, null)));
+            Assert.Equal(SigningRefusalReason.PurposeNotPermitted, unwrap.Reason);
+        }
+
+        var otherKind = await Assert.ThrowsAsync<SigningRefusedException>(
+            () => signer.WrapSecretAsync(SecretKind.CmpSharedSecret, WrappableSecret, configuration));
+        Assert.Equal(SigningRefusalReason.PurposeNotPermitted, otherKind.Reason);
+    }
+
+    [Fact]
+    public async Task A_setting_secret_is_never_wrapped_without_a_binding_and_other_kinds_never_with_one()
+    {
+        var signer = await CreateSignerAsync(SharedWorld);
+
+        var unbound = await Assert.ThrowsAsync<SigningRefusedException>(
+            () => signer.WrapSecretAsync(SecretKind.SettingSecret, WrappableSecret, Context(SigningPurpose.Configuration, null, null)));
+        Assert.Equal(SigningRefusalReason.OperationUnsupported, unbound.Reason);
+
+        var bound = await Assert.ThrowsAsync<SigningRefusedException>(
+            () => signer.WrapBoundSecretAsync(SecretKind.CmpSharedSecret, "token:1", WrappableSecret, Context(SigningPurpose.Cmp, null, null)));
+        Assert.Equal(SigningRefusalReason.OperationUnsupported, bound.Reason);
+
+        var tooLong = await Assert.ThrowsAsync<SigningRefusedException>(
+            () => signer.WrapBoundSecretAsync(SecretKind.SettingSecret, new string('k', WrappedSecretEnvelope.MaxBindingLength + 1),
+                WrappableSecret, Context(SigningPurpose.Configuration, null, null)));
+        Assert.Equal(SigningRefusalReason.OperationUnsupported, tooLong.Reason);
     }
 
     [Fact]

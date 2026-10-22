@@ -8,8 +8,13 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import { validateAgainstProfileClient } from '@shared/validation/profileValidation';
 import { looksLikeHostname } from '@shared/hostname';
 import { inputClass, labelClass, FieldHint } from '@shared/components/forms';
-import type { ValidityCeilingPreflight } from '@shared/generated';
+import type { ServerKeyOptions, ValidityCeilingPreflight } from '@shared/generated';
 import { describeCeiling, exceedsCeiling, toDatetimeLocalValue } from '../pages/validityCeiling';
+import { chooseAlgorithm, findOption, groupRefusals, offeredAlgorithms, offeredSizes, requestKeySize, settleKeyChoice, type KeyChoice } from '../pages/keyOptions';
+import { designatedCertProfileIds, offeredCertProfiles, settleCertProfile } from '../pages/requestCertProfiles';
+import { certificateGroup, issuerGroup, keysGroup, namesGroup, type ConstraintGroup } from '../pages/profileConstraints';
+import { ConstraintPanel } from './ConstraintPanel';
+import { sizeLabel } from '../pages/profiles/keyPolicy';
 import { HeldKeyDownload } from './HeldKeyDownload';
 import { TypedEntryListEditor, type TypedEntryRowStatus } from '@shared/components/TypedEntryListEditor';
 import { SAN_TYPES as SAN_TYPE_DEFS } from '@shared/generalNames';
@@ -25,11 +30,16 @@ import { SAN_TYPES as SAN_TYPE_DEFS } from '@shared/generalNames';
  * names which of the two APIs sits behind them, is the only arrangement under which an
  * improvement made for one page reaches the other.
  *
+ * The profiles come first, because they decide the rest: the request profile sets the field
+ * rules, and the signing profile and certificate profile together decide which keys are
+ * accepted. For a key the CA generates the form asks the server which those are (`keyOptions`)
+ * and offers only them.
+ *
  * `mode` hides exactly what the user API cannot do, nothing more:
  *
- * - No certificate-profile picker: `/api/v1/user` has no cert-profiles listing. The user request
- *   profile carries `defaultCertProfileId` and `allowedCertProfileIds`, and the certificate
- *   profile is taken from those.
+ * - The certificate-profile picker lists every profile for an admin. `/api/v1/user` has no
+ *   cert-profiles listing, so a user chooses among the ones the request profile designates,
+ *   which its listing names in `certProfiles`.
  * - No validity window and no ceiling pre-flight: the user `requests/upload` handler does not
  *   pass `NotBefore`/`NotAfter` to the CSR service, `requests/request-with-key` ignores them, and
  *   there is no `validity-ceiling` endpoint under `/api/v1/user`.
@@ -59,6 +69,8 @@ export interface CertificateRequestEndpoints {
     signingProfiles: string;
     /** GET: certificate profiles for the picker. Admin only; the user API has no such listing. */
     certProfiles?: string;
+    /** GET `ServerKeyOptions`: the keys the CA may generate under a signing/cert profile pair. */
+    keyOptions: (signingProfileId: string, certProfileId: string) => string;
     /** POST `{ pem }`: parse a PEM CSR into subject, SANs and key details. */
     parseCsr: string;
     /** POST `{ requestProfileId, subject, sans }`: validate fields against a request profile. */
@@ -79,6 +91,21 @@ export interface CertificateRequestEndpoints {
      * (`EffectiveRequestProfile`). Left out when the list itself already returns effective rules.
      */
     resolvedRequestProfile?: (requestProfileId: string) => string;
+    /**
+     * GET, admin only: how a request under these profiles would be approved
+     * (`requiresApproval`, `requiredCount`, `othersWhoCanApprove`, `requesterMaySelfApprove`,
+     * `canComplete`), so a request nobody could approve is known before it is made.
+     */
+    approvalOutlook?: (requestProfileId: string, signingProfileId: string, certProfileId: string) => string;
+}
+
+/** The answer of `approvalOutlook`. */
+interface SubmissionApprovalOutlook {
+    requiresApproval: boolean;
+    requiredCount: number;
+    othersWhoCanApprove: number;
+    requesterMaySelfApprove: boolean;
+    canComplete: boolean;
 }
 
 export interface CertificateRequestFormProps {
@@ -86,6 +113,8 @@ export interface CertificateRequestFormProps {
     endpoints: CertificateRequestEndpoints;
     /** Where "View requests" on the success panel takes the requester. */
     requestsPath: string;
+    /** The form is a tab of a page that draws the heading and the padding itself. */
+    embedded?: boolean;
 }
 
 interface SanEntry {
@@ -162,9 +191,16 @@ interface RequestProfile {
     sanRules: SanRulesObj;
     allowedCertProfileIds: string[];
     defaultCertProfileId?: string | null;
+    /** Only the user list returns this: the designated certificate profiles, default first. */
+    certProfiles?: CertProfileChoice[];
     requireApproval: boolean;
     /** Only the user list returns this; the admin DTO does not carry it. */
     requiredApprovalCount?: number;
+}
+
+interface CertProfileChoice {
+    id: string;
+    name: string;
 }
 
 interface SuccessState {
@@ -188,7 +224,6 @@ const DN_FIELDS = ['CN', 'O', 'OU', 'L', 'ST', 'C'];
 // than a network endpoint, so a request profile has to list it in allowedTypes before it can be
 // used — see RequestProfiles.
 const SAN_TYPES = SAN_TYPE_DEFS.map(t => t.value);
-const ALL_KEY_ALGORITHMS = ['RSA', 'ECDSA', 'Ed25519', 'Ed448', 'ML-DSA-44', 'ML-DSA-65', 'ML-DSA-87', 'SLH-DSA-SHA2-128F'];
 
 const TAB_ACTIVE = 'bg-accent-soft text-accent-ink border border-accent/40';
 const TAB_IDLE = 'bg-sunken text-ink-muted border border-line-strong hover:bg-hover';
@@ -198,11 +233,6 @@ const CARD_TITLE = 'text-sm font-semibold text-ink';
 const FIELD_INPUT = 'flex-1 px-3 py-2 bg-raised border rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent';
 
 // --- Helpers ---
-
-/** True for the algorithms whose "size" is the algorithm name itself: no key-size picker. */
-function hasFixedKeySize(alg: string): boolean {
-    return alg === 'Ed25519' || alg === 'Ed448' || alg.startsWith('ML-DSA') || alg.startsWith('SLH-DSA');
-}
 
 /**
  * Lower-camels every object key, recursively. Rules the server seeds at bootstrap are serialised
@@ -276,6 +306,7 @@ function normaliseRequestProfile(p: any, id?: string): RequestProfile {
         subjectDnRules: parseRules(p.effectiveSubjectDnRules ?? p.subjectDnRules),
         sanRules: parseSanRules(p.effectiveSanRules ?? p.sanRules),
         allowedCertProfileIds: parseIdList(p.allowedCertProfileIds),
+        certProfiles: Array.isArray(p.certProfiles) ? p.certProfiles : undefined,
         requireApproval: !!p.requireApproval,
         requiredApprovalCount: typeof p.requiredApprovalCount === 'number' ? p.requiredApprovalCount : undefined,
     };
@@ -318,9 +349,9 @@ function statusText(status: string) {
 
 // --- Component ---
 
-export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ mode, endpoints, requestsPath }) => {
+export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ mode, endpoints, requestsPath, embedded }) => {
     // What the user API leaves out; see the header comment for the reason behind each.
-    const showCertProfilePicker = mode === 'admin' && !!endpoints.certProfiles;
+    const listsCertProfiles = mode === 'admin' && !!endpoints.certProfiles;
     const showValidityWindow = mode === 'admin';
     const showCeilingPreflight = mode === 'admin' && !!endpoints.validityCeiling;
     const allowUpnWithGeneratedKey = mode === 'admin';
@@ -357,9 +388,10 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
     // not render as "no ceiling", which would be the one reading that is actively misleading.
     const [ceiling, setCeiling] = useState<ValidityCeilingPreflight | null>(null);
 
-    // Generate key pair state
-    const [keyAlgorithm, setKeyAlgorithm] = useState('RSA');
-    const [keySize, setKeySize] = useState('2048');
+    // Generate key pair: the keys the chosen profiles accept, and the one picked among them.
+    const [keyOptions, setKeyOptions] = useState<ServerKeyOptions | null>(null);
+    const [keyOptionsError, setKeyOptionsError] = useState<NoticeInput | null>(null);
+    const [keyChoice, setKeyChoice] = useState<KeyChoice | null>(null);
 
     // Submit state
     const [loading, setLoading] = useState(false);
@@ -433,18 +465,35 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
         ? resolvedProfile
         : listedProfile;
 
-    // The certificate profile the request will name. With a picker it is the picker's value;
-    // without one it is whatever the request profile designates, its default first.
-    const derivedCertProfileId = selectedProfileObj?.defaultCertProfileId || selectedProfileObj?.allowedCertProfileIds[0] || '';
-    const effectiveCertProfileId = showCertProfilePicker ? selectedCertProfile : derivedCertProfileId;
+    // The certificate profiles the picker offers. The server refuses a request that names one
+    // the request profile does not designate, so the picker holds the designated ones: for a
+    // user always, for an admin when the request profile designates any (every profile when it
+    // designates none).
+    const designatedCertProfiles = designatedCertProfileIds(selectedProfileObj?.defaultCertProfileId, selectedProfileObj?.allowedCertProfileIds);
+    const offersEveryCertProfile = listsCertProfiles && designatedCertProfiles.length === 0;
+    const certProfileChoices: CertProfileChoice[] = listsCertProfiles
+        ? offeredCertProfiles(certProfiles.map((p: any) => ({ id: p.id, name: p.name || p.id })), designatedCertProfiles)
+        : (selectedProfileObj?.certProfiles ?? []);
+    const effectiveCertProfileId = selectedCertProfile;
 
-    // A request profile that designates a certificate profile pre-selects it in the picker, so
-    // the operator does not have to know which of the two lists the pairing lives in.
+    // A request profile that designates a certificate profile pre-selects it, and the picker
+    // never keeps a choice the list no longer offers.
     useEffect(() => {
-        if (!showCertProfilePicker || !selectedProfileObj) return;
-        const wanted = selectedProfileObj.defaultCertProfileId || selectedProfileObj.allowedCertProfileIds[0];
-        if (wanted && certProfiles.some((p: any) => p.id === wanted)) setSelectedCertProfile(wanted);
-    }, [selectedRequestProfile, certProfiles]); // eslint-disable-line react-hooks/exhaustive-deps
+        setSelectedCertProfile((current) => settleCertProfile(current, certProfileChoices, designatedCertProfiles, offersEveryCertProfile));
+    }, [selectedRequestProfile, certProfiles, selectedProfileObj]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const [approvalOutlook, setApprovalOutlook] = useState<SubmissionApprovalOutlook | null>(null);
+    useEffect(() => {
+        if (!endpoints.approvalOutlook || !selectedRequestProfile || !selectedSigningProfile || !selectedProfileObj?.requireApproval) {
+            setApprovalOutlook(null);
+            return;
+        }
+        let cancelled = false;
+        apiGet<SubmissionApprovalOutlook>(endpoints.approvalOutlook(selectedRequestProfile, selectedSigningProfile, selectedCertProfile))
+            .then((o) => { if (!cancelled) setApprovalOutlook(o); })
+            .catch(() => { if (!cancelled) setApprovalOutlook(null); });
+        return () => { cancelled = true; };
+    }, [endpoints.approvalOutlook, selectedRequestProfile, selectedSigningProfile, selectedCertProfile, selectedProfileObj?.requireApproval]);
 
     // --- Validity ceiling pre-flight ---
     // Re-asked whenever the profile pair changes, because both selections feed the answer: the
@@ -470,6 +519,53 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
 
     const ceilingNotice = ceiling ? describeCeiling(ceiling) : null;
     const notAfterExceedsCeiling = exceedsCeiling(notAfter, ceiling);
+
+    // Until the operator picks a Not After, it is a year after Not Before, or the ceiling when that is sooner.
+    const [notAfterEdited, setNotAfterEdited] = useState(false);
+    useEffect(() => {
+        if (notAfterEdited || !notBefore) return;
+        const oneYear = new Date(notBefore);
+        oneYear.setFullYear(oneYear.getFullYear() + 1);
+        const yearOn = toDatetimeLocalValue(oneYear);
+        const max = ceiling ? describeCeiling(ceiling).maxInputValue : '';
+        setNotAfter(max && exceedsCeiling(yearOn, ceiling) ? max : yearOn);
+    }, [ceiling]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // --- Keys the profiles accept ---
+    // Asked of the server, which runs the checks submission and issuance run, whenever the
+    // profile pair changes. The answer feeds the key pickers and, with what the pair imposes
+    // on the certificate, the panel beside the profile pickers.
+    const keyOptionsWanted = !!selectedSigningProfile && !!effectiveCertProfileId;
+    useEffect(() => {
+        setKeyOptions(null);
+        setKeyOptionsError(null);
+        if (!keyOptionsWanted) return;
+        let cancelled = false;
+        apiGet<ServerKeyOptions>(endpoints.keyOptions(selectedSigningProfile, effectiveCertProfileId))
+            .then((data) => {
+                if (cancelled) return;
+                setKeyOptions(data);
+                setKeyChoice((current) => settleKeyChoice(data.options, current));
+            })
+            .catch((err) => { if (!cancelled) setKeyOptionsError(errorNotice(err, 'Could not check which keys these profiles accept')); });
+        return () => { cancelled = true; };
+    }, [keyOptionsWanted, endpoints.keyOptions, selectedSigningProfile, effectiveCertProfileId]);
+
+    const keyOptionsLoading = keyOptionsWanted && !keyOptions && !keyOptionsError;
+
+    // What the chosen profiles impose, a group to a profile, for the panel beside the pickers.
+    const constraintGroups: ConstraintGroup[] = [];
+    if (selectedProfileObj) constraintGroups.push(namesGroup(selectedProfileObj));
+    if (keyOptions?.constraints) {
+        constraintGroups.push(
+            issuerGroup(keyOptions.signingProfileName, keyOptions.constraints),
+            certificateGroup(keyOptions.certProfileName, keyOptions.constraints),
+            keysGroup(keyOptions.options, keyOptions.refused.length),
+        );
+    }
+    const offeredKeys = keyOptions?.options ?? [];
+    const chosenKey = findOption(offeredKeys, keyChoice);
+    const chosenKeySizes = keyChoice ? offeredSizes(offeredKeys, keyChoice.algorithm) : [];
 
     // --- CSR parsing ---
     const parseCsr = useCallback(async (pem: string) => {
@@ -671,36 +767,21 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
         }
     };
 
-    // Key algorithms the chosen certificate profile permits; all of them when it does not say.
-    const allowedKeyAlgorithms = (() => {
-        const profile = certProfiles.find((p: any) => p.id === effectiveCertProfileId);
-        if (!profile?.allowedKeyAlgorithms) return ALL_KEY_ALGORITHMS;
-        try {
-            const parsed = typeof profile.allowedKeyAlgorithms === 'string'
-                ? JSON.parse(profile.allowedKeyAlgorithms)
-                : profile.allowedKeyAlgorithms;
-            if (Array.isArray(parsed) && parsed.length > 0) {
-                return ALL_KEY_ALGORITHMS.filter(a => parsed.some((p: string) => p.toUpperCase() === a.toUpperCase()));
-            }
-        } catch { /* use all */ }
-        return ALL_KEY_ALGORITHMS;
-    })();
-
     // --- Submit ---
     const hasValidationErrors = !!validationResult && !validationResult.valid;
+    // Where the picker holds only what the request profile designates, a request profile that
+    // designates none cannot be used from here at all.
+    const requestProfileLacksCertProfile = !listsCertProfiles && !!selectedProfileObj && certProfileChoices.length === 0;
     // Both profiles are required by the server; without them the click only produced an error
     // banner after the fact. Name what is missing so the button's disabled state explains itself.
     const missingProfiles = [
         !selectedSigningProfile ? 'a signing profile' : null,
-        showCertProfilePicker && !selectedCertProfile ? 'a certificate profile' : null,
+        !selectedCertProfile && !requestProfileLacksCertProfile ? 'a certificate profile' : null,
     ].filter(Boolean) as string[];
-    // Without a picker the certificate profile comes from the request profile, and a request
-    // profile that names none cannot be used from here at all.
-    const requestProfileLacksCertProfile = !showCertProfilePicker && !!selectedProfileObj && !derivedCertProfileId;
 
     const canSubmit = !loading
         && !!selectedRequestProfile
-        && (tab === 'generate' || !!csrPem.trim())
+        && (tab === 'generate' ? !!chosenKey : !!csrPem.trim())
         && !hasValidationErrors
         && missingProfiles.length === 0
         && !requestProfileLacksCertProfile
@@ -720,11 +801,12 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
         if (!selectedRequestProfile) { setError('Please select a request profile.'); return; }
         if (tab !== 'generate' && !csrPem.trim()) { setError('Please provide a CSR.'); return; }
         if (!selectedSigningProfile) { setError('Please select a signing profile.'); return; }
-        if (showCertProfilePicker && !selectedCertProfile) { setError('Please select a certificate profile.'); return; }
-        if (!effectiveCertProfileId) {
+        if (requestProfileLacksCertProfile) {
             setError('This request profile has no certificate profile assigned, so it cannot be used. Ask an administrator to set one.');
             return;
         }
+        if (!effectiveCertProfileId) { setError('Please select a certificate profile.'); return; }
+        if (tab === 'generate' && (!keyChoice || !chosenKey)) { setError('Choose a key the selected profiles accept.'); return; }
         if (blockedUpnRows.length > 0) {
             setError('A UPN name cannot be requested with a server-generated key from here. Paste or upload a CSR instead.');
             return;
@@ -761,10 +843,11 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                 const created = await apiPost<any>(endpoints.requestWithKey, {
                     subject,
                     sans,
-                    keyAlgorithm,
-                    keySize: hasFixedKeySize(keyAlgorithm) ? keyAlgorithm : keySize,
+                    keyAlgorithm: keyChoice!.algorithm,
+                    keySize: requestKeySize(keyChoice!),
                     certProfileId: effectiveCertProfileId,
                     signingProfileId: selectedSigningProfile,
+                    requestProfileId: selectedRequestProfile,
                     ...validity,
                 });
 
@@ -789,6 +872,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                     pem: csrPem.trim(),
                     signingProfileId: selectedSigningProfile,
                     certificateProfileId: effectiveCertProfileId,
+                    requestProfileId: selectedRequestProfile,
                     subjectOverrides: Object.keys(subject).length > 0 ? subject : undefined,
                     sanOverrides: sans.length > 0 ? sans : undefined,
                     ...validity,
@@ -816,16 +900,120 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
 
     const dismissSuccess = () => setSuccess(null);
 
-    const stepNumber = (parsedCsr || tab === 'generate') ? 4 : 3;
+    const showFields = (!!parsedCsr || tab === 'generate') && !!selectedRequestProfile;
 
     return (
-        <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
-            <h1 className="text-xl font-semibold text-ink">Request Certificate</h1>
+        <div className={embedded ? 'space-y-4 sm:space-y-6' : 'p-3 sm:p-6 space-y-4 sm:space-y-6'}>
+            {!embedded && <h1 className="text-xl font-semibold text-ink">Request Certificate</h1>}
 
-            {/* Step 1: CSR Input Card */}
+            {/* Step 1: the profiles on the left, what they impose on the right */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 items-start">
             <div className={CARD}>
                 <div className={CARD_HEAD}>
-                    <h3 className={CARD_TITLE}>Step 1: Certificate Signing Request</h3>
+                    <h3 className={CARD_TITLE}>Step 1: Profiles</h3>
+                    <p className="text-xs text-ink-muted mt-1">The request profile sets the rules for the names. The signing profile and the certificate profile decide which keys are accepted.</p>
+                </div>
+                <div className="p-4 space-y-3">
+                    <div className="space-y-4">
+                        <div>
+                            <label htmlFor="request-profile" className={labelClass}>Request Profile</label>
+                            <select
+                                id="request-profile"
+                                value={selectedRequestProfile}
+                                onChange={(e) => setSelectedRequestProfile(e.target.value)}
+                                className={inputClass}
+                            >
+                                <option value="">-- Select a Request Profile --</option>
+                                {requestProfiles.map((p) => (
+                                    <option key={p.id} value={p.id}>
+                                        {p.name}{p.description ? ` — ${p.description}` : ''}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                        <div>
+                            <label htmlFor="signing-profile" className={labelClass}>Signing Profile</label>
+                            <select
+                                id="signing-profile"
+                                value={selectedSigningProfile}
+                                onChange={(e) => setSelectedSigningProfile(e.target.value)}
+                                className={inputClass}
+                            >
+                                <option value="">-- Select Signing Profile --</option>
+                                {signingProfiles.map((p) => (
+                                    <option key={p.id || p.name} value={p.id}>
+                                        {p.name || p.id}{p.isDefault ? ' (default)' : ''}
+                                    </option>
+                                ))}
+                            </select>
+                            <FieldHint className="mt-1">Names the issuing CA.</FieldHint>
+                        </div>
+                        <div>
+                            <label htmlFor="cert-profile" className={labelClass}>Certificate Profile</label>
+                            <select
+                                id="cert-profile"
+                                value={selectedCertProfile}
+                                onChange={(e) => setSelectedCertProfile(e.target.value)}
+                                disabled={!listsCertProfiles && !selectedRequestProfile}
+                                className={inputClass}
+                            >
+                                <option value="">-- Select Certificate Profile --</option>
+                                {certProfileChoices.map((p) => (
+                                    <option key={p.id} value={p.id}>{p.name}</option>
+                                ))}
+                            </select>
+                            {!offersEveryCertProfile && (
+                                <FieldHint className="mt-1">The ones the request profile allows.</FieldHint>
+                            )}
+                        </div>
+                    </div>
+                    {selectedProfileObj?.requireApproval && (
+                        <div className="flex flex-wrap gap-2">
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-warn-soft text-warn border border-warn/40">
+                                Requires Approval{selectedProfileObj.requiredApprovalCount ? ` (${selectedProfileObj.requiredApprovalCount})` : ''}
+                            </span>
+                            {approvalOutlook?.requesterMaySelfApprove && (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-sunken text-ink-muted border border-line">
+                                    Self-approval allowed
+                                </span>
+                            )}
+                        </div>
+                    )}
+                    {approvalOutlook?.requesterMaySelfApprove && (
+                        <FieldHint>You may approve this request yourself once it is made; your approval completes it. It stays recorded as self-approved.</FieldHint>
+                    )}
+                    {approvalOutlook && !approvalOutlook.canComplete && (
+                        <FieldHint tone="warn">
+                            Nobody could complete this approval: it needs {approvalOutlook.requiredCount} {approvalOutlook.requiredCount === 1 ? 'approval' : 'approvals'}, and {approvalOutlook.othersWhoCanApprove === 1 ? '1 other account' : `${approvalOutlook.othersWhoCanApprove} other accounts`} can approve requests on this CA. The request would wait until someone can.
+                        </FieldHint>
+                    )}
+                    {requestProfileLacksCertProfile && (
+                        <FieldHint tone="warn">This request profile has no certificate profile assigned, so it cannot be used from here. Ask an administrator to set one.</FieldHint>
+                    )}
+                </div>
+            </div>
+            <div className={CARD}>
+                <div className={CARD_HEAD}>
+                    <h3 className={CARD_TITLE}>What These Profiles Allow</h3>
+                    <p className="text-xs text-ink-muted mt-1">The server holds the request to these at submission, approval and issuance.</p>
+                </div>
+                <div className="p-4">
+                    <ConstraintPanel
+                        groups={constraintGroups}
+                        empty="Choose a request profile to see its rules for the names, and a signing and a certificate profile to see the issuing CA, the certificate's usages and validity, and the keys they accept."
+                        pending={keyOptionsLoading ? 'Checking what the signing and certificate profile allow…' : null}
+                    />
+                    {keyOptionsError && tab !== 'generate' && (
+                        <div className="mt-3"><InlineNotice notice={keyOptionsError} variant="line" /></div>
+                    )}
+                </div>
+            </div>
+            </div>
+
+            {/* Step 2: the key, in a CSR made elsewhere or generated by the CA */}
+            <div className={CARD}>
+                <div className={CARD_HEAD}>
+                    <h3 className={CARD_TITLE}>Step 2: Key</h3>
                 </div>
                 <div className="p-4 space-y-4">
                     <div className="flex gap-2">
@@ -875,61 +1063,75 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
 
                     {tab === 'generate' && (
                         <div className="space-y-4">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div>
-                                    <label className={labelClass}>Key Algorithm</label>
-                                    <select
-                                        value={keyAlgorithm}
-                                        onChange={(e) => {
-                                            const alg = e.target.value;
-                                            setKeyAlgorithm(alg);
-                                            if (alg === 'RSA') setKeySize('2048');
-                                            else if (alg === 'ECDSA') setKeySize('P-256');
-                                            else setKeySize('');
-                                        }}
-                                        className={inputClass}
-                                    >
-                                        {allowedKeyAlgorithms.map(a => (
-                                            <option key={a} value={a}>{a}</option>
-                                        ))}
-                                    </select>
+                            {!keyOptionsWanted && (
+                                <FieldHint>Choose a signing profile and a certificate profile in step 1. The keys they accept are then listed here.</FieldHint>
+                            )}
+                            {keyOptionsLoading && (
+                                <p className="text-xs text-ink-muted">Checking which keys these profiles accept...</p>
+                            )}
+                            {keyOptionsError && (
+                                <div className="bg-crit-soft border border-crit/40 rounded p-3">
+                                    <InlineNotice notice={keyOptionsError} variant="line" />
                                 </div>
-                                {!hasFixedKeySize(keyAlgorithm) && (
-                                    <div>
-                                        <label className={labelClass}>Key Size</label>
-                                        <select
-                                            value={keySize}
-                                            onChange={(e) => setKeySize(e.target.value)}
-                                            className={inputClass}
-                                        >
-                                            {keyAlgorithm === 'RSA' && (
-                                                <>
-                                                    <option value="2048">2048</option>
-                                                    <option value="3072">3072</option>
-                                                    <option value="4096">4096</option>
-                                                    <option value="7680">7680 (high compute)</option>
-                                                    <option value="8192">8192 (high compute)</option>
-                                                </>
-                                            )}
-                                            {keyAlgorithm === 'ECDSA' && (
-                                                <>
-                                                    <option value="P-256">P-256</option>
-                                                    <option value="P-384">P-384</option>
-                                                    <option value="P-521">P-521</option>
-                                                </>
-                                            )}
-                                        </select>
-                                        {keyAlgorithm === 'RSA' && (keySize === '7680' || keySize === '8192') && (
-                                            <p className="text-xs text-warn mt-1">
-                                                ⚠ High-compute RSA — key generation may take 30+ seconds.
-                                            </p>
+                            )}
+                            {keyOptions && offeredKeys.length === 0 && (
+                                <FieldHint tone="warn">
+                                    Signing profile <span className="font-semibold">{keyOptions.signingProfileName}</span> and certificate profile <span className="font-semibold">{keyOptions.certProfileName}</span> accept no key the CA can generate. Choose other profiles in step 1, or paste or upload a CSR made elsewhere.
+                                </FieldHint>
+                            )}
+                            {keyOptions && keyChoice && offeredKeys.length > 0 && (
+                                <>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div>
+                                            <label htmlFor="key-algorithm" className={labelClass}>Key Algorithm</label>
+                                            <select
+                                                id="key-algorithm"
+                                                value={keyChoice.algorithm}
+                                                onChange={(e) => setKeyChoice(chooseAlgorithm(offeredKeys, e.target.value))}
+                                                className={inputClass}
+                                            >
+                                                {offeredAlgorithms(offeredKeys).map(a => (
+                                                    <option key={a} value={a}>{a}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        {chosenKeySizes.length > 0 && (
+                                            <div>
+                                                <label htmlFor="key-size" className={labelClass}>{keyChoice.algorithm === 'ECDSA' ? 'Curve' : 'Key Size'}</label>
+                                                <select
+                                                    id="key-size"
+                                                    value={keyChoice.keySize ?? ''}
+                                                    onChange={(e) => setKeyChoice({ algorithm: keyChoice.algorithm, keySize: e.target.value })}
+                                                    className={inputClass}
+                                                >
+                                                    {chosenKeySizes.map(s => (
+                                                        <option key={s} value={s}>{sizeLabel(s)}</option>
+                                                    ))}
+                                                </select>
+                                                {keyChoice.algorithm === 'RSA' && (keyChoice.keySize === '7680' || keyChoice.keySize === '8192') && (
+                                                    <p className="text-xs text-warn mt-1">
+                                                        ⚠ High-compute RSA — key generation may take 30+ seconds.
+                                                    </p>
+                                                )}
+                                            </div>
                                         )}
                                     </div>
-                                )}
-                            </div>
-                            <p className="text-xs text-ink-muted">
-                                The server will generate a key pair and build a CSR automatically.
-                            </p>
+                                    <FieldHint>
+                                        Only the keys that signing profile <span className="font-semibold">{keyOptions.signingProfileName}</span> and certificate profile <span className="font-semibold">{keyOptions.certProfileName}</span> accept are offered.
+                                        {chosenKey && <> The CA generates the key and signs the request with <span className="data-mono">{chosenKey.signatureAlgorithm}</span>.</>}
+                                    </FieldHint>
+                                </>
+                            )}
+                            {keyOptions && keyOptions.refused.length > 0 && (
+                                <details className="text-xs text-ink-muted" open={offeredKeys.length === 0}>
+                                    <summary className="cursor-pointer">Keys not offered ({keyOptions.refused.length})</summary>
+                                    <ul className="mt-2 space-y-1">
+                                        {groupRefusals(keyOptions.refused).map(g => (
+                                            <li key={g.reason}><span className="text-ink">{g.keys.join(', ')}</span>: {g.reason}</li>
+                                        ))}
+                                    </ul>
+                                </details>
+                            )}
                             <FieldHint tone="warn">The CA holds the private key only until the certificate is issued and you download the .pfx; it is deleted on delivery.</FieldHint>
                         </div>
                     )}
@@ -977,52 +1179,20 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                 </div>
             </div>
 
-            {/* Step 2: Request Profile Selection */}
-            {(parsedCsr || tab === 'generate') && (
+            {/* Step 3: Editable Certificate Fields */}
+            {showFields && (
                 <div className={CARD}>
-                    <div className={`${CARD_HEAD} flex items-center justify-between`}>
-                        <h3 className={CARD_TITLE}>Step 2: Request Profile</h3>
+                    <div className={`${CARD_HEAD} flex items-start justify-between gap-3`}>
+                        <div>
+                            <h3 className={CARD_TITLE}>Step 3: Certificate Fields</h3>
+                            <p className="text-xs text-ink-muted mt-1">{parsedCsr ? 'Pre-filled from CSR. Edit as needed.' : 'The server builds the CSR from these fields.'}</p>
+                        </div>
                         {validating && <span className="text-xs text-ink-muted">Validating...</span>}
                         {validationResult && !validating && (
                             validationResult.valid
                                 ? <span className="text-xs text-ok">All checks passed</span>
                                 : <span className="text-xs text-crit">Validation errors found</span>
                         )}
-                    </div>
-                    <div className="p-4">
-                        <label className={labelClass}>Request Profile</label>
-                        <select
-                            value={selectedRequestProfile}
-                            onChange={(e) => setSelectedRequestProfile(e.target.value)}
-                            className={inputClass}
-                        >
-                            <option value="">-- Select a Request Profile --</option>
-                            {requestProfiles.map((p) => (
-                                <option key={p.id} value={p.id}>
-                                    {p.name}{p.description ? ` — ${p.description}` : ''}
-                                </option>
-                            ))}
-                        </select>
-                        {selectedProfileObj?.requireApproval && (
-                            <div className="mt-2 flex flex-wrap gap-2">
-                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-warn-soft text-warn border border-warn/40">
-                                    Requires Approval{selectedProfileObj.requiredApprovalCount ? ` (${selectedProfileObj.requiredApprovalCount})` : ''}
-                                </span>
-                            </div>
-                        )}
-                        {requestProfileLacksCertProfile && (
-                            <FieldHint tone="warn" className="mt-2">This request profile has no certificate profile assigned, so it cannot be used from here. Ask an administrator to set one.</FieldHint>
-                        )}
-                    </div>
-                </div>
-            )}
-
-            {/* Step 3: Editable Certificate Fields */}
-            {(parsedCsr || tab === 'generate') && selectedRequestProfile && (
-                <div className={CARD}>
-                    <div className={CARD_HEAD}>
-                        <h3 className={CARD_TITLE}>Step 3: Certificate Fields</h3>
-                        <p className="text-xs text-ink-muted mt-1">{parsedCsr ? 'Pre-filled from CSR. Edit as needed.' : 'The server builds the CSR from these fields.'}</p>
                     </div>
                     <div className="p-4 space-y-4">
                         {/* Subject DN Fields */}
@@ -1127,87 +1297,50 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                 </div>
             )}
 
-            {/* Step 4: Issuance Options Card */}
-            {selectedRequestProfile && (
+            {/* Validity window */}
+            {showValidityWindow && (
                 <div className={CARD}>
                     <div className={CARD_HEAD}>
-                        <h3 className={CARD_TITLE}>Step {stepNumber}: Issuance Options</h3>
+                        <h3 className={CARD_TITLE}>Step {showFields ? 4 : 3}: Validity</h3>
                     </div>
                     <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
-                            <label className={labelClass}>Signing Profile</label>
-                            <select
-                                value={selectedSigningProfile}
-                                onChange={(e) => setSelectedSigningProfile(e.target.value)}
+                            <label className={labelClass}>Not Before</label>
+                            <input
+                                type="datetime-local"
+                                value={notBefore}
+                                onChange={(e) => setNotBefore(e.target.value)}
                                 className={inputClass}
-                            >
-                                <option value="">-- Select Signing Profile --</option>
-                                {signingProfiles.map((p) => (
-                                    <option key={p.id || p.name} value={p.id}>
-                                        {p.name || p.id}{p.isDefault ? ' (default)' : ''}
-                                    </option>
-                                ))}
-                            </select>
-                            <FieldHint className="mt-1">Names the issuing CA.</FieldHint>
+                            />
                         </div>
-                        {showCertProfilePicker && (
-                            <div>
-                                <label className={labelClass}>Certificate Profile</label>
-                                <select
-                                    value={selectedCertProfile}
-                                    onChange={(e) => setSelectedCertProfile(e.target.value)}
-                                    className={inputClass}
-                                >
-                                    <option value="">-- Select Certificate Profile --</option>
-                                    {certProfiles.map((p) => (
-                                        <option key={p.id || p.name} value={p.id}>
-                                            {p.name || p.id}
-                                        </option>
-                                    ))}
-                                </select>
-                            </div>
-                        )}
-                        {showValidityWindow && (
-                            <>
-                                <div>
-                                    <label className={labelClass}>Not Before</label>
-                                    <input
-                                        type="datetime-local"
-                                        value={notBefore}
-                                        onChange={(e) => setNotBefore(e.target.value)}
-                                        className={inputClass}
-                                    />
-                                </div>
-                                <div>
-                                    <label className={labelClass}>Not After</label>
-                                    <input
-                                        type="datetime-local"
-                                        value={notAfter}
-                                        onChange={(e) => setNotAfter(e.target.value)}
-                                        // Bound to the effective ceiling so the picker cannot offer a date
-                                        // issuance would shorten. Browsers differ on whether they block an
-                                        // out-of-range value or merely flag it, so the explicit check below
-                                        // still runs — max is a convenience, not the enforcement.
-                                        max={ceilingNotice?.maxInputValue || undefined}
-                                        className={inputClass}
-                                    />
-                                    {ceilingNotice && (
-                                        <p className={`text-[11px] mt-1 ${ceilingNotice.tone === 'warn'
-                                            ? 'text-warn'
-                                            : 'text-ink-muted'}`}>
-                                            {ceilingNotice.text}
-                                        </p>
-                                    )}
-                                    {notAfterExceedsCeiling && ceiling && (
-                                        <p className="text-[11px] mt-1 text-crit">
-                                            {ceiling.spaceBehavior === 'Refuse' && ceiling.spaceCeilingApplies && ceiling.resolution.boundBy === 'Space'
-                                                ? 'This exceeds the ceiling above and will be refused.'
-                                                : 'This exceeds the ceiling above and will be shortened at issuance.'}
-                                        </p>
-                                    )}
-                                </div>
-                            </>
-                        )}
+                        <div>
+                            <label className={labelClass}>Not After</label>
+                            <input
+                                type="datetime-local"
+                                value={notAfter}
+                                onChange={(e) => { setNotAfter(e.target.value); setNotAfterEdited(true); }}
+                                // Bound to the effective ceiling so the picker cannot offer a date
+                                // issuance would shorten. Browsers differ on whether they block an
+                                // out-of-range value or merely flag it, so the explicit check below
+                                // still runs — max is a convenience, not the enforcement.
+                                max={ceilingNotice?.maxInputValue || undefined}
+                                className={inputClass}
+                            />
+                            {ceilingNotice && (
+                                <p className={`text-[11px] mt-1 ${ceilingNotice.tone === 'warn'
+                                    ? 'text-warn'
+                                    : 'text-ink-muted'}`}>
+                                    {ceilingNotice.text}
+                                </p>
+                            )}
+                            {notAfterExceedsCeiling && ceiling && (
+                                <p className="text-[11px] mt-1 text-crit">
+                                    {ceiling.spaceBehavior === 'Refuse' && ceiling.spaceCeilingApplies && ceiling.resolution.boundBy === 'Space'
+                                        ? 'This exceeds the ceiling above and will be refused.'
+                                        : 'This exceeds the ceiling above and will be shortened at issuance.'}
+                                </p>
+                            )}
+                        </div>
                     </div>
                 </div>
             )}
@@ -1225,7 +1358,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                     <span className="text-xs text-crit">Fix validation errors before submitting.</span>
                 )}
                 {!hasValidationErrors && selectedRequestProfile && missingProfiles.length > 0 && (
-                    <FieldHint tone="warn">Choose {missingProfiles.join(' and ')} under Issuance Options before submitting.</FieldHint>
+                    <FieldHint tone="warn">Choose {missingProfiles.join(' and ')} in step 1 before submitting.</FieldHint>
                 )}
                 {!hasValidationErrors && blockedUpnRows.length > 0 && (
                     <FieldHint tone="warn">Remove the UPN name, or paste or upload a CSR that carries it.</FieldHint>

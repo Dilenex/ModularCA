@@ -93,12 +93,15 @@ public class AdminCertSignRequestController(
         return Ok(requests);
     }
 
+    private const string RequestProfileRequired = "A request profile is required: name the one this request is made under as requestProfileId.";
+
     /// <summary>
     /// Generates a new certificate signing request from the provided parameters, with a key
     /// pair the server generates. The private key is held on the request until the certificate
     /// is issued and downloaded as PKCS#12 from <c>{id}/pkcs12</c>. Requires CaOperator
     /// (state-changing: persists a CsrSubmitted record) — overrides the read-only CaAuditor
-    /// class policy so an auditor cannot seed the issuance pipeline.
+    /// class policy so an auditor cannot seed the issuance pipeline. The request names its
+    /// request profile (400 without one) and is held to it (<see cref="RequestProfileEnforcement"/>).
     /// </summary>
     [HttpPost]
     [Authorize]
@@ -108,9 +111,14 @@ public class AdminCertSignRequestController(
         await _currentUser.EnsureLoadedAsync();
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
             return Unauthorized();
+        if (request.RequestProfileId is not Guid requestProfileId)
+            return BadRequest(new { error = RequestProfileRequired });
+        request.SubjectName = await new RequestProfileEnforcement(_db, profiles).SettleSubjectNameAsync(
+            requestProfileId, request.CertificateProfileId, request.SigningProfileId, selfService: false,
+            request.SubjectName, request.SubjectAlternativeNames);
         var generated = await _csrService.GenerateCsrAsync(request, _currentUser.User.Id);
         await _audit.LogAsync(AuditActionType.CsrSubmitted, _currentUser.User.Id, _currentUser.User.Username,
-            "CertificateRequest", generated.RequestId.ToString(), new { request.SubjectName },
+            "CertificateRequest", generated.RequestId.ToString(), new { request.SubjectName, RequestProfileId = requestProfileId },
             HttpContext.Connection.RemoteIpAddress?.ToString());
         return Ok(new { csrId = generated.RequestId, csr = generated.CsrPem, keyHeld = generated.KeyHeld });
     }
@@ -199,8 +207,9 @@ public class AdminCertSignRequestController(
         try { profile = await profiles.ResolveRequestProfileAsync(request.RequestProfileId); }
         catch (InvalidOperationException) { return NotFound(new { error = "Request profile not found." }); }
 
-        var dnRules = JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(profile.SubjectDnRules) ?? new();
-        var sanRules = JsonSerializer.Deserialize<SanRules>(profile.SanRules) ?? new();
+        // Read whatever the case of the stored keys: bootstrap writes camel case, the console Pascal case.
+        var dnRules = JsonSerializer.Deserialize<List<SubjectDnFieldRule>>(profile.SubjectDnRules, SafeJsonOptions.Stored) ?? new();
+        var sanRules = JsonSerializer.Deserialize<SanRules>(profile.SanRules, SafeJsonOptions.Stored) ?? new();
 
         var response = new ValidateAgainstProfileResponse { Valid = true };
 
@@ -454,21 +463,28 @@ public class AdminCertSignRequestController(
         await _currentUser.EnsureLoadedAsync();
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
             return Unauthorized();
+        if (request.RequestProfileId is not Guid requestProfileId)
+            return BadRequest(new { error = RequestProfileRequired });
+        var subjectOverrides = await new RequestProfileEnforcement(_db, profiles).SettleUploadAsync(
+            requestProfileId, request.CertificateProfileId, request.SigningProfileId, selfService: false,
+            request.Pem, request.SubjectOverrides, request.SanOverrides);
         var pem = await _csrService.UploadCsrAsync(
             request.Pem, request.CertificateProfileId, request.SigningProfileId,
-            _currentUser.User.Id, request.SubjectOverrides, request.SanOverrides,
-            request.NotBefore, request.NotAfter);
+            _currentUser.User.Id, subjectOverrides, request.SanOverrides,
+            request.NotBefore, request.NotAfter, requestProfileId);
         if (pem == null)
             return BadRequest(new { error = "Failed to upload CSR" });
         await _audit.LogAsync(AuditActionType.CsrSubmitted, _currentUser.User.Id, _currentUser.User.Username,
-            "CertificateRequest", null, new { Source = "Upload", HasOverrides = request.SubjectOverrides != null || request.SanOverrides != null },
+            "CertificateRequest", null, new { Source = "Upload", HasOverrides = request.SubjectOverrides != null || request.SanOverrides != null, RequestProfileId = requestProfileId },
             HttpContext.Connection.RemoteIpAddress?.ToString());
         return Ok();
     }
 
     /// <summary>
     /// Records an approval for a pending CSR. When the required approval count is met,
-    /// the CSR status transitions to "Approved" and is ready for issuance.
+    /// the CSR status transitions to "Approved" and is ready for issuance. A requester may approve
+    /// their own request only under <see cref="RequestApprovals.MaySelfApproveAsync"/>, and that
+    /// approval completes it whatever the count: it is audited and answered as <c>selfApproved</c>.
     /// </summary>
     [HttpPost("{id:guid}/approve")]
     [Authorize(Policy = "CaOperator")]
@@ -504,27 +520,18 @@ public class AdminCertSignRequestController(
         if (csr.Status != "Pending" && csr.Status != "PendingApproval" && csr.Status != "PartiallyApproved")
             return BadRequest(new { error = $"CSR is already {csr.Status}" });
 
+        // The request profile may have changed since the request was made, and the names an
+        // approver agrees to are the ones issuance will hold to it.
+        if (await new RequestProfileEnforcement(_db, profiles).WhyRefusedAsync(csr) is string refusedByProfile)
+            return Conflict(new { error = refusedByProfile + " Reject the request, or change the request profile and approve again.", code = ModularCA.Shared.Errors.ErrorCodes.RequestProfileRefused });
+
         // Prevent same user approving twice
         if (csr.Approvals.Any(a => a.ApproverId == _currentUser.User.Id && a.Decision == "Approved"))
             return BadRequest(new { error = "You have already approved this request" });
 
-        // Prevent approving own request. The system-super self-approval
-        // escape hatch is now gated by `SecurityPolicyEntity.AllowSystemSuperSelfApproval`
-        // (default false) so multi-admin deployments must explicitly opt in.
-        if (csr.RequestorUserId == _currentUser.User.Id)
-        {
-            var secPolicy = await _securityPolicy.GetAsync();
-            if (!secPolicy.AllowSystemSuperSelfApproval)
-                return BadRequest(new { error = "You cannot approve your own request" });
-
-            // Read the structural super-tier flag so a bootstrap rename of "system-super"
-            // doesn't silently bypass the self-approval check.
-            var isSuperAdmin = await _db.CaGroupMembers.AnyAsync(gm =>
-                gm.UserId == _currentUser.User.Id &&
-                gm.Group.IsSystemTierSuper);
-            if (!isSuperAdmin)
-                return BadRequest(new { error = "You cannot approve your own request" });
-        }
+        var selfApproved = RequestApprovals.IsSelfApproval(csr, _currentUser.User.Id);
+        if (selfApproved && !await RequestApprovals.MaySelfApproveAsync(_db, await _securityPolicy.GetAsync(), _currentUser.User.Id))
+            return BadRequest(new { error = "You cannot approve your own request" });
 
         // Record approval
         var approval = new CsrApprovalEntity
@@ -538,43 +545,27 @@ public class AdminCertSignRequestController(
         _db.CsrApprovals.Add(approval);
         csr.ApprovalCount++;
 
-        // Check if fully approved
-        var requiredCount = 1;
-        // Trace: CSR -> SigningProfile -> CaProtocolConfig -> RequestProfile -> RequiredApprovalCount
-        if (csr.SigningProfileId != null)
-        {
-            var protocolConfig = await _db.CaProtocolConfigs
-                .Include(pc => pc.RequestProfile)
-                .FirstOrDefaultAsync(pc => pc.SigningProfileId == csr.SigningProfileId && pc.RequestProfileId != null);
-            if (protocolConfig?.RequestProfile != null)
-                requiredCount = protocolConfig.RequestProfile.RequiredApprovalCount;
-        }
-
-        if (csr.ApprovalCount >= requiredCount)
-        {
-            csr.Status = "Approved";
-        }
-        else
-        {
-            csr.Status = "PartiallyApproved";
-        }
+        var requiredCount = await RequestApprovals.RequiredCountAsync(_db, profiles, csr);
+        csr.Status = selfApproved || csr.ApprovalCount >= requiredCount ? "Approved" : "PartiallyApproved";
 
         await _db.SaveChangesAsync();
 
-        // Audit
         var caInfoApprove = await ResolveCaFromSigningProfileAsync(csr.SigningProfileId);
         await _audit.LogAsync(AuditActionType.CsrApproved, _currentUser.User.Id, _currentUser.User.Username,
             "CertificateRequest", id.ToString(),
-            new { csr.ApprovalCount, RequiredCount = requiredCount, request.Comment },
+            new { csr.ApprovalCount, RequiredCount = requiredCount, SelfApproved = selfApproved, request.Comment },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: caInfoApprove?.CaId, spaceId: caInfoApprove?.SpaceId);
 
         return Ok(new
         {
-            message = csr.Status == "Approved" ? "CSR fully approved — ready for issuance" : $"Approval recorded ({csr.ApprovalCount}/{requiredCount})",
+            message = selfApproved ? "Self-approved — ready for issuance"
+                : csr.Status == "Approved" ? "CSR fully approved — ready for issuance"
+                : $"Approval recorded ({csr.ApprovalCount}/{requiredCount})",
             status = csr.Status,
             approvalCount = csr.ApprovalCount,
             requiredCount,
+            selfApproved,
         });
     }
 
@@ -609,6 +600,72 @@ public class AdminCertSignRequestController(
             .ToListAsync();
 
         return Ok(approvals);
+    }
+
+    /// <summary>
+    /// How the request's approval stands: the approvals it needs and has, how many other accounts
+    /// could still approve it, whether its requester's own approval would complete it, and whether
+    /// those together can complete it (<see cref="ApprovalOutlook"/>). CaAuditor, fenced to the
+    /// request's CA as <see cref="GetApprovals"/> is.
+    /// </summary>
+    [HttpGet("{id:guid}/approval-outlook")]
+    [Authorize(Policy = "CaAuditor")]
+    public async Task<IActionResult> GetApprovalOutlook(Guid id)
+    {
+        var csr = await _db.CertificateRequests.AsNoTracking().Include(c => c.Approvals).FirstOrDefaultAsync(c => c.Id == id);
+        if (csr == null)
+            return NotFound(new { error = "Certificate request not found" });
+        var fence = await EnforceSpaceFenceAsync(csr.SigningProfileId, Capabilities.CertView);
+        if (fence != null) return fence;
+
+        var approvedBy = csr.Approvals.Where(a => a.Decision == "Approved").Select(a => a.ApproverId).Distinct().ToList();
+        var outlook = await RequestApprovers.OutlookAsync(
+            _db, _authService, await _securityPolicy.GetAsync(), await RequestApprovals.RequiredCountAsync(_db, profiles, csr),
+            csr.SigningProfileId, csr.CertProfileId, csr.RequestorUserId, approvedBy);
+        return Ok(new
+        {
+            outlook.RequiredCount,
+            outlook.ApprovalCount,
+            outlook.OthersWhoCanApprove,
+            outlook.RequesterMaySelfApprove,
+            outlook.CanComplete,
+            selfApproved = csr.Approvals.Any(a => a.Decision == "Approved" && RequestApprovals.IsSelfApproval(csr, a.ApproverId)),
+        });
+    }
+
+    /// <summary>
+    /// How a request the caller is about to make would be approved: whether the request profile
+    /// requires approval, how many approvals it needs, how many other accounts could approve a
+    /// request on the signing profile's CA under these profiles, and whether the caller's own
+    /// approval would complete it. The request form shows it before the request is made, so a
+    /// request nobody could approve is known up front. Needs the capability submitting needs.
+    /// </summary>
+    /// <param name="requestProfileId">The request profile the request would be made under.</param>
+    /// <param name="signingProfileId">The signing profile it would name.</param>
+    /// <param name="certProfileId">The certificate profile it would name.</param>
+    [HttpGet("approval-outlook")]
+    [Authorize]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SigningProfile, "signingProfileId")]
+    public async Task<IActionResult> GetSubmissionApprovalOutlook([FromQuery] Guid requestProfileId, [FromQuery] Guid signingProfileId, [FromQuery] Guid? certProfileId = null)
+    {
+        await _currentUser.EnsureLoadedAsync();
+        if (!_currentUser.IsAuthenticated || _currentUser.User == null)
+            return Unauthorized();
+        var draft = new CertRequestEntity { RequestProfileId = requestProfileId, SigningProfileId = signingProfileId, CertProfileId = certProfileId };
+        var requiresApproval = await new RequestProfileEnforcement(_db, profiles).InitialStatusAsync(requestProfileId) != "Pending";
+        if (!requiresApproval)
+            return Ok(new { requiresApproval, requiredCount = 0, othersWhoCanApprove = 0, requesterMaySelfApprove = false, canComplete = true });
+        var outlook = await RequestApprovers.OutlookAsync(
+            _db, _authService, await _securityPolicy.GetAsync(), await RequestApprovals.RequiredCountAsync(_db, profiles, draft),
+            signingProfileId, certProfileId, _currentUser.User.Id, []);
+        return Ok(new
+        {
+            requiresApproval,
+            outlook.RequiredCount,
+            outlook.OthersWhoCanApprove,
+            outlook.RequesterMaySelfApprove,
+            outlook.CanComplete,
+        });
     }
 
     /// <summary>

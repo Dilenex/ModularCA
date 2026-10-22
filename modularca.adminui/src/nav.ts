@@ -1,4 +1,4 @@
-import { SYSTEM_ADMIN, SYSTEM_OPERATOR, CA_MANAGE, CA_MANAGE_SPACE, CA_AUDIT, CERT_VIEW, CERT_REQUEST, GROUP_MANAGE, USER_MANAGE, TOKEN_MANAGE, type Gate } from './gates';
+import { SYSTEM_ADMIN, SYSTEM_OPERATOR, CA_MANAGE, CA_MANAGE_SPACE, CA_AUDIT, CERT_VIEW, AUTHORITIES, CERTIFICATES, CERTIFICATE_REQUEST, GROUP_MANAGE, USER_MANAGE, TOKEN_MANAGE, type Gate } from './gates';
 import { PORTAL } from './portal';
 
 /**
@@ -37,8 +37,9 @@ export const adminNavSections: NavSection[] = [
     {
         title: 'Certificates',
         items: [
-            { name: 'All Certificates', path: '/certificates', icon: '⎇', gate: CERT_VIEW, keywords: ['certs', 'revoke', 'search'] },
-            { name: 'Request Certificate', path: '/certificates/request', icon: '+', gate: CERT_REQUEST, keywords: ['issue', 'csr', 'new certificate'] },
+            // These two and Authorities carry an SSH tab beside X.509, so their gates also admit who can use that tab.
+            { name: 'All Certificates', path: '/certificates', icon: '⎇', gate: CERTIFICATES, keywords: ['certs', 'revoke', 'search', 'ssh certificates'] },
+            { name: 'Request Certificate', path: '/certificates/request', icon: '+', gate: CERTIFICATE_REQUEST, keywords: ['issue', 'csr', 'new certificate', 'ssh', 'sign key'] },
             { name: 'Pending Requests', path: '/certificates/requests', icon: '✉', gate: CERT_VIEW, keywords: ['csr', 'approve', 'approval'] },
             { name: 'Cert Inventory', path: '/intel/inventory', icon: '⚐', gate: CERT_VIEW, keywords: ['health summary'] },
             { name: 'Compliance', path: '/intel/compliance', icon: '☑', gate: CA_MANAGE, keywords: ['findings', 'vulnerabilities'] },
@@ -48,14 +49,13 @@ export const adminNavSections: NavSection[] = [
     {
         title: 'CA Management',
         items: [
-            { name: 'Authorities', path: '/authorities/manage', icon: '⚿', gate: CA_MANAGE_SPACE, keywords: ['ca', 'certificate authority', 'root', 'intermediate'] },
+            { name: 'Authorities', path: '/authorities/manage', icon: '⚿', gate: AUTHORITIES, keywords: ['ca', 'certificate authority', 'root', 'intermediate', 'ssh ca', 'ssh keys'] },
             { name: 'Profiles', path: '/profiles', icon: '☰', gate: CA_MANAGE, keywords: ['signing profile', 'cert profile', 'request profile'] },
             // Templates are consumed by Windows autoenrollment (MSAE): the policy service offers
             // them to clients and the enrollment service issues from the one a CSR names.
             { name: 'Templates', path: '/templates', icon: '✂', gate: CA_MANAGE, keywords: ['msae', 'autoenrollment', 'windows'] },
             { name: 'CA Distribution', path: '/distribution', icon: '✖', gate: CA_MANAGE, keywords: ['crl', 'ldap', 'service urls', 'aia', 'ocsp'] },
             { name: 'Trust Anchors', path: '/trust-anchors', icon: '⚓', gate: SYSTEM_ADMIN, keywords: ['trust store', 'external ca'] },
-            { name: 'SSH CA', path: '/ssh', icon: '⌘', gate: CERT_VIEW, keywords: ['ssh certificates', 'ssh keys'] },
             { name: 'Protocol Config', path: '/authorities/protocols', icon: '⇄', gate: CA_MANAGE, keywords: ['acme', 'est', 'scep', 'cmp', 'msae', 'protocols'] },
             { name: 'Windows Autoenrollment', path: '/authorities/windows', icon: '⊞', gate: CA_MANAGE, keywords: ['msae', 'autoenrollment', 'kerberos', 'group policy', 'readiness', 'active directory'] },
         ]
@@ -102,15 +102,9 @@ export const userNavSections: NavSection[] = [
     {
         title: 'Certificates',
         items: [
-            { name: 'Request Certificate', path: '/request', icon: '+', keywords: ['csr', 'new certificate'] },
-            { name: 'My Certificates', path: '/certificates', icon: '⎇', keywords: ['certs', 'download', 'renew'] },
+            { name: 'Request Certificate', path: '/request', icon: '+', keywords: ['csr', 'new certificate', 'ssh'] },
+            { name: 'My Certificates', path: '/certificates', icon: '⎇', keywords: ['certs', 'download', 'renew', 'ssh certificates'] },
             { name: 'Request Status', path: '/requests', icon: '✉', keywords: ['pending', 'approval'] },
-        ]
-    },
-    {
-        title: 'SSH',
-        items: [
-            { name: 'SSH Certificates', path: '/ssh', icon: '⌘' },
         ]
     },
     {

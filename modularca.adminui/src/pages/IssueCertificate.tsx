@@ -1,5 +1,11 @@
 import React from 'react';
 import { CertificateRequestForm, type CertificateRequestEndpoints } from '../components/CertificateRequestForm';
+import { KindTabStrip, useKindTabs } from '../components/KindTabs';
+import { useScope } from '../context/ScopeContext';
+import { useAuth } from '../context/AuthContext';
+import { canUseSshTab } from '../authz';
+import { CERT_REQUEST } from '../gates';
+import { SshSignTab } from './SshCertificates';
 
 /**
  * The admin Issue Certificate page: the shared request form against the admin API.
@@ -20,13 +26,35 @@ const ADMIN_ENDPOINTS: CertificateRequestEndpoints = {
     validityCeiling: (signingProfileId, certProfileId) =>
         `/api/v1/admin/certificates/validity-ceiling?signingProfileId=${encodeURIComponent(signingProfileId)}`
         + `&certProfileId=${encodeURIComponent(certProfileId)}`,
+    keyOptions: (signingProfileId, certProfileId) =>
+        `/api/v1/admin/certificates/key-options?signingProfileId=${encodeURIComponent(signingProfileId)}`
+        + `&certProfileId=${encodeURIComponent(certProfileId)}`,
     // The admin list returns raw rows for the profile editor's sake; validation needs the
     // effective profile after inheritance, which is what issuance applies.
     resolvedRequestProfile: (id) => `/api/v1/admin/request-profiles/${encodeURIComponent(id)}/resolved`,
+    approvalOutlook: (requestProfileId, signingProfileId, certProfileId) =>
+        `/api/v1/admin/requests/approval-outlook?requestProfileId=${encodeURIComponent(requestProfileId)}`
+        + `&signingProfileId=${encodeURIComponent(signingProfileId)}`
+        + (certProfileId ? `&certProfileId=${encodeURIComponent(certProfileId)}` : ''),
 };
 
-const IssueCertificate: React.FC = () => (
-    <CertificateRequestForm mode="admin" endpoints={ADMIN_ENDPOINTS} requestsPath="/certificates/requests" />
-);
+/**
+ * The Request Certificate page: the X.509 request form, and on its SSH tab the Sign key form.
+ * Each tab is shown only to who can use it: the X.509 tab to who may request a certificate in
+ * the scope, the SSH tab to who may sign on an SSH CA.
+ */
+const IssueCertificate: React.FC = () => {
+    const { scope, allows } = useScope();
+    const { capabilities } = useAuth();
+    const { tabs, active, setActive } = useKindTabs({ x509: allows(CERT_REQUEST), ssh: canUseSshTab(capabilities, 'sign') });
+    return (
+        <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
+            <h1 className="text-xl font-semibold text-ink">Request Certificate</h1>
+            <KindTabStrip tabs={tabs} active={active} onChange={setActive} />
+            {active === 'X.509' && <CertificateRequestForm mode="admin" endpoints={ADMIN_ENDPOINTS} requestsPath="/certificates/requests" embedded />}
+            {active === 'SSH' && <SshSignTab scope={scope} />}
+        </div>
+    );
+};
 
 export default IssueCertificate;

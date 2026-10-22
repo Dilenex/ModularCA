@@ -729,7 +729,8 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
     /// A Web TLS SAN other than DNS or IP is refused with 400 before any setup work
     /// (<c>BootstrapCertCreator.EnsureWebTlsSansSupported</c>), as is a request that does not
     /// answer <c>admin.multipleAdministrators</c>: false starts key ceremonies off for the
-    /// instance and the first space, true starts them on.
+    /// instance and the first space and allows self-approval, true starts ceremonies on and
+    /// self-approval off.
     /// </summary>
     [HttpPost("initialize")]
     public IActionResult Initialize([FromBody] SetupRequest request)

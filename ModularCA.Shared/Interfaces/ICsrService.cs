@@ -66,11 +66,12 @@ namespace ModularCA.Shared.Interfaces
         /// <summary>
         /// Uploads an externally generated PEM-encoded CSR with optional subject and SAN
         /// overrides, and an optional requested validity window that issuance falls back to
-        /// when the issuer does not specify one.
+        /// when the issuer does not specify one. <paramref name="requestProfileId"/> is recorded
+        /// on the request as the request profile it was made under; the caller has checked it.
         /// </summary>
         Task<string> UploadCsrAsync(string pem, Guid certProfileId, Guid signingProfileId, Guid userId,
             Dictionary<string, string>? subjectOverrides, List<SanOverride>? sanOverrides,
-            DateTime? requestedNotBefore = null, DateTime? requestedNotAfter = null);
+            DateTime? requestedNotBefore = null, DateTime? requestedNotAfter = null, Guid? requestProfileId = null);
     }
 
 }

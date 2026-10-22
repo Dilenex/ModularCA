@@ -20,6 +20,9 @@ import { useEkuCatalog } from '../hooks/useOidCatalog';
 import { NewProfileButton } from './profiles/NewProfileButton';
 import { PROFILE_TABS as TABS, type ProfileTab as Tab } from './profiles/profileRoutes';
 import { periodRangeText, periodText } from '@shared/periodText';
+import { profileTypeLabel } from './sshProfileType';
+import { certProfileInUse, certProfileUseText } from './infrastructureProfiles';
+import { CaScopeName } from '../components/CaScopeName';
 
 /* ─── Certificate Profiles Tab ─── */
 const CertProfilesTab: React.FC = () => {
@@ -79,6 +82,7 @@ const CertProfilesTab: React.FC = () => {
                     {p.inheritanceEnabled && p.inheritsFromId && (
                         <span className="px-2 py-0.5 text-[10px] rounded bg-accent-soft text-accent-ink border border-accent/40 shrink-0">Inherits: {resolveParentName(p.inheritsFromId)}</span>
                     )}
+                    {certProfileInUse(p) && <span title={certProfileUseText(p)} className="shrink-0"><Tag label="In use" /></span>}
                 </span>
             ),
         },
@@ -88,7 +92,7 @@ const CertProfilesTab: React.FC = () => {
     ];
 
     const bulkActions: DataTableBulkAction<any>[] = [
-        { label: 'Delete', single: true, variant: 'danger', onClick: (rows) => setConfirmDelete(rows[0]), enabledFor: (p) => mayChangeProfile(isInstanceWideCertProfile(p), systemCertRevoke) },
+        { label: 'Delete', single: true, variant: 'danger', onClick: (rows) => setConfirmDelete(rows[0]), enabledFor: (p) => !certProfileInUse(p) && mayChangeProfile(isInstanceWideCertProfile(p), systemCertRevoke) },
     ];
 
     const drawer = (p: any) => (
@@ -101,7 +105,7 @@ const CertProfilesTab: React.FC = () => {
             <DetailField label="Validity Max" value={periodText(p.validityPeriodMax)} />
             <DetailField label="CT Enabled" value={p.ctEnabled ? 'Yes' : 'No'} />
             {p.inheritanceEnabled && <DetailField label="Inherits From" value={resolveParentName(p.inheritsFromId) || 'None'} />}
-            <DetailField label="CA Scope" value={p.certificateAuthorityId ? String(p.certificateAuthorityId) : 'System-wide'} />
+            <DetailField label="CA Scope" value={<CaScopeName caId={p.certificateAuthorityId} fallback="System-wide" />} />
             <p className="text-[11px] text-ink-muted pt-3">Open the full page to view all rules or edit.</p>
         </div>
     );
@@ -422,7 +426,8 @@ const SshCertProfilesTab: React.FC = () => {
 
     const columns: DataTableColumn<any>[] = [
         { key: 'name', header: 'Name', defaultWidth: 240, minWidth: 160, truncate: false, exportValue: (p) => p.name, render: (p) => <span className="text-ink font-medium truncate">{p.name}</span> },
-        { key: 'maxPrincipals', header: 'Max Principals', defaultWidth: 130, exportValue: (p) => (p.maxPrincipals ?? ''), render: (p) => <span className="text-xs text-ink-muted">{p.maxPrincipals}</span> },
+        { key: 'certificateType', header: 'Type', defaultWidth: 100, truncate: false, headerTitle: 'The certificate type the profile is for: user, host, or either.', exportValue: (p) => profileTypeLabel(p.certificateType), render: (p) => <Tag label={profileTypeLabel(p.certificateType)} /> },
+        { key: 'maxPrincipals', header: 'Most login names', defaultWidth: 150, exportValue: (p) => (p.maxPrincipals ?? ''), render: (p) => <span className="text-xs text-ink-muted">{p.maxPrincipals}</span> },
         { key: 'validity', header: 'Max Validity', defaultWidth: 120, exportValue: (p) => `${p.maxValidityHours}h`, render: (p) => <span className="text-xs text-ink-muted">{p.maxValidityHours}h</span> },
     ];
 
@@ -434,11 +439,12 @@ const SshCertProfilesTab: React.FC = () => {
         <div className="text-sm">
             <DetailField label="Name" value={p.name} />
             <DetailField label="Description" value={p.description} />
-            <DetailField label="Max Principals" value={String(p.maxPrincipals)} />
+            <DetailField label="Certificate type" value={profileTypeLabel(p.certificateType)} />
+            <DetailField label="Most login names" value={String(p.maxPrincipals)} />
             <DetailField label="Max Validity Hours" value={String(p.maxValidityHours)} />
             <div className="py-1"><span className="text-xs text-ink-muted">Allowed Extensions</span><CeilingList items={p.allowedExtensions} noun="extension" /></div>
             <div className="py-1"><span className="text-xs text-ink-muted">Required Extensions</span><BadgeList items={p.requiredExtensions} /></div>
-            <p className="text-[11px] text-ink-muted pt-3">Open the full page to view principal patterns or edit.</p>
+            <p className="text-[11px] text-ink-muted pt-3">Open the full page to view the login name patterns or edit.</p>
         </div>
     );
 
@@ -534,6 +540,7 @@ const SshRequestProfilesTab: React.FC = () => {
 
     const columns: DataTableColumn<any>[] = [
         { key: 'name', header: 'Name', defaultWidth: 220, minWidth: 150, truncate: false, exportValue: (p) => p.name, render: (p) => <span className="text-ink font-medium truncate">{p.name}</span> },
+        { key: 'certificateType', header: 'Type', defaultWidth: 100, truncate: false, headerTitle: 'The certificate type the profile is for: user, host, or either.', exportValue: (p) => profileTypeLabel(p.certificateType), render: (p) => <Tag label={profileTypeLabel(p.certificateType)} /> },
         { key: 'approval', header: 'Approval', defaultWidth: 110, truncate: false, exportValue: (p) => (p.requireApproval ? 'Required' : 'Auto'), render: (p) => <Tag label={p.requireApproval ? 'Required' : 'Auto'} /> },
         { key: 'caScope', header: 'CA Scope', defaultWidth: 170, exportValue: (p) => (p.certificateAuthorityId ? caName(p.certificateAuthorityId) : 'Any CA'), render: (p) => <span className="text-xs text-ink-muted truncate">{p.certificateAuthorityId ? caName(p.certificateAuthorityId) : 'Any CA'}</span> },
         { key: 'validity', header: 'Max Validity', defaultWidth: 120, exportValue: (p) => `${p.maxValidityHours}h`, render: (p) => <span className="text-xs text-ink-muted">{p.maxValidityHours}h</span> },
@@ -553,6 +560,7 @@ const SshRequestProfilesTab: React.FC = () => {
                 <DetailField label="Name" value={p.name} />
                 <DetailField label="Description" value={p.description} />
                 <DetailField label="CA Scope" value={p.certificateAuthorityId ? caName(p.certificateAuthorityId) : 'Any CA'} />
+                <DetailField label="Certificate type" value={profileTypeLabel(p.certificateType)} />
                 <DetailField label="Require Approval" value={p.requireApproval ? 'Yes' : 'No'} />
                 <DetailField label="Max Validity Hours" value={String(p.maxValidityHours)} />
                 <DetailField label="Allowed Signing Profiles" value={sps.length ? sps.join(', ') : 'Any'} />

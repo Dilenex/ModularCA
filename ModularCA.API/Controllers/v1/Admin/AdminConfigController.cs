@@ -20,7 +20,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
 /// Admin endpoints for viewing and modifying runtime configuration.
 /// Changes are applied to the in-memory config and persisted to config.yaml.
-/// Some changes (logging, HTTPS, scheduler) require a restart to take full effect.
+/// Some changes (log storage, listener ports, HTTPS) require a restart to take full effect.
 /// Every endpoint needs a system administrator, and every write a step-up token
 /// (<see cref="StepUpOps.UpdateConfig"/>): the sections govern authentication, token binding,
 /// network trust, audit, alerting and integration keys, which a system operator must not be able
@@ -76,7 +76,6 @@ public class AdminConfigController(
             Tokens = _config.Tokens,
             Security = _config.Security,
             Metrics = _config.Metrics,
-            SshCa = _config.SshCa,
             LdapAuth = new
             {
                 _config.LdapAuth.Enabled,
@@ -202,7 +201,7 @@ public class AdminConfigController(
             };
         }
 
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("Logging", update);
         var restartNote = update.FilePath != null || update.RetentionDays != null
                        || update.MaxFileSizeMb != null || update.ConsoleFormat != null
@@ -213,7 +212,8 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the HTTP configuration (port, CORS, Swagger, trusted proxies).
-    /// Requires a restart to take full effect. CORS origins are checked here with the startup rules
+    /// CORS and the public port apply at once; the port, Swagger and the trusted proxies at the
+    /// next start. CORS origins are checked here with the startup rules
     /// plus a bare-origin check (<see cref="ConfigInputRules.CorsOriginsError"/>), because an origin
     /// startup rejects would otherwise be saved and stop the next start.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
@@ -236,9 +236,9 @@ public class AdminConfigController(
         if (update.PublicPort.HasValue) _config.Http.PublicPort = update.PublicPort;
         _config.Http.EnableCors = update.EnableCors;
         if (!string.IsNullOrEmpty(update.TrustedProxyCidrs)) _config.Http.TrustedProxyCidrs = update.TrustedProxyCidrs;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("Http", new { update.Port, update.PublicPort, update.CorsOrigins, update.SwaggerEnabled, update.EnableCors, update.TrustedProxyCidrs });
-        return Ok(new { message = "HTTP config updated (restart required)", config = _config.Http });
+        return Ok(new { message = "HTTP config updated. CORS applies now; port, Swagger and trusted proxy changes require restart.", config = _config.Http });
     }
 
     // PUT /config/rate-limiting removed — rate-limit policy now lives in the DB-backed
@@ -259,7 +259,7 @@ public class AdminConfigController(
         if (!string.IsNullOrWhiteSpace(update.MissedRunPolicy)) _config.Scheduler.MissedRunPolicy = update.MissedRunPolicy;
         if (update.DefaultJobTimeoutSeconds > 0) _config.Scheduler.DefaultJobTimeoutSeconds = update.DefaultJobTimeoutSeconds;
         if (update.ConsecutiveFailureAlertThreshold > 0) _config.Scheduler.ConsecutiveFailureAlertThreshold = update.ConsecutiveFailureAlertThreshold;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         // Explicit safe projection for audit details.
         await AuditConfigChange("Scheduler", new
         {
@@ -268,7 +268,7 @@ public class AdminConfigController(
             update.DefaultJobTimeoutSeconds,
             update.ConsecutiveFailureAlertThreshold
         });
-        return Ok(new { message = "Scheduler config updated (restart required for some changes)", config = _config.Scheduler });
+        return Ok(new { message = "Scheduler config updated", config = _config.Scheduler });
     }
 
     /// <summary>
@@ -285,7 +285,7 @@ public class AdminConfigController(
             return BadRequest(new { error = $"RefreshTokenDays must be between 1 and {TokenConfig.MaxRefreshTokenDays}." });
 
         if (update.RefreshTokenDays > 0) _config.Tokens.RefreshTokenDays = update.RefreshTokenDays;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         // Explicit safe projection.
         await AuditConfigChange("Tokens", new { update.RefreshTokenDays });
         return Ok(new { message = "Token config updated", config = _config.Tokens });
@@ -318,7 +318,7 @@ public class AdminConfigController(
         if (update.PerUsernameLoginFailureWindowMinutes is { } failureWindow) _config.Security.PerUsernameLoginFailureWindowMinutes = failureWindow;
         if (update.BehindReverseProxy is { } behindProxy) _config.Security.BehindReverseProxy = behindProxy;
 
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
 
         await AuditConfigChange("Security", new
         {
@@ -397,7 +397,7 @@ public class AdminConfigController(
         if (update.GroupToRoleMappings != null) _config.LdapAuth.GroupToRoleMappings = update.GroupToRoleMappings;
         if (await RequireSuperAsync(controlledUsers, LdapIdentitySuperOnly) is null)
             _config.LdapAuth.GroupToRoleMappings = await ldapSync.RewriteRenamedSpaceGroupsAsync(_config.LdapAuth.GroupToRoleMappings);
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("LdapAuth", new { update.Enabled, update.Host, update.Port });
         return Ok(new { message = "LDAP auth config updated", enabled = _config.LdapAuth.Enabled });
     }
@@ -443,7 +443,7 @@ public class AdminConfigController(
         if (!string.IsNullOrEmpty(update.FromAddress)) _config.Email.FromAddress = update.FromAddress;
         if (update.FromName != null) _config.Email.FromName = update.FromName;
         if (update.AdminRecipients != null) _config.Email.AdminRecipients = update.AdminRecipients;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("Email", new { update.Enabled, update.SmtpHost, update.SmtpPort, update.AuthMethod });
         return Ok(new { message = "Email config updated", enabled = _config.Email.Enabled });
     }
@@ -459,28 +459,10 @@ public class AdminConfigController(
         // toggle). This endpoint only updates the sink-specific config — currently
         // just the scrape path.
         if (!string.IsNullOrEmpty(update.Path)) _config.Metrics.Path = update.Path;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         // Explicit safe projection.
         await AuditConfigChange("Metrics", new { update.Path });
         return Ok(new { message = "Metrics config updated", config = _config.Metrics });
-    }
-
-    /// <summary>
-    /// Updates the SSH CA tool and key storage paths. Requires step-up MFA
-    /// (<see cref="StepUpOps.UpdateConfig"/>).
-    /// </summary>
-    [HttpPut("ssh-ca")]
-    [RequireStepUp(StepUpOps.UpdateConfig)]
-    public async Task<IActionResult> UpdateSshCa([FromBody] SshCaConfig update)
-    {
-        if (!string.IsNullOrEmpty(update.SshKeygenPath)) _config.SshCa.SshKeygenPath = update.SshKeygenPath;
-        if (!string.IsNullOrEmpty(update.KeyStoragePath)) _config.SshCa.KeyStoragePath = update.KeyStoragePath;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
-        // Explicit safe projection. SshKeygenPath / KeyStoragePath are
-        // filesystem locations; any signing-key fields added later would land in the
-        // scrubber but are omitted here at the call site too.
-        await AuditConfigChange("SshCa", new { update.SshKeygenPath, update.KeyStoragePath });
-        return Ok(new { message = "SSH CA config updated", config = _config.SshCa });
     }
 
     /// <summary>
@@ -506,7 +488,7 @@ public class AdminConfigController(
         if (!string.IsNullOrEmpty(update.Mode)) _config.Https.Mode = update.Mode;
         if (update.Port > 0) _config.Https.Port = update.Port;
         if (!string.IsNullOrEmpty(update.RenewalWindow)) _config.Https.RenewalWindow = update.RenewalWindow;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("Https", new { update.PublicDomain, update.PublicPort, update.Port });
         return Ok(new { message = "HTTPS config updated", config = _config.Https });
     }
@@ -527,10 +509,10 @@ public class AdminConfigController(
         // CIDR ranges live in the centralized Whitelists DB table; this endpoint only
         // toggles the on/off switch and the exempt-paths list.
         if (update.ExemptPaths != null) _config.IpWhitelist.ExemptPaths = update.ExemptPaths;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("IpWhitelist", new { update.Enabled });
         _ = _alertService.RaiseAlertAsync("IpWhitelistChanged", AlertSeverity.Warning, $"IP whitelist configuration updated by {_currentUser.User?.Username}", new { update.Enabled });
-        return Ok(new { message = "IP whitelist config updated (restart required for full effect)", config = _config.IpWhitelist });
+        return Ok(new { message = "IP whitelist config updated", config = _config.IpWhitelist });
     }
 
     /// <summary>
@@ -545,7 +527,7 @@ public class AdminConfigController(
         if (_currentUser.User == null)
             return Unauthorized();
 
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await _audit.LogAsync(AuditActionType.ApplicationRestarted, _currentUser.User?.Id, _currentUser.User?.Username,
             "Application", null, sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());
         _ = Task.Run(async () =>
@@ -574,7 +556,7 @@ public class AdminConfigController(
         _config.Backup.VerifyOnSchedule = update.VerifyOnSchedule;
         if (update.VerifyCount > 0) _config.Backup.VerifyCount = update.VerifyCount;
         if (update.MinimumRetentionDays > 0) _config.Backup.MinimumRetentionDays = update.MinimumRetentionDays;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("Backup", new { update.Schedule, update.OutputPath, update.RetentionCount, update.MaxBackupAgeDays });
         return Ok(new { message = "Backup config updated", config = _config.Backup });
     }
@@ -603,7 +585,7 @@ public class AdminConfigController(
         _config.CertPolicy.RequireSans = update.RequireSans;
         if (update.ForbiddenAlgorithms != null) _config.CertPolicy.ForbiddenAlgorithms = update.ForbiddenAlgorithms;
         if (update.AlgorithmSunsetRules != null) _config.CertPolicy.AlgorithmSunsetRules = update.AlgorithmSunsetRules;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("CertPolicy", new { update.Enabled, update.MinRsaKeySize, update.RequireSans });
         return Ok(new { message = "Certificate policy updated", config = _config.CertPolicy });
     }
@@ -625,11 +607,11 @@ public class AdminConfigController(
     /// </para>
     /// <para>
     /// <c>RequiredPaths</c> and <c>TrustedCaCertPaths</c> left out of the body (or null) keep their
-    /// current value; an empty list clears them. Clearing <c>RequiredPaths</c> means
-    /// <c>MtlsMiddleware</c> demands a client certificate on no path after the next restart: mTLS
-    /// login on the auth subdomain is unaffected, but no API path is gated on a client certificate
-    /// any more. The audit record carries both lists before and after, and a cleared list raises a
-    /// security alert.
+    /// current value; an empty list clears them. <c>MtlsMiddleware</c> reads <c>RequiredPaths</c>
+    /// on every request, so clearing it means no path demands a client certificate from the next
+    /// request on: mTLS login on the auth subdomain is unaffected, but no API path is gated on a
+    /// client certificate any more. The audit record carries both lists before and after, and a
+    /// cleared list raises a security alert.
     /// </para>
     /// </summary>
     [HttpPut("mtls")]
@@ -686,7 +668,7 @@ public class AdminConfigController(
         if (update.TrustedCaCertPaths != null) _config.Mtls.TrustedCaCertPaths = update.TrustedCaCertPaths;
         var requiredCleared = previousRequired.Count > 0 && _config.Mtls.RequiredPaths.Count == 0;
         var trustedCleared = previousTrusted.Count > 0 && _config.Mtls.TrustedCaCertPaths.Count == 0;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("Mtls", new
         {
             update.Enabled,
@@ -699,7 +681,7 @@ public class AdminConfigController(
         if (requiredCleared || trustedCleared)
             _ = _alertService.RaiseAlertAsync("MtlsConfigCleared", AlertSeverity.Warning,
                 requiredCleared
-                    ? $"mTLS Required Paths cleared by {_currentUser.User.Username}: after restart no path requires a client certificate."
+                    ? $"mTLS Required Paths cleared by {_currentUser.User.Username}: no path requires a client certificate any more."
                     : $"mTLS Trusted CA Cert Paths cleared by {_currentUser.User.Username}: anchors now come only from enrolled mTLS signing CAs.",
                 new { RequiredPathsCleared = requiredCleared, TrustedCaCertPathsCleared = trustedCleared, PreviousRequiredPaths = previousRequired, PreviousTrustedCaCertPaths = previousTrusted });
         return Ok(new { message = "mTLS config updated", config = _config.Mtls });
@@ -718,7 +700,7 @@ public class AdminConfigController(
         _config.AutoRenewal.AutoApprove = request.AutoApprove;
         if (!string.IsNullOrEmpty(request.Schedule)) _config.AutoRenewal.Schedule = request.Schedule;
         _config.AutoRenewal.RequireKeyRotation = request.RequireKeyRotation;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("AutoRenewal", new { request.Enabled, request.RenewDaysBeforeExpiry, request.AutoApprove, request.Schedule, request.RequireKeyRotation });
         return Ok(new { message = "Auto-renewal config updated", config = _config.AutoRenewal });
     }
@@ -737,7 +719,7 @@ public class AdminConfigController(
         if (!string.IsNullOrEmpty(request.Schedule)) _config.ComplianceScan.Schedule = request.Schedule;
         if (request.DeprecatedAlgorithms != null) _config.ComplianceScan.DeprecatedAlgorithms = request.DeprecatedAlgorithms;
         if (request.ExpiringWithinDays > 0) _config.ComplianceScan.ExpiringWithinDays = request.ExpiringWithinDays;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("ComplianceScan", new { request.Enabled, request.MinRsaKeySize, request.WarnOverValidityDays, request.Schedule, request.ExpiringWithinDays });
         return Ok(new { message = "Compliance scan config updated", config = _config.ComplianceScan });
     }
@@ -757,7 +739,7 @@ public class AdminConfigController(
         _config.CertExpiryNotification.Enabled = request.Enabled;
         if (request.WarningDays != null) _config.CertExpiryNotification.WarningDaysBeforeExpiry = request.WarningDays;
         if (!string.IsNullOrEmpty(request.Schedule)) _config.CertExpiryNotification.Schedule = request.Schedule;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("CertExpiryNotification", new { request.Enabled, request.WarningDays, request.Schedule });
         return Ok(new { message = "Cert expiry notification config updated", config = _config.CertExpiryNotification });
     }
@@ -784,7 +766,7 @@ public class AdminConfigController(
         _config.Acme.ExternalAccountRequired = request.ExternalAccountRequired;
         _config.Acme.EnforceCaa = request.EnforceCaa;
         _config.Acme.TermsOfServiceUrl = termsUrl;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("Acme", new { request.ExternalAccountRequired, request.EnforceCaa, TermsOfServiceUrl = termsUrl });
         return Ok(new { message = "ACME policies updated", config = _config.Acme });
     }
@@ -800,7 +782,7 @@ public class AdminConfigController(
         _config.Alert.Enabled = request.Enabled;
         if (!string.IsNullOrEmpty(request.MinimumSeverity)) _config.Alert.MinimumSeverity = request.MinimumSeverity;
         if (request.CooldownMinutes > 0) _config.Alert.CooldownMinutes = request.CooldownMinutes;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("Alert", new { request.Enabled, request.MinimumSeverity, request.CooldownMinutes });
         return Ok(new { message = "Alert config updated", config = _config.Alert });
     }
@@ -816,7 +798,7 @@ public class AdminConfigController(
         _config.Webhook.Enabled = request.Enabled;
         if (request.MaxRetries > 0) _config.Webhook.MaxRetries = request.MaxRetries;
         if (request.RetryDelaySeconds > 0) _config.Webhook.RetryDelaySeconds = request.RetryDelaySeconds;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("Webhook", new { request.Enabled, request.MaxRetries, request.RetryDelaySeconds });
         return Ok(new { message = "Webhook config updated", config = new { _config.Webhook.Enabled, _config.Webhook.MaxRetries, _config.Webhook.RetryDelaySeconds } });
     }
@@ -832,7 +814,7 @@ public class AdminConfigController(
         _config.NetworkAudit.Enabled = request.Enabled;
         _config.NetworkAudit.LogAllRequests = request.LogAllRequests;
         if (request.ExcludePaths != null) _config.NetworkAudit.ExcludePaths = request.ExcludePaths;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("NetworkAudit", new { request.Enabled, request.LogAllRequests, request.ExcludePaths });
         return Ok(new { message = "Network audit config updated", config = _config.NetworkAudit });
     }
@@ -848,7 +830,7 @@ public class AdminConfigController(
         _config.PolicySync.Enabled = request.Enabled;
         if (!string.IsNullOrEmpty(request.PolicyDirectory)) _config.PolicySync.PolicyDirectory = request.PolicyDirectory;
         _config.PolicySync.SyncOnStartup = request.SyncOnStartup;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("PolicySync", new { request.Enabled, request.PolicyDirectory, request.SyncOnStartup });
         return Ok(new { message = "Policy sync config updated", config = _config.PolicySync });
     }
@@ -867,7 +849,7 @@ public class AdminConfigController(
             _config.CertManager.ApiKey = request.ApiKey;
         if (request.DefaultCertProfileId.HasValue) _config.CertManager.DefaultCertProfileId = request.DefaultCertProfileId;
         if (request.DefaultSigningProfileId.HasValue) _config.CertManager.DefaultSigningProfileId = request.DefaultSigningProfileId;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("CertManager", new { request.Enabled, request.DefaultCertProfileId, request.DefaultSigningProfileId });
         return Ok(new { message = "Cert-manager config updated (restart required)", config = new { _config.CertManager.Enabled, ApiKey = !string.IsNullOrEmpty(_config.CertManager.ApiKey) ? RedactSecret("CertManager.ApiKey") : "", _config.CertManager.DefaultCertProfileId, _config.CertManager.DefaultSigningProfileId } });
     }
@@ -884,7 +866,7 @@ public class AdminConfigController(
         _config.IntegrationApi.Enabled = request.Enabled;
         if (request.ApiKey != null && !IsRedactionSentinel(request.ApiKey))
             _config.IntegrationApi.ApiKey = request.ApiKey;
-        if (TryPersistOrError() is { } __persistErr) return __persistErr;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("IntegrationApi", new { request.Enabled });
         return Ok(new { message = "Integration API config updated (restart required)", config = new { _config.IntegrationApi.Enabled, ApiKey = !string.IsNullOrEmpty(_config.IntegrationApi.ApiKey) ? RedactSecret("IntegrationApi.ApiKey") : "" } });
     }
@@ -897,53 +879,38 @@ public class AdminConfigController(
     }
 
     /// <summary>
-    /// Persists the in-memory config to config.yaml through
-    /// <see cref="ModularCA.Shared.Utils.ConfigYamlWriter"/>, which leaves out the <c>DB</c>
-    /// section (<c>db.yaml</c> owns it) and rewrites the file in place so it keeps its owner,
-    /// group and mode. Env-sourced secrets are temporarily
-    /// cleared before serialization (via <see cref="EnvVarConfigOverlay.WithSecretsProtected"/>)
-    /// so they are never written to disk. Throws on write failure so callers can surface
+    /// Saves the in-memory configuration through <see cref="ConfigSave"/>: instance-wide settings
+    /// to the settings store once they have been moved there, and <c>config.yaml</c> for what
+    /// belongs to the host. Env-sourced secrets are never written to disk. Throws on failure so callers can surface
     /// the failure as 500 to the operator instead of silently returning 200 — a swallowed
     /// warning produced misleading "saved" UX in earlier revisions where the on-disk YAML
     /// silently diverged from in-memory state. The in-memory mutation is left in place
     /// either way; the operator can retry once the underlying file-permission / disk issue
     /// is resolved.
     /// </summary>
-    private void PersistConfig()
-    {
-        Exception? writeFailure = null;
-        _envOverlay.WithSecretsProtected(_config, () =>
-        {
-            try
-            {
-                var configPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
-                ModularCA.Shared.Utils.ConfigYamlWriter.Write(configPath, _config);
-            }
-            catch (Exception ex)
-            {
-                writeFailure = ex;
-            }
-        });
-        if (writeFailure != null)
-            throw writeFailure;
-    }
+    private Task PersistConfigAsync() => ConfigSave.SaveAsync(HttpContext, _config, _envOverlay, _currentUser);
 
     /// <summary>
-    /// Calls <see cref="PersistConfig"/>; on IO failure returns a 500 <see cref="IActionResult"/>
-    /// the caller can return directly. Use as <c>if (TryPersistOrError() is { } err) return err;</c>
+    /// Calls <see cref="PersistConfigAsync"/>; on failure returns an <see cref="IActionResult"/>
+    /// the caller can return directly: 400 for a value the settings store refuses, 409 when other
+    /// changes kept getting in first, 500 otherwise. Use as <c>if (await TryPersistOrErrorAsync() is { } err) return err;</c>
     /// — keeps the 26-ish PUT handlers terse while still surfacing persist failures as 500
     /// to the operator instead of silently returning 200 with a divergent on-disk YAML.
     /// </summary>
-    private IActionResult? TryPersistOrError()
+    private async Task<IActionResult?> TryPersistOrErrorAsync()
     {
         try
         {
-            PersistConfig();
+            await PersistConfigAsync();
             return null;
+        }
+        catch (ModularCA.Shared.Settings.SettingsRefusedException ex)
+        {
+            return StatusCode(ex.Reason == ModularCA.Shared.Settings.SettingsRefusal.Busy ? 409 : 400, new { error = ex.Message });
         }
         catch (Exception ex)
         {
-            return StatusCode(500, new { error = "Failed to persist configuration to config.yaml.", details = ex.Message });
+            return StatusCode(500, new { error = "Failed to save the configuration.", details = ex.Message });
         }
     }
 

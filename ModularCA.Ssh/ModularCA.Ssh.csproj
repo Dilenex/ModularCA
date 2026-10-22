@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    OpenSSH certificates, public keys, signatures and KRLs: encoding, parsing and the checks a CA
+    key applies before it signs. It references no other project and only BouncyCastle, so it can
+    be lifted out of this repository whole. Keep it that way: nothing here may name a ModularCA
+    type.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.7.0" />
+  </ItemGroup>
+
+</Project>

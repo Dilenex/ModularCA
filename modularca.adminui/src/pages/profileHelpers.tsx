@@ -2,6 +2,7 @@ import React from 'react';
 import { DEFAULT_EKU_OPTIONS, parseJsonArray, parseListField } from './profiles/profileFormCore';
 import { FieldHint } from '@shared/components/forms';
 import { formatIso8601Duration } from './validityCeiling';
+import { DEFAULT_EKU_LABELS, KEY_USAGE_LABELS } from './profiles/usageLabels';
 
 /* Shared constants + helper components for the Profile Management tabs and their detail pages. */
 
@@ -40,34 +41,8 @@ export const caCertId = (ca: any): string => ca?.certificateId ?? '';
 export const caDisplayName = (ca: any): string =>
     ca?.name || ca?.commonName || ca?.label || ca?.id || '';
 
-export const DEFAULT_EKU_LABELS: Record<string, string> = {
-    '1.3.6.1.5.5.7.3.1': 'Server Auth',
-    '1.3.6.1.5.5.7.3.2': 'Client Auth',
-    '1.3.6.1.5.5.7.3.3': 'Code Signing',
-    '1.3.6.1.5.5.7.3.4': 'Email Protection',
-    '1.3.6.1.5.5.7.3.8': 'Time Stamping',
-    '1.3.6.1.5.5.7.3.9': 'OCSP Signing',
-    '1.3.6.1.4.1.311.20.2.2': 'Smart Card Logon',
-    '1.3.6.1.5.2.3.5': 'KDC Authentication',
-};
-
-/**
- * Display labels for the nine key usages.
- *
- * Presentation only — never persist these. `canonicalizeUsage` maps every one of them back onto
- * its canonical value, so a profile written with a label by an older build still resolves.
- */
-export const KEY_USAGE_LABELS: Record<string, string> = {
-    digitalSignature: 'Digital Signature',
-    nonRepudiation: 'Non Repudiation',
-    keyEncipherment: 'Key Encipherment',
-    dataEncipherment: 'Data Encipherment',
-    keyAgreement: 'Key Agreement',
-    keyCertSign: 'Key Cert Sign',
-    crlSign: 'CRL Sign',
-    encipherOnly: 'Encipher Only',
-    decipherOnly: 'Decipher Only',
-};
+// The label tables live in a module with no React in it, so pure code can read them too.
+export { DEFAULT_EKU_LABELS, KEY_USAGE_LABELS } from './profiles/usageLabels';
 
 export const keyUsageLabel = (v: string): string => KEY_USAGE_LABELS[v] ?? v;
 
@@ -186,11 +161,11 @@ export const SSH_EXTENSION_TITLES: Record<string, string> = {
     'permit-agent-forwarding': 'Allows the SSH agent to be forwarded to the remote host.',
     'permit-X11-forwarding': 'Allows X11 display forwarding.',
     'permit-user-rc': 'Allows ~/.ssh/rc to run on login.',
-    'no-pty': 'Explicitly denies terminal allocation; the certificate can run commands but not open a shell.',
-    'no-port-forwarding': 'Explicitly denies TCP port forwarding.',
-    'no-agent-forwarding': 'Explicitly denies SSH agent forwarding.',
-    'no-X11-forwarding': 'Explicitly denies X11 forwarding.',
-    'no-user-rc': 'Explicitly denies running ~/.ssh/rc on login.',
+    'no-pty': 'Withholds permit-pty, even when it is also named: the certificate can run commands but not open a shell. Adds nothing to the certificate.',
+    'no-port-forwarding': 'Withholds permit-port-forwarding, even when it is also named. Adds nothing to the certificate.',
+    'no-agent-forwarding': 'Withholds permit-agent-forwarding, even when it is also named. Adds nothing to the certificate.',
+    'no-X11-forwarding': 'Withholds permit-X11-forwarding, even when it is also named. Adds nothing to the certificate.',
+    'no-user-rc': 'Withholds permit-user-rc, even when it is also named. Adds nothing to the certificate.',
 };
 export const sshExtensionTitle = (ext: string): string | undefined => SSH_EXTENSION_TITLES[ext];
 
@@ -284,7 +259,7 @@ export const CT_LOG_IDS_HINT = 'Every enabled log submits each issued certificat
 export const CT_ENABLED_HINT = 'When on, each issued certificate is submitted to the CT logs chosen below. A parent profile with CT on cannot be turned off here.';
 
 /** Hint under an SSH signing profile's Force Command input. */
-export const FORCE_COMMAND_HINT = 'Every session using a certificate from this profile runs this command instead of the one the user asked for, including scp and sftp. Leave blank for normal shell access.';
+export const FORCE_COMMAND_HINT = 'Every session using a certificate from this profile runs this command instead of the one the user asked for, including scp and sftp. Leave blank to force no command.';
 
 /**
  * Hint under an SSH cert profile's Required Extensions picker.
@@ -293,7 +268,7 @@ export const FORCE_COMMAND_HINT = 'Every session using a certificate from this p
  * append Required afterwards, so a required-but-not-allowed extension is still written into every
  * certificate while a caller who asks for it by name is refused. The forms block save on that.
  */
-export const SSH_REQUIRED_EXTENSIONS_HINT = 'Required must be a subset of Allowed. Required extensions are added to every certificate after the Allowed check, so one that is required here but not allowed above still lands in the certificate while a requester who names it explicitly is refused. Save is blocked until the two agree.';
+export const SSH_REQUIRED_EXTENSIONS_HINT = 'Required must be a subset of Allowed. Required extensions are added to every certificate after the Allowed check, so one that is required here but not allowed above still lands in the certificate while a requester who names it explicitly is refused. Save is blocked until the two agree. A required no-* name withholds its permit-* from every certificate.';
 
 /** Field source indicator for resolved profile views */
 export const FieldSourceBadge: React.FC<{ source?: string }> = ({ source }) => {

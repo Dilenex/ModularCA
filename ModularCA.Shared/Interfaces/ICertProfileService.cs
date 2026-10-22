@@ -8,9 +8,11 @@ namespace ModularCA.Shared.Interfaces
     public interface ICertProfileService
     {
         /// <summary>
-        /// Returns all certificate profiles.
+        /// Returns all certificate profiles. With <paramref name="caVisible"/>, uses by CAs the
+        /// caller may not see are counted rather than named.
         /// </summary>
-        Task<List<CertProfileDto>> GetAllAsync();
+        /// <param name="caVisible">Whether the caller may see a CA of the given space (null for the instance); null to name every CA.</param>
+        Task<List<CertProfileDto>> GetAllAsync(Func<Guid?, bool>? caVisible = null);
 
         /// <summary>
         /// Creates a new certificate profile from the given request. <paramref name="spaceId"/> stamps the
@@ -32,9 +34,12 @@ namespace ModularCA.Shared.Interfaces
         Task DeleteAsync(Guid id);
 
         /// <summary>
-        /// Retrieves a certificate profile by its GUID.
+        /// Retrieves a certificate profile by its GUID. With <paramref name="caVisible"/>, uses by
+        /// CAs the caller may not see are counted rather than named.
         /// </summary>
-        Task<CertProfileDto?> GetByIdAsync(Guid id);
+        /// <param name="id">The profile.</param>
+        /// <param name="caVisible">Whether the caller may see a CA of the given space (null for the instance); null to name every CA.</param>
+        Task<CertProfileDto?> GetByIdAsync(Guid id, Func<Guid?, bool>? caVisible = null);
 
     }
 }

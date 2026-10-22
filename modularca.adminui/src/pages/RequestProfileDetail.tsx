@@ -18,6 +18,7 @@ import { RequestProfileForm } from './profiles/RequestProfileForm';
 import { emptyForm, formFromProfile, formToCreateBody, formToUpdateBody, validate } from './profiles/requestProfile';
 import { PROFILE_TYPES, profileDetailPath } from './profiles/profileRoutes';
 import { actionButtonDanger } from '@shared/components/actionButtons';
+import { CaScopeName } from '../components/CaScopeName';
 
 const REQUEST_TAB = PROFILE_TYPES.request.listPath;
 
@@ -46,6 +47,15 @@ const RequestProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) 
     const [resolvedLoading, setResolvedLoading] = useState(false);
     const [validationResult, setValidationResult] = useState<{ isValid: boolean; errors: string[] } | null>(null);
     const [validationLoading, setValidationLoading] = useState(false);
+
+    // Whether system-supers may approve their own requests; only a system administrator can read
+    // it, so for anyone else it stays null and the page says nothing about it.
+    const [selfApprovalAllowed, setSelfApprovalAllowed] = useState<boolean | null>(null);
+    useEffect(() => {
+        apiGet<any>('/api/v1/admin/security-policy/administrators', { toast: false })
+            .then((a) => setSelfApprovalAllowed(typeof a?.selfApprovalAllowed === 'boolean' ? a.selfApprovalAllowed : null))
+            .catch(() => setSelfApprovalAllowed(null));
+    }, []);
 
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [deleting, setDeleting] = useState(false);
@@ -185,11 +195,13 @@ const RequestProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) 
                         <DetailField label="ID" value={p.id} mono />
                         <DetailField label="Name" value={p.name} />
                         <DetailField label="Description" value={p.description} />
-                        <DetailField label="Require Approval" value={p.requireApproval ? 'Yes' : 'No'} />
+                        <DetailField label="Require Approval" value={p.requireApproval
+                            ? `Yes, ${Math.max(1, p.requiredApprovalCount ?? 1)} ${Math.max(1, p.requiredApprovalCount ?? 1) === 1 ? 'approval' : 'approvals'}${selfApprovalAllowed ? ' · self-approval allowed: a system-super’s own approval completes their request' : ''}`
+                            : 'No'} />
                         <DetailField label="Default Cert Profile" value={p.defaultCertProfileId ? resolveProfileName(p.defaultCertProfileId) : 'None'} />
                         <DetailField label="Created" value={p.createdAt ? new Date(p.createdAt).toLocaleString() : undefined} />
                         <DetailField label="Updated" value={p.updatedAt ? new Date(p.updatedAt).toLocaleString() : undefined} />
-                        <DetailField label="CA Scope" value={p.certificateAuthorityId ? String(p.certificateAuthorityId) : 'System-wide'} />
+                        <DetailField label="CA Scope" value={<CaScopeName caId={p.certificateAuthorityId} fallback="System-wide" />} />
                         {p.inheritanceEnabled && <DetailField label="Inherits From" value={resolveParentName(p.inheritsFromId) || 'None'} />}
                     </div>
                     {p.allowedCertProfileIds && p.allowedCertProfileIds.length > 0 && (

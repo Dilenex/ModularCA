@@ -74,6 +74,20 @@ public sealed class RestoreDrillTests(ITestOutputHelper output)
             await old.StopAsync();
 
             var dbYaml = old.Databases();
+            // The first start moved the instance-wide settings to the database: they are marked as
+            // moved there, and the file the install wrote is down to this host's settings, with
+            // the original kept beside it.
+            Assert.Equal(1, await CountAsync(dbYaml.App, "SELECT count(*) FROM \"SettingsState\" WHERE \"ImportedAt\" IS NOT NULL"));
+            Assert.StartsWith(ConfigYamlWriter.HostOnlyHeader.ReplaceLineEndings("\n"),
+                File.ReadAllText(Path.Combine(old.ConfigDirectory, "config.yaml")).ReplaceLineEndings("\n"));
+            var kept = Assert.Single(Directory.GetFiles(old.ConfigDirectory, "config.yaml.pre-settings-*.bak"));
+            // The JWT secret went with them, wrapped by the signer: it is in the store, and in
+            // neither the file nor the copy of the file as it was.
+            Assert.Equal(1, await CountAsync(dbYaml.App, "SELECT count(*) FROM \"SettingsSecrets\" WHERE \"Key\" = 'JWT_Secret' AND \"Value\" IS NOT NULL"));
+            Assert.DoesNotContain("JWT:", File.ReadAllText(Path.Combine(old.ConfigDirectory, "config.yaml")));
+            // The copy keeps the rest of that section; the secret itself is gone from it.
+            Assert.DoesNotMatch(@"(?m)^\s+Secret:\s*\S", File.ReadAllText(kept));
+            var unwrapsBefore = await CountAsync(dbYaml.App, "SELECT count(*) FROM \"SignerAudit\" WHERE \"Operation\" = 'UnwrapSecret' AND \"Purpose\" = 'Configuration' AND \"Outcome\" = 'allowed'");
             var certificates = await CountAsync(dbYaml.App, "SELECT count(*) FROM \"Certificates\"");
             var auditRecords = await CountAsync(dbYaml.Audit, "SELECT count(*) FROM \"AuditLogs\"");
             var keyRing = Directory.GetFiles(Path.Combine(old.ConfigDirectory, "dp-keys")).Select(Path.GetFileName).Order().ToList();
@@ -141,6 +155,12 @@ public sealed class RestoreDrillTests(ITestOutputHelper output)
                 return CrlNumber(crl) > CrlNumber(crlBefore) ? crl : null;
             }, "the restored node published no CRL numbered above the last one the first host published");
             crlAfter.Verify(rootCertificate.GetPublicKey());
+
+            // The restored host had no JWT secret in any file. It read the stored one back through
+            // the restored keystore; it did not fall back to a temporary one.
+            Assert.DoesNotContain("JWT:", File.ReadAllText(Path.Combine(restored.ConfigDirectory, "config.yaml")));
+            Assert.True(await CountAsync(newDbYaml.App, "SELECT count(*) FROM \"SignerAudit\" WHERE \"Operation\" = 'UnwrapSecret' AND \"Purpose\" = 'Configuration' AND \"Outcome\" = 'allowed'") > unwrapsBefore);
+            Assert.DoesNotContain("using a temporary one", restored.NodeLog);
 
             // The configuration secrets were unwrapped, and the audit trail is whole.
             Assert.False(Directory.Exists(Path.Combine(restored.ConfigDirectory, "restore-pending")));
@@ -337,6 +357,9 @@ internal sealed class DrillHost
     private readonly DrillServer _server;
     private readonly ITestOutputHelper _output;
     private readonly StringBuilder _nodeLog = new();
+
+    /// <summary>What the node has written since it was last started.</summary>
+    public string NodeLog { get { lock (_nodeLog) return _nodeLog.ToString(); } }
     private Process? _node;
 
     private DrillHost(string directory, DrillServer server, ITestOutputHelper output)

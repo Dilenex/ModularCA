@@ -121,14 +121,14 @@ public class ErrorCodeCatalogTests
             "MCA-CFG-005", "MCA-CFG-006", "MCA-CFG-007", "MCA-CFG-008", "MCA-CFG-009",
             "MCA-CFG-010", "MCA-CFG-011", "MCA-CFG-012", "MCA-CFG-013", "MCA-CFG-014",
             "MCA-CFG-015", "MCA-CFG-016", "MCA-CFG-017", "MCA-CFG-018", "MCA-CFG-019",
-            "MCA-CFG-020", "MCA-CFG-021",
+            "MCA-CFG-020", "MCA-CFG-021", "MCA-CFG-022",
             "MCA-ISS-000", "MCA-ISS-001", "MCA-ISS-002", "MCA-ISS-003",
             "MCA-LIC-000", "MCA-LIC-001", "MCA-LIC-002", "MCA-LIC-003",
             "MCA-POL-000", "MCA-POL-001",
             "MCA-PRF-000",
             "MCA-REQ-000", "MCA-REQ-001", "MCA-REQ-002", "MCA-REQ-003", "MCA-REQ-004",
             "MCA-RES-000", "MCA-RES-001", "MCA-RES-002", "MCA-RES-003", "MCA-RES-004",
-            "MCA-RES-005", "MCA-RES-006",
+            "MCA-RES-005", "MCA-RES-006", "MCA-RES-007", "MCA-RES-008",
         ];
 
         var missing = pinned.Except(ErrorCodes.All, StringComparer.Ordinal).ToList();

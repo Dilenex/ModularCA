@@ -413,6 +413,16 @@ install_payload
 install -d -o root -g root -m 0755 /usr/share/modularca /usr/share/modularca/sql
 install -o root -g root -m 0644 "$SRC/share/sql/adopt-ownership.sql" /usr/share/modularca/sql/adopt-ownership.sql
 
+# The KRL fetcher for SSH servers (a script, its systemd service and timer, its settings). None of
+# it runs on this host: an administrator copies it from here to each server. The .deb ships the
+# same four files to the same place.
+if [[ -d "$SRC/share/ssh-krl" ]]; then
+    install -d -o root -g root -m 0755 /usr/share/modularca/ssh-krl
+    install -o root -g root -m 0755 "$SRC/share/ssh-krl/modularca-krl-fetch.sh" /usr/share/modularca/ssh-krl/modularca-krl-fetch.sh
+    install -o root -g root -m 0644 "$SRC/share/ssh-krl/modularca-krl-fetch.service" "$SRC/share/ssh-krl/modularca-krl-fetch.timer" \
+        "$SRC/share/ssh-krl/modularca-krl-fetch.env.example" /usr/share/modularca/ssh-krl/
+fi
+
 # ── Ownership and modes ────────────────────────────────────────────────────────
 # The archive carries none of this; see the header.
 note "setting ownership and permissions"

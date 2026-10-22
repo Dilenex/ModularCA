@@ -83,6 +83,7 @@ export function canCancel(csr: any): boolean {
 
 export interface ApprovalRecord {
     id: string;
+    approverId?: string;
     approverUsername: string;
     decision: string;
     comment: string;
@@ -238,7 +239,8 @@ const CertificateRequests: React.FC = () => {
                 { label: 'Key Size', value: (c) => c.keySize },
                 { label: 'Signature Algorithm', value: (c) => c.signatureAlgorithm },
             ] },
-            { fields: [{ label: 'Next', value: () => 'Open the full page to approve, reject, cancel or issue.' }] },
+            { fields: [{ label: 'Next', value: (c) => matchesFilter(c, 'Pending') ? 'Open the full page to approve, reject or cancel.'
+                : matchesFilter(c, 'Approved') ? 'Open the full page to issue or cancel.' : null }] },
         ],
         audit: { tab: 'General', target: (c) => ({ type: 'CertificateRequest', id: csrId(c) }) },
         page: { path: (c) => `/certificates/requests/${csrId(c)}` },

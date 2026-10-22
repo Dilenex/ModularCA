@@ -209,7 +209,7 @@ public class AdminSchedulerController(
             if (request.TimeoutSeconds.HasValue)
                 _registry.SetTimeoutSeconds(name, request.TimeoutSeconds.Value);
 
-            try { PersistSystemConfig(); }
+            try { await PersistSystemConfigAsync(); }
             catch (Exception) { return StatusCode(500, new { error = "Failed to persist scheduler configuration to config.yaml." }); }
 
             afterCron = _registry.GetCron(name);
@@ -271,7 +271,7 @@ public class AdminSchedulerController(
             if (!_registry.SetEnabled(name, request.Enabled))
                 return BadRequest(new { error = $"Job '{name}' has no operator-tunable enabled toggle (continuous job)." });
 
-            try { PersistSystemConfig(); }
+            try { await PersistSystemConfigAsync(); }
             catch (Exception) { return StatusCode(500, new { error = "Failed to persist scheduler configuration to config.yaml." }); }
 
             afterEnabled = await _registry.GetEnabledAsync(name);
@@ -572,7 +572,7 @@ public class AdminSchedulerController(
             if (request.ConsecutiveFailureAlertThreshold.HasValue)
                 _config.Scheduler.ConsecutiveFailureAlertThreshold = request.ConsecutiveFailureAlertThreshold.Value;
 
-            try { PersistSystemConfig(); }
+            try { await PersistSystemConfigAsync(); }
             catch (Exception) { return StatusCode(500, new { error = "Failed to persist scheduler configuration to config.yaml." }); }
 
             after = new
@@ -611,25 +611,18 @@ public class AdminSchedulerController(
     /// UX in earlier revisions. The in-memory mutation is left in place either way; the
     /// operator can retry once the underlying file-permission / disk issue is resolved.
     /// </summary>
-    private void PersistSystemConfig()
+    private async Task PersistSystemConfigAsync()
     {
-        Exception? writeFailure = null;
-        _envOverlay.WithSecretsProtected(_config, () =>
+        try
         {
-            try
-            {
-                var configPath = Path.Combine(AppContext.BaseDirectory, "config", "config.yaml");
-                ModularCA.Shared.Utils.ConfigYamlWriter.Write(configPath, _config);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex,
-                    "AdminSchedulerController: persisting config.yaml failed; in-memory change still applies but operator must retry to persist.");
-                writeFailure = ex;
-            }
-        });
-        if (writeFailure != null)
-            throw writeFailure;
+            await ConfigSave.SaveAsync(HttpContext, _config, _envOverlay, _currentUser);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "AdminSchedulerController: saving the scheduler settings failed; the in-memory change still applies but the operator must retry to keep it.");
+            throw;
+        }
     }
 }
 

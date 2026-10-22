@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
-    buildCmpRequest, buildTokenRequest, emptyEnrollmentForm, enrollmentKind,
+    buildCmpRequest, buildTokenRequest, defaultTokenScope, emptyEnrollmentForm, enrollmentKind,
     ENROLLMENT_PROTOCOLS, enrollmentProtocolMeta, EnrollmentFormState, RESTRICTIONS_REASON, showsQrResult,
-    validateEnrollmentForm,
+    signingProfilesForTokenScope, tokenAcceptedAt, TOKEN_SCOPE_REASON, tokenScopeOptions, validateEnrollmentForm,
 } from '@adminui/components/enrollmentForm';
+import type { CaCapabilities, EffectiveCapabilities } from '@adminui/authz';
+import { ALL_SCOPE, MINE_SCOPE, type Scope } from '@adminui/scope';
 
 /**
  * The protocol catalog and field logic behind the single enrollment-credential form. The page's
@@ -13,7 +15,7 @@ import {
  */
 
 const base: EnrollmentFormState = {
-    ...emptyEnrollmentForm(),
+    ...emptyEnrollmentForm('instance'),
     expiresInHours: 48,
     maxUses: 5,
     subjectRestriction: [{ type: 'DN', value: 'O=Acme' }],
@@ -76,6 +78,11 @@ describe('validation', () => {
             .toBeNull();
     });
 
+    it('requires a token to say where it is accepted, and not a CMP credential', () => {
+        expect(validateEnrollmentForm({ ...base, protocol: 'SCEP', tokenScope: '' }, refOk)).toBe(TOKEN_SCOPE_REASON);
+        expect(validateEnrollmentForm({ ...base, protocol: 'CMP', tokenScope: '', referenceValue: 'fleet', signingProfileId: 'sp1' }, refOk)).toBeNull();
+    });
+
     it('does not demand CMP fields for a token protocol', () => {
         // referenceValue and signingProfileId are empty here, and that must be fine for EST.
         expect(validateEnrollmentForm({ ...base, protocol: 'EST', referenceValue: '', signingProfileId: '' }, refOk)).toBeNull();
@@ -104,8 +111,14 @@ describe('validation', () => {
 
 describe('request bodies', () => {
     it('the token body carries the selected protocol as the restriction', () => {
-        const body = buildTokenRequest({ ...base, protocol: 'EST' });
-        expect(body).toEqual({ expiresInHours: 48, maxUses: 5, subjectRestriction: 'O=Acme', sanRestriction: 'acme.test', protocol: 'EST' });
+        const body = buildTokenRequest({ ...base, protocol: 'EST', signingProfileId: '' });
+        expect(body).toEqual({ scope: 'Instance', scopeId: null, signingProfileId: null, expiresInHours: 48, maxUses: 5, subjectRestriction: 'O=Acme', sanRestriction: 'acme.test', protocol: 'EST' });
+    });
+
+    it('the token body carries the chosen scope and the signing profile', () => {
+        const atCa = buildTokenRequest({ ...base, protocol: 'SCEP', tokenScope: 'ca:r3', signingProfileId: 'sp3' });
+        expect(atCa).toMatchObject({ scope: 'Ca', scopeId: 'r3', signingProfileId: 'sp3' });
+        expect(buildTokenRequest({ ...base, protocol: 'EST', tokenScope: 'space:stg' })).toMatchObject({ scope: 'Space', scopeId: 'stg' });
     });
 
     it('the token body sends null for blank restrictions and 0 for blank uses', () => {
@@ -121,5 +134,59 @@ describe('request bodies', () => {
         // Restrictions are not a CMP concept and must not leak into its request.
         expect(body).not.toHaveProperty('subjectRestriction');
         expect(body).not.toHaveProperty('protocol');
+    });
+});
+
+describe('where a token is accepted', () => {
+    const ca = (id: string, spaceId: string | null, extra: Partial<CaCapabilities> = {}): CaCapabilities => ({
+        id, label: id, name: id, isSshCa: false, spaceId, spaceName: spaceId ? 'Staging' : '', spaceSlug: spaceId ?? '', capabilities: ['cert.revoke'], ...extra,
+    });
+    const admin: EffectiveCapabilities = {
+        system: ['cert.revoke'],
+        cas: [ca('inst', null), ca('r1', 'stg'), ca('r3', 'stg'), ca('ssh', null, { isSshCa: true }), ca('prod', 'prd', { spaceName: 'Prod' })],
+        spaces: [{ id: 'stg', name: 'Staging', slug: 'stg', capabilities: ['cert.revoke'] }, { id: 'prd', name: 'Prod', slug: 'prd', capabilities: ['cert.revoke'] }],
+    };
+    const stagingScope: Scope = { kind: 'space', spaceId: 'stg', slug: 'stg', name: 'Staging' };
+    const r3Scope: Scope = { kind: 'ca', caId: 'r3', label: 'r3', spaceId: 'stg', spaceSlug: 'stg' };
+    const values = (scope: Scope, caps = admin) => tokenScopeOptions(scope, caps).map(o => o.value);
+
+    it('offers the instance, every space and every CA under all CAs, but no SSH CA', () => {
+        expect(values(ALL_SCOPE)).toEqual(['instance', 'space:stg', 'space:prd', 'ca:inst', 'ca:r1', 'ca:r3', 'ca:prod']);
+    });
+
+    it('offers the space and its CAs under a space, and only the CA under a CA', () => {
+        expect(values(stagingScope)).toEqual(['space:stg', 'ca:r1', 'ca:r3']);
+        expect(values(r3Scope)).toEqual(['ca:r3']);
+        expect(values(MINE_SCOPE)).toEqual([]);
+    });
+
+    it('leaves out what the caller does not hold cert.revoke across', () => {
+        const oneCa: EffectiveCapabilities = { system: [], cas: [ca('r3', 'stg'), ca('r1', 'stg', { capabilities: ['cert.view'] })], spaces: [] };
+        expect(values(ALL_SCOPE, oneCa)).toEqual(['ca:r3']);
+        expect(values(stagingScope, oneCa)).toEqual(['ca:r3']);
+    });
+
+    it('starts on the view’s own space or CA, or the only option', () => {
+        expect(defaultTokenScope(stagingScope, tokenScopeOptions(stagingScope, admin))).toBe('space:stg');
+        expect(defaultTokenScope(r3Scope, tokenScopeOptions(r3Scope, admin))).toBe('ca:r3');
+        expect(defaultTokenScope(ALL_SCOPE, tokenScopeOptions(ALL_SCOPE, admin))).toBe('');
+    });
+
+    it('lists only the signing profiles issued inside the chosen scope, plus unbound ones', () => {
+        const profiles = [{ id: 'p-r3', issuerId: 'cert-r3' }, { id: 'p-r1', issuerId: 'cert-r1' }, { id: 'p-free', issuerId: null }];
+        const caOf = (issuer: string) => ({ 'cert-r3': 'r3', 'cert-r1': 'r1' } as Record<string, string>)[issuer];
+        const r3 = tokenScopeOptions(r3Scope, admin)[0];
+        expect(signingProfilesForTokenScope(profiles, r3, caOf).map(p => p.id)).toEqual(['p-r3', 'p-free']);
+        const staging = tokenScopeOptions(stagingScope, admin)[0];
+        expect(signingProfilesForTokenScope(profiles, staging, caOf).map(p => p.id)).toEqual(['p-r3', 'p-r1', 'p-free']);
+        expect(signingProfilesForTokenScope(profiles, undefined, caOf)).toEqual([]);
+    });
+
+    it('names where a stored token is accepted', () => {
+        const cas = [{ id: 'r3', label: 'staging-ca-r3' }];
+        const spaces = [{ id: 'stg', name: 'Staging' }];
+        expect(tokenAcceptedAt({ certificateAuthorityId: 'r3', spaceId: 'stg' }, cas, spaces)).toBe('staging-ca-r3');
+        expect(tokenAcceptedAt({ spaceId: 'stg' }, cas, spaces)).toBe('Staging: any of its CAs');
+        expect(tokenAcceptedAt({}, cas, spaces)).toBe('CAs not in a space');
     });
 });

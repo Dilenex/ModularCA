@@ -245,6 +245,74 @@ public class AcmeFinalizeTests
             .Replace('+', '-').Replace('/', '_').TrimEnd('=');
     }
 
+    /// <summary>A CSR with an empty subject and <paramref name="identifier"/> as its only SAN, as certbot and Caddy send.</summary>
+    private static string CsrWithoutSubjectFor(string identifier)
+    {
+        using var key = RSA.Create(2048);
+        var request = new CertificateRequest(new X500DistinguishedName(""), key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        var sans = new SubjectAlternativeNameBuilder();
+        sans.AddDnsName(identifier);
+        request.CertificateExtensions.Add(sans.Build());
+        return Convert.ToBase64String(request.CreateSigningRequest())
+            .Replace('+', '-').Replace('/', '_').TrimEnd('=');
+    }
+
+    private static RequestProfileEntity ProfileWithCommonName(string requirement) => new()
+    {
+        Id = Guid.NewGuid(), Name = $"cn-{requirement}",
+        SubjectDnRules = JsonSerializer.Serialize(new[] { new { Field = "CN", Requirement = requirement } }),
+    };
+
+    /// <summary>
+    /// The ACME client matrix: certbot and Caddy send no subject, the seeded request profile
+    /// requires a common name, and every finalize from them was refused. The common name is
+    /// taken from the request's own DNS name.
+    /// </summary>
+    [Fact]
+    public async Task A_csr_without_a_subject_is_issued_with_its_dns_name_as_common_name_where_the_profile_requires_one()
+    {
+        var h = Build(prodRequestProfile: ProfileWithCommonName("Required"));
+        var order = ReadyOrder(h);
+
+        var dto = await h.Service.FinalizeAsync(order.Id, CsrWithoutSubjectFor("device-01.example.com"), "https://ca.example.com", h.ProdCa);
+
+        Assert.Equal("valid", dto.Status);
+        var row = Assert.Single(await h.Db.CertificateRequests.ToListAsync());
+        Assert.Equal("CN=device-01.example.com", row.Subject);
+    }
+
+    [Theory]
+    [InlineData("Optional")]
+    [InlineData("Forbidden")]
+    public async Task A_csr_without_a_subject_is_recorded_as_sent_where_the_profile_does_not_require_a_common_name(string requirement)
+    {
+        var h = Build(prodRequestProfile: ProfileWithCommonName(requirement));
+        var order = ReadyOrder(h);
+
+        var dto = await h.Service.FinalizeAsync(order.Id, CsrWithoutSubjectFor("device-01.example.com"), "https://ca.example.com", h.ProdCa);
+
+        Assert.Equal("valid", dto.Status);
+        var row = Assert.Single(await h.Db.CertificateRequests.ToListAsync());
+        Assert.Equal("", row.Subject);
+    }
+
+    /// <summary>
+    /// The first name and no other: it is the one issuance puts on a certificate whose request
+    /// has no subject, so the profile is asked about the subject that will be issued.
+    /// </summary>
+    [Fact]
+    public void The_common_name_is_the_first_dns_name_when_it_fits()
+    {
+        var tooLong = string.Join(".", Enumerable.Repeat("a23456789", 7)) + ".example.com";
+        Assert.True(tooLong.Length > 64);
+
+        Assert.Equal("b.example.com", AcmeOrderService.CommonNameFromSans(["dns:b.example.com", "dns:c.example.com"]));
+        Assert.Equal("*.example.com", AcmeOrderService.CommonNameFromSans(["DNS:*.example.com"]));
+        Assert.Null(AcmeOrderService.CommonNameFromSans(["dns:" + tooLong, "dns:b.example.com"]));
+        Assert.Null(AcmeOrderService.CommonNameFromSans(["dns:a,O=Evil"]));
+        Assert.Null(AcmeOrderService.CommonNameFromSans([]));
+    }
+
     [Fact]
     public async Task A_finalize_issues_from_the_ca_the_order_belongs_to_and_not_the_default_one()
     {

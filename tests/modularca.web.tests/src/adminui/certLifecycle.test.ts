@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CertificateLifecycleSummaryModel } from '@shared/generated';
 import {
-    attentionTone, canReissue, channelNote, durationPhrase, expiryPhrase, expiryState, lifecycleHealth,
+    attentionTone, canReissue, channelNote, durationPhrase, expiryHandling, expiryHandlingNote, expiryPhrase, expiryState, lifecycleHealth,
     lifecycleTone, relativeTime, sortAttention,
 } from '@adminui/pages/certLifecycle';
 
@@ -15,7 +15,7 @@ function summary(patch: Partial<CertificateLifecycleSummaryModel> = {}): Certifi
     return {
         generatedAt: NOW.toISOString(), replacementWindowDays: 90, total: 0, active: 0, revoked: 0, expired: 0,
         expiringWithin7Days: 0, expiringWithin30Days: 0, expiringWithin7DaysNotReplaced: 0, expiringWithin30DaysNotReplaced: 0,
-        expiredReplaced: 0, expiredNotReplaced: 0, expiredUnchecked: 0, recentlyExpiredNotReplaced: 0,
+        expiredReplaced: 0, expiredNotReplaced: 0, retiredOrDismissed: 0, expiredUnchecked: 0, recentlyExpiredNotReplaced: 0,
         attentionTotal: 0, attention: [], byCa: [], ...patch,
     };
 }
@@ -120,5 +120,28 @@ describe('channel notes and reissue', () => {
         expect(canReissue({ revoked: false })).toBe(true);
         expect(canReissue({ revoked: true, revocationReason: 'CertificateHold' })).toBe(true);
         expect(canReissue({ revoked: true, revocationReason: 'KeyCompromise' })).toBe(false);
+        expect(canReissue({ revoked: false, retiredAt: NOW.toISOString() })).toBe(false);
+    });
+});
+
+describe('retired and dismissed certificates', () => {
+    it('names how an expiry was handled, retirement first', () => {
+        expect(expiryHandling({})).toBeNull();
+        expect(expiryHandling({ expiryWarningDismissedAt: at(-DAY) })).toBe('dismissed');
+        expect(expiryHandling({ retiredAt: at(-DAY), expiryWarningDismissedAt: at(-DAY) })).toBe('retired');
+    });
+
+    it('says a retired certificate needs a new enrollment and a dismissed one still renews', () => {
+        expect(expiryHandlingNote({ retiredAt: at(-DAY), retiredBy: 'ops', retiredReason: 'host decommissioned' }))
+            .toBe('Retired by ops: host decommissioned. It stays valid until it expires, but is not renewed or reissued; its subject needs a new enrollment.');
+        expect(expiryHandlingNote({ expiryWarningDismissedAt: at(-DAY) })).toContain('can still be renewed');
+        expect(expiryHandlingNote({})).toBeNull();
+    });
+
+    it('counts retired and dismissed certificates as handled on the dashboard', () => {
+        const items = lifecycleHealth(summary({ expiringWithin30Days: 2, retiredOrDismissed: 2 }), NOW);
+        expect(items.find(i => i.key === 'expiring')).toMatchObject({ tone: 'ok', detail: '2 certificates expire within 30 days, each replaced, retired or dismissed' });
+        const expired = lifecycleHealth(summary({ expired: 1, retiredOrDismissed: 1 }), NOW).find(i => i.key === 'expired');
+        expect(expired).toMatchObject({ tone: 'neutral', detail: '1 certificate expired; every one from the last 90 days was replaced, retired or dismissed' });
     });
 });

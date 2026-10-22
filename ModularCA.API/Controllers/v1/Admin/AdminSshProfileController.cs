@@ -335,6 +335,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// principal/extension constraints), so list output is identical for all callers; the
     /// create/update/delete handlers are restricted to system admins so a
     /// space operator cannot mutate this shared catalog out from under another space.
+    /// Each profile carries its <c>certificateType</c>: <c>user</c>, <c>host</c>, or null for either.
     /// </summary>
     [HttpGet("cert")]
     [Authorize(Policy = "CaOperator")]
@@ -348,7 +349,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
                 p.Id, p.Name, p.Description,
                 p.AllowedPrincipalPatterns, p.MaxPrincipals,
                 p.AllowedExtensions, p.RequiredExtensions,
-                p.MaxValidityHours, p.CreatedAt
+                p.MaxValidityHours, p.CertificateType, p.CreatedAt
             })
             .ToListAsync();
         return Ok(profiles);
@@ -358,7 +359,8 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// Retrieves a single SSH certificate profile by its identifier. Cert
     /// profiles are a system-wide catalog (no per-space binding in the schema), so reads
     /// are permitted to any authenticated <c>CaOperator</c>; mutations are gated to
-    /// system admins on the corresponding write endpoints.
+    /// system admins on the corresponding write endpoints. The profile carries its
+    /// <c>certificateType</c>: <c>user</c>, <c>host</c>, or null for either.
     /// </summary>
     [HttpGet("cert/{id:guid}")]
     [Authorize(Policy = "CaOperator")]
@@ -373,7 +375,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
             profile.Id, profile.Name, profile.Description,
             profile.AllowedPrincipalPatterns, profile.MaxPrincipals,
             profile.AllowedExtensions, profile.RequiredExtensions,
-            profile.MaxValidityHours, profile.CreatedAt
+            profile.MaxValidityHours, profile.CertificateType, profile.CreatedAt
         });
     }
 
@@ -384,6 +386,8 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// Non-admin callers receive 404 and a failure audit row is emitted. Step-up MFA is
     /// required because cert profiles constrain SSH issuance globally across spaces.
     /// AllowedPrincipalPatterns must be a JSON array of .NET regexes that compile (400).
+    /// <c>certificateType</c> is <c>user</c>, <c>host</c> or <c>either</c>; omitted, either.
+    /// Anything else is 400.
     /// </summary>
     [HttpPost("cert")]
     [Authorize]
@@ -402,6 +406,8 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
 
         if (SshProfileFieldRules.ValidateAllowedPrincipalPatterns(request.AllowedPrincipalPatterns) is { } patternError)
             return BadRequest(new { error = patternError });
+        if (SshProfileCertificateType.Error(request.CertificateType) is { } typeError)
+            return BadRequest(new { error = typeError });
 
         var entity = new SshCertProfileEntity
         {
@@ -412,6 +418,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
             AllowedExtensions = request.AllowedExtensions ?? "[\"permit-pty\",\"permit-port-forwarding\",\"permit-agent-forwarding\",\"permit-X11-forwarding\",\"permit-user-rc\"]",
             RequiredExtensions = request.RequiredExtensions ?? "[]",
             MaxValidityHours = request.MaxValidityHours ?? 720,
+            CertificateType = SshProfileCertificateType.Stored(request.CertificateType),
         };
 
         _db.SshCertProfiles.Add(entity);
@@ -419,7 +426,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
 
         await _audit.LogAsync(AuditActionType.SshCertProfileCreated, _currentUser.User?.Id, _currentUser.User?.Username,
             "SshCertProfile", entity.Id.ToString(),
-            new { entity.Name, entity.MaxPrincipals, entity.MaxValidityHours },
+            new { entity.Name, entity.MaxPrincipals, entity.MaxValidityHours, entity.CertificateType },
             HttpContext.Connection.RemoteIpAddress?.ToString());
 
         return Ok(new { entity.Id, entity.Name, entity.CreatedAt });
@@ -431,6 +438,8 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// callers receive 404 and a failure audit row is emitted. Step-up MFA is required
     /// because changes affect issuance constraints applied to every space.
     /// AllowedPrincipalPatterns, when sent, must be a JSON array of .NET regexes that compile (400).
+    /// <c>certificateType</c>, when sent, is <c>user</c>, <c>host</c> or <c>either</c>, which
+    /// clears the type; anything else is 400.
     /// </summary>
     [HttpPut("cert/{id:guid}")]
     [Authorize]
@@ -451,6 +460,8 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
 
         if (SshProfileFieldRules.ValidateAllowedPrincipalPatterns(request.AllowedPrincipalPatterns) is { } patternError)
             return BadRequest(new { error = patternError });
+        if (SshProfileCertificateType.Error(request.CertificateType) is { } typeError)
+            return BadRequest(new { error = typeError });
 
         if (request.Name != null) entity.Name = request.Name;
         if (request.Description != null) entity.Description = request.Description;
@@ -459,12 +470,13 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
         if (request.AllowedExtensions != null) entity.AllowedExtensions = request.AllowedExtensions;
         if (request.RequiredExtensions != null) entity.RequiredExtensions = request.RequiredExtensions;
         if (request.MaxValidityHours.HasValue) entity.MaxValidityHours = request.MaxValidityHours.Value;
+        if (request.CertificateType != null) entity.CertificateType = SshProfileCertificateType.Stored(request.CertificateType);
 
         await _db.SaveChangesAsync();
 
         await _audit.LogAsync(AuditActionType.SshCertProfileUpdated, _currentUser.User?.Id, _currentUser.User?.Username,
             "SshCertProfile", id.ToString(),
-            new { entity.Name, entity.MaxPrincipals, entity.MaxValidityHours },
+            new { entity.Name, entity.MaxPrincipals, entity.MaxValidityHours, entity.CertificateType },
             HttpContext.Connection.RemoteIpAddress?.ToString());
 
         return Ok(new { entity.Id, entity.Name });
@@ -509,7 +521,8 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// <summary>
     /// Lists the SSH request profiles whose <c>CertificateAuthorityId</c> resolves to a CA
     /// inside the caller's <see cref="SpaceFence"/>; profiles with a null CA scope are
-    /// surfaced only to an instance-wide caller, who sees all.
+    /// surfaced only to an instance-wide caller, who sees all. Each profile carries its
+    /// <c>certificateType</c>: <c>user</c>, <c>host</c>, or null for either.
     /// </summary>
     [HttpGet("request")]
     [Authorize(Policy = "CaOperator")]
@@ -526,7 +539,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
                     p.Id, p.Name, p.Description,
                     p.AllowedSshSigningProfileIds, p.AllowedSshCertProfileIds,
                     p.RequireApproval, p.MaxValidityHours,
-                    p.CertificateAuthorityId, p.CreatedAt
+                    p.CertificateAuthorityId, p.CertificateType, p.CreatedAt
                 })
                 .ToListAsync();
             return Ok(all);
@@ -547,7 +560,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
                 p.Id, p.Name, p.Description,
                 p.AllowedSshSigningProfileIds, p.AllowedSshCertProfileIds,
                 p.RequireApproval, p.MaxValidityHours,
-                p.CertificateAuthorityId, p.CreatedAt
+                p.CertificateAuthorityId, p.CertificateType, p.CreatedAt
             }).ToListAsync();
         return Ok(profiles);
     }
@@ -556,7 +569,8 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// Retrieves a single SSH request profile by its identifier. Enforces the
     /// space fence on the profile's <c>CertificateAuthorityId</c>; profiles with null CA
     /// scope are visible only to system admins. Cross-space or null-scope-non-admin
-    /// requests collapse to 404 and emit a failure audit row.
+    /// requests collapse to 404 and emit a failure audit row. The profile carries its
+    /// <c>certificateType</c>: <c>user</c>, <c>host</c>, or null for either.
     /// </summary>
     [HttpGet("request/{id:guid}")]
     [Authorize(Policy = "CaOperator")]
@@ -578,7 +592,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
             profile.Id, profile.Name, profile.Description,
             profile.AllowedSshSigningProfileIds, profile.AllowedSshCertProfileIds,
             profile.RequireApproval, profile.MaxValidityHours,
-            profile.CertificateAuthorityId, profile.CreatedAt
+            profile.CertificateAuthorityId, profile.CertificateType, profile.CreatedAt
         });
     }
 
@@ -587,6 +601,8 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// fenced before any row is written; null-CA (system-wide) rows may only be created
     /// by system admins. Failure paths emit a failure audit row. Step-up MFA is required
     /// because request profiles gate which signing/cert profiles a space can invoke.
+    /// <c>certificateType</c> is <c>user</c>, <c>host</c> or <c>either</c>; omitted, either.
+    /// Anything else is 400.
     /// </summary>
     [HttpPost("request")]
     [Authorize]
@@ -595,6 +611,9 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     public async Task<IActionResult> CreateRequestProfile([FromBody] CreateSshRequestProfileRequest request)
     {
         await _currentUser.EnsureLoadedAsync();
+
+        if (SshProfileCertificateType.Error(request.CertificateType) is { } typeError)
+            return BadRequest(new { error = typeError });
 
         (Guid CaId, Guid? SpaceId)? fence = null;
         if (request.CertificateAuthorityId.HasValue)
@@ -623,6 +642,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
             RequireApproval = request.RequireApproval ?? false,
             MaxValidityHours = request.MaxValidityHours ?? 720,
             CertificateAuthorityId = request.CertificateAuthorityId,
+            CertificateType = SshProfileCertificateType.Stored(request.CertificateType),
         };
 
         _db.SshRequestProfiles.Add(entity);
@@ -630,7 +650,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
 
         await _audit.LogAsync(AuditActionType.SshRequestProfileCreated, _currentUser.User?.Id, _currentUser.User?.Username,
             "SshRequestProfile", entity.Id.ToString(),
-            new { entity.Name, entity.RequireApproval, entity.MaxValidityHours, entity.CertificateAuthorityId },
+            new { entity.Name, entity.RequireApproval, entity.MaxValidityHours, entity.CertificateAuthorityId, entity.CertificateType },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: fence?.CaId,
             spaceId: fence?.SpaceId);
@@ -645,6 +665,8 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// Moving a profile to/from null-CA scope requires system admin. Failure paths
     /// emit a failure audit row. Step-up MFA is required because changes alter which SSH
     /// signing/cert bundles a space can invoke during enrollment.
+    /// <c>certificateType</c>, when sent, is <c>user</c>, <c>host</c> or <c>either</c>, which
+    /// clears the type; anything else is 400.
     /// </summary>
     [HttpPut("request/{id:guid}")]
     [Authorize(Policy = "CaOperator")]
@@ -660,6 +682,9 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
             await EmitFenceDeniedAsync("SshRequestProfile", id, "UpdateRequestProfile");
             return NotFound();
         }
+
+        if (SshProfileCertificateType.Error(request.CertificateType) is { } typeError)
+            return BadRequest(new { error = typeError });
 
         // Capture an audit anchor for the existing CA (may be null for system-wide rows).
         (Guid CaId, Guid? SpaceId)? fence = entity.CertificateAuthorityId.HasValue
@@ -688,12 +713,13 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
         if (request.RequireApproval.HasValue) entity.RequireApproval = request.RequireApproval.Value;
         if (request.MaxValidityHours.HasValue) entity.MaxValidityHours = request.MaxValidityHours.Value;
         if (request.CertificateAuthorityId.HasValue) entity.CertificateAuthorityId = request.CertificateAuthorityId.Value;
+        if (request.CertificateType != null) entity.CertificateType = SshProfileCertificateType.Stored(request.CertificateType);
 
         await _db.SaveChangesAsync();
 
         await _audit.LogAsync(AuditActionType.SshRequestProfileUpdated, _currentUser.User?.Id, _currentUser.User?.Username,
             "SshRequestProfile", id.ToString(),
-            new { entity.Name, entity.RequireApproval, entity.MaxValidityHours, entity.CertificateAuthorityId },
+            new { entity.Name, entity.RequireApproval, entity.MaxValidityHours, entity.CertificateAuthorityId, entity.CertificateType },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: fence?.CaId,
             spaceId: fence?.SpaceId);
@@ -840,6 +866,8 @@ public class CreateSshCertProfileRequest
     public string? RequiredExtensions { get; set; }
     /// <summary>Maximum validity hours.</summary>
     public int? MaxValidityHours { get; set; }
+    /// <summary>The certificate type the profile is for: <c>user</c>, <c>host</c> or <c>either</c>; omitted, either.</summary>
+    public string? CertificateType { get; set; }
 }
 
 /// <summary>Request model for updating an SSH certificate profile (all fields optional).</summary>
@@ -859,6 +887,8 @@ public class UpdateSshCertProfileRequest
     public string? RequiredExtensions { get; set; }
     /// <summary>New maximum validity hours.</summary>
     public int? MaxValidityHours { get; set; }
+    /// <summary>New certificate type: <c>user</c>, <c>host</c>, or <c>either</c> to clear it; omitted, unchanged.</summary>
+    public string? CertificateType { get; set; }
 }
 
 /// <summary>Request model for creating an SSH request profile.</summary>
@@ -878,6 +908,8 @@ public class CreateSshRequestProfileRequest
     public int? MaxValidityHours { get; set; }
     /// <summary>Optional CA ID for access scoping.</summary>
     public Guid? CertificateAuthorityId { get; set; }
+    /// <summary>The certificate type the profile is for: <c>user</c>, <c>host</c> or <c>either</c>; omitted, either.</summary>
+    public string? CertificateType { get; set; }
 }
 
 /// <summary>Request model for updating an SSH request profile (all fields optional).</summary>
@@ -897,4 +929,6 @@ public class UpdateSshRequestProfileRequest
     public int? MaxValidityHours { get; set; }
     /// <summary>New CA ID for access scoping.</summary>
     public Guid? CertificateAuthorityId { get; set; }
+    /// <summary>New certificate type: <c>user</c>, <c>host</c>, or <c>either</c> to clear it; omitted, unchanged.</summary>
+    public string? CertificateType { get; set; }
 }

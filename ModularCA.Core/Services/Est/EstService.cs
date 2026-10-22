@@ -597,7 +597,7 @@ public class EstService : IEstService, IEnrollmentProtocol
     /// </summary>
     /// <summary>
     /// Proves that a presented client certificate was issued by the CA being enrolled against and
-    /// has not been revoked. Calls <paramref name="reject"/> (which must throw) on any failure.
+    /// has been neither revoked nor retired. Calls <paramref name="reject"/> (which must throw) on any failure.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -675,11 +675,14 @@ public class EstService : IEstService, IEnrollmentProtocol
             var serialMatches = await _db.Certificates
                 .AsNoTracking()
                 .Where(c => c.SerialNumber == clientSerialHex)
-                .Select(c => new { c.IssuerCertificateId, c.Revoked })
+                .Select(c => new { c.IssuerCertificateId, c.Revoked, c.RetiredAt })
                 .ToListAsync();
             if (serialMatches.Any(c => c.Revoked
                     && (c.IssuerCertificateId == null || c.IssuerCertificateId == verifiedIssuerCertificateId)))
                 await reject("Client certificate has been revoked and cannot be used for enrollment.");
+            if (serialMatches.Any(c => c.RetiredAt != null
+                    && (c.IssuerCertificateId == null || c.IssuerCertificateId == verifiedIssuerCertificateId)))
+                await reject("Client certificate was retired and cannot be used for enrollment; enroll a new certificate with another credential.");
         }
 
         return verifiedIssuerCertificateId;

@@ -257,6 +257,9 @@ public class InfraController(
         if (certInfo.Revoked)
             return BadRequest(new { error = "Cannot renew a revoked certificate." });
 
+        if (certInfo.RetiredAt != null)
+            return Conflict(new { error = CertificateIssuanceService.RetiredMessage, code = ModularCA.Shared.Errors.ErrorCodes.CertificateRetired });
+
         // Look up the certificate entity to get profile IDs
         var certEntity = await _db.Certificates
             .AsNoTracking()
@@ -425,12 +428,19 @@ public class InfraController(
     // ���──────────────────────── Helpers ─────────────────────────
 
     /// <summary>
+    /// The key this request was admitted with, and the CAs it reaches: a named key's own scope
+    /// within the integration's, or the integration's (<see cref="IntegrationApiConfig.SpaceScope"/>).
+    /// </summary>
+    private ModularCA.Core.Services.IntegrationCaller Caller =>
+        ModularCA.API.Filters.IntegrationKeyGate.CallerOf(HttpContext, _config.IntegrationApi.SpaceScope());
+
+    /// <summary>
     /// AUTH-06: the CAs inside the key's space scope: every CA when it is unset, the instance's
     /// with <c>instance</c>, one space's with a space id, and none for any other value.
     /// </summary>
     private IQueryable<ModularCA.Shared.Entities.CertificateAuthorityEntity> InScope(IQueryable<ModularCA.Shared.Entities.CertificateAuthorityEntity> cas)
     {
-        var scope = _config.IntegrationApi.SpaceScope();
+        var scope = Caller.Scope;
         var everything = scope.Kind == IntegrationScopeKind.Everything;
         var instanceOnly = scope.Kind == IntegrationScopeKind.Instance;
         var spaceId = scope.Kind == IntegrationScopeKind.Space ? scope.SpaceId : null;
@@ -445,7 +455,7 @@ public class InfraController(
     /// </summary>
     private async Task<IActionResult?> VerifySigningProfileSpaceAsync(Guid signingProfileId)
     {
-        var scope = _config.IntegrationApi.SpaceScope();
+        var scope = Caller.Scope;
         if (!scope.IsRestricted)
             return null;
 
@@ -497,7 +507,7 @@ public class InfraController(
 
     private async Task<IActionResult?> VerifyCertificateSpaceBySerialAsync(string serial)
     {
-        if (!_config.IntegrationApi.SpaceScope().IsRestricted)
+        if (!Caller.Scope.IsRestricted)
             return null;
 
         var certEntity = await _db.Certificates
