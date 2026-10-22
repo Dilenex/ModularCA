@@ -953,9 +953,8 @@ features:
                     one with none is refused. A DSA public key is refused. And a KRL download always answers 200 with a
                     valid KRL, also when nothing is revoked, where the public route used to answer 204 with no body.
                     That list is now the same bytes until a certificate of the key is revoked, and a request that names
-                    its ETag is answered 304, so a host can poll it every minute. The fetcher for SSH servers that
-                    ships with this release does; the Admin UI guide has it under &ldquo;Getting the revocation list
-                    to hosts&rdquo;.
+                    its ETag is answered 304, so a host can poll it often. The Admin UI guide has how a host is given
+                    the list under &ldquo;Getting the revocation list to hosts&rdquo;.
                 </p>
 
                 <h3 className="text-lg font-semibold text-ink mb-2">Login names and the name in host logs</h3>

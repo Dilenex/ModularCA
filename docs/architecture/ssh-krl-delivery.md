@@ -184,6 +184,11 @@ case, so the fetcher refuses and the operator decides.
 
 ## Console and docs
 
+**On hold (2026-10-21):** the fetcher is not yet proven on a host, so the console and the docs
+site do not offer it. The key page and "Getting the revocation list to hosts" say to copy the
+list by hand; the fetcher's files still ship. The list below is what they showed, and what
+returns once the fetcher is taken up again.
+
 - **SSH CA key page** (`SshCaKeyDetail.tsx`, helpers in `sshKrl.ts`): a "Revocation list (KRL)"
   section with the URL, the version, the last revocation, and for a user CA "Set up a host": the
   commands with the key's URL filled in, in the bootstrap order. The admin key list carries

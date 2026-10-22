@@ -15,7 +15,7 @@ import { actionButton, actionButtonDanger } from '@shared/components/actionButto
 import { signBlockedReason, sshKeyCustody } from './sshKeyCustody';
 import { SshPlaintextNoticePanel, useSshPlaintextNotice } from '../components/SshPlaintextNotice';
 import { SshKeyLoginNames } from '../components/SshLoginNameGrants';
-import { KRL_DESTINATION, KRL_FETCHER_DIRECTORY, krlHostSetupCommands, krlLastRevocationText, krlVersionText } from './sshKrl';
+import { KRL_DESTINATION, krlLastRevocationText, krlVersionText } from './sshKrl';
 import { Capabilities } from '@shared/generated';
 import { useAuth } from '../context/AuthContext';
 import { FieldHint, inputClassNarrow, labelClass } from '@shared/components/forms';
@@ -114,8 +114,7 @@ const SshCaKeyReviewSection: React.FC<{ caKey: any; onMoved: () => void }> = ({ 
 /// <summary>
 /// Detail page for a single SSH CA key, under Authorities: shows algorithm, validity, public key, its advisory review
 /// date, where the private key is held, its login names, its revocation list (the KRL's URL,
-/// version and last revocation, and the commands that set a host up to fetch it) and integration
-/// hints, with download / disable actions in the action bar. A key that was a plaintext file on
+/// version and last revocation, and how a host is given it) and integration hints, with download / disable actions in the action bar. A key that was a plaintext file on
 /// the node also carries the plaintext notice. The key itself is not edited in place, so the page
 /// is View-only (Edit disabled); the Review section moves the review date and the Login names
 /// section changes the grants, where the reader may manage the SSH CA.
@@ -272,23 +271,13 @@ const SshCaKeyDetail: React.FC = () => {
                             <DetailField label="KRL URL" value={key.krlUrl} mono />
                             <DetailField label="Version" value={krlVersionText(key)} />
                             <DetailField label="Last revocation" value={krlLastRevocationText(key, formatDate)} />
-                            <DetailField label="What it means" value="A certificate revoked here is refused by a host only once that host has fetched the new list. The list stays the same, version included, until a certificate of this key is revoked, so a host can ask for it every minute: an unchanged list is answered 304 Not Modified." />
+                            <DetailField label="What it means" value="A certificate revoked here is refused by a host only once that host has the new list. The list stays the same, version included, until a certificate of this key is revoked: an unchanged list is answered 304 Not Modified." />
+                            {key.isUserCa && (
+                                <DetailField label="On a host" value={<>
+                                    sshd reads the list from the file <code className="text-accent-ink">RevokedKeys</code> names and does not fetch it. Copy the list to each host, from Download KRL or the KRL URL, as <code className="text-accent-ink">{KRL_DESTINATION}</code>, and again after each revocation. sshd refuses every public-key login while that file is missing, so copy it before adding the line to sshd_config.
+                                </>} />
+                            )}
                         </div>
-                        {key.isUserCa && (
-                            <div className="mt-3 p-3 bg-ground rounded-lg max-w-4xl">
-                                <p className="text-ink text-xs font-semibold mb-2">Set up a host</p>
-                                <p className="text-xs text-ink-muted mb-2">
-                                    sshd reads the list from the file <code className="text-accent-ink">RevokedKeys</code> names and does not fetch it. The fetcher shipped with the CA does, once a minute. Its four files are on the CA host in <code className="text-accent-ink">{KRL_FETCHER_DIRECTORY}</code>. Copy them to the host, then run these there as root, in this order. The host needs curl and OpenSSH 8.0 or later.
-                                </p>
-                                <pre className="text-ink data-mono whitespace-pre overflow-x-auto">{krlHostSetupCommands(key.krlUrl)}</pre>
-                                <div className="flex gap-2 mt-2">
-                                    <button onClick={() => { navigator.clipboard.writeText(krlHostSetupCommands(key.krlUrl)); }} className="text-xs text-accent-ink hover:underline">Copy commands</button>
-                                </div>
-                                <p className="text-xs text-ink-muted mt-2">
-                                    sshd refuses every public-key login while the file <code className="text-accent-ink">RevokedKeys</code> names is missing, which is why the first fetch comes before the line in sshd_config. Once set up, a failed fetch leaves <code className="text-accent-ink">{KRL_DESTINATION}</code> as it is and shows in <code className="text-accent-ink">systemctl --failed</code>. After the CA's database is restored from a backup the list's version can be lower than a host's; the fetcher refuses that until it is run once with <code className="text-accent-ink">--allow-lower-version</code>.
-                                </p>
-                            </div>
-                        )}
                     </DetailSection>
                 )}
 
@@ -298,7 +287,7 @@ const SshCaKeyDetail: React.FC = () => {
                             <p><span className="text-ink font-medium">User CA:</span> Add to <code className="text-accent-ink">TrustedUserCAKeys</code> in sshd_config. A host lets a certificate in when one of its login names is the account being logged in to, or is listed for that account in <code className="text-accent-ink">AuthorizedPrincipalsFile</code>.</p>
                         )}
                         {key.isUserCa && key.krlUrl && (
-                            <p><span className="text-ink font-medium">Revocation:</span> Each host fetches the revocation list above and names the file in <code className="text-accent-ink">RevokedKeys</code>. A certificate revoked here is refused only once the host has the new list.</p>
+                            <p><span className="text-ink font-medium">Revocation:</span> Each host holds a copy of the revocation list above and names the file in <code className="text-accent-ink">RevokedKeys</code>. A certificate revoked here is refused only once the host has the new list.</p>
                         )}
                         {key.isHostCa && (
                             <p><span className="text-ink font-medium">Host CA:</span> Add to <code className="text-accent-ink">known_hosts</code> with <code className="text-accent-ink">@cert-authority * {key.publicKey?.split(' ').slice(0, 2).join(' ')}...</code></p>

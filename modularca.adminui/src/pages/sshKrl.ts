@@ -4,7 +4,7 @@
  *
  * The files the commands install are shipped with the CA, in KRL_FETCHER_DIRECTORY on the CA
  * host (deploy/ssh-krl in the source tree). The script's own header is the reference for its
- * options; this page only gives the order that keeps sshd reachable.
+ * options. The console does not offer the fetcher for now, so the page shows no commands.
  */
 
 /** What `GET /api/v1/admin/ssh/ca-keys` says about one SSH CA key's KRL. */
