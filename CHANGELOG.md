@@ -10,6 +10,24 @@ Builds between release candidates are numbered after the candidate they follow: 
 `0.4.2-rc.1.2` and so on. They go to test hosts, and are neither tagged nor published. What they
 change is listed here and becomes the next candidate's section.
 
+### 0.4.2-rc.1.2 — 2026-10-21
+
+On top of `0.4.2-rc.1.1`.
+
+**Changed**
+
+- **A signed SSH certificate opens on its own page.** Signing a key on the SSH tab of Request
+  Certificate showed the certificate above the form, where the next signature replaced it. The
+  certificate's page now opens instead, with the certificate to copy or download, where to save
+  it and a link to sign another. Self-service does the same: requesting a certificate opens a
+  new page for it, which My Certificates also links from each row of its SSH tab.
+
+**Fixed**
+
+- **A host certificate was explained as a user's.** The signed-certificate notice said to save
+  every certificate as `~/.ssh/id_…-cert.pub`. A host certificate is now named for its host key in
+  `/etc/ssh`, with the `HostCertificate` line `sshd_config` needs, and downloads under that name.
+
 ### 0.4.2-rc.1.1 — 2026-10-21
 
 Fixes found on the test hosts and in a production install of `0.4.2-rc.1.0`, on top of it.
