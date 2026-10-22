@@ -13,6 +13,7 @@ using Org.BouncyCastle.Asn1.Cms;
 using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.Cms;
 using Org.BouncyCastle.Crypto;
+using Org.BouncyCastle.Operators.Utilities;
 using Org.BouncyCastle.Security;
 using Org.BouncyCastle.X509;
 using Org.BouncyCastle.X509.Store;
@@ -1204,7 +1205,9 @@ public class ScepService : IScepService, IEnrollmentProtocol
 
     /// <summary>
     /// Builds the CMS SignedData of a CertRep: the SCEP attributes, the content digest, and a
-    /// signature over the signed attributes made by the signer with the CA key.
+    /// signature over the signed attributes made by the signer with the CA key. The SignerInfo
+    /// names the algorithm the signer used, with its parameters (RSASSA-PSS needs them), not the
+    /// one the CA certificate was signed with.
     /// </summary>
     private async Task<byte[]> BuildScepResponse(
         X509Certificate caCert,
@@ -1258,8 +1261,8 @@ public class ScepService : IScepService, IEnrollmentProtocol
         var content = encapsulatedContent ?? [];
         var cmsContentInfo = new Org.BouncyCastle.Asn1.Cms.ContentInfo(PkcsOids.Data, new DerOctetString(content));
 
-        var sigAlgOid = caCert.SigAlgOid;
         var resolvedSigAlg = CertificateUtil.NormalizeSigAlgName(KeyAlgorithmPolicy.ResolveSignatureAlgorithmForKey(caCert.GetPublicKey()));
+        var signatureAlgorithm = DefaultSignatureAlgorithmFinder.Instance.Find(resolvedSigAlg);
         var digestAlgOid = GetDigestAlgOid(resolvedSigAlg);
 
         // Compute digest of the content
@@ -1289,7 +1292,7 @@ public class ScepService : IScepService, IEnrollmentProtocol
             new SignerIdentifier(issuerAndSerial),
             new AlgorithmIdentifier(new DerObjectIdentifier(digestAlgOid)),
             signedAttrSet,
-            new AlgorithmIdentifier(new DerObjectIdentifier(sigAlgOid)),
+            signatureAlgorithm,
             new DerOctetString(signature),
             null); // unsignedAttributes
 
