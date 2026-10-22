@@ -121,7 +121,7 @@ confirmed at source before the next release is distributed.
 | [System.DirectoryServices.Protocols](https://dot.net/) | 10.0.12 | MIT | © Microsoft Corporation. All rights reserved. |
 | [System.IdentityModel.Tokens.Jwt](https://github.com/AzureAD/azure-activedirectory-identitymodel-extensions-for-dotnet) | 8.22.0 | MIT | © Microsoft Corporation. All rights reserved. |
 | [System.IO.Hashing](https://dot.net/) | 8.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
-| [System.Security.Cryptography.Pkcs](https://dot.net/) | 10.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
+| [System.Security.Cryptography.Pkcs](https://dot.net/) | 10.0.13 | MIT | © Microsoft Corporation. All rights reserved. |
 | [YamlDotNet](https://github.com/aaubry/YamlDotNet/wiki) | 16.3.0 | MIT | Copyright (c) Antoine Aubry and contributors |
 | [Yarp.ReverseProxy](https://github.com/dotnet/yarp) | 2.3.0 | MIT | © Microsoft Corporation. All rights reserved. |
 
