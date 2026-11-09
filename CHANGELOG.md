@@ -199,6 +199,17 @@ ones left for 0.4.4, are in `docs/plans/bug-hunt-2026-11.md`.
   answered a wrong code with 401, which the console reads as the end of the session, so a typo
   during first-time setup or on the security page signed the user out. It now answers 400 and the
   form asks again.
+- **The signer no longer watches its JSON configuration files.** It is configured from YAML, but
+  its web host still put an inotify watch on `appsettings.json`, using up one of the 128 a Linux
+  user gets by default. It now reads them once.
+- **A configuration file made read-only stays read-only.** Since secret files became owner-only
+  from creation, rewriting an existing one first set it to mode 0600, which also gave a file its
+  owner had made read-only its write bit back, so `modularca-migrate` and the other writers
+  overwrote it. Only the group's and others' rights are taken away now; a read-only file is
+  refused and reported, as before.
+- **The deploy guide asks for PostgreSQL client tools at the server's major version.** It said
+  "or newer", but a `pg_restore` of 17 or later cannot restore into an older server, so a
+  backup taken on such a host could not be restored there.
 
 ### Security
 

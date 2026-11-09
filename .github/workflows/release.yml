@@ -53,6 +53,17 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      # The backup and restore tests run pg_dump and pg_restore from the PATH. The runner's own
+      # client is newer than this server, and a pg_restore of 17 or later issues
+      # SET transaction_timeout, which a 16 server refuses. Use the server's own major.
+      - name: PostgreSQL 16 client tools
+        run: |
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-16
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+          /usr/lib/postgresql/16/bin/pg_restore --version
+
       # The dist build runs `dotnet publish`, whose BuildWebUIs target installs and builds the five
       # SPAs itself, so node has to be present but there is no separate npm ci step here.
       - uses: actions/setup-node@v4

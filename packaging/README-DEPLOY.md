@@ -718,7 +718,12 @@ The node takes one every day at 02:00 UTC and keeps the last ten (`Backup.Schedu
     sudo -u modularca /opt/modularca/ModularCA.API --backup
 
 `pg_dump` and `pg_restore` must be on the PATH of the account that runs ModularCA, at the
-server's major version or newer. A backup that cannot dump a database stops and writes no
+server's major version. A newer `pg_dump` writes archives an older `pg_restore` cannot read,
+and a `pg_restore` of 17 or later cannot restore into a server older than 17 (it sets
+`transaction_timeout`, which the server refuses). On Debian and Ubuntu with PGDG packages,
+`postgresql-client-<major>` installs the tools under `/usr/lib/postgresql/<major>/bin`; put that
+directory first on the service account's PATH if a newer client is also installed. A backup
+that cannot dump a database stops and writes no
 archive; the scheduled job raises a `BackupFailed` alert. One `pg_dump` or `pg_restore` run may
 take up to `Backup.DatabaseTimeoutMinutes` (60).
 

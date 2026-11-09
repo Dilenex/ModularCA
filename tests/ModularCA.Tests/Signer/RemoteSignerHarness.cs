@@ -60,6 +60,9 @@ internal sealed class HostedSigner : IAsyncDisposable
     public Uri Endpoint { get; }
     public int Port => Endpoint.Port;
 
+    /// <summary>The hosted signer's configuration, for tests of how the host is built.</summary>
+    internal Microsoft.Extensions.Configuration.IConfiguration Configuration => _app.Configuration;
+
     private HostedSigner(WebApplication app, Uri endpoint)
     {
         _app = app;
