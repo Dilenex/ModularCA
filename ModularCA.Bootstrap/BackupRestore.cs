@@ -102,7 +102,9 @@ public static class BackupRestore
     /// The archived <c>config.yaml</c> never carries a <c>DB</c> section: the credentials stay in
     /// <c>db.yaml</c>, which no archive carries. A database that cannot be dumped ends the backup
     /// with no archive, and the encryption key is loaded before any plaintext archive exists; one
-    /// left unencrypted by a later failure is deleted.
+    /// left unencrypted by a later failure is deleted. Everything is staged in a fresh owner-only
+    /// directory (<see cref="CreateBackupStagingDirectory"/>), removed when the backup ends; one
+    /// that cannot be created owner-only ends the backup before anything is staged.
     /// </summary>
     /// <param name="outputPath">
     /// Optional explicit path for the output archive. When null, the archive goes to the configured
@@ -135,13 +137,20 @@ public static class BackupRestore
         var archivePath = ResolveArchivePath(outputPath, AppContext.BaseDirectory, config.Backup?.OutputPath, backupName);
         EnsureOwnerOnlyDirectory(Path.GetDirectoryName(archivePath)!);
 
-        var backupDir = Path.Combine(Path.GetTempPath(), backupName);
-        Directory.CreateDirectory(backupDir);
-        // Plaintext keystores and config are copied in here before the archive is encrypted.
-        // GetTempPath is /tmp on Linux, which is world-readable, so without this every local
-        // user can read the CA private keys for the duration of the backup. Hardening only the
-        // finished archive (further down) does nothing for the plaintext staged beside it.
-        FileSecurityUtil.SetDirectoryOwnerOnly(backupDir);
+        // Plaintext keystores and config are copied in here before the archive is encrypted, so
+        // a staging directory nobody else can read is a precondition, not a nicety: see
+        // CreateBackupStagingDirectory. Without one the backup stops before writing anything.
+        string backupDir;
+        try
+        {
+            backupDir = CreateBackupStagingDirectory();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            Console.WriteLine($"❌ Could not create a staging directory only this user can read: {ex.Message}");
+            Console.WriteLine("   Backup stopped before anything was staged.");
+            return 1;
+        }
         string? plaintextArchive = null;
 
         try
@@ -504,10 +513,18 @@ public static class BackupRestore
     /// replaced. The CRL counters are raised and every CRL configuration made due
     /// (<see cref="CrlNumberFloor"/>), and this host's self-issued Web TLS certificate file is
     /// removed: the node issues a new one at its next start.
+    /// The audit database is left as it is unless <paramref name="restoreAudit"/> asks for the
+    /// archive's audit trail: audit history survives a restore, as it survives a reset, unless
+    /// the operator deliberately replaces it.
     /// Supports both the new <c>.enc</c> format (magic "MCAB" + mode marker + scrypt header) and
     /// the legacy format (<c>[nonce][tag][ciphertext]</c>) for backward compatibility.
     /// </summary>
     /// <param name="archivePath">Path to the backup .zip or .enc (encrypted) archive.</param>
+    /// <param name="restoreAudit">
+    /// Whether the archive's audit database replaces this host's (<c>--restore-audit</c>). False,
+    /// the default, keeps the live audit history and records the restore in it; true is for
+    /// rebuilding a host whose own audit database is empty or lost.
+    /// </param>
     /// <param name="skipSchemaCheck">When true, bypasses schema version validation (use with caution).</param>
     /// <param name="providedPassword">
     /// Optional plain-text password for disaster-recovery restoration of a StoredPassword-mode archive
@@ -525,7 +542,7 @@ public static class BackupRestore
     /// confirmation (step-up MFA + single-use restore token) and the prompt is skipped.
     /// </param>
     /// <returns>0 on success, non-zero on failure.</returns>
-    public static async Task<int> Restore(string archivePath, Func<string, ISigningService> signerForAppDatabase, bool skipSchemaCheck = false, string? providedPassword = null, bool interactive = true)
+    public static async Task<int> Restore(string archivePath, Func<string, ISigningService> signerForAppDatabase, bool skipSchemaCheck = false, string? providedPassword = null, bool interactive = true, bool restoreAudit = false)
     {
         ArgumentNullException.ThrowIfNull(signerForAppDatabase);
         if (!File.Exists(archivePath))
@@ -768,7 +785,9 @@ public static class BackupRestore
             // and a single-use restore token before reaching this point.
             if (interactive)
             {
-                Console.Write("\n⚠️  This will OVERWRITE current config, keystores, and databases. Type [RESTORE] to confirm: ");
+                Console.Write(restoreAudit
+                    ? "\n⚠️  This will OVERWRITE current config, keystores, the application database AND the audit database. Type [RESTORE] to confirm: "
+                    : "\n⚠️  This will OVERWRITE current config, keystores and the application database (the audit database is kept). Type [RESTORE] to confirm: ");
                 if (Console.ReadLine()?.Trim() != "RESTORE")
                 {
                     Console.WriteLine("❌ Restore cancelled.");
@@ -840,11 +859,23 @@ public static class BackupRestore
 
             // 1. Restore databases. Each is one transaction, so one that fails is left as it was;
             // either failure ends the restore before a keystore or a config file is replaced.
-            // The audit database goes first: when it fails, nothing at all has changed.
+            // The audit database is replaced only when asked (--restore-audit), and then goes
+            // first: when it fails, nothing at all has changed. Otherwise the live audit history
+            // stays, and the restore is recorded in it below.
             var toolTimeoutMs = DatabaseToolTimeoutMs(backupConfig.Backup);
             var auditDump = Path.Combine(restoreDir, AuditDumpFileName);
             var auditRestored = false;
-            if (File.Exists(auditDump))
+            if (!restoreAudit)
+            {
+                Console.WriteLine(File.Exists(auditDump)
+                    ? "  (i) Keeping this host's audit database: the archive's audit trail is not restored (--restore-audit replaces it)."
+                    : "  (i) Keeping this host's audit database; the archive holds no audit trail.");
+            }
+            else if (!File.Exists(auditDump))
+            {
+                Console.WriteLine("  ⚠ --restore-audit was given, but the archive holds no audit database; this host's audit database is kept.");
+            }
+            else
             {
                 if (!await RestoreDatabaseAsync("audit", target.DB.Audit, auditDump, ensureCitext: false, toolTimeoutMs))
                 {
@@ -1390,6 +1421,24 @@ public static class BackupRestore
         var path = string.IsNullOrWhiteSpace(configuredOutputPath) ? "backups" : configuredOutputPath;
         return Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(baseDirectory, path));
     }
+
+    /// <summary>
+    /// Creates the directory a backup stages its database dumps, keystores and configuration in
+    /// before they are zipped and encrypted, and returns its path: a new directory under the
+    /// temporary directory with an unpredictable name, owner-only from the moment it exists
+    /// (<see cref="FileSecurityUtil.CreateOwnerOnlyTempDirectory"/>). Throws when it cannot be
+    /// created or restricted, which ends the backup.
+    /// <para>
+    /// It used to be <c>/tmp/modularca-backup-&lt;timestamp&gt;</c>, a name any local user could
+    /// predict and create first, and a failure to restrict it was only a warning, so the
+    /// plaintext could be staged in a directory another user owned or could read.
+    /// </para>
+    /// </summary>
+    /// <returns>The full path of the new, empty staging directory.</returns>
+    /// <exception cref="IOException">The directory could not be created or restricted to its owner.</exception>
+    /// <exception cref="UnauthorizedAccessException">The directory's permissions could not be read or set.</exception>
+    internal static string CreateBackupStagingDirectory()
+        => FileSecurityUtil.CreateOwnerOnlyTempDirectory("modularca-backup-");
 
     /// <summary>
     /// The absolute path a backup archive is written to: <paramref name="outputPath"/> when one

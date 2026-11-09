@@ -254,7 +254,7 @@ if (args.Contains("--restore", StringComparer.OrdinalIgnoreCase))
     var archivePath = args.SkipWhile(a => !a.Equals("--restore", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
     if (string.IsNullOrWhiteSpace(archivePath))
     {
-        Console.WriteLine("Usage: --restore <backup-archive.enc> [--password <password>]");
+        Console.WriteLine("Usage: --restore <backup-archive.enc> [--password <password>] [--restore-audit]");
         Environment.Exit(1);
     }
 
@@ -336,8 +336,10 @@ if (args.Contains("--restore", StringComparer.OrdinalIgnoreCase))
         Environment.Exit(1);
     }
 
-    Log.Warning("Operator triggered restore (--restore) archive={ArchivePath}", archivePath);
-    var exitCode = await BackupRestore.Restore(archivePath, MaintenanceSignerFor, skipSchemaCheck: false, providedPassword: providedPassword);
+    // The audit database is kept unless --restore-audit asks for the archive's audit trail.
+    var restoreAudit = args.Contains("--restore-audit", StringComparer.OrdinalIgnoreCase);
+    Log.Warning("Operator triggered restore (--restore) archive={ArchivePath} restoreAudit={RestoreAudit}", archivePath, restoreAudit);
+    var exitCode = await BackupRestore.Restore(archivePath, MaintenanceSignerFor, skipSchemaCheck: false, providedPassword: providedPassword, restoreAudit: restoreAudit);
     Environment.Exit(exitCode);
 }
 if (args.Contains("--backfill-keystore-pins", StringComparer.OrdinalIgnoreCase))

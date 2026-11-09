@@ -218,6 +218,92 @@ public static class FileSecurityUtil
     }
 
     /// <summary>
+    /// Creates a new, empty directory under <see cref="Path.GetTempPath"/> for staging secrets,
+    /// with an unpredictable name (<paramref name="prefix"/> plus a random suffix) and restricted
+    /// to its owner from the start, and returns its full path. Unlike
+    /// <see cref="SetDirectoryOwnerOnly"/>, a directory that cannot be restricted is an error, not
+    /// a warning: it is deleted and the call throws, so the caller stages nothing.
+    /// <para>
+    /// On POSIX the directory comes from <see cref="Directory.CreateTempSubdirectory"/>, which
+    /// creates it atomically with a fresh random name and mode 0700 (<c>mkdtemp</c>), so no other
+    /// user can have created it first or open it in between. A predictable name under
+    /// <c>/tmp</c> is not safe even when chmodded: another local user can create it before the
+    /// backup does, <see cref="Directory.CreateDirectory(string)"/> then reuses it silently, and
+    /// the chmod fails on a directory that user owns. On Windows the owner-only DACL of
+    /// <see cref="SetDirectoryOwnerOnly"/> is applied before the path is returned. On every
+    /// platform the result is checked with <see cref="EnsureDirectoryOwnerOnly"/>.
+    /// </para>
+    /// </summary>
+    /// <param name="prefix">The start of the directory name, e.g. <c>modularca-backup-</c>.</param>
+    /// <returns>The full path of the new directory.</returns>
+    /// <exception cref="IOException">The directory could not be created, or could not be restricted to its owner.</exception>
+    /// <exception cref="UnauthorizedAccessException">The directory's permissions could not be read or set.</exception>
+    public static string CreateOwnerOnlyTempDirectory(string prefix)
+    {
+        var directory = Directory.CreateTempSubdirectory(prefix).FullName;
+        try
+        {
+            if (OperatingSystem.IsWindows())
+                ApplyWindowsDirectoryOwnerOnlyAcl(directory);
+            EnsureDirectoryOwnerOnly(directory);
+            return directory;
+        }
+        catch
+        {
+            try { Directory.Delete(directory, recursive: true); } catch { /* best effort; the original error matters */ }
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Throws unless <paramref name="directoryPath"/> is reachable by its owner alone. On POSIX
+    /// no group or other permission bit may be set. On Windows the DACL must not inherit from the
+    /// parent folder and may allow access only to the current user and the local Administrators
+    /// group, as <see cref="SetDirectoryOwnerOnly"/> leaves it.
+    /// </summary>
+    /// <param name="directoryPath">The directory to check.</param>
+    /// <exception cref="IOException">Someone other than the owner can reach the directory.</exception>
+    public static void EnsureDirectoryOwnerOnly(string directoryPath)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            EnsureWindowsDirectoryOwnerOnly(directoryPath);
+            return;
+        }
+
+        const UnixFileMode othersBits = UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute
+            | UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
+        var mode = File.GetUnixFileMode(directoryPath);
+        if ((mode & othersBits) != 0)
+            throw new IOException($"'{directoryPath}' is not restricted to its owner (mode {Convert.ToString((int)mode, 8)}).");
+    }
+
+    /// <summary>
+    /// Windows half of <see cref="EnsureDirectoryOwnerOnly"/>: the DACL is protected from
+    /// inheritance and every Allow rule names the current user or the local Administrators group.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private static void EnsureWindowsDirectoryOwnerOnly(string directoryPath)
+    {
+        var security = new DirectoryInfo(directoryPath).GetAccessControl();
+        if (!security.AreAccessRulesProtected)
+            throw new IOException($"'{directoryPath}' inherits permissions from its parent folder.");
+
+        var currentUserSid = WindowsIdentity.GetCurrent().User
+            ?? throw new InvalidOperationException("Cannot resolve current Windows user SID.");
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            currentUserSid.Value,
+            new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null).Value,
+        };
+        foreach (FileSystemAccessRule rule in security.GetAccessRules(includeExplicit: true, includeInherited: true, typeof(SecurityIdentifier)))
+        {
+            if (rule.AccessControlType == AccessControlType.Allow && !allowed.Contains(rule.IdentityReference.Value))
+                throw new IOException($"'{directoryPath}' grants access to {rule.IdentityReference.Value}.");
+        }
+    }
+
+    /// <summary>
     /// Directory counterpart of <see cref="ApplyWindowsOwnerOnlyAcl"/>: replaces the DACL with
     /// explicit Allow ACEs for the current user and local Administrators, disables inheritance,
     /// and marks the entries inheritable so files created inside are covered too.

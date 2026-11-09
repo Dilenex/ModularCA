@@ -132,7 +132,8 @@ public sealed class RestoreDrillTests(ITestOutputHelper output)
             File.Copy(Path.Combine(kit, "backup.key"), Path.Combine(restored.ConfigDirectory, "backup.key"), overwrite: true);
             File.Copy(Path.Combine(kit, "keystore.yaml"), Path.Combine(restored.ConfigDirectory, "keystore.yaml"), overwrite: true);
 
-            var restore = await restored.RunAsync("restore", ["--restore", archiveOnNewHost], stdin: "RESTORE\n");
+            // The new host's audit database is empty, so it takes the archive's audit trail.
+            var restore = await restored.RunAsync("restore", ["--restore", archiveOnNewHost, "--restore-audit"], stdin: "RESTORE\n");
 
             var newDbYaml = restored.Databases();
             Assert.Equal(certificates, await CountAsync(newDbYaml.App, "SELECT count(*) FROM \"Certificates\""));
@@ -172,6 +173,29 @@ public sealed class RestoreDrillTests(ITestOutputHelper output)
                 var chain = await new AuditHashChainService().VerifyAsync(audit, null, limit: 100_000);
                 Assert.Empty(chain.Breaks);
                 Assert.False(chain.Truncated);
+            }
+
+            // A later restore without --restore-audit keeps the audit history this host wrote
+            // after the backup: a record appended now survives it, and the chain stays whole.
+            await restored.StopAsync();
+            await using (var audit = new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+                             .UseNpgsql(PostgresConnection.Build(newDbYaml.Audit)).Options))
+            {
+                await new AuditHashChainService().AppendAsync(audit, new ModularCA.Shared.Entities.AuditLogEntity
+                {
+                    ActionType = "RestoreDrillMarker",
+                    ActorUsername = "restore-drill",
+                    TargetEntityType = "Drill",
+                    Success = true,
+                });
+            }
+            await restored.RunAsync("restore keeping the audit history", ["--restore", archiveOnNewHost], stdin: "RESTORE\n");
+            Assert.Equal(1, await CountAsync(newDbYaml.Audit, "SELECT count(*) FROM \"AuditLogs\" WHERE \"ActionType\" = 'RestoreDrillMarker'"));
+            Assert.Equal(certificates, await CountAsync(newDbYaml.App, "SELECT count(*) FROM \"Certificates\""));
+            await using (var audit = new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+                             .UseNpgsql(PostgresConnection.Build(newDbYaml.Audit)).Options))
+            {
+                Assert.Empty((await new AuditHashChainService().VerifyAsync(audit, null, limit: 100_000)).Breaks);
             }
 
             output.WriteLine($"backup {backup.TotalSeconds:F0}s, restore {restore.TotalSeconds:F0}s, start to serving {start.TotalSeconds:F0}s");

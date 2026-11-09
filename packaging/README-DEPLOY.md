@@ -756,13 +756,19 @@ the price of slower revocation.
 
 ### Restoring onto the same host
 
-`--restore` puts back the databases, the keystores and `config/` from an archive; the console's
-Backup page does the same for an archive in `backups/`. From the command line, with the service
+`--restore` puts back the application database, the keystores and `config/` from an archive;
+the console's Backup page does the same for an archive in `backups/`. From the command line, with the service
 stopped:
 
     sudo systemctl stop modularca
     sudo -u modularca /opt/modularca/ModularCA.API --restore /opt/modularca/backups/<archive>.enc
     sudo systemctl start modularca
+
+**The audit database is kept.** Audit history survives a restore as it survives a reset: the
+live audit database is left as it is, and the restore is recorded in it. To replace it with the
+archive's audit trail instead, add `--restore-audit` (on the Backup page, tick *Also replace the
+audit history with the backup's*). Every audit record made since the backup was taken is then
+lost, so do that only when this host's own audit history is empty or gone.
 
 It asks you to type `RESTORE`. Before it changes anything it writes the live `config/` and
 keystores to `backups/pre-restore-<timestamp>.zip`, owner-only. That file holds every secret in
@@ -790,8 +796,9 @@ without it. A host with no `db.yaml` is refused before anything changes.
      `0600`. Do not start the service.
 3. **Put the kit in place**, owned by `modularca`, `0600`: `keystore.yaml` and `backup.key` in
    `config/`, replacing the ones a fresh install made, and the archive in `backups/`.
-4. **Restore**, as above. For an archive protected by a password, give `--password` or answer
-   the prompt.
+4. **Restore**, as above, adding `--restore-audit` so the new host gets the archive's audit
+   trail; its own audit database is empty. For an archive protected by a password, give
+   `--password` or answer the prompt.
 5. **Start the service.** At this start it unwraps the stored-data secrets the restore staged in
    `config/restore-pending/`, issues its web certificate and publishes a new CRL.
 6. **Check it**, from another machine:

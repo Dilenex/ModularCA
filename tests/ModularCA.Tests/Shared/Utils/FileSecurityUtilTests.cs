@@ -108,6 +108,56 @@ public class FileSecurityUtilTests : IDisposable
     }
 
     [Fact]
+    public void A_new_staging_directory_has_an_unpredictable_name_and_is_owner_only_from_the_start()
+    {
+        const string prefix = "modularca-filesec-";
+        var first = FileSecurityUtil.CreateOwnerOnlyTempDirectory(prefix);
+        var second = FileSecurityUtil.CreateOwnerOnlyTempDirectory(prefix);
+        try
+        {
+            Assert.NotEqual(first, second);
+            foreach (var dir in new[] { first, second })
+            {
+                Assert.True(Directory.Exists(dir));
+                Assert.Empty(Directory.EnumerateFileSystemEntries(dir));
+                Assert.Equal(
+                    Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath())),
+                    Path.GetDirectoryName(dir));
+                var name = Path.GetFileName(dir);
+                Assert.StartsWith(prefix, name);
+                Assert.True(name.Length > prefix.Length, "the name must carry a random suffix");
+
+                if (OperatingSystem.IsWindows())
+                    AssertWindowsOwnerOnly(dir);
+                else
+                    Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(dir));
+            }
+        }
+        finally
+        {
+            foreach (var dir in new[] { first, second })
+                try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact]
+    public void A_directory_others_can_reach_fails_the_owner_only_check_rather_than_warning()
+    {
+        var dir = Path.Combine(_root, "loose");
+        Directory.CreateDirectory(dir);
+        // POSIX: world-readable and traversable. Windows: a new folder under the temp folder
+        // inherits its parent's permissions.
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+
+        Assert.Throws<IOException>(() => FileSecurityUtil.EnsureDirectoryOwnerOnly(dir));
+
+        FileSecurityUtil.SetDirectoryOwnerOnly(dir);
+        FileSecurityUtil.EnsureDirectoryOwnerOnly(dir);
+    }
+
+    [Fact]
     public void File_hardening_still_works_for_the_decrypted_archive()
     {
         var file = Path.Combine(_root, "decrypted.zip");

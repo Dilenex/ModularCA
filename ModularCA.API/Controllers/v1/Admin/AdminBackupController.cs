@@ -263,6 +263,7 @@ public class AdminBackupController(
             _ => _signer,
             skipSchemaCheck: false,
             providedPassword: string.IsNullOrEmpty(request.Password) ? null : request.Password,
+            restoreAudit: request.RestoreAudit,
             interactive: false);
 
         if (exitCode != 0)
@@ -286,7 +287,7 @@ public class AdminBackupController(
             _currentUser.User?.Username,
             targetEntityType: "Backup",
             targetEntityId: sanitized,
-            details: new { archivePath },
+            details: new { archivePath, request.RestoreAudit },
             sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());
 
         _ = _alertService.RaiseAlertAsync("BackupRestored", AlertSeverity.Critical, $"Backup restored from {sanitized} by {_currentUser.User?.Username}", new { FileName = sanitized });
@@ -647,6 +648,13 @@ public class RestoreRequest
     /// by the restore call. Required for the destructive restore endpoint, ignored by preview.
     /// </summary>
     public string? ConfirmationToken { get; set; }
+
+    /// <summary>
+    /// Whether the archive's audit trail replaces this instance's audit database. False (the
+    /// default) keeps the live audit history and records the restore in it; true is for
+    /// rebuilding an instance whose own audit history is empty or lost.
+    /// </summary>
+    public bool RestoreAudit { get; set; }
 }
 
 /// <summary>
