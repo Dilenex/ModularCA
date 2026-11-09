@@ -229,7 +229,8 @@ public class LdapGroupSyncService : ILdapGroupSyncService
 
     /// <summary>
     /// Auto-provisions a new user from LDAP if enabled in configuration.
-    /// Creates the user with a random password hash and syncs group memberships.
+    /// Creates the user with a random password hash and the password source Directory, since its
+    /// password lives in the directory, and syncs group memberships.
     /// </summary>
     public async Task<UserEntity?> AutoProvisionUserAsync(string username, List<string>? ldapGroups)
     {
@@ -242,6 +243,7 @@ public class LdapGroupSyncService : ILdapGroupSyncService
         {
             Username = username,
             PasswordHash = Convert.ToBase64String(RandomNumberGenerator.GetBytes(64)),
+            PasswordSource = Shared.Enums.PasswordSource.Directory,
             IsActive = true,
             CreatedAt = DateTime.UtcNow,
         };

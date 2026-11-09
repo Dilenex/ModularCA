@@ -12,10 +12,12 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
 import TemporaryPasswordModal from '../components/TemporaryPasswordModal';
 import { DetailPage, DetailSection } from '../components/DetailPage';
-import { Capabilities, StepUpOps } from '@shared/generated';
+import { Capabilities, PasswordSource, StepUpOps } from '@shared/generated';
 import { AccessBadgesPanel } from '@shared-auth/components/AccessBadgesPanel';
 import { actionButton, actionButtonDanger, actionButtonPrimary } from '@shared/components/actionButtons';
+import { FieldHint, inputClassNarrow, labelClass } from '@shared/components/forms';
 import { SshUserLoginNames } from '../components/SshLoginNameGrants';
+import { PASSWORD_SOURCES, PASSWORD_SOURCE_TEXT, accountPasswordSource } from './passwordSource';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -27,7 +29,9 @@ function formatDate(d: string | null) {
 /// and guarded account actions (reset password, reset MFA, disable/enable, delete) in the action bar,
 /// each of which opens an approval ceremony instead when the server answers 202. A direct password
 /// reset shows the temporary password once. The page is View/Edit — Edit mode exposes the
-/// add/remove-group controls. For a reader who may manage users, two SSH sections follow: the
+/// add/remove-group controls and the password source select (Inherit / Local / Directory), saved
+/// through the account-update step-up and ceremony rule; it is disabled on one's own account. For
+/// a reader who may manage users, two SSH sections follow: the
 /// login names the user holds on each SSH CA, and the user's live SSH certificates.
 /// </summary>
 const UserDetail: React.FC = () => {
@@ -52,6 +56,9 @@ const UserDetail: React.FC = () => {
     const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel?: string; action: () => Promise<void> } | null>(null);
     const [confirmLoading, setConfirmLoading] = useState(false);
     const [temporaryPassword, setTemporaryPassword] = useState<string | null>(null);
+    // Staged password source: saved on its own, behind the account-update step-up.
+    const [pendingSource, setPendingSource] = useState<PasswordSource | null>(null);
+    const [sourceBusy, setSourceBusy] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -109,6 +116,22 @@ const UserDetail: React.FC = () => {
         return true;
     };
 
+    // Same endpoint, step-up and ceremony rule as the other account fields; the server refuses a
+    // change to one's own source.
+    const savePasswordSource = async () => {
+        if (!pendingSource) return;
+        setSourceBusy(true);
+        try {
+            const res: any = await apiPutWithMfa(`/api/v1/admin/users/${id}`, { passwordSource: pendingSource }, requireStepUp, StepUpOps.UpdateUser, id!);
+            setPendingSource(null);
+            if (!ceremonyStarted(res)) { showToast('success', 'Password source saved'); setRefresh((r) => r + 1); }
+        } catch (err: any) {
+            if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to save the password source');
+        } finally {
+            setSourceBusy(false);
+        }
+    };
+
     const resetPassword = () => setConfirm({
         title: 'Reset Password', message: `Are you sure you want to reset the password for "${user.username}"? If they hold an admin / operator / CA-admin tier, this opens an approval ceremony and the temporary password is shown to whoever executes it.`, confirmLabel: 'Reset Password',
         action: async () => {
@@ -144,6 +167,8 @@ const UserDetail: React.FC = () => {
     const otherSystemAdminCount = users.filter((u: any) => u.id !== user.id && u.isActive !== false &&
         (u.groups || []).some((g: any) => { const n = g.groupName || g.name || ''; return n === 'system-admin' || n === 'system-super'; })).length;
     const canDisable = !isSelf && (!isSuperGroup || otherSystemAdminCount > 0);
+    const currentSource: PasswordSource = accountPasswordSource(user);
+    const selectedSource: PasswordSource = pendingSource ?? currentSource;
 
     const disableAccount = () => {
         if (isSuperGroup && otherSystemAdminCount === 0) { showToast('warning', 'Cannot disable the super admin account — no other system admins exist. Create another system admin first.'); return; }
@@ -193,7 +218,9 @@ const UserDetail: React.FC = () => {
             editable
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
-                    <button onClick={resetPassword} className={actionButton}>Reset Password</button>
+                    <button onClick={resetPassword} disabled={currentSource === PasswordSource.Directory}
+                        title={currentSource === PasswordSource.Directory ? 'This account’s password is checked by the directory only. Reset it there, or set the password source to Local first.' : 'Reset this user’s password'}
+                        className={actionButton}>Reset Password</button>
                     <button onClick={resetMfa} className={actionButton}>Reset MFA</button>
                     {user.isActive !== false
                         ? <button onClick={disableAccount} disabled={!canDisable} title={isSelf ? 'You cannot disable your own account' : !canDisable ? 'Cannot disable — no other system admins exist' : 'Disable this account'} className={actionButton}>Disable Account</button>
@@ -212,7 +239,33 @@ const UserDetail: React.FC = () => {
                         <DetailField label="Created" value={formatDate(user.createdAt)} />
                         <DetailField label="Last Login" value={formatDate(user.lastLogin || user.lastLoginAt)} />
                         <DetailField label="Failed Logins" value={user.failedLoginCount} />
+                        <DetailField label="Password source" value={PASSWORD_SOURCE_TEXT[currentSource].label} />
                     </div>
+                    {mode === 'edit' && (
+                        <div className="mt-3 pt-3 border-t border-line">
+                            <label htmlFor="password-source" className={labelClass}>Password source</label>
+                            <div className="flex items-center gap-2 flex-wrap">
+                                <select id="password-source" aria-describedby="password-source-hint"
+                                    value={selectedSource} disabled={isSelf || sourceBusy}
+                                    onChange={(e) => setPendingSource(e.target.value as PasswordSource)}
+                                    className={inputClassNarrow}>
+                                    {PASSWORD_SOURCES.map((s) => <option key={s} value={s}>{PASSWORD_SOURCE_TEXT[s].label}</option>)}
+                                </select>
+                                <button onClick={savePasswordSource} disabled={isSelf || sourceBusy || selectedSource === currentSource}
+                                    className={actionButtonPrimary}>
+                                    {sourceBusy ? 'Saving…' : 'Save'}
+                                </button>
+                                {selectedSource !== currentSource && (
+                                    <button onClick={() => setPendingSource(null)} disabled={sourceBusy} className={actionButton}>Reset</button>
+                                )}
+                            </div>
+                            <FieldHint id="password-source-hint">
+                                {isSelf
+                                    ? 'You cannot change your own password source; another administrator can.'
+                                    : PASSWORD_SOURCE_TEXT[selectedSource].hint}
+                            </FieldHint>
+                        </div>
+                    )}
                 </DetailSection>
 
                 <DetailSection title="Badges">

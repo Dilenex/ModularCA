@@ -56,6 +56,29 @@ public static class AuditActionType
     public const string UserPasswordChanged = "UserPasswordChanged";
     public const string UserPasswordReset = "UserPasswordReset";
 
+    /// <summary>
+    /// An <c>Inherit</c> account's password was accepted by the directory, so its password source
+    /// became <c>Directory</c>: from then on only the directory checks its password. The actor is
+    /// the account itself; details carry the old and new source and the sign-in path
+    /// (<c>login</c> or the protocol, e.g. <c>EST</c>).
+    /// </summary>
+    public const string UserPasswordSourceLearned = "UserPasswordSourceLearned";
+
+    /// <summary>
+    /// An account's password source was set on the host with <c>--set-password-source</c>, outside
+    /// the API. The actor is <c>host:break-glass</c>; details carry the old and new source, the host
+    /// and the operating-system user.
+    /// </summary>
+    public const string UserPasswordSourceSetOnHost = "UserPasswordSourceSetOnHost";
+
+    /// <summary>
+    /// An administrator changed an account's password source, directly or by executing a
+    /// controlled-user ceremony. Details carry the old and new source (<c>Old</c>, <c>New</c>) and,
+    /// for a ceremony, its id. A change to anything but <c>Directory</c> can bring the account's
+    /// local password into use, so it counts as a password change by that administrator.
+    /// </summary>
+    public const string UserPasswordSourceChanged = "UserPasswordSourceChanged";
+
     // CSR operations
     public const string CsrSubmitted = "CsrSubmitted";
     public const string CsrApproved = "CsrApproved";

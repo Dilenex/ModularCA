@@ -732,7 +732,8 @@ public class BootstrapService
 
     /// <summary>
     /// Creates the initial admin user with the specified username and a generated password.
-    /// Returns the generated password for display to the administrator.
+    /// Returns the generated password for display to the administrator. The user's password
+    /// source is Local, so break-glass sign-in never depends on the directory.
     /// </summary>
     private static string CreateInitialUserWithUsername(ModularCADbContext db, string username, string? email = null)
     {
@@ -762,6 +763,8 @@ public class BootstrapService
             // AuthController answers 403 { requirePasswordChange } and the pre-JWT
             // /auth/change-password endpoint clears the flag.
             PasswordChangeOnNextLogon = true,
+            // Break-glass: checked against the local hash only, never the directory.
+            PasswordSource = ModularCA.Shared.Enums.PasswordSource.Local,
         };
         db.Users.Add(initialUser);
         db.SaveChanges();
@@ -804,7 +807,8 @@ public class BootstrapService
     }
 
     /// <summary>
-    /// Creates the initial admin user with a user-provided password (from the setup wizard).
+    /// Creates the initial admin user with a user-provided password (from the setup wizard). The
+    /// user's password source is Local, so break-glass sign-in never depends on the directory.
     /// </summary>
     /// <exception cref="InvalidOperationException">
     /// Thrown when the supplied password does not satisfy the password policy seeded moments
@@ -836,6 +840,8 @@ public class BootstrapService
             Email = email ?? string.Empty,
             PasswordHash = ModularCA.Auth.Utils.PasswordUtil.HashPassword(password),
             CreatedAt = DateTime.UtcNow,
+            // Break-glass: checked against the local hash only, never the directory.
+            PasswordSource = ModularCA.Shared.Enums.PasswordSource.Local,
         };
         db.Users.Add(initialUser);
         db.SaveChanges();

@@ -487,6 +487,39 @@ if (args.Contains(ModularCA.API.Startup.UnlockUserCommand.Flag, StringComparer.O
     Log.Warning("Operator triggered --unlock-user for {Username}", unlockName);
     Environment.Exit(await ModularCA.API.Startup.UnlockUserCommand.RunAsync(unlockDb, unlockAuditDb, unlockName, Console.Out));
 }
+// Host-local recovery: sets an account's password source with the db.yaml credentials, for the
+// one change the console cannot make, an administrator's own. See SetPasswordSourceCommand.
+if (args.Contains(ModularCA.API.Startup.SetPasswordSourceCommand.Flag, StringComparer.OrdinalIgnoreCase))
+{
+    var sourceArgs = args.SkipWhile(a => !a.Equals(ModularCA.API.Startup.SetPasswordSourceCommand.Flag, StringComparison.OrdinalIgnoreCase)).Skip(1).Take(2).ToArray();
+    var sourceDbYaml = YamlDbConfigLoader.Load(Path.Combine(AppContext.BaseDirectory, "config", "db.yaml"));
+    if (sourceArgs.Length < 2 || sourceArgs.Any(a => string.IsNullOrWhiteSpace(a) || a.StartsWith("--", StringComparison.Ordinal)) || sourceDbYaml == null)
+    {
+        Console.Error.WriteLine(ModularCA.API.Startup.SetPasswordSourceCommand.Usage);
+        Environment.Exit(1);
+    }
+    var sourceConfig = new SystemConfig();
+    sourceConfig.DB.App.Host = sourceDbYaml.App.Host;
+    sourceConfig.DB.App.Port = sourceDbYaml.App.Port;
+    sourceConfig.DB.App.Database = sourceDbYaml.App.Database;
+    sourceConfig.DB.App.Username = sourceDbYaml.App.Username;
+    sourceConfig.DB.App.Password = sourceDbYaml.App.Password;
+    sourceConfig.DB.App.SslMode = sourceDbYaml.App.SslMode;
+    sourceConfig.DB.Audit.Host = sourceDbYaml.Audit.Host;
+    sourceConfig.DB.Audit.Port = sourceDbYaml.Audit.Port;
+    sourceConfig.DB.Audit.Database = sourceDbYaml.Audit.Database;
+    sourceConfig.DB.Audit.Username = sourceDbYaml.Audit.Username;
+    sourceConfig.DB.Audit.Password = sourceDbYaml.Audit.Password;
+    sourceConfig.DB.Audit.SslMode = sourceDbYaml.Audit.SslMode;
+    new ModularCA.Shared.Utils.EnvVarConfigOverlay().Apply(sourceConfig);
+    using var sourceDb = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>()
+        .UseNpgsql(ModularCA.Shared.Utils.PostgresConnection.Build(sourceConfig.DB.App)).Options);
+    using var sourceAuditDb = string.IsNullOrWhiteSpace(sourceConfig.DB.Audit.Database) ? null
+        : new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+            .UseNpgsql(ModularCA.Shared.Utils.PostgresConnection.Build(sourceConfig.DB.Audit)).Options);
+    Log.Warning("Operator triggered --set-password-source for {Username} to {Source}", sourceArgs[0], sourceArgs[1]);
+    Environment.Exit(await ModularCA.API.Startup.SetPasswordSourceCommand.RunAsync(sourceDb, sourceAuditDb, sourceArgs[0], sourceArgs[1], Console.Out));
+}
 
 // Host-local access to the stored settings, with the db.yaml credentials: the way to read and
 // change an instance-wide setting without the console, above all one that has locked the

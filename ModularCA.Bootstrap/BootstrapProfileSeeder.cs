@@ -1326,7 +1326,8 @@ public static class BootstrapProfileSeeder
     /// <summary>
     /// Creates the initial superadmin user with a generated password that meets the seeded policy.
     /// Assigns the user to the system-admin group and all CA-level admin groups.
-    /// Prints the generated password to the console.
+    /// Prints the generated password to the console. The user's password source is Local, so
+    /// break-glass sign-in never depends on the directory.
     /// </summary>
     public static void CreateInitialUser(ModularCADbContext db)
     {
@@ -1355,6 +1356,9 @@ public static class BootstrapProfileSeeder
             // AuthController answers 403 { requirePasswordChange } and the pre-JWT
             // /auth/change-password endpoint clears the flag.
             PasswordChangeOnNextLogon = true,
+            // Break-glass: the first administrator's password is checked against the local hash
+            // only, so it signs in through an LDAP outage and in direct-bind mode.
+            PasswordSource = ModularCA.Shared.Enums.PasswordSource.Local,
         };
         db.Users.Add(initialUser);
         db.SaveChanges();

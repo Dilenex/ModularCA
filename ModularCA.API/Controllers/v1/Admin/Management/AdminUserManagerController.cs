@@ -241,7 +241,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// <summary>
         /// Updates a user account (e.g. activate/deactivate). Requires CaAdmin policy and step-up MFA verification.
         /// Only identity fields whose value differs from the account's are applied. Changing one
-        /// (username, email, enabled, locked, password expiry, forced change) on another account
+        /// (username, email, enabled, locked, password expiry, forced change, password source) on another account
         /// needs a caller who dominates every tier it holds (403 otherwise); when that account holds
         /// a controlled tier and the caller is not system-super, the whole update opens a
         /// controlled-user ceremony instead (202 with the ceremony id). Disabling or locking the
@@ -249,7 +249,9 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// A password is never set here (400): use reset-password. An empty or whitespace username
         /// or email is refused (400). Unlocking also clears a temporary lockout and the failed-login
         /// count. An identity-altering change to another account with a pending promotion is
-        /// refused (409) unless the caller is system-super.
+        /// refused (409) unless the caller is system-super. Nobody changes their own password
+        /// source (400). A password source change that applies is audited as
+        /// <see cref="AuditActionType.UserPasswordSourceChanged"/> with the old and new value.
         /// </summary>
         [HttpPut("{id:guid}")]
         [Authorize(Policy = "CaAdmin")]
@@ -279,6 +281,12 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             var target = await _dbContext.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == id);
             if (target == null)
                 return NotFound(new { message = $"User with ID {id} not found" });
+
+            // A Directory account switching itself to Local would bring back a local password the
+            // directory no longer vouches for; the same request from another administrator goes
+            // through the tier gate and, for a controlled account, a ceremony.
+            if (_currentUser.User?.Id == id && request.PasswordSource != null && request.PasswordSource != target.PasswordSource)
+                return BadRequest(new { error = "You cannot change your own password source. Ask another administrator." });
             var change = new ModularCA.Shared.Models.ControlledIdentityChange
             {
                 Username = request.Username != null && request.Username != target.Username ? request.Username : null,
@@ -289,9 +297,10 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                     ? request.IsLocked : null,
                 PasswordNeverExpires = request.PasswordNeverExpires != null && request.PasswordNeverExpires != target.PasswordNeverExpires ? request.PasswordNeverExpires : null,
                 PasswordChangeOnNextLogon = request.PasswordChangeOnNextLogon != null && request.PasswordChangeOnNextLogon != target.PasswordChangeOnNextLogon ? request.PasswordChangeOnNextLogon : null,
+                PasswordSource = request.PasswordSource != null && request.PasswordSource != target.PasswordSource ? request.PasswordSource : null,
             };
             var altersIdentity = change.Username != null || change.Email != null || change.IsActive != null || change.IsLocked != null
-                || change.PasswordNeverExpires != null || change.PasswordChangeOnNextLogon != null;
+                || change.PasswordNeverExpires != null || change.PasswordChangeOnNextLogon != null || change.PasswordSource != null;
             change.FirstName = request.FirstName;
             change.LastName = request.LastName;
             change.DisplayName = request.DisplayName;
@@ -317,6 +326,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                 Username = change.Username, Email = change.Email, FirstName = change.FirstName, LastName = change.LastName,
                 DisplayName = change.DisplayName, IsActive = change.IsActive, IsLocked = change.IsLocked,
                 PasswordNeverExpires = change.PasswordNeverExpires, PasswordChangeOnNextLogon = change.PasswordChangeOnNextLogon,
+                PasswordSource = change.PasswordSource,
             };
             if (!(await _userService.UpdateUser(id, effective)))
                 return NotFound(new { message = $"User with ID {id} not found" });
@@ -325,6 +335,11 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             await TokenRevocationMiddleware.InvalidateUserStampCacheAsync(_cache, id);
             await _audit.LogAsync(AuditActionType.UserUpdated, _currentUser.User?.Id, _currentUser.User?.Username,
                 "User", id.ToString(), sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());
+            if (change.PasswordSource is { } newSource)
+                await _audit.LogAsync(AuditActionType.UserPasswordSourceChanged, _currentUser.User?.Id, _currentUser.User?.Username,
+                    "User", id.ToString(),
+                    new { Old = target.PasswordSource.ToString(), New = newSource.ToString() },
+                    HttpContext.Connection.RemoteIpAddress?.ToString());
             return Ok(new { message = $"User {id} updated" });
         }
 
@@ -393,7 +408,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// holds any controlled tier and the caller is not system-super, opens a controlled-user
         /// ceremony instead (202 with the ceremony id, no password); the temporary password is then
         /// generated at execute and returned only to whoever executes it. Refused (409) for another
-        /// account with a pending promotion unless the caller is system-super.
+        /// account with a pending promotion unless the caller is system-super, and (409) for a
+        /// Directory account, which would never use a local password.
         /// </summary>
         [HttpPost("{id:guid}/reset-password")]
         [Authorize(Policy = "CaAdmin")]
@@ -408,11 +424,20 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ResetPassword, id.ToString()))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
-            var targetUsername = await _dbContext.Users.AsNoTracking().Where(u => u.Id == id).Select(u => u.Username).FirstOrDefaultAsync();
-            if (targetUsername == null)
+            var resetTarget = await _dbContext.Users.AsNoTracking().Where(u => u.Id == id)
+                .Select(u => new { u.Username, u.PasswordSource }).FirstOrDefaultAsync();
+            if (resetTarget == null)
                 return NotFound(new { message = $"User with ID {id} not found" });
+            var targetUsername = resetTarget.Username;
             if (await AuthorizeAccountAdministrationAsync(id) is { } denied)
                 return denied;
+            // A temporary local password for a Directory account would never be used.
+            if (resetTarget.PasswordSource == PasswordSource.Directory)
+                return Conflict(new
+                {
+                    error = "This account's password is checked by the directory only, so a local password would never be used. "
+                            + "Reset it in the directory, or set the account's password source to Local first."
+                });
             if (await OpenAccountCeremonyAsync(id, targetUsername,
                     new ModularCA.Shared.Models.ControlledUserChangeParameters { ChangeType = "ResetPassword" },
                     "Resetting this controlled user's password") is { } accepted)

@@ -126,6 +126,14 @@ export const MsaeReadinessState = {
 } as const;
 export type MsaeReadinessState = (typeof MsaeReadinessState)[keyof typeof MsaeReadinessState];
 
+/** From `ModularCA.Shared/Enums/PasswordSource.cs`. */
+export const PasswordSource = {
+    Inherit: 'Inherit',
+    Local: 'Local',
+    Directory: 'Directory',
+} as const;
+export type PasswordSource = (typeof PasswordSource)[keyof typeof PasswordSource];
+
 /** From `ModularCA.Shared/Enums/RevocationReason.cs`. */
 export const RevocationReason = {
     Unspecified: 'Unspecified',

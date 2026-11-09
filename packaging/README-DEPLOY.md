@@ -890,6 +890,24 @@ back at `Https.CertificatePath` or reissue the Web TLS certificate from the cons
 generated rather than chosen, it is printed once to the service log and the account is flagged
 `PasswordChangeOnNextLogon`; the first login returns 403 and directs you through a change.
 
+**The initial administrator signs in with its local password, never LDAP.** From 0.4.4 every
+account has a password source: `Inherit` (the instance `LdapAuth` setting, the default), `Local`
+(the local password only; the directory is never asked) or `Directory` (LDAP only; the local
+password is never used). Setup creates the first administrator as `Local`, so break-glass sign-in
+works through an LDAP outage and in direct-bind mode (no `BindDn`). An `Inherit` account becomes
+`Directory` the first time the directory accepts its password. Upgrading does not change existing
+accounts: all start as `Inherit`, the bootstrap administrator of an existing install included. To
+make it a break-glass account, have another administrator open it under Users, switch to Edit and
+set Password source to `Local`. Nobody can change their own source in the console; on an install
+with a single administrator, set it on the host instead:
+
+    sudo -u modularca /opt/modularca/ModularCA.API --set-password-source <username> Local
+
+Like `--unlock-user` it connects with the credentials in `config/db.yaml`, never over HTTP, ends the
+account's sessions, and is written to the audit trail as `UserPasswordSourceSetOnHost` by
+`host:break-glass` (or warns that it could not be). Turning LDAP sign-in off
+refuses password sign-in for `Directory` accounts until they are set back to `Local` or `Inherit`.
+
 **Privileged ports** are granted by `AmbientCapabilities=CAP_NET_BIND_SERVICE` in the unit. Do
 not also `setcap` the binary — the unit already covers it, and a stale file capability survives
 upgrades in ways the unit does not.

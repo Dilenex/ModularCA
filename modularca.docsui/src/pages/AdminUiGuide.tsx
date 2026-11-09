@@ -843,7 +843,8 @@ sshd -t && systemctl reload ssh`}</pre>
                     <li>Create new user accounts</li>
                     <li>Enable/disable user accounts</li>
                     <li>View and modify group assignments</li>
-                    <li>Reset user passwords</li>
+                    <li>Reset user passwords (not for a Directory account, whose password lives in LDAP)</li>
+                    <li>See and, in Edit, set a user&apos;s password source: Inherit (the instance LDAP setting), Local (the local password only, for break-glass) or Directory (LDAP only); not on your own account</li>
                     <li>View user MFA enrollment status</li>
                     <li>View user certificate and request history</li>
                     <li>See the SSH login names a user holds and their live SSH certificates, grant a login name, and revoke all of the certificates</li>
@@ -1233,7 +1234,7 @@ sshd -t && systemctl reload ssh`}</pre>
                     Personal security settings for the currently logged-in administrator.
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
-                    <li>Change password</li>
+                    <li>Change password (a Directory account is told to change it in the directory instead)</li>
                     <li>Enroll or manage TOTP authenticator</li>
                     <li>Register WebAuthn/FIDO2 security keys</li>
                     <li>View active sessions</li>

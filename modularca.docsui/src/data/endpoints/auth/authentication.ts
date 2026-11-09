@@ -24,7 +24,7 @@ export const authentication: ApiEndpoint[] = [
             { name: 'DPoP', type: 'string', required: false, description: 'DPoP proof (ES256, RFC 9449) for POST to this URL. Binds the session\'s refresh token to the proving key.' },
         ],
         responseDescription: 'JWT token pair on success, or MFA challenge with temporary mfaToken if MFA is configured.',
-        notes: 'CSRF validation required. The server sets the CSRF cookie on any response: __Host-CSRF-TOKEN over HTTPS, CSRF-TOKEN over plain HTTP; over HTTPS an unprefixed CSRF-TOKEN is not accepted. If MFA is configured, returns requiresMfa: true with an mfaToken and available methods. Rate limited per IP (10 requests per 5 minutes).',
+        notes: 'The password is checked by the account\'s password source: Local against the local hash only; Directory against LDAP only; Inherit by the instance LDAP setting (with LDAP on: directory first, a refused bind is final, the local hash only for an account the directory has no entry for). An unreachable directory refuses without counting a failed attempt. An Inherit account the directory accepts becomes Directory. The forced password change and expiry apply only when the local hash answered. CSRF validation required. The server sets the CSRF cookie on any response: __Host-CSRF-TOKEN over HTTPS, CSRF-TOKEN over plain HTTP; over HTTPS an unprefixed CSRF-TOKEN is not accepted. If MFA is configured, returns requiresMfa: true with an mfaToken and available methods. Rate limited per IP (10 requests per 5 minutes).',
     },
     {
         method: 'POST',
@@ -54,6 +54,7 @@ export const authentication: ApiEndpoint[] = [
             { name: 'confirmNewPassword', type: 'string', required: true, description: 'New password confirmation' },
         ],
         responseDescription: 'Success message; user must log in again with the new password.',
+        notes: 'A Directory account keeps no local password: it is answered with the generic 401, without consulting the local hash or counting a failed attempt.',
     },
     {
         method: 'POST',

@@ -21,6 +21,13 @@ namespace ModularCA.Shared.Entities
         public DateTime? PasswordExpirationDate { get; set; } = DateTime.UtcNow.AddDays(90);
         public bool PasswordChangeOnNextLogon { get; set; } = false;
 
+        /// <summary>
+        /// Where this account's sign-in password is checked: by the instance LDAP setting
+        /// (<see cref="Enums.PasswordSource.Inherit"/>, the default), the local hash only, or the
+        /// directory only. Stored as the member name; see <c>PasswordCredentialCheck</c> for the rule.
+        /// </summary>
+        public Enums.PasswordSource PasswordSource { get; set; } = Enums.PasswordSource.Inherit;
+
         [MaxLength(255)]
         public string? DisplayName { get; set; }
 

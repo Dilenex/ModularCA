@@ -121,9 +121,15 @@ public class ControlledIdentityChange
     public bool? PasswordChangeOnNextLogon { get; set; }
 
     /// <summary>
+    /// New password source (Inherit, Local or Directory). The stored parameters hold it as its
+    /// number, like every enum in them; the console maps it back to the name.
+    /// </summary>
+    public Enums.PasswordSource? PasswordSource { get; set; }
+
+    /// <summary>
     /// The account state when the ceremony was opened. Execute expires the ceremony when the
-    /// account's username, email, enabled or locked state, or a password flag this change sets, no
-    /// longer matches it. Null on ceremonies opened before it was recorded.
+    /// account's username, email, enabled or locked state, or a password flag or password source
+    /// this change sets, no longer matches it. Null on ceremonies opened before it was recorded.
     /// </summary>
     public ControlledAccountState? Before { get; set; }
 
@@ -132,14 +138,19 @@ public class ControlledIdentityChange
     public bool RemovesAccess => IsActive == false || IsLocked == true;
 }
 
-/// <summary>An account's identity and access state, compared at execute by an <c>UpdateIdentity</c> ceremony.</summary>
+/// <summary>
+/// An account's identity and access state, compared at execute by an <c>UpdateIdentity</c> ceremony.
+/// <see cref="PasswordSource"/> defaults to Inherit for a state recorded before it existed; such a
+/// ceremony never sets a password source, so it is never compared.
+/// </summary>
 public sealed record ControlledAccountState(
     string Username,
     string Email,
     bool IsActive,
     bool IsLocked,
     bool PasswordNeverExpires,
-    bool PasswordChangeOnNextLogon);
+    bool PasswordChangeOnNextLogon,
+    Enums.PasswordSource PasswordSource = Enums.PasswordSource.Inherit);
 
 /// <summary>
 /// An account's credential state: its security stamp, which rotates on every password and identity
@@ -180,11 +191,24 @@ public record ControlledUserChangeResult(
     [System.Text.Json.Serialization.JsonIgnore]
     public string? TemporaryPassword { get; init; }
 
+    /// <summary>
+    /// The account's password source before an <c>UpdateIdentity</c> change that set one, for the
+    /// audit record; null when the change set none.
+    /// </summary>
+    public Enums.PasswordSource? PasswordSourceBefore { get; init; }
+
+    /// <summary>
+    /// The password source an <c>UpdateIdentity</c> change set, for the audit record; null when it
+    /// set none.
+    /// </summary>
+    public Enums.PasswordSource? PasswordSourceAfter { get; init; }
+
     /// <summary>Prints every member except <see cref="TemporaryPassword"/>.</summary>
     protected virtual bool PrintMembers(System.Text.StringBuilder builder)
     {
         builder.Append($"ChangeType = {ChangeType}, TargetUserId = {TargetUserId}, Capability = {Capability}, ")
-            .Append($"SpaceId = {SpaceId}, CertificateAuthorityId = {CertificateAuthorityId}");
+            .Append($"SpaceId = {SpaceId}, CertificateAuthorityId = {CertificateAuthorityId}, ")
+            .Append($"PasswordSourceBefore = {PasswordSourceBefore}, PasswordSourceAfter = {PasswordSourceAfter}");
         return true;
     }
 }

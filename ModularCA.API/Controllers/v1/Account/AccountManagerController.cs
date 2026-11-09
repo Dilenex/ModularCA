@@ -156,7 +156,9 @@ namespace ModularCA.API.Controllers.v1.Account
         /// issued before it stops working at once rather than when the cache entry expires.
         /// Audit findings #32: emits <see cref="AuditActionType.UserPasswordChanged"/> with
         /// <c>success=false</c> when the underlying call returns false or throws — restoring the
-        /// credential-stuffing signal that previously only fired on successful changes.
+        /// credential-stuffing signal that previously only fired on successful changes. A Directory
+        /// account, whose password lives in the directory, is answered 409 with an explanation
+        /// before any step-up, and the refusal is audited the same way.
         /// </summary>
         [HttpPut("password")]
         public async Task<IActionResult> ChangePassword([FromBody] UpdatePasswordRequest request,
@@ -165,6 +167,26 @@ namespace ModularCA.API.Controllers.v1.Account
             await _currentUser.EnsureLoadedAsync();
             if (!_currentUser.IsAuthenticated || _currentUser.User == null)
                 return Unauthorized();
+
+            // A Directory account's password lives in the directory; a local one would never be
+            // used. Answered before the step-up so the user is not asked for a second factor for a
+            // change that cannot happen. The caller already sees their source on their profile.
+            var ownSource = await _db.Users.AsNoTracking()
+                .Where(u => u.Id == _currentUser.User.Id).Select(u => u.PasswordSource).FirstOrDefaultAsync();
+            if (ownSource == PasswordSource.Directory)
+            {
+                await _audit.LogAsync(AuditActionType.UserPasswordChanged, _currentUser.User.Id, _currentUser.User.Username,
+                    "User", _currentUser.User.Id.ToString(),
+                    sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    success: false,
+                    errorMessage: "Password change refused: the account's password is checked by the directory.");
+                return Conflict(new
+                {
+                    error = "Your password is managed by your organisation's directory (LDAP). Change it there; "
+                            + "ModularCA does not keep a password for this account.",
+                    passwordSource = nameof(PasswordSource.Directory),
+                });
+            }
 
             // Require step-up MFA verification
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ChangePassword))

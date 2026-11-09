@@ -21,6 +21,12 @@ namespace ModularCA.Shared.Models.Management
         public bool PasswordNeverExpires { get; set; }
         public bool PasswordChangeOnNextLogon { get; set; }
 
+        /// <summary>
+        /// Where the account's sign-in password is checked: <c>Inherit</c> (the instance LDAP
+        /// setting), <c>Local</c> (the local hash only) or <c>Directory</c> (LDAP only).
+        /// </summary>
+        public Enums.PasswordSource PasswordSource { get; set; }
+
         public DateTime? PasswordExpiration { get; set; }
 
         public DateTime CreatedAt { get; set; }

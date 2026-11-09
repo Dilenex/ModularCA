@@ -19,6 +19,7 @@ import { useAuth } from '../context/AuthContext';
 import { can } from '../authz';
 import { FieldHint } from '@shared/components/forms';
 import { NameConstraintsView } from '@shared/components/NameConstraintsEditor';
+import { storedPasswordSourceName } from './passwordSource';
 
 const APPROVALS_HINT = 'Approvals collected / required. The initiator is never counted.';
 
@@ -113,6 +114,7 @@ function identityChanges(identity: any): { label: string; value: string }[] {
     add('Locked', 'isLocked', yesNo);
     add('Password never expires', 'passwordNeverExpires', yesNo);
     add('Change password at next logon', 'passwordChangeOnNextLogon', yesNo);
+    add('Password source', 'passwordSource', storedPasswordSourceName);
     return rows;
 }
 

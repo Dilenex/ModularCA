@@ -1023,8 +1023,10 @@ public class AdminKeyCeremonyController : ControllerBase
 
     /// <summary>
     /// Writes the audit rows and raises the alerts the direct account endpoints do, for an account
-    /// change (password reset, MFA reset, identity update) applied by a controlled-user ceremony.
-    /// Nothing written carries the temporary password.
+    /// change (password reset, MFA reset, identity update) applied by a controlled-user ceremony,
+    /// including <see cref="AuditActionType.UserPasswordSourceChanged"/> with the old and new value
+    /// when an identity update changed the password source. Nothing written carries the temporary
+    /// password.
     /// </summary>
     private async Task AuditAccountChangeAsync(ControlledUserChangeResult result, Guid ceremonyId)
     {
@@ -1048,6 +1050,9 @@ public class AdminKeyCeremonyController : ControllerBase
             case "UpdateIdentity":
                 await _audit.LogAsync(AuditActionType.UserUpdated, user.Id, user.Username, "User", target.ToString(),
                     new { Action = "UpdateIdentity", CeremonyId = ceremonyId }, ip);
+                if (result is { PasswordSourceBefore: { } before, PasswordSourceAfter: { } after } && before != after)
+                    await _audit.LogAsync(AuditActionType.UserPasswordSourceChanged, user.Id, user.Username, "User", target.ToString(),
+                        new { Old = before.ToString(), New = after.ToString(), CeremonyId = ceremonyId }, ip);
                 break;
         }
     }

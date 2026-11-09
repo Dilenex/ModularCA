@@ -816,6 +816,13 @@ public class ModularCADbContext : DbContext
 
         modelBuilder.Entity<UserEntity>(entity =>
         {
+            // Stored by member name, like the other enums here. The database default is what
+            // every existing row gets on upgrade and what a raw insert that omits it gets: Inherit,
+            // the rule accounts followed before the column existed.
+            entity.Property(e => e.PasswordSource)
+                  .HasConversion<string>()
+                  .HasMaxLength(16)
+                  .HasDefaultValue(ModularCA.Shared.Enums.PasswordSource.Inherit);
             entity.HasIndex(e => e.IsServiceIdentity);
             entity.HasIndex(e => e.ServiceScopeSpaceId);
             entity.HasIndex(e => e.ServiceScopeCaId);

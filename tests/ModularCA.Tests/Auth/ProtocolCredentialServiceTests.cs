@@ -99,7 +99,8 @@ public class ProtocolCredentialServiceTests
     private static UserEntity AddUser(
         ModularCADbContext db, string username, string password,
         bool active = true, bool locked = false, int failedAttempts = 0, DateTime? lockoutEnd = null,
-        bool mustChange = false, DateTime? passwordExpires = null, bool neverExpires = false)
+        bool mustChange = false, DateTime? passwordExpires = null, bool neverExpires = false,
+        PasswordSource source = PasswordSource.Inherit)
     {
         var user = new UserEntity
         {
@@ -112,6 +113,7 @@ public class ProtocolCredentialServiceTests
             PasswordChangeOnNextLogon = mustChange,
             PasswordExpirationDate = passwordExpires,
             PasswordNeverExpires = neverExpires,
+            PasswordSource = source,
         };
         db.Users.Add(user);
         db.SaveChanges();
@@ -310,7 +312,42 @@ public class ProtocolCredentialServiceTests
         // LDAP expects the directory to be authoritative.
         Assert.Equal("device1", await service.VerifyAsync("device1", "the-directory-password", "EST", null));
         Assert.Equal(1, ldap.Calls);
-        Assert.Contains("ldap", Assert.Single(audit.Entries).Details?.ToString());
+        Assert.Contains("ldap", Assert.Single(audit.Entries, e => e.Action == AuditActionType.UserLogin).Details?.ToString());
+    }
+
+    [Fact]
+    public async Task An_inherit_account_the_directory_accepts_over_est_becomes_a_directory_account()
+    {
+        using var fixture = new TestDb();
+        var db = fixture.Context;
+        var user = AddUser(db, "device1", "Correct-Horse-1");
+        var (service, audit, _) = Build(db, ldapEnabled: true, ldapOutcome: LdapBindOutcome.Succeeded);
+
+        Assert.Equal("device1", await service.VerifyAsync("device1", "the-directory-password", "EST", null));
+
+        db.ChangeTracker.Clear();
+        Assert.Equal(PasswordSource.Directory, (await db.Users.AsNoTracking().FirstAsync(u => u.Id == user.Id)).PasswordSource);
+        var learned = Assert.Single(audit.Entries, e => e.Action == AuditActionType.UserPasswordSourceLearned);
+        Assert.Contains("EST", learned.Details?.ToString());
+
+        // Its directory entry is deleted next: the matching local hash no longer answers.
+        var (afterDeletion, _, _) = Build(db, ldapEnabled: true, ldapOutcome: LdapBindOutcome.UserNotFound);
+        Assert.Null(await afterDeletion.VerifyAsync("device1", "Correct-Horse-1", "EST", null));
+    }
+
+    [Fact]
+    public async Task An_account_answered_by_the_local_hash_is_not_learned()
+    {
+        using var fixture = new TestDb();
+        var db = fixture.Context;
+        var user = AddUser(db, "device1", "Correct-Horse-1");
+        var (service, audit, _) = Build(db, ldapEnabled: true, ldapOutcome: LdapBindOutcome.UserNotFound);
+
+        Assert.Equal("device1", await service.VerifyAsync("device1", "Correct-Horse-1", "EST", null));
+
+        db.ChangeTracker.Clear();
+        Assert.Equal(PasswordSource.Inherit, (await db.Users.AsNoTracking().FirstAsync(u => u.Id == user.Id)).PasswordSource);
+        Assert.DoesNotContain(audit.Entries, e => e.Action == AuditActionType.UserPasswordSourceLearned);
     }
 
     [Fact]
@@ -356,6 +393,81 @@ public class ProtocolCredentialServiceTests
         // The password was never checked, so an outage does not walk accounts toward lockout.
         db.ChangeTracker.Clear();
         Assert.Equal(0, (await db.Users.AsNoTracking().FirstAsync(u => u.Id == user.Id)).FailedLoginAttempts);
+    }
+
+    [Theory]
+    [InlineData(LdapBindOutcome.Refused)]
+    [InlineData(LdapBindOutcome.Unavailable)]
+    public async Task A_local_account_verifies_against_the_local_hash_without_asking_the_directory(LdapBindOutcome outcome)
+    {
+        using var fixture = new TestDb();
+        var db = fixture.Context;
+        AddUser(db, "device1", "Correct-Horse-1", source: PasswordSource.Local);
+        var (service, audit, ldap) = Build(db, ldapEnabled: true, ldapOutcome: outcome);
+
+        // A local account keeps working through a directory outage and in direct-bind mode.
+        Assert.Equal("device1", await service.VerifyAsync("device1", "Correct-Horse-1", "EST", null));
+        Assert.Equal(0, ldap.Calls);
+        Assert.Contains("password", Assert.Single(audit.Entries).Details?.ToString());
+    }
+
+    [Fact]
+    public async Task A_directory_account_verifies_when_the_directory_accepts_the_bind()
+    {
+        using var fixture = new TestDb();
+        var db = fixture.Context;
+        AddUser(db, "device1", "a-stale-local-password", source: PasswordSource.Directory);
+        var (service, _, ldap) = Build(db, ldapEnabled: true, ldapOutcome: LdapBindOutcome.Succeeded);
+
+        Assert.Equal("device1", await service.VerifyAsync("device1", "the-directory-password", "EST", null));
+        Assert.Equal(1, ldap.Calls);
+    }
+
+    [Fact]
+    public async Task A_directory_account_the_directory_no_longer_knows_is_refused_and_counted()
+    {
+        using var fixture = new TestDb();
+        var db = fixture.Context;
+        var user = AddUser(db, "device1", "Correct-Horse-1", source: PasswordSource.Directory);
+        var (service, audit, _) = Build(db, ldapEnabled: true, ldapOutcome: LdapBindOutcome.UserNotFound);
+
+        // Its directory entry was deleted: the local hash, though it matches, is not consulted.
+        Assert.Null(await service.VerifyAsync("device1", "Correct-Horse-1", "EST", null));
+        Assert.Contains("not_in_directory", Assert.Single(audit.Entries).Details?.ToString());
+        db.ChangeTracker.Clear();
+        Assert.Equal(1, (await db.Users.AsNoTracking().FirstAsync(u => u.Id == user.Id)).FailedLoginAttempts);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_directory_account_is_refused_without_a_failed_attempt_when_the_directory_cannot_answer(bool ldapEnabled)
+    {
+        using var fixture = new TestDb();
+        var db = fixture.Context;
+        var user = AddUser(db, "device1", "Correct-Horse-1", source: PasswordSource.Directory);
+        var (service, audit, _) = Build(db, ldapEnabled: ldapEnabled, ldapOutcome: LdapBindOutcome.Unavailable);
+
+        // Unreachable, or LDAP sign-in turned off: either way there is no answer, and the local hash
+        // is not an answer for a directory account.
+        Assert.Null(await service.VerifyAsync("device1", "Correct-Horse-1", "EST", null));
+        Assert.Contains("directory_unavailable", Assert.Single(audit.Entries).Details?.ToString());
+        db.ChangeTracker.Clear();
+        Assert.Equal(0, (await db.Users.AsNoTracking().FirstAsync(u => u.Id == user.Id)).FailedLoginAttempts);
+    }
+
+    [Fact]
+    public async Task A_password_the_directory_accepted_is_not_held_to_the_local_password_flags()
+    {
+        using var fixture = new TestDb();
+        var db = fixture.Context;
+        AddUser(db, "device1", "stale-local", mustChange: true, passwordExpires: DateTime.UtcNow.AddDays(-1),
+            source: PasswordSource.Directory);
+        var (service, _, _) = Build(db, ldapEnabled: true, ldapOutcome: LdapBindOutcome.Succeeded);
+
+        // The forced change and expiry concern the local password, which a directory account has
+        // no use for and cannot set.
+        Assert.Equal("device1", await service.VerifyAsync("device1", "the-directory-password", "EST", null));
     }
 
     [Fact]

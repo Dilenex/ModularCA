@@ -115,9 +115,15 @@ namespace ModularCA.API.Controllers.v1.Auth
         /// <summary>
         /// Password login. With a second factor enrolled, returns a pending-MFA token recorded as
         /// password-first; otherwise issues the session, wearing the user's default access badge
-        /// when they have one. With LDAP sign-in on, the password is
-        /// checked by <see cref="PasswordCredentialCheck"/>: a refused directory bind never falls
-        /// back to the local hash, and an unreachable directory refuses the sign-in.
+        /// when they have one. The password is checked by <see cref="PasswordCredentialCheck"/>
+        /// according to the account's password source: a Local account against the local hash
+        /// only, a Directory account against the directory only, and an Inherit account by the
+        /// instance LDAP rule, where a refused directory bind never falls back to the local hash and
+        /// an unreachable directory refuses the sign-in without counting a failed attempt. An
+        /// Inherit account the directory accepts becomes a Directory account
+        /// (<see cref="PasswordCredentialCheck.LearnDirectorySourceAsync"/>). The forced password
+        /// change and password expiry gates concern the local password and apply only when the
+        /// local hash answered.
         /// </summary>
         /// <param name="request">The username and password.</param>
         [AllowAnonymous]
@@ -176,11 +182,12 @@ namespace ModularCA.API.Controllers.v1.Auth
             bool isHardLocked = user.IsLocked;
             bool isTempLocked = user.LockoutEndUtc.HasValue && user.LockoutEndUtc > DateTime.UtcNow;
 
-            // Password verification — LDAP first if enabled. The local hash answers only when LDAP
-            // is off or the directory has no entry for the user; a refused bind is final, and an
-            // unreachable directory refuses the sign-in (see PasswordCredentialCheck).
+            // Password verification by the account's password source (see PasswordCredentialCheck):
+            // a Local account checks the local hash only, a Directory account the directory only,
+            // and an Inherit account asks the directory first when LDAP is on, where a refused bind
+            // is final and an unreachable directory refuses the sign-in.
             var passwordCheck = await PasswordCredentialCheck.VerifyAsync(
-                _config, _ldapAuth, request.Username, request.Password, user.PasswordHash);
+                _config, _ldapAuth, request.Username, request.Password, user.PasswordHash, user.PasswordSource);
             var ldapAuthenticated = passwordCheck == PasswordCheckResult.ValidViaLdap;
 
             if (passwordCheck == PasswordCheckResult.DirectoryUnavailable)
@@ -197,10 +204,13 @@ namespace ModularCA.API.Controllers.v1.Auth
                 return Unauthorized(new { error = "Invalid username or password" });
             }
 
-            if (passwordCheck == PasswordCheckResult.Invalid)
+            if (passwordCheck is PasswordCheckResult.Invalid or PasswordCheckResult.NotInDirectory)
             {
+                // A Directory account the directory has no entry for is a wrong password, counted
+                // like one, under its own reason so an operator can tell a deleted entry apart.
+                var failureReason = passwordCheck == PasswordCheckResult.NotInDirectory ? "not_in_directory" : "invalid_password";
                 MetricsService.AuthLoginTotal.WithLabels(ldapAuthenticated ? "ldap" : "password", "false").Inc();
-                MetricsService.AuthLoginFailures.WithLabels("invalid_password").Inc();
+                MetricsService.AuthLoginFailures.WithLabels(failureReason).Inc();
 
                 // Atomic increment via provider-agnostic ExecuteUpdateAsync.
                 // Replaces an earlier raw-SQL UPDATE that used PostgreSQL-style double-quoted
@@ -244,7 +254,7 @@ namespace ModularCA.API.Controllers.v1.Auth
                 {
                     await _audit.LogAsync(AuditActionType.UserLoginFailed, user.Id, user.Username,
                         sourceIp: sourceIp, success: false,
-                        details: new { reason = "invalid_password" },
+                        details: new { reason = failureReason },
                         errorMessage: "LoginFailed");
                 }
 
@@ -253,6 +263,11 @@ namespace ModularCA.API.Controllers.v1.Auth
                 await DelayToBudgetAsync(sw);
                 return Unauthorized(new { error = "Invalid username or password" });
             }
+
+            // An Inherit account the directory just accepted is a directory account from now on, so
+            // deleting its entry or turning LDAP off cannot bring a stale local password back.
+            if (ldapAuthenticated)
+                await PasswordCredentialCheck.LearnDirectorySourceAsync(_db, _audit, user, sourceIp, "login");
 
             // --- Password verified. Now apply the gates that were deferred above so an
             // attacker cannot enumerate account state without a correct password. ---
@@ -300,8 +315,11 @@ namespace ModularCA.API.Controllers.v1.Auth
                 user.PasswordHash = PasswordUtil.HashPassword(request.Password);
             }
 
-            // Password policy checks (after successful password verification)
-            if (user.PasswordChangeOnNextLogon)
+            // Password policy checks (after successful password verification). They concern the
+            // local password, so they apply only when the local hash answered: a password the
+            // directory accepted is the directory's to rotate and expire, and a Directory account
+            // cannot set a local one, so holding it to these would lock it out for good.
+            if (!ldapAuthenticated && user.PasswordChangeOnNextLogon)
             {
                 MetricsService.AuthLoginFailures.WithLabels("password_change_required").Inc();
                 // Reset failed attempts on correct password even if forced to change
@@ -312,7 +330,7 @@ namespace ModularCA.API.Controllers.v1.Auth
                 return StatusCode(403, new { error = "Password change required", requirePasswordChange = true });
             }
 
-            if (!user.PasswordNeverExpires && user.PasswordExpirationDate.HasValue && user.PasswordExpirationDate < DateTime.UtcNow)
+            if (!ldapAuthenticated && !user.PasswordNeverExpires && user.PasswordExpirationDate.HasValue && user.PasswordExpirationDate < DateTime.UtcNow)
             {
                 MetricsService.AuthLoginFailures.WithLabels("password_expired").Inc();
                 user.FailedLoginAttempts = 0;
@@ -753,7 +771,9 @@ namespace ModularCA.API.Controllers.v1.Auth
         /// because the user has not yet been issued one. Verifies the old password, validates
         /// the new password against the configured password policy, updates the hash, clears
         /// the <see cref="Shared.Entities.UserEntity.PasswordChangeOnNextLogon"/> flag, and
-        /// requires the user to re-login with the new password.
+        /// requires the user to re-login with the new password. A Directory account keeps no local
+        /// password, so it is refused with the generic 401 without consulting the local hash or
+        /// counting a failed attempt.
         /// </summary>
         [AllowAnonymous]
         [HttpPost("change-password")]
@@ -784,6 +804,22 @@ namespace ModularCA.API.Controllers.v1.Auth
             {
                 // Dummy verify so timing is constant, plus generic 401.
                 PasswordUtil.DummyVerify(request.OldPassword ?? string.Empty);
+                await DelayToBudgetAsync(sw);
+                return Unauthorized(new { error = "Invalid username or password" });
+            }
+
+            // A Directory account's password lives in the directory: its local hash is not its
+            // password and a new one would never be used. Login never sends such an account here
+            // (it skips the local-password gates when the directory answered), so only a caller
+            // probing with a stale local password arrives. The local hash is not consulted, no
+            // failed attempt is counted, and the answer is the generic one.
+            if (user.PasswordSource == PasswordSource.Directory)
+            {
+                PasswordUtil.DummyVerify(request.OldPassword ?? string.Empty);
+                await _audit.LogAsync(AuditActionType.UserLoginFailed, user.Id, user.Username,
+                    sourceIp: sourceIp, success: false,
+                    details: new { reason = "directory_account", source = "pre_jwt_change_password" },
+                    errorMessage: "LoginFailed");
                 await DelayToBudgetAsync(sw);
                 return Unauthorized(new { error = "Invalid username or password" });
             }

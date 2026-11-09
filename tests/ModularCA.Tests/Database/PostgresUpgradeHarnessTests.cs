@@ -114,6 +114,9 @@ public class PostgresUpgradeHarnessTests
     /// <summary>The 0.4.3 migration that adds profile-driven expiry warnings, without its timestamp.</summary>
     public const string ProfileExpiryWarnings = "ProfileExpiryWarnings";
 
+    /// <summary>The 0.4.4 migration that adds each account's password source, without its timestamp.</summary>
+    public const string UserPasswordSource = "UserPasswordSource";
+
     private const string ServerVariable = "MODULARCA_TEST_PG";
     private const string RehearsalVariable = "MODULARCA_TEST_PG_REHEARSAL";
     private const string RehearsalAuditVariable = "MODULARCA_TEST_PG_REHEARSAL_AUDIT";
@@ -2080,6 +2083,46 @@ public class PostgresUpgradeHarnessTests
 
             await MigrateToLatestAsync(app, "application");
             Assert.Equal("2026-03-05 00:00:00 / 2026-03-23 00:00:00", await Instants("leaf-90d"));
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await DropDatabaseAsync(server, appName);
+        }
+    }
+
+    /// <summary>
+    /// <c>UserPasswordSource</c> gives every existing account, the bootstrap administrator
+    /// included, the password source <c>Inherit</c>, so every account signs in by the instance LDAP
+    /// setting exactly as before; a row inserted without the column later gets it too.
+    /// </summary>
+    [RequiresEnvironmentFact(ServerVariable)]
+    public async Task Every_existing_account_gets_the_password_source_inherit()
+    {
+        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+        Guid admin = Guid.NewGuid(), operatorUser = Guid.NewGuid(), later = Guid.NewGuid();
+        string User(Guid id, string name) =>
+            "INSERT INTO \"Users\" (\"Id\",\"Username\",\"Email\",\"PasswordHash\",\"PasswordNeverExpires\",\"PasswordChangeOnNextLogon\",\"FirstName\","
+            + "\"LastName\",\"IsActive\",\"IsServiceIdentity\",\"IsLocked\",\"FailedLoginAttempts\",\"CreatedAt\",\"SecurityStamp\",\"IsDeleted\") "
+            + $"VALUES ('{id}','{name}','{name}@acme.example','not-a-hash',false,false,'','',true,false,false,0,now(),'stamp',false); ";
+        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+        await CreateDatabaseAsync(server, appName);
+        try
+        {
+            await using var app = CreateApp(WithDatabase(server, appName));
+            await MigrateThroughAsync(app, ProfileExpiryWarnings);
+            await ExecAsync(app, User(admin, "superadmin") + User(operatorUser, "operator"));
+
+            await MigrateThroughAsync(app, UserPasswordSource);
+
+            Assert.Equal("operator=Inherit,superadmin=Inherit", await TextAsync(app,
+                "SELECT string_agg(\"Username\"::text || '=' || \"PasswordSource\", ',' ORDER BY \"Username\"::text COLLATE \"C\") FROM \"Users\""));
+            await ExecAsync(app, User(later, "later"));
+            Assert.Equal("Inherit", await TextAsync(app, $"SELECT \"PasswordSource\" FROM \"Users\" WHERE \"Id\" = '{later}'"));
+            Assert.Equal(ModularCA.Shared.Enums.PasswordSource.Inherit,
+                (await app.Users.AsNoTracking().SingleAsync(u => u.Id == admin)).PasswordSource);
+
+            await MigrateToLatestAsync(app, "application");
         }
         finally
         {

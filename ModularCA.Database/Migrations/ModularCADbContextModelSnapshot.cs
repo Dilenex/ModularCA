@@ -17,7 +17,7 @@ namespace ModularCA.Database.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.12")
+                .HasAnnotation("ProductVersion", "10.0.14")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "citext");
@@ -3940,6 +3940,13 @@ namespace ModularCA.Database.Migrations
 
                     b.Property<bool>("PasswordNeverExpires")
                         .HasColumnType("boolean");
+
+                    b.Property<string>("PasswordSource")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("Inherit");
 
                     b.Property<string>("SecurityStamp")
                         .IsRequired()

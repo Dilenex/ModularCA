@@ -541,6 +541,7 @@ export interface ControlledAccountState {
     isLocked: boolean;
     passwordNeverExpires: boolean;
     passwordChangeOnNextLogon: boolean;
+    passwordSource: E.PasswordSource;
 }
 
 /** From `ModularCA.Shared/Models/ControlledUserChangeParameters.cs`. */
@@ -571,6 +572,7 @@ export interface ControlledIdentityChange {
     isLocked?: boolean | null;
     passwordNeverExpires?: boolean | null;
     passwordChangeOnNextLogon?: boolean | null;
+    passwordSource?: E.PasswordSource | null;
     before?: ControlledAccountState | null;
 }
 
@@ -604,6 +606,8 @@ export interface ControlledUserChangeResult {
     spaceId?: string | null;
     certificateAuthorityId?: string | null;
     temporaryPassword?: string | null;
+    passwordSourceBefore?: E.PasswordSource | null;
+    passwordSourceAfter?: E.PasswordSource | null;
 }
 
 /** From `ModularCA.Shared/Models/Acme/CreateAcmeAccountRequest.cs`. */
@@ -1717,6 +1721,7 @@ export interface UpdateUserRequest {
     firstName?: string | null;
     passwordNeverExpires?: boolean | null;
     passwordChangeOnNextLogon?: boolean | null;
+    passwordSource?: E.PasswordSource | null;
     lastName?: string | null;
     displayName?: string | null;
     isActive?: boolean | null;
@@ -1752,6 +1757,7 @@ export interface UserEntityDto {
     isLocked: boolean;
     passwordNeverExpires: boolean;
     passwordChangeOnNextLogon: boolean;
+    passwordSource: E.PasswordSource;
     passwordExpiration?: string | null;
     createdAt: string;
     lastLoginAt?: string | null;

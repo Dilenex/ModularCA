@@ -491,6 +491,14 @@ LdapAuth:
                     <li>The service account bind DN is used for search operations only</li>
                     <li>Bind password should be provided via the <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">MODULARCA__LDAPAUTH__BINDPASSWORD</code> environment variable</li>
                     <li>Set <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">RequireTls: true</code> to reject binds that don't negotiate TLS</li>
+                    <li>
+                        <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">Enabled</code> is the instance setting; each account&apos;s
+                        password source can override it: <strong>Inherit</strong> (the default) follows it, <strong>Local</strong> checks the
+                        local password only and never asks the directory, <strong>Directory</strong> checks LDAP only and never the local
+                        password. An Inherit account becomes Directory the first time the directory accepts its password. The administrator
+                        created at setup is Local, so break-glass sign-in works through an LDAP outage. See Authentication Flow for the full rule.
+                    </li>
+                    <li>Turning LDAP off refuses password sign-in for Directory accounts (nothing is counted); set them to Local or Inherit first if they should keep signing in with a local password</li>
                 </ul>
             </section>
 

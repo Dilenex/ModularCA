@@ -129,10 +129,11 @@ namespace ModularCA.Auth.Services
 
         /// <summary>
         /// Updates an existing user's profile fields (username, email, name, active/locked status,
-        /// password-expiry exemption, forced change at next logon). <see cref="UpdateUserRequest.Password"/>
+        /// password-expiry exemption, forced change at next logon, password source). <see cref="UpdateUserRequest.Password"/>
         /// is never applied; passwords change only through reset or the user's own change. An empty
         /// or whitespace username or email is left unchanged. A username or email change, enabling,
-        /// disabling, locking or unlocking rotates the security stamp; an unlock (IsLocked false)
+        /// disabling, locking or unlocking rotates the security stamp, and enabling, disabling,
+        /// locking, unlocking or a password source change also revokes every refresh token; an unlock (IsLocked false)
         /// also clears the failed-login count and any temporary lockout. Disabling revokes every
         /// live SSH certificate issued for the user, and so does a username change, since their
         /// key id is the old username.
@@ -170,6 +171,7 @@ namespace ModularCA.Auth.Services
             }
             var wasActive = user.IsActive;
             var wasLocked = user.IsLocked;
+            var previousSource = user.PasswordSource;
             var previousUsername = user.Username;
             var identityChanged = (!string.IsNullOrWhiteSpace(request.Username) && request.Username != user.Username)
                                   || (!string.IsNullOrWhiteSpace(request.Email) && request.Email != user.Email);
@@ -192,6 +194,7 @@ namespace ModularCA.Auth.Services
             user.IsLocked = request.IsLocked ?? user.IsLocked;
             user.PasswordNeverExpires = request.PasswordNeverExpires ?? user.PasswordNeverExpires;
             user.PasswordChangeOnNextLogon = request.PasswordChangeOnNextLogon ?? user.PasswordChangeOnNextLogon;
+            user.PasswordSource = request.PasswordSource ?? user.PasswordSource;
             // An unlock starts the failure count afresh; otherwise one wrong password re-locks.
             if (request.IsLocked == false)
             {
@@ -204,8 +207,9 @@ namespace ModularCA.Auth.Services
 
             // Rotate the security stamp whenever an admin toggles
             // IsActive or IsLocked so outstanding JWTs invalidate on the next request
-            // rather than waiting out their TTL.
-            if (wasActive != user.IsActive || wasLocked != user.IsLocked)
+            // rather than waiting out their TTL. A password source change switches which password
+            // signs the account in, a credential change like a reset, so it ends sessions too.
+            if (wasActive != user.IsActive || wasLocked != user.IsLocked || previousSource != user.PasswordSource)
             {
                 user.SecurityStamp = Guid.NewGuid().ToString();
 
@@ -421,13 +425,20 @@ namespace ModularCA.Auth.Services
         }
 
         /// <summary>
-        /// Updates a user's password after verifying the current password matches.
+        /// Updates a user's password after verifying the current password matches. Refused (false,
+        /// no failed attempt counted) for a service identity and for a Directory account, whose
+        /// password lives in the directory and which would never use a local one.
         /// </summary>
         public async Task<bool> UpdateUserPassword(Guid userId, UpdatePasswordRequest request)
         {
             if (await _dbContext.Users.AnyAsync(u => u.Id == userId && u.IsServiceIdentity))
             {
                 _logger.LogWarning("Password change refused for service identity {UserId}", userId);
+                return false;
+            }
+            if (await _dbContext.Users.AnyAsync(u => u.Id == userId && u.PasswordSource == Shared.Enums.PasswordSource.Directory))
+            {
+                _logger.LogWarning("Password change refused for directory account {UserId}: its password lives in the directory", userId);
                 return false;
             }
             if (request.OldPassword == null || request.NewPassword == null || request.ConfirmNewPassword == null)
@@ -530,7 +541,9 @@ namespace ModularCA.Auth.Services
 
         /// <summary>
         /// Resets a user's password to a randomly generated value and returns it.
-        /// The user will be forced to change password on next logon.
+        /// The user will be forced to change password on next logon. Throws
+        /// <see cref="InvalidOperationException"/> for a service identity, which has no password,
+        /// and for a Directory account, which would never use a local one.
         /// </summary>
         public async Task<string> ResetUserPassword(Guid userId)
         {
@@ -540,6 +553,10 @@ namespace ModularCA.Auth.Services
                 throw new Exception("User not found");
             if (user.IsServiceIdentity)
                 throw new InvalidOperationException("A service identity has no password.");
+            if (user.PasswordSource == Shared.Enums.PasswordSource.Directory)
+                throw new InvalidOperationException(
+                    "This account's password is checked by the directory only, so a local password would never be used. "
+                    + "Set its password source to Local first if it needs one.");
             var newPassword = PasswordUtil.Generate();
             var newHash = PasswordUtil.HashPassword(newPassword);
             user.PasswordHash = newHash;
@@ -617,6 +634,7 @@ namespace ModularCA.Auth.Services
                 Description = user.Description,
                 IsLocked = user.IsLocked,
                 PasswordNeverExpires = user.PasswordNeverExpires,
+                PasswordSource = user.PasswordSource,
                 CreatedAt = user.CreatedAt,
                 LastLoginAt = user.LastLoginAt,
                 Groups = user.GroupMemberships?.Select(gm => new GroupMembershipDto

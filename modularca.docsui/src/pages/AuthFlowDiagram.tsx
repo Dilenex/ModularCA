@@ -82,12 +82,65 @@ export default function AuthFlowDiagram() {
 
                 <h3 className="text-lg font-semibold text-ink mb-2 mt-4">Password Authentication (Local + LDAP)</h3>
                 <p className="text-ink leading-relaxed mb-3">
-                    The primary login factor. When LDAP is enabled, credentials are tried against the directory
-                    first. A bind the directory refuses is final; the local password hash is checked only for an
-                    account the directory has no entry for (a local-only account such as the bootstrap
-                    administrator), which needs a service account to look users up. While the directory cannot be
-                    reached, password sign-in is refused without counting a failed attempt; WebAuthn and mTLS
-                    sign-in do not depend on it. Local passwords are hashed using
+                    The primary login factor. Each account has a <strong>password source</strong> that decides who
+                    checks its password: the directory (LDAP), the local password hash, or the instance LDAP
+                    setting. Interactive login and EST Basic authentication follow the same rule. WebAuthn and mTLS
+                    sign-in do not depend on the directory.
+                </p>
+                <table className="w-full border-collapse mb-4">
+                    <thead>
+                        <tr className="border-b border-line">
+                            <th className="text-left py-2 pr-4 text-ink font-semibold">Source</th>
+                            <th className="text-left py-2 text-ink font-semibold">How the password is checked</th>
+                        </tr>
+                    </thead>
+                    <tbody className="text-ink">
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">Inherit</td>
+                            <td className="py-2">
+                                The default, and what every account had before 0.4.4. With LDAP off, the local hash
+                                decides. With LDAP on, the directory is asked first: an accepted bind signs in; a refused
+                                bind is final; the local hash decides only for an account the directory has no entry for,
+                                which needs a service account (<code className="text-sm bg-sunken px-1.5 py-0.5 rounded">BindDn</code>) to look users up, since with a direct
+                                bind an unknown user and a wrong password look the same; an unreachable directory refuses
+                                the sign-in without counting a failed attempt.
+                            </td>
+                        </tr>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">Local</td>
+                            <td className="py-2">
+                                The local hash only. The directory is never asked, even with LDAP on, so the account
+                                signs in through an LDAP outage and in direct-bind mode. Use it for break-glass
+                                accounts. The administrator a new install creates at setup is Local.
+                            </td>
+                        </tr>
+                        <tr className="border-b border-line">
+                            <td className="py-2 pr-4 data-mono">Directory</td>
+                            <td className="py-2">
+                                The directory only; the local hash is never consulted. A refused bind, or a directory
+                                that no longer has the account, refuses the sign-in and counts a failed attempt; an
+                                unreachable directory, or LDAP sign-in turned off, refuses it without counting one.
+                                The account cannot set a local password, by self-service or by an administrator's
+                                reset, and the forced-change and expiry flags of the local password do not apply.
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+                <p className="text-ink leading-relaxed mb-3">
+                    <strong>Learning.</strong> When the directory accepts the password of an Inherit account, the
+                    account becomes Directory (audited as <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">UserPasswordSourceLearned</code>). From then on,
+                    deleting its directory entry rather than disabling it cannot bring a stale local password, such
+                    as the one handed out at account creation, back into use. An administrator can see and change
+                    the source on the user's page (Edit); the change takes the same step-up and, for a privileged
+                    account, the same controlled-user ceremony as the user's other credential settings, is audited
+                    as <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">UserPasswordSourceChanged</code>, and ends the user's sessions. Nobody can change their
+                    own source in the console; the only administrator of an install sets theirs on the host with{' '}
+                    <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">--set-password-source &lt;username&gt; Local</code>, audited as{' '}
+                    <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">UserPasswordSourceSetOnHost</code>. Upgrading leaves every existing account, the existing bootstrap administrator
+                    included, as Inherit; set a break-glass account to Local by hand.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    Local passwords are hashed using
                     PBKDF2-SHA256 with a minimum of 600,000 iterations (auto-rehashed from legacy 100k hashes on
                     successful login). The password policy requires a minimum of 16 characters with uppercase,
                     lowercase, digit, and special character requirements.

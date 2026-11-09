@@ -28,6 +28,7 @@ export const account: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup. Required for this operation.' },
         ],
         responseDescription: 'Success confirmation.',
+        notes: 'An account whose password source is Directory is answered 409 before any step-up: its password lives in the directory (LDAP) and is changed there; ModularCA keeps no password for it. The profile (GET /api/v1/account) carries passwordSource.',
     },
     {
         method: 'GET',
