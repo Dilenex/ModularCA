@@ -72,7 +72,10 @@ public class AcmeAccountController(
     /// applies; an existing key addresses the CA its account is bound to (see
     /// <see cref="AcmeJwsActionFilter"/>). An existing account the upgrade left unbound is bound
     /// here to the route's CA, under that CA's EAB policy as a new account would be. A CA that
-    /// does not serve ACME (<see cref="AcmeCaPolicy.RefusalAsync"/>) is refused.
+    /// does not serve ACME (<see cref="AcmeCaPolicy.RefusalAsync"/>) is refused. An EAB key binds
+    /// one account: it is claimed atomically (<see cref="AcmeEabKeyClaim"/>) in the transaction
+    /// that creates or binds the account, and a request that loses the claim to a concurrent one
+    /// is refused with <c>unauthorized</c> and changes nothing.
     /// </summary>
     [HttpPost("new-account")]
     [AcmeJws(AllowNewAccount = true)]
@@ -110,6 +113,7 @@ public class AcmeAccountController(
                 // returning the existing account body. RFC 8555 §7.3.4 permits
                 // this, and it matches Let's Encrypt Boulder behaviour: clients
                 // without valid EAB can't observe which keys have accounts.
+                Guid? existingEabKeyId = null;
                 if (eabRequired)
                 {
                     // Pull the stored JWK for the existing account so EAB's
@@ -118,9 +122,10 @@ public class AcmeAccountController(
                     var storedJwk = jws.Jwk?.GetRawText()
                         ?? await _accountService.GetJwkByIdAsync(existing.Id)
                         ?? "{}";
-                    var eabExistingResult = await ValidateExternalAccountBindingAsync(payload, storedJwk);
+                    var (eabExistingResult, eabKeyId) = await ValidateExternalAccountBindingAsync(payload, storedJwk);
                     if (eabExistingResult != null)
                         return eabExistingResult;
+                    existingEabKeyId = eabKeyId;
                 }
 
                 var status = await _accountService.GetStatusByThumbprintAsync(jws.JwkThumbprint);
@@ -130,15 +135,25 @@ public class AcmeAccountController(
                         "Account is deactivated.");
                 }
 
-                if (await _accountService.GetBoundCaIdAsync(existing.Id) == null
-                    && await _accountService.BindAsync(existing.Id, addressedCa.Id, addressedCa.Label))
+                if (await _accountService.GetBoundCaIdAsync(existing.Id) == null)
                 {
-                    if (eabRequired && payload.ExternalAccountBinding.HasValue)
-                        await MarkEabKeyUsedAsync(payload.ExternalAccountBinding.Value, existing.Id);
-                    await _protocolAudit.LogAcmeAsync("AccountBound", existing.Id, null,
-                        subjectDN: null, certSerial: null, identifiers: null, revocationReason: null,
-                        sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
-                        caLabel: addressedCa.Label, certificateAuthorityId: addressedCa.Id, spaceId: addressedCa.SpaceId);
+                    // Binding spends the EAB key, as creating an account does: claimed first, in
+                    // the same transaction as the binding, so of two requests with one key only
+                    // one binds (AcmeEabKeyClaim).
+                    await using var tx = existingEabKeyId != null ? await _db.Database.BeginTransactionAsync() : null;
+                    if (existingEabKeyId is Guid claimKey && !await AcmeEabKeyClaim.TryClaimAsync(_db, claimKey, DateTime.UtcNow))
+                        return EabKeyAlreadyUsed();
+                    if (await _accountService.BindAsync(existing.Id, addressedCa.Id, addressedCa.Label))
+                    {
+                        if (existingEabKeyId is Guid usedKey)
+                            await AcmeEabKeyClaim.RecordAccountAsync(_db, usedKey, existing.Id);
+                        if (tx != null)
+                            await tx.CommitAsync();
+                        await _protocolAudit.LogAcmeAsync("AccountBound", existing.Id, null,
+                            subjectDN: null, certSerial: null, identifiers: null, revocationReason: null,
+                            sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
+                            caLabel: addressedCa.Label, certificateAuthorityId: addressedCa.Id, spaceId: addressedCa.SpaceId);
+                    }
                 }
 
                 Response.Headers["Location"] = $"{baseUrl}{labelPrefix}/account/{existing.Id}";
@@ -172,16 +187,34 @@ public class AcmeAccountController(
         var thumbprint = _jwsService.ComputeThumbprint(jwkJson);
 
         // Validate External Account Binding if required (RFC 8555 section 7.3.4)
+        Guid? newEabKeyId = null;
         if (eabRequired)
         {
-            var eabResult = await ValidateExternalAccountBindingAsync(payload, jwkJson);
+            var (eabResult, eabKeyId) = await ValidateExternalAccountBindingAsync(payload, jwkJson);
             if (eabResult != null)
                 return eabResult;
+            newEabKeyId = eabKeyId;
         }
 
-        // Persist the CA label the account was created under.
-        var caLabel = HttpContext.Request.RouteValues["caLabel"] as string;
-        var account = await _accountService.CreateAsync(jwkJson, thumbprint, payload.Contact, payload.TermsOfServiceAgreed, addressedCa.Id, caLabel);
+        // The check above read the key as unused, as can a concurrent request presenting the same
+        // key. The key used to be marked used after the account was created, unconditionally and
+        // best-effort, so both requests got an account. It is claimed first now, in the same
+        // transaction as the account, and the request that loses the claim creates nothing.
+        AcmeAccountDto account;
+        await using (var tx = newEabKeyId != null ? await _db.Database.BeginTransactionAsync() : null)
+        {
+            if (newEabKeyId is Guid claimKey && !await AcmeEabKeyClaim.TryClaimAsync(_db, claimKey, DateTime.UtcNow))
+                return EabKeyAlreadyUsed();
+
+            // Persist the CA label the account was created under.
+            var caLabel = HttpContext.Request.RouteValues["caLabel"] as string;
+            account = await _accountService.CreateAsync(jwkJson, thumbprint, payload.Contact, payload.TermsOfServiceAgreed, addressedCa.Id, caLabel);
+
+            if (newEabKeyId is Guid usedKey)
+                await AcmeEabKeyClaim.RecordAccountAsync(_db, usedKey, account.Id);
+            if (tx != null)
+                await tx.CommitAsync();
+        }
 
         // Surface account registration on the ACME audit tab so operators can see new
         // enrollments, not just issuance/revocation.
@@ -189,12 +222,6 @@ public class AcmeAccountController(
             subjectDN: null, certSerial: null, identifiers: null, revocationReason: null,
             sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
             caLabel: addressedCa.Label, certificateAuthorityId: addressedCa.Id, spaceId: addressedCa.SpaceId);
-
-        // Mark EAB key as used if present
-        if (eabRequired && payload.ExternalAccountBinding.HasValue)
-        {
-            await MarkEabKeyUsedAsync(payload.ExternalAccountBinding.Value, account.Id);
-        }
 
         var accountUrl = $"{baseUrl}{labelPrefix}/account/{account.Id}";
         Response.Headers["Location"] = accountUrl;
@@ -417,14 +444,18 @@ public class AcmeAccountController(
 
     /// <summary>
     /// Validates the externalAccountBinding JWS per RFC 8555 section 7.3.4.
-    /// Returns an error result if validation fails, or null if the binding is valid.
+    /// Returns the refusal if validation fails, or no refusal and the id of the EAB key row if the
+    /// binding is valid. The key was unused when read; spending it is
+    /// <see cref="AcmeEabKeyClaim.TryClaimAsync"/>, which a concurrent request may win.
     /// </summary>
-    private async Task<IActionResult?> ValidateExternalAccountBindingAsync(CreateAcmeAccountRequest payload, string accountJwkJson)
+    /// <param name="payload">The new-account payload carrying the binding.</param>
+    /// <param name="accountJwkJson">The account key the binding must contain.</param>
+    private async Task<(IActionResult? Refusal, Guid? EabKeyId)> ValidateExternalAccountBindingAsync(CreateAcmeAccountRequest payload, string accountJwkJson)
     {
         if (!payload.ExternalAccountBinding.HasValue ||
             payload.ExternalAccountBinding.Value.ValueKind == JsonValueKind.Null)
         {
-            return AcmeError(400, "urn:ietf:params:acme:error:externalAccountRequired",
+            return EabRefusal(400, "urn:ietf:params:acme:error:externalAccountRequired",
                 "This server requires external account binding for new accounts.");
         }
 
@@ -435,7 +466,7 @@ public class AcmeAccountController(
             !eab.TryGetProperty("payload", out var eabPayloadProp) ||
             !eab.TryGetProperty("signature", out var eabSignatureProp))
         {
-            return AcmeError(400, "urn:ietf:params:acme:error:malformed",
+            return EabRefusal(400, "urn:ietf:params:acme:error:malformed",
                 "externalAccountBinding must be a JWS with protected, payload, and signature fields.");
         }
 
@@ -445,7 +476,7 @@ public class AcmeAccountController(
 
         if (string.IsNullOrEmpty(eabProtectedB64) || string.IsNullOrEmpty(eabPayloadB64) || string.IsNullOrEmpty(eabSignatureB64))
         {
-            return AcmeError(400, "urn:ietf:params:acme:error:malformed",
+            return EabRefusal(400, "urn:ietf:params:acme:error:malformed",
                 "externalAccountBinding JWS fields must not be empty.");
         }
 
@@ -458,19 +489,19 @@ public class AcmeAccountController(
         }
         catch
         {
-            return AcmeError(400, "urn:ietf:params:acme:error:malformed",
+            return EabRefusal(400, "urn:ietf:params:acme:error:malformed",
                 "externalAccountBinding protected header is not valid base64url-encoded JSON.");
         }
 
         if (!eabHeader.TryGetProperty("kid", out var kidProp) || string.IsNullOrEmpty(kidProp.GetString()))
         {
-            return AcmeError(400, "urn:ietf:params:acme:error:malformed",
+            return EabRefusal(400, "urn:ietf:params:acme:error:malformed",
                 "externalAccountBinding protected header must contain a 'kid' field.");
         }
 
         if (!eabHeader.TryGetProperty("alg", out var algProp) || algProp.GetString() != "HS256")
         {
-            return AcmeError(400, "urn:ietf:params:acme:error:malformed",
+            return EabRefusal(400, "urn:ietf:params:acme:error:malformed",
                 "externalAccountBinding must use HS256 algorithm.");
         }
 
@@ -480,19 +511,19 @@ public class AcmeAccountController(
         var eabKey = await _db.AcmeEabKeys.FirstOrDefaultAsync(k => k.KeyId == keyId);
         if (eabKey == null)
         {
-            return AcmeError(403, "urn:ietf:params:acme:error:unauthorized",
+            return EabRefusal(403, "urn:ietf:params:acme:error:unauthorized",
                 "Unknown external account binding key ID.");
         }
 
         if (eabKey.IsUsed)
         {
-            return AcmeError(403, "urn:ietf:params:acme:error:unauthorized",
+            return EabRefusal(403, "urn:ietf:params:acme:error:unauthorized",
                 "External account binding key has already been used.");
         }
 
         if (eabKey.ExpiresAt.HasValue && eabKey.ExpiresAt.Value < DateTime.UtcNow)
         {
-            return AcmeError(403, "urn:ietf:params:acme:error:unauthorized",
+            return EabRefusal(403, "urn:ietf:params:acme:error:unauthorized",
                 "External account binding key has expired.");
         }
 
@@ -511,18 +542,18 @@ public class AcmeAccountController(
 
             if (!string.Equals(innerThumbprint, accountThumbprint, StringComparison.Ordinal))
             {
-                return AcmeError(400, "urn:ietf:params:acme:error:malformed",
+                return EabRefusal(400, "urn:ietf:params:acme:error:malformed",
                     "externalAccountBinding payload must contain the account public key.");
             }
         }
         catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
         {
-            return AcmeError(400, "urn:ietf:params:acme:error:malformed",
+            return EabRefusal(400, "urn:ietf:params:acme:error:malformed",
                 "externalAccountBinding payload JWK is not valid.");
         }
         catch
         {
-            return AcmeError(400, "urn:ietf:params:acme:error:malformed",
+            return EabRefusal(400, "urn:ietf:params:acme:error:malformed",
                 "externalAccountBinding payload is not valid.");
         }
 
@@ -535,39 +566,23 @@ public class AcmeAccountController(
 
         if (!CryptographicOperations.FixedTimeEquals(expectedSignature, actualSignature))
         {
-            return AcmeError(403, "urn:ietf:params:acme:error:unauthorized",
+            return EabRefusal(403, "urn:ietf:params:acme:error:unauthorized",
                 "External account binding signature verification failed.");
         }
 
-        return null; // Validation passed
+        return (null, eabKey.Id); // Validation passed
     }
+
+    /// <summary>A refusal from <see cref="ValidateExternalAccountBindingAsync"/>: the problem document and no key.</summary>
+    private (IActionResult? Refusal, Guid? EabKeyId) EabRefusal(int status, string type, string detail)
+        => (AcmeError(status, type, detail), null);
 
     /// <summary>
-    /// Marks an EAB key as used after successful account creation.
+    /// The refusal of a request whose EAB key was spent between its validation and its claim, by a
+    /// concurrent request presenting the same key; the same answer as for a key already used.
     /// </summary>
-    private async Task MarkEabKeyUsedAsync(JsonElement eab, Guid accountId)
-    {
-        try
-        {
-            var eabProtectedB64 = eab.GetProperty("protected").GetString()!;
-            var headerJson = System.Text.Encoding.UTF8.GetString(Base64UrlDecode(eabProtectedB64));
-            var eabHeader = JsonSerializer.Deserialize<JsonElement>(headerJson);
-            var keyId = eabHeader.GetProperty("kid").GetString()!;
-
-            var eabKey = await _db.AcmeEabKeys.FirstOrDefaultAsync(k => k.KeyId == keyId);
-            if (eabKey != null)
-            {
-                eabKey.IsUsed = true;
-                eabKey.UsedAt = DateTime.UtcNow;
-                eabKey.UsedByAccountId = accountId;
-                await _db.SaveChangesAsync();
-            }
-        }
-        catch
-        {
-            // Best-effort; account was already created
-        }
-    }
+    private ObjectResult EabKeyAlreadyUsed()
+        => AcmeError(403, "urn:ietf:params:acme:error:unauthorized", "External account binding key has already been used.");
 
     private AcmeJwsPayload GetJws() =>
         HttpContext.Items["AcmeJws"] as AcmeJwsPayload

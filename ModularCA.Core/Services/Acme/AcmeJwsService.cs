@@ -41,21 +41,22 @@ public class AcmeJwsService(IAcmeAccountService accountService, IAcmeNonceServic
         "RS256", "PS256", "ES256", "ES384"
     };
 
+    /// <summary>
+    /// Parses a flattened JWS (RFC 8555 §6.2), checks its algorithm, URL and replay nonce, and
+    /// verifies its signature with the inline <c>jwk</c> or the <c>kid</c> account's key. Every
+    /// refusal is an <see cref="InvalidOperationException"/>, which the ACME filter turns into a
+    /// problem document: a body, header, signature or payload that cannot be read is untagged
+    /// (<c>malformed</c>), never a JSON, base64 or key-lookup exception that would surface as a
+    /// 500; a missing, non-string, unknown or spent nonce is tagged <c>badNonce:</c> (§6.5). The
+    /// payload must be empty (POST-as-GET) or a JSON object.
+    /// </summary>
+    /// <param name="rawBody">The request body.</param>
+    /// <param name="requestUrl">The URL the request was addressed to, which the header's <c>url</c> must equal.</param>
     public async Task<AcmeJwsPayload> ParseAndVerifyAsync(string rawBody, string requestUrl)
     {
-        var jws = JsonSerializer.Deserialize<JsonElement>(rawBody);
+        var (protectedB64, payloadB64, signatureB64, signature, payload, headerJson, header) = ParseFlattened(rawBody);
 
-        var protectedB64 = jws.GetProperty("protected").GetString()
-            ?? throw new InvalidOperationException("Missing protected header.");
-        var payloadB64 = jws.GetProperty("payload").GetString()
-            ?? throw new InvalidOperationException("Missing payload.");
-        var signatureB64 = jws.GetProperty("signature").GetString()
-            ?? throw new InvalidOperationException("Missing signature.");
-
-        var headerJson = Encoding.UTF8.GetString(Base64UrlDecode(protectedB64));
-        var header = JsonSerializer.Deserialize<JsonElement>(headerJson);
-
-        var alg = header.GetProperty("alg").GetString()
+        var alg = OptionalString(header, "alg")
             ?? throw new InvalidOperationException("Missing alg in protected header.");
 
         // Enforce the RFC 8555 algorithm allow-list before any
@@ -64,7 +65,7 @@ public class AcmeJwsService(IAcmeAccountService accountService, IAcmeNonceServic
         if (!AllowedAlgorithms.Contains(alg))
             throw new InvalidOperationException($"badSignatureAlgorithm: Algorithm '{alg}' is not permitted. Allowed: {string.Join(", ", AllowedAlgorithms)}.");
 
-        var url = header.TryGetProperty("url", out var urlProp) ? urlProp.GetString() : null;
+        var url = OptionalString(header, "url");
 
         if (url != requestUrl)
             throw new InvalidOperationException("JWS url does not match request URL.");
@@ -75,13 +76,19 @@ public class AcmeJwsService(IAcmeAccountService accountService, IAcmeNonceServic
         // jwk-signed body consumed no nonce at all and could be replayed without limit. Since
         // the filter resolved an account from an inline jwk on every endpoint, that included
         // revoke-cert: capture one such request and it could be replayed indefinitely.
-        if (!header.TryGetProperty("nonce", out var nonceProp) || string.IsNullOrEmpty(nonceProp.GetString()))
-            throw new InvalidOperationException("Nonce is required in ACME JWS protected header.");
+        //
+        // §6.5.2: a nonce that is missing or unacceptable is answered badNonce, which tells the
+        // client to retry with the fresh nonce the response carries.
+        var nonce = header.TryGetProperty("nonce", out var nonceProp) && nonceProp.ValueKind == JsonValueKind.String
+            ? nonceProp.GetString()
+            : null;
+        if (string.IsNullOrEmpty(nonce))
+            throw new InvalidOperationException("badNonce: A nonce is required in the ACME JWS protected header.");
 
-        if (!await _nonceService.ConsumeAsync(nonceProp.GetString()!))
-            throw new InvalidOperationException("Invalid or expired nonce.");
+        if (!await _nonceService.ConsumeAsync(nonce))
+            throw new InvalidOperationException("badNonce: Invalid or expired nonce.");
 
-        string? kid = header.TryGetProperty("kid", out var kidProp) ? kidProp.GetString() : null;
+        string? kid = OptionalString(header, "kid");
         JsonElement? jwk = header.TryGetProperty("jwk", out var jwkProp) ? jwkProp : null;
 
         if (kid != null && jwk != null)
@@ -90,7 +97,6 @@ public class AcmeJwsService(IAcmeAccountService accountService, IAcmeNonceServic
             throw new InvalidOperationException("JWS must contain kid or jwk.");
 
         var signingInput = Encoding.ASCII.GetBytes($"{protectedB64}.{payloadB64}");
-        var signature = Base64UrlDecode(signatureB64);
 
         Guid? accountId = null;
         string? thumbprint = null;
@@ -102,9 +108,8 @@ public class AcmeJwsService(IAcmeAccountService accountService, IAcmeNonceServic
         }
         else if (kid != null)
         {
-            var kidUri = new Uri(kid);
-            var accountIdStr = kidUri.Segments.Last().TrimEnd('/');
-            if (!Guid.TryParse(accountIdStr, out var parsedId))
+            if (!Uri.TryCreate(kid, UriKind.Absolute, out var kidUri)
+                || !Guid.TryParse(kidUri.Segments.Last().TrimEnd('/'), out var parsedId))
                 throw new InvalidOperationException("Invalid kid format.");
 
             var account = await _accountService.GetByIdAsync(parsedId)
@@ -122,15 +127,102 @@ public class AcmeJwsService(IAcmeAccountService accountService, IAcmeNonceServic
         return new AcmeJwsPayload
         {
             ProtectedHeader = headerJson,
-            Payload = payloadB64.Length == 0 ? "" : Encoding.UTF8.GetString(Base64UrlDecode(payloadB64)),
+            Payload = payload,
             Signature = signatureB64,
             Kid = kid,
             Jwk = jwk,
-            Nonce = nonceProp.ValueKind != JsonValueKind.Undefined ? nonceProp.GetString() : null,
+            Nonce = nonce,
             Url = url,
             AccountId = accountId,
             JwkThumbprint = thumbprint
         };
+    }
+
+    /// <summary>
+    /// Reads a flattened JWS without verifying it: the three members, the protected header as a
+    /// JSON object, the signature bytes and the payload text. A body that is not a JSON object, a
+    /// member that is missing or not a string, or a part that is not base64url or not JSON is
+    /// refused with an untagged <see cref="InvalidOperationException"/> (<c>malformed</c>). The
+    /// payload must be empty or a JSON object, the only two forms an ACME request takes.
+    /// </summary>
+    /// <param name="rawBody">The request body.</param>
+    private static (string ProtectedB64, string PayloadB64, string SignatureB64, byte[] Signature, string Payload, string HeaderJson, JsonElement Header)
+        ParseFlattened(string rawBody)
+    {
+        JsonElement jws;
+        try
+        {
+            jws = JsonSerializer.Deserialize<JsonElement>(rawBody);
+        }
+        catch (JsonException)
+        {
+            throw new InvalidOperationException("The request body is not valid JSON.");
+        }
+        if (jws.ValueKind != JsonValueKind.Object)
+            throw new InvalidOperationException("The request body must be a flattened JWS: a JSON object with protected, payload and signature.");
+
+        var protectedB64 = OptionalString(jws, "protected") ?? throw new InvalidOperationException("Missing protected header.");
+        var payloadB64 = OptionalString(jws, "payload") ?? throw new InvalidOperationException("Missing payload.");
+        var signatureB64 = OptionalString(jws, "signature") ?? throw new InvalidOperationException("Missing signature.");
+
+        string headerJson;
+        JsonElement header;
+        try
+        {
+            headerJson = Encoding.UTF8.GetString(Base64UrlDecode(protectedB64));
+            header = JsonSerializer.Deserialize<JsonElement>(headerJson);
+        }
+        catch (Exception ex) when (ex is FormatException or JsonException)
+        {
+            throw new InvalidOperationException("The protected header is not base64url-encoded JSON.");
+        }
+        if (header.ValueKind != JsonValueKind.Object)
+            throw new InvalidOperationException("The protected header must be a JSON object.");
+
+        byte[] signature;
+        string payload;
+        try
+        {
+            signature = Base64UrlDecode(signatureB64);
+            payload = payloadB64.Length == 0 ? "" : Encoding.UTF8.GetString(Base64UrlDecode(payloadB64));
+        }
+        catch (FormatException)
+        {
+            throw new InvalidOperationException("The signature or payload is not base64url-encoded.");
+        }
+
+        if (payload.Length > 0)
+        {
+            JsonValueKind kind;
+            try
+            {
+                using var document = JsonDocument.Parse(payload);
+                kind = document.RootElement.ValueKind;
+            }
+            catch (JsonException)
+            {
+                throw new InvalidOperationException("The payload is not valid JSON.");
+            }
+            if (kind != JsonValueKind.Object)
+                throw new InvalidOperationException("The payload must be a JSON object, or empty for POST-as-GET.");
+        }
+
+        return (protectedB64, payloadB64, signatureB64, signature, payload, headerJson, header);
+    }
+
+    /// <summary>
+    /// The string member <paramref name="name"/> of <paramref name="element"/>, or null when it is
+    /// absent or JSON null. A member of another type is refused (<c>malformed</c>).
+    /// </summary>
+    /// <param name="element">A JSON object.</param>
+    /// <param name="name">The member's name.</param>
+    private static string? OptionalString(JsonElement element, string name)
+    {
+        if (!element.TryGetProperty(name, out var value) || value.ValueKind == JsonValueKind.Null)
+            return null;
+        if (value.ValueKind != JsonValueKind.String)
+            throw new InvalidOperationException($"JWS member '{name}' must be a string.");
+        return value.GetString();
     }
 
     /// <summary>
@@ -183,19 +275,37 @@ public class AcmeJwsService(IAcmeAccountService accountService, IAcmeNonceServic
     }
 
     /// <summary>
-    /// Verifies a JWS signature using the specified JWK.
+    /// Verifies a JWS signature using the specified JWK, as for the inner JWS of a key change.
+    /// A protected header, signature or JWK that cannot be read is refused with an
+    /// <see cref="InvalidOperationException"/>, as a failed verification is.
     /// </summary>
+    /// <param name="protectedB64">The base64url protected header.</param>
+    /// <param name="payloadB64">The base64url payload.</param>
+    /// <param name="signatureB64">The base64url signature.</param>
+    /// <param name="jwkJson">The key to verify with, as JWK JSON.</param>
     public void VerifySignature(string protectedB64, string payloadB64, string signatureB64, string jwkJson)
     {
-        var headerJson = Encoding.UTF8.GetString(Base64UrlDecode(protectedB64));
-        var header = JsonSerializer.Deserialize<JsonElement>(headerJson);
-        var alg = header.GetProperty("alg").GetString()
-            ?? throw new InvalidOperationException("Missing alg in protected header.");
+        string alg;
+        byte[] signature;
+        JsonElement jwk;
+        try
+        {
+            var header = JsonSerializer.Deserialize<JsonElement>(Encoding.UTF8.GetString(Base64UrlDecode(protectedB64)));
+            if (header.ValueKind != JsonValueKind.Object)
+                throw new InvalidOperationException("The protected header must be a JSON object.");
+            alg = OptionalString(header, "alg")
+                ?? throw new InvalidOperationException("Missing alg in protected header.");
+            signature = Base64UrlDecode(signatureB64);
+            jwk = JsonSerializer.Deserialize<JsonElement>(jwkJson);
+        }
+        catch (Exception ex) when (ex is FormatException or JsonException)
+        {
+            // An unreadable inner JWS is a refusal like any other, not an exception that escapes
+            // the ACME layer as a 500.
+            throw new InvalidOperationException("The JWS protected header, signature or key is not well-formed.");
+        }
 
         var signingInput = Encoding.ASCII.GetBytes($"{protectedB64}.{payloadB64}");
-        var signature = Base64UrlDecode(signatureB64);
-        var jwk = JsonSerializer.Deserialize<JsonElement>(jwkJson);
-
         VerifySignature(alg, jwk, signingInput, signature);
     }
 

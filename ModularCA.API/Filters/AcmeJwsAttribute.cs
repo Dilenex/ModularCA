@@ -90,8 +90,35 @@ public class AcmeJwsActionFilter(
         + "with a new key.";
 
     /// <summary>
+    /// Runs <see cref="VerifyAndRunAsync"/>, then finishes the response the RFC 8555 way. A request
+    /// refused before the action ran gets a fresh Replay-Nonce, as §6.5 asks of error responses and
+    /// requires of <c>badNonce</c>, so the client can retry. A payload the action could not read
+    /// (a <see cref="JsonException"/> from binding it, such as a member of the wrong type) is
+    /// answered 400 <c>malformed</c> rather than escaping as a 500.
+    /// </summary>
+    public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
+    {
+        ActionExecutedContext? executed = null;
+        await VerifyAndRunAsync(context, async () => executed = await next());
+
+        if (executed == null)
+        {
+            await AddReplayNonceAsync(context.HttpContext);
+            return;
+        }
+
+        if (executed.Exception is JsonException unreadable && !executed.ExceptionHandled)
+        {
+            Serilog.Log.Information(unreadable, "ACME request payload could not be read for {Path}", context.HttpContext.Request.Path.Value);
+            executed.Result = AcmeError(400, "urn:ietf:params:acme:error:malformed",
+                "The request payload could not be read: a member does not have the expected type or shape.");
+            executed.ExceptionHandled = true;
+        }
+    }
+
+    /// <summary>
     /// Verifies the JWS, resolves the signing account, refuses a request signed by an account that
-    /// is no longer valid, and decides which CA the request addresses.
+    /// is no longer valid, and decides which CA the request addresses; then runs the action.
     /// A request signed by an account addresses the CA the account is bound to: on the label-less
     /// routes that CA, whatever the default is now, and on a labelled route only when the label
     /// names it; any other CA is refused (403 <c>unauthorized</c>). That covers new-order,
@@ -99,8 +126,13 @@ public class AcmeJwsActionFilter(
     /// the new-account lookup of an existing key. An unbound account is refused everywhere except
     /// new-account, which addresses the route's CA (the default on the label-less routes) and
     /// binds it there. A new-account request with a new key addresses the route's CA.
+    /// A refusal sets <c>context.Result</c> and does not call <paramref name="next"/>. A JWS the
+    /// verifier refuses maps to its problem type (<see cref="MapAcmeProblem"/>): <c>badNonce</c>,
+    /// <c>badSignatureAlgorithm</c>, <c>badPublicKey</c>, otherwise <c>malformed</c>.
     /// </summary>
-    public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
+    /// <param name="context">The action about to run.</param>
+    /// <param name="next">Runs the action.</param>
+    private async Task VerifyAndRunAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
         var request = context.HttpContext.Request;
 
@@ -232,27 +264,35 @@ public class AcmeJwsActionFilter(
         context.HttpContext.Items[AddressedCaItem] = addressedCa;
 
         // Add fresh nonce to response
-        var newNonce = await nonceService.GenerateAsync();
-        context.HttpContext.Response.Headers["Replay-Nonce"] = newNonce;
-        context.HttpContext.Response.Headers["Cache-Control"] = "no-store";
+        await AddReplayNonceAsync(context.HttpContext);
 
         await next();
+    }
+
+    /// <summary>Puts a fresh nonce on the response (RFC 8555 §6.5), not to be cached.</summary>
+    /// <param name="http">The request whose response carries it.</param>
+    private async Task AddReplayNonceAsync(Microsoft.AspNetCore.Http.HttpContext http)
+    {
+        http.Response.Headers["Replay-Nonce"] = await nonceService.GenerateAsync();
+        http.Response.Headers["Cache-Control"] = "no-store";
     }
 
     /// <summary>
     /// Problem-type prefixes the JWS verifier stamps onto its exception messages, mapped to the
     /// RFC 8555 problem type each one means. The verifier lives in ModularCA.Core and has no
     /// business constructing HTTP problem documents, so it tags the message and this filter does
-    /// the translation — <c>badSignatureAlgorithm:</c> for a rejected <c>alg</c>, and
+    /// the translation — <c>badSignatureAlgorithm:</c> for a rejected <c>alg</c>,
     /// <c>badPublicKey:</c> for a key that is malformed or outside the CA's key-size policy
-    /// (RFC 8555 §6.7 defines <c>badPublicKey</c> for exactly that). Anything untagged is a
-    /// generic malformed-request problem. Ordered longest-prefix-first is unnecessary here since
-    /// the prefixes are disjoint.
+    /// (RFC 8555 §6.7 defines <c>badPublicKey</c> for exactly that), and <c>badNonce:</c> for a
+    /// nonce that is missing, unknown or spent (§6.5). Anything untagged is a generic
+    /// malformed-request problem. Ordered longest-prefix-first is unnecessary here since the
+    /// prefixes are disjoint.
     /// </summary>
     private static readonly (string Prefix, string Type)[] ProblemPrefixes =
     [
         ("badSignatureAlgorithm:", "urn:ietf:params:acme:error:badSignatureAlgorithm"),
         ("badPublicKey:", "urn:ietf:params:acme:error:badPublicKey"),
+        ("badNonce:", "urn:ietf:params:acme:error:badNonce"),
     ];
 
     /// <summary>

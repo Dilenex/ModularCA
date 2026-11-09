@@ -171,7 +171,9 @@ public class InfraController(
 
     /// <summary>
     /// Revokes a certificate by serial number. Idempotent: revoking an already-revoked
-    /// certificate returns success. The optional reason defaults to "unspecified".
+    /// certificate returns success. The optional reason defaults to "unspecified"; any other value
+    /// must be the name of an RFC 5280 reason (<see cref="TryParseRevocationReason"/>), or the
+    /// request is refused with 400 and <see cref="ErrorCodes.RequestInvalid"/>.
     /// </summary>
     /// <param name="serial">The serial number of the certificate to revoke.</param>
     /// <param name="request">Optional revocation reason.</param>
@@ -201,18 +203,15 @@ public class InfraController(
             });
         }
 
-        // Parse and validate the revocation reason string against the enum.
-        // Unknown values return 400 instead of silently being stored as "unspecified" garbage.
-        ModularCA.Shared.Enums.RevocationReason reasonEnum;
-        if (string.IsNullOrWhiteSpace(request?.Reason))
-        {
-            reasonEnum = ModularCA.Shared.Enums.RevocationReason.Unspecified;
-        }
-        else if (!Enum.TryParse(request!.Reason, ignoreCase: true, out reasonEnum))
+        // The reason is taken by name only. Enum.TryParse also accepts a number, defined or not,
+        // and a comma list whose values it ORs together, so "8", "99" or
+        // "KeyCompromise,CACompromise" (= AffiliationChanged) used to be stored as given.
+        if (!TryParseRevocationReason(request?.Reason, out var reasonEnum))
         {
             return BadRequest(new
             {
-                error = $"Invalid revocation reason '{request.Reason}'. Expected one of: {string.Join(", ", Enum.GetNames<ModularCA.Shared.Enums.RevocationReason>())}.",
+                error = $"Invalid revocation reason '{request!.Reason}'. Expected one of: {string.Join(", ", RevocationReasonNames)}.",
+                code = ErrorCodes.RequestInvalid,
             });
         }
 
@@ -320,42 +319,85 @@ public class InfraController(
         }
     }
 
-    // ───────────────────────── Profile Read Endpoints ��────────────────────────
+    /// <summary>
+    /// The RFC 5280 §5.3.1 names of the reasons <see cref="RevokeCertificate"/> accepts, in code
+    /// order, as the refusal lists them.
+    /// </summary>
+    private static readonly string[] RevocationReasonNames =
+    [
+        "unspecified", "keyCompromise", "cACompromise", "affiliationChanged", "superseded",
+        "cessationOfOperation", "certificateHold", "privilegeWithdrawn", "aACompromise",
+    ];
 
     /// <summary>
-    /// Lists all certificate profiles. Used by Terraform data sources to discover
-    /// available profiles for certificate issuance.
+    /// Parses a revocation reason given by name: one of the defined
+    /// <see cref="ModularCA.Shared.Enums.RevocationReason"/> names, compared without regard to case,
+    /// so the RFC 5280 spelling (<c>keyCompromise</c>, <c>cACompromise</c>) and the enum's both
+    /// match. Null, empty or blank is <see cref="ModularCA.Shared.Enums.RevocationReason.Unspecified"/>.
+    /// A number, a comma list or any other name is refused, where <c>Enum.TryParse</c> would accept
+    /// it.
     /// </summary>
-    /// <returns>A list of all certificate profiles.</returns>
+    /// <param name="value">The reason as the client sent it.</param>
+    /// <param name="reason">The parsed reason; <see cref="ModularCA.Shared.Enums.RevocationReason.Unspecified"/> when refused.</param>
+    /// <returns>Whether <paramref name="value"/> names a defined reason or is empty.</returns>
+    internal static bool TryParseRevocationReason(string? value, out ModularCA.Shared.Enums.RevocationReason reason)
+    {
+        reason = ModularCA.Shared.Enums.RevocationReason.Unspecified;
+        if (string.IsNullOrWhiteSpace(value))
+            return true;
+        var name = Enum.GetNames<ModularCA.Shared.Enums.RevocationReason>()
+            .FirstOrDefault(n => string.Equals(n, value.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (name == null)
+            return false;
+        reason = Enum.Parse<ModularCA.Shared.Enums.RevocationReason>(name);
+        return true;
+    }
+
+    // ───────────────────────── Profile Read Endpoints��────────────────────────
+
+    /// <summary>
+    /// Lists the certificate profiles inside the key's space scope. Used by Terraform data sources
+    /// to discover available profiles for certificate issuance. A profile bound to no CA is
+    /// instance-wide configuration and is listed to every key whose scope is valid; one bound to a
+    /// CA is listed only when that CA is inside the scope (<see cref="ProfileCaInScope"/>).
+    /// </summary>
+    /// <returns>The certificate profiles inside the key's scope.</returns>
     [HttpGet("cert-profiles")]
     public async Task<IActionResult> ListCertProfiles()
     {
-        var profiles = await _certProfileService.GetAllAsync();
-        return Ok(profiles);
+        var profiles = await _certProfileService.GetAllAsync(Caller.Scope.Allows);
+        var inScope = await ProfileCaInScopeAsync();
+        return Ok(profiles.Where(p => inScope.ByCaId(p.CertificateAuthorityId, unbound: true)).ToList());
     }
 
     /// <summary>
-    /// Lists all signing profiles. Used by Terraform data sources to discover
-    /// available signing profiles for certificate issuance.
+    /// Lists the signing profiles inside the key's space scope: those whose issuing CA is inside
+    /// it. Used by Terraform data sources to discover available signing profiles for certificate
+    /// issuance. A key restricted to a space or to the instance does not see a profile with no
+    /// issuer, which it could not issue under (<see cref="VerifySigningProfileSpaceAsync"/>).
     /// </summary>
-    /// <returns>A list of all signing profiles.</returns>
+    /// <returns>The signing profiles inside the key's scope.</returns>
     [HttpGet("signing-profiles")]
     public async Task<IActionResult> ListSigningProfiles()
     {
         var profiles = await _signingProfileService.GetAllAsync();
-        return Ok(profiles);
+        var inScope = await ProfileCaInScopeAsync();
+        return Ok(profiles.Where(p => inScope.ByCertificateId(p.IssuerId)).ToList());
     }
 
     /// <summary>
-    /// Lists all request profiles. Used by Terraform data sources to discover
-    /// available request profiles and their enrollment constraints.
+    /// Lists the request profiles inside the key's space scope. Used by Terraform data sources to
+    /// discover available request profiles and their enrollment constraints. A profile bound to no
+    /// CA is listed to every key whose scope is valid; one bound to a CA only when that CA is inside
+    /// the scope.
     /// </summary>
-    /// <returns>A list of all request profiles.</returns>
+    /// <returns>The request profiles inside the key's scope.</returns>
     [HttpGet("request-profiles")]
     public async Task<IActionResult> ListRequestProfiles()
     {
         var profiles = await _requestProfileService.GetAllAsync();
-        return Ok(profiles);
+        var inScope = await ProfileCaInScopeAsync();
+        return Ok(profiles.Where(p => inScope.ByCaId(p.CertificateAuthorityId, unbound: true)).ToList());
     }
 
     // ──���────────────────────── CA Read Endpoints ────��────────────────────
@@ -445,6 +487,43 @@ public class InfraController(
         var instanceOnly = scope.Kind == IntegrationScopeKind.Instance;
         var spaceId = scope.Kind == IntegrationScopeKind.Space ? scope.SpaceId : null;
         return cas.Where(ca => everything || (instanceOnly && ca.SpaceId == null) || (spaceId != null && ca.SpaceId == spaceId));
+    }
+
+    /// <summary>
+    /// Which profiles a listing may return to this key, by the CA each is bound to. A key that
+    /// reaches everything sees every profile. A restricted key sees a profile bound to a CA inside
+    /// its scope (<see cref="InScope"/>), and a certificate or request profile bound to no CA; a
+    /// scope that is neither a space nor <c>instance</c> sees none.
+    /// </summary>
+    /// <param name="Scope">The key's scope.</param>
+    /// <param name="CaIds">The ids of the CAs inside a restricted scope.</param>
+    /// <param name="CaCertificateIds">The certificate ids of the CAs inside a restricted scope.</param>
+    private sealed record ProfileCaInScope(IntegrationSpaceScope Scope, HashSet<Guid> CaIds, HashSet<Guid> CaCertificateIds)
+    {
+        /// <summary>Whether a profile bound to CA <paramref name="caId"/> (null for none) is listed; <paramref name="unbound"/> says whether one bound to none is.</summary>
+        public bool ByCaId(Guid? caId, bool unbound) =>
+            !Scope.IsRestricted || (Scope.Kind != IntegrationScopeKind.Invalid && (caId is Guid id ? CaIds.Contains(id) : unbound));
+
+        /// <summary>Whether a profile issuing from CA certificate <paramref name="issuerId"/> is listed; a restricted key does not see one with no issuer.</summary>
+        public bool ByCertificateId(Guid? issuerId) =>
+            !Scope.IsRestricted || (issuerId is Guid id && CaCertificateIds.Contains(id));
+    }
+
+    /// <summary>
+    /// The CAs inside this key's scope, for filtering the profile listings; see
+    /// <see cref="ProfileCaInScope"/>. Reads nothing when the key reaches everything.
+    /// </summary>
+    private async Task<ProfileCaInScope> ProfileCaInScopeAsync()
+    {
+        var scope = Caller.Scope;
+        if (!scope.IsRestricted)
+            return new ProfileCaInScope(scope, [], []);
+        var cas = await InScope(_db.CertificateAuthorities.AsNoTracking())
+            .Select(ca => new { ca.Id, ca.CertificateId })
+            .ToListAsync();
+        return new ProfileCaInScope(scope,
+            cas.Select(ca => ca.Id).ToHashSet(),
+            cas.Where(ca => ca.CertificateId != null).Select(ca => ca.CertificateId!.Value).ToHashSet());
     }
 
     /// <summary>
@@ -596,8 +675,9 @@ public class InfraIssueCertificateRequest
 public class InfraRevokeCertificateRequest
 {
     /// <summary>
-    /// Revocation reason per RFC 5280 (e.g., "keyCompromise", "cessationOfOperation", "unspecified").
-    /// Defaults to "unspecified" when omitted.
+    /// Revocation reason per RFC 5280, by name and in any case (e.g., "keyCompromise",
+    /// "cessationOfOperation", "unspecified"). Defaults to "unspecified" when omitted. A numeric
+    /// code, a comma list or an undefined name is refused with 400.
     /// </summary>
     public string? Reason { get; set; }
 }

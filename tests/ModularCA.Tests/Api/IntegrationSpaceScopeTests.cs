@@ -145,6 +145,60 @@ public class IntegrationSpaceScopeTests
         Assert.Equal(labels, json.RootElement.EnumerateArray().Select(e => e.GetProperty("Label").GetString()).OrderBy(l => l).ToArray());
     }
 
+    /// <summary>
+    /// The profile listings follow the key's scope as the CA listing does. A certificate or request
+    /// profile bound to no CA is instance-wide configuration and is listed to every valid scope; one
+    /// bound to a CA, and a signing profile, follow their CA's space. A restricted key does not see a
+    /// signing profile with no issuer, which it could not issue under, and a scope that is neither a
+    /// space nor <c>instance</c> sees nothing.
+    /// </summary>
+    [Theory]
+    [InlineData(null, "inst,none,other,space", "inst,none,other,space", "inst,none,other,space")]
+    [InlineData("instance", "inst,none", "inst", "inst,none")]
+    [InlineData("space", "none,space", "space", "none,space")]
+    [InlineData("bogus", "", "", "")]
+    public async Task The_integration_API_lists_only_the_profiles_inside_its_scope(string? scope, string cert, string signing, string request)
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var otherSpace = Guid.NewGuid();
+        var instanceCa = new CertificateAuthorityEntity { Name = "Instance CA", Label = "inst", CertificateId = Guid.NewGuid() };
+        var spaceCa = new CertificateAuthorityEntity { Name = "Space CA", Label = "acme", CertificateId = Guid.NewGuid(), SpaceId = Space };
+        var otherCa = new CertificateAuthorityEntity { Name = "Other CA", Label = "other", CertificateId = Guid.NewGuid(), SpaceId = otherSpace };
+        db.CertificateAuthorities.AddRange(instanceCa, spaceCa, otherCa);
+        db.CertProfiles.AddRange(
+            new CertProfileEntity { Name = "none" },
+            new CertProfileEntity { Name = "inst", CertificateAuthorityId = instanceCa.Id },
+            new CertProfileEntity { Name = "space", CertificateAuthorityId = spaceCa.Id, SpaceId = Space },
+            new CertProfileEntity { Name = "other", CertificateAuthorityId = otherCa.Id, SpaceId = otherSpace });
+        db.SigningProfiles.AddRange(
+            new SigningProfileEntity { Name = "none" },
+            new SigningProfileEntity { Name = "inst", IssuerId = instanceCa.CertificateId },
+            new SigningProfileEntity { Name = "space", IssuerId = spaceCa.CertificateId },
+            new SigningProfileEntity { Name = "other", IssuerId = otherCa.CertificateId });
+        db.RequestProfiles.AddRange(
+            new RequestProfileEntity { Name = "none" },
+            new RequestProfileEntity { Name = "inst", CertificateAuthorityId = instanceCa.Id },
+            new RequestProfileEntity { Name = "space", CertificateAuthorityId = spaceCa.Id },
+            new RequestProfileEntity { Name = "other", CertificateAuthorityId = otherCa.Id });
+        await db.SaveChangesAsync();
+        var config = new SystemConfig();
+        config.IntegrationApi.SpaceId = scope == "space" ? Space.ToString() : scope;
+        var type = ApiAssembly.TypeNamed("ModularCA.API.Controllers.v1.Integration.InfraController");
+        var controller = Activator.CreateInstance(type, null, null, null, null,
+            new CertProfileService(db), new SigningProfileService(db), new RequestProfileService(db), db, config)!;
+
+        async Task<string> Names(string action)
+        {
+            var ok = Assert.IsType<OkObjectResult>(await (Task<IActionResult>)type.GetMethod(action)!.Invoke(controller, null)!);
+            using var json = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(ok.Value));
+            return string.Join(",", json.RootElement.EnumerateArray().Select(e => e.GetProperty("Name").GetString()).OrderBy(n => n, StringComparer.Ordinal));
+        }
+
+        Assert.Equal(cert, await Names("ListCertProfiles"));
+        Assert.Equal(signing, await Names("ListSigningProfiles"));
+        Assert.Equal(request, await Names("ListRequestProfiles"));
+    }
+
     /// <summary>Calls <c>SchemaStartup.FoldedScopeRefusals</c>.</summary>
     private static IReadOnlyList<(string Key, string Message, bool ToSystemTenant)> SystemTenantScopeRefusals(
         IReadOnlyList<(string Key, string Value)> scopes, IReadOnlyCollection<Guid> systemTenants, IReadOnlyCollection<Guid> spaces) =>
