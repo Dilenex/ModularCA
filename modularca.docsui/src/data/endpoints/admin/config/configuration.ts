@@ -204,6 +204,7 @@ export const adminConfiguration: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token scoped to update-config.' },
         ],
         responseDescription: 'Update confirmation with the refreshed compliance scan config.',
+        notes: 'ExpiringWithinDays was retired in 0.4.3 and is ignored if sent: the scan reports ExpiringWithoutRenewal for a certificate in its expiry warning (which its certificate profile sets) with no renewal request.',
     },
     {
         method: 'PUT',
@@ -216,6 +217,7 @@ export const adminConfiguration: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token scoped to update-config.' },
         ],
         responseDescription: 'Update confirmation with the refreshed notification config.',
+        notes: 'A certificate\'s CertExpiring e-mail is sent once when its expiry warning starts and once when its alert starts, as its certificate profile sets them. The warning days are reminders inside the warning: each day count that falls after the warning has started sends one reminder that many days before expiry, once per certificate. Before 0.4.3 the job mailed every certificate inside each day count again every day.',
     },
     {
         method: 'PUT',
@@ -228,6 +230,22 @@ export const adminConfiguration: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token scoped to update-config.' },
         ],
         responseDescription: 'Update confirmation with the refreshed ACME config.',
+    },
+    {
+        method: 'PUT',
+        path: '/api/v1/admin/config/tsa',
+        summary: 'Update the time-stamp authority policy OID.',
+        auth: 'Authorize (SystemAdmin)',
+        category: 'Admin Configuration',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token scoped to update-config.' },
+        ],
+        requestBody: [
+            { name: 'policyOid', type: 'string', required: false, description: 'Dotted object identifier, e.g. 1.3.6.1.4.1.66874.1.5.1. Empty restores the default.' },
+        ],
+        responseDescription: 'Update confirmation with the refreshed TSA config.',
+        notes: 'Applies to the next timestamp request. Every token names this policy in TSTInfo.policy, and a request whose reqPolicy names another is refused with failInfo unacceptedPolicy. An empty policyOid restores the default, 1.3.6.1.4.1.66874.1.5.1. A value that is not a dotted object identifier is refused with 400.',
     },
     {
         method: 'PUT',

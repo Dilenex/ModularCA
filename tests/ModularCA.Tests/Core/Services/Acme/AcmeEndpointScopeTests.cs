@@ -99,6 +99,22 @@ public class AcmeEndpointScopeTests
         public Task<bool> HasStaleOrdersAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
+    /// <summary>An order service whose finalize throws <paramref name="refusal"/>.</summary>
+    private sealed class RefusingOrders(Guid accountId, Exception refusal) : IAcmeOrderService
+    {
+        public Task<AcmeOrderDto> FinalizeAsync(Guid orderId, string csrBase64Url, string baseUrl, CertificateAuthorityEntity addressedCa)
+            => Task.FromException<AcmeOrderDto>(refusal);
+        public Task<Guid?> GetAccountIdForOrderAsync(Guid orderId) => Task.FromResult<Guid?>(accountId);
+        public Task<string?> GetIssuedCertificateSerialForOrderAsync(Guid orderId) => throw new NotSupportedException();
+        public Task<AcmeOrderDto> CreateAsync(Guid accountId, CreateAcmeOrderRequest request, string baseUrl, CertificateAuthorityEntity ca) => throw new NotSupportedException();
+        public Task<AcmeOrderDto?> GetByIdAsync(Guid orderId, string baseUrl) => throw new NotSupportedException();
+        public Task<List<AcmeOrderDto>> GetByAccountAsync(Guid accountId, string baseUrl) => throw new NotSupportedException();
+        public Task<string?> DownloadCertificateAsync(Guid orderId) => throw new NotSupportedException();
+        public Task<Guid?> GetAccountIdForCertificateSerialAsync(string serialNumber, byte[]? presentedDer = null) => throw new NotSupportedException();
+        public Task ExpireStaleOrdersAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<bool> HasStaleOrdersAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
+    }
+
     private sealed class World
     {
         public required ModularCADbContext Db { get; init; }
@@ -375,6 +391,34 @@ public class AcmeEndpointScopeTests
             var row = Assert.Single(w.Audit.Rows, r => r.Operation == operation);
             Assert.Equal(("strict", w.Strict.Id, w.Strict.SpaceId), (row.CaLabel, row.CaId, row.SpaceId));
         }
+    }
+
+    /// <summary>
+    /// RFC 8555 section 7.4: a key the key policy refuses is answered 400 badPublicKey, and another
+    /// certificate-policy refusal of the CSR 400 badCSR. Both were 403 orderNotReady; a refusal of
+    /// the order's state still is.
+    /// </summary>
+    [Theory]
+    [InlineData("[KeyAlgorithmPolicy] The subject key (RSA 1024) is not permitted by the system key policy.", 400, "urn:ietf:params:acme:error:badPublicKey")]
+    [InlineData("[MinRsaKeySize] RSA key size 2048 bits is below the minimum required 3072 bits.", 400, "urn:ietf:params:acme:error:badPublicKey")]
+    [InlineData("[ForbiddenAlgorithm] Signature algorithm \"SHA1withRSA\" is forbidden by system policy.", 400, "urn:ietf:params:acme:error:badCSR")]
+    [InlineData(null, 403, "urn:ietf:params:acme:error:orderNotReady")]
+    public async Task A_finalize_refusal_is_answered_with_the_rfc_8555_error_for_it(string? violation, int status, string type)
+    {
+        var w = Seed();
+        var accountId = Guid.NewGuid();
+        Exception refusal = violation == null
+            ? new InvalidOperationException("Order is not ready for finalization. Current status: Pending")
+            : new ModularCA.Shared.Errors.CertificatePolicyViolationException([violation]);
+
+        var result = await InvokeAsync(w, "AcmeOrderController", "FinalizeOrder",
+            new AcmeJwsPayload { AccountId = accountId, Payload = """{"csr":"AAAA"}""" }, w.Open,
+            s => s.Add(typeof(IAcmeOrderService), new RefusingOrders(accountId, refusal)), Guid.NewGuid());
+
+        Assert.Equal(status, StatusOf(result));
+        var problem = Assert.IsType<AcmeErrorResponse>(Assert.IsType<ObjectResult>(result).Value);
+        Assert.Equal(type, problem.Type);
+        Assert.DoesNotContain("RSA 1024", problem.Detail);
     }
 
     /// <summary>

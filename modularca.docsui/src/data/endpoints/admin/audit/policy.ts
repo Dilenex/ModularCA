@@ -22,5 +22,6 @@ export const adminPolicy: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Sync result.',
+        notes: 'In cert-profiles.yaml the expiry warning keys (expiryWarningPercent, expiryWarningMaxWindow, expiryAlertPercent, expiryAlertMaxWindow, expiryNeverWarn, expiryWarningOverridesParent) are optional: a key an entry leaves out keeps the profile\'s current value, so a file written before 0.4.3 leaves the settings made in the console alone. A percent or window given as null (~), or a window given as an empty string, clears it.',
     },
 ];

@@ -1021,6 +1021,8 @@ public static class BootstrapProfileSeeder
                 AllowedSignatureAlgorithms = sigAlgorithms,
                 ValidityPeriodMin = "P30D",
                 ValidityPeriodMax = "P397D",
+                // TlsRenewalJob renews the console's certificate on its own: no expiry warning.
+                ExpiryNeverWarn = true,
                 CanBeDeleted = false,
                 CreatedAt = DateTime.UtcNow,
             };

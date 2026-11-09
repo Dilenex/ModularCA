@@ -80,6 +80,17 @@ public sealed class CorrelationIdMiddleware
     }
 
     /// <summary>
+    /// The correlation id of the request, or its trace identifier when this middleware did not
+    /// run. An endpoint that hides an exception's message returns this so the operator can find
+    /// the logged exception.
+    /// </summary>
+    /// <param name="context">The request.</param>
+    public static string Of(HttpContext context)
+        => context.Items.TryGetValue(HttpContextItemKey, out var id) && id is string s && s.Length > 0
+            ? s
+            : context.TraceIdentifier;
+
+    /// <summary>
     /// Resolves the correlation id from the first present inbound header
     /// (<c>traceparent</c> trace-id segment, <c>X-Correlation-Id</c>, or
     /// <c>X-Request-Id</c>), generating a fresh one when absent.

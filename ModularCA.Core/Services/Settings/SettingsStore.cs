@@ -340,7 +340,11 @@ public sealed class SettingsStore(ModularCADbContext db, IAuditService audit, IS
         }
     }
 
-    /// <summary>Checks every key and value of <paramref name="change"/> and returns what each setting's row should hold.</summary>
+    /// <summary>
+    /// Checks every key and value of <paramref name="change"/> (its type, and the value rule of
+    /// <see cref="ModularCA.Shared.Utils.ConfigInputRules.StoredSettingError"/>) and returns what each
+    /// setting's row should hold.
+    /// </summary>
     private static Dictionary<string, Wanted> Validate(SettingsChange change)
     {
         if (string.IsNullOrWhiteSpace(change.Actor.Name))
@@ -359,6 +363,8 @@ public sealed class SettingsStore(ModularCADbContext db, IAuditService audit, IS
             var definition = Definition(key);
             if (SettingsCatalog.Problem(definition, value) is { } problem)
                 throw new SettingsRefusedException(SettingsRefusal.InvalidValue, problem, key);
+            if (ModularCA.Shared.Utils.ConfigInputRules.StoredSettingError(key, value) is { } ruleProblem)
+                throw new SettingsRefusedException(SettingsRefusal.InvalidValue, ruleProblem, key);
 
             // One value has one stored spelling, so "the same value again" is a comparison of text.
             var json = SettingsCatalog.CanonicalJson(definition, value);

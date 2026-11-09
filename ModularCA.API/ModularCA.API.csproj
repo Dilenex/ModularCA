@@ -9,17 +9,17 @@
   </PropertyGroup>
 
   <ItemGroup>
-<PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.1.1" />
-	<PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.12" />
-	<PackageReference Include="Microsoft.AspNetCore.DataProtection.StackExchangeRedis" Version="10.0.12" />
-	<PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.12" />
-	<PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.12" />
-	<PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12">
+<PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.2.0" />
+	<PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.14" />
+	<PackageReference Include="Microsoft.AspNetCore.DataProtection.StackExchangeRedis" Version="10.0.14" />
+	<PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.14" />
+	<PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.14" />
+	<PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.14">
 	  <PrivateAssets>all</PrivateAssets>
 	  <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
 	</PackageReference>
-	<PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.12" />
-	<PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.12" />
+	<PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.14" />
+	<PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.14" />
 	<PackageReference Include="Microsoft.OpenApi" Version="2.7.5" />
 	<PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
 	<PackageReference Include="NCrontab.Signed" Version="3.4.0" />
@@ -28,7 +28,7 @@
 	<PackageReference Include="Serilog.Sinks.EventLog" Version="4.0.0" />
 	<PackageReference Include="Serilog.Sinks.Network" Version="3.0.0" />
 	<PackageReference Include="Serilog.Sinks.SyslogMessages" Version="4.1.0" />
-	<PackageReference Include="Swashbuckle.AspNetCore" Version="10.2.3" />
+	<PackageReference Include="Swashbuckle.AspNetCore" Version="10.3.1" />
 	<PackageReference Include="Yarp.ReverseProxy" Version="2.3.0" />
 	<ProjectReference Include="..\ModularCA.Auth\ModularCA.Auth.csproj" />
 	<ProjectReference Include="..\ModularCA.Bootstrap\ModularCA.Bootstrap.csproj" />

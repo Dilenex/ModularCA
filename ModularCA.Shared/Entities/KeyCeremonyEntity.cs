@@ -63,7 +63,12 @@ public class KeyCeremonyEntity
     /// <summary>Timestamp when the ceremony was initiated.</summary>
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
-    /// <summary>Timestamp when the ceremony expires if not completed. Default 24 hours from creation.</summary>
+    /// <summary>
+    /// When the ceremony expires if not completed. While pending: 24 hours from creation, the window
+    /// for approval. When the quorum is reached it moves to the execution deadline, a fixed period
+    /// after approval (<c>KeyCeremonyService.ApprovedExecutionWindow</c>); an approved ceremony not
+    /// executed by then expires and Execute refuses it.
+    /// </summary>
     public DateTime ExpiresAt { get; set; }
 
     /// <summary>Timestamp when the ceremony operation was executed, if applicable.</summary>

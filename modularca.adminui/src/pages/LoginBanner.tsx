@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiGet } from '../api/client';
+import { withLoginError } from './loginErrors';
 
 /// <summary>
 /// Pre-login banner gate. Fetches the configured banner title + body from
@@ -9,10 +10,12 @@ import { apiGet } from '../api/client';
 /// session-scoped flag and forwards to /login, Decline clears any stale flag
 /// and shows a terminal message. The flag is kept in sessionStorage so it
 /// resets when the browser tab closes, matching AC-8's "each access attempt"
-/// expectation.
+/// expectation. A sign-in error code the login page arrived with (`?error=`)
+/// is carried back to /login so its message still shows.
 /// </summary>
 const LoginBanner: React.FC = () => {
     const navigate = useNavigate();
+    const [loginPath] = useState(() => withLoginError('/login', new URLSearchParams(window.location.search).get('error')));
     const [title, setTitle] = useState<string>('System Use Notification');
     const [body, setBody] = useState<string | null>(null);
     const [declined, setDeclined] = useState(false);
@@ -23,7 +26,7 @@ const LoginBanner: React.FC = () => {
             .then(d => {
                 if (!d.banner) {
                     // No banner configured — nothing to acknowledge; go straight to login.
-                    navigate('/login', { replace: true });
+                    navigate(loginPath, { replace: true });
                     return;
                 }
                 setBody(d.banner);
@@ -31,14 +34,14 @@ const LoginBanner: React.FC = () => {
             })
             .catch(() => {
                 // Endpoint unreachable or server error — don't strand the user; fall through to login.
-                navigate('/login', { replace: true });
+                navigate(loginPath, { replace: true });
             })
             .finally(() => setLoading(false));
-    }, [navigate]);
+    }, [navigate, loginPath]);
 
     const accept = () => {
         sessionStorage.setItem('loginBannerAcknowledged', '1');
-        navigate('/login', { replace: true });
+        navigate(loginPath, { replace: true });
     };
 
     const decline = () => {

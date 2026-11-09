@@ -667,11 +667,14 @@ public static class BackupRestore
                         }
                     }
 
-                    // Write decrypted ZIP to temp location
-                    tempDecryptedZip = Path.GetTempFileName() + ".zip";
-                    File.WriteAllBytes(tempDecryptedZip, plaintext);
-                    // The decrypted archive contains every CA private key in the install.
-                    FileSecurityUtil.SetOwnerOnly(tempDecryptedZip);
+                    // Write decrypted ZIP to temp location. The decrypted archive contains every
+                    // CA private key in the install, so it is created owner-only (0600) under an
+                    // unguessable name, never written at default permissions and chmodded after:
+                    // a local user who opened it in that window kept a descriptor the chmod did
+                    // not revoke. (Path.GetTempFileName() + ".zip" also left the empty temp file
+                    // behind.)
+                    tempDecryptedZip = Path.Combine(Path.GetTempPath(), $"modularca-restore-{Guid.NewGuid():N}.zip");
+                    FileSecurityUtil.CreateOwnerOnly(tempDecryptedZip, plaintext);
                     archivePath = tempDecryptedZip; // Use decrypted ZIP for rest of restore
                 }
                 finally

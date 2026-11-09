@@ -20,8 +20,8 @@ public class NotificationLogEntity
     public Guid Id { get; set; } = Guid.NewGuid();
 
     /// <summary>
-    /// Event type (for example <c>"CertExpiring_30d"</c>). Matches the notification
-    /// job's internal key. Case sensitive.
+    /// Event type (for example <c>"CertExpiryWarning"</c> or <c>"CertExpiryReminder_7d"</c>;
+    /// <c>"CertExpiring_30d"</c> before 0.4.3). Matches the notification job's internal key. Case sensitive.
     /// </summary>
     [Required]
     [MaxLength(100)]
@@ -35,7 +35,10 @@ public class NotificationLogEntity
     [MaxLength(200)]
     public string TargetEntityId { get; set; } = string.Empty;
 
-    /// <summary>UTC date (time portion zeroed) the notification was emitted.</summary>
+    /// <summary>
+    /// UTC date (time portion zeroed) the notification was emitted; for a certificate expiry step,
+    /// the certificate's <c>NotAfter</c> date, so the step is logged once per certificate.
+    /// </summary>
     public DateTime NotificationDate { get; set; }
 
     /// <summary>Insertion timestamp (UTC) for the log row itself.</summary>

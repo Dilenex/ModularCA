@@ -48,6 +48,9 @@ namespace ModularCA.Shared.Models.Config
         public MtlsConfig Mtls { get; set; } = new();
         public AcmeConfig Acme { get; set; } = new();
         public EstConfig Est { get; set; } = new();
+
+        /// <summary>The time-stamp authority (RFC 3161): the policy its tokens name.</summary>
+        public TsaConfig Tsa { get; set; } = new();
         public ProtocolCleanupConfig ProtocolCleanup { get; set; } = new();
         public SshLoginNameSweepConfig SshLoginNameSweep { get; set; } = new();
         public BackupConfig Backup { get; set; } = new();
@@ -463,14 +466,13 @@ namespace ModularCA.Shared.Models.Config
         public bool EnableCors { get; set; } = false;
 
         /// <summary>
-        /// Optional CIDRs of trusted reverse proxies. Only populated
-        /// when the deployment sits behind a proxy. Consumed by the forwarded-headers
-        /// pipeline in conjunction with <see cref="SecurityConfig.BehindReverseProxy"/>.
-        /// Example: "10.0.1.0/24,10.0.2.0/24". The default is now
-        /// <b>loopback-only</b> — operators who run behind a reverse proxy must
-        /// enumerate trusted proxy subnets explicitly. Leaving this empty with
-        /// <see cref="SecurityConfig.BehindReverseProxy"/>=true falls back to
-        /// loopback-only (the old RFC1918 default has been removed).
+        /// CIDRs of trusted reverse proxies, comma-separated, each <c>address/prefix</c> with no
+        /// bits set after the prefix. Consumed by the forwarded-headers pipeline with
+        /// <see cref="SecurityConfig.BehindReverseProxy"/>. Example: "10.0.1.0/24,10.0.2.0/24".
+        /// Loopback is always trusted. Leaving this empty with
+        /// <see cref="SecurityConfig.BehindReverseProxy"/>=true stops the start (status 1), a proxy
+        /// on the same host included: name it as "127.0.0.1/32,::1/128". An entry that does not
+        /// parse stops the start too.
         /// </summary>
         [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public string TrustedProxyCidrs { get; set; } = string.Empty;
@@ -731,12 +733,14 @@ namespace ModularCA.Shared.Models.Config
         /// <summary>
         /// Hard-enforce DPoP proof-of-possession on refresh: when a session was bound to a client key
         /// (<c>RefreshTokenEntity.CnfJkt</c>), reject the refresh (401 <c>REFRESH_POP_INVALID</c>) unless
-        /// it carries a matching proof. Default <b>false</b> = observe mode: bind + audit-log mismatches
-        /// but allow the refresh (rebinding to the presented key), so the binding can be validated in
-        /// production before enforcement is switched on. The theft defense is only active once enforced.
+        /// it carries a matching proof. Default <b>true</b>: every sign-in path binds the session to the
+        /// browser's key when the client sends a proof (password, certificate, TOTP, WebAuthn, and the
+        /// mTLS code exchange). <b>false</b> = observe mode: audit-log mismatches but allow the refresh,
+        /// rebinding to the presented key. A session that was never bound (a client that sends no proof)
+        /// is not checked in either mode.
         /// </summary>
         [Setting(SettingClass.InstanceWide, SettingReload.Live)]
-        public bool EnforceRefreshTokenPoP { get; set; } = false;
+        public bool EnforceRefreshTokenPoP { get; set; } = true;
 
         /// <summary>
         /// Per-username rate-limit bucket floor. This is the maximum
@@ -1116,8 +1120,9 @@ namespace ModularCA.Shared.Models.Config
         /// <summary>
         /// PEM/DER file paths of the CA certificates that anchor client-certificate
         /// validation, both at the TLS handshake (Kestrel's SNI-gated client-cert callback)
-        /// and in <c>MtlsMiddleware</c>. Relative paths resolve against the application
-        /// base directory.
+        /// and in <c>MtlsMiddleware</c>, which share one set loaded at start. Relative paths
+        /// resolve against the application base directory. When no path loads and mTLS is on,
+        /// both use the certificates of the CAs that groups name as their mTLS signing CA.
         /// <para>
         /// The handshake fails closed on an empty anchor set — a client certificate cannot
         /// be validated against zero anchors, so every certificate is rejected rather than
@@ -1203,6 +1208,22 @@ namespace ModularCA.Shared.Models.Config
         /// </remarks>
         [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int TrustAnchorRefreshSeconds { get; set; } = 60;
+    }
+
+    /// <summary>Instance-wide settings of the time-stamp authority (RFC 3161).</summary>
+    public class TsaConfig
+    {
+        /// <summary>The policy ModularCA's TSA names by default, under Dilenex's enterprise arc (<c>docs/oid-allocation.md</c>).</summary>
+        public const string DefaultPolicyOid = "1.3.6.1.4.1.66874.1.5.1";
+
+        /// <summary>
+        /// The TSA policy, as a dotted object identifier: every timestamp token names it in
+        /// TSTInfo.policy, and a request whose reqPolicy names another is refused with
+        /// failInfo unacceptedPolicy (RFC 3161 section 2.4.2). Set it to assert a policy of
+        /// your own. Default <see cref="DefaultPolicyOid"/>.
+        /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        public string PolicyOid { get; set; } = DefaultPolicyOid;
     }
 
     /// <summary>
@@ -1539,12 +1560,8 @@ namespace ModularCA.Shared.Models.Config
         [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int WarnOverValidityDays { get; set; } = 825;
 
-        /// <summary>
-        /// Days before expiry within which a certificate is flagged as
-        /// "expiring soon" by the compliance scan job. Previously hardcoded to 30.
-        /// </summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
-        public int ExpiringWithinDays { get; set; } = 30;
+        // ExpiringWithinDays was retired in 0.4.3: the scan's ExpiringWithoutRenewal finding uses
+        // each certificate's expiry warning, which its certificate profile sets.
     }
 
     /// <summary>

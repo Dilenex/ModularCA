@@ -108,6 +108,12 @@ public class PostgresUpgradeHarnessTests
     /// <summary>The 0.4.2 migration that adds the purpose-specific certificate profiles to an install that predates them, without its timestamp.</summary>
     public const string StandardCertProfilesMigration = "StandardCertProfiles";
 
+    /// <summary>The 0.4.2 migration that adds retiring a certificate and dismissing its expiry warning, without its timestamp.</summary>
+    public const string CertificateRetireAndDismiss = "CertificateRetireAndDismiss";
+
+    /// <summary>The 0.4.3 migration that adds profile-driven expiry warnings, without its timestamp.</summary>
+    public const string ProfileExpiryWarnings = "ProfileExpiryWarnings";
+
     private const string ServerVariable = "MODULARCA_TEST_PG";
     private const string RehearsalVariable = "MODULARCA_TEST_PG_REHEARSAL";
     private const string RehearsalAuditVariable = "MODULARCA_TEST_PG_REHEARSAL_AUDIT";
@@ -1925,11 +1931,15 @@ public class PostgresUpgradeHarnessTests
                 + RequestProfile("Enterprise Server (EST)", $"'{main}'")
                 + RequestProfile("MDM Device (SCEP)", allowed: $"[\"{main}\"]")
                 + RequestProfile("Enterprise User (CMP)") + RequestProfile("Code Signing") + RequestProfile("Custom"));
-            async Task<string> Untouched() => await TextAsync(app,
-                "SELECT string_agg(to_jsonb(t)::text, E'\\n' ORDER BY t.\"Id\") FROM \"CertProfiles\" t WHERE t.\"Id\" IN "
+            async Task<string> Untouched(string strip = "") => await TextAsync(app,
+                $"SELECT string_agg((to_jsonb(t){strip})::text, E'\\n' ORDER BY t.\"Id\") FROM \"CertProfiles\" t WHERE t.\"Id\" IN "
                 + $"('{main}','{webTls}','{ownCodeSigning}')")
                 + await TextAsync(app, "SELECT string_agg((to_jsonb(t) - 'DefaultCertProfileId' - 'UpdatedAt')::text, E'\\n' ORDER BY t.\"Id\") FROM \"RequestProfiles\" t");
             var before = await Untouched();
+            // ProfileExpiryWarnings (0.4.3) adds the expiry warning columns and sets the Web TLS profile to never warn.
+            const string expiryColumns = " - 'ExpiryWarningPercent' - 'ExpiryWarningMaxWindow' - 'ExpiryAlertPercent' - 'ExpiryAlertMaxWindow'"
+                + " - 'ExpiryNeverWarn' - 'ExpiryWarningOverridesParent' - 'UpdatedAt'";
+            var beforeExpiry = await Untouched(expiryColumns);
 
             await MigrateThroughAsync(app, StandardCertProfilesMigration);
 
@@ -1966,7 +1976,7 @@ public class PostgresUpgradeHarnessTests
             Assert.Equal(before, await Untouched());
 
             await MigrateToLatestAsync(app, "application");
-            Assert.Equal(before, await Untouched());
+            Assert.Equal(beforeExpiry, await Untouched(expiryColumns));
             Assert.Equal(6, await ScalarAsync(app, "SELECT count(*) FROM \"CertProfiles\""));
         }
         finally
@@ -1989,6 +1999,90 @@ public class PostgresUpgradeHarnessTests
         {
             NpgsqlConnection.ClearAllPools();
             await DropDatabaseAsync(server, empty);
+        }
+    }
+
+    /// <summary>
+    /// The <c>ProfileExpiryWarnings</c> backfill: every existing end-entity certificate gets its
+    /// warning at 30 % and its alert at 10 % of its lifetime left, every CA certificate 30 and 7
+    /// days before it expires (never before it became valid), as <see cref="ModularCA.Shared.Utils.ExpiryWarningRule"/>
+    /// computes them with no profile settings; the instance's Web TLS certificate profile is set to
+    /// never warn and its certificates warn at their expiry; every other profile keeps the
+    /// defaults; and the stored value of the retired <c>ComplianceScan.ExpiringWithinDays</c>
+    /// setting is removed while the others stay.
+    /// </summary>
+    [RequiresEnvironmentFact(ServerVariable)]
+    public async Task The_expiry_warning_backfill_gives_leaves_30_and_10_percent_cas_30_and_7_days_and_the_web_tls_profile_never_warns()
+    {
+        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+        Guid main = Guid.NewGuid(), webTls = Guid.NewGuid();
+        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+        await CreateDatabaseAsync(server, appName);
+        try
+        {
+            await using var app = CreateApp(WithDatabase(server, appName));
+            await MigrateThroughAsync(app, CertificateRetireAndDismiss);
+
+            string CertProfile(Guid id, string name) =>
+                "INSERT INTO \"CertProfiles\" (\"Id\",\"Name\",\"Description\",\"IsCaProfile\",\"KeyUsages\",\"ExtendedKeyUsages\",\"AllowedKeyAlgorithms\",\"AllowedKeySizes\","
+                + "\"AllowedSignatureAlgorithms\",\"CreatedAt\",\"Revision\",\"UpdatedAt\",\"CanBeDeleted\",\"ProfileHash\",\"CtEnabled\",\"AllowWildcard\",\"InheritanceEnabled\") "
+                + $"VALUES ('{id}','{name}','',false,'[]','[]','[]','[]','[]','2026-03-01T08:15:30Z',0,'2026-03-01T08:15:30Z',true,'',false,false,false); ";
+            string Cert(string serial, string notBefore, string notAfter, bool isCa, Guid? profile) =>
+                "INSERT INTO \"Certificates\" (\"CertificateId\",\"SerialNumber\",\"Pem\",\"SubjectDN\",\"Issuer\",\"SubjectAlternativeNamesJson\",\"KeyUsagesJson\","
+                + "\"ExtendedKeyUsagesJson\",\"NotBefore\",\"NotAfter\",\"IsCA\",\"IsReissued\",\"Revoked\",\"CreatedAt\",\"CertProfileId\") "
+                + $"VALUES ('{Guid.NewGuid()}','{serial}','','CN={serial}','CN=Upgrade CA','[]','[]','[]','{notBefore}','{notAfter}',{(isCa ? "true" : "false")},false,false,"
+                + $"'2026-03-01T08:15:30Z',{(profile is Guid p ? $"'{p}'" : "NULL")}); ";
+            string Setting(string key, string json) =>
+                "INSERT INTO \"Settings\" (\"Key\",\"ValueJson\",\"Version\",\"Revision\",\"UpdatedAt\",\"ActorName\",\"Source\") "
+                + $"VALUES ('{key}','{json}',1,1,'2026-10-01T00:00:00Z','system','import'); ";
+
+            await ExecAsync(app,
+                CertProfile(main, "Main Certificate Profile") + CertProfile(webTls, "Web TLS Certificate Profile")
+                + Cert("leaf-90d", "2026-01-01T00:00:00Z", "2026-04-01T00:00:00Z", false, main)
+                + Cert("leaf-10h", "2026-01-01T00:00:00Z", "2026-01-01T10:00:00Z", false, null)
+                + Cert("leaf-backwards", "2026-02-01T00:00:00Z", "2026-01-01T00:00:00Z", false, null)
+                + Cert("ca-10y", "2020-01-01T00:00:00Z", "2030-01-01T00:00:00Z", true, null)
+                + Cert("ca-3d", "2026-01-01T00:00:00Z", "2026-01-04T00:00:00Z", true, null)
+                + Cert("console-tls", "2026-01-01T00:00:00Z", "2027-02-02T00:00:00Z", false, webTls)
+                + Setting("ComplianceScan_ExpiringWithinDays", "30") + Setting("ComplianceScan_WarnOverValidityDays", "825"));
+
+            await MigrateThroughAsync(app, ProfileExpiryWarnings);
+
+            async Task<string> Instants(string serial) => await TextAsync(app,
+                "SELECT to_char(\"ExpiryWarningAt\" AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' / ' || to_char(\"ExpiryAlertAt\" AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') "
+                + $"FROM \"Certificates\" WHERE \"SerialNumber\" = '{serial}'");
+            // 90 days: 27 and 9 days before 1 April.
+            Assert.Equal("2026-03-05 00:00:00 / 2026-03-23 00:00:00", await Instants("leaf-90d"));
+            // 10 hours: 3 hours and 1 hour before.
+            Assert.Equal("2026-01-01 07:00:00 / 2026-01-01 09:00:00", await Instants("leaf-10h"));
+            Assert.Equal("2026-01-01 00:00:00 / 2026-01-01 00:00:00", await Instants("leaf-backwards"));
+            Assert.Equal("2029-12-02 00:00:00 / 2029-12-25 00:00:00", await Instants("ca-10y"));
+            Assert.Equal("2026-01-01 00:00:00 / 2026-01-01 00:00:00", await Instants("ca-3d"));
+            Assert.Equal("2027-02-02 00:00:00 / 2027-02-02 00:00:00", await Instants("console-tls"));
+
+            // The rule gives the same instants, to the microsecond.
+            foreach (var serial in new[] { "leaf-90d", "leaf-10h", "ca-10y" })
+            {
+                var row = await app.Certificates.AsNoTracking().SingleAsync(c => c.SerialNumber == serial);
+                var (warningAt, alertAt) = ModularCA.Shared.Utils.ExpiryWarningRule.Compute(row.NotBefore, row.NotAfter, row.IsCA, null);
+                Assert.True(Math.Abs((warningAt - row.ExpiryWarningAt).TotalMilliseconds) < 1, serial);
+                Assert.True(Math.Abs((alertAt - row.ExpiryAlertAt).TotalMilliseconds) < 1, serial);
+            }
+
+            Assert.Equal("Web TLS Certificate Profile", await TextAsync(app,
+                "SELECT string_agg(\"Name\"::text, ',' ORDER BY \"Name\"::text) FROM \"CertProfiles\" WHERE \"ExpiryNeverWarn\""));
+            Assert.Equal(0, await ScalarAsync(app,
+                "SELECT count(*) FROM \"CertProfiles\" WHERE \"ExpiryWarningPercent\" IS NOT NULL OR \"ExpiryAlertPercent\" IS NOT NULL "
+                + "OR \"ExpiryWarningMaxWindow\" IS NOT NULL OR \"ExpiryAlertMaxWindow\" IS NOT NULL OR \"ExpiryWarningOverridesParent\""));
+            Assert.Equal("ComplianceScan_WarnOverValidityDays", await TextAsync(app, "SELECT string_agg(\"Key\"::text, ',') FROM \"Settings\""));
+
+            await MigrateToLatestAsync(app, "application");
+            Assert.Equal("2026-03-05 00:00:00 / 2026-03-23 00:00:00", await Instants("leaf-90d"));
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            await DropDatabaseAsync(server, appName);
         }
     }
 

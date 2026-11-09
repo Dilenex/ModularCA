@@ -18,6 +18,8 @@ certificate cannot be taken back.
 | `1.3.6.1.4.1.66874` | Dilenex LLC: the enterprise arc itself |
 | `1.3.6.1.4.1.66874.1` | ModularCA, the product |
 | `1.3.6.1.4.1.66874.1.1` | generated certificate template identifiers, for Windows autoenrollment |
+| `1.3.6.1.4.1.66874.1.5` | time-stamping (RFC 3161) policy identifiers |
+| `1.3.6.1.4.1.66874.1.5.1` | the default TSA policy, named in every timestamp token unless the operator sets `Tsa.PolicyOid` to a policy of their own |
 
 ## Reserved, not yet used
 

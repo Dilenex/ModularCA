@@ -91,13 +91,7 @@ public class ProtocolCredentialService(
         }
 
         // An elapsed temporary lockout clears itself on the next attempt, exactly as at login.
-        var lockoutExpired = false;
-        if (user.LockoutEndUtc.HasValue && user.LockoutEndUtc <= DateTime.UtcNow)
-        {
-            user.FailedLoginAttempts = 0;
-            user.LockoutEndUtc = null;
-            lockoutExpired = true;
-        }
+        var lockoutExpired = await ModularCA.Core.Helpers.AccountLockout.ClearElapsedAsync(db, user, DateTime.UtcNow);
 
         // Computed now, applied after the password check. See the remarks.
         var isDisabled = !user.IsActive || user.IsServiceIdentity;

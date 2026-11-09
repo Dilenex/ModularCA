@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using ModularCA.Core.Helpers;
 using ModularCA.Core.Services;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
@@ -10,13 +11,18 @@ using ModularCA.Shared.Utils;
 namespace ModularCA.Core.Services.SchedulerJobs;
 
 /// <summary>
-/// Scheduled job that checks for non-revoked, non-CA certificates approaching expiration
-/// and sends grouped notifications to administrators via email and security alerts. Retired
-/// certificates, and those whose expiry warning was dismissed, are left out.
+/// Scheduled job that tells administrators, by e-mail and security alert, about non-revoked,
+/// non-CA certificates in their expiry warning: once when the soft warning starts, once at each
+/// reminder (<c>CertExpiryNotification.WarningDaysBeforeExpiry</c>) that falls inside the
+/// warning, and once when the alert starts. Retired certificates, those whose expiry warning
+/// was dismissed and those already replaced (renewed or reissued) are left out, as are those
+/// whose profile never warns.
 /// <para>
-/// De-dup is backed by the <c>NotificationLog</c> table with a unique composite index on
-/// <c>(EventType, TargetEntityId, NotificationDate)</c>. Duplicate inserts fail atomically
-/// at the DB level so two racing instances cannot both send the same email.
+/// Each step is sent at most once per certificate. It is logged in the <c>NotificationLog</c>
+/// table, keyed by the certificate id and its <c>NotAfter</c> date, whose unique composite index
+/// on <c>(EventType, TargetEntityId, NotificationDate)</c> makes two racing instances fail on
+/// the insert rather than both send. Before 0.4.3 each threshold was keyed by the day it ran, so
+/// a certificate inside a threshold was mailed again every day.
 /// </para>
 /// <para>
 /// Inherits <see cref="SingletonCronJob"/> so the base class owns past-due math
@@ -85,13 +91,8 @@ public class CertExpiryNotificationJob : SingletonCronJob
     public Task RunAsync(CancellationToken cancellationToken) => ExecuteAsync(cancellationToken);
 
     /// <summary>
-    /// Executes the certificate expiry notification check. For each configured warning
-    /// threshold, queries non-revoked, non-CA certificates expiring within that window
-    /// and sends grouped notifications. Already-expired certificates are excluded.
-    /// Duplicate alerts for the same cert on the same calendar day are suppressed via
-    /// <c>NotificationLogEntity</c>'s unique index. The same run then sends the SSH CA key
-    /// review reminders (<see cref="ProcessSshCaKeyReviewsAsync"/>), whether or not any
-    /// certificate threshold is configured.
+    /// Executes the certificate expiry notification check (<see cref="ProcessCertificatesAsync"/>),
+    /// then sends the SSH CA key review reminders (<see cref="ProcessSshCaKeyReviewsAsync"/>).
     /// </summary>
     protected override async Task ExecuteAsync(CancellationToken cancellationToken)
     {
@@ -108,16 +109,7 @@ public class CertExpiryNotificationJob : SingletonCronJob
         // timeout to 5 minutes for this run so the scheduler job never throws on 30s.
         _db.Database.SetCommandTimeout(TimeSpan.FromMinutes(5));
 
-        var thresholds = _config.CertExpiryNotification.WarningDaysBeforeExpiry ?? [];
-
-        // Sort descending so we process the largest window first
-        var sortedThresholds = thresholds.OrderByDescending(d => d).ToList();
-
-        foreach (var days in sortedThresholds)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            await ProcessThresholdAsync(days, cancellationToken);
-        }
+        await ProcessCertificatesAsync(cancellationToken);
 
         cancellationToken.ThrowIfCancellationRequested();
         await ProcessSshCaKeyReviewsAsync(cancellationToken);
@@ -194,115 +186,145 @@ public class CertExpiryNotificationJob : SingletonCronJob
         return sent;
     }
 
+    /// <summary>Notification log event of the soft warning starting.</summary>
+    public const string WarningEvent = "CertExpiryWarning";
+
+    /// <summary>Notification log event of the alert starting.</summary>
+    public const string AlertEvent = "CertExpiryAlert";
+
+    /// <summary>Notification log event of the reminder <paramref name="days"/> days before expiry.</summary>
+    public static string ReminderEvent(int days) => $"CertExpiryReminder_{days}d";
+
+    /// <summary>One step of a certificate's expiry warning: its log event, its notification stage and when it falls.</summary>
+    private sealed record Step(string EventType, string Stage, DateTime At, int Order);
+
     /// <summary>
-    /// Processes a single day-threshold bracket. Per-certificate de-dup is atomic via
-    /// the <c>NotificationLog</c> unique index.
+    /// The steps of <paramref name="cert"/>'s expiry warning in the order they fall: the soft
+    /// warning, each reminder of <paramref name="reminderDays"/> that falls after it, then the alert.
     /// </summary>
-    internal async Task ProcessThresholdAsync(int days, CancellationToken cancellationToken)
+    private static List<Step> StepsOf(CertificateEntity cert, IReadOnlyCollection<int> reminderDays)
+    {
+        var steps = new List<Step> { new(WarningEvent, CertExpiryStage.Warning, cert.ExpiryWarningAt, 0) };
+        foreach (var days in reminderDays)
+        {
+            var at = cert.NotAfter.AddDays(-days);
+            if (at > cert.ExpiryWarningAt)
+                steps.Add(new Step(ReminderEvent(days), CertExpiryStage.Reminder, at, 1));
+        }
+        steps.Add(new Step(AlertEvent, CertExpiryStage.Alert, cert.ExpiryAlertAt, 2));
+        return steps.OrderBy(s => s.At).ThenBy(s => s.Order).ToList();
+    }
+
+    /// <summary>
+    /// Sends one notification for each certificate in its expiry warning
+    /// (<see cref="CertificateExpiry.InWarning"/>; not a CA certificate, not retired, warning not
+    /// dismissed, not replaced by <see cref="CertificateExpiry.ReplacedAsync"/>, the lifecycle
+    /// summary's rule) whose latest step due is not yet logged: the soft warning, a reminder or the
+    /// alert. Every step due is logged with it, so a certificate first seen past several steps
+    /// gets one message, for the latest, and none is sent twice. A step's log row is keyed by the
+    /// certificate id and its <c>NotAfter</c> date, so a run on another day finds it. A replaced
+    /// certificate gets no mail and no security alert, and nothing is logged for it.
+    /// </summary>
+    /// <returns>How many notifications were sent.</returns>
+    internal async Task<int> ProcessCertificatesAsync(CancellationToken cancellationToken)
     {
         var queryNow = TimeProvider.GetUtcNow().UtcDateTime;
-        var targetDate = queryNow.AddDays(days);
+        var reminderDays = (_config.CertExpiryNotification.WarningDaysBeforeExpiry ?? [])
+            .Where(d => d > 0).Distinct().ToList();
 
-        // Find non-revoked, non-CA certs that expire within this window but haven't expired yet,
-        // leaving out retired ones and those whose expiry warning was dismissed
-        var expiringCerts = await _db.Certificates
+        var inWarning = _db.Certificates
             .AsNoTracking()
-            .Where(c => !c.Revoked
-                         && c.RetiredAt == null
-                         && c.ExpiryWarningDismissedAt == null
-                         && !c.IsCA
-                         && c.NotAfter <= targetDate
-                         && c.NotAfter > queryNow)
-            .ToListAsync(cancellationToken);
+            .Where(CertificateExpiry.InWarning(queryNow))
+            .Where(c => !c.IsCA && c.RetiredAt == null && c.ExpiryWarningDismissedAt == null);
+        var due = await inWarning.OrderBy(c => c.NotAfter).ToListAsync(cancellationToken);
+        if (due.Count == 0)
+            return 0;
 
-        if (expiringCerts.Count == 0)
-            return;
+        var replaced = await CertificateExpiry.ReplacedAsync(_db, inWarning, queryNow, ct: cancellationToken);
+        var replacedCount = due.RemoveAll(c => replaced.Contains(c.CertificateId));
+        if (due.Count == 0)
+        {
+            _logger.LogInformation("Certificate expiry notifications: {Replaced} in their warning, all replaced", replacedCount);
+            return 0;
+        }
 
-        var eventType = $"CertExpiring_{days}d";
+        var targets = due.Select(c => c.CertificateId.ToString()).ToList();
+        var logged = (await _db.NotificationLogs.AsNoTracking()
+                .Where(n => targets.Contains(n.TargetEntityId) && n.EventType.StartsWith("CertExpiry"))
+                .Select(n => new { n.EventType, n.TargetEntityId })
+                .ToListAsync(cancellationToken))
+            .Select(n => (n.EventType, n.TargetEntityId))
+            .ToHashSet();
 
-        _logger.LogInformation(
-            "Checking expiry notifications for {Count} certificate(s) within {Days} days",
-            expiringCerts.Count, days);
-
-        int sent = 0;
-        int skipped = 0;
-        foreach (var cert in expiringCerts)
+        int sent = 0, skipped = 0;
+        foreach (var cert in due)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Recompute now/today PER CERT so a long scan that crosses midnight UTC writes
-            // the correct calendar key into NotificationLog.NotificationDate. Without this,
-            // certs processed after midnight would dedup against yesterday's date and skip
-            // sending today's notification (or vice versa).
             var now = TimeProvider.GetUtcNow().UtcDateTime;
-            var today = now.Date;
-
-            // Try to insert a NotificationLog row first. If the unique composite index
-            // rejects it, we've already notified today for this (cert, event) pair —
-            // skip sending.
-            var logRow = new NotificationLogEntity
+            var target = cert.CertificateId.ToString();
+            var reached = StepsOf(cert, reminderDays).Where(s => s.At <= now).ToList();
+            if (reached.Count == 0 || logged.Contains((reached[^1].EventType, target)))
             {
-                EventType = eventType,
-                TargetEntityId = cert.SerialNumber,
-                NotificationDate = today,
-                CreatedAtUtc = now
-            };
-            _db.NotificationLogs.Add(logRow);
+                skipped++;
+                continue;
+            }
+
+            var key = DateTime.SpecifyKind(cert.NotAfter.Date, DateTimeKind.Utc);
+            var rows = reached
+                .Where(s => !logged.Contains((s.EventType, target)))
+                .Select(s => new NotificationLogEntity { EventType = s.EventType, TargetEntityId = target, NotificationDate = key, CreatedAtUtc = now })
+                .ToList();
+            _db.NotificationLogs.AddRange(rows);
             try
             {
                 await _db.SaveChangesAsync(cancellationToken);
             }
             catch (DbUpdateException ex) when (PostgresErrorUtil.IsUniqueViolation(ex))
             {
-                // MySQL ER_DUP_ENTRY (1062) on the (EventType, TargetEntityId, NotificationDate)
-                // unique index — another instance or prior run already sent this notification
-                // today. Detach and skip. Other DbUpdateException variants (transient connection
-                // drops, schema mismatches, foreign-key violations) propagate so the runner
-                // can mark the tick as failed and escalate consecutive failures.
-                _db.Entry(logRow).State = EntityState.Detached;
+                // Another instance logged a step of this certificate first and sends it. Other
+                // DbUpdateException variants propagate so the runner marks the tick failed.
+                foreach (var row in rows)
+                    _db.Entry(row).State = EntityState.Detached;
                 skipped++;
                 continue;
             }
 
+            var step = reached[^1];
             var daysRemaining = (int)Math.Ceiling((cert.NotAfter - now).TotalDays);
-            var issuingCaName = cert.Issuer;
-
             try
             {
-                await _notifications.NotifyCertExpiringAsync(cert, daysRemaining);
+                await _notifications.NotifyCertExpiryStageAsync(cert, step.Stage, now);
 
-                var alertMessage = $"Certificate expiring in {daysRemaining} day(s): " +
-                                   $"Subject={cert.SubjectDN}, Serial={cert.SerialNumber}, " +
-                                   $"Issuer={issuingCaName}, Expires={cert.NotAfter:yyyy-MM-dd HH:mm} UTC";
-
+                var alert = step.Stage == CertExpiryStage.Alert;
                 await _alerts.RaiseAlertAsync(
                     "CertificateExpiring",
-                    AlertSeverity.Warning,
-                    alertMessage,
+                    alert ? AlertSeverity.Critical : AlertSeverity.Warning,
+                    $"Certificate expiry {(alert ? "alert" : step.Stage == CertExpiryStage.Reminder ? "reminder" : "warning")}: expires in "
+                        + $"{CertExpiryStage.TimeLeft(cert.NotAfter - now)}: Subject={cert.SubjectDN}, Serial={cert.SerialNumber}, "
+                        + $"Issuer={cert.Issuer}, Expires={cert.NotAfter:yyyy-MM-dd HH:mm} UTC",
                     new
                     {
                         cert.SubjectDN,
                         cert.SerialNumber,
-                        IssuingCA = issuingCaName,
+                        IssuingCA = cert.Issuer,
                         ExpiryDate = cert.NotAfter,
-                        DaysRemaining = daysRemaining
+                        DaysRemaining = daysRemaining,
+                        step.Stage,
                     });
                 sent++;
             }
             catch (Exception ex)
             {
-                // Don't let a single-cert notify failure mask the rest of the batch.
-                // The log row is already committed so we won't retry today — this is
-                // intentional to avoid flooding on a persistently failing dependency.
-                _logger.LogWarning(ex,
-                    "Failed to send expiry notification for cert {Serial} at {Days}d threshold",
-                    cert.SerialNumber, days);
+                // The step is logged, so it is not retried: a dependency that keeps failing must
+                // not turn into a flood once it recovers.
+                _logger.LogWarning(ex, "Failed to send the expiry {Stage} notification for cert {Serial}", step.Stage, cert.SerialNumber);
             }
         }
 
-        _logger.LogInformation(
-            "{Days}-day expiry notification bracket: sent {Sent}, skipped {Skipped}",
-            days, sent, skipped);
+        _logger.LogInformation("Certificate expiry notifications: {Due} in their warning and not replaced, sent {Sent}, nothing new for {Skipped}, {Replaced} replaced",
+            due.Count, sent, skipped, replacedCount);
+        return sent;
     }
 
 }

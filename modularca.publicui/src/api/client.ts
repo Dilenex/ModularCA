@@ -1,4 +1,5 @@
 import { globalToast } from '../context/ToastContext';
+import { readCsrfCookie } from '@shared/csrf';
 
 // Synced with the admin client. Same-origin in
 // production builds; the dev fallback URL is no longer hardcoded so a missing
@@ -9,15 +10,6 @@ const API_BASE = isSameOrigin ? '' : (VITE_API_URL || '');
 if (!isSameOrigin && !VITE_API_URL) {
     // eslint-disable-next-line no-console
     console.warn('[modularca-publicui] VITE_API_URL is not set; API calls will be sent to the current origin.');
-}
-
-/**
- * Reads the CSRF double-submit cookie set by the backend. Kept identical to the
- * admin client so a future shared package extraction is mechanical.
- */
-function readCsrfCookie(): string | null {
-    const m = document.cookie.match(/(?:^|;\s*)CSRF-TOKEN=([^;]*)/);
-    return m ? decodeURIComponent(m[1]) : null;
 }
 
 export async function api<T = any>(path: string, options: RequestInit = {}): Promise<T> {

@@ -12,6 +12,7 @@ import { StepUpOps } from '@shared/generated';
 import type { CertificateLifecycleSummaryModel } from '@shared/generated';
 import { Link } from 'react-router-dom';
 import { OCSP_REFUSED_CONSEQUENCE, ocspRows, ocspStatus, type CaOcspRow } from './ocspReadiness';
+import { protocolFindings, type ProtocolFinding } from './protocolAdvisories';
 import { sshKeyReadiness } from './sshKeyCustody';
 import { sshCaKeyPath } from './sshPlaces';
 
@@ -249,7 +250,7 @@ const SystemStatusCard: React.FC = () => {
 
 /* ─── Certificate Statistics Card ─── */
 const CertStatsCard: React.FC = () => {
-    const [stats, setStats] = useState<{ total: number; active: number; revoked: number; expired: number; expiring30: number } | null>(null);
+    const [stats, setStats] = useState<{ total: number; active: number; revoked: number; expired: number; expiring: number } | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
 
@@ -257,7 +258,7 @@ const CertStatsCard: React.FC = () => {
         // The server's counts over every certificate. Counting the rows of the list endpoint
         // counted its first page, so an instance with more than 25 certificates read "Total 25".
         apiGet<CertificateLifecycleSummaryModel>('/api/v1/admin/certificates/lifecycle-summary')
-            .then((s) => setStats({ total: s.total, active: s.active, revoked: s.revoked, expired: s.expired, expiring30: s.expiringWithin30Days }))
+            .then((s) => setStats({ total: s.total, active: s.active, revoked: s.revoked, expired: s.expired, expiring: s.inExpiryWarning }))
             .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     }, []);
@@ -267,7 +268,7 @@ const CertStatsCard: React.FC = () => {
         { label: 'Active', value: stats.active, color: 'bg-ok-soft text-ok border-ok/40' },
         { label: 'Revoked', value: stats.revoked, color: 'bg-crit-soft text-crit border-crit/40' },
         { label: 'Expired', value: stats.expired, color: 'bg-warn-soft text-warn border-warn/40' },
-        { label: 'Expiring (30d)', value: stats.expiring30, color: 'bg-warn-soft text-warn border-warn/40' },
+        { label: 'In expiry warning', value: stats.expiring, color: 'bg-warn-soft text-warn border-warn/40' },
     ] : [];
 
     return (
@@ -366,12 +367,8 @@ const SchedulerStatusCard: React.FC = () => {
 };
 
 /* ─── OCSP Responders Card ─── */
-const OcspRespondersCard: React.FC = () => {
-    const [rows, setRows] = useState<Fetched<CaOcspRow[]> | null>(null);
-
-    useEffect(() => {
-        fetched(apiGet<any[]>('/api/v1/admin/authorities/hierarchy').then((d) => ocspRows(Array.isArray(d) ? d : []))).then(setRows);
-    }, []);
+const OcspRespondersCard: React.FC<{ hierarchy: Fetched<any[]> | null }> = ({ hierarchy }) => {
+    const rows: Fetched<CaOcspRow[]> | null = hierarchy && (hierarchy.ok ? { ok: true, value: ocspRows(hierarchy.value) } : hierarchy);
 
     const refusing = rows?.ok ? rows.value.filter((r) => r.problem) : [];
 
@@ -389,6 +386,35 @@ const OcspRespondersCard: React.FC = () => {
                             <StatusBadge {...ocspStatus(r)!} />
                             <Link to={`/authorities/manage/${encodeURIComponent(r.id)}`} className="text-ink hover:underline">{r.name}</Link>
                             {r.problem && <span className="text-ink-muted">{r.problem}</span>}
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+};
+
+/* ─── Enrollment Protocols Card ─── */
+const ProtocolFindingsCard: React.FC<{ hierarchy: Fetched<any[]> | null }> = ({ hierarchy }) => {
+    const findings: Fetched<ProtocolFinding[]> | null = hierarchy && (hierarchy.ok ? { ok: true, value: protocolFindings(hierarchy.value) } : hierarchy);
+
+    return (
+        <div className="bg-raised border border-line rounded-lg p-4">
+            <h2 className="text-sm font-semibold text-ink mb-3">Enrollment Protocols</h2>
+            {!findings && <div className="text-sm text-ink-muted">Loading...</div>}
+            {findings && !findings.ok && <Unavailable what="protocol configurations" error={findings.error} />}
+            {findings?.ok && findings.value.length === 0 && <div className="text-sm text-ink-muted">Every enabled protocol can run on its CA.</div>}
+            {findings?.ok && findings.value.length > 0 && (
+                <div className="space-y-2">
+                    <p className="text-xs text-crit max-w-3xl">
+                        These protocols are enabled on a CA they cannot run on, so no client can enroll through them there. Turn them off under <Link to="/authorities/protocols" className="underline hover:no-underline">Protocol Configuration</Link>, or serve them from another CA.
+                    </p>
+                    {findings.value.map((f) => (
+                        <div key={`${f.caId}-${f.protocol}-${f.advisory.reason}`} className="flex items-baseline gap-2 text-xs flex-wrap">
+                            <StatusBadge status="revoked" label="Cannot run" />
+                            <span className="text-ink font-semibold">{f.protocol}</span>
+                            <Link to={`/authorities/manage/${encodeURIComponent(f.caId)}`} className="text-ink hover:underline">{f.caName}</Link>
+                            <span className="text-ink-muted">{f.advisory.message}</span>
                         </div>
                     ))}
                 </div>
@@ -543,10 +569,8 @@ const DrStatusCard: React.FC = () => {
                         </div>
                         <div className="bg-sunken rounded p-3">
                             <div className="text-xs text-ink-muted">Backup Age</div>
-                            <div className={`text-sm mt-1 ${drStatus.backupAgeHours > 24 ? 'text-warn' : 'text-ink'}`}>
-                                {drStatus.backupAgeHours !== undefined && drStatus.backupAgeHours !== null
-                                    ? `${drStatus.backupAgeHours}h`
-                                    : drStatus.backupAge || '-'}
+                            <div className={`text-sm mt-1 ${drStatus.lastBackupAgeHours > 24 ? 'text-warn' : 'text-ink'}`}>
+                                {typeof drStatus.lastBackupAgeHours === 'number' ? `${drStatus.lastBackupAgeHours}h` : '-'}
                             </div>
                         </div>
                         <div className="bg-sunken rounded p-3">
@@ -597,11 +621,21 @@ const DrStatusCard: React.FC = () => {
 
 /* ─── System Health Page ─── */
 const SystemHealth: React.FC = () => {
+    // One read of the CA hierarchy feeds both the OCSP and the enrollment-protocol findings.
+    const [hierarchy, setHierarchy] = useState<Fetched<any[]> | null>(null);
+
+    useEffect(() => {
+        fetched(apiGet<any[]>('/api/v1/admin/authorities/hierarchy').then((d) => (Array.isArray(d) ? d : []))).then(setHierarchy);
+    }, []);
+
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <h1 className="text-xl font-semibold text-ink">System Health</h1>
             <HealthCheckCard />
-            <OcspRespondersCard />
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+                <OcspRespondersCard hierarchy={hierarchy} />
+                <ProtocolFindingsCard hierarchy={hierarchy} />
+            </div>
             <DrStatusCard />
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <SystemStatusCard />

@@ -24,9 +24,12 @@ namespace ModularCA.Shared.Interfaces
 
         /// <summary>
         /// Updates an existing certificate profile by ID. A changed inheritance parent is checked as
-        /// <see cref="CreateAsync"/> checks it.
+        /// <see cref="CreateAsync"/> checks it. When the expiry warning settings or the inheritance
+        /// change, the warning instants of the live certificates issued under the profile and under
+        /// the profiles inheriting from it are re-computed.
         /// </summary>
-        Task UpdateAsync(Guid id, UpdateCertProfileRequest request, Func<Guid?, Guid?, bool>? parentAllowed = null);
+        /// <returns>How many certificates had their expiry warning instants re-computed.</returns>
+        Task<int> UpdateAsync(Guid id, UpdateCertProfileRequest request, Func<Guid?, Guid?, bool>? parentAllowed = null);
 
         /// <summary>
         /// Deletes a certificate profile by ID.

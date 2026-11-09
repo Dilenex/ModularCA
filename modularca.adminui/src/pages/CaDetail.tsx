@@ -11,6 +11,7 @@ import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { ocspStatus } from './ocspReadiness';
+import { advisoriesOf, openEnrollmentNotice } from './protocolAdvisories';
 import InfrastructureProfiles from '../components/InfrastructureProfiles';
 
 function formatDate(d: string | null) {
@@ -175,12 +176,37 @@ const CaDetail: React.FC = () => {
                                 empty="No protocol configuration"
                                 disableExport
                                 columns={[
-                                    { key: 'protocol', header: 'Protocol', defaultWidth: 120, sortable: true, exportValue: (pc: any) => pc.protocol || pc.name, render: (pc: any) => <span className="text-ink">{pc.protocol || pc.name}</span> },
+                                    { key: 'protocol', header: 'Protocol', defaultWidth: 260, minWidth: 120, truncate: false, sortable: true, exportValue: (pc: any) => pc.protocol || pc.name, render: (pc: any) => (
+                                        <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
+                                            <span className="text-ink">{pc.protocol || pc.name}</span>
+                                            {advisoriesOf(pc).length > 0 && <span className="text-xs font-medium text-warn whitespace-nowrap">Cannot run on this CA</span>}
+                                            {openEnrollmentNotice(pc, true) && <span className="text-xs font-medium text-warn whitespace-nowrap">No challenge password</span>}
+                                        </span>
+                                    ) },
                                     { key: 'enabled', header: 'Enabled', defaultWidth: 100, truncate: false, sortable: true, sortValue: (pc: any) => !!pc.enabled, exportValue: (pc: any) => (pc.enabled ? 'Yes' : 'No'), render: (pc: any) => <StatusBadge status={pc.enabled ? 'enabled' : 'disabled'} /> },
                                     { key: 'profile', header: 'Profile', flex: true, exportValue: (pc: any) => pc.signingProfileName || pc.signingProfile || pc.certProfile || '', render: (pc: any) => <span className="text-ink-muted truncate">{pc.signingProfileName || pc.signingProfile || pc.certProfile || '-'}</span> },
                                 ] as DataTableColumn<any>[]}
                             />
                         </div>
+                        {ca.protocolConfigs.flatMap((pc: any) => advisoriesOf(pc).map((a) => (
+                            <InlineNotice
+                                key={`${pc.protocol}-${a.reason}`}
+                                severity="warning"
+                                className="mt-2"
+                                notice={{ title: `${pc.protocol} cannot run on this CA`, detail: a.message, code: a.reason }}
+                            />
+                        )))}
+                        {ca.protocolConfigs.map((pc: any) => {
+                            const open = openEnrollmentNotice(pc, true);
+                            return open && (
+                                <InlineNotice
+                                    key={`${pc.protocol}-${open.reason}`}
+                                    severity="warning"
+                                    className="mt-2"
+                                    notice={{ title: 'SCEP is open to anyone who can reach it', detail: open.message, code: open.reason }}
+                                />
+                            );
+                        })}
                     </DetailSection>
                 )}
 

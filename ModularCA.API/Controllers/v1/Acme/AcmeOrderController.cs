@@ -11,6 +11,7 @@ using ModularCA.Core.Services;
 using ModularCA.Core.Services.Acme;
 using ModularCA.Database;
 using ModularCA.Shared.Errors;
+using ModularCA.Shared.Utils;
 using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Acme;
@@ -133,9 +134,12 @@ public class AcmeOrderController(
     /// Audit findings #28: emits an <see cref="AuditActionType.AcmeOrderFinalized"/> record
     /// after the certificate is issued and the order status is updated, under that CA.
     /// Audit findings #23: maps <see cref="InvalidOperationException"/> messages from the
-    /// service layer (auth-state mismatches, profile errors, internal lookup failures) to a
-    /// fixed RFC 7807 detail string instead of leaking internal text to anonymous ACME
-    /// clients. The original exception is logged at warn level for operator diagnostics.
+    /// service layer (auth-state mismatches, profile errors, internal lookup failures, an expired
+    /// order) to a fixed RFC 7807 detail string instead of leaking internal text to anonymous ACME
+    /// clients. The original exception is logged at warn level for operator diagnostics, and the
+    /// service has written the <c>FinalizeRefused</c> audit row. A certificate-policy refusal is
+    /// answered 400: <c>badPublicKey</c> for a key outside the key policy, <c>badCSR</c> otherwise
+    /// (RFC 8555 section 7.4); the order is invalid either way, as after any other finalize refusal.
     /// </summary>
     [AcmeJws]
     [HttpPost("order/{id:guid}/finalize")]
@@ -203,6 +207,15 @@ public class AcmeOrderController(
             Response.Headers["Location"] = $"{baseUrl}{AcmeCaPolicy.PathPrefix(ca.Label)}/order/{order.Id}";
             return Ok(order);
         }
+        catch (CertificatePolicyViolationException ex)
+        {
+            _logger.LogWarning(ex, "ACME finalize refused by certificate policy for order {OrderId}: {Reason}", id, ex.Message);
+            return RefusesSubjectKey(ex)
+                ? AcmeError(400, "urn:ietf:params:acme:error:badPublicKey",
+                    $"The CSR's public key is not permitted by the key policy. Allowed: {KeyAlgorithmPolicy.AllowedPublicKeysText}.")
+                : AcmeError(400, "urn:ietf:params:acme:error:badCSR",
+                    "The CSR is not permitted by the certificate policy.");
+        }
         catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
         {
             // Audit findings #23: ACME service throws InvalidOperationException for many
@@ -241,7 +254,8 @@ public class AcmeOrderController(
     /// Audit findings #23: the catch on <see cref="InvalidOperationException"/> now returns
     /// a fixed RFC 7807 detail string instead of <c>ex.Message</c>; the underlying message
     /// is logged at warn level so operators retain diagnostic information. The
-    /// <c>CertificateRevoked</c> protocol audit row names the CA by label and id.
+    /// <c>CertificateRevoked</c> protocol audit row names the CA by label and id; every refusal
+    /// writes a <c>RevokeRefused</c> row (see <see cref="AuditRevokeRefusedAsync"/>).
     /// </summary>
     // RFC 8555 §6.2 lets revokeCert be signed with an inline jwk. Here that jwk must be an
     // account key: the filter looks the account up by its thumbprint and refuses an unknown key,
@@ -255,22 +269,32 @@ public class AcmeOrderController(
         if (request == null || string.IsNullOrEmpty(request.Certificate))
             return AcmeError(400, "urn:ietf:params:acme:error:malformed", "Certificate is required.");
 
+        string? serial = null;
+        string? subject = null;
         try
         {
             // Decode the base64url DER certificate to find the serial
             var certDer = Base64UrlDecode(request.Certificate);
             var parser = new Org.BouncyCastle.X509.X509CertificateParser();
-            var cert = parser.ReadCertificate(certDer);
-            var serial = ModularCA.Shared.Utils.CertificateUtil.FormatSerialNumber(cert.SerialNumber);
+            var cert = parser.ReadCertificate(certDer)
+                ?? throw new InvalidOperationException("The certificate could not be read.");
+            serial = ModularCA.Shared.Utils.CertificateUtil.FormatSerialNumber(cert.SerialNumber);
+            subject = cert.SubjectDN.ToString();
 
             // Ownership verification: the revoking account must have issued this certificate
             var ownerAccountId = await _orderService.GetAccountIdForCertificateSerialAsync(serial, certDer);
             if (ownerAccountId == null)
+            {
+                await AuditRevokeRefusedAsync(jws, subject, serial, request.Reason, "Certificate was not issued via ACME.");
                 return AcmeError(403, "urn:ietf:params:acme:error:unauthorized",
                     "Certificate was not issued via ACME.");
+            }
             if (ownerAccountId != jws.AccountId)
+            {
+                await AuditRevokeRefusedAsync(jws, subject, serial, request.Reason, "Account did not issue this certificate.");
                 return AcmeError(403, "urn:ietf:params:acme:error:unauthorized",
                     "Account did not issue this certificate.");
+            }
 
             // Full RFC 5280 reason code coverage and
             // per-account policy. Reason 2 (cACompromise) and 10 (aACompromise)
@@ -289,12 +313,15 @@ public class AcmeOrderController(
                 case 9: reason = ModularCA.Shared.Enums.RevocationReason.PrivilegeWithdrawn; break;
                 case 2:
                 case 10:
+                    await AuditRevokeRefusedAsync(jws, subject, serial, request.Reason, "Revocation reason reserved for CA operators.");
                     return AcmeError(403, "urn:ietf:params:acme:error:badRevocationReason",
                         $"Revocation reason {request.Reason} is reserved for CA operators and cannot be set by ACME account holders.");
                 case 8:
+                    await AuditRevokeRefusedAsync(jws, subject, serial, request.Reason, "Revocation reason 8 (removeFromCRL) is not supported.");
                     return AcmeError(400, "urn:ietf:params:acme:error:badRevocationReason",
                         "Revocation reason 8 (removeFromCRL) is only valid when reversing a certificate hold via delta CRL and is not supported on the revoke-cert endpoint.");
                 default:
+                    await AuditRevokeRefusedAsync(jws, subject, serial, request.Reason, "Revocation reason not supported.");
                     return AcmeError(400, "urn:ietf:params:acme:error:badRevocationReason",
                         $"Revocation reason '{request.Reason}' is not supported.");
             }
@@ -309,14 +336,43 @@ public class AcmeOrderController(
 
             return Ok();
         }
-        catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
+        catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException or FormatException)
         {
             // Audit findings #23: do not leak service-layer exception messages to anonymous
             // ACME clients (could include internal state hints, DB lookup failures, or
             // ownership-check details). Log for diagnostics, return a fixed string.
             _logger.LogWarning(ex, "ACME revoke-cert rejected: {Reason}", ex.Message);
+            await AuditRevokeRefusedAsync(jws, subject, serial, request.Reason, ex.Message);
             return AcmeError(400, "urn:ietf:params:acme:error:malformed",
                 "Certificate revocation request rejected.");
+        }
+    }
+
+    /// <summary>
+    /// Writes a <c>RevokeRefused</c> row on the ACME audit tab under the addressed CA. Revocation
+    /// refusals (not issued over ACME, another account's certificate, a reason the account may not
+    /// set, an unreadable request) were answered and recorded nowhere. An audit failure is logged
+    /// and does not change the answer.
+    /// </summary>
+    /// <param name="jws">The verified request, which names the account.</param>
+    /// <param name="subject">The certificate's subject, when it could be read.</param>
+    /// <param name="serial">The certificate's serial, when it could be read.</param>
+    /// <param name="reasonCode">The revocation reason the client asked for.</param>
+    /// <param name="refusal">Why the revocation was refused, for the operator.</param>
+    private async Task AuditRevokeRefusedAsync(AcmeJwsPayload jws, string? subject, string? serial, int? reasonCode, string refusal)
+    {
+        try
+        {
+            var ca = AddressedCa();
+            await _protocolAudit.LogAcmeAsync("RevokeRefused", jws.AccountId, null,
+                subject, serial, null, reasonCode?.ToString(),
+                HttpContext.Connection.RemoteIpAddress?.ToString(),
+                success: false, errorMessage: refusal,
+                caLabel: ca?.Label, certificateAuthorityId: ca?.Id, spaceId: ca?.SpaceId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Audit emission for a refused ACME revocation failed.");
         }
     }
 
@@ -330,6 +386,17 @@ public class AcmeOrderController(
     /// </summary>
     private ModularCA.Shared.Entities.CertificateAuthorityEntity? AddressedCa() =>
         HttpContext.Items[AcmeJwsActionFilter.AddressedCaItem] as ModularCA.Shared.Entities.CertificateAuthorityEntity;
+
+    /// <summary>
+    /// Whether a certificate-policy refusal is about the subject key: the system key policy, or
+    /// the configured minimum RSA key size. RFC 8555 section 7.4 answers those with
+    /// <c>badPublicKey</c> and other CSR refusals with <c>badCSR</c>.
+    /// </summary>
+    /// <param name="refusal">The refusal.</param>
+    internal static bool RefusesSubjectKey(CertificatePolicyViolationException refusal)
+        => refusal.Violations.Any(v =>
+            v.StartsWith($"[{KeyAlgorithmPolicy.RuleName}]", StringComparison.Ordinal)
+            || v.StartsWith("[MinRsaKeySize]", StringComparison.Ordinal));
 
     private ObjectResult AcmeError(int status, string type, string detail)
     {

@@ -666,8 +666,7 @@ public class BootstrapModularCA
         if (!File.Exists(backupKeyPath))
         {
             var backupKey = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32); // 256-bit key
-            File.WriteAllBytes(backupKeyPath, backupKey);
-            FileSecurityUtil.SetOwnerOnly(backupKeyPath);
+            FileSecurityUtil.WriteOwnerOnly(backupKeyPath, backupKey);
             Console.WriteLine("✓ Backup encryption key generated");
         }
 

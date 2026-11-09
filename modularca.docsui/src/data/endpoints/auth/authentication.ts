@@ -20,10 +20,11 @@ export const authentication: ApiEndpoint[] = [
             { name: 'password', type: 'string', required: true, description: 'The user\'s password' },
         ],
         headers: [
-            { name: 'X-CSRF-Token', type: 'string', required: true, description: 'Anti-CSRF token for state-changing anonymous requests' },
+            { name: 'X-CSRF-Token', type: 'string', required: true, description: 'Anti-CSRF token: the value of the __Host-CSRF-TOKEN cookie (CSRF-TOKEN over plain HTTP)' },
+            { name: 'DPoP', type: 'string', required: false, description: 'DPoP proof (ES256, RFC 9449) for POST to this URL. Binds the session\'s refresh token to the proving key.' },
         ],
         responseDescription: 'JWT token pair on success, or MFA challenge with temporary mfaToken if MFA is configured.',
-        notes: 'CSRF validation required. If MFA is configured, returns requiresMfa: true with an mfaToken and available methods.',
+        notes: 'CSRF validation required. The server sets the CSRF cookie on any response: __Host-CSRF-TOKEN over HTTPS, CSRF-TOKEN over plain HTTP; over HTTPS an unprefixed CSRF-TOKEN is not accepted. If MFA is configured, returns requiresMfa: true with an mfaToken and available methods. Rate limited per IP (10 requests per 5 minutes).',
     },
     {
         method: 'POST',
@@ -34,7 +35,11 @@ export const authentication: ApiEndpoint[] = [
         requestBody: [
             { name: 'refreshToken', type: 'string', required: true, description: 'The refresh token from a previous login or refresh' },
         ],
+        headers: [
+            { name: 'DPoP', type: 'string', required: false, description: 'DPoP proof signed by the key the session was bound to. Required when the session is bound.' },
+        ],
         responseDescription: 'New JWT access token and refresh token pair.',
+        notes: 'A session bound to a DPoP key at sign-in (any sign-in that carried a proof) is refused with 401 REFRESH_POP_INVALID unless the refresh carries a proof from that key; this is enforced by default from 0.4.3 (Security.EnforceRefreshTokenPoP). A session that was never bound is not checked. Rate limited per IP (120 requests per 5 minutes).',
     },
     {
         method: 'POST',
@@ -67,7 +72,11 @@ export const authentication: ApiEndpoint[] = [
         summary: 'Authenticate using a client TLS certificate (certificate-based login).',
         auth: 'Anonymous',
         category: 'Authentication',
-        responseDescription: 'JWT token pair if the certificate thumbprint matches a registered user.',
-        notes: 'Client certificate must be presented at the TLS layer.',
+        headers: [
+            { name: 'X-CSRF-Token', type: 'string', required: true, description: 'Anti-CSRF token: the value of the __Host-CSRF-TOKEN cookie (CSRF-TOKEN over plain HTTP)' },
+            { name: 'DPoP', type: 'string', required: false, description: 'DPoP proof for POST to this URL. Binds the session\'s refresh token to the proving key.' },
+        ],
+        responseDescription: 'JWT token pair if the certificate matches an active mTLS credential, or an MFA challenge when the user also has TOTP or WebAuthn.',
+        notes: 'Client certificate must be presented at the TLS layer. A certificate that is revoked or on hold is refused with 401 and the attempt is audited, whatever the credential row says. Rate limited per IP (10 requests per 5 minutes).',
     },
 ];

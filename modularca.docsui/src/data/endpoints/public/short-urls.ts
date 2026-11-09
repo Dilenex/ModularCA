@@ -32,6 +32,7 @@ export const publicShortUrls: ApiEndpoint[] = [
         auth: 'Anonymous',
         category: 'Public Short URLs',
         responseDescription: 'OCSP response.',
+        notes: 'Switching OCSP off answers 503 here as on /ocsp/... and /api/v1/public/ocsp. A delegated responder certificate is used only if the CA signed it, carries the OCSP signing usage and is within its dates.',
     },
     {
         method: 'GET',
@@ -48,5 +49,6 @@ export const publicShortUrls: ApiEndpoint[] = [
         auth: 'Anonymous',
         category: 'Public Short URLs',
         responseDescription: 'TSA response.',
+        notes: 'The message imprint must be SHA-256, SHA-384 or SHA-512; from 0.4.3 a SHA-1 imprint is answered with status rejection and failInfo badAlg. Tokens name the policy in Tsa.PolicyOid (default 1.3.6.1.4.1.66874.1.5.1 from 0.4.3, 1.2.3.4.1 before), and a reqPolicy naming another is refused with failInfo unacceptedPolicy.',
     },
 ];

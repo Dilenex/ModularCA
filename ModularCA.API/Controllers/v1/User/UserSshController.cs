@@ -195,6 +195,14 @@ public class UserSshController(
         if (sshCaKey == null)
             return BadRequest(new { error = "SSH CA key not found" });
 
+        // A request profile bound to a CA governs that CA's requests only. Nothing tied the two
+        // together here, so a caller could pair another CA's request profile (no approval, empty
+        // allow-lists) with this CA's signing profile and skip the approval and the profile
+        // choices this CA's own request profiles impose. The request options listing
+        // (SshLoginNameService.RequestOptionsAsync) and the X.509 path already apply this rule.
+        if (reqProfile.CertificateAuthorityId != null && reqProfile.CertificateAuthorityId != sshCaKey.CertificateAuthorityId)
+            return BadRequest(new { error = "This request profile belongs to a different CA than the signing profile's SSH CA key." });
+
         var hasAccess = await _authService.HasCaCapabilityAsync(
             _currentUser.User.Id, sshCaKey.CertificateAuthorityId, Capabilities.CertRequest);
         if (!hasAccess)

@@ -31,4 +31,18 @@ public static class AccessBadgePolicy
     /// <summary>The sources of a badge as a set of keys.</summary>
     public static IReadOnlySet<SourceKey> KeysOf(IEnumerable<AccessBadgeSourceEntity> sources)
         => sources.Select(s => new SourceKey(s.Kind, s.SourceId)).ToHashSet();
+
+    /// <summary>
+    /// Whether editing a badge widens the session making the edit, which then needs the same
+    /// step-up as switching to a wider badge. The worn badge is read live on every request, so
+    /// giving it a source it lacked (or deleting it, <paramref name="edited"/> null) widens the
+    /// session at once; editing any other badge does not touch this session.
+    /// </summary>
+    /// <param name="wornBadgeId">The badge the session wears, or null when it wears none.</param>
+    /// <param name="editedBadgeId">The badge being edited or deleted.</param>
+    /// <param name="stored">The edited badge's sources as stored now.</param>
+    /// <param name="edited">The sources it would have afterwards; null when it is being deleted.</param>
+    /// <returns>True when the edit needs step-up MFA.</returns>
+    public static bool EditWidensSession(Guid? wornBadgeId, Guid editedBadgeId, IReadOnlySet<SourceKey> stored, IReadOnlySet<SourceKey>? edited)
+        => wornBadgeId == editedBadgeId && IsBroadening(stored, edited);
 }

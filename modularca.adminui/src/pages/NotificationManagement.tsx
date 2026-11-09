@@ -80,7 +80,9 @@ const NotificationManagement: React.FC = () => {
     };
 
     const openEdit = (p: any) => {
-        const hasDays = p.daysBeforeExpiry !== undefined && p.daysBeforeExpiry !== null;
+        // CertExpiring's stored days are never read: when it is sent follows each certificate's
+        // expiry warning, and the reminders are the expiry notification settings. Not editable here.
+        const hasDays = p.eventType !== 'CertExpiring' && p.daysBeforeExpiry !== undefined && p.daysBeforeExpiry !== null;
         setEditForm({ recipients: listFromValue(p.recipients), daysBeforeExpiry: hasDays ? String(p.daysBeforeExpiry) : '', enabled: !!p.enabled, hasDays });
         setEditEmailError(null);
         setEditTarget(p);
@@ -250,6 +252,12 @@ const NotificationManagement: React.FC = () => {
                                 <input type="checkbox" checked={editForm.enabled} onChange={(e) => setEditForm({ ...editForm, enabled: e.target.checked })} className="h-4 w-4 rounded border-line-strong text-accent-ink focus:ring-accent" />
                                 Enabled
                             </label>
+                            {editTarget.eventType === 'CertExpiring' && (
+                                <p className="text-xs text-ink-muted">
+                                    Sent once when a certificate&apos;s expiry warning starts and once when its alert starts, as its certificate
+                                    profile sets them, plus each reminder of the expiry notification settings that falls inside the warning.
+                                </p>
+                            )}
                             {editForm.hasDays && (
                                 <div>
                                     <label className={labelClass}>Days Before Expiry</label>

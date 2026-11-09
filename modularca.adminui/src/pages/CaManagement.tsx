@@ -23,6 +23,7 @@ import { Capabilities, StepUpOps } from '@shared/generated';
 import { FieldHint, inputClass, labelClass } from '@shared/components/forms';
 import { CEREMONY_UNKNOWN_HINT, INSTANCE_SCOPE, ceremonyRequiredFor, createCaButtonLabel } from './caCreation';
 import { type CeremonyRefusal, readCeremonyRefusal } from './ceremonyRefusal';
+import { candidateSetKey, reconcileParent } from './caParent';
 import { CeremonyRefusalNotice } from '../components/CeremonyRefusalNotice';
 import { NameConstraintsEditor, type NameConstraintsValue } from '@shared/components/NameConstraintsEditor';
 import { nameConstraintRowsInvalid, nameConstraintRowsToList } from '@shared/generalNames';
@@ -215,11 +216,13 @@ const X509Authorities: React.FC = () => {
     const parentCandidates = allCasFlat.filter((ca) =>
         managesAllSpaces || (!!formSpace && ca.spaceId === formSpace) || can(capabilities, Capabilities.CaManage, ca.id));
 
+    // Keyed on WHICH CAs are candidates, not how many (see reconcileParent).
+    const parentCandidateKeys: string[] = parentCandidates.map(parentKey);
+    const parentCandidateSet = candidateSetKey(parentCandidateKeys);
     useEffect(() => {
-        if (!parentCandidates.some((ca) => parentKey(ca) === formParentCa)) {
-            setFormParentCa(parentCandidates[0] ? parentKey(parentCandidates[0]) : '');
-        }
-    }, [formSpace, parentCandidates.length]); // eslint-disable-line react-hooks/exhaustive-deps
+        const next = reconcileParent(parentCandidateKeys, formParentCa);
+        if (next !== formParentCa) setFormParentCa(next);
+    }, [formSpace, parentCandidateSet]); // eslint-disable-line react-hooks/exhaustive-deps
 
     /**
      * The chosen parent's remaining life in years, so the validity field can warn before the
@@ -245,6 +248,11 @@ const X509Authorities: React.FC = () => {
         }
         if (formCaType === 'intermediate' && !formParentCa) {
             setCreateError('Parent CA is required for intermediate CAs.');
+            return;
+        }
+        // Never sign under a parent the form is not showing.
+        if (formCaType === 'intermediate' && !selectedParent) {
+            setCreateError('The selected parent CA is not available in the current scope. Choose the parent again.');
             return;
         }
         setCreateLoading(true);

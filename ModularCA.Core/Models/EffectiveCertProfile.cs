@@ -83,9 +83,33 @@ public class EffectiveCertProfile
     /// </summary>
     public string? CtLogIds { get; set; }
 
+    /// <summary>Effective soft expiry warning percent; null for the default.</summary>
+    public int? ExpiryWarningPercent { get; set; }
+
+    /// <summary>Effective longest soft warning window (ISO 8601); null for no cap.</summary>
+    public string? ExpiryWarningMaxWindow { get; set; }
+
+    /// <summary>Effective expiry alert percent; null for the default.</summary>
+    public int? ExpiryAlertPercent { get; set; }
+
+    /// <summary>Effective longest alert window (ISO 8601); null for no cap.</summary>
+    public string? ExpiryAlertMaxWindow { get; set; }
+
+    /// <summary>Whether the effective profile never warns of expiry.</summary>
+    public bool ExpiryNeverWarn { get; set; }
+
+    /// <summary>Whether the profile's expiry warning settings replace its parent's rather than being clamped to them.</summary>
+    public bool ExpiryWarningOverridesParent { get; set; }
+
+    /// <summary>The effective expiry warning settings, for <see cref="ModularCA.Shared.Utils.ExpiryWarningRule.Compute"/>.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public ModularCA.Shared.Utils.ExpiryWarningSettings ExpiryWarnings =>
+        new(ExpiryWarningPercent, ExpiryWarningMaxWindow, ExpiryAlertPercent, ExpiryAlertMaxWindow, ExpiryNeverWarn);
+
     /// <summary>
-    /// Maps field names to their source: "inherited" or "overridden".
-    /// Used by the UI to visually distinguish inherited vs overridden values.
+    /// Maps field names to their source: "inherited", "overridden", or "clamped" (the child's
+    /// value was less strict than the parent's and the parent's is used). Used by the UI to
+    /// visually distinguish inherited, overridden and clamped values.
     /// </summary>
     public Dictionary<string, string> FieldSources { get; set; } = new();
 }

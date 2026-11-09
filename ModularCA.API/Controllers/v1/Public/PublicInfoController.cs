@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using ModularCA.Core.Services.Hostnames;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
 using ModularCA.API.Startup;
@@ -39,8 +40,11 @@ public class PublicInfoController(SystemConfig config, IFeatureFlagService featu
 
     /// <summary>
     /// Returns <c>{ publicDomain, publicHttpsBaseUrl, enabledProtocols, sourceCodeUrl, license }</c>.
-    /// Falls back to the request's scheme/host when <c>Https.PublicDomain</c> is
-    /// unset (setup mode) so the SPA has something reasonable to render either way.
+    /// <c>publicHttpsBaseUrl</c> is always an HTTPS URL. When <c>Https.PublicDomain</c> is unset
+    /// (setup mode) it is the request's host: as requested over HTTPS, and over plain HTTP the
+    /// origin a plain-HTTP request is redirected to (<see cref="HttpsRedirectTarget"/>, the rule
+    /// <c>HttpSchemeEnforcementMiddleware</c> applies), so the portal never shows an
+    /// <c>http://</c> URL for ACME, which is served over HTTPS only.
     /// <c>enabledProtocols</c> is the subset of system protocols whose feature flag
     /// is on.
     /// </summary>
@@ -50,7 +54,9 @@ public class PublicInfoController(SystemConfig config, IFeatureFlagService featu
         var publicDomain = _config.Https.PublicDomain?.Trim() ?? string.Empty;
         var baseUrl = !string.IsNullOrWhiteSpace(publicDomain)
             ? _config.Https.GetPublicHttpsBaseUrl()
-            : $"{Request.Scheme}://{Request.Host}";
+            : Request.IsHttps
+                ? $"https://{Request.Host}"
+                : HttpsRedirectTarget.Build(Request.Host.Host, string.Empty, _config);
 
         var enabledProtocols = ProtocolFlags
             .Where(p => _featureFlags.IsEnabled(p.Flag))

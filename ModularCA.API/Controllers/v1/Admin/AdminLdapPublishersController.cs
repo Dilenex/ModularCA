@@ -396,7 +396,9 @@ public class AdminLdapPublishersController(
     /// <c>caId</c>), so a multi-row selection on the Distribution page prompts for MFA exactly once
     /// instead of once per row. The space fence is enforced on the CA up front; each publisher row
     /// is resolved within that CA, and rows that are missing are skipped (not failed). The batch
-    /// never aborts on a single error; a per-id summary is returned.
+    /// never aborts on a single error; a per-id summary is returned. A failed row carries a generic
+    /// message and the correlation id under which its exception is logged, not the exception's
+    /// message, which can name hosts and DNs.
     /// </summary>
     [HttpPost("bulk")]
     [RequireStepUp(StepUpOps.BulkLdapPublisher, "caId")]
@@ -484,7 +486,9 @@ public class AdminLdapPublishersController(
             }
             catch (Exception ex)
             {
-                results.Add(new { id, status = "failed", error = ex.Message });
+                var correlationId = ModularCA.API.Middleware.CorrelationIdMiddleware.Of(HttpContext);
+                Serilog.Log.Error(ex, "Bulk {Verb} of LDAP publisher {PublisherId} failed (correlationId={CorrelationId})", verb, id, correlationId);
+                results.Add(new { id, status = "failed", error = $"The change failed. The server log has the cause under correlation id {correlationId}.", correlationId });
                 failed++;
             }
         }

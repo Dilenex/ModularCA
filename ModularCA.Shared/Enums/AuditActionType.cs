@@ -17,6 +17,13 @@ public static class AuditActionType
     public const string SessionRefreshNotice = "SessionRefreshNotice";
     public const string UserCertLogin = "UserCertLogin";
     public const string UserLogout = "UserLogout";
+    /// <summary>
+    /// Every session of an account was ended (security stamp rotated, refresh tokens revoked)
+    /// because an mTLS sign-in credential of it was revoked, or its certificate was revoked or put
+    /// on hold. Details name the reason, the credential or certificate, and how many refresh tokens
+    /// were revoked.
+    /// </summary>
+    public const string UserSessionsEnded = "UserSessionsEnded";
 
     // MFA
     public const string MfaTokenInvalid = "MfaTokenInvalid";
@@ -88,6 +95,13 @@ public static class AuditActionType
     /// <summary>The advisory review date of an SSH CA key was moved; the details name the key, the new date and the one before.</summary>
     public const string SshCaKeyReviewDateChanged = "SshCaKeyReviewDateChanged";
 
+    /// <summary>
+    /// A host started with its configured Web TLS certificate missing and serves a temporary
+    /// self-signed one instead; the details name the path, the mode and the temporary
+    /// certificate's SHA-256 fingerprint.
+    /// </summary>
+    public const string WebTlsTemporaryCertificateServed = "WebTlsTemporaryCertificateServed";
+
     // Scheduled jobs
     public const string TlsCertificateRenewed = "TlsCertificateRenewed";
     public const string CrlExported = "CrlExported";
@@ -148,6 +162,8 @@ public static class AuditActionType
     public const string EnrollmentTokenGenerated = "EnrollmentTokenGenerated";
     public const string EnrollmentTokenRevoked = "EnrollmentTokenRevoked";
     public const string QrEnrollmentCompleted = "QrEnrollmentCompleted";
+    /// <summary>A token (QR or link) enrollment was refused before issuance.</summary>
+    public const string QrEnrollmentRejected = "QrEnrollmentRejected";
 
     // Protocol configuration
     public const string ProtocolConfigUpdated = "ProtocolConfigUpdated";

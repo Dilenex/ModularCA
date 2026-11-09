@@ -65,6 +65,6 @@ export const totpMfa: ApiEndpoint[] = [
             { name: 'recoveryCode', type: 'string', required: true, description: 'Plaintext recovery code issued at TOTP enrollment (case- and dash-insensitive)' },
         ],
         responseDescription: 'Success message confirming TOTP has been reset. User must re-enroll via /auth/totp/setup.',
-        notes: 'Recovery codes are single-use. The code is consumed regardless of outcome to prevent replay. After success the user\'s security stamp is rotated, invalidating all outstanding tokens.',
+        notes: 'Recovery codes are single-use and stored as per-user salted PBKDF2 hashes. Codes issued before 0.4.3 stay in the old unsalted SHA-256 form until they are used or TOTP is enrolled again, which replaces them. A wrong code counts as a failed sign-in and locks the account at the security policy\'s failed-attempt threshold, and administrators are notified of the lockout as for a wrong password. Every refusal costs the same hashing and is held to the security policy\'s login response delay, so its timing does not show whether the account exists or can sign in. After success the user\'s security stamp is rotated and every refresh token revoked, so outstanding tokens stop working at once. Rate limited per IP (5 requests per 15 minutes).',
     },
 ];

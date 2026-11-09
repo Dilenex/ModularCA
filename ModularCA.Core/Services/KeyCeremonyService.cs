@@ -11,12 +11,20 @@ namespace ModularCA.Core.Services;
 
 /// <summary>
 /// Manages key ceremony workflows for catastrophic CA operations.
-/// Enforces quorum-based multi-party approval, self-approval prevention,
-/// 24-hour expiry, and permanent audit trails. A ceremony that could never reach its quorum is
-/// refused at initiation (<see cref="ICeremonyQuorumGuard"/>).
+/// Enforces quorum-based multi-party approval, self-approval prevention, a 24-hour approval
+/// window, an execution deadline of <see cref="ApprovedExecutionWindow"/> after approval, and
+/// permanent audit trails. A ceremony that could never reach its quorum is refused at initiation
+/// (<see cref="ICeremonyQuorumGuard"/>).
 /// </summary>
 public class KeyCeremonyService : IKeyCeremonyService
 {
+    /// <summary>
+    /// How long an approved ceremony may wait to be executed. Approval moves
+    /// <see cref="KeyCeremonyEntity.ExpiresAt"/> to this far ahead; past it the ceremony expires,
+    /// so an approval cannot sit indefinitely as a standing licence for the operation.
+    /// </summary>
+    public static readonly TimeSpan ApprovedExecutionWindow = TimeSpan.FromDays(7);
+
     private readonly ModularCADbContext _db;
     private readonly IAuditService _audit;
     private readonly IEffectivePolicyResolver _policies;
@@ -130,7 +138,10 @@ public class KeyCeremonyService : IKeyCeremonyService
         ceremony.CurrentApprovals = approvals.Count(a => a.Decision == "Approved");
 
         if (ceremony.CurrentApprovals >= ceremony.RequiredApprovals)
+        {
             ceremony.Status = "Approved";
+            ceremony.ExpiresAt = DateTime.UtcNow.Add(ApprovedExecutionWindow);
+        }
 
         await _db.SaveChangesAsync();
 
@@ -140,7 +151,7 @@ public class KeyCeremonyService : IKeyCeremonyService
             approverUsername,
             "KeyCeremony",
             ceremonyId.ToString(),
-            new { ceremony.CurrentApprovals, ceremony.RequiredApprovals, ceremony.Status });
+            new { ceremony.CurrentApprovals, ceremony.RequiredApprovals, ceremony.Status, ceremony.ExpiresAt });
 
         return ceremony;
     }
@@ -324,11 +335,12 @@ public class KeyCeremonyService : IKeyCeremonyService
     {
         var now = DateTime.UtcNow;
         var stale = await _db.KeyCeremonies
-            .Where(c => c.Status == "Pending" && c.ExpiresAt <= now)
+            .Where(c => (c.Status == "Pending" || c.Status == "Approved") && c.ExpiresAt <= now)
             .ToListAsync();
 
         foreach (var ceremony in stale)
         {
+            var wasStatus = ceremony.Status;
             ceremony.Status = "Expired";
 
             await _audit.LogAsync(
@@ -337,13 +349,34 @@ public class KeyCeremonyService : IKeyCeremonyService
                 ceremony.InitiatedByUsername,
                 "KeyCeremony",
                 ceremony.Id.ToString(),
-                new { ceremony.OperationType, ceremony.TargetEntityId });
+                new { ceremony.OperationType, ceremony.TargetEntityId, WasStatus = wasStatus, ceremony.ExpiresAt });
         }
 
         if (stale.Count > 0)
             await _db.SaveChangesAsync();
 
         return stale.Count;
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> ExpireIfPastDeadlineAsync(Guid ceremonyId, Guid? actorUserId = null, string? actorUsername = null)
+    {
+        var ceremony = await _db.KeyCeremonies.FindAsync(ceremonyId);
+        if (ceremony == null || ceremony.Status is not ("Pending" or "Approved") || ceremony.ExpiresAt > DateTime.UtcNow)
+            return false;
+
+        var wasStatus = ceremony.Status;
+        ceremony.Status = "Expired";
+        await _db.SaveChangesAsync();
+
+        await _audit.LogAsync(
+            AuditActionType.KeyCeremonyExpired,
+            actorUserId ?? ceremony.InitiatedByUserId,
+            actorUsername ?? ceremony.InitiatedByUsername,
+            "KeyCeremony",
+            ceremony.Id.ToString(),
+            new { ceremony.OperationType, ceremony.TargetEntityId, WasStatus = wasStatus, ceremony.ExpiresAt, Reason = "execute_after_deadline" });
+        return true;
     }
 
     /// <summary>

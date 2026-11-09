@@ -8,7 +8,8 @@ import {
     REQUESTED_USAGE_HINT, caDisplayName, caRowId,
 } from '../profileHelpers';
 import { type ProfileFormMode, parseListField } from './profileFormCore';
-import type { CertProfileFormState } from './certProfile';
+import { type CertProfileFormState, expiryProblems } from './certProfile';
+import { periodText } from '@shared/periodText';
 import type { KeyPolicyLists } from './keyPolicy';
 import { KeyPolicyEditor, type ParentKeyPolicy } from './KeyPolicyEditor';
 import { groupEkuOptions, keyUsageOptions } from './pickerCatalogs';
@@ -29,20 +30,91 @@ const keyListsOf = (p: any): KeyPolicyLists => ({
  * The parent's effective key lists, from GET .../resolved so a parent that itself inherits is
  * read correctly. Until that answers (or if it fails) the parent's own row stands in.
  */
-const useParentKeyPolicy = (parentId: string, parentProfiles: any[]): ParentKeyPolicy | null => {
-    const [resolved, setResolved] = React.useState<{ id: string; lists: KeyPolicyLists } | null>(null);
+const useParentResolved = (parentId: string, parentProfiles: any[]): { keys: ParentKeyPolicy | null; effective: any | null } => {
+    const [resolved, setResolved] = React.useState<{ id: string; profile: any } | null>(null);
     React.useEffect(() => {
         if (!parentId) return;
         let active = true;
         apiGet<any>(`/api/v1/admin/cert-profiles/${parentId}/resolved`)
-            .then((r) => { if (active && r) setResolved({ id: parentId, lists: keyListsOf(r) }); })
-            .catch(() => { /* keep the row's own lists */ });
+            .then((r) => { if (active && r) setResolved({ id: parentId, profile: r }); })
+            .catch(() => { /* keep the row's own values */ });
         return () => { active = false; };
     }, [parentId]);
-    if (!parentId) return null;
+    if (!parentId) return { keys: null, effective: null };
     const row = parentProfiles.find((pr) => cpId(pr) === parentId);
-    const lists = resolved?.id === parentId ? resolved.lists : row ? keyListsOf(row) : null;
-    return lists ? { name: row?.name ?? 'parent', lists } : null;
+    const effective = resolved?.id === parentId ? resolved.profile : row ?? null;
+    return { keys: effective ? { name: row?.name ?? 'parent', lists: keyListsOf(effective) } : null, effective };
+};
+
+/** The parent's effective value of a percent field, for an empty input's placeholder. */
+const parentPercent = (parent: any | null, key: 'expiryWarningPercent' | 'expiryAlertPercent', fallback: number): string =>
+    parent ? `parent: ${parent[key] ?? fallback}` : `default ${fallback}`;
+
+/**
+ * The expiry warning settings: when the soft (amber) warning and the alert (red) start, as a share
+ * of the certificate's lifetime with an optional longest window, or never for certificates that
+ * renew themselves. With inheritance, an override switch decides whether the parent's settings
+ * bind this profile (it may then only warn earlier) or are replaced by the values set here.
+ */
+const ExpiryWarningFields: React.FC<{ value: CertProfileFormState; onChange: (next: CertProfileFormState) => void; parent: any | null }> = ({ value: f, onChange, parent }) => {
+    const set = <K extends keyof CertProfileFormState>(key: K, v: CertProfileFormState[K]) => onChange({ ...f, [key]: v });
+    const inherits = f.inheritanceEnabled && !!f.inheritsFromId;
+    const problems = expiryProblems(f);
+    return (
+        <fieldset className="border border-line rounded p-3 space-y-3">
+            <legend className="px-1 text-xs font-semibold text-ink">Expiry warning</legend>
+            <FieldHint>
+                A certificate shows a warning (amber) when this share of its lifetime remains, and an alert (red) later; by default 30 % and 10 %:
+                a 90-day certificate warns 27 days and alerts 9 days before it expires, a 10-hour one 3 hours and 1 hour before. A window, when set,
+                caps how early either starts. A CA certificate whose profile sets neither keeps 30 days and 7 days. Each certificate keeps the
+                instants it was given at issuance; saving a change here re-computes them for this profile&apos;s valid certificates.
+            </FieldHint>
+            <label className="flex items-center gap-2 text-xs text-ink">
+                <input type="checkbox" checked={f.expiryNeverWarn} onChange={(e) => set('expiryNeverWarn', e.target.checked)} className={checkboxClass} />
+                Renewed automatically: never warn
+            </label>
+            {f.expiryNeverWarn && <FieldHint className="ml-6">Its certificates raise no expiry warning or e-mail. One that expires without a successor still shows as expired, not replaced.</FieldHint>}
+            {inherits && (
+                <>
+                    <label className="flex items-center gap-2 text-xs text-ink">
+                        <input type="checkbox" checked={f.expiryWarningOverridesParent} onChange={(e) => set('expiryWarningOverridesParent', e.target.checked)} className={checkboxClass} />
+                        Override the parent&apos;s expiry warning settings
+                    </label>
+                    <FieldHint className="ml-6">
+                        {f.expiryWarningOverridesParent
+                            ? 'The values set here are used as they are; empty ones are inherited from the parent.'
+                            : 'Empty values are inherited. A value set here may only make the warning earlier than the parent\u2019s (a larger percent, a longer window); a later one is clamped to the parent\u2019s, and never-warn holds only when the parent never warns too.'}
+                    </FieldHint>
+                </>
+            )}
+            <div className={`grid grid-cols-1 md:grid-cols-2 gap-3 ${f.expiryNeverWarn ? 'opacity-60' : ''}`}>
+                <div>
+                    <label className={labelClass} htmlFor="cp-expiry-warning-percent">Warning at % of lifetime left</label>
+                    <input id="cp-expiry-warning-percent" type="number" min={1} max={100} placeholder={inherits ? parentPercent(parent, 'expiryWarningPercent', 30) : 'default 30'}
+                        value={f.expiryWarningPercent} onChange={(e) => set('expiryWarningPercent', e.target.value)} className={inputClass} disabled={f.expiryNeverWarn} />
+                </div>
+                <div>
+                    <label className={labelClass} htmlFor="cp-expiry-warning-window">Longest warning window (ISO 8601)</label>
+                    <input id="cp-expiry-warning-window" type="text" placeholder={inherits && parent?.expiryWarningMaxWindow ? `parent: ${parent.expiryWarningMaxWindow}` : 'no cap, e.g. P30D'}
+                        value={f.expiryWarningMaxWindow} onChange={(e) => set('expiryWarningMaxWindow', e.target.value)} className={inputClass} disabled={f.expiryNeverWarn} />
+                    {f.expiryWarningMaxWindow.trim() && <FieldHint>= {periodText(f.expiryWarningMaxWindow)}</FieldHint>}
+                </div>
+                <div>
+                    <label className={labelClass} htmlFor="cp-expiry-alert-percent">Alert at % of lifetime left</label>
+                    <input id="cp-expiry-alert-percent" type="number" min={1} max={100} placeholder={inherits ? parentPercent(parent, 'expiryAlertPercent', 10) : 'default 10'}
+                        value={f.expiryAlertPercent} onChange={(e) => set('expiryAlertPercent', e.target.value)} className={inputClass} disabled={f.expiryNeverWarn} />
+                </div>
+                <div>
+                    <label className={labelClass} htmlFor="cp-expiry-alert-window">Longest alert window (ISO 8601)</label>
+                    <input id="cp-expiry-alert-window" type="text" placeholder={inherits && parent?.expiryAlertMaxWindow ? `parent: ${parent.expiryAlertMaxWindow}` : 'no cap, e.g. P7D'}
+                        value={f.expiryAlertMaxWindow} onChange={(e) => set('expiryAlertMaxWindow', e.target.value)} className={inputClass} disabled={f.expiryNeverWarn} />
+                    {f.expiryAlertMaxWindow.trim() && <FieldHint>= {periodText(f.expiryAlertMaxWindow)}</FieldHint>}
+                </div>
+            </div>
+            {inherits && parent?.expiryNeverWarn && !f.expiryWarningOverridesParent && <FieldHint>The parent never warns.</FieldHint>}
+            {problems.map((msg) => <FieldHint key={msg} tone="warn">{msg}</FieldHint>)}
+        </fieldset>
+    );
 };
 
 /**
@@ -90,7 +162,7 @@ export const CertProfileForm: React.FC<{
     systemPurpose?: string | null;
 }> = ({ value: f, onChange, profileId, parentProfiles, authorities, ekuCatalog, keyUsageCatalog, ctLogs, systemPurpose }) => {
     const set = <K extends keyof CertProfileFormState>(key: K, v: CertProfileFormState[K]) => onChange({ ...f, [key]: v });
-    const parent = useParentKeyPolicy(f.inheritanceEnabled ? f.inheritsFromId : '', parentProfiles);
+    const { keys: parent, effective: parentEffective } = useParentResolved(f.inheritanceEnabled ? f.inheritsFromId : '', parentProfiles);
     return (
         <div className="space-y-3 max-w-3xl">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -151,6 +223,7 @@ export const CertProfileForm: React.FC<{
                 <CatalogGapNotice missing={ekuCatalog.missingFromCatalog} kind="extended key usage" />
             </div>
             <KeyPolicyEditor id="cp-keys" value={f.keyPolicy} onChange={(next) => set('keyPolicy', next)} parent={parent} />
+            <ExpiryWarningFields value={f} onChange={onChange} parent={parentEffective} />
         </div>
     );
 };

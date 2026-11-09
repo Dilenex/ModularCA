@@ -2,6 +2,7 @@
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Logging;
 using ModularCA.Shared.Entities;
+using ModularCA.Shared.Utils;
 using ModularCA.Database.Conventions;
 
 namespace ModularCA.Database;
@@ -300,6 +301,10 @@ public class ModularCADbContext : DbContext
             // NotAfter alone rather than (Revoked, NotAfter): several of those carry no Revoked
             // predicate, which a Revoked-led index would not serve, and Revoked selects little.
             c.HasIndex(c => c.NotAfter);
+
+            // The expiry warning: the summary, the list's expiring status, the chart and the
+            // notification job ask for ExpiryWarningAt <= now alongside NotAfter >= now.
+            c.HasIndex(c => c.ExpiryWarningAt);
 
             c.HasOne(c => c.SigningProfile)
                 .WithMany()
@@ -1161,16 +1166,49 @@ public class ModularCADbContext : DbContext
     // is identified.
     // ===========================================================================================
 
+    /// <summary>Saves, after <see cref="StampDefaultExpiryWarnings"/> and the CERT-FK-DIAG trace.</summary>
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
+        StampDefaultExpiryWarnings();
         LogCertFkCorruptionDiagnostics();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
+    /// <summary>Saves, after <see cref="StampDefaultExpiryWarnings"/> and the CERT-FK-DIAG trace.</summary>
     public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
+        StampDefaultExpiryWarnings();
         LogCertFkCorruptionDiagnostics();
         return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    /// <summary>
+    /// Gives every certificate being added without its expiry warning instants the ones
+    /// <see cref="ExpiryWarningRule"/> computes: from its certificate profile's own settings when
+    /// that profile is tracked by this context (inheritance is not resolved here), the defaults
+    /// otherwise. Issuance computes them from the effective profile; this covers the rows written
+    /// elsewhere: bootstrap, a root CA, mTLS login certificates and test fixtures. An instant
+    /// already set is kept.
+    /// </summary>
+    private void StampDefaultExpiryWarnings()
+    {
+        foreach (var entry in ChangeTracker.Entries<CertificateEntity>())
+        {
+            if (entry.State != EntityState.Added)
+                continue;
+            var c = entry.Entity;
+            if (c.ExpiryWarningAt != default && c.ExpiryAlertAt != default)
+                continue;
+            var profile = c.CertProfile ?? (c.CertProfileId is Guid profileId
+                ? ChangeTracker.Entries<CertProfileEntity>().FirstOrDefault(p => p.Entity.Id == profileId)?.Entity
+                : null);
+            var settings = profile == null ? null : ExpiryWarningSettings.Of(profile);
+            var (warningAt, alertAt) = ExpiryWarningRule.Compute(c.NotBefore, c.NotAfter, c.IsCA, settings);
+            if (c.ExpiryWarningAt == default)
+                c.ExpiryWarningAt = warningAt;
+            if (c.ExpiryAlertAt == default)
+                c.ExpiryAlertAt = c.ExpiryWarningAt > alertAt ? c.ExpiryWarningAt : alertAt;
+        }
     }
 
     /// <summary>

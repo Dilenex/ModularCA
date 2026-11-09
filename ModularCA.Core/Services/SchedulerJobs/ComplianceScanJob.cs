@@ -1,3 +1,4 @@
+using ModularCA.Core.Helpers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Services;
@@ -226,7 +227,7 @@ public class ComplianceScanJob : SingletonCronJob
     /// <param name="now">Current UTC timestamp for validity calculations.</param>
     /// <param name="renewalSet">Set of certificate IDs that have pending renewal requests.</param>
     /// <returns>List of vulnerability findings for this certificate.</returns>
-    private List<CertComplianceFindingEntity> AnalyzeCertificate(
+    internal List<CertComplianceFindingEntity> AnalyzeCertificate(
         CertificateEntity cert,
         ComplianceScanConfig scanConfig,
         DateTime now,
@@ -289,14 +290,13 @@ public class ComplianceScanJob : SingletonCronJob
             }
         }
 
-        // 5. Expiring without renewal — window is configurable via
-        // ComplianceScan.ExpiringWithinDays (default 30).
-        var daysToExpiry = (cert.NotAfter - now).TotalDays;
-        var expiringWindow = Math.Max(1, _config.ComplianceScan.ExpiringWithinDays);
-        if (daysToExpiry <= expiringWindow && daysToExpiry > 0 && !renewalSet.Contains(cert.CertificateId))
+        // 5. Expiring without renewal: in its expiry warning, which its profile set when it was
+        // issued (ComplianceScan.ExpiringWithinDays was retired in 0.4.3).
+        if (CertificateExpiry.IsInWarning(cert.Revoked, cert.NotAfter, cert.ExpiryWarningAt, now)
+            && !renewalSet.Contains(cert.CertificateId))
         {
             findings.Add(CreateFinding(cert.CertificateId, AlertSeverity.Warning, "ExpiringWithoutRenewal",
-                $"Certificate expires in {(int)daysToExpiry} day(s) and no renewal request exists"));
+                $"Certificate expires in {CertExpiryStage.TimeLeft(cert.NotAfter - now)}, is in its expiry warning, and no renewal request exists"));
         }
 
         // 6. Wildcard certificate (informational)

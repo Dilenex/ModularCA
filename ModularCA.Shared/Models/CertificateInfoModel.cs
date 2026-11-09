@@ -94,5 +94,15 @@ namespace ModularCA.Shared.Models
         /// <summary>Who dismissed the expiry warning.</summary>
         public string? ExpiryWarningDismissedBy { get; set; }
 
+        /// <summary>
+        /// When the soft expiry warning starts; equal to <see cref="NotAfter"/> when the profile
+        /// never warns. Set by issuance and by the certificate reads; null on a write means
+        /// "compute it from the default rule".
+        /// </summary>
+        public DateTime? ExpiryWarningAt { get; set; }
+
+        /// <summary>When the expiry alert starts; equal to <see cref="NotAfter"/> when the profile never warns.</summary>
+        public DateTime? ExpiryAlertAt { get; set; }
+
     }
 }

@@ -17,8 +17,11 @@ public static class FileSecurityUtil
     /// <c>chmod 600</c> via <see cref="File.SetUnixFileMode"/>. On Windows, the file's
     /// DACL is replaced with explicit ACEs granting <see cref="FileSystemRights.FullControl"/>
     /// only to the current user and the local Administrators group, and inheritance is
-    /// disabled so parent-folder ACEs do not leak access. Errors are swallowed so a
-    /// permission-tightening failure does not crash callers writing secrets to disk.
+    /// disabled so parent-folder ACEs do not leak access. A failure is written to standard error
+    /// as a warning rather than thrown, so a permission-tightening failure does not crash callers
+    /// writing secrets to disk. To create a secret file, prefer
+    /// <see cref="WriteOwnerOnly(string, byte[])"/>, which on POSIX never leaves it readable in
+    /// between.
     /// </summary>
     /// <param name="filePath">Absolute path to the file whose ACL should be tightened.</param>
     public static void SetOwnerOnly(string filePath)
@@ -49,7 +52,84 @@ public static class FileSecurityUtil
             File.SetUnixFileMode(filePath,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite);
         }
-        catch { /* Best effort — don't crash if permissions fail */ }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"[WARNING] FileSecurityUtil.SetOwnerOnly: failed to restrict '{filePath}' to mode 0600: {ex.Message}. " +
+                "Other local users may be able to read it; fix its owner and mode by hand.");
+        }
+    }
+
+    /// <summary>
+    /// Writes a secret file restricted to its owner. On Linux and other POSIX systems it is never
+    /// readable by anyone else, not even for the moment between creating it and tightening it: a
+    /// new file is created with mode 0600 through <see cref="FileStreamOptions.UnixCreateMode"/>.
+    /// On Windows there is no create-time equivalent here: a new file starts with the ACL it
+    /// inherits from its folder, is written while no other handle may open it
+    /// (<see cref="FileShare.None"/>), and gets the owner-only DACL of <see cref="SetOwnerOnly"/>
+    /// only after the write, so for that moment the folder's permissions apply. On every platform
+    /// an existing file is tightened before the new contents go in and then truncated and
+    /// rewritten. Failures to restrict permissions are reported as warnings, as in
+    /// <see cref="SetOwnerOnly"/>; failures to write throw.
+    /// </summary>
+    /// <param name="filePath">The file to create or replace.</param>
+    /// <param name="contents">The bytes to write.</param>
+    public static void WriteOwnerOnly(string filePath, byte[] contents)
+    {
+        ArgumentNullException.ThrowIfNull(contents);
+        if (File.Exists(filePath))
+            SetOwnerOnly(filePath);
+
+        var options = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write, Share = FileShare.None };
+        if (!OperatingSystem.IsWindows())
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        using (var stream = new FileStream(filePath, options))
+            stream.Write(contents);
+        SetOwnerOnly(filePath);
+    }
+
+    /// <summary>
+    /// Writes key material to a NEW file restricted to its owner, never into an existing one. On
+    /// POSIX the file is created with mode 0600 (<see cref="FileStreamOptions.UnixCreateMode"/>)
+    /// and <see cref="FileMode.CreateNew"/>, so it is never readable by anyone else and a file
+    /// someone else created at that path first is refused rather than written into. With
+    /// <paramref name="replaceExisting"/>, an existing file is deleted first, so a descriptor some
+    /// other user already holds on it points at the old file, not the new contents.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="WriteOwnerOnly(string, byte[])"/> truncates and rewrites an existing file, which
+    /// suits configuration; for decrypted keys and archives the inode must be new. Writing an
+    /// empty file, restricting it and then writing into it (as the unlocker did) leaves the empty
+    /// file at default permissions for a moment, and a descriptor opened then survives the chmod.
+    /// </remarks>
+    /// <param name="filePath">The file to create.</param>
+    /// <param name="contents">The bytes to write.</param>
+    /// <param name="replaceExisting">Delete a file already at <paramref name="filePath"/> first.</param>
+    /// <exception cref="IOException">The file exists (and is not to be replaced), or was recreated by someone else after the delete.</exception>
+    public static void CreateOwnerOnly(string filePath, byte[] contents, bool replaceExisting = false)
+    {
+        ArgumentNullException.ThrowIfNull(contents);
+        if (replaceExisting && File.Exists(filePath))
+            File.Delete(filePath);
+
+        var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
+        if (!OperatingSystem.IsWindows())
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        using (var stream = new FileStream(filePath, options))
+            stream.Write(contents);
+        SetOwnerOnly(filePath);
+    }
+
+    /// <summary>
+    /// Text counterpart of <see cref="WriteOwnerOnly(string, byte[])"/>; writes
+    /// <paramref name="contents"/> as UTF-8 without a byte-order mark.
+    /// </summary>
+    /// <param name="filePath">The file to create or replace.</param>
+    /// <param name="contents">The text to write.</param>
+    public static void WriteOwnerOnly(string filePath, string contents)
+    {
+        ArgumentNullException.ThrowIfNull(contents);
+        WriteOwnerOnly(filePath, new System.Text.UTF8Encoding(false).GetBytes(contents));
     }
 
     /// <summary>
@@ -99,7 +179,12 @@ public static class FileSecurityUtil
             File.SetUnixFileMode(directoryPath,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
-        catch { /* Best effort — don't crash if permissions fail */ }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"[WARNING] FileSecurityUtil.SetDirectoryOwnerOnly: failed to restrict '{directoryPath}' to mode 0700: " +
+                $"{ex.Message}. Staged secrets may be readable by other users.");
+        }
     }
 
     /// <summary>

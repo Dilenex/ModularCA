@@ -165,8 +165,8 @@ public interface IControlledUserCeremonyService
 
     /// <summary>
     /// True when a promotion (grant, role assignment or group membership) of
-    /// <paramref name="userId"/> is pending or approved but not yet executed, including a role
-    /// assigned to a group they belong to. Their credentials must not be reset meanwhile. An open
+    /// <paramref name="userId"/> is pending or approved, not yet executed and not past its expiry,
+    /// including a role assigned to a group they belong to. Their credentials must not be reset meanwhile. An open
     /// ceremony naming the user whose parameters cannot be read counts as a promotion.
     /// </summary>
     Task<bool> HasOpenPromotionAsync(Guid userId);

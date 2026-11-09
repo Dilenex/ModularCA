@@ -155,7 +155,7 @@ public static class BootstrapKeystoreWriter
     /// <remarks>
     /// Asymmetry note: at runtime the canonical source for the secondary passphrase
     /// is the <c>MODULARCA_KEYSTORE_SECONDARY_PASSPHRASE</c> environment variable. The on-disk YAML
-    /// file is written here (and tightened to owner-only) only because bootstrap generates the
+    /// file is written here (created owner-only, never readable by others in between) only because bootstrap generates the
     /// secondary passphrase before any operator can export an env var. After bootstrap completes,
     /// operators are expected to copy the value into their secret manager / systemd EnvironmentFile,
     /// export it, and remove or further restrict <c>config/keystore.yaml</c>. The runtime loader
@@ -171,8 +171,7 @@ public static class BootstrapKeystoreWriter
         }).ToList();
 
         var yamlPath = Path.Combine(configDir, "keystore.yaml");
-        File.WriteAllLines(yamlPath, yamlLines);
-        FileSecurityUtil.SetOwnerOnly(yamlPath);
+        FileSecurityUtil.WriteOwnerOnly(yamlPath, string.Concat(yamlLines.Select(l => l + Environment.NewLine)));
 
         Console.WriteLine($"\n📝 Secondary passphrases written to: {yamlPath}");
         Console.WriteLine($"   After bootstrap, export these as JSON in the {ModularCA.Keystore.Config.KeystoreYamlLoader.SecondaryPassphraseEnvVar}");

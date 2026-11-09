@@ -36,7 +36,10 @@ flags. `install.sh` sets them explicitly (the `.deb`'s `postinst` sets the same)
 - **A runtime directory is set up once.** The installer creates one that is missing, owned by
   `modularca` with the mode above, and hands over one still owned by root. After that it never
   changes its ownership, its mode or anything in it, on any run; the service writes its secrets
-  there owner-only itself. On a split install the signer keeps `keystores/` and `keystore.yaml` across every
+  there owner-only itself. Both units set `UMask=0077`, so every file the service creates is its
+  own alone, the log files in `logs/` included; a file it rewrites in place keeps its mode. To let
+  members of the `modularca` group read new log files directly, give the unit a drop-in with
+  `UMask=0027`; `journalctl -u modularca` needs nothing. On a split install the signer keeps `keystores/` and `keystore.yaml` across every
   upgrade (see "Two units" below).
 - **The signer's own directory, `signer/`, is never the installer's.** On a split install the
   operator creates it for `modularca-signer`; `install.sh` and the `.deb` never create it, copy into
@@ -171,6 +174,8 @@ operator sees:
 | The dry run or a migration failed on a lock timeout, a deadlock or a lost connection | — then **75** | retried in the service with backoff for up to `Schema.WaitSeconds`, then exits and systemd retries |
 | A pending migration refuses in the dry run | **3** | nothing applied to either database; the journal lists every refusal of both databases, each with its migration and message |
 | Schema newer than this build, tables without history, wrong password, `pg_hba.conf` refusal, TLS failure, tables the runtime role does not own, a migration that failed for good, PostgreSQL older than 14 | **3** | not retried (`RestartPreventExitStatus=3`); the journal says why and prints the fix |
+| `Hsm.Enabled: true` and the HSM cannot be initialised (module, slot, PIN or token) | **3** | not retried, so a wrong PIN is not tried again until the token locks |
+| Another setting that cannot work (see "Some settings stop the start") | **1** | retried every 5 s until the unit's start limit (5 starts in 300 s) |
 
 The control role applies nothing it has not rehearsed. Before the first migration it runs every
 pending migration of both databases in one transaction per database and rolls it back. One refusal
@@ -193,6 +198,31 @@ To check schema ownership read-only at any time, as the service user and never a
     sudo -u modularca /opt/modularca/ModularCA.API --db-ownership check
 
 It exits 0 when both databases are sound and 3 when not, and prints what it found and the repair.
+
+### Upgrading to 0.4.3
+
+0.4.3 adds one migration, which gives every certificate its expiry warning and alert instants.
+Nothing it does needs a restore to undo, but take the usual backup first.
+
+1. **On every host, check `config/config.yaml`** for the two settings that now stop the start:
+   each `Http.TrustedProxyCidrs` entry must be `address/prefix` with no bits after the prefix,
+   and `Security.BehindReverseProxy: true` needs at least one entry, even when the proxy runs on
+   the same host: list it as `127.0.0.1/32,::1/128` (see "Things worth knowing before the first
+   production start"). These are per-host settings, so a host that refuses is fixed in that file
+   and started again; the console is not needed. With `Hsm.Enabled: true`, make sure the module,
+   slot and PIN work: a failing HSM now stops the start too, with status 3, which systemd does not
+   retry.
+2. **Execute approved ceremonies** before upgrading; approvals now lapse after 7 days, and one
+   approved earlier keeps its old 24-hour expiry.
+3. **Log readers:** both units now set `UMask=0077`. Give a group that reads `logs/` directly a
+   drop-in with `UMask=0027`.
+4. **After it starts,** expect the dashboard's Needs attention list to change (warnings now
+   follow 30 % of each certificate's lifetime), one more expiry e-mail for each certificate
+   already in its new window and not yet replaced, ACME clients still configured with an
+   `http://` directory to be redirected to HTTPS, and timestamp tokens to name the policy
+   `1.3.6.1.4.1.66874.1.5.1` instead of `1.2.3.4.1` (Settings → Certificates → Time-Stamp
+   Authority sets another). The changelog's "Upgrading from 0.4.2" lists the client-visible
+   changes.
 
 ### Upgrading to 0.4.2
 
@@ -826,7 +856,30 @@ every spelling, but if you have a curated OID catalog, place it at `/opt/modular
 
 **Audit history survives a reinstall.** The audit database is preserved by default; wiping it is
 opt-in (`--wipe-audit` on a CLI bootstrap, or the "Erase existing audit history" checkbox in the
-wizard). If you are rehearsing installs on one host, expect audit rows to carry across.
+wizard, which its recovery from a previous install's database also offers). If you are
+rehearsing installs on one host, expect audit rows to carry across.
+
+**Some settings stop the start when they cannot work.** These exit with status 1 and say why in
+the journal; fix the named setting in that host's `config/config.yaml` and start again:
+
+- `Http.TrustedProxyCidrs` with an entry that is not `address/prefix`, or with bits set after the
+  prefix (`10.0.1.5/24`; write `10.0.1.0/24`, or `10.0.1.5/32` for one proxy).
+- `Security.BehindReverseProxy: true` with no `Http.TrustedProxyCidrs`. Forwarded headers would
+  be honoured from loopback only, every request would appear to come from the proxy, and an
+  internal proxy address would pass the internal-only IP whitelist rules. Name the proxy (for a
+  proxy on the same host, `TrustedProxyCidrs: "127.0.0.1/32,::1/128"`), or set
+  `BehindReverseProxy: false` if nothing is in front of the host.
+
+An enabled HSM that cannot be initialised stops the start with status **3** instead, which systemd
+does not retry: each restart would try the PIN again, and a token locks after a few wrong ones.
+That is `Hsm.Enabled: true` with a module, slot, PIN or token that does not work, or with no
+`Hsm.ModulePath`. Earlier releases fell back to the software keystore. On a split install the
+setting is in the signer's `signer/signer.yaml`. Fix it and start the unit again.
+
+**A missing custom Web TLS certificate is served around, not fatal.** With `Https.Mode: Custom`
+and the PFX gone, the service starts on a temporary self-signed certificate, logs a warning with
+its SHA-256 fingerprint and writes a `WebTlsTemporaryCertificateServed` audit entry. Put the file
+back at `Https.CertificatePath` or reissue the Web TLS certificate from the console.
 
 **The initial administrator password must be changed on first login.** When the password was
 generated rather than chosen, it is printed once to the service log and the account is flagged

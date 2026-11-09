@@ -5,6 +5,9 @@ namespace ModularCA.Shared.Models;
 /// requested scope, returned by <c>GET /api/v1/admin/certificates/lifecycle-summary</c>.
 /// </summary>
 /// <remarks>
+/// A certificate's expiry warning and alert start at the instants stored on it at issuance from its
+/// profile (<c>ModularCA.Shared.Utils.ExpiryWarningRule</c>); the <c>ExpiringWithin*</c> counts are
+/// the fixed 7- and 30-day windows of earlier releases, kept for one release.
 /// A certificate is <em>replaced</em> when it was reissued (flag or renewal link), or when a newer,
 /// unrevoked, unexpired certificate from the same issuing CA carries the same subject DN and the
 /// same SAN set. Replacement is only evaluated for certificates that expired within
@@ -33,16 +36,39 @@ public class CertificateLifecycleSummaryModel
     /// <summary>Expired and not revoked.</summary>
     public int Expired { get; set; }
 
+    /// <summary>
+    /// Active certificates whose soft expiry warning has started (<c>ExpiryWarningAt</c> has
+    /// passed), including those in the alert, replaced, retired or dismissed. The certificate list's
+    /// <c>status=expiring</c> returns the same set.
+    /// </summary>
+    public int InExpiryWarning { get; set; }
+
+    /// <summary>Of <see cref="InExpiryWarning"/>, those with no replacement, not retired or dismissed.</summary>
+    public int InExpiryWarningNotReplaced { get; set; }
+
+    /// <summary>
+    /// Active certificates whose expiry alert has started (<c>ExpiryAlertAt</c> has passed). The
+    /// certificate list's <c>status=alert</c> returns the same set.
+    /// </summary>
+    public int InExpiryAlert { get; set; }
+
+    /// <summary>Of <see cref="InExpiryAlert"/>, those with no replacement, not retired or dismissed.</summary>
+    public int InExpiryAlertNotReplaced { get; set; }
+
     /// <summary>Active certificates that expire within 7 days.</summary>
+    /// <remarks>Deprecated in 0.4.3 and removed in a later release: use <see cref="InExpiryAlert"/>.</remarks>
     public int ExpiringWithin7Days { get; set; }
 
     /// <summary>Active certificates that expire within 30 days (includes the 7-day ones).</summary>
+    /// <remarks>Deprecated in 0.4.3 and removed in a later release: use <see cref="InExpiryWarning"/>.</remarks>
     public int ExpiringWithin30Days { get; set; }
 
     /// <summary>Active certificates expiring within 7 days with no replacement, not retired or dismissed.</summary>
+    /// <remarks>Deprecated in 0.4.3 and removed in a later release: use <see cref="InExpiryAlertNotReplaced"/>.</remarks>
     public int ExpiringWithin7DaysNotReplaced { get; set; }
 
     /// <summary>Active certificates expiring within 30 days with no replacement, not retired or dismissed.</summary>
+    /// <remarks>Deprecated in 0.4.3 and removed in a later release: use <see cref="InExpiryWarningNotReplaced"/>.</remarks>
     public int ExpiringWithin30DaysNotReplaced { get; set; }
 
     /// <summary>Certificates that expired within the replacement window and were replaced.</summary>
@@ -52,8 +78,8 @@ public class CertificateLifecycleSummaryModel
     public int ExpiredNotReplaced { get; set; }
 
     /// <summary>
-    /// Certificates in the replacement band (expiring within 30 days, or expired within the window)
-    /// that are not replaced but were retired or had their expiry warning dismissed.
+    /// Certificates in their expiry warning, or expired within the replacement window, that are not
+    /// replaced but were retired or had their expiry warning dismissed.
     /// </summary>
     public int RetiredOrDismissed { get; set; }
 
@@ -68,7 +94,7 @@ public class CertificateLifecycleSummaryModel
 
     /// <summary>
     /// Certificates needing attention, capped: recently expired ones with no replacement (most
-    /// recent first), then ones expiring within 30 days with no replacement (soonest first).
+    /// recent first), then ones in their expiry warning with no replacement (soonest first).
     /// </summary>
     public List<CertificateAttentionItemModel> Attention { get; set; } = new();
 
@@ -91,6 +117,12 @@ public class CertificateAttentionItemModel
 
     /// <summary><c>expired</c> or <c>expiring</c>.</summary>
     public string State { get; set; } = string.Empty;
+
+    /// <summary>When the soft expiry warning started.</summary>
+    public DateTime ExpiryWarningAt { get; set; }
+
+    /// <summary>When the expiry alert starts or started; an expiring item past it is shown red.</summary>
+    public DateTime ExpiryAlertAt { get; set; }
 
     public Guid? CaId { get; set; }
     public string? CaLabel { get; set; }

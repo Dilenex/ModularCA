@@ -108,7 +108,10 @@ public class OcspResponderService : IOcspService
         CancellationToken cancellationToken = default)
     {
         result.Status = "unknown";
-        result.CaLabel = caLabel ?? string.Empty;
+        // Empty until a responder CA resolves, then that CA's own label. The label in the URL is
+        // whatever an unauthenticated client typed, and this value becomes a metric label: as
+        // given, every distinct label became a time series kept for the life of the process.
+        result.CaLabel = string.Empty;
         result.CacheMaxAgeSeconds = 0;
 
         // Single load of the runtime security policy — cache in the service for
@@ -214,7 +217,7 @@ public class OcspResponderService : IOcspService
             || resolved.SigningContext == null || resolved.CaCert == null)
             return BuildStatusResponse(OcspRespStatus.InternalError, result);
 
-        result.CaLabel = resolved.CaLabel ?? caLabel ?? string.Empty;
+        result.CaLabel = resolved.CaLabel ?? string.Empty;
 
         var caCert = resolved.CaCert;
         var signerCert2 = resolved.SignerCert;
@@ -658,7 +661,8 @@ public class OcspResponderService : IOcspService
     /// Loads the delegated responder cert,
     /// verifies id-kp-OCSPSigning EKU, id-pkix-ocsp-nocheck extension (gated
     /// by <see cref="SecurityPolicyEntity.RequireNoCheckExtension"/>), validity
-    /// window, and the parent CA chain state (validity + revoked + enabled).
+    /// window, that the CA issued and signed it (<see cref="OcspResponderRules.IssuerProblem"/>),
+    /// and the parent CA chain state (validity + revoked + enabled).
     /// </summary>
     private async Task<DelegatedResolveResult> TryResolveDelegatedResponderAsync(X509Certificate caCert, CertificateAuthorityEntity caEntity, CancellationToken ct)
     {
@@ -690,7 +694,8 @@ public class OcspResponderService : IOcspService
         // and the validity window. OcspResponderReadiness reports the same findings to operators.
         var now = DateTime.UtcNow;
         var delegatedPolicy = await _securityPolicy.GetAsync();
-        var problem = OcspResponderRules.Problem(responderCert, delegatedPolicy.RequireNoCheckExtension, now);
+        var problem = OcspResponderRules.Problem(responderCert, delegatedPolicy.RequireNoCheckExtension, now)
+            ?? OcspResponderRules.IssuerProblem(responderCert, caCert);
         if (problem != null)
         {
             _logger.LogWarning("OCSP: delegated responder '{Subject}' refused. {Problem}", responderCert.SubjectDN, problem);

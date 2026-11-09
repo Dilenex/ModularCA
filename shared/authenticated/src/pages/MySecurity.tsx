@@ -261,7 +261,7 @@ export const MySecurity: React.FC<{ embedded?: boolean }> = ({ embedded = false 
     };
 
     const handleRevokeMtls = (credId: string) => {
-        if (!confirm('Revoke this client certificate?')) return;
+        if (!confirm('Revoke this client certificate? Every session of your account will be signed out, this one included.')) return;
         openTotpModal('Confirm mTLS Revocation', async (code: string) => {
             const stepUp = await apiPost<{ mfaToken: string }>('/auth/mfa/verify-stepup/totp', { code, operation: 'mtls-delete', targetId: credId });
             await api(`/auth/mtls/credentials/${credId}`, { method: 'DELETE', headers: { 'X-MFA-Token': stepUp.mfaToken } });

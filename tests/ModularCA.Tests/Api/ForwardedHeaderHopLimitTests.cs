@@ -54,14 +54,14 @@ public class ForwardedHeaderHopLimitTests
     }
 
     /// <summary>
-    /// Mirrors the startup check: claiming to be behind a proxy while naming none is the
-    /// configuration that silently disables the whitelist.
+    /// The startup and save-time check: claiming to be behind a proxy while naming none is the
+    /// configuration that silently disables the whitelist, and is refused.
     /// </summary>
     private static bool WarnsAboutSilentBypass(bool behindProxy, string trustedCidrs) =>
-        behindProxy && string.IsNullOrWhiteSpace(trustedCidrs);
+        ModularCA.Shared.Utils.ConfigInputRules.ReverseProxyError(behindProxy, trustedCidrs) != null;
 
     [Fact]
-    public void Claiming_a_proxy_without_naming_one_is_warned_about()
+    public void Claiming_a_proxy_without_naming_one_is_refused()
     {
         Assert.True(WarnsAboutSilentBypass(behindProxy: true, trustedCidrs: ""));
         Assert.True(WarnsAboutSilentBypass(behindProxy: true, trustedCidrs: "   "));

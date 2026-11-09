@@ -152,6 +152,10 @@ export default function AuthFlowDiagram() {
                         ensure the certificate chains to the exact CA it was enrolled under. OCSP revocation
                         checks can be enforced
                         via the DB-backed <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">SecurityPolicy.RequireMtlsOcspCheck</code>.
+                        Independently of that setting, every mTLS sign-in and step-up reads the certificate&apos;s own
+                        status: a certificate revoked by any path, or on hold, is refused and the attempt audited
+                        (<code className="text-sm bg-sunken px-1.5 py-0.5 rounded">mtls_certificate_revoked</code>), and a
+                        credential whose certificate record no longer exists is refused too.
                         Failed chain validation increments the failed login counter and can trigger account lockout.
                     </p>
                 </div>
@@ -256,7 +260,8 @@ export default function AuthFlowDiagram() {
     |<-----------------------------|
     |                              |
     |  POST /api/v1/auth/refresh   |
-    |  Cookie: refresh={token}     |
+    |  { refreshToken }            |
+    |  DPoP: {proof}               |
     |----------------------------->|
     |                              |
     |  200 { accessToken,          |
@@ -293,6 +298,12 @@ export default function AuthFlowDiagram() {
                         via <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">Security.BindRefreshTokenToFingerprint</code> -- User-Agent
                         hash binding</li>
                     <li><strong>Account status enforced on refresh:</strong> Locked, disabled, or temporarily locked users cannot refresh</li>
+                    <li><strong>Proof of possession (DPoP):</strong> every sign-in that carries a <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">DPoP</code> proof
+                        binds the session to the browser&apos;s non-extractable key (password, certificate, TOTP, WebAuthn, and the
+                        mTLS redirect sign-in at <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">POST /auth/mtls/exchange</code>). A bound session
+                        refreshes only with a proof from that key; <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">Security.EnforceRefreshTokenPoP</code> is
+                        on by default from 0.4.3 (off = observe and log only)</li>
+                    <li><strong>Rate limited:</strong> per client address, 120 refreshes per 5 minutes</li>
                 </ul>
             </section>
 
@@ -311,8 +322,9 @@ export default function AuthFlowDiagram() {
                     endpoint rejects any operation string not in this allow-list.
                 </p>
                 <div className="bg-sunken rounded p-4 data-mono mb-4 overflow-x-auto">
-                    <pre className="text-ink">{`Certificate:  revoke-cert, hold-cert, unhold-cert, reissue-cert, export-cert
-User:         create-user, update-user, delete-user
+                    <pre className="text-ink">{`Certificate:  revoke-cert, hold-cert, unhold-cert, reissue-cert, export-cert,
+              retire-cert, undo-retire-cert
+User:        create-user, update-user, delete-user
 Group:        add-group-member, remove-group-member
 Password/MFA: reset-password, reset-mfa, change-password
 Backup:       create-backup, restore-backup, set-backup-password, change-backup-encryption-mode

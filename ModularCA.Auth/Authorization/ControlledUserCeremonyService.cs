@@ -505,7 +505,9 @@ public class ControlledUserCeremonyService(
     /// <inheritdoc />
     /// <remarks>
     /// An open ceremony that names the user but whose parameters cannot be read counts as a
-    /// promotion (fail closed): it cannot be shown not to be one.
+    /// promotion (fail closed): it cannot be shown not to be one. A Pending or Approved ceremony
+    /// past its <c>ExpiresAt</c> is not open: it can no longer be executed, though its status is
+    /// changed to Expired only when ceremonies are next listed or executed.
     /// </remarks>
     public async Task<bool> HasOpenPromotionAsync(Guid userId)
     {
@@ -513,7 +515,8 @@ public class ControlledUserCeremonyService(
         var now = DateTime.UtcNow;
         var open = await db.KeyCeremonies.AsNoTracking()
             .Where(c => c.OperationType == "ControlledUserChange"
-                && ((c.Status == "Pending" && c.ExpiresAt > now) || c.Status == "Approved")
+                && (c.Status == "Pending" || c.Status == "Approved")
+                && c.ExpiresAt > now
                 && c.ParametersJson.Contains(idText))
             .ToListAsync();
         return open.Select(Deserialize).Any(p => p == null || (IsPromotion(p.ChangeType)

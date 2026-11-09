@@ -211,6 +211,9 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// (<c>responderSerial</c>, <c>responderSubject</c>, <c>responderNotAfter</c>); null for a CA that is
         /// disabled or has no certificate. <c>certificate.carriesDigitalSignature</c> says whether the CA
         /// certificate's key usage includes digitalSignature; null when the certificate cannot be read.
+        /// Each of <c>protocolConfigs</c> carries <c>advisories</c>: why that protocol cannot run on this
+        /// CA (<see cref="ModularCA.Shared.Enrollment.ProtocolCompatibility"/>), empty when nothing is known
+        /// to be wrong. System Health lists the enabled ones that carry any.
         /// System admins see all CAs; other users see only CAs belonging to their accessible spaces.
         /// </summary>
         [HttpGet("hierarchy")]
@@ -256,6 +259,8 @@ namespace ModularCA.API.Controllers.v1.Admin
             {
                 visited.Add(ca.Id);
 
+                var keyAlgorithm = ModularCA.Shared.Enrollment.ProtocolCompatibility.KeyAlgorithmOf(ca.Certificate);
+
                 // Protocols disabled system-wide are left out here as they are on the protocol
                 // configuration page: the row stays in the table, but a protocol this deployment
                 // does not serve is not listed as configured on the CA.
@@ -270,6 +275,9 @@ namespace ModularCA.API.Controllers.v1.Admin
                         SigningProfileName = pc.SigningProfile?.Name,
                         CertProfileId = pc.CertProfileId,
                         CertProfileName = pc.CertProfile?.Name,
+                        // The console warns on the CA page when SCEP takes requests without one.
+                        pc.ScepChallengeRequired,
+                        Advisories = ModularCA.Shared.Enrollment.ProtocolCompatibility.Advisories(pc.Protocol, keyAlgorithm),
                     })
                     .ToList();
 
@@ -313,7 +321,7 @@ namespace ModularCA.API.Controllers.v1.Admin
                     } : null,
                     // The key algorithm the CA actually has, read from its certificate. The console
                     // needs it to say, before anything is saved, that SCEP cannot run here.
-                    KeyAlgorithm = ModularCA.Shared.Enrollment.ProtocolCompatibility.KeyAlgorithmOf(ca.Certificate),
+                    KeyAlgorithm = keyAlgorithm,
                     ProtocolConfigs = caProtocols,
                     ServiceUrls = urls != null ? new
                     {

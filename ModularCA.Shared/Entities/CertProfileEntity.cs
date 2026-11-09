@@ -117,6 +117,43 @@ public class CertProfileEntity
     public bool InheritanceEnabled { get; set; } = false;
 
     /// <summary>
+    /// Share of a certificate's lifetime, 1 to 100, that remains when its soft expiry warning
+    /// starts. Null takes the parent's value, or 30 (a CA certificate: 30 days).
+    /// See <see cref="ModularCA.Shared.Utils.ExpiryWarningRule"/>.
+    /// </summary>
+    public int? ExpiryWarningPercent { get; set; }
+
+    /// <summary>
+    /// Longest soft warning window, an ISO 8601 duration such as <c>P30D</c> or <c>PT6H</c>. Null
+    /// takes the parent's value, or no cap.
+    /// </summary>
+    [MaxLength(50)]
+    public string? ExpiryWarningMaxWindow { get; set; }
+
+    /// <summary>
+    /// Share of a certificate's lifetime, 1 to 100, that remains when its expiry alert starts. Null
+    /// takes the parent's value, or 10 (a CA certificate: 7 days).
+    /// </summary>
+    public int? ExpiryAlertPercent { get; set; }
+
+    /// <summary>Longest alert window, an ISO 8601 duration. Null takes the parent's value, or no cap.</summary>
+    [MaxLength(50)]
+    public string? ExpiryAlertMaxWindow { get; set; }
+
+    /// <summary>
+    /// Certificates of this profile are renewed automatically, so their expiry never warns. They
+    /// still count as expired, not replaced, if one expires without a successor.
+    /// </summary>
+    public bool ExpiryNeverWarn { get; set; }
+
+    /// <summary>
+    /// This profile's expiry warning settings replace its parent's instead of being held to them:
+    /// each value it sets is used as it is, and only the ones it leaves empty are inherited.
+    /// Without it, a child may only warn earlier than its parent.
+    /// </summary>
+    public bool ExpiryWarningOverridesParent { get; set; }
+
+    /// <summary>
     /// Navigation property to the CA this profile is scoped to.
     /// </summary>
     [ForeignKey("CertificateAuthorityId")]

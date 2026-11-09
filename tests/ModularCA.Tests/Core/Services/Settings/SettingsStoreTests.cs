@@ -196,6 +196,21 @@ public class SettingsStoreTests
     }
 
     [Fact]
+    public async Task The_tsa_policy_is_stored_only_as_a_dotted_object_identifier()
+    {
+        var world = new World();
+
+        var refused = await Assert.ThrowsAsync<SettingsRefusedException>(() =>
+            world.Store().WriteAsync(Set("Tsa_PolicyOid", JsonValue.Create("my policy"))));
+        Assert.Equal(SettingsRefusal.InvalidValue, refused.Reason);
+        Assert.Contains("Tsa.PolicyOid", refused.Message);
+        Assert.Empty((await world.Store().LoadAsync()).Settings);
+
+        await world.Store().WriteAsync(Set("Tsa_PolicyOid", JsonValue.Create("1.3.6.1.4.1.99999.7.1")));
+        Assert.Equal("\"1.3.6.1.4.1.99999.7.1\"", Assert.Single((await world.Store().LoadAsync()).Settings.Values).ValueJson);
+    }
+
+    [Fact]
     public async Task A_null_is_a_value_where_the_setting_allows_one()
     {
         var world = new World();

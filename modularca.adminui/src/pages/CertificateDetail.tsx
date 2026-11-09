@@ -3,7 +3,7 @@ import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { Link, useParams, useNavigate } from 'react-router-dom';
-import { apiGet, apiPost, apiDelete, apiPostWithMfa, apiBlob } from '../api/client';
+import { apiGet, apiPost, apiDelete, apiPostWithMfa, apiDeleteWithMfa, apiBlob } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -15,7 +15,7 @@ import { StepUpOps } from '@shared/generated';
 import { FieldHint } from '@shared/components/forms';
 import { type CeremonyRefusal, readCeremonyRefusal } from './ceremonyRefusal';
 import { CeremonyRefusalNotice } from '../components/CeremonyRefusalNotice';
-import { canReissue, capitalize, channelNote, expiryHandling, expiryHandlingNote, expiryPhrase, expiryState, lifecycleTone, toneBannerClass, toneTextClass } from './certLifecycle';
+import { canReissue, capitalize, channelNote, expiryHandling, expiryHandlingNote, expiryLevel, expiryPhrase, expiryState, lifecycleTone, neverWarns, toneBannerClass, toneTextClass } from './certLifecycle';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -210,16 +210,19 @@ const CertificateDetail: React.FC = () => {
             setRetireOpen(false);
             setRefresh((r) => r + 1);
         } catch (err: any) {
-            setHandlingError(errorNotice(err, 'The change was not saved'));
+            if (err?.message !== 'Step-up MFA cancelled') setHandlingError(errorNotice(err, 'The change was not saved'));
         } finally {
             setHandlingBusy(false);
         }
     };
+    // Retire and undo stop or restart every renewal path, so they ask for step-up; dismiss and restore do not.
     const retire = () => changeExpiryHandling(
-        () => apiPost(`/api/v1/admin/certificates/${serial}/retire`, { reason: retireReason.trim() || null }),
+        () => apiPostWithMfa(`/api/v1/admin/certificates/${serial}/retire`, { reason: retireReason.trim() || null },
+            requireStepUp, StepUpOps.RetireCert, serial!),
         'Certificate retired. It is no longer renewed and raises no expiry warning.');
     const undoRetire = () => changeExpiryHandling(
-        () => apiDelete(`/api/v1/admin/certificates/${serial}/retire`), 'Retirement undone. The certificate can be renewed again.');
+        () => apiDeleteWithMfa(`/api/v1/admin/certificates/${serial}/retire`, requireStepUp, StepUpOps.UndoRetireCert, serial!),
+        'Retirement undone. The certificate can be renewed again.');
     const dismissWarning = () => changeExpiryHandling(
         () => apiPost(`/api/v1/admin/certificates/${serial}/expiry-warning/dismiss`, {}), 'Expiry warning dismissed.');
     const restoreWarning = () => changeExpiryHandling(
@@ -278,7 +281,7 @@ const CertificateDetail: React.FC = () => {
     const lifecycle = expiryState(cert);
     const handling = expiryHandling(cert);
     const handlingNote = expiryHandlingNote(cert);
-    const lifecycleToneValue = lifecycleTone(cert.notAfter, !!cert.replaced || handling !== null);
+    const lifecycleToneValue = lifecycleTone(cert, !!cert.replaced || handling !== null);
     const thumbprints = parseThumbprints(cert.thumbprints);
     const sans = parseSans(cert.subjectAlternativeNames);
     const cn = (cert.subjectDN || '').match(/CN=([^,]+)/)?.[1] || cert.serialNumber;
@@ -326,6 +329,7 @@ const CertificateDetail: React.FC = () => {
                     <div className={`px-3 py-2.5 border rounded-md space-y-1.5 ${toneBannerClass(lifecycleToneValue)}`}>
                         <div className="flex items-center gap-x-3 gap-y-1 flex-wrap">
                             <span className={`text-sm font-semibold ${toneTextClass(lifecycleToneValue)}`}>{capitalize(expiryPhrase(cert.notAfter))}</span>
+                            {lifecycle === 'expiring' && <span className="text-xs text-ink-muted">{expiryLevel(cert) === 'alert' ? 'Expiry alert' : 'Expiry warning'}</span>}
                             <span className="text-xs text-ink-muted">{formatDate(cert.notAfter)}</span>
                             <span className="text-sm text-ink">
                                 {cert.replaced
@@ -375,6 +379,12 @@ const CertificateDetail: React.FC = () => {
                         <div>
                             <DetailField label="Not Before" value={formatDate(cert.notBefore)} />
                             <DetailField label="Not After" value={formatDate(cert.notAfter)} />
+                            {cert.expiryWarningAt && (neverWarns(cert)
+                                ? <DetailField label="Expiry Warning" value="No expiry warning (profile)" />
+                                : <>
+                                    <DetailField label="Expiry Warning" value={`Warns from ${formatDate(cert.expiryWarningAt)}`} />
+                                    {cert.expiryAlertAt && <DetailField label="Expiry Alert" value={`Alert from ${formatDate(cert.expiryAlertAt)}`} />}
+                                </>)}
                             <DetailField label="Key Algorithm" value={[cert.keyAlgorithm, cert.keySize].filter(Boolean).join(' ')} />
                             <DetailField label="Signature Algorithm" value={cert.signatureAlgorithm} />
                         </div>

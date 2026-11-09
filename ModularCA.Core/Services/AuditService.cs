@@ -234,6 +234,7 @@ public class AuditService : IAuditService
             AuditActionType.SessionRefreshNotice or
             AuditActionType.UserCertLogin or
             AuditActionType.UserLogout or
+            AuditActionType.UserSessionsEnded or
             // MFA
             AuditActionType.MfaTotpVerified or
             AuditActionType.MfaTotpFailed or

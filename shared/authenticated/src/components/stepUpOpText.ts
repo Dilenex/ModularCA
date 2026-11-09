@@ -26,6 +26,8 @@ const TEXT: Record<string, string> = {
     'revoke-cert': 'Revoke a certificate',
     'hold-cert': 'Place a certificate on hold',
     'unhold-cert': 'Lift the hold on a certificate',
+    'retire-cert': 'Retire a certificate, so it is never renewed',
+    'undo-retire-cert': "Undo a certificate's retirement, so it can be renewed again",
     'revoke-self-cert': 'Revoke one of your own certificates',
     'reissue-cert': 'Reissue a certificate with a new key',
     'export-cert': 'Export a certificate and its private key',

@@ -6,8 +6,8 @@ namespace ModularCA.Shared.Entities;
 /// <summary>
 /// One-time recovery codes generated at TOTP enrollment. A user who
 /// loses access to their authenticator app can exchange a recovery code for a TOTP
-/// reset at <c>/auth/totp/recovery</c>. Codes are hashed at rest (SHA-256 hex) and
-/// consumed on first use via <see cref="UsedAt"/>.
+/// reset at <c>/auth/totp/recovery</c>. Codes are hashed at rest (per-user salted PBKDF2;
+/// older rows unsalted SHA-256) and consumed on first use via <see cref="UsedAt"/>.
 /// </summary>
 public class TotpRecoveryCodeEntity
 {
@@ -21,8 +21,10 @@ public class TotpRecoveryCodeEntity
     public virtual UserEntity? User { get; set; }
 
     /// <summary>
-    /// SHA-256 hex of the plaintext code. 64 chars uppercase. The plaintext is
-    /// shown exactly once at enrollment time and cannot be recovered from the DB.
+    /// Hash of the plaintext code: <c>pbkdf2:</c> plus 56 hex characters (per-user salted
+    /// PBKDF2-HMAC-SHA256, from 0.4.3), or 64 uppercase hex characters of unsalted SHA-256 on rows
+    /// written earlier. The plaintext is shown exactly once at enrollment time and cannot be
+    /// recovered from the DB.
     /// </summary>
     [Required]
     [MaxLength(64)]

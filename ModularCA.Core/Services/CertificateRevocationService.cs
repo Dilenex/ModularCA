@@ -1,4 +1,5 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Logging;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
@@ -15,6 +16,10 @@ namespace ModularCA.Core.Services
     /// validators without waiting for the next scheduled CRL export. Failures in the CRL regen
     /// are logged but don't fail the revoke — the alternative (either fully sync with an HTTP
     /// stall or fully async via an outbox) is worse in this pass.
+    /// <para>
+    /// Revoking or holding a certificate that is an mTLS sign-in credential also ends every session
+    /// of the accounts holding it (<see cref="UserSessionTermination"/>), in the same save.
+    /// </para>
     /// </summary>
     public class CertificateRevocationService : ICertificateRevocationService
     {
@@ -24,14 +29,24 @@ namespace ModularCA.Core.Services
         private readonly INotificationService _notifications;
         private readonly ICrlService _crlService;
         private readonly ILogger<CertificateRevocationService> _logger;
+        private readonly IDistributedCache? _cache;
+        private readonly IAuditService? _audit;
 
+        /// <summary>
+        /// Creates the service. <paramref name="cache"/> drops the cached security stamp of an
+        /// account whose sessions a revocation ends, and <paramref name="audit"/> records the ending;
+        /// without them the stamp check catches up when its cache entry lapses and the ending is
+        /// only logged.
+        /// </summary>
         public CertificateRevocationService(
             ModularCADbContext db,
             IKeystoreCertificates keystore,
             ICertificateStore certStore,
             INotificationService notifications,
             ICrlService crlService,
-            ILogger<CertificateRevocationService> logger)
+            ILogger<CertificateRevocationService> logger,
+            IDistributedCache? cache = null,
+            IAuditService? audit = null)
         {
             _db = db;
             _keystore = keystore;
@@ -39,11 +54,15 @@ namespace ModularCA.Core.Services
             _notifications = notifications;
             _crlService = crlService;
             _logger = logger;
+            _cache = cache;
+            _audit = audit;
         }
 
         /// <summary>
         /// Permanently revokes a certificate by ID or serial number with the specified reason.
         /// Throws if the certificate is already revoked (idempotency guard).
+        /// Any mTLS sign-in credential issued as the certificate is revoked in the same save, and
+        /// every session of the accounts holding one is ended.
         /// Triggers a full CRL regeneration after persistence and an
         /// opportunistic delta CRL regen if a delta config exists.
         /// </summary>
@@ -64,7 +83,14 @@ namespace ModularCA.Core.Services
             certEntity.RevocationDate = now;
             if (invalidityDate.HasValue)
                 certEntity.InvalidityDate = invalidityDate.Value.ToUniversalTime();
+            var holders = await MtlsCredentialStatus.HoldersOfCertificateAsync(_db, certEntity.CertificateId);
+            var ended = await UserSessionTermination.EndAllSessionsAsync(_db, holders, now);
+            var mtlsRevoked = await MtlsCredentialStatus.MarkRevokedForCertificateAsync(_db, certEntity.CertificateId, now);
             await _db.SaveChangesAsync();
+            if (mtlsRevoked > 0)
+                _logger.LogInformation("Revoking certificate {CertId} also revoked {Count} mTLS sign-in credential(s) issued as it.",
+                    certEntity.CertificateId, mtlsRevoked);
+            await RecordEndedSessionsAsync(certEntity, ended, "mtls_certificate_revoked");
 
             MetricsService.CertsRevoked.WithLabels(certEntity.Issuer ?? "unknown", reason.ToString()).Inc();
 
@@ -85,6 +111,8 @@ namespace ModularCA.Core.Services
         /// <summary>
         /// Places a certificate on hold. Idempotent — repeating on an already-held
         /// cert returns the current state without bumping <c>RevocationDate</c>.
+        /// An mTLS sign-in credential issued as the certificate stays unrevoked, so a release
+        /// restores it, but every session of the accounts holding one is ended in the same save.
         /// </summary>
         public async Task<RevocationResult> HoldCertificateAsync(Guid? certificateId, string? certificateSerialNumber)
         {
@@ -109,7 +137,10 @@ namespace ModularCA.Core.Services
             certEntity.Revoked = true;
             certEntity.RevocationReason = nameof(RevocationReason.CertificateHold);
             certEntity.RevocationDate = now;
+            var holders = await MtlsCredentialStatus.HoldersOfCertificateAsync(_db, certEntity.CertificateId);
+            var ended = await UserSessionTermination.EndAllSessionsAsync(_db, holders, now);
             await _db.SaveChangesAsync();
+            await RecordEndedSessionsAsync(certEntity, ended, "mtls_certificate_on_hold");
 
             var crlNumber = await TryRegenerateCrlAsync(certEntity);
             return new RevocationResult(
@@ -147,6 +178,40 @@ namespace ModularCA.Core.Services
                 null,
                 now,
                 crlNumber);
+        }
+
+        /// <summary>
+        /// After the save that ended them, drops the cached stamps of the accounts whose sessions a
+        /// revocation or hold of <paramref name="cert"/> ended, and logs and audits each. Failures
+        /// are logged and do not fail the revocation, which is already committed; a stale cached
+        /// stamp lapses within the stamp cache's lifetime.
+        /// </summary>
+        private async Task RecordEndedSessionsAsync(CertificateEntity cert, IReadOnlyList<EndedSessions> ended, string reason)
+        {
+            if (ended.Count == 0)
+                return;
+
+            try { await UserSessionTermination.InvalidateStampCacheAsync(_cache, ended.Select(e => e.UserId)); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Could not drop cached security stamps after certificate {CertId} ended sessions", cert.CertificateId); }
+
+            foreach (var e in ended)
+            {
+                _logger.LogInformation(
+                    "Certificate {CertId} ({Reason}) was an mTLS sign-in credential of user {UserId}; ended all of that user's sessions ({Count} refresh token(s) revoked).",
+                    cert.CertificateId, reason, e.UserId, e.RefreshTokensRevoked);
+                if (_audit == null)
+                    continue;
+                try
+                {
+                    await _audit.LogAsync(AuditActionType.UserSessionsEnded, null, null,
+                        targetEntityType: "User", targetEntityId: e.UserId.ToString(),
+                        details: new { reason, username = e.Username, certificateId = cert.CertificateId, serialNumber = cert.SerialNumber, refreshTokensRevoked = e.RefreshTokensRevoked });
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not audit the sessions ended for user {UserId}", e.UserId);
+                }
+            }
         }
 
         /// <summary>

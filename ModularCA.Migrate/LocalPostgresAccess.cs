@@ -15,8 +15,10 @@ namespace ModularCA.Migrate;
 /// <para>
 /// So when no credentials are given, this creates a temporary role through the socket, uses it for
 /// the run, and drops it at the end. The role is exactly what the preflight requires and no more —
-/// <c>CREATEDB</c> and <c>CREATEROLE</c>, never superuser — so even while it exists it cannot read
-/// anything the migration does not create.
+/// <c>CREATEDB</c> and <c>CREATEROLE</c>, never superuser. While the run lasts it is a member of
+/// the application and audit roles it creates, so its password is a real credential: it travels
+/// to <c>psql</c> on standard input, never on the command line (where any local user could read
+/// it from <c>/proc</c>), and as a SCRAM verifier, so the server log never holds the plaintext.
 /// </para>
 /// <para>
 /// Everything here degrades to an explanation. If the host is not one where this works, the
@@ -28,6 +30,37 @@ public sealed class LocalPostgresAccess : IAsyncDisposable
 {
     /// <summary>The name of the temporary role, chosen to be obvious in a role listing.</summary>
     public const string TemporaryRole = "modularca_migration_tmp";
+
+    /// <summary>
+    /// The command line <see cref="PsqlAsync"/> runs. It carries no SQL: the statement goes on
+    /// standard input. <c>-X</c> skips the postgres user's <c>.psqlrc</c>, <c>-q</c> keeps command
+    /// tags out of the output, <c>-tA</c> prints bare values, and <c>ON_ERROR_STOP</c> makes a
+    /// failed statement a non-zero exit, as <c>-c</c> did.
+    /// </summary>
+    public static readonly IReadOnlyList<string> PsqlArguments =
+        ["-u", "postgres", "--", "psql", "-X", "-q", "-tA", "-v", "ON_ERROR_STOP=1"];
+
+    /// <summary>
+    /// The SCRAM-SHA-256 verifier PostgreSQL stores for <paramref name="password"/> (RFC 7677, in
+    /// PostgreSQL's <c>SCRAM-SHA-256$iterations:salt$StoredKey:ServerKey</c> form). Given in
+    /// <c>CREATE ROLE ... PASSWORD</c>, it is stored as is, so the plaintext never reaches the
+    /// server or its log. The password must be ASCII, which needs no SASLprep.
+    /// </summary>
+    /// <param name="password">The ASCII password.</param>
+    /// <param name="salt">The salt; 16 random bytes when null.</param>
+    /// <param name="iterations">PBKDF2 iterations; 4096 is PostgreSQL's default.</param>
+    /// <returns>The verifier.</returns>
+    public static string ScramSha256Verifier(string password, byte[]? salt = null, int iterations = 4096)
+    {
+        salt ??= RandomNumberGenerator.GetBytes(16);
+        var salted = Rfc2898DeriveBytes.Pbkdf2(System.Text.Encoding.ASCII.GetBytes(password), salt, iterations, HashAlgorithmName.SHA256, 32);
+        var clientKey = HMACSHA256.HashData(salted, "Client Key"u8);
+        var storedKey = SHA256.HashData(clientKey);
+        var serverKey = HMACSHA256.HashData(salted, "Server Key"u8);
+        CryptographicOperations.ZeroMemory(salted);
+        CryptographicOperations.ZeroMemory(clientKey);
+        return $"SCRAM-SHA-256${iterations}:{Convert.ToBase64String(salt)}${Convert.ToBase64String(storedKey)}:{Convert.ToBase64String(serverKey)}";
+    }
 
     private readonly Action<string> _say;
     private bool _created;
@@ -89,8 +122,10 @@ public sealed class LocalPostgresAccess : IAsyncDisposable
                 $"The role '{TemporaryRole}' already exists, which means a previous run was interrupted "
                 + $"before it could clean up. Remove it with: sudo -u postgres psql -c \"DROP ROLE {TemporaryRole};\"");
 
+        // The verifier, not the password: PostgreSQL stores a SCRAM verifier it is given as is, so
+        // the statement (on stdin, see PsqlAsync) and any server log of it hold no plaintext.
         var create = await PsqlAsync(
-            $"CREATE ROLE {TemporaryRole} WITH LOGIN PASSWORD '{password}' CREATEDB CREATEROLE", ct);
+            $"CREATE ROLE {TemporaryRole} WITH LOGIN PASSWORD '{ScramSha256Verifier(password)}' CREATEDB CREATEROLE", ct);
         if (create.ExitCode != 0)
             throw new InvalidOperationException(
                 "Could not create a temporary administrative role: "
@@ -139,25 +174,34 @@ public sealed class LocalPostgresAccess : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Runs one statement as the <c>postgres</c> user over the local socket. The statement goes to
+    /// <c>psql</c> on standard input, not as a <c>-c</c> argument: arguments are readable by every
+    /// local user through <c>/proc/&lt;pid&gt;/cmdline</c> and <c>ps</c> for as long as the process
+    /// runs, and the role-creating statement carries a credential.
+    /// </summary>
+    /// <param name="sql">The statement.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>psql's exit code (non-zero when the statement failed), output and error text.</returns>
     private static async Task<(int ExitCode, string Output, string Error)> PsqlAsync(string sql, CancellationToken ct)
     {
         // runuser rather than sudo: it is in the base system, needs no sudoers entry, and we are
         // already root or IsAvailable would have said no.
         var startInfo = new ProcessStartInfo("runuser")
         {
+            RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
         };
-        startInfo.ArgumentList.Add("-u");
-        startInfo.ArgumentList.Add("postgres");
-        startInfo.ArgumentList.Add("--");
-        startInfo.ArgumentList.Add("psql");
-        startInfo.ArgumentList.Add("-tAc");
-        startInfo.ArgumentList.Add(sql);
+        foreach (var arg in PsqlArguments)
+            startInfo.ArgumentList.Add(arg);
 
         using var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("could not start runuser");
+
+        await process.StandardInput.WriteLineAsync(sql.AsMemory(), ct);
+        process.StandardInput.Close();
 
         var output = await process.StandardOutput.ReadToEndAsync(ct);
         var error = await process.StandardError.ReadToEndAsync(ct);

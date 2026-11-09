@@ -59,6 +59,13 @@ public sealed class CertificateLifecycleSummaryTests
     }
 
     [Fact]
+    public async Task Expiry_warnings_follow_each_certificates_stored_instants()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        await CertificateLifecycleScenarios.Expiry_warnings_follow_each_certificates_stored_instants(db);
+    }
+
+    [Fact]
     public void San_set_key_ignores_order_case_and_duplicates()
     {
         Assert.Equal(
@@ -102,7 +109,7 @@ internal static class CertificateLifecycleScenarios
     }
 
     private static CertificateEntity Leaf(ModularCADbContext db, Ca ca, string cn, double notBeforeDays, double notAfterDays,
-        string[]? sans = null, bool revoked = false, bool reissued = false)
+        string[]? sans = null, bool revoked = false, bool reissued = false, bool neverWarn = false)
     {
         var leaf = new CertificateEntity
         {
@@ -117,6 +124,8 @@ internal static class CertificateLifecycleScenarios
             Revoked = revoked,
             IsReissued = reissued,
         };
+        if (neverWarn)
+            (leaf.ExpiryWarningAt, leaf.ExpiryAlertAt) = (leaf.NotAfter, leaf.NotAfter);
         db.Certificates.Add(leaf);
         db.SaveChanges();
         return leaf;
@@ -136,6 +145,13 @@ internal static class CertificateLifecycleScenarios
     {
         var result = await (Task<IActionResult>)controller.GetType().GetMethod("GetLifecycleSummary")!.Invoke(controller, [caId, spaceId])!;
         return Assert.IsType<CertificateLifecycleSummaryModel>(Assert.IsType<OkObjectResult>(result).Value);
+    }
+
+    private static async Task<JsonElement> HistogramTotalsAsync(object controller)
+    {
+        var result = await (Task<IActionResult>)controller.GetType().GetMethod("ExpiryHistogram")!.Invoke(controller, [null, null, null, null, null])!;
+        var json = JsonSerializer.Serialize(Assert.IsType<OkObjectResult>(result).Value);
+        return JsonDocument.Parse(json).RootElement.GetProperty("totals");
     }
 
     private static async Task<(int Total, List<CertificateInfoModel> Items)> ListAsync(object controller, string? status, string? replaced,
@@ -269,6 +285,12 @@ internal static class CertificateLifecycleScenarios
         Assert.Equal(20, summary.Active);
         Assert.Equal(4, summary.ExpiringWithin7Days);
         Assert.Equal(12, summary.ExpiringWithin30Days);
+        // Every soon-N (60 days back, 1 to 23 ahead) has less than 30 % of its life left; those
+        // with at most 10 % left (soon-0, -1, -2) are in their alert.
+        Assert.Equal(12, summary.InExpiryWarning);
+        Assert.Equal(12, summary.InExpiryWarningNotReplaced);
+        Assert.Equal(3, summary.InExpiryAlert);
+        Assert.Equal(3, summary.InExpiryAlertNotReplaced);
         Assert.Equal(1, summary.ExpiredUnchecked);
         Assert.Equal(30, summary.ExpiredNotReplaced);
         Assert.Equal(30, summary.RecentlyExpiredNotReplaced);
@@ -310,6 +332,8 @@ internal static class CertificateLifecycleScenarios
         Assert.Equal(0, summary.ExpiredNotReplaced);
         Assert.Equal(1, summary.ExpiringWithin30DaysNotReplaced);
         Assert.Equal(2, summary.ExpiringWithin30Days);
+        Assert.Equal(2, summary.InExpiryWarning);
+        Assert.Equal(1, summary.InExpiryWarningNotReplaced);
         Assert.Equal(2, summary.RetiredOrDismissed);
 
         var (_, notReplaced) = await ListAsync(controller, null, "no");
@@ -323,6 +347,68 @@ internal static class CertificateLifecycleScenarios
         var restored = await SummaryAsync(controller);
         Assert.Equal(3, restored.AttentionTotal);
         Assert.Equal(0, restored.RetiredOrDismissed);
+    }
+
+    /// <summary>
+    /// The scenario behind <c>CertificateLifecycleSummaryTests.Expiry_warnings_follow_each_certificates_stored_instants</c>,
+    /// on any provider: a fresh 10-hour certificate needs no attention (it used to from birth);
+    /// short-lived ones near their end are in their warning or alert; a 3-year one warns months
+    /// ahead; a never-warn certificate stays out until it expires and is then expired, not
+    /// replaced; the list's <c>expiring</c> and <c>alert</c> statuses return exactly the summary's
+    /// counts, alone and with <c>replaced=no</c>, and the chart's <c>expiringSoon</c> matches.
+    /// </summary>
+    internal static async Task Expiry_warnings_follow_each_certificates_stored_instants(ModularCADbContext db)
+    {
+        const double hour = 1.0 / 24;
+        var ca = SeedCa(db, "Expiry");
+        var fresh = Leaf(db, ca, "fresh.example", -0.1 * hour, 9.9 * hour);
+        var warned = Leaf(db, ca, "warned.example", -8 * hour, 2 * hour);
+        var alerted = Leaf(db, ca, "alerted.example", -9.5 * hour, 0.5 * hour);
+        var longLived = Leaf(db, ca, "long.example", -900, 200);
+        var notYet = Leaf(db, ca, "not-yet.example", -10, 80);
+        var quiet = Leaf(db, ca, "quiet.example", -89, 1, neverWarn: true);
+        var quietExpired = Leaf(db, ca, "quiet-expired.example", -91, -1, neverWarn: true);
+        Leaf(db, ca, "warned.example", -1 * hour, 24 * hour - 1 * hour);
+
+        var controller = NewController(db, new GroupAuthStub([], system: true));
+        var summary = await SummaryAsync(controller);
+
+        Assert.Equal(3, summary.InExpiryWarning);
+        Assert.Equal(1, summary.InExpiryAlert);
+        Assert.Equal(2, summary.InExpiryWarningNotReplaced);
+        Assert.Equal(1, summary.InExpiryAlertNotReplaced);
+        var attention = summary.Attention.Select(a => a.CommonName).ToList();
+        Assert.Equal(new[] { "quiet-expired.example", "alerted.example", "long.example" }, attention);
+        Assert.DoesNotContain(fresh.CertificateId, summary.Attention.Select(a => a.CertificateId));
+        Assert.DoesNotContain(quiet.CertificateId, summary.Attention.Select(a => a.CertificateId));
+        Assert.DoesNotContain(notYet.CertificateId, summary.Attention.Select(a => a.CertificateId));
+        var item = summary.Attention.Single(a => a.CertificateId == alerted.CertificateId);
+        Assert.Equal("expiring", item.State);
+        Assert.True(item.ExpiryAlertAt <= DateTime.UtcNow);
+        // PostgreSQL keeps microseconds, the entity ticks.
+        Assert.True(Math.Abs((longLived.ExpiryWarningAt - summary.Attention.Single(a => a.CertificateId == longLived.CertificateId).ExpiryWarningAt).TotalMilliseconds) < 1);
+        Assert.Equal(1, summary.ExpiredNotReplaced);
+        Assert.Contains(quietExpired.CertificateId, summary.Attention.Select(a => a.CertificateId));
+
+        var (expiringTotal, expiring) = await ListAsync(controller, "expiring", null);
+        Assert.Equal(summary.InExpiryWarning, expiringTotal);
+        Assert.Equal(new[] { warned.CertificateId, alerted.CertificateId, longLived.CertificateId }.Order(), expiring.Select(i => i.CertificateId).Order());
+        Assert.All(expiring, i => Assert.True(i.ExpiryWarningAt <= DateTime.UtcNow));
+        var (expiringOpen, _) = await ListAsync(controller, "expiring", "no");
+        Assert.Equal(summary.InExpiryWarningNotReplaced, expiringOpen);
+        var (alertTotal, alerts) = await ListAsync(controller, "alert", null);
+        Assert.Equal(summary.InExpiryAlert, alertTotal);
+        Assert.Equal(alerted.CertificateId, Assert.Single(alerts).CertificateId);
+        var (alertOpen, _) = await ListAsync(controller, "alert", "no");
+        Assert.Equal(summary.InExpiryAlertNotReplaced, alertOpen);
+
+        var (_, all) = await ListAsync(controller, null, null);
+        var quietItem = all.Single(i => i.CertificateId == quiet.CertificateId);
+        Assert.Equal(quietItem.NotAfter, quietItem.ExpiryWarningAt);
+
+        var totals = await HistogramTotalsAsync(controller);
+        Assert.Equal(summary.InExpiryWarning, totals.GetProperty("expiringSoon").GetInt32());
+        Assert.Equal(summary.Active - summary.InExpiryWarning, totals.GetProperty("active").GetInt32());
     }
 
     private sealed class CurrentUserStub(Guid id) : ICurrentUserService

@@ -345,6 +345,12 @@ public class MfaStepUpController : ControllerBase
         return Ok(new { mfaToken = stepUpToken, expiresInSeconds = ttl, operation = request.Operation, targetId = request.TargetId, targetCount = request.TargetIds?.Count });
     }
 
+    /// <summary>
+    /// Issues a step-up token for an operation on the mTLS-restricted allow-list from the client
+    /// certificate on the connection. The certificate must match one of the caller's unrevoked,
+    /// unexpired credentials, its certificate must not be revoked or on hold, and it must chain to
+    /// the credential's signing CA; a revoked certificate is refused and audited.
+    /// </summary>
     [HttpPost("verify-stepup/mtls")]
     public async Task<IActionResult> VerifyStepUpMtls([FromBody] StepUpMtlsRequest request)
     {
@@ -369,27 +375,26 @@ public class MfaStepUpController : ControllerBase
 
         var thumbprint = clientCert.GetCertHashString(System.Security.Cryptography.HashAlgorithmName.SHA256);
 
-        var credential = await _db.MtlsCredentials.FirstOrDefaultAsync(c =>
-            c.UserId == userId.Value
-            && c.Thumbprint == thumbprint
-            && !c.IsRevoked
-            && c.ExpiresAt > DateTime.UtcNow);
+        var match = await ModularCA.Core.Helpers.MtlsCredentialStatus.FindForAuthenticationAsync(_db, thumbprint, userId.Value, DateTime.UtcNow);
+        var credential = match.Credential;
 
         if (credential == null)
             return Unauthorized(new { error = "Client certificate does not match any active mTLS credential" });
 
-        // Validate the chain and revocation status, as all four sibling mTLS paths do
-        // (AuthController.CertLogin, MtlsController.Verify/LoginRedirect/Enroll).
-        //
-        // Matching a thumbprint against a credential row proves neither issuer binding nor
-        // current validity. The Kestrel handshake does not compensate: it runs with
-        // RevocationMode.Offline and IgnoreEndRevocationUnknown. And MtlsCredentialEntity
-        // .IsRevoked is written only by MtlsController.RevokeCredential — so a certificate
-        // revoked through the certificate admin UI still had IsRevoked = false on its
-        // credential row. Such a certificate was rejected by /auth/cert-login and
-        // /auth/mtls/verify but still minted step-up tokens here, and the operations reachable
-        // via mTLS step-up include totp-remove, webauthn-delete and mtls-enroll — enough to
-        // strip the rightful owner's remaining factors and enrol a fresh certificate.
+        if (!match.Authenticates)
+        {
+            await _audit.LogAsync(
+                AuditActionType.MfaStepUpFailed,
+                userId.Value, _currentUser.User?.Username,
+                sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(), success: false,
+                details: new { reason = match.AuditReason, request.Operation, credentialId = credential.Id, certificateId = credential.CertificateId },
+                errorMessage: "StepUpFailed");
+            return Unauthorized(new { error = "This client certificate has been revoked and can no longer be used for verification" });
+        }
+
+        // Validate the chain, as the sibling mTLS paths do. Matching a thumbprint against a
+        // credential row proves no issuer binding, and the Kestrel handshake runs with
+        // RevocationMode.Offline; the certificate's own revocation status was checked above.
         var stepUpChainOk = await MtlsChainValidator.ValidateAgainstCredentialCaAsync(
             _db, credential.SigningCaId, clientCert,
             requireRevocationCheck: (await _securityPolicy.GetAsync()).RequireMtlsOcspCheck);

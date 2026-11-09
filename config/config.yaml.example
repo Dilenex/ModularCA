@@ -378,10 +378,14 @@ Https:
 #   MinimumSeverity: "Warning"   # Critical, Warning, or Info
 #   CooldownMinutes: 5           # Prevent duplicate alerts within this window
 
-# Certificate Expiry Notifications — email admins when certs approach expiration
+# Certificate Expiry Notifications — email admins when certs approach expiration. Each certificate
+# is mailed once when its expiry warning starts and once when its alert starts, as its certificate
+# profile sets them (by default when 30 % and 10 % of its lifetime is left). The days below are
+# reminders inside the warning: one, once per certificate, for each day count that falls after
+# its warning has started. A day count before the warning starts sends nothing.
 # CertExpiryNotification:
 #   Enabled: true
-#   WarningDaysBeforeExpiry:     # Thresholds at which to send warnings
+#   WarningDaysBeforeExpiry:     # Reminder days before expiry, inside the warning
 #     - 90
 #     - 60
 #     - 30

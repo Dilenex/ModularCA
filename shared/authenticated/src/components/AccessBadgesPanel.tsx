@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuthClient } from '../api/AuthClientContext';
 import { useStepUp } from './StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
-import { AccessBadgeSourceKind, type AccessBadgeDto, type AccessBadgeSourceOptionDto, type AccessBadgeSourceRef } from '@shared/generated';
+import { AccessBadgeSourceKind, StepUpOps, type AccessBadgeDto, type AccessBadgeSourceOptionDto, type AccessBadgeSourceRef } from '@shared/generated';
 
 /**
  * Lists, creates, edits and deletes the access badges of one user.
@@ -16,19 +16,25 @@ import { AccessBadgeSourceKind, type AccessBadgeDto, type AccessBadgeSourceOptio
 export const AccessBadgesPanel: React.FC<{
     basePath: string;
     embedded?: boolean;
-    /** Set on an administrator's view of another user, whose badge changes ask for step-up. */
+    /**
+     * Set on an administrator's view of another user, whose badge changes ask for step-up.
+     * Without it, the panel answers the server's own request for step-up with SwitchBadge: the
+     * signed-in user editing or deleting the badge they are wearing so that the session gains
+     * rights is asked for MFA, exactly as switching to a wider badge is.
+     */
     stepUp?: { operation: string; targetId: string };
 }> = ({ basePath, embedded, stepUp }) => {
     const client = useAuthClient();
     const { apiGet } = client;
     const { showToast } = useToast();
     const { requireStepUp } = useStepUp();
-    const apiPost = (path: string, body: object) => stepUp
-        ? client.apiPostWithMfa(path, body, requireStepUp, stepUp.operation, stepUp.targetId) : client.apiPost(path, body);
-    const apiPut = (path: string, body: object) => stepUp
-        ? client.apiPutWithMfa(path, body, requireStepUp, stepUp.operation, stepUp.targetId) : client.apiPut(path, body);
-    const apiDelete = (path: string) => stepUp
-        ? client.apiDeleteWithMfa(path, requireStepUp, stepUp.operation, stepUp.targetId) : client.apiDelete(path);
+    // The prompt appears only when the server answers 403 with requiresStepUp, so an edit that
+    // does not widen the session goes through without one.
+    const operation = stepUp?.operation ?? StepUpOps.SwitchBadge;
+    const targetId = stepUp?.targetId;
+    const apiPost = (path: string, body: object) => client.apiPostWithMfa(path, body, requireStepUp, operation, targetId);
+    const apiPut = (path: string, body: object) => client.apiPutWithMfa(path, body, requireStepUp, operation, targetId);
+    const apiDelete = (path: string) => client.apiDeleteWithMfa(path, requireStepUp, operation, targetId);
 
     const [badges, setBadges] = useState<AccessBadgeDto[]>([]);
     const [sources, setSources] = useState<AccessBadgeSourceOptionDto[]>([]);

@@ -241,7 +241,7 @@ export const LdapPublisherManager: React.FC<{ caId: string }> = ({ caId }) => {
                 <div>
                     <label className={labelClass}>Password</label>
                     <input type="password" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })}
-                        placeholder={isEdit ? '(unchanged)' : ''} className={inputClass} />
+                        placeholder={isEdit ? '(unchanged)' : ''} className={inputClass} autoComplete="new-password" />
                     {!f.useSsl && (
                         <FieldHint tone="warn">
                             Without SSL the bind password is sent to {f.host || 'the directory'} in cleartext. Enable it and use the LDAPS port (usually 636). Many directories, Active Directory included, reject unencrypted simple binds outright.

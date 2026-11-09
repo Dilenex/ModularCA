@@ -142,6 +142,7 @@ public class AdminConfigController(
             ComplianceScan = _config.ComplianceScan,
             CertExpiryNotification = _config.CertExpiryNotification,
             Acme = _config.Acme,
+            Tsa = _config.Tsa,
             Alert = _config.Alert,
             Webhook = new { _config.Webhook.Enabled, _config.Webhook.MaxRetries, _config.Webhook.RetryDelaySeconds },
             PolicySync = _config.PolicySync,
@@ -215,7 +216,10 @@ public class AdminConfigController(
     /// CORS and the public port apply at once; the port, Swagger and the trusted proxies at the
     /// next start. CORS origins are checked here with the startup rules
     /// plus a bare-origin check (<see cref="ConfigInputRules.CorsOriginsError"/>), because an origin
-    /// startup rejects would otherwise be saved and stop the next start.
+    /// startup rejects would otherwise be saved and stop the next start. The trusted proxy CIDRs
+    /// are written as sent, so an empty value clears them; an entry that does not parse, or no
+    /// entry while <c>Security.BehindReverseProxy</c> is on, is refused with 400
+    /// (<see cref="ConfigInputRules.ReverseProxyError"/>), since startup refuses the same.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("http")]
@@ -229,13 +233,16 @@ public class AdminConfigController(
             return BadRequest(new { error = "PublicPort must be between 1 and 65535." });
         if (ConfigInputRules.CorsOriginsError(update.CorsOrigins, requireBareOrigin: true) is { } corsError)
             return BadRequest(new { error = corsError });
+        var trustedProxyCidrs = update.TrustedProxyCidrs?.Trim() ?? string.Empty;
+        if (ConfigInputRules.ReverseProxyError(_config.Security.BehindReverseProxy, trustedProxyCidrs) is { } proxyError)
+            return BadRequest(new { error = proxyError });
 
         _config.Http.CorsOrigins = update.CorsOrigins ?? _config.Http.CorsOrigins;
         _config.Http.SwaggerEnabled = update.SwaggerEnabled;
         if (update.Port >= 0) _config.Http.Port = update.Port;
         if (update.PublicPort.HasValue) _config.Http.PublicPort = update.PublicPort;
         _config.Http.EnableCors = update.EnableCors;
-        if (!string.IsNullOrEmpty(update.TrustedProxyCidrs)) _config.Http.TrustedProxyCidrs = update.TrustedProxyCidrs;
+        _config.Http.TrustedProxyCidrs = trustedProxyCidrs;
         if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("Http", new { update.Port, update.PublicPort, update.CorsOrigins, update.SwaggerEnabled, update.EnableCors, update.TrustedProxyCidrs });
         return Ok(new { message = "HTTP config updated. CORS applies now; port, Swagger and trusted proxy changes require restart.", config = _config.Http });
@@ -293,7 +300,9 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the middleware-wired security configuration — JWT / refresh-token binding,
-    /// per-username rate limits, and reverse-proxy trust. Requires step-up MFA.
+    /// per-username rate limits, and reverse-proxy trust. Requires step-up MFA. Turning
+    /// <c>BehindReverseProxy</c> on while <c>Http.TrustedProxyCidrs</c> names no proxy is refused
+    /// with 400, as startup would refuse it.
     /// Runtime-tunable policy (lockout, MFA TTLs, OCSP posture, login banner) is
     /// managed via <c>PUT /api/v1/admin/security-policy</c> and lives in the
     /// <c>SecurityPolicy</c> table.
@@ -305,6 +314,9 @@ public class AdminConfigController(
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null)
             return Unauthorized();
+        if (update.BehindReverseProxy == true
+            && ConfigInputRules.ReverseProxyError(true, _config.Http.TrustedProxyCidrs) is { } proxyError)
+            return BadRequest(new { error = proxyError + " Save the trusted proxy CIDRs first." });
 
         // Apply only what was sent. Binding SecurityConfig directly meant an omitted field
         // arrived as its constructor default and was written over the stored value — so a
@@ -718,9 +730,8 @@ public class AdminConfigController(
         if (request.WarnOverValidityDays > 0) _config.ComplianceScan.WarnOverValidityDays = request.WarnOverValidityDays;
         if (!string.IsNullOrEmpty(request.Schedule)) _config.ComplianceScan.Schedule = request.Schedule;
         if (request.DeprecatedAlgorithms != null) _config.ComplianceScan.DeprecatedAlgorithms = request.DeprecatedAlgorithms;
-        if (request.ExpiringWithinDays > 0) _config.ComplianceScan.ExpiringWithinDays = request.ExpiringWithinDays;
         if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
-        await AuditConfigChange("ComplianceScan", new { request.Enabled, request.MinRsaKeySize, request.WarnOverValidityDays, request.Schedule, request.ExpiringWithinDays });
+        await AuditConfigChange("ComplianceScan", new { request.Enabled, request.MinRsaKeySize, request.WarnOverValidityDays, request.Schedule });
         return Ok(new { message = "Compliance scan config updated", config = _config.ComplianceScan });
     }
 
@@ -769,6 +780,27 @@ public class AdminConfigController(
         if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("Acme", new { request.ExternalAccountRequired, request.EnforceCaa, TermsOfServiceUrl = termsUrl });
         return Ok(new { message = "ACME policies updated", config = _config.Acme });
+    }
+
+    /// <summary>
+    /// Updates the time-stamp authority's policy OID, which applies to the next timestamp request.
+    /// An empty value restores <see cref="TsaConfig.DefaultPolicyOid"/>. A value that is not a
+    /// dotted object identifier (<see cref="ConfigInputRules.ObjectIdentifierError"/>) is refused
+    /// with 400. Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
+    /// </summary>
+    [HttpPut("tsa")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
+    public async Task<IActionResult> UpdateTsa([FromBody] TsaUpdateRequest request)
+    {
+        var policyOid = string.IsNullOrWhiteSpace(request.PolicyOid) ? TsaConfig.DefaultPolicyOid : request.PolicyOid.Trim();
+        if (ConfigInputRules.ObjectIdentifierError(policyOid, "PolicyOid") is { } oidError)
+            return BadRequest(new { error = oidError });
+
+        var previous = _config.Tsa.PolicyOid;
+        _config.Tsa.PolicyOid = policyOid;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
+        await AuditConfigChange("Tsa", new { PolicyOid = new { Before = previous, After = policyOid } });
+        return Ok(new { message = "TSA policy updated", config = _config.Tsa });
     }
 
     /// <summary>
@@ -893,7 +925,8 @@ public class AdminConfigController(
     /// <summary>
     /// Calls <see cref="PersistConfigAsync"/>; on failure returns an <see cref="IActionResult"/>
     /// the caller can return directly: 400 for a value the settings store refuses, 409 when other
-    /// changes kept getting in first, 500 otherwise. Use as <c>if (await TryPersistOrErrorAsync() is { } err) return err;</c>
+    /// changes kept getting in first, 500 otherwise, with a generic message and the correlation
+    /// id under which the exception is logged (its message can name paths and hosts). Use as <c>if (await TryPersistOrErrorAsync() is { } err) return err;</c>
     /// — keeps the 26-ish PUT handlers terse while still surfacing persist failures as 500
     /// to the operator instead of silently returning 200 with a divergent on-disk YAML.
     /// </summary>
@@ -910,7 +943,13 @@ public class AdminConfigController(
         }
         catch (Exception ex)
         {
-            return StatusCode(500, new { error = "Failed to save the configuration.", details = ex.Message });
+            var correlationId = ModularCA.API.Middleware.CorrelationIdMiddleware.Of(HttpContext);
+            Serilog.Log.Error(ex, "Saving the configuration failed (correlationId={CorrelationId})", correlationId);
+            return StatusCode(500, new
+            {
+                error = $"Failed to save the configuration. The server log has the cause under correlation id {correlationId}.",
+                correlationId,
+            });
         }
     }
 
@@ -998,7 +1037,6 @@ public class ComplianceScanUpdateRequest
     public int WarnOverValidityDays { get; set; }
     public string? Schedule { get; set; }
     public List<string>? DeprecatedAlgorithms { get; set; }
-    public int ExpiringWithinDays { get; set; }
 }
 
 /// <summary>Request body for PUT /config/cert-expiry-notifications.</summary>
@@ -1021,6 +1059,13 @@ public class AcmePoliciesUpdateRequest
     /// <c>new-account</c> require <c>termsOfServiceAgreed</c> (RFC 8555 §7.3.3).
     /// </summary>
     public string? TermsOfServiceUrl { get; set; }
+}
+
+/// <summary>Request body for PUT /config/tsa.</summary>
+public class TsaUpdateRequest
+{
+    /// <summary>The TSA policy as a dotted object identifier; null or empty restores the default.</summary>
+    public string? PolicyOid { get; set; }
 }
 
 /// <summary>Request body for PUT /config/alert.</summary>

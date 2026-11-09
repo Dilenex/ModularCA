@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using ModularCA.Core.Services;
 using ModularCA.Database;
 using ModularCA.Shared.Enums;
+using ModularCA.Shared.Errors;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Utils;
@@ -105,9 +106,11 @@ public class PublicEnrollmentController(
     /// it is scoped to the CA that will issue, the signing profile's issuer
     /// (<see cref="EnrollmentTokenService.ScopeRefusal"/>). A token without profiles falls back to
     /// its own CA's protocol configuration, or to the default CA's when it names no CA.
-    /// Returns 400 on invalid token or CSR input, 503 when the operator has not finished
-    /// configuring a CA or enrollment profile (setup incomplete), and 500 on unknown
-    /// server-side issuance failures.
+    /// Returns 400 on invalid token or CSR input, and on a key the system key policy refuses
+    /// (MCA-POL-000), which is checked before the token is spent and again at issuance; 503 when
+    /// the operator has not finished configuring a CA or enrollment profile (setup incomplete);
+    /// and 500 on unknown server-side issuance failures. Every refusal is audited; see
+    /// <see cref="AuditRejectionAsync"/>.
     /// </summary>
     [HttpPost("{token}")]
     public async Task<IActionResult> SubmitEnrollment(string token, [FromBody] QrEnrollmentRequest request)
@@ -115,10 +118,16 @@ public class PublicEnrollmentController(
         // Validate the token exists and is still usable
         var entity = await tokenService.GetByTokenAsync(token);
         if (entity == null)
+        {
+            await AuditRejectionAsync(null, null, "Invalid, expired, or exhausted enrollment token.");
             return BadRequest(new { error = "Invalid, expired, or exhausted enrollment token." });
+        }
 
         if (string.IsNullOrWhiteSpace(request.CsrPem))
+        {
+            await AuditRejectionAsync(entity, null, "No CSR was submitted.");
             return BadRequest(new { error = "CSR (PEM-encoded PKCS#10) is required." });
+        }
 
         // Parse the CSR
         CertificateUtil.ParsedCsrInfo parsedCsr;
@@ -137,11 +146,19 @@ public class PublicEnrollmentController(
             Log.Warning(
                 "Public enrollment received invalid CSR. ExceptionType={ExceptionType} RemoteIp={RemoteIp} CsrHash={CsrHash}",
                 ex.GetType().Name, remoteIp, csrHash);
+            await AuditRejectionAsync(entity, null, $"The CSR could not be parsed ({ex.GetType().Name}, SHA-256 prefix {csrHash}).");
             return BadRequest(new { error = "Enrollment failed. Contact administrator if the problem persists." });
         }
 
         var subject = parsedCsr.SubjectName;
         var sanJson = JsonSerializer.Serialize(parsedCsr.SubjectAlternativeNames);
+
+        var keyRefusal = SystemKeyPolicyRefusal(parsedCsr);
+        if (keyRefusal != null)
+        {
+            await AuditRejectionAsync(entity, subject, $"{keyRefusal} ({ErrorCodes.PolicyViolation})");
+            return BadRequest(new { error = $"Enrollment rejected: {keyRefusal}", code = ErrorCodes.PolicyViolation });
+        }
 
         // Enforce the token's name restrictions. Possession of the token is the ENTIRE
         // authorization on this anonymous endpoint, so these are the only thing binding it to a
@@ -157,6 +174,7 @@ public class PublicEnrollmentController(
             Log.Warning(
                 "Public enrollment rejected on subject restriction. TokenId={TokenId} RemoteIp={RemoteIp} Reason={Reason}",
                 entity.Id, HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown", subjectFailure);
+            await AuditRejectionAsync(entity, subject, $"Subject restriction: {subjectFailure}.");
             return BadRequest(new { error = $"Enrollment rejected: {subjectFailure}." });
         }
 
@@ -165,6 +183,7 @@ public class PublicEnrollmentController(
             Log.Warning(
                 "Public enrollment rejected on SAN restriction. TokenId={TokenId} RemoteIp={RemoteIp} Reason={Reason}",
                 entity.Id, HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown", sanFailure);
+            await AuditRejectionAsync(entity, subject, $"SAN restriction: {sanFailure}.");
             return BadRequest(new { error = $"Enrollment rejected: {sanFailure}." });
         }
 
@@ -187,7 +206,10 @@ public class PublicEnrollmentController(
                 : await CaResolverService.DefaultCandidates(db.CertificateAuthorities.AsNoTracking()).FirstOrDefaultAsync();
 
             if (defaultCa == null)
+            {
+                await AuditRejectionAsync(entity, subject, "No enabled Certificate Authority is configured.");
                 return StatusCode(503, new { error = "No enabled Certificate Authority is configured. The system is not ready to accept enrollments." });
+            }
 
             // Try to find a protocol config with profiles, preferring EST as the most common enrollment protocol
             var protocolConfig = await db.CaProtocolConfigs.AsNoTracking()
@@ -197,7 +219,10 @@ public class PublicEnrollmentController(
                 .FirstOrDefaultAsync();
 
             if (protocolConfig?.SigningProfileId == null || protocolConfig?.CertProfileId == null)
+            {
+                await AuditRejectionAsync(entity, subject, "No signing or certificate profile is configured for enrollment.", defaultCa);
                 return StatusCode(503, new { error = "No signing or certificate profile is configured for enrollment. The system is not ready to accept enrollments." });
+            }
 
             signingProfileId = entity.SigningProfileId ?? protocolConfig.SigningProfileId.Value;
             certProfileId = entity.CertProfileId ?? protocolConfig.CertProfileId.Value;
@@ -205,17 +230,26 @@ public class PublicEnrollmentController(
 
         var signingProfile = await db.SigningProfiles.FindAsync(signingProfileId);
         if (signingProfile == null)
+        {
+            await AuditRejectionAsync(entity, subject, "The configured signing profile was not found.");
             return StatusCode(503, new { error = "Configured signing profile not found. The system is not ready to accept enrollments." });
+        }
 
         // The CA that will issue is the signing profile's issuer; the token must be scoped to it.
         var issuingCa = signingProfile.IssuerId == null ? null
             : await db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(ca => ca.CertificateId == signingProfile.IssuerId);
         if (issuingCa == null)
+        {
+            await AuditRejectionAsync(entity, subject, "The configured signing profile does not issue from a Certificate Authority.");
             return StatusCode(503, new { error = "Configured signing profile does not issue from a Certificate Authority. The system is not ready to accept enrollments." });
+        }
 
         var certProfile = await db.CertProfiles.FindAsync(certProfileId);
         if (certProfile == null)
+        {
+            await AuditRejectionAsync(entity, subject, "The configured certificate profile was not found.", issuingCa);
             return StatusCode(503, new { error = "Configured certificate profile not found. The system is not ready to accept enrollments." });
+        }
 
         // Validate against request profile if one is configured on the token
         bool requireApproval = false;
@@ -225,7 +259,10 @@ public class PublicEnrollmentController(
             var (isValid, error, modifiedSubject) = await requestProfileValidation
                 .ValidateAsync(entity.RequestProfileId.Value, subject, sanJson);
             if (!isValid)
+            {
+                await AuditRejectionAsync(entity, subject, $"Request profile: {error ?? "validation failed"}", issuingCa);
                 return BadRequest(new { error = error ?? "Request profile validation failed." });
+            }
             if (modifiedSubject != null)
                 subject = modifiedSubject;
 
@@ -250,7 +287,10 @@ public class PublicEnrollmentController(
         // carrying no profile of its own, fell back to the default CA's configuration.
         var (consumed, consumeError) = await tokenService.ValidateAndConsumeAsync(token, subject, "QR", issuingCa);
         if (!consumed)
+        {
+            await AuditRejectionAsync(entity, subject, consumeError ?? "Token validation failed.", issuingCa);
             return BadRequest(new { error = consumeError ?? "Token validation failed." });
+        }
 
         // Create the CSR entity
         var csrEntity = new CertRequestEntity
@@ -303,6 +343,11 @@ public class PublicEnrollmentController(
                 csrEntity.Id, notBefore, notAfter);
             certPem = issuanceResult.Pem;
         }
+        catch (CertificatePolicyViolationException ex)
+        {
+            await AuditRejectionAsync(entity, subject, ex.Message, issuingCa);
+            return BadRequest(new { error = "Enrollment rejected: the request is not permitted by the certificate policy.", code = ex.Code });
+        }
         catch (Exception ex)
         {
             Log.Error(ex, "Public enrollment certificate issuance failed for CSR {CsrId}", csrEntity.Id);
@@ -334,6 +379,56 @@ public class PublicEnrollmentController(
             notBefore,
             notAfter
         });
+    }
+
+    /// <summary>
+    /// Why the CSR's public key is refused by the system key policy
+    /// (<see cref="KeyAlgorithmPolicy.IsAllowedPublicKey"/>), or null when it is allowed. Checked
+    /// before the token is spent, so a key the CA would refuse at issuance does not use up a
+    /// single-use token.
+    /// </summary>
+    /// <param name="parsedCsr">The parsed CSR.</param>
+    private static string? SystemKeyPolicyRefusal(CertificateUtil.ParsedCsrInfo parsedCsr)
+    {
+        var description = "none";
+        if (parsedCsr.PublicKeyDer != null
+            && KeyAlgorithmPolicy.IsAllowedPublicKey(
+                Org.BouncyCastle.Security.PublicKeyFactory.CreateKey(parsedCsr.PublicKeyDer), out description))
+            return null;
+        return $"the key ({description}) is not permitted by the system key policy. " +
+               $"Allowed: {KeyAlgorithmPolicy.AllowedPublicKeysText}.";
+    }
+
+    /// <summary>
+    /// Writes a <see cref="AuditActionType.QrEnrollmentRejected"/> row for a refused token
+    /// enrollment. Every refusal on this anonymous endpoint (unusable token, unreadable CSR, a
+    /// name outside the token's restrictions, a key outside the system key policy, a request-profile
+    /// refusal, a CA or profile not configured, a token that could not be consumed, a certificate
+    /// policy refusal at issuance) was answered and recorded only in the
+    /// application log. The row names the token by its id, never by its value. An audit failure is
+    /// logged and does not change the answer.
+    /// </summary>
+    /// <param name="token">The token row, or null when the presented token matched none.</param>
+    /// <param name="subject">The requested subject, once read.</param>
+    /// <param name="reason">Why the enrollment was refused.</param>
+    /// <param name="ca">The CA that would have issued, when known; otherwise the token's own.</param>
+    private async Task AuditRejectionAsync(EnrollmentTokenEntity? token, string? subject, string reason,
+        CertificateAuthorityEntity? ca = null)
+    {
+        try
+        {
+            await audit.LogAsync(AuditActionType.QrEnrollmentRejected, null, "QR-Enrollment",
+                "EnrollmentToken", token?.Id.ToString(),
+                new { Subject = subject, Protocol = "QR", TokenId = token?.Id, Reason = reason },
+                HttpContext.Connection.RemoteIpAddress?.ToString(),
+                success: false, errorMessage: reason,
+                certificateAuthorityId: ca?.Id ?? token?.CertificateAuthorityId,
+                spaceId: ca?.SpaceId ?? token?.SpaceId);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Audit emission for a refused token enrollment failed.");
+        }
     }
 
     /// <summary>

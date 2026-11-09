@@ -23,6 +23,18 @@ public static class KeyAlgorithmPolicy
     private static volatile Func<string?> _rsaPadding = () => null;
 
     /// <summary>
+    /// The subject keys <see cref="IsAllowedPublicKey"/> accepts, as a refusal names them.
+    /// </summary>
+    public const string AllowedPublicKeysText =
+        "RSA 2048, 3072, 4096, 7680 or 8192; ECDSA P-256, P-384 or P-521; Ed25519; Ed448; ML-DSA; SLH-DSA";
+
+    /// <summary>
+    /// The rule name a certificate-policy refusal of a subject key carries, as <c>[KeyAlgorithmPolicy]</c>
+    /// at the start of the violation.
+    /// </summary>
+    public const string RuleName = "KeyAlgorithmPolicy";
+
+    /// <summary>
     /// When <c>true</c>, RSA signature algorithms resolve to RSA-PSS (RSASSA-PSS with MGF1)
     /// instead of PKCS#1 v1.5. Asked on every use of the padding setting given to
     /// <see cref="FollowRsaPadding"/>, so a change to it applies to the next signature; PSS
@@ -96,6 +108,88 @@ public static class KeyAlgorithmPolicy
     /// </summary>
     public static bool IsAllowed(string algorithm, int sizeOrCurve)
         => IsAllowed(algorithm, sizeOrCurve.ToString());
+
+    /// <summary>
+    /// Whether a subject public key is allowed by <see cref="IsAllowed(string, string)"/>, judged
+    /// from the key itself rather than from the algorithm and size a request row records:
+    /// the RSA modulus length, the named EC curve (or explicit parameters equal to one), the
+    /// EdDSA type, or the ML-DSA/SLH-DSA parameter set. An EC key on any other curve is refused,
+    /// including one whose order merely has the same bit length as an allowed curve.
+    /// </summary>
+    /// <param name="publicKey">The key the certificate would certify.</param>
+    /// <param name="description">The key as the refusal should name it, e.g. <c>RSA 1024</c>.</param>
+    public static bool IsAllowedPublicKey(AsymmetricKeyParameter publicKey, out string description)
+    {
+        switch (publicKey)
+        {
+            case RsaKeyParameters rsa:
+                description = $"RSA {rsa.Modulus.BitLength}";
+                return IsAllowed("RSA", rsa.Modulus.BitLength);
+            case ECPublicKeyParameters ec:
+                var curve = AllowedEcCurveName(ec);
+                description = curve != null ? $"ECDSA {curve}" : $"ECDSA on curve {ec.PublicKeyParamSet?.Id ?? "with explicit parameters"}";
+                return curve != null && IsAllowed("ECDSA", curve);
+            case Ed25519PublicKeyParameters:
+                description = "Ed25519";
+                return IsAllowed("Ed25519", (string?)null);
+            case Ed448PublicKeyParameters:
+                description = "Ed448";
+                return IsAllowed("Ed448", (string?)null);
+            case MLDsaPublicKeyParameters mlDsa:
+                description = mlDsa.Parameters.Name;
+                return IsAllowed(mlDsa.Parameters.Name, (string?)null);
+            case SlhDsaPublicKeyParameters slhDsa:
+                description = slhDsa.Parameters.Name;
+                return IsAllowed(slhDsa.Parameters.Name, (string?)null);
+            default:
+                description = publicKey?.GetType().Name ?? "no key";
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Refuses a subject key <see cref="IsAllowedPublicKey"/> does not allow, with a
+    /// <see cref="ModularCA.Shared.Errors.CertificatePolicyViolationException"/> (MCA-POL-000)
+    /// whose one violation is tagged <c>[KeyAlgorithmPolicy]</c> and names the key and the keys
+    /// allowed. Issuance applies it to every certificate; a protocol may apply it earlier, before
+    /// it spends anything on the request.
+    /// </summary>
+    /// <param name="subjectPublicKey">The key the certificate would certify.</param>
+    /// <exception cref="ModularCA.Shared.Errors.CertificatePolicyViolationException">The key is not allowed.</exception>
+    public static void EnsureSubjectKeyAllowed(AsymmetricKeyParameter subjectPublicKey)
+    {
+        if (!IsAllowedPublicKey(subjectPublicKey, out var description))
+            throw new ModularCA.Shared.Errors.CertificatePolicyViolationException(
+                [$"[{RuleName}] The subject key ({description}) is not permitted by the system key policy. " +
+                 $"Allowed: {AllowedPublicKeysText}."]);
+    }
+
+    /// <summary>The NIST curves the policy allows, by OID, with the names it knows them by.</summary>
+    private static readonly (string Oid, string Name)[] AllowedEcCurves =
+    [
+        ("1.2.840.10045.3.1.7", "P-256"),
+        ("1.3.132.0.34", "P-384"),
+        ("1.3.132.0.35", "P-521"),
+    ];
+
+    /// <summary>
+    /// The allowed curve an EC key is on, by its named-curve OID or, for explicit parameters, by
+    /// comparing them to each allowed curve; null when it is on none of them.
+    /// </summary>
+    private static string? AllowedEcCurveName(ECPublicKeyParameters ec)
+    {
+        if (ec.PublicKeyParamSet != null)
+            return AllowedEcCurves.FirstOrDefault(c => c.Oid == ec.PublicKeyParamSet.Id).Name;
+
+        foreach (var (oid, name) in AllowedEcCurves)
+        {
+            var named = Org.BouncyCastle.Asn1.X9.ECNamedCurveTable.GetByOid(new Org.BouncyCastle.Asn1.DerObjectIdentifier(oid));
+            if (named != null && named.Curve.Equals(ec.Parameters.Curve)
+                && named.G.Equals(ec.Parameters.G) && named.N.Equals(ec.Parameters.N))
+                return name;
+        }
+        return null;
+    }
 
     /// <summary>
     /// Resolves the canonical BouncyCastle signature algorithm name for the given key algorithm

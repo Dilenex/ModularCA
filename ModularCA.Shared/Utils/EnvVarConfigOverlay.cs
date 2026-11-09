@@ -102,31 +102,67 @@ public class EnvVarConfigOverlay
     // own narrower lock, but only this lock covers cross-controller races.
     private readonly object _persistLock = new();
 
+    private readonly Dictionary<string, Func<string?>> _released = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Clears the secret at <paramref name="path"/> (one of the secret paths, e.g.
+    /// <c>Hsm.Pin</c>) from <paramref name="config"/> once it has been used, so the running
+    /// process no longer holds it as a string. A secret that came from the file is put back for
+    /// the length of each <see cref="WithSecretsProtected"/> write, read again through
+    /// <paramref name="reread"/>, so rewriting <c>config.yaml</c> keeps it there instead of
+    /// writing the cleared value. A secret from the environment is left out of the file as before.
+    /// </summary>
+    /// <param name="config">The running configuration.</param>
+    /// <param name="path">The secret's path.</param>
+    /// <param name="reread">Reads the value the file holds now.</param>
+    /// <exception cref="ArgumentException"><paramref name="path"/> is not a secret path.</exception>
+    public void Release(SystemConfig config, string path, Func<string?> reread)
+    {
+        var accessor = SecretAccessors.FirstOrDefault(a => string.Equals(a.Path, path, StringComparison.OrdinalIgnoreCase));
+        if (accessor.Path == null)
+            throw new ArgumentException($"{path} is not a secret path.", nameof(path));
+        lock (_persistLock)
+        {
+            accessor.Setter(config, string.Empty);
+            if (!EnvSourcedPaths.Contains(accessor.Path))
+                _released[accessor.Path] = reread;
+        }
+    }
+
     /// <summary>
     /// Executes <paramref name="body"/> with all env-sourced secret fields temporarily
-    /// nulled in <paramref name="config"/>, restoring them in a <c>finally</c>. Use this
+    /// nulled in <paramref name="config"/>, and every secret cleared by <see cref="Release"/>
+    /// temporarily put back from the file, restoring them in a <c>finally</c>. Use this
     /// around any code that serializes <see cref="SystemConfig"/> to disk so env-sourced
-    /// secrets do not leak from the running process into <c>config.yaml</c>. If
-    /// <paramref name="body"/> throws, the exception propagates and the original values
-    /// are still restored. Cross-thread-safe via an internal lock.
+    /// secrets do not leak from the running process into <c>config.yaml</c>, and released ones
+    /// are not lost from it. If <paramref name="body"/> throws, the exception propagates and the
+    /// original values are still restored. Cross-thread-safe via an internal lock.
     /// </summary>
     public void WithSecretsProtected(SystemConfig config, Action body)
     {
         lock (_persistLock)
         {
             var restoreActions = new List<Action>(SecretAccessors.Length);
-            foreach (var (path, getter, setter) in SecretAccessors)
-            {
-                if (EnvSourcedPaths.Contains(path))
-                {
-                    var saved = getter(config);
-                    setter(config, null);
-                    restoreActions.Add(() => setter(config, saved));
-                }
-            }
-
             try
             {
+                foreach (var (path, getter, setter) in SecretAccessors)
+                {
+                    if (EnvSourcedPaths.Contains(path))
+                    {
+                        var saved = getter(config);
+                        setter(config, null);
+                        restoreActions.Add(() => setter(config, saved));
+                    }
+                    else if (_released.TryGetValue(path, out var reread))
+                    {
+                        // Read before anything changes: a file that cannot be read stops the write.
+                        var fromFile = reread();
+                        var saved = getter(config);
+                        setter(config, fromFile);
+                        restoreActions.Add(() => setter(config, saved));
+                    }
+                }
+
                 body();
             }
             finally

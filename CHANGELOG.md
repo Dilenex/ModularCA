@@ -8,6 +8,538 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 Nothing yet.
 
+## [0.4.3] — 2026-11-08
+
+A patch release of fixes since 0.4.2, most of them from a security review and a bug hunt: a
+revoked client certificate stops signing in and its sessions end, enrollment protocols and
+start-up checks are tightened, reissue and Windows autoenrollment keep to the certificate and the
+identity they are for, and a certificate's expiry warning follows its profile instead of a fixed
+30 days. It is built on the .NET 10.0.14 runtime and adds one migration.
+
+One release candidate, `0.4.3-rc.1.0`, went to test hosts and was not published. "Changes since
+0.4.3-rc.1.0" below is what came after it; the sections after that are the candidate's own, so
+an upgrade from 0.4.2 brings both. The builds before the candidate, `0.4.3-dev.1.0` to
+`0.4.3-dev.1.3`, are listed at the end of this section.
+
+### Upgrading from 0.4.2
+
+Each entry below says more; this is the checklist. "Upgrading to 0.4.3" in
+`packaging/README-DEPLOY.md` has the same steps for a host.
+
+**Before installing, on every host**
+
+- **Check the reverse-proxy settings in `config/config.yaml`.** The node now refuses to start
+  when an `Http.TrustedProxyCidrs` entry does not parse or has bits after its prefix
+  (`10.0.1.0/24`, not `10.0.1.5/24`), or when `Security.BehindReverseProxy` is on with no trusted
+  proxy listed. That includes a proxy on the same host, such as nginx in front of the node on
+  loopback: list it as `127.0.0.1/32,::1/128`. Both are per-host settings in that file, so a host
+  that refuses is fixed there, without the console, and started again.
+- **Check `Hsm.Enabled`.** A node or signer with the HSM enabled now refuses to start when the HSM
+  cannot be initialised, instead of carrying on with software keys. It exits with status 3, which
+  systemd does not retry, so a wrong PIN is tried once rather than until the token locks. Fix it
+  and start the unit again.
+- **Log readers.** Both services run with `UMask=0077`, so log files created from now on are
+  readable by the service account only. A member of the `modularca` group who reads `logs/`
+  directly needs a drop-in with `UMask=0027`; `journalctl` is unaffected.
+- **Ceremonies.** Execute any approved ceremony first: approvals now lapse after 7 days, and one
+  approved before the upgrade keeps its old expiry, 24 hours after it was opened.
+- **The runtime comes with the release.** The tarball and the image carry .NET 10.0.14 inside
+  them; installing this release is how a host gets it. Updating the host's packages does not.
+
+**What changes at the first start**
+
+- **Expiry warnings move.** The `ProfileExpiryWarnings` migration gives every existing certificate
+  its warning and alert instants: an end-entity certificate warns when 30 % of its lifetime is
+  left and alerts at 10 %, a CA certificate 30 days and 7 days before it expires. Long-lived
+  certificates warn much earlier than before (a one-year certificate about 110 days ahead, where
+  it was 30) and short-lived ones much later (a 10-hour certificate 3 hours ahead, where it was
+  always), so the dashboard's Needs attention list changes. The `Web TLS Certificate Profile` is
+  set to never warn. Expiry e-mails are sent once per step from now on; each certificate already
+  inside its new window, and not yet replaced, is mailed once more after the upgrade.
+- **Rolling back to 0.4.2 resets `ComplianceScan.ExpiringWithinDays` to 30.** The migration
+  removes the stored value, and its rollback cannot restore it. Note a custom value before
+  upgrading if you might roll back, and set it again afterwards.
+- **Sign-in.** Refresh tokens require proof of possession: a browser that lost its key is asked
+  to sign in again. A console tab left open across the upgrade may refuse one sign-in until it is
+  reloaded (the CSRF cookie is renamed). Revoked mTLS certificates stop signing in, and revoking
+  or holding one signs its holder out of every session. With "Require WebAuthn user verification"
+  on, a security key that is a user's only second factor now asks for its PIN or biometric at
+  sign-in too.
+- **Controlled-user promotions waiting for approval** can now be refused at execution because the
+  target's credentials changed ("the password, MFA or account of a user it promotes changed after
+  it was opened") when the target's mTLS credential expires while the ceremony waits: an expired
+  credential no longer counts as an MFA factor. This fails closed; open the promotion again.
+- **Issuance follows the system key policy on every path**, including approved requests still
+  waiting in the queue: a key outside it (RSA below 2048, a curve other than P-256, P-384 or
+  P-521) is refused even where the profile allowed it.
+
+**Clients and scripts**
+
+- **ACME is HTTPS only.** A client pointed at an `http://` directory gets 308 to HTTPS; certbot,
+  acme.sh and lego follow it. The public portal stays on HTTP. An account that was deactivated, or
+  revoked by an administrator, is refused on every request; its client must register again.
+- **CMP** password-based MAC accepts SHA-2 one-way functions, HMAC-SHA1 or HMAC-SHA2, and at most
+  10,000 iterations; a client built on BouncyCastle's `PKMacBuilder` defaults (SHA-1) is refused
+  with `badAlg`. OpenSSL's defaults are accepted.
+- **Windows autoenrollment** certificates carry the Kerberos identity as their whole subject
+  (`CN=<user>` or `CN=<host>`), whatever subject the client's request asked for. The SAN and the
+  SID mapping are unchanged.
+- **The timestamp authority** refuses SHA-1 message imprints.
+- **The TSA policy changes** from the placeholder `1.2.3.4.1` to `1.3.6.1.4.1.66874.1.5.1`
+  (Settings → Certificates → Time-Stamp Authority sets another). A client that pinned
+  `1.2.3.4.1`, or sends it as `reqPolicy`, must accept the new one; a request naming another
+  policy is refused with `unacceptedPolicy`. Tokens issued before the upgrade keep the old policy.
+- **Scripts:** retiring a certificate or undoing it needs `X-MFA-Token` (`retire-cert`,
+  `undo-retire-cert`), and so does editing or deleting the access badge the session wears when
+  that widens it (`switch-badge`); a reissue whose body names a different certificate than its URL
+  is refused with 400; a script that copies the CSRF cookie must read `__Host-CSRF-TOKEN` over
+  HTTPS; the lifecycle summary's `ExpiringWithin*` counts still work for this release, but move to
+  the `InExpiry*` counts; `ComplianceScan.ExpiringWithinDays` is gone.
+- **Containers.** `latest` is this release. To stay on it, name it:
+  `MODULARCA_IMAGE=ghcr.io/dilenex/modularca:0.4.3`.
+
+### Changes since 0.4.3-rc.1.0
+
+The fixes from the November bug hunt that were chosen for 0.4.3 are here; the findings, and the
+ones left for 0.4.4, are in `docs/plans/bug-hunt-2026-11.md`.
+
+**Security**
+
+- **Built on the .NET 10.0.14 runtime.** The tarball and image carry the .NET runtime inside them,
+  and every earlier build, `0.4.2` and `0.4.3-rc.1.0` included, carries 10.0.13 or older.
+  10.0.14 is Microsoft's out-of-band security release of 25 October 2026: a critical Brotli decoder
+  out-of-bounds write (CVE-2026-111497; ModularCA does not itself turn Brotli decompression on), and
+  a complete fix for the SocketAsyncEventArgs memory corruption that 10.0.13 only partly fixed
+  (CVE-2026-70197). Updating means installing this release. Updating the host's packages does not
+  reach the runtime inside the tarball.
+- **Reissue acts on the certificate in the URL.** The three admin reissue endpoints
+  (`{certId}/reissue`, `serial/{serial}/reissue`, `csr/{csrId}/reissue`) authorized the CA of the
+  certificate named in the URL, then reissued the one named in the request body. An operator on one
+  CA could reissue another CA's certificate in the same space. A body that names a different
+  certificate, serial or request is now refused with 400; revocation was fixed the same way earlier.
+- **A deactivated ACME account stops working.** Account status was checked only on account update
+  and key change, so after an account was deactivated (or revoked by an administrator) its key
+  could still place and finalize orders, answer challenges and revoke certificates. Every request
+  signed by such an account is now refused with `unauthorized` (RFC 8555 §7.3.6).
+- **A compromised key is not reissued.** Reissuing an expired certificate that had been revoked for
+  key compromise (or CA compromise) is meant to be refused, because the reissue would carry the same
+  key. The refusal was swallowed by an error handler meant for other failures, and the certificate
+  was reissued. It is refused now, and a comparison that cannot be made refuses too.
+- **MSAE certificates are named by the Kerberos identity alone.** The request recorded `CN=<user>`
+  or `CN=<host>` from the ticket, but the certificate was built from the subject in the client's
+  CSR, with the identity's common name added only when the CSR had none. A domain user could
+  have any subject signed (`CN=Administrator,O=Corp`), which subject-based mappings, RADIUS and VPN
+  checks would trust; the SAN and AD's SID mapping were not affected. The certificate now carries
+  exactly the identity's subject. An MSAE renewal likewise keeps the renewed certificate's whole
+  subject instead of only a common name taken from its first DNS name.
+- **"Require WebAuthn user verification" covers sign-in.** When a security key was a user's only
+  second factor, the sign-in step asked the key for user verification as "preferred" whatever the
+  policy said, so a key could be used without its PIN or biometric. Sign-in now follows the
+  policy, and an assertion started under weaker options is refused.
+- **Editing the badge you are wearing asks for MFA when it widens the session.** Switching to a
+  wider access badge needs step-up MFA, but the worn badge is read on every request, so adding a
+  source to it, or deleting it, widened the session with none. Both now ask for the same step-up
+  as switching; narrowing a badge, renaming it and editing other badges do not.
+- **Decrypted keys are written to new owner-only files.** The keystore unlocker's `--output` and the
+  decrypted archive a restore stages in the temp folder were created at default permissions and
+  restricted afterwards; a local user who opened the file in between kept reading it after the
+  change. Both are now created owner-only from the start, as new files, and the restore's archive
+  gets an unguessable name.
+- **The migration tool keeps its temporary password off the command line.** `modularca-migrate`
+  created its temporary administrative role with the password in `psql`'s arguments, which any
+  local user can read while the command runs; for the run, that role can act as the application
+  and audit roles. The statement now goes to `psql` on standard input and carries a SCRAM verifier,
+  so neither the process list nor a PostgreSQL statement log holds the password.
+- **Self-service SSH signing keeps to the CA's own request profiles.** A user could pair another
+  CA's SSH request profile (one without approval, allowing any profile) with this CA's signing
+  profile, and get a certificate at once from a CA whose own request profiles require approval.
+  A request profile bound to a CA is now accepted only for that CA's signing profiles.
+- **Metrics no longer grow with made-up OCSP labels and SCEP operations.** The CA label in an OCSP
+  URL and the `operation` of a SCEP request became metric labels as given, so a client could create
+  any number of time series, each kept until restart and exported on every scrape, without signing
+  in. OCSP metrics now carry the label of the CA that answered (empty when none did), and SCEP
+  operations outside the three it defines are counted as `other`.
+
+**Changed**
+
+- **Dependencies:** Microsoft .NET packages 10.0.12 → 10.0.14 (Entity Framework Core, JWT bearer,
+  Redis caching and data protection, systemd hosting, directory services);
+  `System.Security.Cryptography.Pkcs` 10.0.13 → 10.0.14; Swashbuckle 10.2.3 → 10.3.1;
+  FluentValidation 12.1.1 → 12.2.0; React 19.3.0 → 19.3.1; React Router 7.18.2 → 7.18.5. None of
+  these carried a known advisory. Every version is more than seven days old, as the dependency
+  policy requires.
+
+**Fixed**
+
+- **Certificate sign-in offers the certificate picker in a browser that already has the console
+  open.** When the web TLS certificate also names the mTLS sign-in hostname, as it must, a browser
+  sent the sign-in request over its existing HTTP/2 connection to the main hostname, where no
+  client certificate is asked for: no picker appeared and the sign-in failed with "did not present
+  a client certificate". A request for the mTLS or EST hostname that arrives on a connection made
+  for another hostname is now answered `421 Misdirected Request`, and the browser retries on a new
+  connection that asks for the certificate. Connections without SNI, and TLS ended at a proxy, are
+  not affected.
+- **The certificate buttons say what a cancelled prompt does.** Under "Sign in with Certificate"
+  and "Verify with Client Certificate": cancelling the browser's certificate prompt ends on the
+  browser's own error page, and going back and trying again prompts once more.
+- **A failed certificate sign-in keeps its message through the login banner.** When the banner had
+  not yet been accepted in that browser tab, the sign-in page sent the browser to the banner and the
+  banner sent it back to a plain sign-in page, so the reason the sign-in failed was never shown. The
+  reason now travels through the banner.
+- **Editing an access badge saves.** Changing a badge's sources failed with "The resource was
+  modified by another request" (409) whenever the edit added a source: the new source rows were
+  taken for existing rows and updated, which matched nothing. Sources that stay now keep their rows,
+  dropped ones are deleted and new ones inserted. The fault dates from 0.4.2 and hit every badge,
+  in the account panel and the admin console alike.
+- **A new intermediate CA is signed by the parent the form shows.** After switching the console's
+  scope to a CA subtree with the same number of CAs, the create form kept the previous parent
+  while its list showed the new scope's first CA, and Create signed the new CA under the parent no
+  longer shown. The form now follows the scope, and refuses to submit a parent it is not showing.
+- **A mistyped code while setting up an authenticator app no longer signs you out.** The server
+  answered a wrong code with 401, which the console reads as the end of the session, so a typo
+  during first-time setup or on the security page signed the user out. It now answers 400 and the
+  form asks again.
+
+### Security
+
+- **A revoked client certificate no longer signs in.** Revoking an mTLS sign-in certificate from
+  the certificate pages, ACME, the integration API or a revocation ceremony changed only the
+  certificate, and unless `RequireMtlsOcspCheck` was on (it is off by default) the certificate
+  kept signing in, by certificate login, the mTLS redirect sign-in and MFA, and kept passing mTLS
+  step-up. Every mTLS sign-in and step-up now reads the certificate's own status: a revoked
+  certificate is refused, and so is one on hold until it is released. Each refusal is audited as
+  a failed sign-in (or failed step-up) with the reason `mtls_certificate_revoked`. Revoking the
+  certificate also revokes its mTLS credential, and a revoked certificate no longer counts as an
+  MFA factor. A credential whose certificate record no longer exists (only possible if that row
+  was deleted) is refused as well, with the reason `mtls_certificate_record_missing`; its owner
+  enrols a new certificate.
+- **Revoking or holding a sign-in certificate signs its holder out everywhere.** Revoking an mTLS
+  sign-in certificate, or putting it on hold, stopped it signing in again, but the sessions it had
+  already opened ran on until they expired. A session does not record which certificate opened it,
+  so every session of the account that holds the certificate now ends at once, as after a password
+  reset, and the ending is audited as `UserSessionsEnded`. Releasing the hold lets the certificate
+  sign in again; the ended sessions stay ended. Revoking your own mTLS credential on the account's
+  security page does the same, so it signs you out too, this session included.
+- **Refresh tokens require proof of possession by default.** `Security.EnforceRefreshTokenPoP`
+  is now on. A session bound to the browser's key at sign-in refreshes only with a proof from
+  that key, so a stolen refresh token is no use elsewhere. The mTLS redirect sign-in now binds
+  its session too, when the console exchanges its one-time code (`POST /auth/mtls/exchange`, which
+  takes a `DPoP` header), as does `POST /auth/mtls/verify`; every console sign-in now binds.
+  **Upgrade impact:** a browser that has lost its key (site data cleared) is asked to sign in
+  again at its next refresh instead of being re-bound. Sessions that were never bound, from
+  clients that send no proof, are not affected. To go back to observe-only, set
+  `Security.EnforceRefreshTokenPoP` to false in Settings, or on the host with
+  `ModularCA.API --settings set Security.EnforceRefreshTokenPoP false --reason "..."`.
+- **TOTP recovery codes are stored salted and slow-hashed, and guessing them locks the account.**
+  New codes are kept as PBKDF2 hashes salted per user instead of plain SHA-256. Codes issued
+  before this release keep working until used; enrolling TOTP again replaces them with codes in
+  the new form. A wrong recovery code now locks the account at the security policy's
+  failed-attempt threshold, as a wrong password does; before, it only counted. A refusal for an
+  unknown, disabled or locked account takes as long as one for a wrong code, so it no longer shows
+  whether the username exists, and the lockout notifies administrators, as a password lockout does.
+- **Old access tokens stop at once after a password change or a TOTP recovery.** Both rotate the
+  account's security stamp, but a cached copy of the old stamp let earlier tokens work for up to
+  30 seconds. The cache entry is now dropped.
+- **More sign-in endpoints are rate limited per address**: certificate login and the mTLS redirect
+  sign-in (10 per 5 minutes), the mTLS MFA redirect and mTLS step-up (25 per 5 minutes), the mTLS
+  code exchange and handoff (20 per 5 minutes), and refresh (120 per 5 minutes), under both the
+  `/auth/...` and `/api/v1/auth/...` paths.
+- **The CSRF cookie is `__Host-CSRF-TOKEN` over HTTPS.** The browser only accepts a cookie with
+  that prefix when it is Secure, host-only and on `/`, so a sibling subdomain can no longer plant
+  a token of its own. Plain HTTP keeps `CSRF-TOKEN`. **Upgrade impact:** the consoles and setup
+  wizard read the new name; a script that copies the cookie into `X-CSRF-Token` must read
+  `__Host-CSRF-TOKEN` over HTTPS. A leftover `CSRF-TOKEN` from an older release is deleted and no
+  longer accepted over HTTPS, so a console tab left open across the upgrade may refuse one sign-in
+  until it is reloaded.
+- **An approved ceremony must be executed within 7 days.** An approval used to stand until
+  someone executed it, however long that took. Reaching the quorum now sets the ceremony's expiry
+  to 7 days ahead; after that it is marked Expired, the expiry is audited, and Execute answers 409
+  with the reason. Open a new ceremony to go ahead. **Upgrade impact:** ceremonies approved before
+  this release keep their original expiry, 24 hours after they were opened, so any still waiting
+  to be executed past that expire the next time ceremonies are listed or one is executed.
+  CA-creation ceremonies already could not be executed past it, because the signer refused them.
+- **The service now refuses to start when the reverse-proxy settings cannot work.** A
+  `Http.TrustedProxyCidrs` entry that did not parse was skipped, and `Security.BehindReverseProxy`
+  on with no trusted proxy only printed a warning. Either way forwarded headers were honoured from
+  loopback alone, every request appeared to come from the proxy, and an internal proxy address
+  passed every internal-only IP whitelist rule. Both now stop the start with a message naming the
+  setting; they are per-host settings, so fix them in that host's `config/config.yaml`. Each entry
+  must be `address/prefix` with no bits after the prefix (`10.0.1.0/24`, not `10.0.1.5/24`).
+  The console checks the same when you save (400 naming the entry), refuses to turn
+  BehindReverseProxy on before a proxy is listed, and can now clear the list. **Upgrade impact:**
+  check `Http.TrustedProxyCidrs` and `Security.BehindReverseProxy` on every host before upgrading.
+- **An enabled HSM that fails to initialise stops the start.** The node and the signer used to
+  carry on with the software keystore, so a CA whose key is on the HSM ran without it. They now
+  refuse to start and say what to check. `Hsm.Enabled: true` with an empty `Hsm.ModulePath` is
+  refused the same way. The PIN is passed to the module as bytes that are zeroed after the login,
+  and the running configuration drops its copy; `config.yaml` rewrites keep the PIN the file holds.
+  The refusal exits with status 3, which the systemd units do not restart, so a wrong PIN is tried
+  once rather than until a token that allows three tries locks.
+- **Enrollment tokens no longer reach the log files, the journal or syslog.** The public
+  enrollment token travels in the URL path, and the request log recorded that path whole. Every
+  log event now has the token replaced with `{token}`, as the audit database already had, and the
+  built-in ingress logs from Warning only, so it no longer writes the proxied path either.
+- **Secret files are created owner-only from the first byte.** `config/backup.key`,
+  `config/backup-password.key`, `config/keystore.yaml`, `db.yaml`, `setup-database.yaml` and the
+  signer's identity PFX files were written and then restricted, and a failure to restrict them on
+  Linux went unreported. They are now created with mode 0600, and a failure to restrict a secret file or
+  a staging directory is reported as a warning. Both systemd units now set `UMask=0077`, so
+  everything the service creates is its own alone. **Upgrade impact:** log files created after the
+  upgrade are `0600`; a member of the `modularca` group who reads `logs/` directly needs a drop-in
+  with `UMask=0027`. `journalctl` is unaffected.
+- **mTLS on a required path trusts what the handshake trusts.** `MtlsMiddleware` read
+  `Mtls.TrustedCaCertPaths` relative to the working directory and ignored the mTLS signing CAs the
+  handshake falls back to, so a client certificate the TLS handshake accepted could be refused on
+  a `Mtls.RequiredPaths` path. Both now use one set loaded at start.
+- **Admin errors no longer echo exception messages.** A failed configuration save, and a failed
+  row in the bulk CRL schedule and LDAP publisher actions, answer with a generic message and a
+  correlation id; the exception is in the server log under that id.
+- **A missing custom Web TLS certificate is logged and audited.** With `Https.Mode: Custom` and
+  the PFX missing, the server serves a temporary self-signed certificate until the file is put back
+  or the certificate is reissued. That was one console line; it is now a warning in the log with
+  the temporary certificate's SHA-256 fingerprint and an audit entry,
+  `WebTlsTemporaryCertificateServed`, so a browser warning can be checked against it.
+- **`.gitignore` covers `*.p12` and `backups/`**, so a PKCS#12 file or a backup archive in a
+  working copy is not committed by accident.
+- **ACME is served over HTTPS only.** A plain-HTTP request to `/acme/...` or `/api/v1/acme/...`
+  is now redirected (308) to HTTPS on the public domain instead of being answered, so account
+  keys, orders and certificates no longer travel in clear text. ACME clients must use the
+  `https://` directory URL; one configured with `http://` follows the redirect if it can, and
+  should be changed. http-01 validation is unaffected: the CA still fetches the challenge from
+  the client on port 80. The public portal stays reachable over plain HTTP; its ACME page shows
+  the HTTPS directory URL there and lists the endpoints only when opened over HTTPS.
+- **CMP holds password-based MAC to the CA's own "require signature" setting.** The setting was
+  read from whichever CMP configuration the database returned first, from any CA, so a request
+  protected by a shared secret could pass at a CA that requires signature protection. It is read
+  from the CA the request is addressed to, and the refusal comes before the shared secret is
+  looked up, so it no longer spends one of the credential's uses.
+- **CMP accepts only sound password-based MAC parameters.** The client chooses the one-way
+  function, the MAC and the iteration count, and the server did that work before checking who was
+  asking, with up to 500,000 iterations of any digest. It now accepts SHA-224/256/384/512 as the
+  one-way function, HMAC with SHA-1 or SHA-2 as the MAC, and at most 10,000 iterations, and
+  answers anything else with `badAlg`. `openssl cmp -secret` (SHA-256, HMAC-SHA1, 500 iterations)
+  works as before. A CMP client that uses SHA-1 as the one-way function (BouncyCastle's
+  `PKMacBuilder` default) or more than 10,000 iterations must be reconfigured.
+- **EST over client certificates compares SAN types.** Each SAN a request asks for must be a SAN
+  of the same type and value in the client certificate. The types used to be ignored and the
+  certificate's common name counted as any SAN, so an email address or a common name could
+  vouch for a UPN or an IP address. The common name still stands for the DNS name of a device
+  certificate that carries no DNS SAN.
+- **The system key policy applies to every issuance.** A request whose key is not RSA 2048,
+  3072, 4096, 7680 or 8192, ECDSA P-256, P-384 or P-521, Ed25519, Ed448, ML-DSA or SLH-DSA is
+  refused at issuance (MCA-POL-000), judged from the key itself. It was enforced only on requests
+  made in the console, so EST, SCEP, CMP, ACME, Windows autoenrollment and token enrollment could
+  obtain a certificate for an RSA-1024 key or a key on another curve when the certificate profile
+  listed no key sizes. Token enrollment checks the key before it spends the token (400 with the
+  code), and ACME answers such a key with `badPublicKey` (400), another certificate-policy refusal
+  with `badCSR`.
+- **A delegated OCSP responder must be signed by its CA.** The responder certificate was checked
+  for its usage and dates but not for who signed it. One the CA did not sign is now refused, and
+  System Health names it, as it names a responder without the OCSP signing usage.
+- **The timestamp authority refuses SHA-1 message imprints** with `badAlg` (RFC 3161). Clients
+  must hash with SHA-256, SHA-384 or SHA-512, which current clients do by default.
+- **ACME orders and authorizations expire when they say they do.** An order past its expiry, or
+  one with an expired authorization, is refused at finalize (403 `orderNotReady`), and a challenge
+  of an expired authorization is refused (400 `malformed`), whether or not the cleanup sweep has
+  reached them yet.
+- **Protocol refusals are audited.** ACME finalize refusals made before issuance (an expired or
+  unready order, the wrong CA, a request naming other identifiers, CAA) are recorded as
+  `FinalizeRefused`, and every refused ACME revocation as `RevokeRefused`. Token (QR or link)
+  enrollment refusals are recorded as `QrEnrollmentRejected`. A SCEP message that cannot be read,
+  verified or opened is recorded as an unsuccessful `PKIOperation`, and every CMP error answer as
+  an `Error` row naming the request type and the failure. These were answered and recorded
+  nowhere.
+- **The TSA refuses a request for a policy it does not issue under.** A request whose `reqPolicy`
+  named any policy was answered with a token claiming that policy. It is now refused with status
+  rejection and failInfo `unacceptedPolicy` (RFC 3161 section 2.4.2) unless it names the TSA
+  policy; a request with no `reqPolicy` is answered as before.
+
+### Added
+
+- **System Health lists enrollment protocols that cannot run on their CA.** A new Enrollment
+  Protocols card names each enabled protocol configuration that cannot work where it is, with the
+  reason and a link to the CA: today, SCEP on a CA whose key is not RSA. The console refuses to
+  enable that, but a configuration saved before it did is still on, and it is not switched off
+  for you. The CA's page shows the same reason beside the protocol, and the CA
+  hierarchy feed carries it as `advisories` on each protocol configuration.
+- **The console warns where SCEP takes requests without a challenge password.** The protocol
+  page and the CA's page show an amber notice on a SCEP configuration with Require Challenge
+  Password off: anyone who can reach that CA's SCEP endpoint can enroll. The setting is unchanged.
+  The CA hierarchy feed now carries `scepChallengeRequired` on each protocol configuration.
+- **Timestamp tokens name a real TSA policy, which the console can set.** The TSA put the
+  placeholder `1.2.3.4.1` in every token's policy field. It now names `1.3.6.1.4.1.66874.1.5.1`,
+  the default policy under Dilenex's registered enterprise arc. Settings → Certificates →
+  Time-Stamp Authority sets a policy of your own (`PUT /api/v1/admin/config/tsa`, step-up
+  `update-config`, audited with the old and new value), as does
+  `--settings set Tsa_PolicyOid …` on the host. A value that is not a dotted object identifier is
+  refused, and an empty one restores the default; a change applies to the next request. Tokens
+  issued before keep `1.2.3.4.1`. A client that checks the policy must accept the new one.
+- **The sign-in page says why a certificate sign-in failed.** A revoked or held certificate, one
+  that is not enrolled, an expired sign-in session and the other refusals of the certificate
+  sign-in sent the browser back to the sign-in page with nothing shown. Each now shows a plain
+  message; an unknown reason shows a general one.
+
+### Changed
+
+- **The setup wizard keeps the audit database when it clears a previous install.** Its recovery
+  from an application database left by an earlier install dropped the audit database too, though
+  a command-line reset keeps audit history unless given `--wipe-audit`. It now drops the
+  application database only, unless you tick "Erase existing audit history" first, and the
+  bootstrap that follows keeps the audit database as well. `POST /api/v1/setup/database/drop`
+  takes `{"wipeAudit": true}` for the old behaviour.
+- **Service secret fields are not filled in by the browser.** The setup wizard's database
+  password and the console's service secrets (LDAP bind and publisher passwords, SMTP password and
+  OAuth2 secrets, the cert-manager and integration API keys, a new user's password) ask the
+  browser not to offer the saved console password.
+- **A certificate warns of its expiry by its profile, in two levels.** A fixed 30 days put a
+  10-hour certificate on Needs attention from the moment it was issued, and warned of a one-year
+  certificate only a month ahead. Each certificate is now given, when it is issued, the instants
+  its expiry **warning** (amber) and its expiry **alert** (red) start, from its certificate
+  profile: by default when 30 % and 10 % of its lifetime is left, so a 10-hour certificate warns 3
+  hours and alerts 1 hour before it expires, a 90-day one 27 and 9 days before, a one-year one
+  about 110 and 37 days before. A profile may set other percents and a longest window for either
+  level (an ISO 8601 duration such as `P30D`), under Expiry warning on its page and as
+  `expiryWarningPercent`, `expiryWarningMaxWindow`, `expiryAlertPercent` and `expiryAlertMaxWindow`
+  in the API and in policy sync YAML; invalid values are refused with `MCA-PRF-001`. A CA
+  certificate whose profile sets neither level keeps 30 days and 7 days. A profile marked
+  **Renewed automatically: never warn** (`expiryNeverWarn`) gives its certificates no warning at
+  all, though one that expires unreplaced still shows as expired, not replaced; the seeded
+  `Web TLS Certificate Profile`, which the instance renews its own console certificate from, is
+  set so. A profile that inherits takes its parent's values where it leaves them empty and may
+  only warn earlier than its parent (a lower percent, a shorter window, or never-warn under a
+  parent that warns is clamped to the parent's), unless it declares that it overrides its
+  parent's expiry settings (`expiryWarningOverridesParent`); the resolved profile marks each
+  value inherited, overridden or clamped. Saving a profile's expiry settings re-computes the
+  instants of its valid certificates and of those of the profiles inheriting from it, and the
+  profile's audit entry records how many (`ExpiryWarningsRecomputed`). The dashboard, the
+  certificate list (new statuses `expiring` and `alert`), the certificate page (when its warning
+  and alert start, or that its profile never warns), the user portal, the expiry calendar, the
+  inventory, the health score, the compliance scan and the expiry e-mails all read the stored
+  instants. The compliance report's 30/60/90-day forecast, the inventory's forecast cards, the
+  list's "Within N days" filter and auto-renewal's `RenewDaysBeforeExpiry` are unchanged. A
+  profile change and the re-compute are saved in one transaction. Policy sync leaves a profile's
+  expiry settings as they are when its YAML leaves the keys out, so a file written for 0.4.2
+  changes nothing; `expiryWarningOverridesParent` can be set there too.
+- **Expiry e-mails are sent once per step, not every day.** A certificate is mailed once when its
+  expiry warning starts and once when its alert starts. `CertExpiryNotification.WarningDaysBeforeExpiry`
+  now sets reminders inside the warning: each day count that falls after the warning has started
+  sends one reminder, once per certificate. This also fixes the daily repeats: the job mailed
+  every certificate inside each threshold again every day, once per threshold. A certificate
+  first found past several steps gets one message, for the latest, and a certificate already
+  replaced gets none, and raises no security alert. The `CertExpiring` notification preference no longer offers its
+  days-before-expiry field, which nothing read.
+- **The lifecycle summary's fixed-window counts are deprecated.** `ExpiringWithin7Days`,
+  `ExpiringWithin30Days` and their `NotReplaced` counterparts are filled as before for this
+  release and removed in a later one; use the new `InExpiryWarning`, `InExpiryWarningNotReplaced`,
+  `InExpiryAlert` and `InExpiryAlertNotReplaced`. Attention items carry `expiryWarningAt` and
+  `expiryAlertAt`, and so does every certificate the list and detail return. The expiry chart's
+  `expiringSoon` counts certificates in their expiry warning.
+- **`ComplianceScan.ExpiringWithinDays` is retired.** The scan's ExpiringWithoutRenewal finding
+  is raised for a certificate in its expiry warning with no renewal request. The setting is
+  ignored if sent to `PUT /api/v1/admin/config/compliance-scan`, its stored value is removed by
+  the migration, and a `config.yaml` that still sets it to anything other than 30 is warned
+  about at start.
+- **The health score's expiry factors are renamed** `ExpiryAlert` (30 points, critical) and
+  `ExpiryWarning` (15 points, warning), from `ExpiringWithin7Days` and `ExpiringWithin30Days`, and
+  follow the certificate's instants.
+- **Retiring a certificate asks for step-up MFA, and so does undoing it.** Retire stops every
+  renewal from a certificate, so it is now confirmed like revoking and reissuing. Dismissing an
+  expiry warning and restoring it change only the warning and still ask for nothing. Scripts
+  that call `POST` or `DELETE /api/v1/admin/certificates/{serial}/retire` must send `X-MFA-Token`,
+  issued for the serial under `retire-cert` or `undo-retire-cert`; without it they get 403.
+- **SCEP on a CA whose key is not RSA is refused with the reason.** A SCEP client encrypts its
+  request to the CA certificate with RSA, so it cannot enroll at such a CA. GetCACert and
+  PKIOperation there now answer 409 with that sentence, and the SCEP audit tab records the refusal
+  and why, where before a client failed on its own and the server recorded nothing. GetCACaps is
+  answered as before.
+- **The account's MFA list and the controlled-user check no longer count a certificate that
+  cannot sign in.** An mTLS credential whose certificate is revoked, on hold or no longer on
+  record, or that has expired, is left out of `GET /api/v1/account/mfa` and of the MFA state a
+  controlled-user ceremony pins, by the rule sign-in uses.
+- **System Health puts OCSP Responders and Enrollment Protocols side by side** on wide screens.
+- **Build tooling.** The four web apps are built with vite 8.3.4 (was 8.3.0), which fixes three
+  advisories in its development server and editor launcher, and the web tests run on vitest 5.0.4
+  (was 5.0.0), which fixes two in its mocking module. Neither runs in an installed CA.
+  `browserslist` 4.29.3 and `baseline-browser-mapping` 2.11.28 clear two advisories in build-only
+  dependencies. Every resolved version is at least seven days old, as the dependency policy
+  requires.
+
+### Fixed
+
+- **The protocol on/off switches cover the exact paths.** Switching OCSP off did not stop
+  `POST /ocsp`, the path OCSP clients use, because only `/ocsp/...` was matched; the same applied
+  to `/crl`, `/acme`, `/est`, `/scep`, `/cmp` and `/msae` without a trailing path. Paths are now
+  matched by whole segments, so `/ocsp` and `/ocsp/...` are both switched off and a path that
+  merely starts with the same letters is not.
+- **CMP error answers carry the right failure bits.** The failure reason went out as the wrong
+  bit (`badRequest` as `wrongAuthority`, `badAlg` as none), so a client such as `openssl cmp`
+  printed a misleading reason. The text of each answer was always right. A refused revocation
+  now carries `notAuthorized` (bit 23), where it carried `wrongAuthority`.
+- **An account whose temporary lockout has run out gets its attempts back.** The sign-in paths
+  cleared an elapsed lockout in memory only, so the first wrong password, certificate or recovery
+  code after it counted on top of the old total and locked the account again at once. The cleared
+  count is now written to the database first, on password and certificate sign-in, the password
+  change before sign-in, EST and Windows autoenrollment passwords, and TOTP recovery.
+- **An expired approved promotion no longer blocks credential resets.** A controlled-user
+  promotion that was approved but not executed before its expiry still made password and MFA resets
+  of its target answer 409, though it could no longer be executed. It stops blocking at its
+  expiry, as a pending one already did.
+- **SCEP records a configuration fault on the SCEP tab.** A PKCSReq at a CA whose SCEP
+  configuration names no certificate profile, or a signing or certificate profile that no longer
+  exists, was answered badRequest with no audit row. It now writes one unsuccessful `PKCSReq` row
+  with the reason, and the reply carries the request's transactionID and nonce, which it left out.
+- **System Health shows the age of the last backup.** The Disaster Recovery card read a field the
+  server never sends, so Backup Age was always "-"; it now reads `lastBackupAgeHours`.
+- **The CA page's protocol table shows "Cannot run on this CA" in full.** The Protocol column was
+  120 px wide and cut the label off; it is wider and wraps the labels when narrowed.
+
+### The builds on the way
+
+#### 0.4.3-dev.1.3 — 2026-10-22
+
+- **The TSA policy can be set from the console.** Settings → Certificates has a Time-Stamp
+  Authority card for the policy OID, saved through the new `PUT /api/v1/admin/config/tsa`
+  (step-up `update-config`, audited with the old and new value). The change applies to the next
+  timestamp request. An empty value restores `1.3.6.1.4.1.66874.1.5.1`; a value that is not a
+  dotted object identifier is refused. `GET /api/v1/admin/config` now returns the `tsa` section.
+
+#### 0.4.3-dev.1.2 — 2026-10-22
+
+- **Timestamp tokens name a real TSA policy.** The TSA put the placeholder `1.2.3.4.1` in every
+  token's policy field. It now names `1.3.6.1.4.1.66874.1.5.1`, the default policy under Dilenex's
+  registered enterprise arc, and the new instance-wide setting `Tsa.PolicyOid` lets an operator
+  name a policy of their own (`--settings set Tsa_PolicyOid 1.3.6.1.4.1.<pen>.…`); the store
+  refuses a value that is not a dotted object identifier. Tokens issued before keep
+  `1.2.3.4.1`. A client that checks the policy must accept the new one.
+- **The TSA refuses a request for a policy it does not issue under.** A request whose `reqPolicy`
+  named any policy was answered with a token claiming that policy. It is now refused with status
+  rejection and failInfo `unacceptedPolicy` (RFC 3161 section 2.4.2) unless it names the TSA
+  policy; a request with no `reqPolicy` is answered as before.
+- **The sign-in page says why a certificate sign-in failed.** A revoked or held certificate, one
+  that is not enrolled, an expired sign-in session and the other refusals of the certificate
+  sign-in sent the browser back to the sign-in page with nothing shown. Each now shows a plain
+  message; an unknown reason shows a general one.
+- **The account's MFA list and the controlled-user check no longer count a certificate that
+  cannot sign in.** An mTLS credential whose certificate is revoked, on hold or no longer on
+  record, or that has expired, is left out of `GET /api/v1/account/mfa` and of the MFA state a
+  controlled-user ceremony pins, by the rule sign-in uses.
+- **The CA page's protocol table shows "Cannot run on this CA" in full.** The Protocol column was
+  120 px wide and cut the label off; it is wider and wraps the labels when narrowed.
+- **Build tooling:** `browserslist` 4.29.3 and `baseline-browser-mapping` 2.11.28 in the four web
+  apps, clearing two advisories in build-only dependencies. Nothing shipped changes.
+
+#### 0.4.3-dev.1.1 — 2026-10-22
+
+- **System Health shows the age of the last backup.** The Disaster Recovery card read a field the
+  server never sends, so Backup Age was always "-"; it now reads `lastBackupAgeHours`.
+- **System Health puts OCSP Responders and Enrollment Protocols side by side** on wide screens.
+- **The certificate profile list's drawer shows the expiry warning and alert**, as the full page does.
+
+#### 0.4.3-dev.1.0 — 2026-10-22
+
+The first build: everything in the candidate's sections above except what the builds above and
+the fixes after `0.4.3-dev.1.3` add.
+
 ## [0.4.2] — 2026-10-22
 
 Everything since 0.4.0: the settings work that was built as 0.4.1, which is not released on its

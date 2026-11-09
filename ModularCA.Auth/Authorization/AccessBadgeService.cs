@@ -79,7 +79,13 @@ public sealed class AccessBadgeService
         return ToDto(badge, options);
     }
 
-    /// <summary>Replaces a badge's name, description, default flag and sources.</summary>
+    /// <summary>
+    /// Replaces a badge's name, description, default flag and sources. Sources that stay keep
+    /// their rows, dropped ones are deleted, and new ones are added to the context explicitly:
+    /// a source row's id is set when it is constructed, so one only attached to the tracked
+    /// badge's collection would be taken for an existing row and updated, which matches nothing
+    /// and fails as a concurrency conflict.
+    /// </summary>
     public async Task<AccessBadgeDto?> UpdateAsync(Guid userId, Guid badgeId, AccessBadgeWriteRequest request)
     {
         var badge = await _db.AccessBadges
@@ -95,10 +101,19 @@ public sealed class AccessBadgeService
         if (request.IsDefault && !badge.IsDefault) await ClearDefaultAsync(userId);
         badge.IsDefault = request.IsDefault;
 
-        _db.AccessBadgeSources.RemoveRange(badge.Sources);
-        badge.Sources.Clear();
-        foreach (var s in Distinct(request.Sources))
-            badge.Sources.Add(new AccessBadgeSourceEntity { BadgeId = badge.Id, Kind = s.Kind, SourceId = s.SourceId });
+        var wanted = Distinct(request.Sources).Select(s => (s.Kind, s.SourceId)).ToHashSet();
+        foreach (var dropped in badge.Sources.Where(s => !wanted.Contains((s.Kind, s.SourceId))).ToList())
+        {
+            badge.Sources.Remove(dropped);
+            _db.AccessBadgeSources.Remove(dropped);
+        }
+        var kept = badge.Sources.Select(s => (s.Kind, s.SourceId)).ToHashSet();
+        foreach (var (kind, sourceId) in wanted.Where(k => !kept.Contains(k)))
+        {
+            var added = new AccessBadgeSourceEntity { BadgeId = badge.Id, Kind = kind, SourceId = sourceId };
+            _db.AccessBadgeSources.Add(added);
+            badge.Sources.Add(added);
+        }
 
         await _db.SaveChangesAsync();
         return ToDto(badge, options);

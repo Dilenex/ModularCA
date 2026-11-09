@@ -49,7 +49,9 @@ Environment=DOTNET_CONSOLE_ANSI_COLOR=false
 
 Restart=always
 RestartSec=5s
-# Exit status 3: the startup schema check refused, which only an operator can fix; not retried.
+# Exit status 3: the startup schema check refused, or the enabled HSM could not be initialised
+# (a retry would try the PIN again and could lock the token); only an operator can fix either, so
+# it is not retried. Other fatal configuration errors exit 1 and are retried up to the start limit.
 # Status 75: it waited Schema.WaitSeconds for the database or the node's migrations; retried.
 RestartPreventExitStatus=3
 
@@ -84,6 +86,9 @@ SystemCallErrorNumber=EPERM
 # exist yet. config/ and logs/ are the node's: read-only here, and not read with --signer-dir.
 ReadWritePaths=/opt/modularca/keystores -/opt/modularca/signer
 # A PKCS#11 module needs its device; add e.g. DeviceAllow= and drop PrivateDevices when using one.
+
+# Every file and directory the signer creates is its own alone.
+UMask=0077
 
 # Core dumps of this process would contain unwrapped key material.
 LimitCORE=0

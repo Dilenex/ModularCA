@@ -50,26 +50,81 @@ export function daysUntil(notAfter: string | Date, now: Date = new Date()): numb
     return (toDate(notAfter).getTime() - now.getTime()) / DAY;
 }
 
-/** Whether a certificate is expired or expiring within soonDays, ignoring revoked ones. */
-export function expiryState(cert: { revoked?: boolean; notAfter: string }, now: Date = new Date(), soonDays = 30): 'revoked' | 'expired' | 'expiring' | 'active' {
+/**
+ * When a certificate's expiry warning (amber) and alert (red) start, as the server stored them from
+ * its certificate profile at issuance. Both equal notAfter when the profile never warns.
+ */
+export interface ExpiryInstants {
+    notAfter: string | Date;
+    expiryWarningAt?: string | null;
+    expiryAlertAt?: string | null;
+}
+
+/** Fixed windows of releases before 0.4.3, used when a row carries no instants. */
+const FALLBACK_WARNING_DAYS = 30;
+const FALLBACK_ALERT_DAYS = 7;
+
+/**
+ * Which expiry level a valid certificate is in at now: its alert, its warning, or neither. Uses
+ * the stored instants, or the old 30- and 7-day windows when the row has none.
+ */
+export function expiryLevel(cert: ExpiryInstants, now: Date = new Date()): 'alert' | 'warning' | 'none' {
+    const t = now.getTime();
+    if (cert.expiryWarningAt) {
+        if (cert.expiryAlertAt && toDate(cert.expiryAlertAt).getTime() <= t) return 'alert';
+        return toDate(cert.expiryWarningAt).getTime() <= t ? 'warning' : 'none';
+    }
+    const days = daysUntil(cert.notAfter, now);
+    if (days <= FALLBACK_ALERT_DAYS) return 'alert';
+    return days <= FALLBACK_WARNING_DAYS ? 'warning' : 'none';
+}
+
+/** Whether the certificate's profile never warns of its expiry (both instants at notAfter). */
+export function neverWarns(cert: ExpiryInstants): boolean {
+    return !!cert.expiryWarningAt && toDate(cert.expiryWarningAt).getTime() >= toDate(cert.notAfter).getTime();
+}
+
+/**
+ * Whether a certificate is expired or in its expiry warning, ignoring revoked ones. The warning
+ * starts at the stored instant; a row without one falls back to soonDays before expiry.
+ */
+export function expiryState(cert: { revoked?: boolean; notAfter: string; expiryWarningAt?: string | null; expiryAlertAt?: string | null },
+    now: Date = new Date(), soonDays = FALLBACK_WARNING_DAYS): 'revoked' | 'expired' | 'expiring' | 'active' {
     if (cert.revoked) return 'revoked';
     const days = daysUntil(cert.notAfter, now);
     if (days < 0) return 'expired';
+    if (cert.expiryWarningAt) return expiryLevel(cert, now) === 'none' ? 'active' : 'expiring';
     return days <= soonDays ? 'expiring' : 'active';
 }
 
 /**
  * How loud a certificate's expiry should be. A replaced certificate is routine (neutral). One
- * that expired in the last 30 days with no replacement, or expires within 7, is critical; one
- * that expired earlier or expires within 30 days is a warning; anything further out is fine.
+ * that expired in the last 30 days with no replacement, or is in its expiry alert, is critical;
+ * one that expired earlier or is in its expiry warning is a warning; anything else is fine. Pass
+ * the certificate (or attention item) itself to use its stored instants; a bare notAfter, or a
+ * row without them, uses the old 7- and 30-day windows.
  */
-export function lifecycleTone(notAfter: string | Date, replaced: boolean, now: Date = new Date()): LifecycleTone {
+export function lifecycleTone(cert: string | Date | ExpiryInstants, replaced: boolean, now: Date = new Date()): LifecycleTone {
     if (replaced) return 'neutral';
-    const days = daysUntil(notAfter, now);
+    const c: ExpiryInstants = typeof cert === 'string' || cert instanceof Date ? { notAfter: cert } : cert;
+    const days = daysUntil(c.notAfter, now);
     if (days < 0) return days >= -30 ? 'crit' : 'warn';
-    if (days <= 7) return 'crit';
-    if (days <= 30) return 'warn';
-    return 'ok';
+    switch (expiryLevel(c, now)) {
+        case 'alert': return 'crit';
+        case 'warning': return 'warn';
+        default: return 'ok';
+    }
+}
+
+/**
+ * When the certificate's expiry warning and alert start, for its page: "No expiry warning
+ * (profile)" when the profile never warns; null when the row carries no instants.
+ */
+export function expiryScheduleText(cert: ExpiryInstants, formatDate: (d: string) => string = (d) => new Date(d).toLocaleString()): string | null {
+    if (!cert.expiryWarningAt) return null;
+    if (neverWarns(cert)) return 'No expiry warning (profile)';
+    const warns = `Warns from ${formatDate(String(cert.expiryWarningAt))}`;
+    return cert.expiryAlertAt ? `${warns}; alert from ${formatDate(String(cert.expiryAlertAt))}` : warns;
 }
 
 /** Text colour for a tone. */
@@ -108,9 +163,12 @@ export function isoDay(d: Date): string {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** List link for active certificates expiring within days with no replacement. */
-export function expiringLink(days: number, now: Date = new Date()): string {
-    return `/certificates?status=active&replaced=no&notAfterTo=${isoDay(new Date(now.getTime() + (days + 1) * DAY))}`;
+/**
+ * List link for certificates in their expiry warning (or, with alert, their expiry alert); with
+ * notReplaced, only those with no replacement that are not retired or dismissed.
+ */
+export function expiringLink(alert = false, notReplaced = true): string {
+    return `/certificates?status=${alert ? 'alert' : 'expiring'}${notReplaced ? '&replaced=no' : ''}`;
 }
 
 export interface LifecycleHealthItem {
@@ -123,24 +181,29 @@ export interface LifecycleHealthItem {
 
 const certs = (n: number) => `${n} certificate${n === 1 ? '' : 's'}`;
 
-/** The dashboard's expiry health items, each with a tone and a link to the matching list. */
-export function lifecycleHealth(s: CertificateLifecycleSummaryModel, now: Date = new Date()): LifecycleHealthItem[] {
+/**
+ * The dashboard's expiry health items, each with a tone and a link to the matching list. The
+ * expiring item counts the certificates in their expiry warning or alert, which start at the
+ * instants each certificate's profile gave it.
+ */
+export function lifecycleHealth(s: CertificateLifecycleSummaryModel, _now: Date = new Date()): LifecycleHealthItem[] {
     const items: LifecycleHealthItem[] = [];
+    const warned = s.inExpiryWarning ?? 0, warnedOpen = s.inExpiryWarningNotReplaced ?? 0, alertedOpen = s.inExpiryAlertNotReplaced ?? 0;
 
-    if (s.expiringWithin7DaysNotReplaced > 0) {
-        items.push({ key: 'expiring', label: 'Expiring', tone: 'crit', to: expiringLink(7, now),
-            detail: `${certs(s.expiringWithin7DaysNotReplaced)} expire within 7 days with no replacement` });
-    } else if (s.expiringWithin30DaysNotReplaced > 0) {
-        items.push({ key: 'expiring', label: 'Expiring', tone: 'warn', to: expiringLink(30, now),
-            detail: `${certs(s.expiringWithin30DaysNotReplaced)} expire within 30 days with no replacement` });
-    } else if (s.expiringWithin30Days > 0) {
-        items.push({ key: 'expiring', label: 'Expiring', tone: 'ok', to: `/certificates?status=active&notAfterTo=${isoDay(new Date(now.getTime() + 31 * DAY))}`,
+    if (alertedOpen > 0) {
+        items.push({ key: 'expiring', label: 'Expiring', tone: 'crit', to: expiringLink(true),
+            detail: `${certs(alertedOpen)} in their expiry alert with no replacement` });
+    } else if (warnedOpen > 0) {
+        items.push({ key: 'expiring', label: 'Expiring', tone: 'warn', to: expiringLink(),
+            detail: `${certs(warnedOpen)} in their expiry warning with no replacement` });
+    } else if (warned > 0) {
+        items.push({ key: 'expiring', label: 'Expiring', tone: 'ok', to: expiringLink(false, false),
             detail: s.retiredOrDismissed > 0
-                ? `${certs(s.expiringWithin30Days)} expire within 30 days, each replaced, retired or dismissed`
-                : `${certs(s.expiringWithin30Days)} expire within 30 days, all already replaced` });
+                ? `${certs(warned)} in their expiry warning, each replaced, retired or dismissed`
+                : `${certs(warned)} in their expiry warning, all already replaced` });
     } else {
         items.push({ key: 'expiring', label: 'Expiring', tone: 'ok', to: '/certificates?status=active',
-            detail: 'Nothing expires within 30 days' });
+            detail: 'No certificate is in its expiry warning' });
     }
 
     if (s.recentlyExpiredNotReplaced > 0) {
@@ -161,9 +224,13 @@ export function lifecycleHealth(s: CertificateLifecycleSummaryModel, now: Date =
     return items;
 }
 
-/** Tone of one attention item: expired or within 7 days is critical, the rest a warning. */
-export function attentionTone(item: Pick<CertificateAttentionItemModel, 'notAfter'>, now: Date = new Date()): LifecycleTone {
-    return lifecycleTone(item.notAfter, false, now);
+/**
+ * Tone of one attention item: expired recently or in its expiry alert is critical, in its expiry
+ * warning a warning. An item without instants falls back to the 7- and 30-day windows.
+ */
+export function attentionTone(item: Pick<CertificateAttentionItemModel, 'notAfter'> & Partial<Pick<CertificateAttentionItemModel, 'expiryWarningAt' | 'expiryAlertAt'>>,
+    now: Date = new Date()): LifecycleTone {
+    return lifecycleTone(item, false, now);
 }
 
 /**

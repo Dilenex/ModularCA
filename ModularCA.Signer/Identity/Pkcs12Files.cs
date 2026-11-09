@@ -14,7 +14,8 @@ public static class Pkcs12Files
     /// <summary>
     /// Writes <paramref name="certificate"/> with its private key, followed by
     /// <paramref name="chain"/>, to <paramref name="path"/> under <paramref name="password"/>,
-    /// and tightens the file to its owner. An existing file is replaced.
+    /// owner-only from the start (<see cref="FileSecurityUtil.WriteOwnerOnly(string, byte[])"/>).
+    /// An existing file is replaced.
     /// </summary>
     public static void Write(string path, X509Certificate2 certificate, IEnumerable<X509Certificate2>? chain, string password)
     {
@@ -28,8 +29,7 @@ public static class Pkcs12Files
         var directory = Path.GetDirectoryName(Path.GetFullPath(path));
         if (!string.IsNullOrEmpty(directory))
             Directory.CreateDirectory(directory);
-        File.WriteAllBytes(path, collection.Export(X509ContentType.Pkcs12, password ?? string.Empty)!);
-        FileSecurityUtil.SetOwnerOnly(path);
+        FileSecurityUtil.WriteOwnerOnly(path, collection.Export(X509ContentType.Pkcs12, password ?? string.Empty)!);
     }
 
     /// <summary>

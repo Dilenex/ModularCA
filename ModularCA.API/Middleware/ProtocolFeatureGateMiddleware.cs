@@ -13,41 +13,46 @@ public class ProtocolFeatureGateMiddleware
     private readonly RequestDelegate _next;
 
     /// <summary>
-    /// Maps request path prefixes to the feature flag that gates them.
-    /// Order matters: more-specific prefixes must appear before shorter ones
-    /// so that e.g. "/api/v1/admin/crl" (not listed) is not blocked.
+    /// Maps request path prefixes to the feature flag that gates them. Each prefix is matched by
+    /// whole segments (<see cref="PathString.StartsWithSegments(PathString, StringComparison)"/>),
+    /// so <c>/ocsp</c> gates both <c>/ocsp</c> and <c>/ocsp/...</c> and not <c>/ocspfoo</c>.
     /// </summary>
-    private static readonly (string PathPrefix, string FlagName)[] Gates = new[]
+    /// <remarks>
+    /// These were matched as raw string prefixes ending in a slash, so the exact paths a client
+    /// posts to — <c>POST /ocsp</c> above all — were never gated, and the ones without a slash
+    /// (<c>/api/v1/acme</c>) also matched unrelated paths that merely began with the same letters.
+    /// </remarks>
+    private static readonly (PathString PathPrefix, string FlagName)[] Gates = new (PathString, string)[]
     {
         // CRL — public distribution endpoints
         ("/api/v1/public/crl", "CRL.Enabled"),
-        ("/crl/",              "CRL.Enabled"),
+        ("/crl",               "CRL.Enabled"),
 
         // OCSP — public responder endpoints
         ("/api/v1/public/ocsp", "OCSP.Enabled"),
-        ("/ocsp/",              "OCSP.Enabled"),
+        ("/ocsp",               "OCSP.Enabled"),
 
         // ACME — RFC 8555 endpoints
         ("/api/v1/acme",                  "ACME.Enabled"),
-        ("/acme/",                        "ACME.Enabled"),
-        ("/.well-known/acme-challenge/",  "ACME.Enabled"),
+        ("/acme",                         "ACME.Enabled"),
+        ("/.well-known/acme-challenge",   "ACME.Enabled"),
 
         // EST — RFC 7030 endpoints
         ("/api/v1/est",            "EST.Enabled"),
-        ("/est/",                  "EST.Enabled"),
-        ("/.well-known/est/",      "EST.Enabled"),
+        ("/est",                   "EST.Enabled"),
+        ("/.well-known/est",       "EST.Enabled"),
 
         // SCEP — Simple Certificate Enrollment Protocol endpoints
         ("/api/v1/scep", "SCEP.Enabled"),
-        ("/scep/",       "SCEP.Enabled"),
+        ("/scep",        "SCEP.Enabled"),
 
         // CMP — Certificate Management Protocol endpoints
         ("/api/v1/cmp", "CMP.Enabled"),
-        ("/cmp/",       "CMP.Enabled"),
+        ("/cmp",        "CMP.Enabled"),
 
         // Windows autoenrollment (MS-WSTEP)
         ("/api/v1/msae", "MSAE.Enabled"),
-        ("/msae/",       "MSAE.Enabled"),
+        ("/msae",        "MSAE.Enabled"),
     };
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -65,12 +70,12 @@ public class ProtocolFeatureGateMiddleware
     /// </summary>
     public async Task InvokeAsync(HttpContext context, IFeatureFlagService featureFlagService)
     {
-        var path = context.Request.Path.Value;
-        if (path != null)
+        var path = context.Request.Path;
+        if (path.HasValue)
         {
             foreach (var (prefix, flagName) in Gates)
             {
-                if (path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                if (path.StartsWithSegments(prefix, StringComparison.OrdinalIgnoreCase))
                 {
                     if (!featureFlagService.IsEnabled(flagName))
                     {

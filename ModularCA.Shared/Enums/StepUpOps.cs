@@ -260,6 +260,11 @@ public static class StepUpOps
     /// <summary>Signing an SSH certificate through the admin routes: a user certificate for a user or a service identity, or a host certificate.</summary>
     public const string SignSshCert = "sign-ssh-cert";
 
+    /// <summary>Retiring a certificate, so nothing renews, reissues or re-enrolls from it.</summary>
+    public const string RetireCert = "retire-cert";
+    /// <summary>Undoing a certificate's retirement, so it can be renewed again.</summary>
+    public const string UndoRetireCert = "undo-retire-cert";
+
     /// <summary>
     /// The canonical allow-list consulted by <c>IssueStepUpTokenAsync</c>. Any operation
     /// string not present here is rejected at issuance time with
@@ -311,6 +316,7 @@ public static class StepUpOps
         RestartAuditChain, ManageTrustAnchor, RevokeSshCert, CreateEnrollmentSecret, CreateEabKey, ManageUserBadge,
         CreateSpace, CreateCertProfile, CreateRequestProfile, CreateSigningProfile, ManageSshTemplate, ApproveRequest, RejectRequest,
         ManageSshLoginNames, SignSshCert,
+        RetireCert, UndoRetireCert,
     };
 
     /// <summary>

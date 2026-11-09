@@ -23,6 +23,7 @@ import { periodRangeText, periodText } from '@shared/periodText';
 import { profileTypeLabel } from './sshProfileType';
 import { certProfileInUse, certProfileUseText } from './infrastructureProfiles';
 import { CaScopeName } from '../components/CaScopeName';
+import { expiryAlertText, expiryWarningText } from './profiles/certProfile';
 
 /* ─── Certificate Profiles Tab ─── */
 const CertProfilesTab: React.FC = () => {
@@ -104,6 +105,8 @@ const CertProfilesTab: React.FC = () => {
             <DetailField label="Validity Min" value={periodText(p.validityPeriodMin)} />
             <DetailField label="Validity Max" value={periodText(p.validityPeriodMax)} />
             <DetailField label="CT Enabled" value={p.ctEnabled ? 'Yes' : 'No'} />
+            <DetailField label="Expiry Warning" value={expiryWarningText(p)} />
+            <DetailField label="Expiry Alert" value={expiryAlertText(p)} />
             {p.inheritanceEnabled && <DetailField label="Inherits From" value={resolveParentName(p.inheritsFromId) || 'None'} />}
             <DetailField label="CA Scope" value={<CaScopeName caId={p.certificateAuthorityId} fallback="System-wide" />} />
             <p className="text-[11px] text-ink-muted pt-3">Open the full page to view all rules or edit.</p>

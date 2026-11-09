@@ -9,6 +9,7 @@ using ModularCA.API.Services;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Auth.Utils;
 using ModularCA.Auth.Models;
+using ModularCA.Core.Helpers;
 using ModularCA.Core.Services;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
@@ -157,7 +158,7 @@ public class MtlsController : ControllerBase
         // factor at all (bootstrap), mirroring TOTP `setup`/WebAuthn `register`.
         var hasTotpPrecheck = await _db.TotpSecrets.AnyAsync(t => t.UserId == userId.Value && t.IsVerified);
         var hasWebAuthnPrecheck = await _db.Fido2Credentials.AnyAsync(c => c.UserId == userId.Value);
-        var hasActiveMtlsPrecheck = await _db.MtlsCredentials.AnyAsync(c => c.UserId == userId.Value && !c.IsRevoked && c.ExpiresAt > DateTime.UtcNow);
+        var hasActiveMtlsPrecheck = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
         if (hasTotpPrecheck || hasWebAuthnPrecheck || hasActiveMtlsPrecheck)
         {
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.MtlsEnroll))
@@ -390,7 +391,9 @@ public class MtlsController : ControllerBase
 
     /// <summary>
     /// Revokes an mTLS credential by ID. Requires step-up MFA verification via X-MFA-Token header.
-    /// Cannot revoke the user's last remaining MFA method. Also revokes the underlying certificate.
+    /// Cannot revoke the user's last remaining MFA method. Also revokes the underlying certificate,
+    /// and ends every session of the account (the current one included) in the same save, since a
+    /// session does not record which credential opened it.
     /// </summary>
     [Authorize]
     [HttpDelete("credentials/{id}")]
@@ -414,14 +417,15 @@ public class MtlsController : ControllerBase
         // Prevent removal of last MFA method
         var hasTotp = await _db.TotpSecrets.AnyAsync(t => t.UserId == userId.Value && t.IsVerified);
         var hasWebAuthn = await _db.Fido2Credentials.AnyAsync(c => c.UserId == userId.Value);
-        var otherActiveMtls = await _db.MtlsCredentials.AnyAsync(c =>
-            c.UserId == userId.Value && c.Id != id && !c.IsRevoked && c.ExpiresAt > DateTime.UtcNow);
+        var otherActiveMtls = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c =>
+            c.UserId == userId.Value && c.Id != id);
 
         if (!hasTotp && !hasWebAuthn && !otherActiveMtls)
             return StatusCode(409, new { error = "Cannot revoke your only MFA method. Set up another MFA method first." });
 
+        var now = DateTime.UtcNow;
         credential.IsRevoked = true;
-        credential.RevokedAt = DateTime.UtcNow;
+        credential.RevokedAt = now;
 
         // Also revoke the underlying certificate if it exists
         if (credential.CertificateId.HasValue)
@@ -431,11 +435,14 @@ public class MtlsController : ControllerBase
             {
                 cert.Revoked = true;
                 cert.RevocationReason = "Superseded";
-                cert.RevocationDate = DateTime.UtcNow;
+                cert.RevocationDate = now;
             }
         }
 
+        // Refresh tokens do not record the credential that opened them, so every session ends.
+        var ended = await UserSessionTermination.EndAllSessionsAsync(_db, [userId.Value], now);
         await _db.SaveChangesAsync();
+        await UserSessionTermination.InvalidateStampCacheAsync(_cache, [userId.Value]);
 
         // Emit the dedicated MfaMtlsRemoved action type instead of
         // the generic UserUpdated, and capture the source IP. Keeps MFA revocation
@@ -448,8 +455,19 @@ public class MtlsController : ControllerBase
             targetEntityId: id.ToString(),
             details: new { Action = "MtlsRevoked", CredentialId = id, SerialNumber = credential.SerialNumber },
             sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());
+        foreach (var e in ended)
+        {
+            await _audit.LogAsync(
+                Shared.Enums.AuditActionType.UserSessionsEnded,
+                userId.Value,
+                _currentUser.User?.Username,
+                targetEntityType: "User",
+                targetEntityId: e.UserId.ToString(),
+                details: new { reason = "mtls_credential_revoked", credentialId = id, certificateId = credential.CertificateId, refreshTokensRevoked = e.RefreshTokensRevoked },
+                sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());
+        }
 
-        return Ok(new { message = "mTLS credential revoked successfully" });
+        return Ok(new { message = "mTLS credential revoked. Every session of this account has been signed out; sign in again." });
     }
 
     /// <summary>
@@ -457,6 +475,8 @@ public class MtlsController : ControllerBase
     /// validates it against the user's stored mTLS credentials, and issues a full JWT on success.
     /// Accepts the temporary MFA token from the login endpoint (no JWT required), consumed once;
     /// a token minted by a certificate login is refused, since one certificate is not two factors.
+    /// A credential whose certificate is revoked or on hold is refused and audited, and a valid
+    /// DPoP proof binds the new session's refresh token to the proving key.
     /// </summary>
     /// <remarks>
     /// <c>[AllowAnonymous]</c> is required, not optional. <c>StartModularCA</c> sets a
@@ -496,14 +516,16 @@ public class MtlsController : ControllerBase
         var thumbprint = clientCert.GetCertHashString(System.Security.Cryptography.HashAlgorithmName.SHA256);
 
         // Look up the credential for this user and thumbprint
-        var credential = await _db.MtlsCredentials.FirstOrDefaultAsync(c =>
-            c.UserId == userId
-            && c.Thumbprint == thumbprint
-            && !c.IsRevoked
-            && c.ExpiresAt > DateTime.UtcNow);
+        var match = await MtlsCredentialStatus.FindForAuthenticationAsync(_db, thumbprint, userId, DateTime.UtcNow);
+        var credential = match.Credential;
 
         if (credential == null)
             return Unauthorized(new { error = "Client certificate does not match any active mTLS credential for this user" });
+        if (!match.Authenticates)
+        {
+            await AuditRefusedCredentialAsync(user.Id, user.Username, match, thumbprint, "mtls-verify");
+            return Unauthorized(new { error = "This client certificate has been revoked and can no longer be used to sign in" });
+        }
 
         // Validate the presented cert chains to the enrolled signing CA.
         // Thumbprint equality alone does not prove issuer binding.
@@ -593,7 +615,7 @@ public class MtlsController : ControllerBase
         }
         var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired);
         var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
-        var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash);
+        var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash, await GetDpopJktAsync());
         // Plaintext is returned to the client; DB stores the hash.
         var refreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
 
@@ -649,6 +671,18 @@ public class MtlsController : ControllerBase
     /// history.
     /// </summary>
     private const string MfaHandoffCookie = "MfaMtlsHandoff";
+
+    /// <summary>
+    /// Audits a client certificate refused because its certificate is revoked, on hold or no longer
+    /// on record (<see cref="MtlsCredentialMatch.AuditReason"/>), as a failed sign-in of its owner.
+    /// </summary>
+    private Task AuditRefusedCredentialAsync(Guid userId, string? username, MtlsCredentialMatch match, string thumbprint, string flow)
+        => _audit.LogAsync(
+            Shared.Enums.AuditActionType.UserLoginFailed,
+            userId, username,
+            sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(), success: false,
+            details: new { reason = match.AuditReason, Flow = flow, thumbprint, credentialId = match.Credential?.Id, certificateId = match.Credential?.CertificateId },
+            errorMessage: "LoginFailed");
 
     /// <summary>Audits a refused attempt to complete a certificate-first sign-in with a client certificate.</summary>
     private async Task AuditCertificateAsBothFactorsAsync(Guid userId, string flow)
@@ -708,12 +742,13 @@ public class MtlsController : ControllerBase
     /// Browser-navigation mTLS verification endpoint. Unlike the POST /verify endpoint (which
     /// uses fetch and can't trigger TLS renegotiation), this GET endpoint forces the browser
     /// to navigate here directly, triggering a fresh TLS handshake and the certificate picker.
-    /// On success, redirects back to the admin UI with a one-time auth code in the query.
+    /// On success, redirects back to the admin UI with a one-time auth code in the query; the
+    /// session is bound to a DPoP key when that code is exchanged (<see cref="ExchangeCode"/>).
+    /// A credential whose certificate is revoked or on hold is refused and audited.
     /// <para>
-    /// Reads the MFA token from the <see cref="MfaHandoffCookie"/> cookie set by
-    /// <see cref="PrepareRedirect"/>; falls back to the legacy <c>?mfaToken=</c> query
-    /// parameter only when the cookie is absent (test envs, manual deep links). The cookie
-    /// path keeps the token out of referer headers, server logs, and browser history.
+    /// Reads the MFA token only from the <see cref="MfaHandoffCookie"/> cookie set by
+    /// <see cref="PrepareRedirect"/>; there is no query-string form. The cookie keeps the token
+    /// out of referer headers, server logs, and browser history.
     /// </para>
     /// The token is consumed once, and one minted by a certificate login is refused.
     /// </summary>
@@ -728,9 +763,6 @@ public class MtlsController : ControllerBase
     {
         var mainOrigin = ResolveMainOrigin();
 
-        // Prefer the cookie set by PrepareRedirect; fall back to the query parameter so a
-        // direct deep link (e.g. ops debugging) still works in environments without the
-        // shared-parent-domain cookie scope.
         // Cookie only. A query-string fallback survived the introduction of the cookie handoff
         // and undid it: the SPA never sent the query form, but anyone holding a token from a
         // log line could.
@@ -778,14 +810,16 @@ public class MtlsController : ControllerBase
         // clientCert was already obtained above (non-null if we reached here)
         var thumbprint = clientCert.GetCertHashString(System.Security.Cryptography.HashAlgorithmName.SHA256);
 
-        var credential = await _db.MtlsCredentials.FirstOrDefaultAsync(c =>
-            c.UserId == userId
-            && c.Thumbprint == thumbprint
-            && !c.IsRevoked
-            && c.ExpiresAt > DateTime.UtcNow);
+        var match = await MtlsCredentialStatus.FindForAuthenticationAsync(_db, thumbprint, userId, DateTime.UtcNow);
+        var credential = match.Credential;
 
         if (credential == null)
             return Redirect($"{mainOrigin}/login?error=cert_not_matched");
+        if (!match.Authenticates)
+        {
+            await AuditRefusedCredentialAsync(user.Id, user.Username, match, thumbprint, "mtls-verify-redirect");
+            return Redirect($"{mainOrigin}/login?error=cert_revoked");
+        }
 
         // Full chain validation against the enrolled signing CA.
         var chainOkRedirect = await MtlsChainValidator.ValidateAgainstCredentialCaAsync(
@@ -897,7 +931,9 @@ public class MtlsController : ControllerBase
     /// Primary mTLS login endpoint. Reads the client certificate from the TLS connection,
     /// looks up the thumbprint in MtlsCredentials, finds the user, and either issues a full
     /// JWT (if no other MFA methods) or redirects to MFA verification with a pending-MFA token
-    /// recorded as certificate-first.
+    /// recorded as certificate-first. A credential whose certificate is revoked or on hold is
+    /// refused and audited. Tokens leave through a one-time code whose exchange
+    /// (<see cref="ExchangeCode"/>) binds the session to a DPoP key.
     /// </summary>
     [HttpGet("login-redirect")]
     [AllowAnonymous]
@@ -914,14 +950,17 @@ public class MtlsController : ControllerBase
         var thumbprint = clientCert.GetCertHashString(System.Security.Cryptography.HashAlgorithmName.SHA256);
 
         // Look up the credential by thumbprint (any user)
-        var credential = await _db.MtlsCredentials.FirstOrDefaultAsync(c =>
-            c.Thumbprint == thumbprint
-            && !c.IsRevoked
-            && c.ExpiresAt > DateTime.UtcNow);
+        var match = await MtlsCredentialStatus.FindForAuthenticationAsync(_db, thumbprint, null, DateTime.UtcNow);
+        var credential = match.Credential;
 
-        var user = credential != null ? await _db.Users.FindAsync(credential.UserId) : null;
+        var user = credential?.User;
         if (credential == null || user == null)
             return Redirect($"{mainOrigin}/login?error=auth_failed");
+        if (!match.Authenticates)
+        {
+            await AuditRefusedCredentialAsync(user.Id, user.Username, match, thumbprint, "login-redirect");
+            return Redirect($"{mainOrigin}/login?error=cert_revoked");
+        }
 
         // Validate chain against the enrolled signing CA.
         var chainOkLogin = await MtlsChainValidator.ValidateAgainstCredentialCaAsync(
@@ -1063,6 +1102,7 @@ public class MtlsController : ControllerBase
     /// <summary>
     /// Exchanges a one-time authorization code (issued by verify-redirect or login-redirect)
     /// for the associated JWT tokens. The code is single-use and expires after 30 seconds.
+    /// A valid DPoP proof on this request binds the session's refresh token to the proving key.
     /// </summary>
     [HttpPost("exchange")]
     [AllowAnonymous]
@@ -1099,11 +1139,14 @@ public class MtlsController : ControllerBase
                 });
             }
 
+            var refreshPlaintext = data.GetProperty("RefreshToken").GetString();
+            await BindRefreshTokenToProofAsync(refreshPlaintext);
+
             return Ok(new
             {
                 token = data.GetProperty("Token").GetString(),
                 expiresAt = data.GetProperty("ExpiresAt").GetString(),
-                refreshToken = data.GetProperty("RefreshToken").GetString()
+                refreshToken = refreshPlaintext
             });
         }
         catch (JsonException)
@@ -1111,6 +1154,32 @@ public class MtlsController : ControllerBase
             return Unauthorized(new { error = "Invalid or expired authorization code" });
         }
     }
+
+    /// <summary>
+    /// Binds the refresh token a redirect sign-in minted to the key that proved possession on this
+    /// exchange. The redirect itself is a browser navigation and cannot carry a DPoP proof, so the
+    /// token is stored unbound; it is first handed to the client here, which makes this the point
+    /// to bind it. Without a valid proof the token stays unbound.
+    /// </summary>
+    private async Task BindRefreshTokenToProofAsync(string? refreshPlaintext)
+    {
+        if (string.IsNullOrEmpty(refreshPlaintext))
+            return;
+        var jkt = await GetDpopJktAsync();
+        if (jkt == null)
+            return;
+        var hash = ModularCA.Auth.Services.JwtTokenService.HashRefreshToken(refreshPlaintext);
+        var stored = await _db.RefreshTokens.FirstOrDefaultAsync(t => t.Token == hash && t.CnfJkt == null);
+        if (stored == null)
+            return;
+        stored.CnfJkt = jkt;
+        await _db.SaveChangesAsync();
+    }
+
+    /// <summary>The JWK thumbprint of a valid DPoP proof on this request, or null when there is none.</summary>
+    private Task<string?> GetDpopJktAsync()
+        => HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Services.IDpopProofService>()
+            .GetValidatedJktAsync(HttpContext, HttpContext.RequestAborted);
 
     /// <summary>
     /// Resolves the main application origin URL for redirect purposes.
@@ -1161,7 +1230,9 @@ public class MtlsController : ControllerBase
     /// safe shared suffix exists (e.g. raw IP, single-label host, or unconfigured
     /// PublicDomain) — caller should not set the Domain attribute in that case, which
     /// scopes the cookie to the request host only and effectively disables cross-subdomain
-    /// handoff in that environment (the legacy query-string fallback covers it).
+    /// handoff in that environment. There is no other route for the token, so
+    /// <see cref="VerifyRedirect"/> then answers <c>mfa_token_missing</c> unless the browser
+    /// reaches it on the same host.
     /// </summary>
     private string? ComputeHandoffCookieDomain()
     {

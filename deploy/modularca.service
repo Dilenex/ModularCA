@@ -53,9 +53,9 @@ Environment=DOTNET_CONSOLE_ANSI_COLOR=false
 # promised a restart the unit would not perform.
 #
 # The thrash protection that on-failure was chosen for is provided by the start limit below,
-# which applies to every restart cause: bootstrap still exits non-zero on a fatal
-# misconfiguration (bad JWT secret, mTLS enabled with no trust anchors), and systemd still gives
-# up after 5 attempts in 300s rather than filling the journal with the same failure.
+# which applies to every restart cause: bootstrap still exits 1 on a fatal misconfiguration (bad
+# JWT secret, mTLS enabled with no trust anchors), and systemd still gives up after 5 attempts in
+# 300s rather than filling the journal with the same failure.
 #
 # A `systemctl stop` is unaffected — that is a stop job, not a service exit, and always does not
 # override it.
@@ -63,12 +63,14 @@ Restart=always
 RestartSec=5s
 # Exit status 3 is the startup schema check refusing: something only an operator can fix (a schema
 # newer than this build, a wrong password or pg_hba rule, tables the runtime role does not own, a
-# migration that failed for good). A restart cannot fix it, so the unit stops as failed at once
-# instead of using up its start limit. Transient conditions are waited for or retried inside the
-# process, not by restarts: an unreachable database, a migration in progress, and a migration that
-# failed on a lock timeout, a deadlock or a lost connection. Status 75 means that went on for
-# longer than Schema.WaitSeconds (900 s); systemd retries it, and each such restart takes at least
-# that long, so the start limit below is not reached by a database that is merely slow to come back.
+# migration that failed for good), or an enabled HSM that cannot be initialised (each restart
+# would try the PIN again, and a token locks after a few wrong ones). A restart cannot fix either,
+# so the unit stops as failed at once instead of using up its start limit. Transient conditions
+# are waited for or retried inside the process, not by restarts: an unreachable database, a
+# migration in progress, and a migration that failed on a lock timeout, a deadlock or a lost
+# connection. Status 75 means that went on for longer than Schema.WaitSeconds (900 s); systemd
+# retries it, and each such restart takes at least that long, so the start limit below is not
+# reached by a database that is merely slow to come back.
 RestartPreventExitStatus=3
 
 # CRL/OCSP/AIA must be reachable over plain HTTP per RFC 5280, and operators commonly
@@ -105,6 +107,11 @@ SystemCallErrorNumber=EPERM
 # SshCa.KeyStoragePath or Logging.FilePath configured outside these needs its own entry in a
 # drop-in, and must be owned by this user.
 ReadWritePaths=/opt/modularca/config /opt/modularca/keystores /opt/modularca/logs /opt/modularca/backups
+
+# Every file and directory the service creates is its own alone, whatever the code path: keys,
+# configuration, backups and logs. A file it rewrites in place keeps the mode it had. Members of
+# the modularca group who read logs/ directly need UMask=0027 in a drop-in; journalctl needs nothing.
+UMask=0077
 
 # Core dumps of this process would contain unwrapped key material.
 LimitCORE=0

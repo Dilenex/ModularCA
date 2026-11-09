@@ -161,9 +161,14 @@ public class ScepService : IScepService, IEnrollmentProtocol
         _signer = signer ?? throw new ArgumentNullException(nameof(signer));
     }
 
-    public async Task<(byte[] data, bool isPkcs7)> GetCaCertAsync(string? caLabel = null)
+    /// <summary>
+    /// Answers GetCACert with the addressed CA's certificate and its issuers. Refused, after an
+    /// unsuccessful audit row, when SCEP cannot run on that CA; see <see cref="EnsureScepCanRunAsync"/>.
+    /// </summary>
+    public async Task<(byte[] data, bool isPkcs7)> GetCaCertAsync(string? caLabel = null, string? sourceIp = null)
     {
         var context = await _caResolver.ResolveAsync(caLabel, "SCEP");
+        await EnsureScepCanRunAsync(context, GetCaCertOperation, sourceIp);
 
         // If a CA entity is resolved, return its certificate chain
         if (context.Ca != null)
@@ -230,11 +235,13 @@ public class ScepService : IScepService, IEnrollmentProtocol
     /// <summary>
     /// Processes a SCEP PKIOperation request. Parses the CMS SignedData envelope, verifies
     /// the message signature, dispatches by message type, and returns a properly-signed
-    /// CMS response with appropriate SCEP failInfo codes on error.
+    /// CMS response with appropriate SCEP failInfo codes on error. Refused, after an unsuccessful
+    /// audit row, when SCEP cannot run on the addressed CA; see <see cref="EnsureScepCanRunAsync"/>.
     /// </summary>
     public async Task<byte[]> PkiOperationAsync(byte[] cmsRequest, string? caLabel = null, string? sourceIp = null)
     {
         var context = await _caResolver.ResolveAsync(caLabel, "SCEP");
+        await EnsureScepCanRunAsync(context, PkiOperationOperation, sourceIp);
 
         // Resolve the CA signer that will sign SCEP responses
         var (caCert, caKey) = await ResolveSignerForCaAsync(context)
@@ -250,13 +257,17 @@ public class ScepService : IScepService, IEnrollmentProtocol
             }
             catch (Exception)
             {
+                await LogPkiOperationRejectedAsync(context, null, sourceIp, "The request is not a CMS SignedData message (badMessageCheck).");
                 return await BuildFailureResponse(caCert, caKey, null, null, FailInfoBadMessageCheck);
             }
 
             var signerInfos = signedData.GetSignerInfos();
             var signerEnum = signerInfos.GetSigners().GetEnumerator();
             if (!signerEnum.MoveNext())
+            {
+                await LogPkiOperationRejectedAsync(context, null, sourceIp, "The CMS message has no signer (badMessageCheck).");
                 return await BuildFailureResponse(caCert, caKey, null, null, FailInfoBadMessageCheck);
+            }
 
             var signerInfo = (SignerInformation)signerEnum.Current;
             var signedAttrs = signerInfo.SignedAttributes;
@@ -267,7 +278,11 @@ public class ScepService : IScepService, IEnrollmentProtocol
 
             // Validate senderNonce length is within RFC 8894 §3.2.1.5 bounds.
             if (senderNonce != null && (senderNonce.Length < 16 || senderNonce.Length > 32))
+            {
+                await LogPkiOperationRejectedAsync(context, transactionId, sourceIp,
+                    $"senderNonce is {senderNonce.Length} octets; 16 to 32 are accepted (badMessageCheck).");
                 return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadMessageCheck);
+            }
 
             // Verify the CMS signature on the request and capture the signer cert for
             // trust-chain analysis (High #5 renewal binding).
@@ -287,11 +302,17 @@ public class ScepService : IScepService, IEnrollmentProtocol
                     }
                 }
                 if (!verified)
+                {
+                    await LogPkiOperationRejectedAsync(context, transactionId, sourceIp,
+                        "The CMS signature does not verify under any certificate the message carries (badMessageCheck).");
                     return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadMessageCheck);
+                }
             }
             catch (Exception)
             {
                 // Signature verification failure — badMessageCheck
+                await LogPkiOperationRejectedAsync(context, transactionId, sourceIp,
+                    "The CMS signature could not be verified (badMessageCheck).");
                 return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadMessageCheck);
             }
 
@@ -306,10 +327,14 @@ public class ScepService : IScepService, IEnrollmentProtocol
             }
 
             // Unsupported message type — return failure
+            await LogPkiOperationRejectedAsync(context, transactionId, sourceIp,
+                $"Unsupported messageType '{messageType ?? "(none)"}' (badRequest).");
             return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            _logger.LogWarning(ex, "SCEP PKIOperation at CA {CaLabel} failed.", context.Ca?.Label);
+            await LogPkiOperationRejectedAsync(context, null, sourceIp, "The request could not be processed (badRequest).");
             return await BuildFailureResponse(caCert, caKey, null, null, FailInfoBadRequest);
         }
     }
@@ -353,7 +378,11 @@ public class ScepService : IScepService, IEnrollmentProtocol
         }
 
         if (csrDer == null)
+        {
+            await LogPkiOperationRejectedAsync(context, transactionId, sourceIp,
+                "The PKCSReq envelope could not be opened with the CA key (badRequest).");
             return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
+        }
 
         // Convert DER CSR to PEM and parse
         var csrPem = CertificateUtil.ConvertDerToPem(csrDer, "CERTIFICATE REQUEST");
@@ -365,6 +394,8 @@ public class ScepService : IScepService, IEnrollmentProtocol
         }
         catch (Exception)
         {
+            await LogPkiOperationRejectedAsync(context, transactionId, sourceIp,
+                "The PKCSReq envelope does not hold a readable PKCS#10 request (badRequest).");
             return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
         }
 
@@ -592,10 +623,12 @@ public class ScepService : IScepService, IEnrollmentProtocol
             case EnrollmentOutcome.Refused:
                 return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
 
-            // A configuration fault, not a decision about the request. Thrown because that is how
-            // this method has always answered one — the caller catches it and renders badRequest.
+            // A configuration fault, not a decision about the request. The middle does not audit
+            // one, so the row is written here, and the client is answered badRequest.
             case EnrollmentOutcome.Failed failed:
-                throw new InvalidOperationException(failed.Message);
+                _logger.LogWarning("SCEP PKCSReq at CA {CaLabel} failed: {Reason}", context.Ca?.Label, failed.Message);
+                await LogPkcsReqRejectedAsync(parsedCsr.SubjectName, context, transactionId, sourceIp, failed.Message);
+                return await BuildFailureResponse(caCert, caKey, transactionId, senderNonce, FailInfoBadRequest);
 
             default:
                 throw new InvalidOperationException("Unrecognised enrollment outcome.");
@@ -859,6 +892,46 @@ public class ScepService : IScepService, IEnrollmentProtocol
         /// <summary>The failInfo the response carries.</summary>
         public string FailInfo { get; }
     }
+
+    /// <summary>
+    /// Refuses the exchange when SCEP cannot run on the addressed CA at all, as
+    /// <see cref="ProtocolCompatibility"/> judges it from the CA's certificate: today, a key that is
+    /// not RSA, which no SCEP client can envelope a request to. Writes an unsuccessful audit row
+    /// carrying the reason first. Checked on every request because a configuration enabled before
+    /// enabling was refused still resolves; the row itself is left as it is.
+    /// </summary>
+    /// <param name="context">The CA the exchange addresses.</param>
+    /// <param name="operation">The SCEP operation, as the audit row records it.</param>
+    /// <param name="sourceIp">Caller address, for the audit row.</param>
+    /// <exception cref="ProtocolIncompatibleException">SCEP cannot run on this CA.</exception>
+    private async Task EnsureScepCanRunAsync(ResolvedCaContext context, string operation, string? sourceIp)
+    {
+        var ca = context.Ca;
+        if (ca?.CertificateId == null)
+            return;
+
+        var certificate = await _db.Certificates.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.CertificateId == ca.CertificateId);
+        var advisory = ProtocolCompatibility.Advisories(Protocol, ProtocolCompatibility.KeyAlgorithmOf(certificate)).FirstOrDefault();
+        if (advisory == null)
+            return;
+
+        _logger.LogWarning("SCEP {Operation} at CA {CaLabel} refused: {Reason}", operation, ca.Label, advisory.Message);
+        await _protocolAudit.LogScepAsync(operation, subjectDN: null, certSerial: null,
+            keyAlgorithm: null, keySize: null, caLabel: ca.Label, transactionId: null, sourceIp: sourceIp,
+            success: false, errorMessage: advisory.Message,
+            certificateAuthorityId: ca.Id, spaceId: ca.SpaceId);
+        throw new ProtocolIncompatibleException(advisory);
+    }
+
+    /// <summary>Audit operation recorded for a GetCACert refused because SCEP cannot run on the CA.</summary>
+    private const string GetCaCertOperation = "GetCACert";
+
+    /// <summary>
+    /// Audit operation recorded for a PKIOperation refused before its message is read, because SCEP
+    /// cannot run on the CA.
+    /// </summary>
+    private const string PkiOperationOperation = "PKIOperation";
 
     /// <summary>Audit message type recorded for a PKCSReq that was issued or refused.</summary>
     private const string PkcsReqOperation = "PKCSReq";
@@ -1159,7 +1232,35 @@ public class ScepService : IScepService, IEnrollmentProtocol
         => _protocolAudit.LogScepAsync("PKCSReq", subject, certSerial: null,
             keyAlgorithm: null, keySize: null, caLabel: context.Ca?.Label,
             transactionId: transactionId, sourceIp: sourceIp,
-            success: false, errorMessage: reason);
+            success: false, errorMessage: reason,
+            certificateAuthorityId: context.Ca?.Id, spaceId: context.Ca?.SpaceId);
+
+    /// <summary>
+    /// Records a PKIOperation the responder could not read or authenticate (the CMS envelope, its
+    /// signature, the nonce, the message type, the enveloped request) on the SCEP audit tab. Those
+    /// were answered with a failInfo and recorded nowhere. An audit failure is logged and does not
+    /// change the answer.
+    /// </summary>
+    /// <param name="context">The CA the request addressed.</param>
+    /// <param name="transactionId">The SCEP transactionID, when it could be read.</param>
+    /// <param name="sourceIp">Caller address.</param>
+    /// <param name="reason">What was wrong, with the failInfo the client received.</param>
+    private async Task LogPkiOperationRejectedAsync(ResolvedCaContext context, string? transactionId,
+        string? sourceIp, string reason)
+    {
+        try
+        {
+            await _protocolAudit.LogScepAsync(PkiOperationOperation, subjectDN: null, certSerial: null,
+                keyAlgorithm: null, keySize: null, caLabel: context.Ca?.Label,
+                transactionId: transactionId, sourceIp: sourceIp,
+                success: false, errorMessage: reason,
+                certificateAuthorityId: context.Ca?.Id, spaceId: context.Ca?.SpaceId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "SCEP rejection audit failed for CA {CaLabel}", context.Ca?.Label);
+        }
+    }
 
     /// <summary>Builds a signed CertRep carrying SUCCESS and the certs-only PKCS#7.</summary>
     private Task<byte[]> BuildSuccessResponse(

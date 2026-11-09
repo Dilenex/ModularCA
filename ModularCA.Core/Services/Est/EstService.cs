@@ -271,10 +271,6 @@ public class EstService : IEstService, IEnrollmentProtocol
                     reason => ThrowEnrollRejectedAsync(reason, caLabel, sourceIp, clientCert));
             }
 
-            var csrSanValues = parsedCsr.SubjectAlternativeNames
-                .Select(s => s.Contains(':') ? s.Split(':', 2)[1] : s)
-                .ToList();
-
             // Gather the client cert's subject CN + SANs. Any parse failure in these
             // extractors fails closed (they throw InvalidOperationException) — we emit
             // the EstEnrollRejected audit before propagating so the operator can trace
@@ -300,9 +296,7 @@ public class EstService : IEstService, IEnrollmentProtocol
             bool subjectOk = string.IsNullOrEmpty(csrCn)
                 || (clientCn != null && string.Equals(csrCn, clientCn, StringComparison.OrdinalIgnoreCase));
 
-            bool sansOk = csrSanValues.Count == 0 ||
-                csrSanValues.All(csrSan =>
-                    clientSans.Any(cs => string.Equals(cs, csrSan, StringComparison.OrdinalIgnoreCase)));
+            bool sansOk = CsrSansHeldByClient(parsedCsr.SubjectAlternativeNames, clientSans);
 
             if (!subjectOk || !sansOk)
             {
@@ -812,34 +806,20 @@ public class EstService : IEstService, IEnrollmentProtocol
     }
 
     /// <summary>
-    /// Extract DNS/email/IP SAN values from a .NET <see cref="System.Security.Cryptography.X509Certificates.X509Certificate2"/>
-    /// by walking the Subject Alternative Name extension.
-    /// Now throws <see cref="InvalidOperationException"/> on
-    /// malformed SAN parsing rather than silently returning an empty list. An empty list
-    /// from a swallowed failure allowed CSR SAN-subset checks to enforce against an empty
-    /// allow-list, weakening the mTLS client-identity binding.
+    /// The SANs an mTLS client certificate holds, typed as the CSR parser types them
+    /// (<c>DNS:host</c>, <c>IP:addr</c>, <c>EMAIL:addr</c>, <c>UPN:name</c>, ...). See
+    /// <see cref="ClientCertSanCandidates"/> for what counts. Throws
+    /// <see cref="InvalidOperationException"/> on a malformed SAN extension rather than returning
+    /// an empty list, which would weaken the mTLS client-identity binding.
     /// </summary>
     private List<string> ExtractClientCertSans(System.Security.Cryptography.X509Certificates.X509Certificate2 cert)
     {
-        var result = new List<string>();
         try
         {
-            foreach (var ext in cert.Extensions)
-            {
-                if (ext.Oid?.Value != "2.5.29.17") continue;
-                // Parse the SAN extension via BC for type-agnostic traversal.
-                var asn1 = Org.BouncyCastle.Asn1.Asn1Object.FromByteArray(ext.RawData);
-                var gns = Org.BouncyCastle.Asn1.X509.GeneralNames.GetInstance(asn1);
-                foreach (var gn in gns.GetNames())
-                {
-                    var val = gn.Name?.ToString();
-                    if (!string.IsNullOrEmpty(val)) result.Add(val);
-                }
-            }
-            // Also include the cert's subject CN as a trivial SAN candidate so callers
-            // submitting CSRs where the SAN == the CN still pass the subset check.
-            var subjectCn = ExtractCommonName(cert.Subject);
-            if (subjectCn != null) result.Add(subjectCn);
+            return ClientCertSanCandidates(cert.Extensions
+                    .Where(e => e.Oid?.Value == "2.5.29.17")
+                    .Select(e => e.RawData),
+                ExtractCommonName(cert.Subject));
         }
         catch (Exception ex) when (ex is not InvalidOperationException)
         {
@@ -849,8 +829,50 @@ public class EstService : IEstService, IEnrollmentProtocol
             throw new InvalidOperationException(
                 "Malformed Subject Alternative Name extension on mTLS client cert; cannot verify SAN-binding for EST enrollment.", ex);
         }
+    }
+
+    /// <summary>
+    /// The typed SANs an mTLS client certificate vouches for: each entry of its SAN extension,
+    /// and its common name as a DNS name when the certificate has no DNS SAN of its own and the
+    /// common name is a host name.
+    /// </summary>
+    /// <remarks>
+    /// The values used to be compared with their types stripped, and the common name was a
+    /// candidate for every type, so a certificate whose CN or email SAN read <c>admin@corp</c>
+    /// could ask for a UPN of <c>admin@corp</c>, and one named <c>10.0.0.1</c> for that IP
+    /// address. The common name still stands for the DNS name of a device certificate that
+    /// carries no SAN, the one case a client relies on it for.
+    /// </remarks>
+    /// <param name="sanExtensions">The raw value of each SAN extension on the certificate.</param>
+    /// <param name="commonName">The certificate's subject CN, or null.</param>
+    internal static List<string> ClientCertSanCandidates(IEnumerable<byte[]> sanExtensions, string? commonName)
+    {
+        var result = new List<string>();
+        foreach (var raw in sanExtensions)
+        {
+            var gns = Org.BouncyCastle.Asn1.X509.GeneralNames.GetInstance(
+                Org.BouncyCastle.Asn1.Asn1Object.FromByteArray(raw));
+            result.AddRange(gns.GetNames().Select(UpnSanEncoding.Describe));
+        }
+
+        if (!string.IsNullOrWhiteSpace(commonName)
+            && !result.Any(s => s.StartsWith("DNS:", StringComparison.OrdinalIgnoreCase))
+            && Uri.CheckHostName(commonName) == UriHostNameType.Dns)
+        {
+            result.Add($"DNS:{commonName}");
+        }
         return result;
     }
+
+    /// <summary>
+    /// Whether every SAN a CSR asks for is one the mTLS client certificate holds, compared as
+    /// typed <c>TYPE:value</c> pairs (case-insensitively), so a value is only ever matched by the
+    /// same value of the same type. A CSR with no SANs asks for nothing.
+    /// </summary>
+    /// <param name="csrSans">The CSR's SANs as the CSR parser renders them.</param>
+    /// <param name="clientSans">The certificate's SANs; see <see cref="ClientCertSanCandidates"/>.</param>
+    internal static bool CsrSansHeldByClient(IReadOnlyCollection<string> csrSans, IReadOnlyCollection<string> clientSans)
+        => csrSans.All(csrSan => clientSans.Any(cs => string.Equals(cs, csrSan, StringComparison.OrdinalIgnoreCase)));
 
     /// <summary>
     /// CSR attributes advertised to EST clients. Previously this

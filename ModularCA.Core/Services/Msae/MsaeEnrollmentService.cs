@@ -235,6 +235,8 @@ public class MsaeEnrollmentService(
             {
                 CsrPem = csrPem,
                 Subject = subject,
+                // The ticket names the certificate; nothing of the CSR's subject may ride along.
+                SubjectReplacesCsr = caller.Kerberos != null,
                 SubjectAlternativeNames = sans,
                 KeyAlgorithm = parsedCsr.KeyAlgorithm,
                 KeySize = parsedCsr.KeySize,
@@ -254,6 +256,10 @@ public class MsaeEnrollmentService(
                     material = material with
                     {
                         Subject = renewed.SubjectDN,
+                        // Issuance would otherwise build the subject from the empty CSR subject
+                        // (falling back to the first DNS name), and the renewal would drop the
+                        // old certificate's other components.
+                        SubjectReplacesCsr = true,
                         SubjectAlternativeNames = RenewedNames(renewal.Certificate),
                     };
                 }

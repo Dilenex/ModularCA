@@ -3,8 +3,9 @@ using System.Net.Mail;
 namespace ModularCA.Shared.Utils;
 
 /// <summary>
-/// Save-time checks for list-valued settings written through PUT /admin/config/*. Each method
-/// returns null when the value is acceptable, otherwise a message for a 400 response.
+/// Save-time checks for settings written through PUT /admin/config/* or the settings store
+/// (<see cref="StoredSettingError"/>). Each method returns null when the value is acceptable,
+/// otherwise a message for a 400 response or a refused write.
 /// </summary>
 public static class ConfigInputRules
 {
@@ -137,6 +138,134 @@ public static class ConfigInputRules
         }
         return null;
     }
+
+    /// <summary>
+    /// Parses one <c>Http.TrustedProxyCidrs</c> entry: an IPv4 or IPv6 address, a slash and a
+    /// prefix length within the address family's range, with no bits set after the prefix.
+    /// Returns null and the network when it parses, otherwise a message naming the entry.
+    /// </summary>
+    /// <param name="cidr">One trimmed entry.</param>
+    /// <param name="network">The network, when the entry parses.</param>
+    public static string? TrustedProxyCidrError(string cidr, out System.Net.IPNetwork network)
+    {
+        network = default;
+        var slash = cidr.IndexOf('/');
+        if (slash <= 0 || slash == cidr.Length - 1)
+            return $"Trusted proxy '{cidr}' in Http.TrustedProxyCidrs is not in CIDR form: write address/prefix, e.g. 10.0.1.5/32.";
+        if (!System.Net.IPAddress.TryParse(cidr[..slash], out var address) || address.ToString().Contains('%'))
+            return $"Trusted proxy '{cidr}' in Http.TrustedProxyCidrs does not start with an IP address.";
+        var max = address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork ? 32 : 128;
+        if (!int.TryParse(cidr[(slash + 1)..], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var prefix)
+            || prefix > max)
+            return $"Trusted proxy '{cidr}' in Http.TrustedProxyCidrs has a prefix length that is not from 0 to {max}.";
+
+        var bytes = address.GetAddressBytes();
+        var masked = (byte[])bytes.Clone();
+        for (var i = 0; i < masked.Length; i++)
+        {
+            var keep = Math.Clamp(prefix - i * 8, 0, 8);
+            masked[i] &= (byte)(0xFF << (8 - keep));
+        }
+        if (!bytes.AsSpan().SequenceEqual(masked))
+            return $"Trusted proxy '{cidr}' in Http.TrustedProxyCidrs has bits set after the /{prefix} prefix: write {new System.Net.IPAddress(masked)}/{prefix}, or /{max} for one address.";
+
+        network = new System.Net.IPNetwork(address, prefix);
+        return null;
+    }
+
+    /// <summary>
+    /// Validates the comma-separated <c>Http.TrustedProxyCidrs</c> list, split as startup splits
+    /// it (comma, entries trimmed, blanks dropped). Returns the first entry that does not parse
+    /// (<see cref="TrustedProxyCidrError"/>), or null when all do or the list is blank.
+    /// </summary>
+    /// <param name="csv">The Http.TrustedProxyCidrs value.</param>
+    public static string? TrustedProxyCidrsError(string? csv)
+    {
+        if (string.IsNullOrWhiteSpace(csv)) return null;
+        foreach (var cidr in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (TrustedProxyCidrError(cidr, out _) is { } error)
+                return error;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// The networks <c>Http.TrustedProxyCidrs</c> names. Throws when an entry does not parse;
+    /// check <see cref="TrustedProxyCidrsError"/> first.
+    /// </summary>
+    /// <param name="csv">The Http.TrustedProxyCidrs value.</param>
+    /// <exception cref="FormatException">An entry is not a usable CIDR.</exception>
+    public static IReadOnlyList<System.Net.IPNetwork> TrustedProxyNetworks(string? csv)
+    {
+        if (string.IsNullOrWhiteSpace(csv)) return [];
+        var networks = new List<System.Net.IPNetwork>();
+        foreach (var cidr in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (TrustedProxyCidrError(cidr, out var network) is { } error)
+                throw new FormatException(error);
+            networks.Add(network);
+        }
+        return networks;
+    }
+
+    /// <summary>
+    /// The reverse-proxy settings together: <c>Security.BehindReverseProxy</c> on with no trusted
+    /// proxy named is refused, because forwarded headers are then honoured from loopback only,
+    /// every request appears to come from the proxy, and an RFC1918 proxy address passes every
+    /// internal-only IP whitelist rule. Also refuses an entry that does not parse. Returns null
+    /// when the pair is usable.
+    /// </summary>
+    /// <param name="behindReverseProxy">Security.BehindReverseProxy.</param>
+    /// <param name="trustedProxyCidrs">Http.TrustedProxyCidrs.</param>
+    public static string? ReverseProxyError(bool behindReverseProxy, string? trustedProxyCidrs)
+    {
+        if (TrustedProxyCidrsError(trustedProxyCidrs) is { } error)
+            return error;
+        if (behindReverseProxy && string.IsNullOrWhiteSpace(trustedProxyCidrs))
+            return "Security.BehindReverseProxy is on but Http.TrustedProxyCidrs names no proxy. Every request would appear "
+                 + "to come from the proxy, and an internal proxy address passes the internal-only IP whitelist rules. "
+                 + "Name the proxy, e.g. 10.0.1.5/32, or 127.0.0.1/32,::1/128 for a proxy on this host, or turn BehindReverseProxy off.";
+        return null;
+    }
+
+    /// <summary>
+    /// Validates a dotted object identifier as X.660 writes it: at least two arcs of decimal
+    /// digits separated by dots, no leading zeros, the first arc 0, 1 or 2, and the second at most
+    /// 39 under 0 or 1. Returns null when it is one, otherwise a message naming
+    /// <paramref name="field"/>.
+    /// </summary>
+    /// <param name="oid">The value from the request body or the settings store.</param>
+    /// <param name="field">The setting name used in the message, e.g. <c>Tsa.PolicyOid</c>.</param>
+    public static string? ObjectIdentifierError(string? oid, string field)
+    {
+        var example = "e.g. 1.3.6.1.4.1.66874.1.5.1";
+        if (string.IsNullOrWhiteSpace(oid))
+            return $"{field} must be an object identifier written with dots, {example}.";
+        var arcs = oid.Split('.');
+        if (arcs.Length < 2
+            || arcs.Any(a => a.Length == 0 || !a.All(char.IsAsciiDigit) || (a.Length > 1 && a[0] == '0')))
+            return $"{field} '{oid}' is not an object identifier: write decimal arcs separated by dots, with no spaces or leading zeros, {example}.";
+        if (arcs[0] is not ("0" or "1" or "2"))
+            return $"{field} '{oid}' is not an object identifier: the first arc must be 0, 1 or 2.";
+        if (arcs[0] != "2" && (arcs[1].Length > 2 || int.Parse(arcs[1], System.Globalization.CultureInfo.InvariantCulture) > 39))
+            return $"{field} '{oid}' is not an object identifier: under {arcs[0]} the second arc must be from 0 to 39.";
+        return null;
+    }
+
+    /// <summary>
+    /// The rule a stored setting's value must pass beyond its type, for settings that no console
+    /// endpoint checks before they reach the settings store: null when the value passes or the
+    /// setting has no such rule. The store applies it to every write, from the console or
+    /// <c>--settings set</c>. The value must already be of the setting's type.
+    /// </summary>
+    /// <param name="key">The store key, with underscores.</param>
+    /// <param name="value">The value being stored.</param>
+    public static string? StoredSettingError(string key, System.Text.Json.Nodes.JsonNode? value) => key switch
+    {
+        "Tsa_PolicyOid" => ObjectIdentifierError(value is System.Text.Json.Nodes.JsonValue text && text.TryGetValue<string>(out var oid) ? oid : null, "Tsa.PolicyOid"),
+        _ => null,
+    };
 
     /// <summary>
     /// The origins a CORS origin list allows, split as startup splits it. None when the list is

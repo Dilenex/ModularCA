@@ -259,7 +259,7 @@ const MyX509Certificates: React.FC = () => {
                         <span className="text-xs text-ink-muted whitespace-nowrap">{formatDate(c.notAfter)}</span>
                         {(state === 'expired' || state === 'expiring') && (
                             <span className="text-xs truncate">
-                                <span className={toneTextClass(lifecycleTone(c.notAfter, !!c.replaced, now))}>{capitalize(expiryPhrase(c.notAfter, now))}</span>
+                                <span className={toneTextClass(lifecycleTone(c, !!c.replaced, now))}>{capitalize(expiryPhrase(c.notAfter, now))}</span>
                                 <span className="text-ink-muted"> · {replacementText(c)}</span>
                             </span>
                         )}
@@ -301,8 +301,8 @@ const MyX509Certificates: React.FC = () => {
                 )}
 
                 {(expiryState(cert) === 'expired' || expiryState(cert) === 'expiring') && (
-                    <div className={`border rounded p-2 text-xs ${toneBannerClass(lifecycleTone(cert.notAfter, !!cert.replaced))}`}>
-                        <span className={`font-semibold ${toneTextClass(lifecycleTone(cert.notAfter, !!cert.replaced))}`}>{capitalize(expiryPhrase(cert.notAfter))}</span>
+                    <div className={`border rounded p-2 text-xs ${toneBannerClass(lifecycleTone(cert, !!cert.replaced))}`}>
+                        <span className={`font-semibold ${toneTextClass(lifecycleTone(cert, !!cert.replaced))}`}>{capitalize(expiryPhrase(cert.notAfter))}</span>
                         <span className="text-ink"> · {replacementText(cert)}</span>
                         {!cert.replaced && !cert.retiredAt && <span className="text-ink-muted">. Use Renew to request a replacement, or renew it the way you obtained it.</span>}
                         {!cert.replaced && cert.retiredAt && <span className="text-ink-muted">. An administrator retired it, so it is not renewed; request a new certificate instead.</span>}

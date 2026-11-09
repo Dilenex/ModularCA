@@ -24,7 +24,7 @@ import { AlgorithmSummary, KeyPolicySummary } from './profiles/KeyPolicyEditor';
 import { useEkuCatalog } from '../hooks/useOidCatalog';
 import type { CertificateLifecycleSummaryModel } from '@shared/generated';
 import {
-    attentionTone, capitalize, channelLabel, expiringLink, expiryPhrase, isoDay, lifecycleHealth, sortAttention,
+    attentionTone, capitalize, channelLabel, expiringLink, expiryPhrase, lifecycleHealth, sortAttention,
     toneDotClass, toneTextClass, type LifecycleHealthItem,
 } from './certLifecycle';
 import { periodText } from '@shared/periodText';
@@ -319,8 +319,8 @@ const Dashboard: React.FC = () => {
     const stat = (n: number | undefined) => (certStatsLoading ? '...' : certStatsError ? '-' : n ?? 0);
     const loudText = (t: string) => (t === 'crit' || t === 'warn' ? toneTextClass(t) : 'text-ink');
     const expiredTone = health.find((h) => h.key === 'expired')?.tone ?? 'neutral';
-    const expiringTone = summary && summary.expiringWithin30DaysNotReplaced > 0
-        ? (summary.expiringWithin7DaysNotReplaced > 0 ? 'crit' : 'warn')
+    const expiringTone = summary && summary.inExpiryWarningNotReplaced > 0
+        ? (summary.inExpiryAlertNotReplaced > 0 ? 'crit' : 'warn')
         : 'neutral';
 
     return (
@@ -378,11 +378,14 @@ const Dashboard: React.FC = () => {
                     <div className={statLabelClass}>Active</div>
                     <div className={`${statValueClass} text-ok`}>{stat(summary?.active)}</div>
                 </Link>
-                <Link to={summary && summary.expiringWithin30DaysNotReplaced === 0 ? `/certificates?status=active&notAfterTo=${isoDay(new Date(now.getTime() + 31 * 86_400_000))}` : expiringLink(30, now)} className={statLinkClass}>
-                    <div className={statLabelClass}>Expiring (30d)</div>
-                    <div className={`${statValueClass} ${loudText(expiringTone)}`}>{stat(summary?.expiringWithin30Days)}</div>
-                    {summary && summary.expiringWithin30Days > 0 && (
-                        <div className="text-xs text-ink-muted mt-0.5">{summary.expiringWithin30DaysNotReplaced} not replaced</div>
+                <Link to={expiringLink(false, !summary || summary.inExpiryWarningNotReplaced > 0)} className={statLinkClass}
+                    title="Certificates in their expiry warning, which each certificate's profile sets (by default when 30 % of its lifetime is left).">
+                    <div className={statLabelClass}>Expiring</div>
+                    <div className={`${statValueClass} ${loudText(expiringTone)}`}>{stat(summary?.inExpiryWarning)}</div>
+                    {summary && summary.inExpiryWarning > 0 && (
+                        <div className="text-xs text-ink-muted mt-0.5">
+                            {summary.inExpiryWarningNotReplaced} not replaced{summary.inExpiryAlert > 0 ? `, ${summary.inExpiryAlert} in alert` : ''}
+                        </div>
                     )}
                 </Link>
                 <Link to="/certificates?status=expired" className={statLinkClass}
@@ -424,7 +427,7 @@ const Dashboard: React.FC = () => {
                 {!certStatsLoading && summary && attention.length === 0 && (
                     <div className="px-4 py-6 text-center">
                         <div className="text-sm text-ink font-medium">Nothing needs attention</div>
-                        <div className="text-xs text-ink-muted mt-1">No certificate expired in the last 30 days or expires in the next 30 without a replacement.</div>
+                        <div className="text-xs text-ink-muted mt-1">No certificate expired in the last 30 days or is in its expiry warning without a replacement.</div>
                     </div>
                 )}
                 {!certStatsLoading && attention.length > 0 && (
@@ -469,7 +472,7 @@ const Dashboard: React.FC = () => {
                     <div className="px-4 py-2 border-t border-line text-xs">
                         <Link to="/certificates?status=expired&replaced=no" className="text-accent-ink hover:underline">Expired, not replaced</Link>
                         <span className="text-ink-muted"> · </span>
-                        <Link to={expiringLink(30, now)} className="text-accent-ink hover:underline">Expiring within 30 days, not replaced</Link>
+                        <Link to={expiringLink()} className="text-accent-ink hover:underline">In expiry warning, not replaced</Link>
                     </div>
                 )}
             </div>

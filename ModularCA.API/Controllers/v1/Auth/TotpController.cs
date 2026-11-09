@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
@@ -37,9 +38,11 @@ public class TotpController : ControllerBase
     private readonly SystemConfig _config;
     private readonly ISecurityPolicyService _securityPolicy;
     private readonly IDataProtector _protector;
+    private readonly INotificationService _notifications;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="TotpController"/> class.
+    /// <paramref name="notifications"/> tells administrators when wrong recovery codes lock an account.
     /// </summary>
     public TotpController(
         ModularCADbContext db,
@@ -49,7 +52,8 @@ public class TotpController : ControllerBase
         IAuditService audit,
         SystemConfig config,
         ISecurityPolicyService securityPolicy,
-        IDataProtectionProvider dataProtection)
+        IDataProtectionProvider dataProtection,
+        INotificationService notifications)
     {
         _db = db;
         _cache = cache;
@@ -59,6 +63,7 @@ public class TotpController : ControllerBase
         _config = config;
         _securityPolicy = securityPolicy;
         _protector = dataProtection.CreateProtector("TotpSecret");
+        _notifications = notifications;
     }
 
     // ── Setup ────────────────────────────────────────────────────────
@@ -90,7 +95,7 @@ public class TotpController : ControllerBase
         // bootstrap case — no existing factor — stays open so `mfa_setup_required`
         // users can enroll their first method without chicken-and-egg deadlock.
         var hasWebAuthn = await _db.Fido2Credentials.AnyAsync(c => c.UserId == userId.Value);
-        var hasActiveMtls = await _db.MtlsCredentials.AnyAsync(c => c.UserId == userId.Value && !c.IsRevoked && c.ExpiresAt > DateTime.UtcNow);
+        var hasActiveMtls = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
         if (hasWebAuthn || hasActiveMtls)
         {
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.TotpSetup))
@@ -134,7 +139,8 @@ public class TotpController : ControllerBase
 
     /// <summary>
     /// Verifies the first TOTP code after setup to confirm the user has successfully
-    /// enrolled their authenticator app. Marks the secret as verified on success.
+    /// enrolled their authenticator app. Marks the secret as verified on success and returns ten
+    /// one-time recovery codes, stored only as per-user salted PBKDF2 hashes (<see cref="RecoveryCodeHash"/>).
     /// </summary>
     [Authorize]
     [HttpPost("verify-setup")]
@@ -151,7 +157,7 @@ public class TotpController : ControllerBase
         // another verified factor, VerifySetup requires step-up. Bootstrap users
         // without any factor can still complete first-time enrollment.
         var hasWebAuthnPrecheck = await _db.Fido2Credentials.AnyAsync(c => c.UserId == userId.Value);
-        var hasMtlsPrecheck = await _db.MtlsCredentials.AnyAsync(c => c.UserId == userId.Value && !c.IsRevoked && c.ExpiresAt > DateTime.UtcNow);
+        var hasMtlsPrecheck = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
         if (hasWebAuthnPrecheck || hasMtlsPrecheck)
         {
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.TotpVerifySetup))
@@ -166,8 +172,11 @@ public class TotpController : ControllerBase
 
         var secret = GetDecryptedSecret(totpSecret);
         var (valid, timeStep) = VerifyTotpCode(secret, request.Code, 0);
+        // 400, not 401: the session is fine, the code the user typed is wrong. The console's API
+        // client treats every 401 as the end of the session, so a typo here used to sign the user
+        // out in the middle of enrolment (and, on the security page, throw away the step-up).
         if (!valid)
-            return Unauthorized(new { error = "Invalid TOTP code. Check your authenticator app and try again." });
+            return BadRequest(new { error = "Invalid TOTP code. Check your authenticator app and try again." });
 
         totpSecret.IsVerified = true;
         totpSecret.LastUsedTimeStep = timeStep;
@@ -198,7 +207,7 @@ public class TotpController : ControllerBase
             _db.TotpRecoveryCodes.Add(new TotpRecoveryCodeEntity
             {
                 UserId = userId.Value,
-                CodeHash = ComputeRecoveryCodeHash(code),
+                CodeHash = RecoveryCodeHash.Compute(userId.Value, code),
                 CreatedAt = DateTime.UtcNow
             });
         }
@@ -223,12 +232,19 @@ public class TotpController : ControllerBase
     /// Exchange a one-time recovery code for a TOTP reset. The caller
     /// provides their username + a recovery code; on success, the user's TOTP secret is
     /// removed and they must re-enroll via <c>/setup</c>. The recovery code is consumed
-    /// (marked <c>UsedAt</c>) regardless of outcome to prevent replay.
+    /// (marked <c>UsedAt</c>) to prevent replay, the security stamp rotates (old JWTs stop at once)
+    /// and every refresh token is revoked. Codes match in either stored form
+    /// (<see cref="RecoveryCodeHash"/>). A wrong code counts as a failed sign-in (counted
+    /// atomically), locks the account at the security policy's threshold and then notifies
+    /// administrators, as a wrong password does. An unknown, disabled or locked account costs the
+    /// same hashing and the same <see cref="SecurityPolicyEntity.LoginResponseDelayMs"/> budget as a
+    /// wrong code, so the response time does not tell them apart.
     /// </summary>
     [AllowAnonymous]
     [HttpPost("recovery")]
     public async Task<IActionResult> TotpRecovery([FromBody] TotpRecoveryRequest request)
     {
+        var sw = Stopwatch.StartNew();
         var sourceIp = HttpContext.Connection.RemoteIpAddress?.ToString();
 
         if (string.IsNullOrWhiteSpace(request.Username) || string.IsNullOrWhiteSpace(request.RecoveryCode))
@@ -236,42 +252,74 @@ public class TotpController : ControllerBase
 
         var user = await _db.Users.FirstOrDefaultAsync(u => u.Username == request.Username);
         if (user == null)
+        {
+            _ = RecoveryCodeHash.Candidates(Guid.Empty, request.RecoveryCode);
+            await _audit.LogAsync(
+                Shared.Enums.AuditActionType.MfaTotpFailed,
+                null, request.Username,
+                sourceIp: sourceIp, success: false,
+                details: new { reason = "totp_recovery_user_not_found" },
+                errorMessage: "RecoveryFailed");
+            await DelayToBudgetAsync(sw);
             return Unauthorized(new { error = "Invalid recovery code" });
+        }
 
         // Recovery is a credential exchange, so the account-state checks that gate every other
         // login path apply here too. Without them a disabled or locked account could still
         // trade a recovery code for a cleared MFA enrolment and a rotated security stamp.
+        await ModularCA.Core.Helpers.AccountLockout.ClearElapsedAsync(_db, user, DateTime.UtcNow);
         if (!user.IsActive || user.IsLocked || (user.LockoutEndUtc.HasValue && user.LockoutEndUtc > DateTime.UtcNow))
         {
+            _ = RecoveryCodeHash.Candidates(user.Id, request.RecoveryCode);
             await _audit.LogAsync(
                 Shared.Enums.AuditActionType.MfaTotpFailed,
                 user.Id, user.Username,
                 sourceIp: sourceIp, success: false,
                 details: new { reason = "totp_recovery_account_not_eligible" },
                 errorMessage: "RecoveryFailed");
+            await DelayToBudgetAsync(sw);
             return Unauthorized(new { error = "Invalid recovery code" });
         }
 
-        var hash = ComputeRecoveryCodeHash(request.RecoveryCode);
+        var (currentHash, legacyHash) = RecoveryCodeHash.Candidates(user.Id, request.RecoveryCode);
         var code = await _db.TotpRecoveryCodes
-            .FirstOrDefaultAsync(r => r.UserId == user.Id && r.CodeHash == hash && r.UsedAt == null);
+            .FirstOrDefaultAsync(r => r.UserId == user.Id && (r.CodeHash == currentHash || r.CodeHash == legacyHash) && r.UsedAt == null);
 
         if (code == null)
         {
-            // Count the failure against the account, as the password and TOTP paths do.
-            // Without this, guesses here were free: they never advanced the lockout counter,
-            // so an attacker could work through the code space without ever locking the
-            // account they were attacking.
-            user.FailedLoginAttempts++;
-            _db.Users.Update(user);
-            await _db.SaveChangesAsync();
+            // Count the failure against the account and lock it at the shared threshold, as the
+            // password and certificate paths do, so guessing here runs into the same lockout.
+            // Incremented in the database, so concurrent guesses cannot overwrite each other's count.
+            await _db.Users
+                .Where(u => u.Id == user.Id)
+                .ExecuteUpdateAsync(s => s.SetProperty(u => u.FailedLoginAttempts, u => u.FailedLoginAttempts + 1));
+            await _db.Entry(user).ReloadAsync();
+
+            var policy = await _securityPolicy.GetAsync();
+            var lockedOut = policy.MaxFailedLoginAttempts > 0 && user.FailedLoginAttempts >= policy.MaxFailedLoginAttempts;
+            if (lockedOut)
+            {
+                if (policy.LockoutMinutes > 0)
+                    user.LockoutEndUtc = DateTime.UtcNow.AddMinutes(policy.LockoutMinutes);
+                else
+                    user.IsLocked = true;
+                _db.Users.Update(user);
+                await _db.SaveChangesAsync();
+            }
 
             await _audit.LogAsync(
                 Shared.Enums.AuditActionType.MfaTotpFailed,
                 user.Id, user.Username,
                 sourceIp: sourceIp, success: false,
-                details: new { reason = "totp_recovery_code_invalid", user.FailedLoginAttempts },
+                details: new { reason = "totp_recovery_code_invalid", user.FailedLoginAttempts, lockedOut },
                 errorMessage: "RecoveryFailed");
+            if (lockedOut)
+            {
+                await _notifications.NotifyAccountLockedAsync(user.Username, policy.LockoutMinutes > 0
+                    ? $"Temporarily locked for {policy.LockoutMinutes} minutes after {user.FailedLoginAttempts} failed attempts (TOTP recovery code) from {sourceIp}"
+                    : $"Permanently locked after {user.FailedLoginAttempts} failed attempts (TOTP recovery code) from {sourceIp}");
+            }
+            await DelayToBudgetAsync(sw);
             return Unauthorized(new { error = "Invalid recovery code" });
         }
 
@@ -287,6 +335,7 @@ public class TotpController : ControllerBase
         user.MfaEnrolledAt = null;
         _db.Users.Update(user);
         await _db.SaveChangesAsync();
+        await ModularCA.API.Middleware.TokenRevocationMiddleware.InvalidateUserStampCacheAsync(_cache, user.Id);
 
         // The stamp invalidates JWTs; it does not touch refresh tokens, and refresh does not
         // check the stamp. A recovery code is used on a bad day, possibly because a device is
@@ -311,13 +360,24 @@ public class TotpController : ControllerBase
     }
 
     /// <summary>
-    /// SHA-256 hex of a recovery code with the dash removed and the string uppercased,
-    /// so case / delimiter differences don't trip up a user who retyped from paper.
+    /// Waits until the security policy's <see cref="SecurityPolicyEntity.LoginResponseDelayMs"/>
+    /// budget has elapsed since <paramref name="sw"/> started, so every refusal of a recovery takes
+    /// about the same wall-clock time. As <c>AuthController</c> does for password sign-in.
     /// </summary>
-    private static string ComputeRecoveryCodeHash(string code)
+    private async Task DelayToBudgetAsync(Stopwatch sw)
     {
-        var normalized = code.Replace("-", string.Empty, StringComparison.Ordinal).ToUpperInvariant();
-        return Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(normalized)));
+        var budgetMs = (await _securityPolicy.GetAsync()).LoginResponseDelayMs;
+        if (budgetMs <= 0) return;
+        var elapsed = (int)sw.ElapsedMilliseconds;
+        if (elapsed >= budgetMs) return;
+        try
+        {
+            await Task.Delay(budgetMs - elapsed, HttpContext.RequestAborted);
+        }
+        catch (TaskCanceledException)
+        {
+            // Client disconnected.
+        }
     }
 
     // ── Login verification ──────────────────────────────────────────
@@ -513,7 +573,7 @@ public class TotpController : ControllerBase
 
         // Prevent removal of last MFA method
         var hasWebAuthn = await _db.Fido2Credentials.AnyAsync(c => c.UserId == userId.Value);
-        var hasActiveMtls = await _db.MtlsCredentials.AnyAsync(c => c.UserId == userId.Value && !c.IsRevoked && c.ExpiresAt > DateTime.UtcNow);
+        var hasActiveMtls = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
         if (!hasWebAuthn && !hasActiveMtls)
             return StatusCode(409, new { error = "Cannot remove your only MFA method. Register a security key or enroll an mTLS certificate before removing TOTP." });
 

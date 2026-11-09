@@ -40,8 +40,8 @@ confirmed at source before the next release is distributed.
 | [Fido2.AspNet](https://github.com/passwordless-lib/fido2-net-lib) | 4.0.1 | MIT | — |
 | [Fido2.Models](https://github.com/passwordless-lib/fido2-net-lib) | 4.0.1 | MIT | — |
 | [Fido2](https://github.com/passwordless-lib/fido2-net-lib) | 4.0.1 | MIT | — |
-| [FluentValidation.DependencyInjectionExtensions](https://fluentvalidation.net/) | 12.1.1 | Apache-2.0 | Copyright (c) Jeremy Skinner, .NET Foundation, and contributors 2008-2025 |
-| [FluentValidation](https://fluentvalidation.net/) | 12.1.1 | Apache-2.0 | Copyright (c) Jeremy Skinner, .NET Foundation, and contributors 2008-2025 |
+| [FluentValidation.DependencyInjectionExtensions](https://fluentvalidation.net/) | 12.2.0 | Apache-2.0 | Copyright (c) Jeremy Skinner, .NET Foundation, and contributors 2008-2025 |
+| [FluentValidation](https://fluentvalidation.net/) | 12.2.0 | Apache-2.0 | Copyright (c) Jeremy Skinner, .NET Foundation, and contributors 2008-2025 |
 | [Google.Protobuf](https://github.com/protocolbuffers/protobuf) | 3.36.1 | BSD-3-Clause | Copyright 2015, Google Inc. |
 | [Grpc.AspNetCore.Server.ClientFactory](https://github.com/grpc/grpc-dotnet) | 2.83.0 | Apache-2.0 | Copyright 2019 The gRPC Authors |
 | [Grpc.AspNetCore.Server](https://github.com/grpc/grpc-dotnet) | 2.83.0 | Apache-2.0 | Copyright 2019 The gRPC Authors |
@@ -54,8 +54,8 @@ confirmed at source before the next release is distributed.
 | [Kerberos.NET](https://github.com/dotnet/Kerberos.NET) | 4.6.168 | MIT | Copyright (c) .NET Foundation and Contributors |
 | [libsodium](https://libsodium.org/) | 1.0.20.1 | ISC | © 2024 Frank Denis |
 | [MailKit](http://www.mimekit.net/) | 4.16.0 | MIT | .NET Foundation and Contributors |
-| [Microsoft.AspNetCore.Authentication.JwtBearer](https://asp.net/) | 10.0.12 | MIT | © Microsoft Corporation. All rights reserved. |
-| [Microsoft.AspNetCore.DataProtection.StackExchangeRedis](https://asp.net/) | 10.0.12 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.AspNetCore.Authentication.JwtBearer](https://asp.net/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.AspNetCore.DataProtection.StackExchangeRedis](https://asp.net/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
 | [Microsoft.Bcl.Cryptography](https://dot.net/) | 10.0.2 | MIT | © Microsoft Corporation. All rights reserved. |
 | [Microsoft.Bcl.Memory](https://dot.net/) | 9.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
 | [Microsoft.Build.Framework](http://go.microsoft.com/fwlink/?LinkId=624683) | 18.0.2 | MIT | © Microsoft Corporation. All rights reserved. |
@@ -65,15 +65,15 @@ confirmed at source before the next release is distributed.
 | [Microsoft.CodeAnalysis.CSharp](https://github.com/dotnet/roslyn) | 5.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
 | [Microsoft.CodeAnalysis.Workspaces.Common](https://github.com/dotnet/roslyn) | 5.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
 | [Microsoft.CodeAnalysis.Workspaces.MSBuild](https://github.com/dotnet/roslyn) | 5.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
-| [Microsoft.EntityFrameworkCore.Abstractions](https://docs.microsoft.com/ef/core/) | 10.0.12 | MIT | © Microsoft Corporation. All rights reserved. |
-| [Microsoft.EntityFrameworkCore.Analyzers](https://docs.microsoft.com/ef/core/) | 10.0.12 | MIT | © Microsoft Corporation. All rights reserved. |
-| [Microsoft.EntityFrameworkCore.Design](https://docs.microsoft.com/ef/core/) | 10.0.12 | MIT | © Microsoft Corporation. All rights reserved. |
-| [Microsoft.EntityFrameworkCore.Relational](https://docs.microsoft.com/ef/core/) | 10.0.12 | MIT | © Microsoft Corporation. All rights reserved. |
-| [Microsoft.EntityFrameworkCore](https://docs.microsoft.com/ef/core/) | 10.0.12 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.EntityFrameworkCore.Abstractions](https://docs.microsoft.com/ef/core/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.EntityFrameworkCore.Analyzers](https://docs.microsoft.com/ef/core/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.EntityFrameworkCore.Design](https://docs.microsoft.com/ef/core/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.EntityFrameworkCore.Relational](https://docs.microsoft.com/ef/core/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.EntityFrameworkCore](https://docs.microsoft.com/ef/core/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
 | [Microsoft.Extensions.ApiDescription.Server](https://asp.net/) | 10.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
-| [Microsoft.Extensions.Caching.StackExchangeRedis](https://asp.net/) | 10.0.12 | MIT | © Microsoft Corporation. All rights reserved. |
-| [Microsoft.Extensions.DependencyModel](https://dot.net/) | 10.0.12 | MIT | © Microsoft Corporation. All rights reserved. |
-| [Microsoft.Extensions.Hosting.Systemd](https://dot.net/) | 10.0.12 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.Extensions.Caching.StackExchangeRedis](https://asp.net/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.Extensions.DependencyModel](https://dot.net/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.Extensions.Hosting.Systemd](https://dot.net/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
 | [Microsoft.IdentityModel.Abstractions](https://github.com/AzureAD/azure-activedirectory-identitymodel-extensions-for-dotnet) | 8.22.0 | MIT | © Microsoft Corporation. All rights reserved. |
 | [Microsoft.IdentityModel.JsonWebTokens](https://github.com/AzureAD/azure-activedirectory-identitymodel-extensions-for-dotnet) | 8.22.0 | MIT | © Microsoft Corporation. All rights reserved. |
 | [Microsoft.IdentityModel.Logging](https://github.com/AzureAD/azure-activedirectory-identitymodel-extensions-for-dotnet) | 8.22.0 | MIT | © Microsoft Corporation. All rights reserved. |
@@ -107,10 +107,10 @@ confirmed at source before the next release is distributed.
 | [Serilog.Sinks.SyslogMessages](https://github.com/IonxSolutions/serilog-sinks-syslog) | 4.1.0 | Apache-2.0 | Copyright © Ionx Solutions 2018 |
 | [Serilog](https://serilog.net/) | 4.4.0 | Apache-2.0 | Copyright © Serilog Contributors |
 | [StackExchange.Redis](https://stackexchange.github.io/StackExchange.Redis/) | 2.7.27 | MIT | 2014 - 2024 Stack Exchange, Inc. |
-| [Swashbuckle.AspNetCore.Swagger](https://github.com/domaindrivendev/Swashbuckle.AspNetCore) | 10.2.3 | MIT | Copyright (c) 2016-2026 Richard Morris |
-| [Swashbuckle.AspNetCore.SwaggerGen](https://github.com/domaindrivendev/Swashbuckle.AspNetCore) | 10.2.3 | MIT | Copyright (c) 2016-2026 Richard Morris |
-| [Swashbuckle.AspNetCore.SwaggerUI](https://github.com/domaindrivendev/Swashbuckle.AspNetCore) | 10.2.3 | MIT | Copyright (c) 2016-2026 Richard Morris |
-| [Swashbuckle.AspNetCore](https://github.com/domaindrivendev/Swashbuckle.AspNetCore) | 10.2.3 | MIT | — |
+| [Swashbuckle.AspNetCore.Swagger](https://github.com/domaindrivendev/Swashbuckle.AspNetCore) | 10.3.1 | MIT | Copyright (c) 2016-2026 Richard Morris |
+| [Swashbuckle.AspNetCore.SwaggerGen](https://github.com/domaindrivendev/Swashbuckle.AspNetCore) | 10.3.1 | MIT | Copyright (c) 2016-2026 Richard Morris |
+| [Swashbuckle.AspNetCore.SwaggerUI](https://github.com/domaindrivendev/Swashbuckle.AspNetCore) | 10.3.1 | MIT | Copyright (c) 2016-2026 Richard Morris |
+| [Swashbuckle.AspNetCore](https://github.com/domaindrivendev/Swashbuckle.AspNetCore) | 10.3.1 | MIT | — |
 | [System.CodeDom](https://dot.net/) | 6.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
 | [System.Composition.AttributedModel](https://dot.net/) | 9.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
 | [System.Composition.Convention](https://dot.net/) | 9.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
@@ -118,10 +118,10 @@ confirmed at source before the next release is distributed.
 | [System.Composition.Runtime](https://dot.net/) | 9.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
 | [System.Composition.TypedParts](https://dot.net/) | 9.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
 | [System.Composition](https://dot.net/) | 9.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
-| [System.DirectoryServices.Protocols](https://dot.net/) | 10.0.12 | MIT | © Microsoft Corporation. All rights reserved. |
+| [System.DirectoryServices.Protocols](https://dot.net/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
 | [System.IdentityModel.Tokens.Jwt](https://github.com/AzureAD/azure-activedirectory-identitymodel-extensions-for-dotnet) | 8.22.0 | MIT | © Microsoft Corporation. All rights reserved. |
 | [System.IO.Hashing](https://dot.net/) | 8.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
-| [System.Security.Cryptography.Pkcs](https://dot.net/) | 10.0.13 | MIT | © Microsoft Corporation. All rights reserved. |
+| [System.Security.Cryptography.Pkcs](https://dot.net/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
 | [YamlDotNet](https://github.com/aaubry/YamlDotNet/wiki) | 16.3.0 | MIT | Copyright (c) Antoine Aubry and contributors |
 | [Yarp.ReverseProxy](https://github.com/dotnet/yarp) | 2.3.0 | MIT | © Microsoft Corporation. All rights reserved. |
 
@@ -1130,12 +1130,12 @@ Bundled into the admin, user, public, setup and docs interfaces.
 | --- | --- | --- | --- |
 | cookie | 1.1.1 | MIT | jshttp/cookie |
 | qrcode-generator | 2.0.4 | MIT | https://github.com/kazuhikoarase/qrcode-generator |
-| react | 19.3.0 | MIT | https://github.com/react/react |
-| react-dom | 19.3.0 | MIT | https://github.com/react/react |
-| react-router | 7.18.2 | MIT | https://github.com/remix-run/react-router |
-| react-router-dom | 7.18.2 | MIT | https://github.com/remix-run/react-router |
+| react | 19.3.1 | MIT | https://github.com/react/react |
+| react-dom | 19.3.1 | MIT | https://github.com/react/react |
+| react-router | 7.18.5 | MIT | https://github.com/remix-run/react-router |
+| react-router-dom | 7.18.5 | MIT | https://github.com/remix-run/react-router |
 | scheduler | 0.28.0 | MIT | https://github.com/react/react |
-| set-cookie-parser | 2.7.2 | MIT | nfriedly/set-cookie-parser |
+| set-cookie-parser | 2.7.3 | MIT | nfriedly/set-cookie-parser |
 
 ## Vendored assets (2)
 

@@ -99,6 +99,7 @@ export const CARD_FIELDS: Record<string, readonly string[]> = {
     webhook: ['webhook.enabled', 'webhook.maxRetries', 'webhook.retryDelaySeconds'],
     certManager: ['certManager.enabled', 'certManager.apiKey', 'certManager.defaultCertProfileId', 'certManager.defaultSigningProfileId'],
     integrationApi: ['integrationApi.enabled', 'integrationApi.apiKey'],
+    tsa: ['tsa.policyOid'],
     acme: ['acme.externalAccountRequired', 'acme.enforceCaa', 'acme.termsOfServiceUrl'],
     policySync: ['policySync.enabled', 'policySync.policyDirectory', 'policySync.syncOnStartup'],
     alert: ['alert.enabled', 'alert.minimumSeverity', 'alert.cooldownMinutes'],

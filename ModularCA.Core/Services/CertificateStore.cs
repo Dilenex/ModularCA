@@ -51,6 +51,9 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
             // lookup for new rows. Legacy / self-signed rows leave this null
             // and fall back to the defence-in-depth resolver in CrlService.
             IssuerCertificateId = info.IssuerCertificateId,
+            // Left at default when the caller computed none: the context's save fills them from the default rule.
+            ExpiryWarningAt = info.ExpiryWarningAt ?? default,
+            ExpiryAlertAt = info.ExpiryAlertAt ?? default,
         };
 
         _dbContext.Certificates.Add(entity);
@@ -103,6 +106,8 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
             RetiredReason = entity.RetiredReason,
             ExpiryWarningDismissedAt = entity.ExpiryWarningDismissedAt,
             ExpiryWarningDismissedBy = entity.ExpiryWarningDismissedBy,
+            ExpiryWarningAt = entity.ExpiryWarningAt,
+            ExpiryAlertAt = entity.ExpiryAlertAt,
             SigningProfileId = entity.SigningProfileId ?? Guid.Empty,
             SubjectAlternativeNames = UpnSanEncoding.DeserializeStoredSans(entity.SubjectAlternativeNamesJson),
 
@@ -144,6 +149,8 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
                 RetiredReason = c.RetiredReason,
                 ExpiryWarningDismissedAt = c.ExpiryWarningDismissedAt,
                 ExpiryWarningDismissedBy = c.ExpiryWarningDismissedBy,
+                ExpiryWarningAt = c.ExpiryWarningAt,
+                ExpiryAlertAt = c.ExpiryAlertAt,
                 SigningProfileId = c.SigningProfileId ?? Guid.Empty,
                 SubjectAlternativeNames = UpnSanEncoding.DeserializeStoredSans(c.SubjectAlternativeNamesJson),
                 KeyUsages = string.IsNullOrWhiteSpace(c.KeyUsagesJson)
@@ -206,6 +213,8 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
             NotAfter = entity.NotAfter,
             Thumbprints = entity.Thumbprints,
             IsCA = entity.IsCA,
+            ExpiryWarningAt = entity.ExpiryWarningAt,
+            ExpiryAlertAt = entity.ExpiryAlertAt,
             HasPrivateKey = entity.HasExportablePrivateKey(),
 
 
@@ -230,6 +239,8 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
             NotAfter = c.NotAfter,
             Thumbprints = c.Thumbprints,
             IsCA = c.IsCA,
+            ExpiryWarningAt = c.ExpiryWarningAt,
+            ExpiryAlertAt = c.ExpiryAlertAt,
             HasPrivateKey = c.HasExportablePrivateKey(),
             Revoked = c.Revoked,
             RevocationReason = c.RevocationReason ?? string.Empty,
@@ -283,6 +294,8 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
             NotAfter = entity.NotAfter,
             Thumbprints = entity.Thumbprints,
             IsCA = entity.IsCA,
+            ExpiryWarningAt = entity.ExpiryWarningAt,
+            ExpiryAlertAt = entity.ExpiryAlertAt,
             HasPrivateKey = entity.HasExportablePrivateKey(),
 
 

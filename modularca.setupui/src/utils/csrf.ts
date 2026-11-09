@@ -1,7 +1,8 @@
-/// Reads the CSRF-TOKEN cookie and returns it for use in X-CSRF-Token header.
+import { readCsrfCookie } from '@shared/csrf';
+
+/// Reads the CSRF cookie (`__Host-CSRF-TOKEN` over HTTPS, `CSRF-TOKEN` over plain HTTP) for the X-CSRF-Token header.
 export function getCsrfToken(): string {
-    const match = document.cookie.match(/(?:^|;\s*)CSRF-TOKEN=([^;]*)/);
-    return match ? decodeURIComponent(match[1]) : '';
+    return readCsrfCookie() ?? '';
 }
 
 /// Returns headers object with CSRF token included.

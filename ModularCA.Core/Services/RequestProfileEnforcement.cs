@@ -232,6 +232,27 @@ public sealed class RequestProfileEnforcement(ModularCADbContext db, IProfileRes
         return supplied.Count == 0 ? null : JsonSerializer.Serialize(supplied);
     }
 
+    /// <summary>
+    /// Subject overrides that make the certificate carry exactly <paramref name="settledSubject"/>,
+    /// whatever the CSR's own subject says: every field of the settled subject, marked with
+    /// <see cref="CertificateIssuanceService.ReplaceSubjectKey"/> so issuance drops the CSR's
+    /// components instead of keeping those the overrides do not name. Used when a protocol settled
+    /// the subject itself (<see cref="ModularCA.Shared.Enrollment.EnrollmentRequestMaterial.SubjectReplacesCsr"/>).
+    /// A field that appears more than once keeps its last value.
+    /// </summary>
+    /// <param name="settledSubject">The subject as the request row records it.</param>
+    /// <returns>The overrides, as the request row stores them.</returns>
+    public static string ReplacingSubjectOverrides(string? settledSubject)
+    {
+        var overrides = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [CertificateIssuanceService.ReplaceSubjectKey] = "replace",
+        };
+        foreach (var (field, value) in FieldsOf(new X509Name(settledSubject ?? string.Empty)))
+            overrides[field] = value;
+        return JsonSerializer.Serialize(overrides);
+    }
+
     /// <summary>The marker of a CMP request, which stores a public key where the others store a CSR.</summary>
     private const string CmpPublicKeyMarker = "-----CMP-PUBKEY-----";
 

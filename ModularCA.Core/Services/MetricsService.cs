@@ -85,6 +85,22 @@ public class MetricsService
         { LabelNames = new[] { "operation", "status" } });
 
     /// <summary>
+    /// The <c>operation</c> label for a SCEP request: one of the three operations SCEP defines
+    /// that this server answers, in their canonical spelling, or <c>other</c>. The query string
+    /// used to be the label as given, and every distinct value an unauthenticated client sent
+    /// became a time series kept for the life of the process and exported on every scrape.
+    /// </summary>
+    /// <param name="operation">The <c>operation</c> query parameter as received.</param>
+    /// <returns>A label from a fixed, small set.</returns>
+    public static string ScepOperationLabel(string? operation) => (operation ?? string.Empty).ToLowerInvariant() switch
+    {
+        "getcacert" => "GetCACert",
+        "getcacaps" => "GetCACaps",
+        "pkioperation" => "PKIOperation",
+        _ => "other",
+    };
+
+    /// <summary>
     /// Total CMP (Certificate Management Protocol) requests, labelled by outcome status (ok, error).
     /// </summary>
     public static readonly Counter CmpRequestsTotal = Metrics.CreateCounter(

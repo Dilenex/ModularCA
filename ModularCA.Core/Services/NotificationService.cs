@@ -12,6 +12,16 @@ namespace ModularCA.Core.Services;
 public interface INotificationService
 {
     Task NotifyCertExpiringAsync(CertificateEntity cert, int daysRemaining);
+
+    /// <summary>
+    /// Sends the <c>CertExpiring</c> notification for one step of a certificate's expiry warning:
+    /// its soft warning starting, a reminder inside the window, or its alert starting.
+    /// </summary>
+    /// <param name="cert">The certificate.</param>
+    /// <param name="stage"><see cref="CertExpiryStage.Warning"/>, <see cref="CertExpiryStage.Reminder"/> or <see cref="CertExpiryStage.Alert"/>.</param>
+    /// <param name="now">The time the notification is sent, against which the time left is told.</param>
+    Task NotifyCertExpiryStageAsync(CertificateEntity cert, string stage, DateTime now);
+
     Task NotifyCertRevokedAsync(string subjectDN, string serial, string reason);
     Task NotifyCertIssuedAsync(string subjectDN, string serial, string protocol);
     Task NotifyAccountLockedAsync(string username, string reason);
@@ -79,6 +89,39 @@ public class NotificationService : INotificationService
             Action Required:
               Renew the certificate before expiration.
             """);
+
+    /// <inheritdoc />
+    public Task NotifyCertExpiryStageAsync(CertificateEntity cert, string stage, DateTime now)
+    {
+        var left = CertExpiryStage.TimeLeft(cert.NotAfter - now);
+        var (subject, headline, action) = stage switch
+        {
+            CertExpiryStage.Alert => ($"[ModularCA] Certificate expiry alert: expires in {left}", "Certificate Expiry Alert",
+                "Renew or replace the certificate now; little of its lifetime is left."),
+            CertExpiryStage.Reminder => ($"[ModularCA] Reminder: certificate expires in {left}", "Certificate Expiry Reminder",
+                "Renew the certificate before it expires."),
+            _ => ($"[ModularCA] Certificate expiry warning: expires in {left}", "Certificate Expiry Warning",
+                "Renew the certificate before it expires."),
+        };
+        return SendNotification("CertExpiring", null, subject,
+            $"""
+            ModularCA Notification
+            ======================
+
+            Event: {headline}
+            Time: {now:yyyy-MM-dd HH:mm} UTC
+
+            Certificate Details:
+              Serial: {cert.SerialNumber}
+              Subject: {cert.SubjectDN}
+              Expires: {cert.NotAfter:yyyy-MM-dd HH:mm} UTC
+              Time Left: {left}
+
+            Action Required:
+              {action}
+              Dismissing the expiry warning, or retiring the certificate, in the console stops these messages.
+            """);
+    }
 
     public Task NotifyCertRevokedAsync(string subjectDN, string serial, string reason) =>
         SendNotification("CertRevoked", null,

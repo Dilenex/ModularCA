@@ -19,7 +19,8 @@ namespace ModularCA.API.Middleware
     ///   configured, NOT the attacker-controllable <c>Host</c> header.</item>
     /// </list>
     /// Plain-HTTP PKI surface (CRL distribution points, OCSP, CA cert downloads,
-    /// TSA, ACME http-01 challenges), plus the <c>/health</c> probe, is preserved.
+    /// TSA, ACME http-01 challenge responses), the public portal and the <c>/health</c> probe
+    /// are preserved. The ACME protocol endpoints are HTTPS only.
     /// </summary>
     public class HttpSchemeEnforcementMiddleware
     {
@@ -29,8 +30,8 @@ namespace ModularCA.API.Middleware
         /// <summary>
         /// Path prefixes that are allowed to be served over plain HTTP because
         /// they are part of the public PKI surface that RFC 5280 mandates be
-        /// reachable without TLS (CRLs, OCSP, CA cert downloads, TSA), ACME
-        /// http-01 challenge endpoints. These are matched with
+        /// reachable without TLS (CRLs, OCSP, CA cert downloads, TSA), the ACME
+        /// http-01 challenge path, and the public portal. These are matched with
         /// <c>PathString.StartsWithSegments</c> so only full segment
         /// prefixes match — e.g. <c>/ocspxray</c> no longer matches
         /// <c>/ocsp</c>.
@@ -45,13 +46,15 @@ namespace ModularCA.API.Middleware
             new PathString("/ca"),
             new PathString("/api/v1/public/tsa"),
             new PathString("/tsa"),
-            new PathString("/acme"),
-            new PathString("/api/v1/acme"),
+            // ACME itself (/acme, /api/v1/acme) is HTTPS only and a plain-HTTP request is
+            // redirected. This path is where an http-01 response is served, which RFC 8555
+            // section 8.3 fetches over port 80.
             new PathString("/.well-known/acme-challenge"),
             // Public portal SPA + its read-only info endpoint are reachable over plain
             // HTTP as well as HTTPS, consistent with the PKI distribution surface above
             // (relying parties may not have TLS trust established yet). The portal's other
-            // calls (/api/v1/public/ca, /crl, /ocsp, /acme) are already allow-listed.
+            // calls (/api/v1/public/ca, /crl, /ocsp) are already allow-listed; its ACME page
+            // reads the directory only when opened over HTTPS.
             // NOTE: /api/v1/public/enroll is deliberately NOT listed — enrollment tokens
             // travel in the URL and must stay on HTTPS.
             new PathString("/public"),

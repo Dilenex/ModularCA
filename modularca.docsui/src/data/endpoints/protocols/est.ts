@@ -16,6 +16,7 @@ export const est: ApiEndpoint[] = [
         auth: 'EST Client Auth',
         category: 'EST',
         responseDescription: 'Issued certificate in PKCS#7 format.',
+        notes: 'With a client certificate, every SAN the CSR asks for must be a SAN of the same type and value in that certificate (DNS names, email addresses and so on are compared case-insensitively, never across types). The client certificate\'s common name counts only as a DNS name, and only when the certificate carries no DNS SAN and the common name is a host name.',
     },
     {
         method: 'POST',

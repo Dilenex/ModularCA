@@ -128,4 +128,67 @@ public class EnvVarConfigOverlayTests
         }
         finally { Environment.SetEnvironmentVariable(JwtSecretEnvVar, original); }
     }
+
+    /// <summary>
+    /// The HSM PIN is cleared from the running configuration once the session has logged in, so
+    /// the process no longer holds it as a string. A config.yaml rewrite must still keep the PIN
+    /// the file holds, or the next start could not log in to the HSM.
+    /// </summary>
+    [Fact]
+    public void Release_clears_a_file_secret_and_writes_put_the_file_value_back()
+    {
+        var config = new SystemConfig();
+        config.Hsm.Pin = "pin-1234";
+        var overlay = new EnvVarConfigOverlay();
+
+        overlay.Release(config, "Hsm.Pin", () => "pin-1234");
+        Assert.Equal(string.Empty, config.Hsm.Pin);
+
+        string? written = null;
+        overlay.WithSecretsProtected(config, () => written = ConfigYamlWriter.Serialize(config));
+
+        Assert.Contains("pin-1234", written);
+        Assert.Equal(string.Empty, config.Hsm.Pin);
+    }
+
+    [Fact]
+    public void Release_of_an_unreadable_file_stops_the_write_and_keeps_the_secret_cleared()
+    {
+        var config = new SystemConfig();
+        config.Hsm.Pin = "1234";
+        var overlay = new EnvVarConfigOverlay();
+        overlay.Release(config, "Hsm.Pin", () => throw new IOException("unreadable"));
+
+        var ran = false;
+        Assert.Throws<IOException>(() => overlay.WithSecretsProtected(config, () => ran = true));
+
+        Assert.False(ran);
+        Assert.Equal(string.Empty, config.Hsm.Pin);
+    }
+
+    [Fact]
+    public void Release_of_an_environment_secret_keeps_it_out_of_the_file()
+    {
+        const string pinVar = "MODULARCA__HSM__PIN";
+        var original = Environment.GetEnvironmentVariable(pinVar);
+        Environment.SetEnvironmentVariable(pinVar, "from-env");
+        try
+        {
+            var config = new SystemConfig();
+            var overlay = new EnvVarConfigOverlay();
+            overlay.Apply(config);
+            overlay.Release(config, "Hsm.Pin", () => "from-file");
+
+            string? sawDuringBody = "<not-set>";
+            overlay.WithSecretsProtected(config, () => sawDuringBody = config.Hsm.Pin);
+
+            Assert.Null(sawDuringBody);
+            Assert.Equal(string.Empty, config.Hsm.Pin);
+        }
+        finally { Environment.SetEnvironmentVariable(pinVar, original); }
+    }
+
+    [Fact]
+    public void Release_refuses_a_path_that_is_not_a_secret()
+        => Assert.Throws<ArgumentException>(() => new EnvVarConfigOverlay().Release(new SystemConfig(), "Http.Port", () => null));
 }

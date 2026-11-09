@@ -158,7 +158,7 @@ public class PublicShortUrlController(
         var ct = HttpContext.RequestAborted;
         if (!OcspGetDecoder.TryDecode(encodedRequest, out var requestBytes) || requestBytes == null)
         {
-            ModularCA.Core.Services.MetricsService.OcspRequests.WithLabels("malformedRequest", caLabel ?? string.Empty).Inc();
+            ModularCA.Core.Services.MetricsService.OcspRequests.WithLabels("malformedRequest", string.Empty).Inc();
             ModularCA.Core.Services.MetricsService.ProtocolRequestsTotal.WithLabels("OCSP", "error").Inc();
             return BadRequest();
         }

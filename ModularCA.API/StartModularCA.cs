@@ -775,15 +775,12 @@ var aspNetLevel = verboseErrors ? LogEventLevel.Warning : LogEventLevel.Warning;
 
 builder.Host.UseSerilog((context, services, configuration) =>
 {
-    configuration
-        .MinimumLevel.ControlledBy(loggingLevelSwitch)
-        // Positive override so ModularCA.* logs are not clamped by the
-        // Microsoft.AspNetCore warning override (which also affects MVC-sourced events).
-        .MinimumLevel.Override("ModularCA", LogEventLevel.Information)
-        .MinimumLevel.Override("Microsoft.AspNetCore", aspNetLevel)
-        .MinimumLevel.Override("Microsoft.EntityFrameworkCore", efCoreLevel)
+    configuration.MinimumLevel.ControlledBy(loggingLevelSwitch);
+    ModularCA.Core.Logging.LogLevelOverrides.Apply(configuration, aspNetLevel, efCoreLevel)
         .Enrich.FromLogContext()
-        .Enrich.WithProperty("Application", "ModularCA");
+        .Enrich.WithProperty("Application", "ModularCA")
+        // Enrollment tokens travel in the path; no sink may keep them (AuditPathRedaction).
+        .Enrich.With(new ModularCA.Core.Logging.RequestPathRedactionEnricher());
 
     // Console sink — one line per event with a syslog priority prefix under systemd, CLEF
     // JSON for a container's log shipper, readable template for a terminal. See
@@ -1615,10 +1612,12 @@ static bool IsKeystoreIntegrityFailure(Exception? ex)
 
 // Load HSM-backed CA signers if PKCS#11 is configured and enabled
 Pkcs11SessionManager? hsmSession = null;
-if (!signerIsRemote && !ingressOnly && config.Hsm?.Enabled == true && !string.IsNullOrEmpty(config.Hsm.ModulePath))
+if (!signerIsRemote && !ingressOnly && config.Hsm?.Enabled == true)
 {
     try
     {
+        if (string.IsNullOrEmpty(config.Hsm.ModulePath))
+            throw new InvalidOperationException("Hsm.ModulePath is empty.");
         hsmSession = new Pkcs11SessionManager(config.Hsm.ModulePath, config.Hsm.SlotId, config.Hsm.Pin);
         foreach (var cert in signerBootstrap.AddHsmSigners(hsmSession, appConnStr))
             Console.WriteLine($"[HSM] CA loaded: {cert.SubjectDN}");
@@ -1628,9 +1627,21 @@ if (!signerIsRemote && !ingressOnly && config.Hsm?.Enabled == true && !string.Is
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"[HSM] Initialization failed: {ex.Message}");
-        Console.WriteLine("[HSM] Continuing with software-only keystore.");
-        hsmSession = null;
+        // Falling back to the software keystore used to start a CA whose keys are on the HSM
+        // without them, or sign with a software key the operator meant to retire.
+        Console.Error.WriteLine($"[FATAL] Hsm.Enabled is true but the HSM could not be initialised: {ex.Message}");
+        Console.Error.WriteLine("        Refusing to start rather than continue with the software keystore. Check Hsm.ModulePath,");
+        Console.Error.WriteLine("        Hsm.SlotId and the PIN (Hsm.Pin or MODULARCA__HSM__PIN) and that the token is present,");
+        Console.Error.WriteLine("        or set Hsm.Enabled: false in config.yaml to run without the HSM.");
+        Log.Fatal(ex, "[HSM] Initialization failed; refusing to start.");
+        // Not 1: a restart would try the PIN again, and a token locks after a few wrong ones.
+        Log.CloseAndFlush();
+        Environment.Exit(ModularCA.API.Startup.SchemaStartup.ExitCode);
+    }
+    finally
+    {
+        // The session manager keeps its own zeroable copy; the configuration drops its string.
+        envOverlay.Release(config, "Hsm.Pin", () => YamlConfigLoader.Load(configPath, _ => { }).Hsm.Pin);
     }
 }
 
@@ -1842,6 +1853,17 @@ builder.Services.AddScoped<TrustAnchorService>();
 if (ModularCA.Shared.Utils.ConfigInputRules.CorsOriginsError(config.Http.CorsOrigins, requireBareOrigin: false) is { } corsError)
     throw new InvalidOperationException($"[CORS] {corsError}");
 
+// A trusted proxy entry that does not parse used to be skipped, and BehindReverseProxy with no
+// proxy named only warned: forwarded headers were then honoured from loopback alone, every request
+// appeared to come from the proxy, and an RFC1918 proxy address passed every internal-only IP
+// whitelist rule. Both are host-local settings in config.yaml, so that is where the fix goes.
+if (ModularCA.Shared.Utils.ConfigInputRules.ReverseProxyError(config.Security.BehindReverseProxy, config.Http.TrustedProxyCidrs) is { } proxyError)
+{
+    Console.Error.WriteLine($"[FATAL] {proxyError}");
+    Console.Error.WriteLine("        Both settings are per host: fix Http.TrustedProxyCidrs or Security.BehindReverseProxy in this host's config/config.yaml, then start again.");
+    Environment.Exit(1);
+}
+
 // The policy follows Http.EnableCors and Http.CorsOrigins as they are saved.
 var corsPolicies = new ModularCA.API.Middleware.SettingsCorsPolicyProvider(config);
 builder.Services.AddSingleton<Microsoft.AspNetCore.Cors.Infrastructure.ICorsPolicyProvider>(corsPolicies);
@@ -1887,6 +1909,14 @@ if (activeRoles.Has(ModularCA.API.Startup.ProcessRole.Ingress))
         message => Log.Warning("[INGRESS] {Message}", message));
     ModularCA.API.Ingress.IngressHosting.AddIngress(builder.Services, config.Ingress, ingressRoutes, ingressTrust);
 }
+
+// The mTLS trust anchors, loaded once for both the handshake below and MtlsMiddleware.
+var mtlsAnchors = MtlsTrustAnchors.Load(config, appConnStr, isSetupMode);
+builder.Services.AddSingleton(mtlsAnchors);
+
+// Set when a configured Web TLS certificate is missing and a temporary one is served instead;
+// written to the audit trail once the services are up.
+(string Path, string Mode, string Fingerprint)? temporaryWebTls = null;
 
 if (isSetupMode)
 {
@@ -2084,7 +2114,12 @@ else
         // login page is still served over HTTPS
         Console.WriteLine("[WARNING] Web TLS certificate not found — using temporary self-signed certificate.");
         Console.WriteLine("         Put the certificate back at Https.CertificatePath, or reissue the Web TLS certificate from the console.");
-        apiCertProvider.SetCertificate(GenerateSetupTlsCert());
+        var temporaryCert = GenerateSetupTlsCert();
+        apiCertProvider.SetCertificate(temporaryCert);
+        temporaryWebTls = (pfxPath ?? "(Https.CertificatePath is empty)", httpsMode ?? "", temporaryCert.GetCertHashString(System.Security.Cryptography.HashAlgorithmName.SHA256));
+        // Nothing replaces it on its own in this mode, so it is said where it stays visible.
+        Log.Warning("[SECURITY] Web TLS certificate {Path} (Https.Mode {Mode}) is missing; serving a temporary self-signed certificate, SHA-256 {Fingerprint}, until it is put back or reissued.",
+            temporaryWebTls.Value.Path, temporaryWebTls.Value.Mode, temporaryWebTls.Value.Fingerprint);
     }
 
     {
@@ -2116,139 +2151,12 @@ else
             // client cert; every other SNI (the main hostname) gets a plain
             // server-auth handshake with no cert prompt.
             //
-            // Pre-load the configured trusted mTLS CA certs
-            // once at startup (outside the hot path). The per-connection
-            // validation callback walks a custom-trust chain against them
-            // when a cert is presented; additional per-credential validation
-            // (thumbprint, bind to enrolled SigningCaId) still happens in the
-            // mTLS login controllers.
-            //
-            // Every load failure is collected rather than swallowed. A config
-            // that lists three CA paths of which none resolve used to leave an
-            // empty anchor set behind a one-line console notice — and an empty
-            // anchor set is indistinguishable, at handshake time, from "mTLS was
-            // never configured". The failures are reported to the operator and
-            // then folded into the fail-fast check below, so a typo'd or
-            // unreadable anchor path stops the server instead of quietly
-            // degrading the transport gate.
-            var mtlsTrustedCas = new List<System.Security.Cryptography.X509Certificates.X509Certificate2>();
-            var mtlsAnchorLoadFailures = new List<string>();
-            foreach (var path in config.Mtls.TrustedCaCertPaths ?? new List<string>())
-            {
-                if (string.IsNullOrWhiteSpace(path))
-                    continue;
-
-                // Relative anchor paths resolve against the application base directory
-                // (same convention as Https.CertificatePath above) rather than the
-                // process working directory, which differs between a console run, a
-                // systemd unit, and a Windows service.
-                var anchorPath = Path.IsPathRooted(path)
-                    ? path
-                    : Path.Combine(AppContext.BaseDirectory, path);
-
-                try
-                {
-                    if (!File.Exists(anchorPath))
-                    {
-                        mtlsAnchorLoadFailures.Add($"{path} — file not found (resolved to {anchorPath})");
-                        continue;
-                    }
-                    mtlsTrustedCas.Add(System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificateFromFile(anchorPath));
-                }
-                catch (Exception ex)
-                {
-                    mtlsAnchorLoadFailures.Add($"{path} — {ex.GetType().Name}: {ex.Message}");
-                }
-            }
-
-            if (mtlsAnchorLoadFailures.Count > 0)
-            {
-                Console.WriteLine("[mTLS WARNING] One or more Mtls.TrustedCaCertPaths entries could not be loaded:");
-                foreach (var failure in mtlsAnchorLoadFailures)
-                    Console.WriteLine($"               {failure}");
-                Log.Warning("[SECURITY] {Count} configured mTLS trust anchor(s) failed to load: {Failures}",
-                    mtlsAnchorLoadFailures.Count, string.Join(" | ", mtlsAnchorLoadFailures));
-            }
-
-            // Fall back to the enrolled mTLS signing CAs recorded in the database when
-            // config.yaml names no anchor paths.
-            //
-            // Every mTLS client certificate this system will ever see was issued by one of
-            // its own CAs: MtlsController signs them with the CA named by the requesting
-            // user's group (CaGroups.MtlsSigningCaId), and MtlsCredential.SigningCaId
-            // records which one. The database therefore already holds the exact and complete
-            // anchor set, and requiring the operator to hand-export those same certificates
-            // to PEM files and list their paths is busywork that the setup wizard does not
-            // do — it writes Mtls.Enabled from the operator's checkbox but hardcodes
-            // TrustedCaCertPaths to empty (BootstrapDatabaseSetup.cs), so the wizard's own
-            // happy path could never satisfy a config-only anchor requirement.
-            //
-            // Config wins when present. An operator who lists explicit paths is asserting a
-            // narrower or external trust set (e.g. fronting with a proxy that forwards certs
-            // from a CA this instance does not run), and silently widening that back out to
-            // "every CA in the database" would defeat the point.
-            //
-            // Setup mode is skipped: the schema may not exist yet, and the fail-fast below
-            // is itself setup-exempt, so there is nothing to feed.
-            if (mtlsTrustedCas.Count == 0 && !isSetupMode && config.Mtls.Enabled)
-            {
-                try
-                {
-                    var anchorDbOptions = new DbContextOptionsBuilder<ModularCADbContext>()
-                        .UseNpgsql(appConnStr)
-                        .Options;
-                    using var anchorDb = new ModularCADbContext(anchorDbOptions);
-
-                    // Resolved in three steps rather than one joined query: the FK columns are
-                    // Guid? (a group may have no mTLS CA, an SSH-only CA has no X.509 cert) and
-                    // threading nullable keys through Join is both harder to read and easy to get
-                    // subtly wrong. Three small round-trips at startup cost nothing.
-                    var mtlsCaIds = anchorDb.CaGroups
-                        .AsNoTracking()
-                        .Where(g => g.MtlsSigningCaId != null)
-                        .Select(g => g.MtlsSigningCaId!.Value)
-                        .Distinct()
-                        .ToList();
-
-                    var caCertIds = anchorDb.CertificateAuthorities
-                        .AsNoTracking()
-                        .Where(ca => mtlsCaIds.Contains(ca.Id) && ca.CertificateId != null)
-                        .Select(ca => ca.CertificateId!.Value)
-                        .Distinct()
-                        .ToList();
-
-                    var seededAnchors = anchorDb.Certificates
-                        .AsNoTracking()
-                        .Where(c => caCertIds.Contains(c.CertificateId))
-                        .Select(c => c.RawCertificate)
-                        .ToList();
-
-                    foreach (var raw in seededAnchors)
-                    {
-                        if (raw == null || raw.Length == 0)
-                            continue;
-                        try
-                        {
-                            mtlsTrustedCas.Add(System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificate(raw));
-                        }
-                        catch (Exception ex)
-                        {
-                            mtlsAnchorLoadFailures.Add($"database-seeded anchor — {ex.GetType().Name}: {ex.Message}");
-                        }
-                    }
-
-                    if (mtlsTrustedCas.Count > 0)
-                        Console.WriteLine($"[mTLS] Seeded {mtlsTrustedCas.Count} trust anchor(s) from enrolled mTLS signing CAs (Mtls.TrustedCaCertPaths is empty).");
-                }
-                catch (Exception ex)
-                {
-                    // A read failure here is not the same as "no anchors exist" — say so, so the
-                    // fatal below does not send the operator hunting for a config problem when
-                    // the real cause was an unreachable database at boot.
-                    mtlsAnchorLoadFailures.Add($"database anchor lookup failed — {ex.GetType().Name}: {ex.Message}");
-                    Log.Warning(ex, "[SECURITY] Could not read enrolled mTLS signing CAs for trust-anchor seeding.");
-                }
-            }
+            // The trust anchors were loaded before the branch (MtlsTrustAnchors): the configured
+            // paths, or the enrolled mTLS signing CAs when none loads. The same set is what
+            // MtlsMiddleware validates against. Load failures are reported there and folded into
+            // the fail-fast check below.
+            var mtlsTrustedCas = mtlsAnchors.Certificates;
+            var mtlsAnchorLoadFailures = mtlsAnchors.Failures;
 
             // Enforce TLS 1.2 floor + TLS 1.3.
             var sslProtocols =
@@ -2755,6 +2663,25 @@ if (hsmSession != null)
     app.Lifetime.ApplicationStopping.Register(() => hsmSession.Dispose());
 }
 
+if (temporaryWebTls is { } missingWebTls && !isSetupMode)
+{
+    try
+    {
+        using var auditScope = app.Services.CreateScope();
+        await auditScope.ServiceProvider.GetRequiredService<IAuditService>().LogAsync(
+            ModularCA.Shared.Enums.AuditActionType.WebTlsTemporaryCertificateServed,
+            actorUserId: null, actorUsername: "system",
+            targetEntityType: "WebTlsCertificate", targetEntityId: missingWebTls.Path,
+            details: new { missingWebTls.Path, missingWebTls.Mode, Sha256Fingerprint = missingWebTls.Fingerprint, Host = Environment.MachineName },
+            success: false,
+            errorMessage: "The configured Web TLS certificate is missing; a temporary self-signed certificate is served until it is put back or reissued.");
+    }
+    catch (Exception ex)
+    {
+        Log.Warning(ex, "[SECURITY] Could not write the audit entry for the temporary Web TLS certificate.");
+    }
+}
+
 // A restore leaves the Data Protection key ring and the SSH CA keys wrapped under
 // config/restore-pending/; the signer now holds the restored keystore, so unwrap them before
 // anything reads the key ring. A blob that does not unwrap stays for the next start.
@@ -3190,6 +3117,15 @@ app.UseExceptionHandler(errorApp =>
     });
 });
 
+// The hostnames whose handshake differs, resolved from the same settings as at the listener above.
+var misdirectedGatedHosts = new[]
+{
+    ModularCA.Shared.Utils.SubdomainUtil.ResolveFqdn(config.Mtls.AuthSubdomain, config.Https.PublicDomain),
+    isSetupMode ? null : ModularCA.Shared.Utils.SubdomainUtil.ResolveFqdn(config.Est.AuthSubdomain, config.Https.PublicDomain),
+}.OfType<string>().ToArray();
+if (misdirectedGatedHosts.Length > 0)
+    app.UseMiddleware<ModularCA.API.Middleware.MisdirectedRequestMiddleware>((IReadOnlyList<string>)misdirectedGatedHosts);
+
 // HSTS where ASP.NET Core's UseHsts set it, so the host-level hardening applies
 // when TLS is active, from Http.Hsts as it is saved rather than as it was at start. The
 // custom SecurityHeadersMiddleware still enforces HSTS for the admin UI
@@ -3233,42 +3169,9 @@ var forwardedOptions = new Microsoft.AspNetCore.Builder.ForwardedHeadersOptions
 forwardedOptions.KnownIPNetworks.Add(new System.Net.IPNetwork(System.Net.IPAddress.Loopback, 32));
 forwardedOptions.KnownIPNetworks.Add(new System.Net.IPNetwork(System.Net.IPAddress.IPv6Loopback, 128));
 
-if (!string.IsNullOrWhiteSpace(config.Http.TrustedProxyCidrs))
-{
-    foreach (var cidr in config.Http.TrustedProxyCidrs.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-    {
-        var slashIdx = cidr.IndexOf('/');
-        if (slashIdx <= 0) { Console.WriteLine($"[WARNING] TrustedProxyCidrs entry '{cidr}' is not in CIDR form, skipping."); continue; }
-        if (!System.Net.IPAddress.TryParse(cidr[..slashIdx], out var addr)) { Console.WriteLine($"[WARNING] TrustedProxyCidrs entry '{cidr}' has an invalid address, skipping."); continue; }
-        if (!int.TryParse(cidr[(slashIdx + 1)..], out var prefixLen)) { Console.WriteLine($"[WARNING] TrustedProxyCidrs entry '{cidr}' has an invalid prefix length, skipping."); continue; }
-        try
-        {
-            forwardedOptions.KnownIPNetworks.Add(new System.Net.IPNetwork(addr, prefixLen));
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[WARNING] TrustedProxyCidrs entry '{cidr}' rejected: {ex.Message}");
-        }
-    }
-}
-// A deployment that says it is behind a proxy but names no trusted proxy falls back to
-// loopback-only, which means X-Forwarded-For is ignored and every request is attributed to the
-// proxy's own address. That address is usually RFC1918, so it satisfies every internal-only IP
-// whitelist rule and the whitelist silently permits the entire internet — failing open, with no
-// symptom until someone checks. Nothing said a word about this before; it cost an afternoon of
-// probing two live deployments to find.
-if (config.Security.BehindReverseProxy && string.IsNullOrWhiteSpace(config.Http.TrustedProxyCidrs))
-{
-    Console.WriteLine();
-    Console.WriteLine("  !! WARNING: Security.BehindReverseProxy is true but Http.TrustedProxyCidrs is empty.");
-    Console.WriteLine("     Forwarded headers are therefore trusted from loopback only, so X-Forwarded-For");
-    Console.WriteLine("     from your proxy is IGNORED and every request is recorded as coming from the");
-    Console.WriteLine("     proxy itself. If that address is RFC1918 it satisfies the internal-only IP");
-    Console.WriteLine("     whitelist rules, and the whitelist will permit callers from anywhere.");
-    Console.WriteLine("     The audit trail and per-IP login rate limiting are degraded the same way.");
-    Console.WriteLine("     Set Http.TrustedProxyCidrs to your proxy's address, e.g. \"10.0.1.5/32\".");
-    Console.WriteLine();
-}
+// Checked with the CORS origins, before anything is served.
+foreach (var trustedProxy in ModularCA.Shared.Utils.ConfigInputRules.TrustedProxyNetworks(config.Http.TrustedProxyCidrs))
+    forwardedOptions.KnownIPNetworks.Add(trustedProxy);
 
 app.UseForwardedHeaders(forwardedOptions);
 

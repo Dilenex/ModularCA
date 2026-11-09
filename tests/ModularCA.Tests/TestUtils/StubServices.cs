@@ -26,6 +26,7 @@ internal sealed class RecordingAlertService : ISecurityAlertService
 internal class NoopNotificationService : INotificationService
 {
     public virtual Task NotifyCertExpiringAsync(CertificateEntity cert, int daysRemaining) => Task.CompletedTask;
+    public virtual Task NotifyCertExpiryStageAsync(CertificateEntity cert, string stage, DateTime now) => Task.CompletedTask;
     public virtual Task NotifyCertRevokedAsync(string subjectDN, string serial, string reason) => Task.CompletedTask;
     public virtual Task NotifyCertIssuedAsync(string subjectDN, string serial, string protocol) => Task.CompletedTask;
     public virtual Task NotifyAccountLockedAsync(string username, string reason) => Task.CompletedTask;

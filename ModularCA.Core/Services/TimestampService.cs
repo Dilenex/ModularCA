@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
+using ModularCA.Shared.Models.Config;
 using ModularCA.Shared.Signing;
 using ModularCA.Shared.Utils;
 using Org.BouncyCastle.Asn1;
@@ -32,24 +33,39 @@ public class TimestampService : ITimestampService
     /// <summary>The caller identity the TSA signs under; the signer audits it with every decision.</summary>
     private const string SignerCaller = nameof(TimestampService);
 
+    /// <summary>
+    /// Message-imprint hash algorithms the TSA timestamps. SHA-1 is refused with badAlg: a token
+    /// over a SHA-1 imprint attests to every document that collides with it, and chosen-prefix
+    /// SHA-1 collisions are practical.
+    /// </summary>
     private static readonly HashSet<string> AcceptedAlgorithms = new()
     {
         TspAlgorithms.Sha256,
         TspAlgorithms.Sha384,
         TspAlgorithms.Sha512,
-        TspAlgorithms.Sha1,
     };
 
-    private static readonly string TsaPolicyOid = "1.2.3.4.1";
+    private readonly SystemConfig _config;
 
-    /// <summary>Constructs the service over the database and the signer that holds the TSA key.</summary>
-    public TimestampService(ModularCADbContext db, ILogger<TimestampService> logger, ISigningService signer)
+    /// <summary>
+    /// Constructs the service over the database, the signer that holds the TSA key, and the
+    /// configuration whose <see cref="TsaConfig.PolicyOid"/> names the TSA policy, read per request.
+    /// </summary>
+    public TimestampService(ModularCADbContext db, ILogger<TimestampService> logger, ISigningService signer, SystemConfig config)
     {
         _db = db;
         _logger = logger;
         _signer = signer ?? throw new ArgumentNullException(nameof(signer));
+        _config = config ?? throw new ArgumentNullException(nameof(config));
     }
 
+    /// <summary>
+    /// Answers a DER TimeStampReq with a DER TimeStampResp. The token names the policy in
+    /// <see cref="TsaConfig.PolicyOid"/>. Refused with status rejection: an undecodable request
+    /// (systemFailure), a SHA-1 or unknown imprint algorithm (badAlg), a reqPolicy other than the
+    /// TSA policy (unacceptedPolicy, RFC 3161 section 2.4.2), a policy setting that is not an
+    /// object identifier, and a CA with no usable TSA signer (systemFailure).
+    /// </summary>
     public async Task<byte[]> ProcessTimestampRequestAsync(byte[] tsqBytes, string? caLabel = null)
     {
         TimeStampRequest tsRequest;
@@ -65,7 +81,24 @@ public class TimestampService : ITimestampService
         var hashAlgOid = tsRequest.MessageImprintAlgOid;
         if (!AcceptedAlgorithms.Contains(hashAlgOid))
         {
-            return BuildRejection($"Hash algorithm {hashAlgOid} not supported");
+            return BuildRejection($"Hash algorithm {hashAlgOid} not supported; use SHA-256, SHA-384 or SHA-512",
+                Org.BouncyCastle.Asn1.Cmp.PkiFailureInfo.BadAlg);
+        }
+
+        var policyOid = _config.Tsa?.PolicyOid?.Trim() ?? string.Empty;
+        if (ConfigInputRules.ObjectIdentifierError(policyOid, "Tsa.PolicyOid") is { } policyError)
+        {
+            _logger.LogError("TSA: {Problem} Every request is refused until it is corrected.", policyError);
+            return BuildRejection("The TSA policy is not configured correctly");
+        }
+
+        // BouncyCastle's token generator writes the request's reqPolicy into the token when there
+        // is one, so a policy this TSA does not issue under has to be refused before it.
+        var requestedPolicy = tsRequest.ReqPolicy;
+        if (requestedPolicy != null && requestedPolicy != policyOid)
+        {
+            return BuildRejection($"Requested policy {requestedPolicy} is not supported; this TSA issues under {policyOid}",
+                Org.BouncyCastle.Asn1.Cmp.PkiFailureInfo.UnacceptedPolicy);
         }
 
         var (tsaCert, tsaKey, signingContext) = await ResolveTsaSignerAsync(caLabel);
@@ -91,7 +124,7 @@ public class TimestampService : ITimestampService
             var tokenGen = new TimeStampTokenGenerator(
                 signerInfoGenerator,
                 Asn1DigestFactory.Get(OiwObjectIdentifiers.IdSha1),
-                new DerObjectIdentifier(TsaPolicyOid),
+                new DerObjectIdentifier(policyOid),
                 isIssuerSerialIncluded: false);
 
             var respGen = new TimeStampResponseGenerator(tokenGen, TspAlgorithms.Allowed);
@@ -180,14 +213,21 @@ public class TimestampService : ITimestampService
         return (null, null, null);
     }
 
-    private static byte[] BuildRejection(string statusString)
+    /// <summary>
+    /// A TimeStampResp with status rejection, the given text and failInfo (RFC 3161 section
+    /// 2.4.2), <c>systemFailure</c> unless another is named.
+    /// </summary>
+    /// <param name="statusString">The statusString the client receives.</param>
+    /// <param name="failInfo">A BouncyCastle <c>PkiFailureInfo</c> mask, e.g. <c>PkiFailureInfo.BadAlg</c>.</param>
+    private static byte[] BuildRejection(string statusString,
+        int failInfo = Org.BouncyCastle.Asn1.Cmp.PkiFailureInfo.SystemFailure)
     {
         try
         {
             var respGen = new TimeStampResponseGenerator(null, TspAlgorithms.Allowed);
             var resp = respGen.GenerateFailResponse(
                 Org.BouncyCastle.Asn1.Cmp.PkiStatus.Rejection,
-                Org.BouncyCastle.Asn1.Cmp.PkiFailureInfo.SystemFailure,
+                failInfo,
                 statusString);
             return resp.GetEncoded();
         }
