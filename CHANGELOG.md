@@ -6,7 +6,145 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
-Nothing yet.
+**Upgrade notes**
+
+- **With LDAP sign-in on, a password the directory refuses is final.** A stale local password no
+  longer signs in an account the directory refused, disabled or expired, and while the directory
+  cannot be reached password sign-in is refused, except for accounts whose password source is
+  Local (WebAuthn and client certificates still work).
+- **Every account gets a password source** (the `UserPasswordSource` migration). Existing accounts
+  start as Inherit, which signs in as before. The bootstrap administrator of an existing install
+  is not changed: to keep a break-glass account that works through an LDAP outage, another
+  administrator opens it under Users, chooses Edit and sets Password source to Local; on a
+  single-administrator install, run `ModularCA.API --set-password-source <username> Local` on the
+  host as the service user.
+- **A certificate profile with no EKUs is refused under a signing profile that restricts them**,
+  for leaf certificates. Give such profiles the usages they are meant for. Windows autoenrollment
+  leaves such a template out of its policy, with a warning in the log.
+- **A browser clock more than a minute fast** fails token refresh on proof-of-possession sessions;
+  the allowance was five minutes either way.
+- **The mTLS RequiredPaths gate refuses a certificate from this instance's CAs that it has no
+  record of**, and every certificate from a CA that is revoked, held, disabled or deleted.
+- **A scoped integration API key no longer lists signing profiles that have no issuer**; issuing
+  with one was already refused.
+- **Issuance for a CA with a certificate quota runs one at a time**, so the quota holds under
+  concurrency; CAs without a quota are unaffected.
+- **A restore keeps the audit database.** To rebuild a host from a backup, which has no audit
+  history of its own, add `--restore-audit` (on the console, tick *Also replace the audit history
+  with the backup's*); "Restoring onto a new host" in the deploy guide now says so.
+
+**Security**
+
+- **The infrastructure API lists only the profiles inside the API key's scope.** The certificate,
+  signing and request profile listings returned every profile on the instance, so a key scoped to
+  one space could read every other space's profiles; they now return only profiles bound to a CA
+  inside the key's scope, plus unbound certificate and request profiles.
+- **The infrastructure API's revoke takes a reason by its RFC 5280 name only.** A numeric code, an
+  undefined code or a comma list was accepted and stored, so a client could put a reason RFC 5280
+  does not define, or a different reason from the one it named, on the CRL and OCSP response;
+  these are now refused with 400 (`MCA-REQ-000`).
+- **An EAB key binds one ACME account, even under a race.** Two new-account requests presenting the
+  same external account binding key at once could both pass the unused check and both get an
+  account; the key is now claimed atomically before the account is created, and the request that
+  loses is refused with `unauthorized`.
+- **A certificate request is issued once, even when two issue calls race.** Two concurrent
+  issuances of one approved request, or two reissues of one certificate, each had the signer sign
+  a certificate and each stored it. Issuance now locks the request before it checks or signs
+  anything, so the second call waits and is refused with 409 (`CsrStateNotEligible`, or
+  `AlreadyReissued`) with nothing signed for it.
+- **Concurrent issuances no longer overshoot a CA's certificate quota.** For a CA with a quota,
+  issuance counts under a per-CA lock held until its certificate is saved, so the second is
+  refused with `QuotaExceeded` before it signs.
+- **A client certificate whose issuing CA is revoked, held, disabled or deleted no longer signs
+  in.** mTLS sign-in, step-up and the MFA-factor checks read only the leaf's own status. Every CA
+  up the chain must now be in good standing; a refusal is audited as `mtls_issuer_revoked` or
+  `mtls_issuer_disabled`.
+- **The mTLS RequiredPaths gate refuses a revoked or held client certificate.** It admitted any
+  certificate that chained to a trusted anchor, checking revocation only against the local CRL
+  cache. A certificate issued by this instance's CAs must now be on record, not revoked or on
+  hold, and under CAs in good standing.
+- **Revoking your own mTLS credential revokes its certificate through the revocation service.** My
+  Security changed the certificate row directly, so no CRL was regenerated, no notification was
+  sent and no revocation audit entry was written. It still signs out every session of the account.
+- **A command-line backup stages its files in an unpredictable, owner-only directory, or stops.**
+  It staged plaintext dumps and keystores in `/tmp/modularca-backup-<timestamp>`, a name another
+  local user could create first, and only warned when it could not restrict it.
+- **A refused LDAP bind no longer falls back to the local password.** A password the directory
+  refused, or an account it had disabled or expired, could still sign in to the console or EST
+  with a stale local password. For an account whose password source is Inherit, the local
+  password is used only when the directory has no entry for it; while the directory cannot be
+  reached, password sign-in is refused without counting a failed attempt.
+- **Each account has a password source that decides whether LDAP or the local password checks
+  it.** Inherit follows the instance LDAP setting. Local checks only the local password and never
+  asks the directory, so it keeps working through an LDAP outage and in direct-bind mode.
+  Directory checks only LDAP and never the local password. A refused bind or a missing entry
+  counts as a failed attempt; an unreachable directory, or LDAP sign-in turned off, refuses
+  without counting one. The first time the directory accepts an Inherit account's password, the
+  account becomes Directory (audited as `UserPasswordSourceLearned`), so deleting its directory
+  entry can no longer bring a stale local password back. Administrators see and change the source
+  on the user's page, with the same step-up, tier gate and controlled-user ceremony as the user's
+  other credential settings; the change is audited as `UserPasswordSourceChanged` and ends the
+  user's sessions, and nobody can change their own. A Directory account cannot set a local
+  password by self-service, the pre-session change or an admin reset, and is not held to the local
+  password's forced-change or expiry flags. A new install creates its first administrator as
+  Local. On the host, `--set-password-source <username> <Inherit|Local|Directory>` makes the one
+  change the console cannot, an administrator's own: like `--unlock-user` it uses the credentials
+  in `db.yaml`, never HTTP, ends the account's sessions and is audited as
+  `UserPasswordSourceSetOnHost` by `host:break-glass`.
+- **A DPoP proof is single-use for as long as it is valid, and cannot be dated ahead.** A proof
+  dated up to five minutes in the future outlived its replay record and could be used again, and
+  two simultaneous requests with the same proof could both pass. A proof may now be at most a
+  minute ahead of the server clock, its jti is remembered until the proof can no longer be
+  accepted, and the jti is claimed in one atomic step (Redis `SET NX` when Redis is configured).
+- **Every sign-in path starts the session wearing the user's default access badge.** Only
+  password-only sign-in applied it; signing in with TOTP, WebAuthn or a client certificate gave a
+  full-strength session.
+- **The approval outlook judges other accounts on their own grants and writes no audit rows.** A
+  caller wearing a badge saw nobody able to approve, because their badge was applied to everyone
+  else, and system administrators outside the CA's groups got false "elevated access" audit rows
+  each time the outlook was opened.
+- **A leaf certificate with no extended key usages can no longer get around the signing profile's
+  allow-list.** A certificate profile that listed no EKUs issued a leaf with no ExtendedKeyUsage
+  extension, valid for any purpose, even when the signing profile allowed only certain usages, and
+  a signing profile whose allowed EKUs were all misspelled restricted nothing. CA and system
+  infrastructure certificates may still carry no EKU.
+- **A certificate's maximum validity is measured from its own start date.** It was counted from
+  the moment of issuance, so a request with a backdated notBefore could get a certificate that
+  lived longer than the profile allows. The maximum now limits notAfter − notBefore, and the
+  validity pre-flight on the issue form uses the same rule.
+- **An OCSP request that names more than one issuer is refused as unauthorized.** The responder
+  answered every entry using the first entry's CA, so an entry for a different CA could get "good"
+  or "revoked" signed by a responder with no authority over that certificate.
+
+**Fixed**
+
+- **ACME answers a bad nonce with badNonce and a malformed request with 400 malformed.** A missing,
+  unknown or replayed nonce was answered `malformed` and without a `Replay-Nonce`, so clients
+  could not retry; it is now `badNonce` with a fresh nonce, as RFC 8555 §6.5 requires. A body that
+  was not a readable JWS, or a payload a handler could not bind, returned 500.
+- **A restore keeps the audit history unless asked to replace it.** A restore replaced the live
+  audit database with the archive's, so every audit record made since the backup was lost,
+  against the rule that audit history survives unless it is deliberately wiped. The audit database
+  is now left as it is and the restore is recorded in it; `--restore-audit`, or the console's
+  *Also replace the audit history with the backup's*, puts the archive's trail in its place. The
+  confirmation prompt says which databases will be overwritten.
+- **Windows autoenrollment leaves out a template it could not issue, instead of offering nothing.**
+  A template whose certificate profile lists no EKUs under a restricting signing profile made the
+  whole policy listing fail; it is now skipped with a warning naming it, as an ECC-only template
+  already was.
+- **Setup and bootstrap refuse an empty section up front.** A setup request with a section set to
+  null (`"admin": null`), or a `bootstrap.yaml` with a bare section key (`HttpsApi:` with nothing
+  under it), failed partway through the bootstrap with a null reference. Either is now refused
+  before anything is changed, naming each empty section (`MCA-REQ-000`).
+
+**Changed**
+
+- **The .NET build has no warnings, and a new one fails it.** The 70 compiler and analyzer warnings
+  are fixed, mostly deprecated BouncyCastle calls (their output pinned byte for byte first) and
+  nullable references, and every project treats warnings as errors. A deliberate exception is a
+  pragma at the line with its reason, never a project-wide suppression. Every public member of the
+  node and the signer is documented, and neither suppresses missing-documentation warnings any
+  longer.
 
 ## [0.4.3] — 2026-11-08
 

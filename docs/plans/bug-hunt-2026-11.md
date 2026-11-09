@@ -6,7 +6,23 @@ in "Enrollment protocols hardened", X2 and X3 in "Secrets are owner-only", F5, F
 "Sign-in and sessions", and F1, F3, F4, F7 and X4 in "Issuance". The single-fix commits are kept on
 `backup/0.4.3-dev-pre-rebase-rc.1.4`: F1 `0089e7e`, F2 `3a5d2eb`, F3 `2e15693`, F4 `f41135b`, F5
 `162cc0c`, F6 `e1ca1ee`, F7 `ec901f2`, X1 `09791ef`, X2 `16bc9d7`, X3 `7448530`, X4 `cabf2e8`, X5
-`2fd35db`. X4 and X5 were confirmed in the source before fixing. The 0.4.4 group is open.
+`2fd35db`. X4 and X5 were confirmed in the source before fixing.
+
+**0.4.4 security pass (2026-11-09).** Five agents, one per area, each confirmed its findings in the
+source before changing code, with a test that failed first; their branches `fix/044-{api,races,
+mtls,auth,issuance}` are merged into `0.4.4-dev`, and the full suite passed (5700) on the result.
+Fixed: infra profile listings scoped to the API key; infra revoke reasons; EAB single use; ACME
+`badNonce` and malformed JWS; double issuance of one request; quota overshoot; the issuing-CA
+standing for mTLS; revocation at the RequiredPaths gate; self-service mTLS revoke through the
+revocation service; CLI backup staging; the LDAP local-password fallback; DPoP `iat` and jti; the
+default badge on every sign-in path; the approval outlook's caller context; the empty EKU list;
+maximum validity from notBefore; multi-issuer OCSP requests. Not real: ceremony approve vs reject
+(already guarded by `xmin`, now pinned by PostgreSQL tests) and the parent's pathLenConstraint (the
+signer refuses such a certificate). Restore and audit history: decided 2026-11-09, a restore keeps
+the live audit database unless `--restore-audit` is given. Still open below: the HSM items (no EC
+CA runs on an HSM, so the r‖s fix is not urgent), the remaining issuance and keystore items, the
+console items, and the Kerberos replay and pending-MFA caches, which have the same non-atomic
+check the DPoP fix removed.
 
 Six read-only reviews of `0.4.3-dev` at `0.4.3-rc.1.2` (`7bd74b9` on the same backup branch),
 2026-11-07, one per area: API; Core; Auth; Keystore, Signer and Ssh; Bootstrap,
