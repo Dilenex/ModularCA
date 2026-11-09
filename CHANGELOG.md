@@ -207,6 +207,9 @@ ones left for 0.4.4, are in `docs/plans/bug-hunt-2026-11.md`.
   owner had made read-only its write bit back, so `modularca-migrate` and the other writers
   overwrote it. Only the group's and others' rights are taken away now; a read-only file is
   refused and reported, as before.
+- **The deploy guide asks for PostgreSQL client tools at the server's major version.** It said
+  "or newer", but a `pg_restore` of 17 or later cannot restore into an older server, so a
+  backup taken on such a host could not be restored there.
 
 ### Security
 
