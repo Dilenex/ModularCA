@@ -55,11 +55,13 @@ namespace ModularCA.Core.Services
         /// <summary>
         /// Creates a new certificate profile entity from the given request.
         /// <paramref name="spaceId"/> stamps the profile with its space (null for the instance).
-        /// The inheritance parent is checked by <see cref="EnsureParentAllowedAsync"/>.
+        /// The inheritance parent is checked by <see cref="EnsureParentAllowedAsync"/>, and invalid
+        /// expiry warning settings are refused (<see cref="ErrorCodes.ExpiryWarningSettingsInvalid"/>).
         /// </summary>
         public async Task<CertProfileDto> CreateAsync(CreateCertProfileRequest request, Guid? spaceId = null, Func<Guid?, Guid?, bool>? parentAllowed = null)
         {
             await EnsureParentAllowedAsync(request.InheritsFromId, null, spaceId, request.CertificateAuthorityId, parentAllowed);
+            EnsureExpiryWarningsValid(request);
             var profile = new CertProfileEntity
             {
                 Name = request.Name,
@@ -80,6 +82,7 @@ namespace ModularCA.Core.Services
                 InheritsFromId = request.InheritsFromId,
                 InheritanceEnabled = request.InheritanceEnabled
             };
+            ApplyExpiryWarnings(profile, request);
 
             _db.CertProfiles.Add(profile);
             await _db.SaveChangesAsync();
@@ -90,14 +93,23 @@ namespace ModularCA.Core.Services
         /// <summary>
         /// Updates an existing certificate profile by ID with the supplied request values. A changed
         /// inheritance parent, or a changed CA binding, is checked by <see cref="EnsureParentAllowedAsync"/>.
+        /// Invalid expiry warning settings are refused (<see cref="ConfigurationValidationException"/>,
+        /// <see cref="ErrorCodes.ExpiryWarningSettingsInvalid"/>). When the expiry warning settings
+        /// or the inheritance change, the warning instants of the live certificates of this profile
+        /// and of the profiles inheriting from it are re-computed in the same transaction as the save
+        /// (<see cref="CertificateExpiry.SaveAndRecomputeAsync"/>): if the re-compute fails, the
+        /// profile is left as it was.
         /// </summary>
-        public async Task UpdateAsync(Guid id, UpdateCertProfileRequest request, Func<Guid?, Guid?, bool>? parentAllowed = null)
+        /// <returns>How many certificates had their expiry warning instants re-computed.</returns>
+        public async Task<int> UpdateAsync(Guid id, UpdateCertProfileRequest request, Func<Guid?, Guid?, bool>? parentAllowed = null)
         {
             var profile = await _db.CertProfiles.FindAsync(id);
             if (profile == null) throw new KeyNotFoundException("Profile not found");
             if (request.InheritsFromId != profile.InheritsFromId || request.CertificateAuthorityId != profile.CertificateAuthorityId)
                 await EnsureParentAllowedAsync(request.InheritsFromId, id, profile.SpaceId, request.CertificateAuthorityId, parentAllowed);
             await EnsureUsesSurviveAsync(profile, request);
+            EnsureExpiryWarningsValid(request);
+            var before = ExpiryInputs(profile);
 
             profile.Name = request.Name;
             profile.Description = request.Description;
@@ -115,10 +127,42 @@ namespace ModularCA.Core.Services
             profile.CertificateAuthorityId = request.CertificateAuthorityId;
             profile.InheritsFromId = request.InheritsFromId;
             profile.InheritanceEnabled = request.InheritanceEnabled;
+            ApplyExpiryWarnings(profile, request);
             profile.UpdatedAt = DateTime.UtcNow;
 
-            await _db.SaveChangesAsync();
+            return await CertificateExpiry.SaveAndRecomputeAsync(_db,
+                before == ExpiryInputs(profile) ? [] : [id], DateTime.UtcNow);
         }
+
+        /// <summary>Everything on a profile that decides its certificates' expiry warning instants.</summary>
+        internal static string ExpiryInputs(CertProfileEntity p) =>
+            $"{p.ExpiryWarningPercent}|{p.ExpiryWarningMaxWindow}|{p.ExpiryAlertPercent}|{p.ExpiryAlertMaxWindow}|{p.ExpiryNeverWarn}"
+            + $"|{p.ExpiryWarningOverridesParent}|{p.InheritanceEnabled}|{p.InheritsFromId}";
+
+        /// <summary>
+        /// Refuses expiry warning settings <see cref="ExpiryWarningRule.Problem"/> finds fault with
+        /// (<see cref="ConfigurationValidationException"/>, <see cref="ErrorCodes.ExpiryWarningSettingsInvalid"/>).
+        /// </summary>
+        private static void EnsureExpiryWarningsValid(CreateCertProfileRequest request)
+        {
+            if (ExpiryWarningRule.Problem(request.ExpiryWarningPercent, Blank(request.ExpiryWarningMaxWindow),
+                    request.ExpiryAlertPercent, Blank(request.ExpiryAlertMaxWindow)) is string problem)
+                throw new ConfigurationValidationException(problem, ErrorCodes.ExpiryWarningSettingsInvalid,
+                    "Use percents from 1 to 100 with the alert no larger than the warning, and windows such as P30D or PT6H.");
+        }
+
+        /// <summary>Copies the expiry warning settings of <paramref name="request"/> onto <paramref name="profile"/>, blank windows as null.</summary>
+        private static void ApplyExpiryWarnings(CertProfileEntity profile, CreateCertProfileRequest request)
+        {
+            profile.ExpiryWarningPercent = request.ExpiryWarningPercent;
+            profile.ExpiryWarningMaxWindow = Blank(request.ExpiryWarningMaxWindow);
+            profile.ExpiryAlertPercent = request.ExpiryAlertPercent;
+            profile.ExpiryAlertMaxWindow = Blank(request.ExpiryAlertMaxWindow);
+            profile.ExpiryNeverWarn = request.ExpiryNeverWarn;
+            profile.ExpiryWarningOverridesParent = request.ExpiryWarningOverridesParent;
+        }
+
+        private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
         /// <summary>
         /// Refuses an inheritance parent the caller may not see: one that does not exist, is the
@@ -367,6 +411,12 @@ namespace ModularCA.Core.Services
             SpaceId = profile.SpaceId,
             InheritsFromId = profile.InheritsFromId,
             InheritanceEnabled = profile.InheritanceEnabled,
+            ExpiryWarningPercent = profile.ExpiryWarningPercent,
+            ExpiryWarningMaxWindow = profile.ExpiryWarningMaxWindow,
+            ExpiryAlertPercent = profile.ExpiryAlertPercent,
+            ExpiryAlertMaxWindow = profile.ExpiryAlertMaxWindow,
+            ExpiryNeverWarn = profile.ExpiryNeverWarn,
+            ExpiryWarningOverridesParent = profile.ExpiryWarningOverridesParent,
             SystemPurpose = SystemCertProfiles.PurposeOf(profile.Name)
         };
     }

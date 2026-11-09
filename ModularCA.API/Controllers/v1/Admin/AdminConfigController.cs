@@ -729,9 +729,8 @@ public class AdminConfigController(
         if (request.WarnOverValidityDays > 0) _config.ComplianceScan.WarnOverValidityDays = request.WarnOverValidityDays;
         if (!string.IsNullOrEmpty(request.Schedule)) _config.ComplianceScan.Schedule = request.Schedule;
         if (request.DeprecatedAlgorithms != null) _config.ComplianceScan.DeprecatedAlgorithms = request.DeprecatedAlgorithms;
-        if (request.ExpiringWithinDays > 0) _config.ComplianceScan.ExpiringWithinDays = request.ExpiringWithinDays;
         if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
-        await AuditConfigChange("ComplianceScan", new { request.Enabled, request.MinRsaKeySize, request.WarnOverValidityDays, request.Schedule, request.ExpiringWithinDays });
+        await AuditConfigChange("ComplianceScan", new { request.Enabled, request.MinRsaKeySize, request.WarnOverValidityDays, request.Schedule });
         return Ok(new { message = "Compliance scan config updated", config = _config.ComplianceScan });
     }
 
@@ -1016,7 +1015,6 @@ public class ComplianceScanUpdateRequest
     public int WarnOverValidityDays { get; set; }
     public string? Schedule { get; set; }
     public List<string>? DeprecatedAlgorithms { get; set; }
-    public int ExpiringWithinDays { get; set; }
 }
 
 /// <summary>Request body for PUT /config/cert-expiry-notifications.</summary>

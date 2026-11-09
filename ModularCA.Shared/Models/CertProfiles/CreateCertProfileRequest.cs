@@ -78,4 +78,32 @@ public class CreateCertProfileRequest
 
     /// <summary>JSON array of CT log IDs to submit to when <see cref="CtEnabled"/> is set.</summary>
     public string? CtLogIds { get; set; }
+
+    /// <summary>
+    /// Share of a certificate's lifetime, 1 to 100, that remains when its soft expiry warning
+    /// starts; null for the parent's value or the default (30; a CA certificate warns 30 days ahead).
+    /// </summary>
+    public int? ExpiryWarningPercent { get; set; }
+
+    /// <summary>Longest soft warning window, an ISO 8601 duration such as <c>P30D</c>; null for no cap.</summary>
+    public string? ExpiryWarningMaxWindow { get; set; }
+
+    /// <summary>
+    /// Share of the lifetime, 1 to 100 and no larger than <see cref="ExpiryWarningPercent"/>, that
+    /// remains when the expiry alert starts; null for the parent's value or the default (10; a CA
+    /// certificate alerts 7 days ahead).
+    /// </summary>
+    public int? ExpiryAlertPercent { get; set; }
+
+    /// <summary>Longest alert window, an ISO 8601 duration; null for no cap.</summary>
+    public string? ExpiryAlertMaxWindow { get; set; }
+
+    /// <summary>The certificates are renewed automatically: their expiry never warns.</summary>
+    public bool ExpiryNeverWarn { get; set; }
+
+    /// <summary>
+    /// The expiry warning settings replace the parent's rather than being held to warn no later
+    /// than it. Only meaningful with inheritance.
+    /// </summary>
+    public bool ExpiryWarningOverridesParent { get; set; }
 }

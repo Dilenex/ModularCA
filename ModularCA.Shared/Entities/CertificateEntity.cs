@@ -79,6 +79,19 @@ public class CertificateEntity
     public DateTime? InvalidityDate { get; set; }
 
     /// <summary>
+    /// When the soft (amber) expiry warning starts, from the certificate's profile at issuance
+    /// (<see cref="ModularCA.Shared.Utils.ExpiryWarningRule"/>). Equal to <see cref="NotAfter"/>
+    /// when the profile never warns. Re-computed when the profile's warning settings change.
+    /// </summary>
+    public DateTime ExpiryWarningAt { get; set; }
+
+    /// <summary>
+    /// When the expiry alert (red) starts; never before <see cref="ExpiryWarningAt"/>. Equal to
+    /// <see cref="NotAfter"/> when the profile never warns.
+    /// </summary>
+    public DateTime ExpiryAlertAt { get; set; }
+
+    /// <summary>
     /// When an operator dismissed this certificate's expiry warning, or null. A dismissed
     /// certificate leaves the expiry warnings and notifications and can still be renewed.
     /// </summary>

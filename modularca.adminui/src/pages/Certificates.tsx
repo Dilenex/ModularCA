@@ -60,7 +60,7 @@ function ExpiryCell({ cert }: { cert: any }) {
     const state = expiryState(cert, now);
     const show = state === 'expired' || state === 'expiring';
     const handling = expiryHandling(cert);
-    const tone = lifecycleTone(cert.notAfter, !!cert.replaced || handling !== null, now);
+    const tone = lifecycleTone(cert, !!cert.replaced || handling !== null, now);
     return (
         <div className="flex flex-col min-w-0">
             <span className="text-xs text-ink-muted">{formatDate(cert.notAfter)}</span>
@@ -134,7 +134,7 @@ const X509Certificates: React.FC = () => {
     const page = Math.max(1, parseInt(q.page, 10) || 1);
     const pageSize = PAGE_SIZES.includes(parseInt(q.pageSize, 10)) ? parseInt(q.pageSize, 10) : 20;
     const sort = parseSort(q.sort);
-    const statusFilter = (['active', 'revoked', 'expired'].includes(q.status) ? q.status : 'all') as 'all' | 'active' | 'revoked' | 'expired';
+    const statusFilter = (['active', 'revoked', 'expired', 'expiring', 'alert'].includes(q.status) ? q.status : 'all') as 'all' | 'active' | 'revoked' | 'expired' | 'expiring' | 'alert';
     const replacedFilter = q.replaced === 'yes' || q.replaced === 'no' ? q.replaced : '';
     const { caId: caIdFilter, keyAlgorithm: keyAlgorithmFilter, notAfterFrom, notAfterTo, issuedFrom, issuedTo } = q;
     // The typed filters are edited locally and written to the URL after a pause, so every
@@ -402,6 +402,8 @@ const X509Certificates: React.FC = () => {
                         <option value="active">Active</option>
                         <option value="revoked">Revoked</option>
                         <option value="expired">Expired</option>
+                        <option value="expiring" title="Valid certificates whose expiry warning has started, as their profile set it">In expiry warning</option>
+                        <option value="alert" title="Valid certificates whose expiry alert has started">In expiry alert</option>
                     </select>
                 </FilterField>
                 <FilterField label="Expiring">

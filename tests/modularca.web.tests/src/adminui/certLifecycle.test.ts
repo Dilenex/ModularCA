@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { CertificateLifecycleSummaryModel } from '@shared/generated';
 import {
-    attentionTone, canReissue, channelNote, durationPhrase, expiryHandling, expiryHandlingNote, expiryPhrase, expiryState, lifecycleHealth,
-    lifecycleTone, relativeTime, sortAttention,
+    attentionTone, canReissue, channelNote, durationPhrase, expiringLink, expiryHandling, expiryHandlingNote, expiryLevel, expiryPhrase,
+    expiryScheduleText, expiryState, lifecycleHealth, lifecycleTone, neverWarns, relativeTime, sortAttention,
 } from '@adminui/pages/certLifecycle';
 
 const NOW = new Date('2026-10-05T12:00:00Z');
@@ -14,6 +14,7 @@ const at = (ms: number) => new Date(NOW.getTime() + ms).toISOString();
 function summary(patch: Partial<CertificateLifecycleSummaryModel> = {}): CertificateLifecycleSummaryModel {
     return {
         generatedAt: NOW.toISOString(), replacementWindowDays: 90, total: 0, active: 0, revoked: 0, expired: 0,
+        inExpiryWarning: 0, inExpiryWarningNotReplaced: 0, inExpiryAlert: 0, inExpiryAlertNotReplaced: 0,
         expiringWithin7Days: 0, expiringWithin30Days: 0, expiringWithin7DaysNotReplaced: 0, expiringWithin30DaysNotReplaced: 0,
         expiredReplaced: 0, expiredNotReplaced: 0, retiredOrDismissed: 0, expiredUnchecked: 0, recentlyExpiredNotReplaced: 0,
         attentionTotal: 0, attention: [], byCa: [], ...patch,
@@ -49,6 +50,55 @@ describe('relative time', () => {
     });
 });
 
+describe('stored expiry instants', () => {
+    // A 10-hour certificate issued an hour ago: warning at 3 h left, alert at 1 h left.
+    const tenHour = { notAfter: at(9 * HOUR), expiryWarningAt: at(6 * HOUR), expiryAlertAt: at(8 * HOUR) };
+    // A one-year certificate 100 days from expiry: in its warning (about 110 days), not its alert (about 37).
+    const year = { notAfter: at(100 * DAY), expiryWarningAt: at(-10 * DAY), expiryAlertAt: at(63 * DAY) };
+
+    it('follows the instants, not a fixed 30 days', () => {
+        expect(expiryState(tenHour, NOW)).toBe('active');
+        expect(expiryLevel(tenHour, NOW)).toBe('none');
+        expect(lifecycleTone(tenHour, false, NOW)).toBe('ok');
+        expect(expiryState(year, NOW)).toBe('expiring');
+        expect(expiryLevel(year, NOW)).toBe('warning');
+        expect(lifecycleTone(year, false, NOW)).toBe('warn');
+    });
+
+    it('is critical once the alert has started', () => {
+        const alerted = { ...tenHour, expiryWarningAt: at(-2 * HOUR), expiryAlertAt: at(-MIN) };
+        expect(expiryLevel(alerted, NOW)).toBe('alert');
+        expect(lifecycleTone(alerted, false, NOW)).toBe('crit');
+        expect(attentionTone(alerted, NOW)).toBe('crit');
+        expect(attentionTone({ ...alerted, expiryAlertAt: at(HOUR) }, NOW)).toBe('warn');
+    });
+
+    it('never warns when the profile says so, but an unreplaced expiry stays red', () => {
+        const never = { notAfter: at(2 * HOUR), expiryWarningAt: at(2 * HOUR), expiryAlertAt: at(2 * HOUR) };
+        expect(neverWarns(never)).toBe(true);
+        expect(expiryState(never, NOW)).toBe('active');
+        expect(lifecycleTone(never, false, NOW)).toBe('ok');
+        const expired = { notAfter: at(-HOUR), expiryWarningAt: at(-HOUR), expiryAlertAt: at(-HOUR) };
+        expect(expiryState(expired, NOW)).toBe('expired');
+        expect(lifecycleTone(expired, false, NOW)).toBe('crit');
+        expect(lifecycleTone(expired, true, NOW)).toBe('neutral');
+    });
+
+    it('falls back to 30 and 7 days for a row without instants', () => {
+        expect(expiryLevel({ notAfter: at(6 * DAY) }, NOW)).toBe('alert');
+        expect(expiryLevel({ notAfter: at(20 * DAY) }, NOW)).toBe('warning');
+        expect(expiryLevel({ notAfter: at(60 * DAY) }, NOW)).toBe('none');
+        expect(expiryState({ notAfter: at(20 * DAY), expiryWarningAt: null }, NOW)).toBe('expiring');
+    });
+
+    it('describes the schedule for the certificate page', () => {
+        const iso = (d: string) => d.slice(0, 10);
+        expect(expiryScheduleText(year, iso)).toBe(`Warns from ${year.expiryWarningAt.slice(0, 10)}; alert from ${year.expiryAlertAt.slice(0, 10)}`);
+        expect(expiryScheduleText({ notAfter: at(DAY), expiryWarningAt: at(DAY), expiryAlertAt: at(DAY) })).toBe('No expiry warning (profile)');
+        expect(expiryScheduleText({ notAfter: at(DAY) })).toBeNull();
+    });
+});
+
 describe('tone rules', () => {
     it('keeps a replaced certificate neutral however expired', () => {
         expect(lifecycleTone(at(-2 * DAY), true, NOW)).toBe('neutral');
@@ -81,14 +131,31 @@ describe('tone rules', () => {
         expect(lifecycleHealth(summary({ expired: 5, expiredNotReplaced: 2 }), NOW).find(h => h.key === 'expired')!.tone).toBe('warn');
     });
 
-    it('grades expiring certificates by the unreplaced ones', () => {
+    it('grades expiring certificates by the unreplaced ones in their warning and alert', () => {
         const health = (p: Partial<CertificateLifecycleSummaryModel>) => lifecycleHealth(summary(p), NOW).find(h => h.key === 'expiring')!;
-        expect(health({ expiringWithin30Days: 3, expiringWithin7Days: 1, expiringWithin7DaysNotReplaced: 1, expiringWithin30DaysNotReplaced: 3 }).tone).toBe('crit');
-        const warn = health({ expiringWithin30Days: 3, expiringWithin30DaysNotReplaced: 2 });
+        const crit = health({ inExpiryWarning: 3, inExpiryAlert: 1, inExpiryAlertNotReplaced: 1, inExpiryWarningNotReplaced: 3 });
+        expect(crit.tone).toBe('crit');
+        expect(crit.to).toBe('/certificates?status=alert&replaced=no');
+        const warn = health({ inExpiryWarning: 3, inExpiryWarningNotReplaced: 2 });
         expect(warn.tone).toBe('warn');
-        expect(warn.to).toMatch(/^\/certificates\?status=active&replaced=no&notAfterTo=\d{4}-\d{2}-\d{2}$/);
-        expect(health({ expiringWithin30Days: 3 }).tone).toBe('ok');
+        expect(warn.to).toBe('/certificates?status=expiring&replaced=no');
+        expect(warn.detail).toBe('2 certificates in their expiry warning with no replacement');
+        const handled = health({ inExpiryWarning: 3 });
+        expect(handled.tone).toBe('ok');
+        expect(handled.to).toBe('/certificates?status=expiring');
         expect(health({}).tone).toBe('ok');
+    });
+
+    it('ignores the deprecated fixed-window counts', () => {
+        const health = lifecycleHealth(summary({ expiringWithin30Days: 5, expiringWithin30DaysNotReplaced: 5, expiringWithin7DaysNotReplaced: 2 }), NOW)
+            .find(h => h.key === 'expiring')!;
+        expect(health).toMatchObject({ tone: 'ok', detail: 'No certificate is in its expiry warning' });
+    });
+
+    it('links to the expiring and alert lists', () => {
+        expect(expiringLink()).toBe('/certificates?status=expiring&replaced=no');
+        expect(expiringLink(true)).toBe('/certificates?status=alert&replaced=no');
+        expect(expiringLink(false, false)).toBe('/certificates?status=expiring');
     });
 });
 
@@ -139,8 +206,8 @@ describe('retired and dismissed certificates', () => {
     });
 
     it('counts retired and dismissed certificates as handled on the dashboard', () => {
-        const items = lifecycleHealth(summary({ expiringWithin30Days: 2, retiredOrDismissed: 2 }), NOW);
-        expect(items.find(i => i.key === 'expiring')).toMatchObject({ tone: 'ok', detail: '2 certificates expire within 30 days, each replaced, retired or dismissed' });
+        const items = lifecycleHealth(summary({ inExpiryWarning: 2, retiredOrDismissed: 2 }), NOW);
+        expect(items.find(i => i.key === 'expiring')).toMatchObject({ tone: 'ok', detail: '2 certificates in their expiry warning, each replaced, retired or dismissed' });
         const expired = lifecycleHealth(summary({ expired: 1, retiredOrDismissed: 1 }), NOW).find(i => i.key === 'expired');
         expect(expired).toMatchObject({ tone: 'neutral', detail: '1 certificate expired; every one from the last 90 days was replaced, retired or dismissed' });
     });

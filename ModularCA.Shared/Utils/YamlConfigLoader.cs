@@ -37,6 +37,9 @@ public static class YamlConfigLoader
         ("SshCa", "KeyStoragePath",
             "is retired and ignored: SSH CA keys are held by the signer, and a key file from before is found by the path its SSH CA key row records. Remove the key.",
             "config/ssh-ca-keys"),
+        ("ComplianceScan", "ExpiringWithinDays",
+            "is retired and ignored: a certificate is reported as expiring without renewal once its expiry warning starts, which its certificate profile sets. Remove the key.",
+            "30"),
     ];
 
     /// <summary>

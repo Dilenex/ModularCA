@@ -250,7 +250,7 @@ const SystemStatusCard: React.FC = () => {
 
 /* ─── Certificate Statistics Card ─── */
 const CertStatsCard: React.FC = () => {
-    const [stats, setStats] = useState<{ total: number; active: number; revoked: number; expired: number; expiring30: number } | null>(null);
+    const [stats, setStats] = useState<{ total: number; active: number; revoked: number; expired: number; expiring: number } | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
 
@@ -258,7 +258,7 @@ const CertStatsCard: React.FC = () => {
         // The server's counts over every certificate. Counting the rows of the list endpoint
         // counted its first page, so an instance with more than 25 certificates read "Total 25".
         apiGet<CertificateLifecycleSummaryModel>('/api/v1/admin/certificates/lifecycle-summary')
-            .then((s) => setStats({ total: s.total, active: s.active, revoked: s.revoked, expired: s.expired, expiring30: s.expiringWithin30Days }))
+            .then((s) => setStats({ total: s.total, active: s.active, revoked: s.revoked, expired: s.expired, expiring: s.inExpiryWarning }))
             .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
     }, []);
@@ -268,7 +268,7 @@ const CertStatsCard: React.FC = () => {
         { label: 'Active', value: stats.active, color: 'bg-ok-soft text-ok border-ok/40' },
         { label: 'Revoked', value: stats.revoked, color: 'bg-crit-soft text-crit border-crit/40' },
         { label: 'Expired', value: stats.expired, color: 'bg-warn-soft text-warn border-warn/40' },
-        { label: 'Expiring (30d)', value: stats.expiring30, color: 'bg-warn-soft text-warn border-warn/40' },
+        { label: 'In expiry warning', value: stats.expiring, color: 'bg-warn-soft text-warn border-warn/40' },
     ] : [];
 
     return (
@@ -569,10 +569,8 @@ const DrStatusCard: React.FC = () => {
                         </div>
                         <div className="bg-sunken rounded p-3">
                             <div className="text-xs text-ink-muted">Backup Age</div>
-                            <div className={`text-sm mt-1 ${drStatus.backupAgeHours > 24 ? 'text-warn' : 'text-ink'}`}>
-                                {drStatus.backupAgeHours !== undefined && drStatus.backupAgeHours !== null
-                                    ? `${drStatus.backupAgeHours}h`
-                                    : drStatus.backupAge || '-'}
+                            <div className={`text-sm mt-1 ${drStatus.lastBackupAgeHours > 24 ? 'text-warn' : 'text-ink'}`}>
+                                {typeof drStatus.lastBackupAgeHours === 'number' ? `${drStatus.lastBackupAgeHours}h` : '-'}
                             </div>
                         </div>
                         <div className="bg-sunken rounded p-3">
@@ -634,8 +632,10 @@ const SystemHealth: React.FC = () => {
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <h1 className="text-xl font-semibold text-ink">System Health</h1>
             <HealthCheckCard />
-            <OcspRespondersCard hierarchy={hierarchy} />
-            <ProtocolFindingsCard hierarchy={hierarchy} />
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+                <OcspRespondersCard hierarchy={hierarchy} />
+                <ProtocolFindingsCard hierarchy={hierarchy} />
+            </div>
             <DrStatusCard />
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <SystemStatusCard />

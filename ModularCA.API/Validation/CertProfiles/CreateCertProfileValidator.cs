@@ -68,7 +68,19 @@ namespace ModularCA.API.Validation.CertProfiles
                 .NotEmpty()
                 .Matches(@"^P(\d+Y)?(\d+M)?(\d+D)?$")
                 .WithMessage("ValidityPeriodMax must be an ISO 8601 duration like P1Y, P6M, or P90D.");
+
+            // The expiry warning settings: the same check CertProfileService makes, reported here
+            // with the field so the console can show it next to the input.
+            RuleFor(x => x.ExpiryWarningPercent)
+                .Must((x, _) => ExpiryProblem(x) == null)
+                .WithErrorCode(Shared.Errors.ErrorCodes.ExpiryWarningSettingsInvalid)
+                .WithMessage(x => ExpiryProblem(x)!);
         }
+
+        /// <summary>What <see cref="ExpiryWarningRule.Problem"/> says of the request's expiry warning settings, or null.</summary>
+        private static string? ExpiryProblem(CreateCertProfileRequest x) =>
+            ExpiryWarningRule.Problem(x.ExpiryWarningPercent, string.IsNullOrWhiteSpace(x.ExpiryWarningMaxWindow) ? null : x.ExpiryWarningMaxWindow.Trim(),
+                x.ExpiryAlertPercent, string.IsNullOrWhiteSpace(x.ExpiryAlertMaxWindow) ? null : x.ExpiryAlertMaxWindow.Trim());
 
         private static List<(string? Oid, string? FriendlyName)> ReadCatalog(
             ModularCADbContext db, string keyUsageKind) =>

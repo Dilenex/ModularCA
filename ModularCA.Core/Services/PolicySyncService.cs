@@ -1,5 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using ModularCA.Core.Helpers;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Models.RequestProfiles;
@@ -64,6 +65,7 @@ public class PolicySyncService : IPolicySyncService
                 aggregate.Created += result.Created;
                 aggregate.Updated += result.Updated;
                 aggregate.Unchanged += result.Unchanged;
+                aggregate.ExpiryWarningsRecomputed += result.ExpiryWarningsRecomputed;
                 aggregate.Errors.AddRange(result.Errors);
             }
             catch (Exception ex)
@@ -90,7 +92,13 @@ public class PolicySyncService : IPolicySyncService
     }
 
     /// <summary>
-    /// Parses and synchronizes certificate profile definitions from YAML content.
+    /// Parses and synchronizes certificate profile definitions from YAML content. An expiry
+    /// warning key an entry leaves out keeps the profile's current value (<see cref="ExpiryOf"/>),
+    /// so a file written before 0.4.3 does not reset settings made in the console. An entry whose
+    /// resulting expiry warning settings <see cref="ExpiryWarningRule.Problem"/> refuses is skipped
+    /// with an error. When an updated profile's expiry warning settings change, the warning instants
+    /// of its live certificates, and of those of the profiles inheriting from it, are re-computed in
+    /// the same transaction as the save (<see cref="CertificateExpiry.SaveAndRecomputeAsync"/>).
     /// </summary>
     private async Task<PolicySyncResult> SyncCertProfilesAsync(string yamlContent)
     {
@@ -117,6 +125,7 @@ public class PolicySyncService : IPolicySyncService
         var existingProfiles = await _db.CertProfiles
             .Where(p => p.CertificateAuthorityId == null)
             .ToListAsync();
+        var expiryChanged = new List<Guid>();
 
         foreach (var yamlProfile in root.Profiles)
         {
@@ -130,6 +139,14 @@ public class PolicySyncService : IPolicySyncService
 
                 var existing = existingProfiles.FirstOrDefault(p =>
                     string.Equals(p.Name, yamlProfile.Name, StringComparison.OrdinalIgnoreCase));
+
+                var expiry = ExpiryOf(yamlProfile, existing);
+                if (ExpiryWarningRule.Problem(expiry.WarningPercent, expiry.WarningMaxWindow,
+                        expiry.AlertPercent, expiry.AlertMaxWindow) is string expiryProblem)
+                {
+                    result.Errors.Add($"Cert profile '{yamlProfile.Name}' was not synced: {expiryProblem}");
+                    continue;
+                }
 
                 if (existing == null)
                 {
@@ -147,11 +164,12 @@ public class PolicySyncService : IPolicySyncService
                         ValidityPeriodMax = yamlProfile.ValidityPeriodMax,
                         CtEnabled = yamlProfile.CtEnabled
                     };
+                    ApplyExpiryWarnings(entity, expiry);
                     _db.CertProfiles.Add(entity);
                     result.Created++;
                     _logger.LogInformation("Creating cert profile: {Name}", yamlProfile.Name);
                 }
-                else if (HasCertProfileChanged(existing, yamlProfile))
+                else if (HasCertProfileChanged(existing, yamlProfile, expiry))
                 {
                     // The same guards as an edit in the console: a profile the application finds by
                     // name keeps its kind, and one a CA issues its own certificates from keeps the usage.
@@ -186,6 +204,9 @@ public class PolicySyncService : IPolicySyncService
                     existing.ValidityPeriodMin = yamlProfile.ValidityPeriodMin;
                     existing.ValidityPeriodMax = yamlProfile.ValidityPeriodMax;
                     existing.CtEnabled = yamlProfile.CtEnabled;
+                    if (ExpiryValues.Of(existing) != expiry)
+                        expiryChanged.Add(existing.Id);
+                    ApplyExpiryWarnings(existing, expiry);
                     existing.UpdatedAt = DateTime.UtcNow;
                     existing.Revision++;
                     result.Updated++;
@@ -202,9 +223,49 @@ public class PolicySyncService : IPolicySyncService
             }
         }
 
-        await _db.SaveChangesAsync();
+        result.ExpiryWarningsRecomputed += await CertificateExpiry.SaveAndRecomputeAsync(_db, expiryChanged, DateTime.UtcNow);
         return result;
     }
+
+    /// <summary>Every expiry warning setting of a certificate profile, windows blank as null.</summary>
+    private sealed record ExpiryValues(int? WarningPercent, string? WarningMaxWindow, int? AlertPercent, string? AlertMaxWindow,
+        bool NeverWarn, bool OverridesParent)
+    {
+        /// <summary>The settings <paramref name="profile"/> stores.</summary>
+        public static ExpiryValues Of(CertProfileEntity profile) => new(
+            profile.ExpiryWarningPercent, Blank(profile.ExpiryWarningMaxWindow), profile.ExpiryAlertPercent, Blank(profile.ExpiryAlertMaxWindow),
+            profile.ExpiryNeverWarn, profile.ExpiryWarningOverridesParent);
+    }
+
+    /// <summary>
+    /// The expiry warning settings a synced entry leaves on the profile: each key the entry carries,
+    /// and for each key it leaves out, the value <paramref name="existing"/> has (the default for a
+    /// new profile). A key given as null (<c>~</c>) clears a percent or a window, as does an empty window.
+    /// </summary>
+    private static ExpiryValues ExpiryOf(CertProfileYamlEntry yaml, CertProfileEntity? existing)
+    {
+        var current = existing == null ? new ExpiryValues(null, null, null, null, false, false) : ExpiryValues.Of(existing);
+        return new ExpiryValues(
+            yaml.Has(nameof(yaml.ExpiryWarningPercent)) ? yaml.ExpiryWarningPercent : current.WarningPercent,
+            yaml.Has(nameof(yaml.ExpiryWarningMaxWindow)) ? Blank(yaml.ExpiryWarningMaxWindow) : current.WarningMaxWindow,
+            yaml.Has(nameof(yaml.ExpiryAlertPercent)) ? yaml.ExpiryAlertPercent : current.AlertPercent,
+            yaml.Has(nameof(yaml.ExpiryAlertMaxWindow)) ? Blank(yaml.ExpiryAlertMaxWindow) : current.AlertMaxWindow,
+            yaml.ExpiryNeverWarn ?? current.NeverWarn,
+            yaml.ExpiryWarningOverridesParent ?? current.OverridesParent);
+    }
+
+    /// <summary>Writes <paramref name="expiry"/> onto <paramref name="profile"/>.</summary>
+    private static void ApplyExpiryWarnings(CertProfileEntity profile, ExpiryValues expiry)
+    {
+        profile.ExpiryWarningPercent = expiry.WarningPercent;
+        profile.ExpiryWarningMaxWindow = expiry.WarningMaxWindow;
+        profile.ExpiryAlertPercent = expiry.AlertPercent;
+        profile.ExpiryAlertMaxWindow = expiry.AlertMaxWindow;
+        profile.ExpiryNeverWarn = expiry.NeverWarn;
+        profile.ExpiryWarningOverridesParent = expiry.OverridesParent;
+    }
+
+    private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     /// <summary>
     /// Parses and synchronizes signing profile definitions from YAML content. A profile whose
@@ -437,9 +498,10 @@ public class PolicySyncService : IPolicySyncService
     }
 
     /// <summary>
-    /// Compares an existing cert profile entity to a YAML definition to detect changes.
+    /// Compares an existing cert profile entity to a YAML definition, whose expiry warning settings
+    /// are <paramref name="expiry"/> (<see cref="ExpiryOf"/>), to detect changes.
     /// </summary>
-    private static bool HasCertProfileChanged(CertProfileEntity existing, CertProfileYamlEntry yaml)
+    private static bool HasCertProfileChanged(CertProfileEntity existing, CertProfileYamlEntry yaml, ExpiryValues expiry)
     {
         return existing.Description != (yaml.Description ?? string.Empty)
             || existing.IsCaProfile != yaml.IsCaProfile
@@ -450,7 +512,8 @@ public class PolicySyncService : IPolicySyncService
             || existing.AllowedSignatureAlgorithms != (yaml.AllowedSignatureAlgorithms ?? "[]")
             || existing.ValidityPeriodMin != yaml.ValidityPeriodMin
             || existing.ValidityPeriodMax != yaml.ValidityPeriodMax
-            || existing.CtEnabled != yaml.CtEnabled;
+            || existing.CtEnabled != yaml.CtEnabled
+            || ExpiryValues.Of(existing) != expiry;
     }
 
     /// <summary>
@@ -501,9 +564,19 @@ public class PolicySyncService : IPolicySyncService
         public List<CertProfileYamlEntry> Profiles { get; set; } = new();
     }
 
-    /// <summary>A single certificate profile entry in YAML.</summary>
+    /// <summary>
+    /// A single certificate profile entry in YAML. The expiry warning keys are optional: one left
+    /// out keeps the profile's current value, which <see cref="Has"/> tells apart from one given as null.
+    /// </summary>
     private class CertProfileYamlEntry
     {
+        private readonly HashSet<string> _present = [];
+        private int? _expiryWarningPercent, _expiryAlertPercent;
+        private string? _expiryWarningMaxWindow, _expiryAlertMaxWindow;
+
+        /// <summary>Whether the entry carries the property <paramref name="name"/>, even as null.</summary>
+        public bool Has(string name) => _present.Contains(name);
+
         public string Name { get; set; } = string.Empty;
         public string? Description { get; set; }
         public bool IsCaProfile { get; set; }
@@ -515,6 +588,34 @@ public class PolicySyncService : IPolicySyncService
         public string? ValidityPeriodMin { get; set; }
         public string? ValidityPeriodMax { get; set; }
         public bool CtEnabled { get; set; }
+        /// <summary>Soft expiry warning percent of the lifetime (1-100); null for the default, absent to keep the current value.</summary>
+        public int? ExpiryWarningPercent
+        {
+            get => _expiryWarningPercent;
+            set { _expiryWarningPercent = value; _present.Add(nameof(ExpiryWarningPercent)); }
+        }
+        /// <summary>Longest soft warning window, ISO 8601; null or empty for no cap, absent to keep the current value.</summary>
+        public string? ExpiryWarningMaxWindow
+        {
+            get => _expiryWarningMaxWindow;
+            set { _expiryWarningMaxWindow = value; _present.Add(nameof(ExpiryWarningMaxWindow)); }
+        }
+        /// <summary>Expiry alert percent of the lifetime (1-100); null for the default, absent to keep the current value.</summary>
+        public int? ExpiryAlertPercent
+        {
+            get => _expiryAlertPercent;
+            set { _expiryAlertPercent = value; _present.Add(nameof(ExpiryAlertPercent)); }
+        }
+        /// <summary>Longest alert window, ISO 8601; null or empty for no cap, absent to keep the current value.</summary>
+        public string? ExpiryAlertMaxWindow
+        {
+            get => _expiryAlertMaxWindow;
+            set { _expiryAlertMaxWindow = value; _present.Add(nameof(ExpiryAlertMaxWindow)); }
+        }
+        /// <summary>The certificates are renewed automatically: never warn of their expiry. Absent to keep the current value.</summary>
+        public bool? ExpiryNeverWarn { get; set; }
+        /// <summary>The expiry warning settings set here override the parent's instead of being held to them. Absent to keep the current value.</summary>
+        public bool? ExpiryWarningOverridesParent { get; set; }
     }
 
     /// <summary>Root object for signing-profiles.yaml.</summary>

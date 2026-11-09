@@ -462,7 +462,8 @@ namespace ModularCA.Core.Services
             var certModel = BuildCertModel(issuedCert, certPem, standardOids, extendedOids,
                 effectiveCertProfile.SourceProfileId, csrEntity.SigningProfile.Id, certIv, certEncryptedAes, certEncryptedPrivKey,
                 encryptionCertSerial, isCa: effectiveCertProfile.IsCaProfile,
-                issuerCertificateId: refCACert.CertificateId);
+                issuerCertificateId: refCACert.CertificateId,
+                expiryWarnings: effectiveCertProfile.ExpiryWarnings);
 
             await _certStore.SaveCertificateAsync(issuedCert.GetEncoded(), certModel);
 
@@ -913,7 +914,8 @@ namespace ModularCA.Core.Services
             var certModel = BuildCertModel(issuedCert, certPem, standardOids, extendedOids,
                 effectiveCertProfile.SourceProfileId, csrEntity.SigningProfile.Id, null, null, null,
                 isCa: effectiveCertProfile.IsCaProfile,
-                issuerCertificateId: refCACert.CertificateId);
+                issuerCertificateId: refCACert.CertificateId,
+                expiryWarnings: effectiveCertProfile.ExpiryWarnings);
 
             await _certStore.SaveCertificateAsync(issuedCert.GetEncoded(), certModel);
 
@@ -1715,10 +1717,6 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
-        /// Builds a <see cref="CertificateInfoModel"/> from the issued certificate and metadata,
-        /// including the serial number of the CA certificate whose public key encrypted the private key.
-        /// </summary>
-        /// <summary>
         /// Throws when a subject DN is longer than the Certificates table can store.
         /// </summary>
         /// <remarks>
@@ -1733,6 +1731,12 @@ namespace ModularCA.Core.Services
                 subjectDn.ToString(), CertificateEntity.SubjectDnMaxLength);
         }
 
+        /// <summary>
+        /// Builds a <see cref="CertificateInfoModel"/> from the issued certificate and metadata,
+        /// including the serial number of the CA certificate whose public key encrypted the private key,
+        /// and the expiry warning and alert instants <paramref name="expiryWarnings"/> (the effective
+        /// certificate profile's settings) give it. Every issuance and reissue goes through here.
+        /// </summary>
         private static CertificateInfoModel BuildCertModel(
             X509Certificate issuedCert, string certPem,
             List<string> standardOids, List<string> extendedOids,
@@ -1740,8 +1744,10 @@ namespace ModularCA.Core.Services
             byte[]? certIv, byte[]? certEncryptedAes, byte[]? certEncryptedPrivKey,
             string? encryptionCertSerialNumber = null,
             bool isCa = false,
-            Guid? issuerCertificateId = null)
+            Guid? issuerCertificateId = null,
+            ExpiryWarningSettings? expiryWarnings = null)
         {
+            var (expiryWarningAt, expiryAlertAt) = ExpiryWarningRule.Compute(issuedCert.NotBefore, issuedCert.NotAfter, isCa, expiryWarnings);
             return new CertificateInfoModel
             {
                 Pem = certPem,
@@ -1767,6 +1773,8 @@ namespace ModularCA.Core.Services
                 // CertificateStore persists it and CRL generation can use it directly
                 // instead of the DN-based fallback resolver.
                 IssuerCertificateId = issuerCertificateId,
+                ExpiryWarningAt = expiryWarningAt,
+                ExpiryAlertAt = expiryAlertAt,
             };
         }
 

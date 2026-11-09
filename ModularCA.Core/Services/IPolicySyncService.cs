@@ -38,6 +38,12 @@ public class PolicySyncResult
     /// <summary>Number of profiles that matched exactly and required no changes.</summary>
     public int Unchanged { get; set; }
 
+    /// <summary>
+    /// Number of live certificates whose expiry warning instants were re-computed because their
+    /// certificate profile's expiry warning settings changed.
+    /// </summary>
+    public int ExpiryWarningsRecomputed { get; set; }
+
     /// <summary>List of error messages encountered during sync.</summary>
     public List<string> Errors { get; set; } = new();
 }

@@ -270,22 +270,22 @@ export const FORCE_COMMAND_HINT = 'Every session using a certificate from this p
  */
 export const SSH_REQUIRED_EXTENSIONS_HINT = 'Required must be a subset of Allowed. Required extensions are added to every certificate after the Allowed check, so one that is required here but not allowed above still lands in the certificate while a requester who names it explicitly is refused. Save is blocked until the two agree. A required no-* name withholds its permit-* from every certificate.';
 
-/** Field source indicator for resolved profile views */
+/**
+ * Field source indicator for resolved profile views: overridden, inherited, or clamped (the
+ * child's value was less strict than its parent allows, so the parent's is used).
+ */
 export const FieldSourceBadge: React.FC<{ source?: string }> = ({ source }) => {
     if (!source) return null;
-    const isOverridden = source === 'overridden';
-    return (
-        <span className={`ml-2 px-1.5 py-0.5 text-[10px] rounded border ${isOverridden
-            ? 'bg-ok-soft text-ok border-ok/40'
-            : 'bg-sunken text-ink-muted border-line-strong'}`}>
-            {isOverridden ? 'overridden' : 'inherited'}
-        </span>
-    );
+    const tone = source === 'overridden' ? 'bg-ok-soft text-ok border-ok/40'
+        : source === 'clamped' ? 'bg-warn-soft text-warn border-warn/40'
+        : 'bg-sunken text-ink-muted border-line-strong';
+    const text = source === 'overridden' ? 'overridden' : source === 'clamped' ? 'clamped to parent' : 'inherited';
+    return <span className={`ml-2 px-1.5 py-0.5 text-[10px] rounded border ${tone}`}>{text}</span>;
 };
 
 /** Wrapper that adds a colored left border based on field source */
 export const SourceBorderedField: React.FC<{ source?: string; label: string; value?: string | null }> = ({ source, label, value }) => {
-    const borderColor = source === 'overridden' ? 'border-l-ok' : source === 'inherited' ? 'border-l-line-strong' : '';
+    const borderColor = source === 'overridden' ? 'border-l-ok' : source === 'clamped' ? 'border-l-warn' : source === 'inherited' ? 'border-l-line-strong' : '';
     return (
         <div className={`pl-3 border-l-2 ${borderColor}`}>
             <div className="flex items-center">

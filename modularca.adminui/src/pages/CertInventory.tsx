@@ -6,6 +6,7 @@ import { Link } from 'react-router-dom';
 import { apiGet, apiGetAllPages } from '../api/client';
 import { useScope } from '../context/ScopeContext';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
+import { expiryState } from './certLifecycle';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -318,7 +319,6 @@ const CertInventory: React.FC = () => {
     // Per-CA breakdown
     const caBreakdown = useMemo(() => {
         const m: Record<string, { total: number; active: number; expiring: number; revoked: number }> = {};
-        const d30 = new Date(now); d30.setDate(d30.getDate() + 30);
         for (const c of certs) {
             const issuer = c.issuer || 'Unknown';
             if (!m[issuer]) m[issuer] = { total: 0, active: 0, expiring: 0, revoked: 0 };
@@ -327,7 +327,8 @@ const CertInventory: React.FC = () => {
             if (st === 'revoked') m[issuer].revoked++;
             else if (st === 'active') {
                 m[issuer].active++;
-                if (new Date(c.notAfter) <= d30) m[issuer].expiring++;
+                // In its expiry warning, as the certificate's profile set it at issuance.
+                if (expiryState(c, now) === 'expiring') m[issuer].expiring++;
             }
         }
         return Object.entries(m).sort((a, b) => b[1].total - a[1].total);
@@ -571,7 +572,7 @@ const CertInventory: React.FC = () => {
                                 { key: 'ca', header: 'CA Name', flex: true, sortable: true, exportValue: ([issuer]) => issuer, render: ([issuer]) => <span className={`text-ink truncate ${caFilter === issuer ? 'font-semibold' : ''}`} title={issuer}>{issuer}</span> },
                                 { key: 'total', header: 'Total', defaultWidth: 90, align: 'right', sortable: true, sortValue: ([, d]) => d.total, exportValue: ([, d]) => d.total, render: ([, d]) => <span className="text-ink tabular-nums">{d.total}</span> },
                                 { key: 'active', header: 'Active', defaultWidth: 90, align: 'right', sortable: true, sortValue: ([, d]) => d.active, exportValue: ([, d]) => d.active, render: ([, d]) => <span className="text-ok tabular-nums">{d.active}</span> },
-                                { key: 'expiring', header: 'Expiring Soon', defaultWidth: 120, align: 'right', sortable: true, sortValue: ([, d]) => d.expiring, exportValue: ([, d]) => d.expiring, render: ([, d]) => <span className={`tabular-nums ${d.expiring > 0 ? 'text-warn' : 'text-ink-muted'}`}>{d.expiring}</span> },
+                                { key: 'expiring', header: 'In Expiry Warning', defaultWidth: 140, align: 'right', sortable: true, sortValue: ([, d]) => d.expiring, exportValue: ([, d]) => d.expiring, render: ([, d]) => <span className={`tabular-nums ${d.expiring > 0 ? 'text-warn' : 'text-ink-muted'}`}>{d.expiring}</span> },
                                 { key: 'revoked', header: 'Revoked', defaultWidth: 100, align: 'right', sortable: true, sortValue: ([, d]) => d.revoked, exportValue: ([, d]) => d.revoked, render: ([, d]) => <span className={`tabular-nums ${d.revoked > 0 ? 'text-crit' : 'text-ink-muted'}`}>{d.revoked}</span> },
                                 { key: 'filter', header: '', defaultWidth: 80, align: 'right', truncate: false, hideable: false, exportValue: () => '', render: ([issuer]) => (
                                     <button onClick={() => setCaFilter(caFilter === issuer ? null : issuer)} className="text-accent-ink hover:underline text-[10px] underline">

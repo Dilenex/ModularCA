@@ -171,6 +171,11 @@ public class ProfileResolutionService : IProfileResolutionService
         ValidateJsonArraySubset(child.AllowedSignatureAlgorithms, parent.AllowedSignatureAlgorithms,
             "AllowedSignatureAlgorithms", errors);
 
+        // Expiry warning: unless the child overrides, each value must warn no later than the parent's.
+        var expirySources = new Dictionary<string, string>();
+        ExpiryWarningRule.Merge(child, parent, expirySources, (field, own, used) =>
+            errors.Add($"{field}: child value '{own}' would warn later than parent ('{used ?? "no cap"}')."));
+
         return errors;
     }
 
@@ -241,6 +246,12 @@ public class ProfileResolutionService : IProfileResolutionService
             CtEnabled = entity.CtEnabled,
             CtLogIds = entity.CtLogIds,
             AllowWildcard = entity.AllowWildcard,
+            ExpiryWarningPercent = entity.ExpiryWarningPercent,
+            ExpiryWarningMaxWindow = entity.ExpiryWarningMaxWindow,
+            ExpiryAlertPercent = entity.ExpiryAlertPercent,
+            ExpiryAlertMaxWindow = entity.ExpiryAlertMaxWindow,
+            ExpiryNeverWarn = entity.ExpiryNeverWarn,
+            ExpiryWarningOverridesParent = entity.ExpiryWarningOverridesParent,
             FieldSources = new Dictionary<string, string>() // Empty — all fields are "own"
         };
     }
@@ -273,7 +284,9 @@ public class ProfileResolutionService : IProfileResolutionService
     /// where child overrides take precedence and unset child fields inherit from parent.
     /// CLM-002: Enforces that CA profile overrides are equal or stricter than the
     /// parent (system) profile. If a CA profile attempts to weaken a constraint,
-    /// the stricter parent value is used and a warning is logged.
+    /// the stricter parent value is used and a warning is logged. The expiry warning settings
+    /// follow <see cref="ExpiryWarningRule.Merge"/>: clamped the same way unless the child declares
+    /// <see cref="CertProfileEntity.ExpiryWarningOverridesParent"/>.
     /// </summary>
     private EffectiveCertProfile MergeCertProfiles(CertProfileEntity child, CertProfileEntity parent)
     {
@@ -357,10 +370,24 @@ public class ProfileResolutionService : IProfileResolutionService
             parent.ExtendedKeyUsages, nameof(EffectiveCertProfile.ExtendedKeyUsages), child.Id, parent.Id,
             BuildUsageComparisonKey("Extended"));
 
+        // CLM-002 for the expiry warning: a child warns no later than its parent unless it
+        // declares that its settings override the parent's.
+        var expiry = ExpiryWarningRule.Merge(child, parent, sources, (field, own, used) =>
+            _logger.LogWarning(
+                "CLM-002: Cert profile '{ChildId}' {Field} '{ChildVal}' would warn later than parent '{ParentId}' allows. Using '{ParentVal}'.",
+                child.Id, field, own, parent.Id, used ?? "the parent's setting"));
+
         var result = new EffectiveCertProfile
         {
             SourceProfileId = child.Id,
             ParentProfileId = parent.Id,
+
+            ExpiryWarningPercent = expiry.WarningPercent,
+            ExpiryWarningMaxWindow = expiry.WarningMaxWindow,
+            ExpiryAlertPercent = expiry.AlertPercent,
+            ExpiryAlertMaxWindow = expiry.AlertMaxWindow,
+            ExpiryNeverWarn = expiry.NeverWarn,
+            ExpiryWarningOverridesParent = child.ExpiryWarningOverridesParent,
 
             // Identity fields always come from the child
             Name = child.Name,

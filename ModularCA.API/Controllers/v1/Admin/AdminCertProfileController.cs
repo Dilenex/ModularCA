@@ -147,6 +147,10 @@ public class AdminCertProfileController(
     /// own scope (<see cref="CaBindingAccess"/>). <c>CtLogIds</c> that are not a JSON array of
     /// existing CT log ids are refused with 400 (<see cref="CtLogIdsErrorAsync"/>). An instance-wide
     /// profile needs cert.revoke at system scope (403, <see cref="InstanceWideRefusalAsync"/>).
+    /// Invalid expiry warning settings are refused (400, <c>MCA-PRF-001</c>). When the expiry
+    /// warning settings or the inheritance change, the live certificates of the profile and of the
+    /// profiles inheriting from it get their warning instants re-computed; the audit entry records
+    /// how many (<c>ExpiryWarningsRecomputed</c>).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
     [HttpPut("{id}")]
@@ -175,9 +179,9 @@ public class AdminCertProfileController(
         if (await CtLogIdsErrorAsync(request.CtLogIds) is string ctError)
             return BadRequest(new { error = ctError });
 
-        await certProfileService.UpdateAsync(id, request, WriteFence.AllowsProfile);
+        var recomputed = await certProfileService.UpdateAsync(id, request, WriteFence.AllowsProfile);
         await audit.LogAsync(AuditActionType.CertProfileUpdated, currentUser.User?.Id, currentUser.User?.Username,
-            "CertProfile", id.ToString(), request,
+            "CertProfile", id.ToString(), new { Profile = request, ExpiryWarningsRecomputed = recomputed },
             HttpContext.Connection.RemoteIpAddress?.ToString());
         _ = _alertService.RaiseAlertAsync("CertProfileChanged", AlertSeverity.Warning, $"Certificate profile {id} updated by {currentUser.User?.Username}", new { ProfileId = id });
         return NoContent();

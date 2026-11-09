@@ -1541,12 +1541,8 @@ namespace ModularCA.Shared.Models.Config
         [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int WarnOverValidityDays { get; set; } = 825;
 
-        /// <summary>
-        /// Days before expiry within which a certificate is flagged as
-        /// "expiring soon" by the compliance scan job. Previously hardcoded to 30.
-        /// </summary>
-        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
-        public int ExpiringWithinDays { get; set; } = 30;
+        // ExpiringWithinDays was retired in 0.4.3: the scan's ExpiringWithoutRenewal finding uses
+        // each certificate's expiry warning, which its certificate profile sets.
     }
 
     /// <summary>

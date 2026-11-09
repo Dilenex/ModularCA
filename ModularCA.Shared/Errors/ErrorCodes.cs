@@ -276,6 +276,13 @@ public static class ErrorCodes
     public const string KeyParametersNotPermitted = "MCA-PRF-000";
 
     /// <summary>
+    /// A certificate profile's expiry warning settings are not valid: a percent outside 1 to 100,
+    /// an alert later in the lifetime than the warning, or a window that is not a positive ISO 8601
+    /// duration. See <c>ExpiryWarningRule.Problem</c>.
+    /// </summary>
+    public const string ExpiryWarningSettingsInvalid = "MCA-PRF-001";
+
+    /// <summary>
     /// Codes nothing raises any more. They stay in <see cref="All"/> so their numbers are never
     /// reused, and so a log line or runbook that names one still resolves.
     /// </summary>

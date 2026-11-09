@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using ModularCA.Core.Helpers;
 using Microsoft.Extensions.Logging;
 using ModularCA.Shared.Models.Config;
 using ModularCA.Database;
@@ -238,6 +239,7 @@ public class CertHealthScoreService : ICertHealthScoreService
         }
 
         // --- Expiry checks (most specific first, only one applies) ---
+        // The alert and warning start at the instants the certificate's profile gave it.
         if (cert.NotAfter < now)
         {
             factors.Add(new CertHealthFactor
@@ -248,23 +250,23 @@ public class CertHealthScoreService : ICertHealthScoreService
                 Severity = "Critical"
             });
         }
-        else if ((cert.NotAfter - now).TotalDays <= 7)
+        else if (CertificateExpiry.IsInAlert(false, cert.NotAfter, cert.ExpiryAlertAt, now))
         {
             factors.Add(new CertHealthFactor
             {
-                Name = "ExpiringWithin7Days",
+                Name = "ExpiryAlert",
                 Points = 30,
-                Description = $"Certificate expires in {(int)(cert.NotAfter - now).TotalDays} day(s).",
+                Description = $"Certificate expires in {CertExpiryStage.TimeLeft(cert.NotAfter - now)}; its expiry alert has started.",
                 Severity = "Critical"
             });
         }
-        else if ((cert.NotAfter - now).TotalDays <= 30)
+        else if (CertificateExpiry.IsInWarning(false, cert.NotAfter, cert.ExpiryWarningAt, now))
         {
             factors.Add(new CertHealthFactor
             {
-                Name = "ExpiringWithin30Days",
+                Name = "ExpiryWarning",
                 Points = 15,
-                Description = $"Certificate expires in {(int)(cert.NotAfter - now).TotalDays} days.",
+                Description = $"Certificate expires in {CertExpiryStage.TimeLeft(cert.NotAfter - now)}; its expiry warning has started.",
                 Severity = "Warning"
             });
         }

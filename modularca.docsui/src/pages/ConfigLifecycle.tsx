@@ -614,12 +614,12 @@ Backup:
                         <tr className="border-b border-line">
                             <td className="py-2 pr-4 data-mono">CertExpiryNotification</td>
                             <td className="py-2 pr-4 data-mono">0 6 * * *</td>
-                            <td className="py-2">Emails subscribers when a cert is within a warning-day threshold</td>
+                            <td className="py-2">Emails subscribers once when a certificate&apos;s expiry warning starts and once when its alert starts (both set by its certificate profile), plus one reminder for each warning day that falls inside the warning; each at most once per certificate</td>
                         </tr>
                         <tr className="border-b border-line">
                             <td className="py-2 pr-4 data-mono">Compliance</td>
                             <td className="py-2 pr-4 data-mono">0 3 * * *</td>
-                            <td className="py-2">Flags weak keys, deprecated sigalgs, missing SANs, over-long validity</td>
+                            <td className="py-2">Flags weak keys, deprecated sigalgs, missing SANs, over-long validity, and certificates in their expiry warning with no renewal request</td>
                         </tr>
                         <tr className="border-b border-line">
                             <td className="py-2 pr-4 data-mono">AutoRenewal</td>

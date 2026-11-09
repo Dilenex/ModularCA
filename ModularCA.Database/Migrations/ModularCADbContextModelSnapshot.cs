@@ -762,6 +762,26 @@ namespace ModularCA.Database.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)");
 
+                    b.Property<string>("ExpiryAlertMaxWindow")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<int?>("ExpiryAlertPercent")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("ExpiryNeverWarn")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("ExpiryWarningMaxWindow")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<bool>("ExpiryWarningOverridesParent")
+                        .HasColumnType("boolean");
+
+                    b.Property<int?>("ExpiryWarningPercent")
+                        .HasColumnType("integer");
+
                     b.Property<string>("ExtendedKeyUsages")
                         .IsRequired()
                         .HasMaxLength(255)
@@ -1129,6 +1149,12 @@ namespace ModularCA.Database.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)");
 
+                    b.Property<DateTime>("ExpiryAlertAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("ExpiryWarningAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTime?>("ExpiryWarningDismissedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -1219,6 +1245,8 @@ namespace ModularCA.Database.Migrations
                     b.HasKey("CertificateId");
 
                     b.HasIndex("CertProfileId");
+
+                    b.HasIndex("ExpiryWarningAt");
 
                     b.HasIndex("IssuerCertificateId");
 

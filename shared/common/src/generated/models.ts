@@ -289,6 +289,8 @@ export interface CertificateAttentionItemModel {
     notBefore: string;
     notAfter: string;
     state: string;
+    expiryWarningAt: string;
+    expiryAlertAt: string;
     caId?: string | null;
     caLabel?: string | null;
     caName?: string | null;
@@ -366,6 +368,8 @@ export interface CertificateInfoModel {
     retiredReason?: string | null;
     expiryWarningDismissedAt?: string | null;
     expiryWarningDismissedBy?: string | null;
+    expiryWarningAt?: string | null;
+    expiryAlertAt?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/CertificateLifecycleSummaryModel.cs`. */
@@ -376,6 +380,10 @@ export interface CertificateLifecycleSummaryModel {
     active: number;
     revoked: number;
     expired: number;
+    inExpiryWarning: number;
+    inExpiryWarningNotReplaced: number;
+    inExpiryAlert: number;
+    inExpiryAlertNotReplaced: number;
     expiringWithin7Days: number;
     expiringWithin30Days: number;
     expiringWithin7DaysNotReplaced: number;
@@ -482,6 +490,12 @@ export interface CertProfileDto {
     inheritanceEnabled: boolean;
     systemPurpose?: string | null;
     infrastructureUses: string[];
+    expiryWarningPercent?: number | null;
+    expiryWarningMaxWindow?: string | null;
+    expiryAlertPercent?: number | null;
+    expiryAlertMaxWindow?: string | null;
+    expiryNeverWarn: boolean;
+    expiryWarningOverridesParent: boolean;
 }
 
 /** From `ModularCA.Shared/Models/Csr/CertRequestDto.cs`. */
@@ -517,7 +531,6 @@ export interface ComplianceScanConfig {
     minRsaKeySize: number;
     deprecatedAlgorithms: string[];
     warnOverValidityDays: number;
-    expiringWithinDays: number;
 }
 
 /** From `ModularCA.Shared/Models/ControlledUserChangeParameters.cs`. */
@@ -642,6 +655,12 @@ export interface CreateCertProfileRequest {
     allowWildcard: boolean;
     ctEnabled: boolean;
     ctLogIds?: string | null;
+    expiryWarningPercent?: number | null;
+    expiryWarningMaxWindow?: string | null;
+    expiryAlertPercent?: number | null;
+    expiryAlertMaxWindow?: string | null;
+    expiryNeverWarn: boolean;
+    expiryWarningOverridesParent: boolean;
 }
 
 /** From `ModularCA.Shared/Models/Crl/CreateCrlConfigurationRequest.cs`. */

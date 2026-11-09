@@ -286,7 +286,7 @@ const ExpiryCalendar: React.FC = () => {
             {!loading && !error && (
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                     {[
-                        { label: 'Expiring ≤30d', value: windowTotals.expiringSoon, dot: SEG.expiringSoon, emphasis: windowTotals.expiringSoon > 0 },
+                        { label: 'In expiry warning', value: windowTotals.expiringSoon, dot: SEG.expiringSoon, emphasis: windowTotals.expiringSoon > 0 },
                         { label: 'Active', value: windowTotals.active, dot: SEG.active },
                         { label: 'Expired', value: windowTotals.expired, dot: SEG.expired },
                         { label: 'Revoked', value: windowTotals.revoked, dot: SEG.revoked },
@@ -330,7 +330,7 @@ const ExpiryCalendar: React.FC = () => {
                                     const c = u.counts;
                                     const barPct = (c.total / maxTotal) * 100;
                                     const seg = (n: number) => (c.total > 0 ? (n / c.total) * 100 : 0);
-                                    const tip = `${u.label}${u.sublabel ? ' ' + u.sublabel : ''}\nExpiring ≤30d: ${c.expiringSoon}\nActive: ${c.active}\nExpired: ${c.expired}\nRevoked: ${c.revoked}\nTotal: ${c.total}`;
+                                    const tip = `${u.label}${u.sublabel ? ' ' + u.sublabel : ''}\nIn expiry warning: ${c.expiringSoon}\nActive: ${c.active}\nExpired: ${c.expired}\nRevoked: ${c.revoked}\nTotal: ${c.total}`;
                                     return (
                                         <button key={u.key} onClick={() => onUnitClick(u)} title={tip}
                                             className="group flex-1 min-w-[14px] h-full flex flex-col justify-end items-stretch cursor-pointer">
@@ -358,7 +358,7 @@ const ExpiryCalendar: React.FC = () => {
 
                     {/* legend */}
                     <div className="flex items-center gap-4 text-xs text-ink-muted mt-4 flex-wrap">
-                        <span className="flex items-center gap-1"><span className={`w-3 h-3 rounded ${SEG.expiringSoon} inline-block`} /> Expiring ≤30d</span>
+                        <span className="flex items-center gap-1"><span className={`w-3 h-3 rounded ${SEG.expiringSoon} inline-block`} /> In expiry warning</span>
                         <span className="flex items-center gap-1"><span className={`w-3 h-3 rounded ${SEG.active} inline-block`} /> Active</span>
                         <span className="flex items-center gap-1"><span className={`w-3 h-3 rounded ${SEG.expired} inline-block`} /> Expired</span>
                         <span className="flex items-center gap-1"><span className={`w-3 h-3 rounded ${SEG.revoked} inline-block`} /> Revoked</span>
@@ -443,7 +443,7 @@ const MonthGrid: React.FC<MonthGridProps> = ({ year, month, buckets, loading, on
                             if (d === null) return <div key={`b${i}`} />;
                             const c = dayMap.get(d);
                             const has = !!c && c.total > 0;
-                            const tip = c ? `${monthLabel.split(' ')[0]} ${d}\nExpiring ≤30d: ${c.expiringSoon}\nActive: ${c.active}\nExpired: ${c.expired}\nRevoked: ${c.revoked}` : undefined;
+                            const tip = c ? `${monthLabel.split(' ')[0]} ${d}\nIn expiry warning: ${c.expiringSoon}\nActive: ${c.active}\nExpired: ${c.expired}\nRevoked: ${c.revoked}` : undefined;
                             return (
                                 <button key={d} disabled={!has} title={tip}
                                     onClick={() => has && onDay(new Date(year, month - 1, d))}

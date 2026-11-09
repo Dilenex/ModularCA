@@ -179,7 +179,8 @@ the state when this was drawn (2026-10-05); the readers made live since are list
 | `WebAuthn.EnforceForGroups` | d | `AuthController` | live | live |
 | `Alert.Enabled`, `MinimumSeverity`, `CooldownMinutes` | d | `SecurityAlertService` | live | live |
 | `CertExpiryNotification.Enabled`, `WarningDaysBeforeExpiry`, `Schedule` | d | `CertExpiryNotificationJob`, registry | live | live |
-| `ComplianceScan.Enabled`, `Schedule`, `MinRsaKeySize`, `DeprecatedAlgorithms`, `WarnOverValidityDays`, `ExpiringWithinDays` | d | `ComplianceScanJob`, `CertHealthScoreService` | live | live |
+| `ComplianceScan.Enabled`, `Schedule`, `MinRsaKeySize`, `DeprecatedAlgorithms`, `WarnOverValidityDays` | d | `ComplianceScanJob`, `CertHealthScoreService` | live | live |
+| `ComplianceScan.ExpiringWithinDays` | none | none since 0.4.3: retired; the scan reads each certificate's expiry warning, which its certificate profile sets. The `ProfileExpiryWarnings` migration deletes its stored row, and a config file still holding it is warned about unless it holds the written default, 30 | none | none |
 | `CertPolicy.Enabled`, `MinRsaKeySize`, `ForbiddenAlgorithms`, `RequireSans`, `AlgorithmSunsetRules`, `ExpireCheckSchedule` | d | `CertPolicyService` (issuance, enrollment role), `CertExpireJob` | live | live |
 | `CertPolicy.RsaSignaturePadding` | d | the static `KeyAlgorithmPolicy.UseRsaPss`, set once at startup | restart | live |
 | `AutoRenewal.Enabled`, `Schedule`, `RenewDaysBeforeExpiry`, `AutoApprove`, `RequireKeyRotation` | d | `AutoRenewalJob`, `AdminCertificateController` | live | live |

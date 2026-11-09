@@ -16,7 +16,7 @@ import { KEY_USAGE_OPTIONS, keyUsageLabel, canonicalizeUsages, parseListField, F
 import { useEkuCatalog, useKeyUsageCatalog } from '../hooks/useOidCatalog';
 import { CertProfileForm } from './profiles/CertProfileForm';
 import { KeyPolicySummary } from './profiles/KeyPolicyEditor';
-import { emptyForm, formFromProfile, formToCreateBody, formToUpdateBody, validate } from './profiles/certProfile';
+import { emptyForm, expiryAlertText, expiryWarningText, formFromProfile, formToCreateBody, formToUpdateBody, validate } from './profiles/certProfile';
 import { PROFILE_TYPES, profileDetailPath } from './profiles/profileRoutes';
 import { type CtLogChoice, ctLogChoicesFromResponse, ctLogDisplay, ctLogIdsFromStored } from './profiles/ctLogChoices';
 import { actionButtonDanger } from '@shared/components/actionButtons';
@@ -235,6 +235,9 @@ const CertProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => 
                     <DetailField label="CT Enabled" value={p.ctEnabled ? 'Yes' : 'No'} />
                     {p.ctEnabled && <div className="py-1"><span className="text-xs text-ink-muted">CT Logs</span><CtLogList stored={p.ctLogIds} logs={ctLogs} /></div>}
                     <DetailField label="Allow Wildcard SAN/CN" value={p.allowWildcard ? 'Yes' : 'No'} />
+                    <DetailField label="Expiry Warning" value={expiryWarningText(p)} />
+                    <DetailField label="Expiry Alert" value={expiryAlertText(p)} />
+                    {p.inheritanceEnabled && <DetailField label="Expiry Settings" value={p.expiryWarningOverridesParent ? 'Override the parent’s' : 'Held to the parent’s (may only warn earlier)'} />}
                     {p.inheritanceEnabled && <DetailField label="Inherits From" value={resolveParentName(p.inheritsFromId) || 'None'} />}
                     <DetailField label="CA Scope" value={<CaScopeName caId={p.certificateAuthorityId} fallback="System-wide" />} />
                 </DetailSection>
@@ -274,6 +277,12 @@ const CertProfileDetail: React.FC<{ isNew?: boolean }> = ({ isNew = false }) => 
                                 </div>
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.CtEnabled} label="CT Enabled" value={resolvedProfile.ctEnabled ? 'Yes' : 'No'} />
                                 <SourceBorderedField source={resolvedProfile.fieldSources?.CtLogIds} label="CT Logs" value={ctLogIdsFromStored(resolvedProfile.ctLogIds).map((x) => ctLogDisplay(x, ctLogs).text).join(', ') || 'Every enabled log'} />
+                                <SourceBorderedField source={resolvedProfile.fieldSources?.ExpiryNeverWarn} label="Expiry: never warn" value={resolvedProfile.expiryNeverWarn ? 'Yes' : 'No'} />
+                                <SourceBorderedField source={resolvedProfile.fieldSources?.ExpiryWarningPercent} label="Expiry warning percent" value={resolvedProfile.expiryWarningPercent == null ? 'default' : `${resolvedProfile.expiryWarningPercent} %`} />
+                                <SourceBorderedField source={resolvedProfile.fieldSources?.ExpiryWarningMaxWindow} label="Longest warning window" value={periodText(resolvedProfile.expiryWarningMaxWindow) || 'no cap'} />
+                                <SourceBorderedField source={resolvedProfile.fieldSources?.ExpiryAlertPercent} label="Expiry alert percent" value={resolvedProfile.expiryAlertPercent == null ? 'default' : `${resolvedProfile.expiryAlertPercent} %`} />
+                                <SourceBorderedField source={resolvedProfile.fieldSources?.ExpiryAlertMaxWindow} label="Longest alert window" value={periodText(resolvedProfile.expiryAlertMaxWindow) || 'no cap'} />
+                                <div className="text-xs text-ink-muted">Effective: warning {expiryWarningText(resolvedProfile)}; alert {expiryAlertText(resolvedProfile)}.{resolvedProfile.expiryWarningOverridesParent ? ' This profile overrides its parent’s expiry warning settings.' : ''}</div>
                             </div>
                         )}
                     </DetailSection>

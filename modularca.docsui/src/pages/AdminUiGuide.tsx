@@ -88,14 +88,41 @@ export default function AdminUiGuide() {
                     <li>CA status cards showing each authority's health, key algorithm, and certificate count</li>
                     <li>Recently issued certificates with quick links to details</li>
                     <li>Pending request count with approve/reject shortcuts</li>
-                    <li>Expiring certificate warnings for the next 30/60/90 days</li>
+                    <li>Needs attention: certificates in their expiry warning or alert, and recently expired ones, with no replacement</li>
                     <li>System health summary (scheduler, database, OCSP responder)</li>
                     <li>Quick-action buttons for common tasks (issue certificate, create CA)</li>
                 </ul>
+                <h3 className="text-lg font-semibold text-ink mb-2">When a certificate warns of its expiry</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    Each certificate is given two instants when it is issued, from its certificate profile: when its
+                    expiry <span className="font-semibold">warning</span> starts (amber) and when its expiry{' '}
+                    <span className="font-semibold">alert</span> starts (red). By default the warning starts when 30 % of
+                    the certificate&apos;s lifetime is left and the alert at 10 %: a 10-hour certificate warns 3 hours before
+                    it expires and alerts 1 hour before, a 90-day one 27 and 9 days before, a one-year one about 110 and 37
+                    days before. A profile can set other percents, and a longest window for either level (for example P30D),
+                    under Expiry warning on the profile&apos;s page. A CA certificate whose profile sets neither warns 30 days
+                    and alerts 7 days before it expires. A profile marked <span className="font-semibold">Renewed
+                    automatically: never warn</span> gives its certificates no warning at all; the console&apos;s own TLS
+                    certificate profile is set so, since the instance renews that certificate itself. Such a certificate is
+                    still shown as expired, not replaced, if it does expire without a successor. The certificate&apos;s page shows
+                    when its warning and alert start, or that its profile never warns.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    A profile that inherits takes its parent&apos;s expiry settings where it leaves them empty, and may only warn
+                    earlier than its parent: a smaller percent or a shorter window than the parent&apos;s is clamped to the
+                    parent&apos;s, and never-warn holds only when the parent never warns too. Between two CA profiles, a level
+                    the parent leaves unset counts as the CA default (30 days, 7 days), so a longer window is kept. A profile
+                    that ticks Override the
+                    parent&apos;s expiry warning settings uses its own values as they are. The resolved profile marks each
+                    value inherited, overridden or clamped. Saving a change re-computes the instants of the profile&apos;s valid
+                    certificates, and of the profiles inheriting from it, in the same transaction as the save; the audit entry
+                    records how many.
+                </p>
                 <h3 className="text-lg font-semibold text-ink mb-2">Clearing an expiry warning</h3>
                 <p className="text-ink leading-relaxed mb-3">
-                    A certificate that expires within 30 days, or expired in the last 30, with no replacement is listed
-                    under Needs attention. A reissue or renewal clears it. When none is coming, there are two other ways,
+                    A certificate in its expiry warning, or that expired in the last 30 days, with no replacement is listed
+                    under Needs attention, amber while in its warning and red once its alert starts or it has expired. A
+                    reissue or renewal clears it and stops its expiry e-mails. When none is coming, there are two other ways,
                     and neither revokes the certificate or changes the CRL and OCSP answers:
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
@@ -457,6 +484,7 @@ export default function AdminUiGuide() {
                     <li>Configure key usage, extended key usage, and basic constraints</li>
                     <li>Set allowed key algorithms and sizes</li>
                     <li>Define validity period limits</li>
+                    <li>Set when its certificates&apos; expiry warning and alert start, or that they never warn (see the Dashboard section)</li>
                     <li>Configure subject DN rules and SAN validation</li>
                     <li>Profile inheritance: system profiles as baseline, CA profiles inherit and restrict</li>
                     <li>Assign profiles to specific CAs</li>
@@ -1058,7 +1086,7 @@ sshd -t && systemctl reload ssh`}</pre>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li>Create notification rules with event triggers</li>
                     <li>Configure email notification recipients</li>
-                    <li>Set expiry warning thresholds (e.g., 30, 14, 7 days)</li>
+                    <li>CertExpiring is sent once when a certificate&apos;s expiry warning starts and once when its alert starts; the expiry notification settings&apos; days (e.g. 14, 7, 1) add reminders inside the warning, each sent once</li>
                     <li>View notification delivery history</li>
                 </ul>
                 <div className="bg-sunken rounded p-4 data-mono">

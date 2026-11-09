@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { apiGet, apiGetAllPages } from '../../api/client';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { Link } from 'react-router-dom';
-import { capitalize, expiryPhrase, lifecycleTone, toneTextClass } from '../certLifecycle';
+import { capitalize, expiryPhrase, expiryState, lifecycleTone, toneTextClass } from '../certLifecycle';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -73,11 +73,8 @@ const Dashboard: React.FC = () => {
     }, []);
 
     const activeCerts = certificates.filter(c => certStatus(c) === 'active');
-    const expiringSoon = certificates.filter(c => {
-        if (certStatus(c) !== 'active') return false;
-        const days = Math.ceil((new Date(c.notAfter).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-        return days <= 30;
-    });
+    // In its expiry warning, which the certificate's profile set when it was issued.
+    const expiringSoon = certificates.filter(c => certStatus(c) === 'active' && expiryState(c) === 'expiring');
     const revokedCerts = certificates.filter(c => c.revoked);
     const expiringNotReplaced = expiringSoon.filter(c => !c.replaced);
 
@@ -123,7 +120,7 @@ const Dashboard: React.FC = () => {
                         <p className="text-2xl font-bold text-ok mt-1">{activeCerts.length}</p>
                     </div>
                     <div className="bg-raised border border-line rounded-lg p-4">
-                        <p className="text-xs text-ink-muted uppercase tracking-wider">Expiring Within 30 Days</p>
+                        <p className="text-xs text-ink-muted uppercase tracking-wider">Expiring</p>
                         <p className={`text-2xl font-bold mt-1 ${expiringNotReplaced.length > 0 ? 'text-warn' : 'text-ink-muted'}`}>
                             {expiringSoon.length}
                         </p>
@@ -150,7 +147,7 @@ const Dashboard: React.FC = () => {
                     <h2 className="text-lg font-semibold text-ink mb-3">Expiring Soon</h2>
                     <div className={`bg-raised border rounded-lg overflow-hidden ${expiringNotReplaced.length > 0 ? 'border-warn/40' : 'border-line'}`}>
                         {expiringSoon.map((cert) => {
-                            const tone = lifecycleTone(cert.notAfter, !!cert.replaced);
+                            const tone = lifecycleTone(cert, !!cert.replaced);
                             return (
                                 <div
                                     key={cert.serialNumber}

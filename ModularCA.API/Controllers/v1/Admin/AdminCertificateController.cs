@@ -65,7 +65,10 @@ public class AdminCertificateController(
     /// <param name="issuer">Partial match filter on the certificate issuer.</param>
     /// <param name="caId">Filter to certificates issued by this certificate authority.</param>
     /// <param name="spaceId">Filter to certificates issued by CAs of this space. The pre-0.4.0 <c>tenantId</c> is refused (400), here and on the histogram and health summary.</param>
-    /// <param name="status">Status filter: "active" (not revoked and not expired), "revoked", or "expired" (expired and not revoked).</param>
+    /// <param name="status">Status filter: "active" (not revoked and not expired), "revoked", "expired" (expired and not revoked),
+    /// "expiring" (in its expiry warning: not revoked, not expired, past its <c>ExpiryWarningAt</c>) or "alert" (likewise past its
+    /// <c>ExpiryAlertAt</c>). "expiring" returns the lifecycle summary's <c>InExpiryWarning</c> set, and with <paramref name="replaced"/>
+    /// "no" its <c>InExpiryWarningNotReplaced</c> set; "alert" likewise.</param>
     /// <param name="replaced">"yes" or "no": certificates that have, or have not, been replaced (<see cref="CertificateLifecycle"/>);
     /// "no" leaves out retired certificates and those whose expiry warning was dismissed, as the lifecycle summary does.
     /// Only certificates still valid or expired within <see cref="CertificateLifecycle.ReplacementWindowDays"/> days match either value.</param>
@@ -161,6 +164,12 @@ public class AdminCertificateController(
                     break;
                 case "expired":
                     query = query.Where(c => !c.Revoked && c.NotAfter < now);
+                    break;
+                case "expiring":
+                    query = query.Where(CertificateExpiry.InWarning(now));
+                    break;
+                case "alert":
+                    query = query.Where(CertificateExpiry.InAlert(now));
                     break;
             }
         }
@@ -271,6 +280,8 @@ public class AdminCertificateController(
                 RetiredReason = c.RetiredReason,
                 ExpiryWarningDismissedAt = c.ExpiryWarningDismissedAt,
                 ExpiryWarningDismissedBy = c.ExpiryWarningDismissedBy,
+                ExpiryWarningAt = c.ExpiryWarningAt,
+                ExpiryAlertAt = c.ExpiryAlertAt,
             });
         }
 
@@ -452,7 +463,8 @@ public class AdminCertificateController(
     /// for the expiry calendar's timeline histogram and month-grid drill-down. Honours the same
     /// per-CA / ACL access control as the certificate list, so callers only see buckets for
     /// certificates they can view. Buckets are sparse — only periods containing certificates are
-    /// returned.
+    /// returned. <c>expiringSoon</c> counts the certificates in their expiry warning
+    /// (<see cref="CertificateExpiry.InWarning"/>), <c>active</c> the other unexpired, unrevoked ones.
     /// </summary>
     /// <param name="caId">Optional issuing-CA filter (same semantics as the certificate list).</param>
     /// <param name="from">Optional minimum NotAfter (expiry) date to include.</param>
@@ -482,14 +494,14 @@ public class AdminCertificateController(
         if (from.HasValue) query = query.Where(c => c.NotAfter >= from.Value);
         if (to.HasValue) query = query.Where(c => c.NotAfter <= to.Value);
 
-        // Pull only the two columns we need and bucket in memory. Two scalars per row keeps this
+        // Pull only the columns we need and bucket in memory. Three scalars per row keeps this
         // cheap even with large inventories and avoids provider-specific GroupBy translation.
         var rows = await query
-            .Select(c => new { c.NotAfter, c.Revoked })
+            .Select(c => new { c.NotAfter, c.Revoked, c.ExpiryWarningAt })
             .ToListAsync();
 
         var now = DateTime.UtcNow;
-        var soonCutoff = now.AddDays(30);
+        bool Warned(DateTime notAfter, bool revoked, DateTime warningAt) => CertificateExpiry.IsInWarning(revoked, notAfter, warningAt, now);
         var byDay = string.Equals(granularity, "day", StringComparison.OrdinalIgnoreCase);
 
         var buckets = rows
@@ -500,8 +512,8 @@ public class AdminCertificateController(
                 year = g.Key.Year,
                 month = g.Key.Month,
                 day = byDay ? g.Key.Day : 0,
-                active = g.Count(r => !r.Revoked && r.NotAfter > soonCutoff),
-                expiringSoon = g.Count(r => !r.Revoked && r.NotAfter >= now && r.NotAfter <= soonCutoff),
+                active = g.Count(r => !r.Revoked && r.NotAfter >= now && !Warned(r.NotAfter, r.Revoked, r.ExpiryWarningAt)),
+                expiringSoon = g.Count(r => Warned(r.NotAfter, r.Revoked, r.ExpiryWarningAt)),
                 expired = g.Count(r => !r.Revoked && r.NotAfter < now),
                 revoked = g.Count(r => r.Revoked),
                 total = g.Count()
@@ -530,8 +542,9 @@ public class AdminCertificateController(
     /// <summary>
     /// Expiry and replacement counts over every certificate the caller may view, scoped exactly
     /// like the certificate list (access control, then <paramref name="caId"/> / <paramref name="spaceId"/>),
-    /// plus a capped list of certificates that need attention: expired in the last 30 days or
-    /// expiring within 30 days, with no replacement. Counts never depend on paging.
+    /// plus a capped list of certificates that need attention: expired in the last 30 days, or in
+    /// their expiry warning (<see cref="CertificateExpiry.InWarning"/>), with no replacement. Counts
+    /// never depend on paging. The fixed 7- and 30-day counts are filled as before 0.4.3, for one release.
     /// </summary>
     /// <param name="caId">Optional issuing-CA filter (same semantics as the certificate list).</param>
     /// <param name="spaceId">Optional space filter (same semantics as the certificate list).</param>
@@ -570,25 +583,26 @@ public class AdminCertificateController(
             .FirstOrDefaultAsync();
 
         // The replacement check runs over a bounded band: certificates that expired within the
-        // window or expire within 30 days.
-        var band = query.Where(c => !c.Revoked && c.NotAfter >= windowStart && c.NotAfter <= in30);
+        // window, are in their expiry warning, or expire within 30 days.
+        var band = query.Where(CertificateExpiry.InReplacementBand(now, windowStart, in30));
         var rows = await band
-            .Select(c => new { c.CertificateId, c.SerialNumber, c.SubjectDN, c.NotBefore, c.NotAfter, c.IssuerCertificateId, c.SigningProfileId, c.RetiredAt, c.ExpiryWarningDismissedAt })
+            .Select(c => new { c.CertificateId, c.SerialNumber, c.SubjectDN, c.NotBefore, c.NotAfter, c.IssuerCertificateId, c.SigningProfileId,
+                c.RetiredAt, c.ExpiryWarningDismissedAt, c.ExpiryWarningAt, c.ExpiryAlertAt })
             .ToListAsync();
         var caMap = await IssuingCaMapAsync();
-        var replaced = rows.Count == 0
-            ? new Dictionary<Guid, CertificateLifecycle.Replacement>()
-            : await CertificateLifecycle.ResolveReplacementsAsync(_dbContext, band, caMap, now);
+        HashSet<Guid> replaced = rows.Count == 0 ? [] : await CertificateExpiry.ReplacedAsync(_dbContext, band, now, caMap);
 
         var expiredInBand = rows.Where(r => r.NotAfter < now).ToList();
-        var expiringInBand = rows.Where(r => r.NotAfter >= now).ToList();
+        var expiringInBand = rows.Where(r => r.NotAfter >= now && r.NotAfter <= in30).ToList();
+        var warned = rows.Where(r => CertificateExpiry.IsInWarning(false, r.NotAfter, r.ExpiryWarningAt, now)).ToList();
+        var alerted = warned.Where(r => CertificateExpiry.IsInAlert(false, r.NotAfter, r.ExpiryAlertAt, now)).ToList();
         var silenced = rows.Where(r => r.RetiredAt != null || r.ExpiryWarningDismissedAt != null).Select(r => r.CertificateId).ToHashSet();
-        bool NotReplaced(Guid id) => !replaced.ContainsKey(id) && !silenced.Contains(id);
+        bool NotReplaced(Guid id) => !replaced.Contains(id) && !silenced.Contains(id);
 
         var attentionRows = expiredInBand
             .Where(r => r.NotAfter >= recentStart && NotReplaced(r.CertificateId))
             .OrderByDescending(r => r.NotAfter)
-            .Concat(expiringInBand.Where(r => NotReplaced(r.CertificateId)).OrderBy(r => r.NotAfter))
+            .Concat(warned.Where(r => NotReplaced(r.CertificateId)).OrderBy(r => r.NotAfter))
             .ToList();
         var shown = attentionRows.Take(AttentionCap).ToList();
 
@@ -616,6 +630,8 @@ public class AdminCertificateController(
                 NotBefore = r.NotBefore,
                 NotAfter = r.NotAfter,
                 State = expired ? "expired" : "expiring",
+                ExpiryWarningAt = r.ExpiryWarningAt,
+                ExpiryAlertAt = r.ExpiryAlertAt,
                 CaId = ca,
                 CaLabel = info?.Label,
                 CaName = info?.Name,
@@ -637,7 +653,7 @@ public class AdminCertificateController(
             .OrderByDescending(g => g.Total)
             .ToList();
 
-        var expiredReplaced = expiredInBand.Count(r => replaced.ContainsKey(r.CertificateId));
+        var expiredReplaced = expiredInBand.Count(r => replaced.Contains(r.CertificateId));
         var total = counts?.Total ?? 0;
         var revoked = counts?.Revoked ?? 0;
         var expiredTotal = counts?.Expired ?? 0;
@@ -649,13 +665,17 @@ public class AdminCertificateController(
             Revoked = revoked,
             Expired = expiredTotal,
             Active = total - revoked - expiredTotal,
+            InExpiryWarning = warned.Count,
+            InExpiryWarningNotReplaced = warned.Count(r => NotReplaced(r.CertificateId)),
+            InExpiryAlert = alerted.Count,
+            InExpiryAlertNotReplaced = alerted.Count(r => NotReplaced(r.CertificateId)),
             ExpiringWithin7Days = counts?.Expiring7 ?? 0,
             ExpiringWithin30Days = counts?.Expiring30 ?? 0,
             ExpiringWithin7DaysNotReplaced = expiringInBand.Count(r => r.NotAfter <= in7 && NotReplaced(r.CertificateId)),
             ExpiringWithin30DaysNotReplaced = expiringInBand.Count(r => NotReplaced(r.CertificateId)),
             ExpiredReplaced = expiredReplaced,
             ExpiredNotReplaced = expiredInBand.Count(r => NotReplaced(r.CertificateId)),
-            RetiredOrDismissed = rows.Count(r => silenced.Contains(r.CertificateId) && !replaced.ContainsKey(r.CertificateId)),
+            RetiredOrDismissed = expiredInBand.Concat(warned).Count(r => silenced.Contains(r.CertificateId) && !replaced.Contains(r.CertificateId)),
             ExpiredUnchecked = expiredTotal - (counts?.ExpiredInWindow ?? 0),
             RecentlyExpiredNotReplaced = expiredInBand.Count(r => r.NotAfter >= recentStart && NotReplaced(r.CertificateId)),
             AttentionTotal = attentionRows.Count,
