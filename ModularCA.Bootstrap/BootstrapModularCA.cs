@@ -361,7 +361,11 @@ public class BootstrapModularCA
         }
     }
 
-    /// <summary>The bootstrap procedure <see cref="Run"/> performs, with refusals propagating as exceptions.</summary>
+    /// <summary>
+    /// The bootstrap procedure <see cref="Run"/> performs, with refusals propagating as exceptions.
+    /// A bootstrap.yaml with an empty required section is refused before anything is changed
+    /// (<see cref="BootstrapInputSections.EnsureBootstrapSectionsPresent"/>).
+    /// </summary>
     private static int RunCore(bool wipeAuditDatabase)
     {
         var configDir = Path.Combine(AppContext.BaseDirectory, "config");
@@ -379,9 +383,10 @@ public class BootstrapModularCA
         }
         try
         {
+            BootstrapInputSections.EnsureBootstrapSectionsPresent(bootstrapConfig);
             BootstrapCertCreator.EnsureRootLabelUsable(bootstrapConfig.CA.Subject.CN ?? "ModularCA");
-            BootstrapCertCreator.EnsureWebTlsSansSupported(bootstrapConfig.HttpsApi?.SANs);
-            BootstrapServiceUrlBuilder.EnsurePublicDomainUsable(bootstrapConfig.HttpsApi?.PublicDomain);
+            BootstrapCertCreator.EnsureWebTlsSansSupported(bootstrapConfig.HttpsApi.SANs);
+            BootstrapServiceUrlBuilder.EnsurePublicDomainUsable(bootstrapConfig.HttpsApi.PublicDomain);
         }
         catch (ModularCA.Shared.Errors.RequestValidationException ex)
         {

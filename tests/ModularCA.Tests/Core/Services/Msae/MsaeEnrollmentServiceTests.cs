@@ -208,7 +208,7 @@ public class MsaeEnrollmentServiceTests
             // What a client that fetched policy sends: szOID_CERTIFICATE_TEMPLATE with OID and version.
             req.CertificateExtensions.Add(new X509Extension(
                 new Oid(MsaeCsrTemplate.TemplateInfoOid),
-                new DerSequence(new DerObjectIdentifier(templateOid), new DerInteger(100), new DerInteger(0)).GetDerEncoded(),
+                new DerSequence(new DerObjectIdentifier(templateOid), DerInteger.ValueOf(100), DerInteger.ValueOf(0)).GetDerEncoded(),
                 false));
         }
         return req.CreateSigningRequest();
@@ -273,7 +273,7 @@ public class MsaeEnrollmentServiceTests
 
         var request = Assert.Single(await h.Db.CertificateRequests.ToListAsync());
         Assert.Equal("CN=ws-042.lab.test", request.Subject);
-        Assert.Equal(["DNS:ws-042.lab.test", "DNS:ws-042"], System.Text.Json.JsonSerializer.Deserialize<string[]>(request.SubjectAlternativeNames!));
+        Assert.Equal(["DNS:ws-042.lab.test", "DNS:ws-042"], Assert.IsType<string[]>(System.Text.Json.JsonSerializer.Deserialize<string[]>(request.SubjectAlternativeNames!)));
         Assert.Equal(oldRow.CertificateId, request.RenewalOfCertificateId);
         Assert.Equal(MsaeEnrollmentService.RenewOperation, Assert.Single(h.Audit.Entries).Action);
         Assert.NotEmpty(Certificates(pkcs7.Pkcs7!));
@@ -393,9 +393,9 @@ public class MsaeEnrollmentServiceTests
 
     private static X509Certificate2Collection Certificates(byte[] pkcs7)
     {
-        var collection = new X509Certificate2Collection();
-        collection.Import(pkcs7);
-        return collection;
+        var cms = new System.Security.Cryptography.Pkcs.SignedCms();
+        cms.Decode(pkcs7);
+        return cms.Certificates;
     }
 
     private static async Task AssertRefusedCleanly(Harness h, Func<Task> act, string expectedReasonFragment)

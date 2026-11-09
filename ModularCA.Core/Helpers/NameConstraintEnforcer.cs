@@ -65,7 +65,7 @@ public static class NameConstraintEnforcer
         try
         {
             var nc = NameConstraints.GetInstance(X509ExtensionUtilities.FromExtensionValue(ext));
-            return new CaConstraints(ca.SubjectDN.ToString(), Subtrees(nc.PermittedSubtrees), Subtrees(nc.ExcludedSubtrees));
+            return new CaConstraints(ca.SubjectDN.ToString(), Subtrees(nc.PermittedSubtreesValue), Subtrees(nc.ExcludedSubtreesValue));
         }
         catch (Exception ex)
         {
@@ -75,14 +75,9 @@ public static class NameConstraintEnforcer
         }
     }
 
-    private static List<GeneralSubtree> Subtrees(Asn1Sequence? sequence)
-    {
-        var list = new List<GeneralSubtree>();
-        if (sequence != null)
-            foreach (var element in sequence)
-                list.Add(GeneralSubtree.GetInstance(element));
-        return list;
-    }
+    /// <summary>One half of a NameConstraints extension as a list; empty when that half is absent.</summary>
+    private static List<GeneralSubtree> Subtrees(GeneralSubtrees? subtrees)
+        => subtrees == null ? [] : [.. subtrees.GetElements()];
 
     /// <summary>
     /// Refuses, with a <see cref="CertificatePolicyViolationException"/> carrying

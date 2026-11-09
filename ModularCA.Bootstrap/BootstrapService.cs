@@ -34,8 +34,9 @@ public class BootstrapService
     /// that succeeds; both schemas are applied and the data seeded as the runtime roles; the
     /// ownership rule is proved before any configuration is written. A refusal, a runtime role
     /// refused by pg_hba, or an MCA- coded validation failure is returned verbatim (none carries
-    /// a secret); anything else returns only a correlation id. A Web TLS SAN of a type the
-    /// certificate cannot carry is refused first (<see cref="BootstrapCertCreator.EnsureWebTlsSansSupported"/>).
+    /// a secret); anything else returns only a correlation id. A request with an empty section is
+    /// refused first (<see cref="BootstrapInputSections.EnsureSetupSectionsPresent"/>), then a Web
+    /// TLS SAN of a type the certificate cannot carry (<see cref="BootstrapCertCreator.EnsureWebTlsSansSupported"/>).
     /// <c>Admin.MultipleAdministrators</c> decides whether key ceremonies start on and whether
     /// self-approval is allowed (<see cref="BootstrapModularCA.ApplyAdministratorChoice"/>).
     /// <c>Features.AcmeAllowPrivateAddressValidation</c> lets the first CA's http-01 validator
@@ -50,7 +51,8 @@ public class BootstrapService
 
         try
         {
-            BootstrapCertCreator.EnsureWebTlsSansSupported(request.WebTlsCertificate?.Sans);
+            BootstrapInputSections.EnsureSetupSectionsPresent(request);
+            BootstrapCertCreator.EnsureWebTlsSansSupported(request.WebTlsCertificate.Sans);
 
             // === Build a BootstrapConfig-equivalent from the SetupRequest ===
             var configDir = Path.Combine(AppContext.BaseDirectory, "config");
@@ -130,7 +132,7 @@ public class BootstrapService
             // The application database is dropped and recreated deliberately: the wizard only runs
             // when IsConfigured() is false, so there is no install to protect. The audit database
             // is preserved unless the operator ticked the wipe box.
-            var wipeAudit = request.Database?.WipeAuditDatabase ?? false;
+            var wipeAudit = request.Database.WipeAuditDatabase;
             var databases = BootstrapDatabaseSetup.ProvisionAsync(
                 rootConfig, setupDbConfig, wipeAudit, selectedSslModeString, selectedSslModeString,
                 Console.WriteLine).GetAwaiter().GetResult();
@@ -439,7 +441,7 @@ public class BootstrapService
                 dbContext,
                 request.Security?.MaxFailedLoginAttempts,
                 request.Security?.LockoutMinutes);
-            BootstrapModularCA.ApplyAdministratorChoice(dbContext, orgSpace, request.Admin?.MultipleAdministrators);
+            BootstrapModularCA.ApplyAdministratorChoice(dbContext, orgSpace, request.Admin.MultipleAdministrators);
             BootstrapProfileSeeder.SeedLdapPublisherPolicy(dbContext);
             BootstrapProfileSeeder.SeedProtocolRateLimits(dbContext);
             BootstrapProfileSeeder.SeedDefaultSshProfiles(dbContext);

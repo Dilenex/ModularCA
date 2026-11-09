@@ -487,7 +487,7 @@ namespace ModularCA.Core.Services
                 if (permitted != null || excluded != null)
                 {
                     certGen.AddExtension(X509Extensions.NameConstraints, true,
-                        new NameConstraints((IList<GeneralSubtree>?)permitted, (IList<GeneralSubtree>?)excluded));
+                        new NameConstraints(SubtreesOrNull(permitted), SubtreesOrNull(excluded)));
                 }
             }
 
@@ -513,7 +513,7 @@ namespace ModularCA.Core.Services
             if (profile.InhibitAnyPolicy)
             {
                 certGen.AddExtension(X509Extensions.InhibitAnyPolicy, true,
-                    new DerInteger(0));
+                    DerInteger.ValueOf(0));
             }
         }
 
@@ -621,7 +621,7 @@ namespace ModularCA.Core.Services
             var excluded = ParseSubtrees(excludedJson);
             if (permitted == null && excluded == null)
                 return null;
-            return new NameConstraints((IList<GeneralSubtree>?)permitted, (IList<GeneralSubtree>?)excluded);
+            return new NameConstraints(SubtreesOrNull(permitted), SubtreesOrNull(excluded));
         }
 
         /// <summary>
@@ -632,5 +632,12 @@ namespace ModularCA.Core.Services
         /// would encode a constraint other than the one configured.
         /// </summary>
         private static GeneralSubtree[]? ParseSubtrees(string? json) => NameConstraintRules.ParseJson(json);
+
+        /// <summary>
+        /// The subtrees as the <see cref="GeneralSubtrees"/> a <see cref="NameConstraints"/> takes,
+        /// or null to leave that half of the extension out.
+        /// </summary>
+        private static GeneralSubtrees? SubtreesOrNull(GeneralSubtree[]? subtrees)
+            => subtrees == null ? null : new GeneralSubtrees(subtrees);
     }
 }

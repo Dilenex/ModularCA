@@ -213,7 +213,7 @@ public static class IssuerCertificateBackfill
         try
         {
             var ext = cert.GetExtensionValue(X509Extensions.AuthorityKeyIdentifier);
-            return ext == null ? null : AuthorityKeyIdentifier.GetInstance(Asn1Object.FromByteArray(ext.GetOctets())).GetKeyIdentifier();
+            return ext == null ? null : AuthorityKeyIdentifier.GetInstance(Asn1Object.FromByteArray(ext.GetOctets())).KeyIdentifier?.GetOctets();
         }
         catch { return null; }
     }

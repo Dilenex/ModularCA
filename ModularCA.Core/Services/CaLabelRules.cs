@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
+using ModularCA.Shared.Entities;
 using ModularCA.Shared.Errors;
 
 namespace ModularCA.Core.Services;
@@ -132,4 +133,16 @@ public static class CaLabelRules
     public static ResourceConflictException NameRaceConflict(string? label, string? name) => new(
         $"Another CA took the label '{label}' or the name '{name}' while this one was being saved. Labels and names are unique across the instance.",
         ErrorCodes.NameAlreadyTaken);
+
+    /// <summary>
+    /// The CA's label, for code that builds a route or URL from it. Every way of creating a CA
+    /// gives it one (CA creation, bootstrap), but the column allows null, so a row without one
+    /// was edited by hand; this throws, naming the CA, rather than building a broken URL.
+    /// </summary>
+    /// <param name="ca">The CA.</param>
+    /// <exception cref="InvalidOperationException">The CA has no label.</exception>
+    public static string RequiredLabel(CertificateAuthorityEntity ca) =>
+        string.IsNullOrEmpty(ca.Label)
+            ? throw new InvalidOperationException($"CA '{ca.Name}' ({ca.Id}) has no label; give it one under Authorities before using it.")
+            : ca.Label;
 }

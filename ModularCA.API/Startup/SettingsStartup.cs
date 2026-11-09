@@ -31,6 +31,10 @@ public static class SettingsStartup
     /// start on the defaults. A signer that cannot be reached is not such a fault: the secrets
     /// are then left where they are, and the log says which could not be read.
     /// </summary>
+    /// <param name="config">The configuration read from this host's file, which the stored values are taken onto.</param>
+    /// <param name="environment">The environment overlay; the settings it set are left as the environment gave them.</param>
+    /// <param name="persistence">Where this host's configuration file is rewritten when the settings move.</param>
+    /// <param name="controlActive">Whether this process runs the control role, the only one that moves the settings.</param>
     /// <param name="signerAccess">How to reach a signer for the secrets; null for a process that uses none (an ingress).</param>
     public static async Task<SettingsStartReport> RunAsync(SystemConfig config, EnvVarConfigOverlay environment,
         SettingsPersistence persistence, bool controlActive, SignerAccess? signerAccess)

@@ -169,8 +169,11 @@ public class MigrationLintTests
     {
         using var db = Create(context);
         var migrator = db.GetService<IMigrator>();
+        // EF1001: the comparison is against EF's own internal migrator, on purpose: it is what the real apply runs.
+#pragma warning disable EF1001
         var generateUpSql = typeof(Migrator).GetMethod("GenerateUpSql",
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+#pragma warning restore EF1001
         var assembly = db.GetService<IMigrationsAssembly>();
         foreach (var (id, type) in assembly.Migrations)
         {

@@ -57,7 +57,7 @@ public sealed class StaleTenantQueryTests
     {
         var method = Action(controller, action);
         Assert.Contains(method.GetParameters(), p => p.Name == replacement && p.GetCustomAttribute<FromQueryAttribute>() != null);
-        var refusal = Assert.Single(method.GetCustomAttributes().Where(a => a.GetType().FullName == Attribute));
+        var refusal = Assert.Single(method.GetCustomAttributes(), a => a.GetType().FullName == Attribute);
         Assert.Equal("tenantId", Prop(refusal, "Key"));
         Assert.Equal(replacement, Prop(refusal, "Replacement"));
 

@@ -37,7 +37,7 @@ public static class Pkcs7Util
             certSet.Add(Asn1Object.FromByteArray(cert.GetEncoded()));
 
         var signedData = new DerSequence(
-            new DerInteger(1),
+            DerInteger.ValueOf(1),
             new DerSet(),
             new DerSequence(new DerObjectIdentifier(IdData)),
             new DerTaggedObject(false, 0, new DerSet(certSet)),

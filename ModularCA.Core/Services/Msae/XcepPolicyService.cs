@@ -63,7 +63,6 @@ public class XcepPolicyService(
     IEnrollmentPrincipalAuthorizer principalAuthorizer,
     IProfileResolutionService profileResolution,
     IssuanceValidationService validation,
-    SystemConfig config,
     IPublicNameResolver names,
     ILogger<XcepPolicyService> logger) : IXcepPolicyService
 {

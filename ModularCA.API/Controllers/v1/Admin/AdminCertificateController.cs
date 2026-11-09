@@ -65,6 +65,7 @@ public class AdminCertificateController(
     /// <param name="issuer">Partial match filter on the certificate issuer.</param>
     /// <param name="caId">Filter to certificates issued by this certificate authority.</param>
     /// <param name="spaceId">Filter to certificates issued by CAs of this space. The pre-0.4.0 <c>tenantId</c> is refused (400), here and on the histogram and health summary.</param>
+    /// <param name="sort">Order: <c>notBefore</c> (the default, newest first), <c>notAfter</c>, <c>subject</c>, <c>serial</c> or <c>issuer</c>, with a leading <c>-</c> for descending (<see cref="ApplySort"/>).</param>
     /// <param name="status">Status filter: "active" (not revoked and not expired), "revoked", "expired" (expired and not revoked),
     /// "expiring" (in its expiry warning: not revoked, not expired, past its <c>ExpiryWarningAt</c>) or "alert" (likewise past its
     /// <c>ExpiryAlertAt</c>). "expiring" returns the lifecycle summary's <c>InExpiryWarning</c> set, and with <paramref name="replaced"/>

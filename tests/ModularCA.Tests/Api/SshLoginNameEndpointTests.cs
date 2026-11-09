@@ -44,7 +44,7 @@ public sealed class SshLoginNameEndpointTests
     private sealed class CurrentUserStub(UserEntity user) : ICurrentUserService
     {
         public Guid? UserId => user.Id;
-        public UserEntity? User { get; } = user;
+        public UserEntity? User => user;
         public bool IsAuthenticated => true;
         public Task EnsureLoadedAsync() => Task.CompletedTask;
     }

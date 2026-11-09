@@ -50,6 +50,7 @@ public sealed class MsaeSetupKitService(ModularCADbContext db, SystemConfig conf
             .FirstOrDefaultAsync(c => c.Id == caId, cancellation);
         var realm = await db.KerberosRealms.AsNoTracking().FirstOrDefaultAsync(r => r.Id == realmId, cancellation);
         if (ca == null || realm == null || realm.SpaceId != ca.SpaceId) return null;
+        var label = CaLabelRules.RequiredLabel(ca);
 
         // The name in the kit is the one the forest issues tickets for, taken from the binding's
         // service principal, when it is a name this service is known by; otherwise the public
@@ -57,20 +58,20 @@ public sealed class MsaeSetupKitService(ModularCADbContext db, SystemConfig conf
         var known = names.Resolve(PublicNameResolver.HostFromServicePrincipal(realm.ServicePrincipal));
         var host = known ?? config.Https.PublicDomain;
         var baseUrl = names.BaseUrl(known);
-        var cepUrl = $"{baseUrl}/msae/{ca.Label}/cep";
+        var cepUrl = $"{baseUrl}/msae/{label}/cep";
         var policyId = $"{{{ca.Id.ToString().ToUpperInvariant()}}}";
         var friendlyName = $"{ca.Name} (ModularCA)";
         var spaceName = ca.Space?.Name ?? "space";
 
         var files = new List<KitFile>
         {
-            new("README.md", Readme(ca.Label, realm.Realm, realm.DnsDomain, cepUrl, policyId, host)),
+            new("README.md", Readme(label, realm.Realm, realm.DnsDomain, cepUrl, policyId, host)),
             new("1-ad-service-account.ps1", KerberosRealmService.SetupScript(realm, spaceName, cepUrl, null, null)),
             new("2-gpo-policy-server.ps1", GpoScript(cepUrl, policyId, friendlyName, realm.DnsDomain)),
-            new("3-client-check.ps1", ClientCheck(baseUrl, ca.Label, ca.Name, host)),
+            new("3-client-check.ps1", ClientCheck(baseUrl, label, ca.Name, host)),
         };
         if (!string.IsNullOrWhiteSpace(ca.Certificate?.Pem))
-            files.Add(new($"{ca.Label}-root.cer", ca.Certificate.Pem.Trim() + "\n"));
+            files.Add(new($"{label}-root.cer", ca.Certificate.Pem.Trim() + "\n"));
         return files;
     }
 

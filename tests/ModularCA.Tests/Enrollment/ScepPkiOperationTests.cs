@@ -274,7 +274,7 @@ public class ScepPkiOperationTests
         {
             var env = new CmsEnvelopedDataGenerator();
             env.AddKeyTransRecipient(ca.Certificate);
-            content = env.Generate(new CmsProcessableByteArray(payload), CmsEnvelopedGenerator.Aes256Cbc).GetEncoded();
+            content = env.Generate(new CmsProcessableByteArray(payload), new DerObjectIdentifier(CmsEnvelopedGenerator.Aes256Cbc)).GetEncoded();
         }
         else
         {
@@ -376,7 +376,7 @@ public class ScepPkiOperationTests
             Message(h.Ca, key, signerCert, "19", $"tx-verify-{fail}", payload), "lab", "10.0.0.5");
 
         var signer = new CmsSignedData(response).GetSignerInfos().GetSigners().Cast<SignerInformation>().Single();
-        var algorithm = signer.ToSignerInfo().SignatureAlgorithm;
+        var algorithm = signer.SignerInfo.SignatureAlgorithm;
         if (algorithm.Algorithm.Equals(PkcsObjectIdentifiers.IdRsassaPss))
             Assert.IsType<RsassaPssParameters>(RsassaPssParameters.GetInstance(algorithm.Parameters));
         Assert.True(signer.Verify(h.Ca.Certificate));

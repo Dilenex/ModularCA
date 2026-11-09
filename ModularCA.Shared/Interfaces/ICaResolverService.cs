@@ -46,9 +46,10 @@ public interface ICaResolverService
 public class ResolvedCaContext
 {
     /// <summary>
-    /// The resolved CA entity, or null if no CA entities are configured (legacy fallback).
+    /// The resolved CA entity. The resolver refuses a request it cannot place on an enabled CA, so
+    /// a context always has one.
     /// </summary>
-    public CertificateAuthorityEntity? Ca { get; init; }
+    public required CertificateAuthorityEntity Ca { get; init; }
 
     public Guid SigningProfileId { get; init; }
     public Guid CertProfileId { get; init; }

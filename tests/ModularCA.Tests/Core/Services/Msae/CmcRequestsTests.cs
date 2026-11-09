@@ -54,13 +54,13 @@ public class CmcRequestsTests
     /// </summary>
     private static byte[] BuildCmc(byte[] pkcs10Der, AsymmetricKeyParameter signingKey, bool includeRequest = true, int requestTag = 0)
     {
-        var tcr = new DerSequence(new DerInteger(1), Asn1Object.FromByteArray(pkcs10Der));
+        var tcr = new DerSequence(DerInteger.ValueOf(1), Asn1Object.FromByteArray(pkcs10Der));
         var requests = includeRequest ? new DerSequence(new DerTaggedObject(false, requestTag, tcr)) : new DerSequence();
         var pkiData = new DerSequence(new DerSequence(), requests, new DerSequence(), new DerSequence());
 
         var generator = new CmsSignedDataGenerator();
         generator.AddSigner(signingKey, [1, 2, 3, 4], CmsSignedDataGenerator.DigestSha256);
-        return generator.Generate(CmcRequests.PkiDataOid, new CmsProcessableByteArray(pkiData.GetDerEncoded()), true).GetEncoded();
+        return generator.Generate(new CmsProcessableByteArray(new DerObjectIdentifier(CmcRequests.PkiDataOid), pkiData.GetDerEncoded()), true).GetEncoded();
     }
 
     /// <summary>
@@ -80,7 +80,7 @@ public class CmcRequestsTests
         req.OtherRequestAttributes.Add(new AsnEncodedData(new Oid(CmcRequests.RenewalCertificateOid), old.RawData));
         var pkcs10 = req.CreateSigningRequest();
 
-        var tcr = new DerSequence(new DerInteger(1), Asn1Object.FromByteArray(pkcs10));
+        var tcr = new DerSequence(DerInteger.ValueOf(1), Asn1Object.FromByteArray(pkcs10));
         var pkiData = new DerSequence(new DerSequence(), new DerSequence(new DerTaggedObject(false, 0, tcr)), new DerSequence(), new DerSequence());
         var generator = new CmsSignedDataGenerator();
         generator.AddSigner(DotNetUtilities.GetRsaKeyPair(newRsa).Private, [1, 2, 3, 4], CmsSignedDataGenerator.DigestSha256);
@@ -92,7 +92,7 @@ public class CmcRequestsTests
                 : DotNetUtilities.GetRsaKeyPair(RSA.Create(2048)).Private;   // claims the old cert, signs with another key
             generator.AddSigner(signingKey, oldBc, CmsSignedDataGenerator.DigestSha256);
         }
-        var cmc = generator.Generate(CmcRequests.PkiDataOid, new CmsProcessableByteArray(pkiData.GetDerEncoded()), true).GetEncoded();
+        var cmc = generator.Generate(new CmsProcessableByteArray(new DerObjectIdentifier(CmcRequests.PkiDataOid), pkiData.GetDerEncoded()), true).GetEncoded();
         return (cmc, old);
     }
 

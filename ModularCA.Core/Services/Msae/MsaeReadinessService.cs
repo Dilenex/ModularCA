@@ -88,18 +88,20 @@ public sealed class MsaeReadinessService(
         if (ca == null) return null;
 
         var hasSpace = ca.SpaceId != null;
+        var label = CaLabelRules.RequiredLabel(ca);
+        var slug = hasSpace && !string.IsNullOrWhiteSpace(ca.Space?.Slug) ? ca.Space.Slug : null;
         // The console's scope parser resolves ?space= by slug and ?ca= by label; an id there is
         // silently dropped and the linked page opens unscoped.
-        var scope = hasSpace && !string.IsNullOrWhiteSpace(ca.Space?.Slug)
-            ? $"?space={Uri.EscapeDataString(ca.Space!.Slug)}&ca={Uri.EscapeDataString(ca.Label)}"
-            : $"?ca={Uri.EscapeDataString(ca.Label)}";
+        var scope = slug != null
+            ? $"?space={Uri.EscapeDataString(slug)}&ca={Uri.EscapeDataString(label)}"
+            : $"?ca={Uri.EscapeDataString(label)}";
         var baseUrl = config.Https.GetPublicHttpsBaseUrl();
         var result = new MsaeReadiness
         {
             CaId = ca.Id,
-            CaLabel = ca.Label,
+            CaLabel = label,
             SpaceId = hasSpace ? ca.SpaceId : null,
-            CepUrl = $"{baseUrl}/msae/{ca.Label}/cep",
+            CepUrl = $"{baseUrl}/msae/{label}/cep",
             PolicyId = $"{{{ca.Id.ToString().ToUpperInvariant()}}}",
             EvaluatedAt = DateTime.UtcNow,
         };
@@ -179,7 +181,7 @@ public sealed class MsaeReadinessService(
         // first enabled binding's URL is the headline; others are listed when they differ.
         var advertised = new Dictionary<Guid, string>();
         foreach (var realm in enabledRealms)
-            advertised[realm.Id] = $"{names.BaseUrlForServicePrincipal(realm.ServicePrincipal)}/msae/{ca.Label}/cep";
+            advertised[realm.Id] = $"{names.BaseUrlForServicePrincipal(realm.ServicePrincipal)}/msae/{label}/cep";
         if (enabledRealms.Count > 0)
             result.CepUrl = advertised[enabledRealms[0].Id];
         var realmFix = hasSpace
@@ -266,7 +268,7 @@ public sealed class MsaeReadinessService(
                 _ => "Accepted tickets act as an identity that may request certificates here.",
             },
             Items = idItems,
-            Fix = idState == MsaeReadinessState.Fail ? new MsaeReadinessFix { Label = "Open Users", Path = $"/users?tab=service-identities{(hasSpace && !string.IsNullOrWhiteSpace(ca.Space?.Slug) ? $"&space={Uri.EscapeDataString(ca.Space!.Slug)}" : "")}" } : null,
+            Fix = idState == MsaeReadinessState.Fail ? new MsaeReadinessFix { Label = "Open Users", Path = $"/users?tab=service-identities{(slug != null ? $"&space={Uri.EscapeDataString(slug)}" : "")}" } : null,
         });
 
         // 7. Templates offered to Windows.

@@ -26,7 +26,7 @@ public class MsaeCsrTemplateTests
 
     private static X509Extension InfoExtension(string oid, int major = 100, int minor = 2)
         => new(new Oid(MsaeCsrTemplate.TemplateInfoOid),
-            new DerSequence(new DerObjectIdentifier(oid), new DerInteger(major), new DerInteger(minor)).GetDerEncoded(),
+            new DerSequence(new DerObjectIdentifier(oid), DerInteger.ValueOf(major), DerInteger.ValueOf(minor)).GetDerEncoded(),
             false);
 
     [Fact]

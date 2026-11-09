@@ -45,14 +45,14 @@ public static class CmcResponses
         // CMCStatusInfoV2 ::= SEQUENCE { cMCStatus, bodyList SEQUENCE OF BodyPartID,
         //   statusString UTF8String OPTIONAL, otherInfo CHOICE { failInfo, pendInfo, ... } OPTIONAL }
         var statusInfo = new DerSequence(
-            new DerInteger(StatusPending),
-            new DerSequence(new DerInteger(RequestBodyPartId)),
+            DerInteger.ValueOf(StatusPending),
+            new DerSequence(DerInteger.ValueOf(RequestBodyPartId)),
             new DerUtf8String("Taken Under Submission"),
             pendInfo);
 
         // TaggedAttribute ::= SEQUENCE { bodyPartID, attrType OID, attrValues SET OF ANY }
         var control = new DerSequence(
-            new DerInteger(RequestBodyPartId + 1),
+            DerInteger.ValueOf(RequestBodyPartId + 1),
             new DerObjectIdentifier(StatusInfoV2Oid),
             new DerSet((Asn1Encodable)statusInfo));
 
@@ -60,6 +60,6 @@ public static class CmcResponses
         var response = new DerSequence(new DerSequence((Asn1Encodable)control), new DerSequence(), new DerSequence());
 
         var generator = new CmsSignedDataGenerator();
-        return generator.Generate(PkiResponseOid, new CmsProcessableByteArray(response.GetDerEncoded()), true).GetEncoded();
+        return generator.Generate(new CmsProcessableByteArray(new DerObjectIdentifier(PkiResponseOid), response.GetDerEncoded()), true).GetEncoded();
     }
 }

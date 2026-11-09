@@ -308,7 +308,9 @@ public class PostgresUpgradeHarnessTests
             await using (var app = CreateApp(connection))
             {
                 await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
-                await app.Database.ExecuteSqlRawAsync(Seed030Sql + SeedTenantHostnameSql);
+                // Fixture SQL written in this file from its own constants; nothing in it comes from input.
+                var seed = Seed030Sql + SeedTenantHostnameSql;
+                await app.Database.ExecuteSqlRawAsync(seed);
             }
 
             using var log = new CapturedSerilog();

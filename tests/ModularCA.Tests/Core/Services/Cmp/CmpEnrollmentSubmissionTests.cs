@@ -199,7 +199,7 @@ public class CmpEnrollmentSubmissionTests
 
         var builder = new CertTemplateBuilder()
             .SetSubject(new X509Name(DeviceDn))
-            .SetPublicKey(spki)
+            .SetSubjectPublicKeyInfo(spki)
             .SetExtensions(new X509Extensions(new Dictionary<DerObjectIdentifier, X509Extension>
             {
                 [X509Extensions.SubjectAlternativeName] = new X509Extension(

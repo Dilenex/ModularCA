@@ -381,7 +381,7 @@ public abstract partial class SigningServiceContractTests
     {
         var gen = new CmsEnvelopedDataGenerator();
         gen.AddKeyTransRecipient(cert);
-        return gen.Generate(new CmsProcessableByteArray(content), NistObjectIdentifiers.IdAes256Cbc.Id).GetEncoded();
+        return gen.Generate(new CmsProcessableByteArray(content), NistObjectIdentifiers.IdAes256Cbc).GetEncoded();
     }
 
     /// <summary>
@@ -2189,12 +2189,12 @@ public abstract partial class SigningServiceContractTests
         await Refused(TypedSigningData.Certificate(issuer, LeafKey.Public, rsa, gen =>
             gen.AddExtension(X509Extensions.KeyUsage, true, new KeyUsage(KeyUsage.CrlSign))), SigningRefusalReason.PurposeNotPermitted);
         await Refused(TypedSigningData.Certificate(issuer, LeafKey.Public, rsa, gen =>
-            gen.AddExtension(X509Extensions.BasicConstraints, true, new Org.BouncyCastle.Asn1.DerSequence(new Org.BouncyCastle.Asn1.DerInteger(0)))), SigningRefusalReason.PurposeNotPermitted);
+            gen.AddExtension(X509Extensions.BasicConstraints, true, new Org.BouncyCastle.Asn1.DerSequence(Org.BouncyCastle.Asn1.DerInteger.ValueOf(0)))), SigningRefusalReason.PurposeNotPermitted);
         await Refused(TypedSigningData.Certificate(issuer, LeafKey.Public, rsa, gen =>
         {
             gen.AddExtension(X509Extensions.BasicConstraints, true, new BasicConstraints(false));
             gen.AddExtension(X509Extensions.NameConstraints, true, new NameConstraints(
-                new[] { new GeneralSubtree(new GeneralName(GeneralName.DnsName, "example.test")) }, null));
+                new GeneralSubtrees(new GeneralSubtree(new GeneralName(GeneralName.DnsName, "example.test"))), null));
         }), SigningRefusalReason.PurposeNotPermitted);
 
         // A leaf with any other EKU is signed as before.

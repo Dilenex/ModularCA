@@ -66,7 +66,7 @@ namespace ModularCA.Tests.Database
             Assert.Equal(SchemaVerdict.Unmanaged, SchemaVersionGate.Evaluate(state, appliesMigrations: true));
 
             await Assert.ThrowsAsync<InvalidOperationException>(() => SchemaVersionGate.ApplyAllForBootstrapAsync(db));
-            Assert.Empty(Tables().Where(t => t.StartsWith("__EFMigrations", StringComparison.Ordinal) && t != "__EFMigrationsLock"));
+            Assert.DoesNotContain(Tables(), t => t.StartsWith("__EFMigrations", StringComparison.Ordinal) && t != "__EFMigrationsLock");
         }
 
         [Fact]

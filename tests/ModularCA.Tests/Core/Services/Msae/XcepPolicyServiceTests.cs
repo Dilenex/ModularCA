@@ -109,7 +109,7 @@ public class XcepPolicyServiceTests
         var authorizer = new RecordingAuthorizer(member);
         var profiles = new ProfileResolutionService(db, NullLogger<ProfileResolutionService>.Instance);
         var service = new XcepPolicyService(db, new CaResolverService(db), authorizer, profiles,
-            new IssuanceValidationService(db, NullLogger<IssuanceValidationService>.Instance), config,
+            new IssuanceValidationService(db, NullLogger<IssuanceValidationService>.Instance),
             new PublicNameResolver(config), NullLogger<XcepPolicyService>.Instance);
 
         return new Harness { Db = db, CaCert = caCert, Ca = ca, Signing = signing, DeviceProfile = device, Authorizer = authorizer, Service = service };
