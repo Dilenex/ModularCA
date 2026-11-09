@@ -148,6 +148,8 @@ public static class AuditActionType
     public const string EnrollmentTokenGenerated = "EnrollmentTokenGenerated";
     public const string EnrollmentTokenRevoked = "EnrollmentTokenRevoked";
     public const string QrEnrollmentCompleted = "QrEnrollmentCompleted";
+    /// <summary>A token (QR or link) enrollment was refused before issuance.</summary>
+    public const string QrEnrollmentRejected = "QrEnrollmentRejected";
 
     // Protocol configuration
     public const string ProtocolConfigUpdated = "ProtocolConfigUpdated";

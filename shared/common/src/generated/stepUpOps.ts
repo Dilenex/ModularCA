@@ -132,6 +132,8 @@ export const StepUpOps = {
     RotateJwtSecret: 'rotate-jwt-secret',
     ManageSshLoginNames: 'manage-ssh-login-names',
     SignSshCert: 'sign-ssh-cert',
+    RetireCert: 'retire-cert',
+    UndoRetireCert: 'undo-retire-cert',
 } as const;
 
 /** Union of every valid step-up operation string. */

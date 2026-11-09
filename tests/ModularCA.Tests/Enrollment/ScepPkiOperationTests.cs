@@ -593,6 +593,163 @@ public class ScepPkiOperationTests
         Assert.Equal("4", expired.FailInfo);
     }
 
+    /// <summary>
+    /// Gives the CA an elliptic-curve certificate, as a CA whose SCEP configuration was enabled
+    /// before enabling SCEP on a non-RSA CA was refused.
+    /// </summary>
+    private static void MakeCaElliptic(Harness h)
+    {
+        using var key = System.Security.Cryptography.ECDsa.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
+        var request = new System.Security.Cryptography.X509Certificates.CertificateRequest(
+            "CN=Lab EC CA", key, System.Security.Cryptography.HashAlgorithmName.SHA256);
+        using var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
+        var row = h.Db.Certificates.Single(c => c.IsCA);
+        row.Pem = cert.ExportCertificatePem();
+        row.RawCertificate = cert.RawData;
+        h.Db.SaveChanges();
+    }
+
+    /// <summary>
+    /// SCEP on a CA whose key is not RSA cannot work: no client can envelope its request to the CA.
+    /// A configuration enabled before that was refused still resolves, so PKIOperation refuses
+    /// with the reason before reading the message, and the SCEP tab says why, rather than the
+    /// request failing in decryption with nothing recorded.
+    /// </summary>
+    [Fact]
+    public async Task A_pki_operation_at_a_non_rsa_ca_is_refused_with_the_reason_and_audited()
+    {
+        var h = Build(requireApproval: false);
+        var key = Rsa();
+        var message = Message(h.Ca, key, SelfSigned(key, "CN=printer9.lab.test"), "19", "tx-ec", Csr(key, "CN=printer9.lab.test"));
+        MakeCaElliptic(h);
+
+        var refusal = await Assert.ThrowsAsync<ProtocolIncompatibleException>(
+            () => h.Service.PkiOperationAsync(message, "lab", "10.0.0.5"));
+
+        Assert.Equal(ProtocolCompatibility.ScepRequiresRsaKey, refusal.Advisory.Reason);
+        Assert.Contains("ECDSA", refusal.Message);
+        var entry = Assert.Single(h.Audit.Entries);
+        Assert.Equal("PKIOperation", entry.Operation);
+        Assert.False(entry.Success);
+        Assert.Equal(refusal.Message, entry.Error);
+        Assert.Empty(h.Db.CertificateRequests);
+        Assert.Empty(h.Db.ScepTransactions);
+    }
+
+    /// <summary>
+    /// GetCACert, the first thing every SCEP client asks, is refused the same way, so the client is
+    /// told why before it tries to build a request it cannot build.
+    /// </summary>
+    [Fact]
+    public async Task Get_ca_cert_at_a_non_rsa_ca_is_refused_with_the_reason_and_audited()
+    {
+        var h = Build(requireApproval: false);
+        MakeCaElliptic(h);
+
+        var refusal = await Assert.ThrowsAsync<ProtocolIncompatibleException>(() => h.Service.GetCaCertAsync("lab", "10.0.0.5"));
+
+        Assert.Equal(ProtocolCompatibility.ScepRequiresRsaKey, refusal.Advisory.Reason);
+        var entry = Assert.Single(h.Audit.Entries);
+        Assert.Equal("GetCACert", entry.Operation);
+        Assert.False(entry.Success);
+        Assert.Equal(refusal.Message, entry.Error);
+    }
+
+    /// <summary>An RSA CA is answered as before, and nothing is audited for GetCACert.</summary>
+    [Fact]
+    public async Task Get_ca_cert_at_an_rsa_ca_is_answered()
+    {
+        var h = Build(requireApproval: false);
+
+        var (data, isPkcs7) = await h.Service.GetCaCertAsync("lab", "10.0.0.5");
+
+        Assert.False(isPkcs7);
+        Assert.Equal(h.Ca.Certificate.GetEncoded(), data);
+        Assert.Empty(h.Audit.Entries);
+    }
+
+    /// <summary>
+    /// A PKIOperation the responder cannot read or authenticate is answered with its failInfo and
+    /// now leaves an unsuccessful PKIOperation row on the SCEP tab; it was recorded nowhere.
+    /// </summary>
+    [Fact]
+    public async Task A_message_that_is_not_cms_is_answered_bad_message_check_and_audited()
+    {
+        var h = Build(requireApproval: false);
+
+        var (status, failInfo, _) = Read(await h.Service.PkiOperationAsync([0x30, 0x03, 0x02, 0x01, 0x00], "lab", "10.0.0.5"));
+
+        Assert.Equal("2", status);
+        Assert.Equal("1", failInfo);
+        var entry = Assert.Single(h.Audit.Entries);
+        Assert.Equal("PKIOperation", entry.Operation);
+        Assert.False(entry.Success);
+        Assert.Contains("not a CMS SignedData", entry.Error);
+    }
+
+    [Fact]
+    public async Task A_message_whose_signature_does_not_verify_is_answered_bad_message_check_and_audited()
+    {
+        var h = Build(requireApproval: false);
+        var key = Rsa();
+        // Signed with one key, carrying the certificate of another.
+        var message = Message(h.Ca, key, SelfSigned(Rsa(), "CN=printer8.lab.test"), "19", "tx-badsig", Csr(key, "CN=printer8.lab.test"));
+
+        var (status, failInfo, _) = Read(await h.Service.PkiOperationAsync(message, "lab", "10.0.0.5"));
+
+        Assert.Equal("2", status);
+        Assert.Equal("1", failInfo);
+        Assert.Contains("CMS signature", Assert.Single(h.Audit.Entries).Error);
+        Assert.Empty(h.Db.CertificateRequests);
+    }
+
+    [Fact]
+    public async Task A_request_enveloped_to_another_key_is_answered_bad_request_and_audited()
+    {
+        var h = Build(requireApproval: false);
+        var key = Rsa();
+        var elsewhere = TestCaMaterial.CreateCa("CN=Some Other CA, O=Elsewhere");
+        var message = Message(elsewhere, key, SelfSigned(key, "CN=printer7.lab.test"), "19", "tx-envelope", Csr(key, "CN=printer7.lab.test"));
+
+        var (status, failInfo, _) = Read(await h.Service.PkiOperationAsync(message, "lab", "10.0.0.5"));
+
+        Assert.Equal("2", status);
+        Assert.Equal("2", failInfo);
+        var entry = Assert.Single(h.Audit.Entries);
+        Assert.Equal("PKIOperation", entry.Operation);
+        Assert.Contains("envelope could not be opened", entry.Error);
+    }
+
+    /// <summary>
+    /// A configuration fault the shared middle reports (here the certificate profile the SCEP
+    /// configuration names is gone) is answered badRequest under the request's transactionID and
+    /// leaves exactly one SCEP row. It left none: the row was skipped as already written.
+    /// </summary>
+    [Fact]
+    public async Task A_configuration_fault_is_answered_bad_request_and_audited_once()
+    {
+        var h = Build(requireApproval: false);
+        h.Db.CaProtocolConfigs.Single().CertProfileId = Guid.NewGuid();
+        await h.Db.SaveChangesAsync();
+        var key = Rsa();
+
+        var response = await h.Service.PkiOperationAsync(
+            Message(h.Ca, key, SelfSigned(key, "CN=printer10.lab.test"), "19", "tx-noprofile", Csr(key, "CN=printer10.lab.test")),
+            "lab", "10.0.0.5");
+
+        var (status, failInfo, certs) = Read(response);
+        Assert.Equal("2", status);
+        Assert.Equal("2", failInfo);
+        Assert.Empty(certs);
+        var signer = new CmsSignedData(response).GetSignerInfos().GetSigners().Cast<SignerInformation>().Single();
+        Assert.Equal("tx-noprofile", ((DerPrintableString)signer.SignedAttributes[IdTransactionId].AttrValues[0]).GetString());
+        var entry = Assert.Single(h.Audit.Entries);
+        Assert.Equal("PKCSReq", entry.Operation);
+        Assert.False(entry.Success);
+        Assert.Equal("Configured SCEP certificate profile not found.", entry.Error);
+        Assert.Empty(h.Db.CertificateRequests);
+    }
+
     // The replay refusal is not tested here. It is the unique index on
     // (CaId, TransactionId) that detects a replayed PKCSReq, and EF Core's in-memory provider
     // does not enforce unique indexes, so a second identical request is simply inserted and

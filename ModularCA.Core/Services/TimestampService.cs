@@ -32,12 +32,16 @@ public class TimestampService : ITimestampService
     /// <summary>The caller identity the TSA signs under; the signer audits it with every decision.</summary>
     private const string SignerCaller = nameof(TimestampService);
 
+    /// <summary>
+    /// Message-imprint hash algorithms the TSA timestamps. SHA-1 is refused with badAlg: a token
+    /// over a SHA-1 imprint attests to every document that collides with it, and chosen-prefix
+    /// SHA-1 collisions are practical.
+    /// </summary>
     private static readonly HashSet<string> AcceptedAlgorithms = new()
     {
         TspAlgorithms.Sha256,
         TspAlgorithms.Sha384,
         TspAlgorithms.Sha512,
-        TspAlgorithms.Sha1,
     };
 
     private static readonly string TsaPolicyOid = "1.2.3.4.1";
@@ -65,7 +69,8 @@ public class TimestampService : ITimestampService
         var hashAlgOid = tsRequest.MessageImprintAlgOid;
         if (!AcceptedAlgorithms.Contains(hashAlgOid))
         {
-            return BuildRejection($"Hash algorithm {hashAlgOid} not supported");
+            return BuildRejection($"Hash algorithm {hashAlgOid} not supported; use SHA-256, SHA-384 or SHA-512",
+                Org.BouncyCastle.Asn1.Cmp.PkiFailureInfo.BadAlg);
         }
 
         var (tsaCert, tsaKey, signingContext) = await ResolveTsaSignerAsync(caLabel);
@@ -180,14 +185,21 @@ public class TimestampService : ITimestampService
         return (null, null, null);
     }
 
-    private static byte[] BuildRejection(string statusString)
+    /// <summary>
+    /// A TimeStampResp with status rejection, the given text and failInfo (RFC 3161 section
+    /// 2.4.2), <c>systemFailure</c> unless another is named.
+    /// </summary>
+    /// <param name="statusString">The statusString the client receives.</param>
+    /// <param name="failInfo">A BouncyCastle <c>PkiFailureInfo</c> mask, e.g. <c>PkiFailureInfo.BadAlg</c>.</param>
+    private static byte[] BuildRejection(string statusString,
+        int failInfo = Org.BouncyCastle.Asn1.Cmp.PkiFailureInfo.SystemFailure)
     {
         try
         {
             var respGen = new TimeStampResponseGenerator(null, TspAlgorithms.Allowed);
             var resp = respGen.GenerateFailResponse(
                 Org.BouncyCastle.Asn1.Cmp.PkiStatus.Rejection,
-                Org.BouncyCastle.Asn1.Cmp.PkiFailureInfo.SystemFailure,
+                failInfo,
                 statusString);
             return resp.GetEncoded();
         }

@@ -260,6 +260,7 @@ namespace ModularCA.Core.Services
             if (!csrEntity.IsInfrastructureCert && !_validation.ValidityDurationMeetsMinimum(notBefore, notAfter, effectiveCertProfile))
                 throw new Exception($"Certificate validity duration is shorter than the profile's minimum ({effectiveCertProfile.ValidityPeriodMin ?? "not set"}). Either extend NotAfter, clear the minimum on the cert profile, or use a different profile.");
 
+            EnsureKeyAllowedBySystemPolicy(publicKeyOverride ?? csr!.GetPublicKey());
             _validation.ValidateAgainstCertProfile(csrEntity.KeyAlgorithm, csrEntity.KeySize, csrEntity.SignatureAlgorithm, effectiveCertProfile);
             _validation.ValidateAgainstSigningProfile(csrEntity.KeyAlgorithm, csrEntity.SignatureAlgorithm, csrEntity.SigningProfile);
 
@@ -764,6 +765,7 @@ namespace ModularCA.Core.Services
             if (!_validation.ValidityDurationMeetsMinimum(notBefore, notAfter, effectiveCertProfile))
                 throw new Exception($"Reissued certificate validity duration is shorter than the profile's minimum ({effectiveCertProfile.ValidityPeriodMin ?? "not set"}). Extend NotAfter or use a different profile.");
 
+            EnsureKeyAllowedBySystemPolicy(csr.GetPublicKey());
             _validation.ValidateAgainstCertProfile(csrEntity.KeyAlgorithm, csrEntity.KeySize, csrEntity.SignatureAlgorithm, effectiveCertProfile);
             _validation.ValidateAgainstSigningProfile(csrEntity.KeyAlgorithm, csrEntity.SignatureAlgorithm, csrEntity.SigningProfile);
 
@@ -1830,6 +1832,21 @@ namespace ModularCA.Core.Services
             db.CertificateRequests.Update(csr);
             await db.SaveChangesAsync();
         }
+
+        /// <summary>
+        /// Refuses a subject key the system key policy (<see cref="KeyAlgorithmPolicy"/>) does not
+        /// allow, judged from the key the certificate would certify. The profiles' own lists are
+        /// checked separately and can only narrow this.
+        /// </summary>
+        /// <remarks>
+        /// The policy was applied where a request entered through the console (CSR upload and
+        /// generation, CA creation) and to ACME account keys, but not here, so a protocol CSR —
+        /// EST, SCEP, CMP, ACME, MSAE, token enrollment — with an RSA-1024 key or a key on a
+        /// non-NIST curve was issued whenever its profile listed no key sizes.
+        /// </remarks>
+        /// <exception cref="CertificatePolicyViolationException">The key is not allowed.</exception>
+        internal static void EnsureKeyAllowedBySystemPolicy(AsymmetricKeyParameter subjectPublicKey)
+            => KeyAlgorithmPolicy.EnsureSubjectKeyAllowed(subjectPublicKey);
 
         /// <summary>
         /// Validates that the CSR is in "Pending" status and has not yet been issued.

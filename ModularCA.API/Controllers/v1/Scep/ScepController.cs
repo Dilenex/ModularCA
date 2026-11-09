@@ -4,6 +4,7 @@ using ModularCA.Core.Services;
 using ModularCA.Shared.Interfaces;
 using Serilog;
 using ModularCA.Shared.Errors;
+using ModularCA.Shared.Enrollment;
 
 using ModularCA.API.Filters;
 using ModularCA.API.Startup;
@@ -37,7 +38,8 @@ public class ScepController(IScepService scepService) : ControllerBase
 
     /// <summary>
     /// SCEP GET handler — dispatches GetCACert, GetCACaps, and PKIOperation (via GET).
-    /// Validates the operation parameter and returns protocol-appropriate errors.
+    /// Validates the operation parameter and returns protocol-appropriate errors; 409 with the
+    /// reason when SCEP cannot run on the addressed CA (its key is not RSA).
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> Get([FromQuery] string operation, [FromQuery] string? message, string? caLabel = null)
@@ -61,10 +63,17 @@ public class ScepController(IScepService scepService) : ControllerBase
                 _ => BadRequest($"Unknown SCEP operation: {operation}")
             };
         }
+        catch (ProtocolIncompatibleException ex)
+        {
+            MetricsService.ScepRequestsTotal.WithLabels(MetricsService.ScepOperationLabel(operation), "error").Inc();
+            MetricsService.ProtocolRequestsTotal.WithLabels("SCEP", "error").Inc();
+            MetricsService.ProtocolErrorsTotal.WithLabels("SCEP", "incompatible_ca").Inc();
+            return Incompatible(ex);
+        }
         catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
         {
             Log.Error(ex, "SCEP GET operation failed");
-            MetricsService.ScepRequestsTotal.WithLabels(operation, "error").Inc();
+            MetricsService.ScepRequestsTotal.WithLabels(MetricsService.ScepOperationLabel(operation), "error").Inc();
             MetricsService.ProtocolRequestsTotal.WithLabels("SCEP", "error").Inc();
             MetricsService.ProtocolErrorsTotal.WithLabels("SCEP", "invalid_operation").Inc();
             return BadRequest(new { error = "SCEP operation failed. Contact administrator if the problem persists." });
@@ -74,7 +83,7 @@ public class ScepController(IScepService scepService) : ControllerBase
             || ex.GetType().Name.Contains("IOException"))
         {
             Log.Error(ex, "SCEP GET received invalid message");
-            MetricsService.ScepRequestsTotal.WithLabels(operation, "error").Inc();
+            MetricsService.ScepRequestsTotal.WithLabels(MetricsService.ScepOperationLabel(operation), "error").Inc();
             MetricsService.ProtocolRequestsTotal.WithLabels("SCEP", "error").Inc();
             MetricsService.ProtocolErrorsTotal.WithLabels("SCEP", "invalid_message").Inc();
             return BadRequest(new { error = "SCEP operation failed. Contact administrator if the problem persists." });
@@ -90,7 +99,7 @@ public class ScepController(IScepService scepService) : ControllerBase
             _ => null
         };
         var outcomeStatus = statusCode is >= 400 ? "error" : "ok";
-        MetricsService.ScepRequestsTotal.WithLabels(operation, outcomeStatus).Inc();
+        MetricsService.ScepRequestsTotal.WithLabels(MetricsService.ScepOperationLabel(operation), outcomeStatus).Inc();
         MetricsService.ProtocolRequestsTotal.WithLabels("SCEP", outcomeStatus).Inc();
         MetricsService.ProtocolRequestDuration.WithLabels("SCEP").Observe(stopwatch.Elapsed.TotalSeconds);
         return result;
@@ -98,7 +107,8 @@ public class ScepController(IScepService scepService) : ControllerBase
 
     /// <summary>
     /// SCEP POST handler — used for PKIOperation when POSTPKIOperation capability is advertised.
-    /// Enforces request size limits and validates content type before processing.
+    /// Enforces request size limits and validates content type before processing; 409 with the
+    /// reason when SCEP cannot run on the addressed CA (its key is not RSA).
     /// </summary>
     [HttpPost]
     [RequestSizeLimit(MaxScepBodySize)]
@@ -144,6 +154,13 @@ public class ScepController(IScepService scepService) : ControllerBase
             MetricsService.ProtocolRequestDuration.WithLabels("SCEP").Observe(stopwatch.Elapsed.TotalSeconds);
             return File(cmsResponse, "application/x-pki-message");
         }
+        catch (ProtocolIncompatibleException ex)
+        {
+            MetricsService.ScepRequestsTotal.WithLabels("PKIOperation", "error").Inc();
+            MetricsService.ProtocolRequestsTotal.WithLabels("SCEP", "error").Inc();
+            MetricsService.ProtocolErrorsTotal.WithLabels("SCEP", "incompatible_ca").Inc();
+            return Incompatible(ex);
+        }
         catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
         {
             // SCEP errors should ideally be CMS failure responses, but if we cannot
@@ -167,11 +184,19 @@ public class ScepController(IScepService scepService) : ControllerBase
     }
 
     /// <summary>
+    /// The answer when SCEP cannot run on the addressed CA: 409 with the reason in words, since
+    /// no CertRep can carry it and the client could not have built a request this CA could open.
+    /// The service has already logged it and written the audit row.
+    /// </summary>
+    private ObjectResult Incompatible(ProtocolIncompatibleException ex)
+        => Conflict(new { error = ex.Message, reason = ex.Advisory.Reason });
+
+    /// <summary>
     /// Handles GetCACert — returns the CA certificate or certificate chain.
     /// </summary>
     private async Task<IActionResult> HandleGetCaCert(string? caLabel)
     {
-        var (data, isPkcs7) = await scepService.GetCaCertAsync(caLabel);
+        var (data, isPkcs7) = await scepService.GetCaCertAsync(caLabel, HttpContext.Connection.RemoteIpAddress?.ToString());
         var contentType = isPkcs7 ? "application/x-x509-ca-ra-cert" : "application/x-x509-ca-cert";
         return File(data, contentType);
     }

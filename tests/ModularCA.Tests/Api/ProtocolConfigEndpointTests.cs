@@ -389,6 +389,39 @@ public sealed class ProtocolConfigEndpointTests
             new[] { JsonValueKind.True, JsonValueKind.False });
     }
 
+    /// <summary>
+    /// The CA page and System Health read the hierarchy feed, so SCEP on a non-RSA CA carries its
+    /// advisory there too, and a protocol with nothing wrong carries an empty list.
+    /// </summary>
+    [Fact]
+    public async Task The_ca_hierarchy_carries_the_advisory_for_scep_on_a_non_rsa_ca()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var caId = SeedCa(db, EcdsaCaPem(), "SCEP", "EST");
+        var type = ApiAssembly.TypeNamed("ModularCA.API.Controllers.v1.Admin.AdminCaController");
+        var flags = new FlagStub("SCEP.Enabled", "EST.Enabled");
+        var controller = Activator.CreateInstance(
+            type, null, null, db, null, null, null, null, null, null, flags,
+            new ModularCA.Core.Services.Ocsp.OcspResponderReadiness(db, new StubSecurityPolicyService(), flags))!;
+        GiveHttpContext(controller);
+        ModularCA.Auth.Authorization.SpaceFence.Store(((ControllerBase)controller).HttpContext,
+            ModularCA.Auth.Authorization.SpaceFence.Of([], instanceScope: true,
+                systemCapabilities: [ModularCA.Shared.Authorization.Capabilities.CertView]));
+
+        var result = await (Task<IActionResult>)type.GetMethod("GetHierarchy")!.Invoke(controller, null)!;
+
+        var json = JsonSerializer.Serialize(Assert.IsType<OkObjectResult>(result).Value,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        var ca = JsonDocument.Parse(json).RootElement.EnumerateArray().Single(c => c.GetProperty("id").GetGuid() == caId);
+        var configs = ca.GetProperty("protocolConfigs").EnumerateArray().ToList();
+        var scep = configs.Single(p => p.GetProperty("protocol").GetString() == "SCEP");
+        var advisory = Assert.Single(scep.GetProperty("advisories").EnumerateArray().ToList());
+        Assert.Equal(ProtocolCompatibility.ScepRequiresRsaKey, advisory.GetProperty("reason").GetString());
+        Assert.Contains("ECDSA", advisory.GetProperty("message").GetString()!);
+        var est = configs.Single(p => p.GetProperty("protocol").GetString() == "EST");
+        Assert.Empty(est.GetProperty("advisories").EnumerateArray().ToList());
+    }
+
     // ---- stubs -----------------------------------------------------------------------------
 
     /// <summary>A feature flag service whose enabled flags are exactly the names it was given.</summary>

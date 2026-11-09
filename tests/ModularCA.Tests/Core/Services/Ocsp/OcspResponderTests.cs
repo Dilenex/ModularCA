@@ -212,6 +212,44 @@ public class OcspResponderTests
         }
     }
 
+    /// <summary>
+    /// Bug hunt 2026-11, X5: the result's CA label is a metric label, so it is the resolved CA's
+    /// own label or empty, never what the URL said. Each label an unauthenticated client made up
+    /// used to become a time series that lived as long as the process.
+    /// </summary>
+    [Fact]
+    public async Task The_result_names_the_resolved_ca_never_the_label_in_the_url()
+    {
+        var ca = TestCaMaterial.CreateCa();
+        var (db, service) = Build(ca, (d, caId) =>
+            d.Certificates.Add(Row(ca, caId, IntermediateSerial, "CN=Test Intermediate", isCa: true)));
+
+        using (db)
+        {
+            var resolved = new OcspProcessingResult();
+            await service.ProcessOcspRequestAsync(ca.BuildOcspRequest(IntermediateSerial), "test-ca", resolved);
+            Assert.Equal("test-ca", resolved.CaLabel);
+
+            var madeUp = new OcspProcessingResult();
+            await service.ProcessOcspRequestAsync(ca.BuildOcspRequest(IntermediateSerial), "made-up-" + Guid.NewGuid().ToString("N"), madeUp);
+            Assert.Equal(string.Empty, madeUp.CaLabel);
+
+            var garbage = new OcspProcessingResult();
+            await service.ProcessOcspRequestAsync([0x30, 0x00], "made-up-" + Guid.NewGuid().ToString("N"), garbage);
+            Assert.Equal(string.Empty, garbage.CaLabel);
+        }
+    }
+
+    /// <summary>The SCEP operation label is one of a fixed set, whatever the query string says.</summary>
+    [Theory]
+    [InlineData("GetCACert", "GetCACert")]
+    [InlineData("getcacaps", "GetCACaps")]
+    [InlineData("PKIOPERATION", "PKIOperation")]
+    [InlineData("anything-else-0001", "other")]
+    [InlineData(null, "other")]
+    public void Scep_operation_labels_are_a_fixed_set(string? operation, string label)
+        => Assert.Equal(label, ModularCA.Core.Services.MetricsService.ScepOperationLabel(operation));
+
     // ── Baseline behaviour that must not regress ─────────────────────────────
 
     [Fact]

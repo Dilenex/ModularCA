@@ -311,8 +311,9 @@ export default function AuthFlowDiagram() {
                     endpoint rejects any operation string not in this allow-list.
                 </p>
                 <div className="bg-sunken rounded p-4 data-mono mb-4 overflow-x-auto">
-                    <pre className="text-ink">{`Certificate:  revoke-cert, hold-cert, unhold-cert, reissue-cert, export-cert
-User:         create-user, update-user, delete-user
+                    <pre className="text-ink">{`Certificate:  revoke-cert, hold-cert, unhold-cert, reissue-cert, export-cert,
+              retire-cert, undo-retire-cert
+User:        create-user, update-user, delete-user
 Group:        add-group-member, remove-group-member
 Password/MFA: reset-password, reset-mfa, change-password
 Backup:       create-backup, restore-backup, set-backup-password, change-backup-encryption-mode

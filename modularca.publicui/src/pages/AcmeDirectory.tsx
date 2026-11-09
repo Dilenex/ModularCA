@@ -19,20 +19,21 @@ const AcmeDirectory: React.FC = () => {
     const [directory, setDirectory] = useState<any>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    // Canonical public base URL from the server (built from Https.PublicDomain),
-    // not window.location.origin — a reverse proxy may present a different host
-    // than the one operators configured for external clients to use.
-    const [baseUrl, setBaseUrl] = useState<string>(window.location.origin);
+    // Canonical public HTTPS base URL from the server (built from Https.PublicDomain, or the
+    // HTTPS origin a plain-HTTP request is redirected to), not window.location.origin: a reverse
+    // proxy may present a different host, and over plain HTTP the origin is not where ACME is
+    // served. Until the server answers, only an HTTPS origin is shown.
+    const [baseUrl, setBaseUrl] = useState<string>(
+        window.location.protocol === 'https:' ? window.location.origin : '');
 
     // Load available CAs and the canonical public info in parallel
     useEffect(() => {
         apiGet<PublicInfo>('/api/v1/public/info')
             .then((info) => {
-                if (info?.publicHttpsBaseUrl) setBaseUrl(info.publicHttpsBaseUrl);
+                if (info?.publicHttpsBaseUrl?.startsWith('https://')) setBaseUrl(info.publicHttpsBaseUrl);
             })
             .catch(() => {
-                // Fall back to window.location.origin (already set) — don't
-                // block the page on this.
+                // Keep the HTTPS origin (or nothing, over plain HTTP); don't block the page on this.
             });
 
         apiGet<any[]>('/api/v1/public/ca')
@@ -56,18 +57,22 @@ const AcmeDirectory: React.FC = () => {
             .finally(() => setLoading(false));
     }, []);
 
+    // ACME is served over HTTPS only, and a plain-HTTP request for the directory is redirected
+    // to another origin, so over HTTP the page shows the HTTPS directory URL without reading it.
+    const overPlainHttp = window.location.protocol === 'http:';
+
     // Load ACME directory when a CA is selected
     useEffect(() => {
-        if (!selectedLabel) return;
+        if (!selectedLabel || overPlainHttp) return;
         setLoading(true);
         setError(null);
         apiGet<any>(`/acme/${selectedLabel}/directory`)
             .then(setDirectory)
             .catch((err) => setError(err.message))
             .finally(() => setLoading(false));
-    }, [selectedLabel]);
+    }, [selectedLabel, overPlainHttp]);
 
-    const directoryUrl = selectedLabel ? `${baseUrl}/acme/${selectedLabel}/directory` : '';
+    const directoryUrl = selectedLabel && baseUrl ? `${baseUrl}/acme/${selectedLabel}/directory` : '';
 
     return (
         <div className="space-y-6">
@@ -116,6 +121,11 @@ const AcmeDirectory: React.FC = () => {
             )}
 
             {/* Directory endpoints */}
+            {overPlainHttp && directoryUrl && (
+                <p className="text-sm text-ink-muted">
+                    ACME is served over HTTPS only. Open this page over HTTPS to list the directory's endpoints.
+                </p>
+            )}
             {loading && <p className="text-sm text-ink-muted">Loading directory...</p>}
             {error && <p className="text-sm text-crit">{error}</p>}
 

@@ -11,6 +11,7 @@ import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { ocspStatus } from './ocspReadiness';
+import { advisoriesOf } from './protocolAdvisories';
 import InfrastructureProfiles from '../components/InfrastructureProfiles';
 
 function formatDate(d: string | null) {
@@ -175,12 +176,25 @@ const CaDetail: React.FC = () => {
                                 empty="No protocol configuration"
                                 disableExport
                                 columns={[
-                                    { key: 'protocol', header: 'Protocol', defaultWidth: 120, sortable: true, exportValue: (pc: any) => pc.protocol || pc.name, render: (pc: any) => <span className="text-ink">{pc.protocol || pc.name}</span> },
+                                    { key: 'protocol', header: 'Protocol', defaultWidth: 120, sortable: true, exportValue: (pc: any) => pc.protocol || pc.name, render: (pc: any) => (
+                                        <span className="text-ink">
+                                            {pc.protocol || pc.name}
+                                            {advisoriesOf(pc).length > 0 && <span className="ml-2 text-xs font-medium text-warn">Cannot run on this CA</span>}
+                                        </span>
+                                    ) },
                                     { key: 'enabled', header: 'Enabled', defaultWidth: 100, truncate: false, sortable: true, sortValue: (pc: any) => !!pc.enabled, exportValue: (pc: any) => (pc.enabled ? 'Yes' : 'No'), render: (pc: any) => <StatusBadge status={pc.enabled ? 'enabled' : 'disabled'} /> },
                                     { key: 'profile', header: 'Profile', flex: true, exportValue: (pc: any) => pc.signingProfileName || pc.signingProfile || pc.certProfile || '', render: (pc: any) => <span className="text-ink-muted truncate">{pc.signingProfileName || pc.signingProfile || pc.certProfile || '-'}</span> },
                                 ] as DataTableColumn<any>[]}
                             />
                         </div>
+                        {ca.protocolConfigs.flatMap((pc: any) => advisoriesOf(pc).map((a) => (
+                            <InlineNotice
+                                key={`${pc.protocol}-${a.reason}`}
+                                severity="warning"
+                                className="mt-2"
+                                notice={{ title: `${pc.protocol} cannot run on this CA`, detail: a.message, code: a.reason }}
+                            />
+                        )))}
                     </DetailSection>
                 )}
 

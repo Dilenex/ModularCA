@@ -91,9 +91,10 @@ export const adminCertificates: ApiEndpoint[] = [
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for retire-cert, issued for the serial' },
         ],
         responseDescription: 'serialNumber, retiredAt, retiredBy, retiredReason, expiryWarningDismissedAt and expiryWarningDismissedBy.',
-        notes: 'Not a revocation: CRLs and OCSP are unchanged. Afterwards the console, the user portal, the Infra API, auto-renewal and protocol renewals (EST re-enrollment and EST with the certificate as its credential, SCEP, CMP, Windows autoenrollment) all refuse to renew from it, with MCA-RES-008 or the CertificateRetired refusal; its subject needs a new enrollment. Needs cert.revoke on the issuing CA. 400 for a revoked certificate; repeating it changes nothing. Audited as CertificateRetired.',
+        notes: 'Not a revocation: CRLs and OCSP are unchanged. Afterwards the console, the user portal, the Infra API, auto-renewal and protocol renewals (EST re-enrollment and EST with the certificate as its credential, SCEP, CMP, Windows autoenrollment) all refuse to renew from it, with MCA-RES-008 or the CertificateRetired refusal; its subject needs a new enrollment. Because it stops every renewal path, the route asks step-up MFA: 403 { error, requiresStepUp: true, operation } without a valid token. Needs cert.revoke on the issuing CA. 400 for a revoked certificate; repeating it changes nothing. Audited as CertificateRetired.',
     },
     {
         method: 'DELETE',
@@ -103,9 +104,10 @@ export const adminCertificates: ApiEndpoint[] = [
         category: 'Admin Certificates',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup for undo-retire-cert, issued for the serial' },
         ],
         responseDescription: 'The same fields as retiring.',
-        notes: 'Audited as CertificateRetirementUndone.',
+        notes: 'Asks step-up MFA, as retiring does: 403 { error, requiresStepUp: true, operation } without a valid token. Audited as CertificateRetirementUndone.',
     },
     {
         method: 'POST',
@@ -117,7 +119,7 @@ export const adminCertificates: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'The same fields as retiring.',
-        notes: 'Auto-renewal, the console and protocol clients still renew it. Needs cert.revoke on the issuing CA; 400 for a revoked certificate. Audited as CertificateExpiryWarningDismissed.',
+        notes: 'Auto-renewal, the console and protocol clients still renew it. No step-up MFA is asked: only the warning changes. Needs cert.revoke on the issuing CA; 400 for a revoked certificate. Audited as CertificateExpiryWarningDismissed.',
     },
     {
         method: 'DELETE',

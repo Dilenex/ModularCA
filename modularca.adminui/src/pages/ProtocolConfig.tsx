@@ -12,20 +12,13 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { StepUpOps } from '@shared/generated';
 import { ToggleField, labelClass } from '@shared/components/forms';
+import { advisoriesOf, type ProtocolAdvisory } from './protocolAdvisories';
 
 // MSAE is Windows autoenrollment (MS-WSTEP over HTTPS). Its own fields are the two authentication
 // modes: username (WS-Security UsernameToken / HTTP Basic) and Kerberos, which needs a realm bound
 // on the space page.
 const PROTOCOLS = ['EST', 'SCEP', 'CMP', 'ACME', 'OCSP', 'MSAE'];
 const ACME_CHALLENGE_OPTIONS = ['http-01', 'dns-01', 'tls-alpn-01'];
-
-/** One reason a protocol configuration on this CA cannot work, as the API reports it. */
-interface ProtocolAdvisory {
-    /** A stable code, e.g. `ScepRequiresRsaKey`. */
-    reason: string;
-    /** The sentence to show the operator. */
-    message: string;
-}
 
 /**
  * The advisory for SCEP on an authority whose key is not RSA, written here for the card of a
@@ -146,7 +139,7 @@ const ProtocolConfig: React.FC = () => {
      * configured row, or the one we can tell without a row, SCEP on a non-RSA authority.
      */
     const advisoriesFor = (protocol: string, config: any): ProtocolAdvisory[] => {
-        if (config) return (config.advisories as ProtocolAdvisory[]) || [];
+        if (config) return advisoriesOf(config);
         if (protocol === 'SCEP' && caKeyAlgorithm && caKeyAlgorithm.toUpperCase() !== 'RSA')
             return [scepKeyAdvisory(caKeyAlgorithm)];
         return [];

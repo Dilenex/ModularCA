@@ -210,12 +210,13 @@ public sealed class NameConstraintIssuanceTests
                 name, "Acme", null, null, null, "US", "ECDSA", 256, 2, null, SpaceId,
                 nameConstraintsPermittedJson: permitted, nameConstraintsExcludedJson: excluded);
 
-        /// <summary>Stores an approved request for <paramref name="subject"/> and <paramref name="sans"/> (with <paramref name="sanOverrides"/> and <paramref name="subjectOverrides"/> as stored, when given, made under <paramref name="requestProfileId"/>) under the CA's own signing profile, and issues it.</summary>
+        /// <summary>Stores an approved request for <paramref name="subject"/> and <paramref name="sans"/> (with <paramref name="sanOverrides"/> and <paramref name="subjectOverrides"/> as stored, when given, made under <paramref name="requestProfileId"/>) under the CA's own signing profile, and issues it. The request is over a fresh P-256 key unless <paramref name="keys"/> names another, signed with <paramref name="csrSignatureAlgorithm"/>; the row records ECDSA P-256 either way.</summary>
         public Task<IssuanceResult> IssueLeafAsync(CertificateAuthorityEntity ca, string subject, string[] sans, string? sanOverrides = null,
-            Guid? requestProfileId = null, string? subjectOverrides = null)
+            Guid? requestProfileId = null, string? subjectOverrides = null,
+            Org.BouncyCastle.Crypto.AsymmetricCipherKeyPair? keys = null, string csrSignatureAlgorithm = "SHA256WITHECDSA")
         {
-            var keys = KeyAlgorithmPolicy.GenerateKeyPair("ECDSA", "P-256");
-            var csr = new Pkcs10CertificationRequest(new Asn1SignatureFactory("SHA256WITHECDSA", keys.Private, new SecureRandom()),
+            keys ??= KeyAlgorithmPolicy.GenerateKeyPair("ECDSA", "P-256");
+            var csr = new Pkcs10CertificationRequest(new Asn1SignatureFactory(csrSignatureAlgorithm, keys.Private, new SecureRandom()),
                 new X509Name(subject), keys.Public, null);
             using var sw = new StringWriter();
             new PemWriter(sw).WriteObject(csr);

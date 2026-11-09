@@ -104,7 +104,8 @@ export default function AdminUiGuide() {
                         auto-renewal or by its client.</li>
                     <li><span className="font-semibold">Retire</span>, on the certificate&apos;s page, also stops every
                         renewal from it: the console, the user portal, auto-renewal and protocol renewals refuse it, and its
-                        subject needs a new enrollment. Use it for a host or device that is gone.</li>
+                        subject needs a new enrollment. Use it for a host or device that is gone. Retire asks you to
+                        confirm with step-up MFA, and so does undoing it.</li>
                 </ul>
                 <p className="text-ink leading-relaxed mb-3">
                     Both need cert.revoke on the issuing CA, are audited, and can be undone from the certificate&apos;s page.
@@ -153,8 +154,16 @@ export default function AdminUiGuide() {
                     take a node that issues X.509 certificates out of service. <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">sshKeys</code> can
                     be null when the keys could not be read.
                 </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    The Enrollment Protocols card lists every enabled protocol configuration that cannot run on its CA, with the
+                    reason: today, SCEP on a CA whose key is not RSA. Such a configuration could be saved before the console
+                    refused it, and it is not switched off for you; SCEP clients sent to that CA are refused with the same reason.
+                    Turn it off under Protocol Configuration, or serve SCEP from an RSA CA. The CA&apos;s own page shows the
+                    reason beside the protocol.
+                </p>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /health/ready<br />
+                    GET /api/v1/admin/authorities/hierarchy<br />
                     GET /api/v1/admin/scheduler/health<br />
                     GET /api/v1/admin/certificates/health/summary
                 </div>

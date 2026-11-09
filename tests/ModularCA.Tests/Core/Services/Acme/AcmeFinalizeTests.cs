@@ -509,4 +509,146 @@ public class AcmeFinalizeTests
         Assert.False(audited.Success);
         Assert.Equal("ACME is not enabled for CA 'prod'.", audited.Error);
     }
+
+    /// <summary>
+    /// An order past its expiry is refused at finalize and goes invalid, whether or not the
+    /// cleanup sweep has reached it; it used to be issued if the sweep had not run yet.
+    /// </summary>
+    [Fact]
+    public async Task An_expired_order_is_refused_at_finalize_and_goes_invalid()
+    {
+        var h = Build();
+        var order = ReadyOrder(h);
+        order.ExpiresAt = DateTime.UtcNow.AddMinutes(-1);
+        await h.Db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => h.Service.FinalizeAsync(order.Id, CsrFor("device-01.example.com"), "https://ca.example.com", h.ProdCa));
+
+        Assert.Empty(h.Issuance.IssuedCsrIds);
+        Assert.Empty(await h.Db.CertificateRequests.ToListAsync());
+        Assert.Equal(nameof(AcmeOrderStatus.Invalid), (await h.Db.AcmeOrders.FindAsync(order.Id))!.Status);
+        var audited = Assert.Single(h.Audit.Entries);
+        Assert.Equal("FinalizeRefused", audited.Operation);
+        Assert.Contains("expired", audited.Error);
+    }
+
+    /// <summary>An authorization that has expired since it was validated refuses the finalize too.</summary>
+    [Fact]
+    public async Task An_order_with_an_expired_authorization_is_refused_at_finalize()
+    {
+        var h = Build();
+        var order = ReadyOrder(h);
+        h.Db.AcmeAuthorizations.Add(new AcmeAuthorizationEntity
+        {
+            OrderId = order.Id, IdentifierValue = "device-01.example.com",
+            Status = nameof(AcmeAuthorizationStatus.Valid), ExpiresAt = DateTime.UtcNow.AddMinutes(-1),
+        });
+        await h.Db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => h.Service.FinalizeAsync(order.Id, CsrFor("device-01.example.com"), "https://ca.example.com", h.ProdCa));
+
+        Assert.Empty(h.Issuance.IssuedCsrIds);
+        Assert.Contains("authorization", Assert.Single(h.Audit.Entries).Error);
+    }
+
+    /// <summary>
+    /// A refusal made before the shared middle runs (here a CSR naming an identifier the order
+    /// does not carry) writes one FinalizeRefused row; such refusals were audited nowhere.
+    /// </summary>
+    [Fact]
+    public async Task A_refusal_before_the_pipeline_is_audited_once()
+    {
+        var h = Build();
+        var order = ReadyOrder(h);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => h.Service.FinalizeAsync(order.Id, CsrFor("elsewhere.example.com"), "https://ca.example.com", h.ProdCa));
+
+        var audited = Assert.Single(h.Audit.Entries);
+        Assert.Equal("FinalizeRefused", audited.Operation);
+        Assert.False(audited.Success);
+        Assert.Equal(h.ProdCa.Id, audited.CaId);
+    }
+
+    /// <summary>
+    /// A key outside the system key policy is refused before CAA and the pipeline, as a
+    /// certificate-policy refusal the controller answers badPublicKey; the order goes invalid as
+    /// after any other finalize refusal, and one FinalizeRefused row names the rule.
+    /// </summary>
+    [Fact]
+    public async Task A_key_outside_the_system_policy_is_refused_before_the_pipeline_and_the_order_goes_invalid()
+    {
+        var h = Build();
+        var order = ReadyOrder(h);
+        using var key = RSA.Create(1024);
+        var request = new CertificateRequest("CN=device-01.example.com", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        var sans = new SubjectAlternativeNameBuilder();
+        sans.AddDnsName("device-01.example.com");
+        request.CertificateExtensions.Add(sans.Build());
+        var csr = Convert.ToBase64String(request.CreateSigningRequest()).Replace('+', '-').Replace('/', '_').TrimEnd('=');
+
+        var refusal = await Assert.ThrowsAsync<ModularCA.Shared.Errors.CertificatePolicyViolationException>(
+            () => h.Service.FinalizeAsync(order.Id, csr, "https://ca.example.com", h.ProdCa));
+
+        Assert.StartsWith("[KeyAlgorithmPolicy] The subject key (RSA 1024)", Assert.Single(refusal.Violations));
+        Assert.Empty(await h.Db.CertificateRequests.ToListAsync());
+        Assert.Empty(h.Issuance.IssuedCsrIds);
+        Assert.Equal(nameof(AcmeOrderStatus.Invalid), (await h.Db.AcmeOrders.FindAsync(order.Id))!.Status);
+        var audited = Assert.Single(h.Audit.Entries);
+        Assert.Equal("FinalizeRefused", audited.Operation);
+        Assert.Contains("KeyAlgorithmPolicy", audited.Error);
+    }
+
+    /// <summary>A finalize of an order that is not ready is refused and audited.</summary>
+    [Fact]
+    public async Task A_finalize_of_an_order_that_is_not_ready_is_audited()
+    {
+        var h = Build();
+        var order = ReadyOrder(h);
+        order.Status = nameof(AcmeOrderStatus.Pending);
+        await h.Db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => h.Service.FinalizeAsync(order.Id, CsrFor("device-01.example.com"), "https://ca.example.com", h.ProdCa));
+
+        Assert.Contains("not ready", Assert.Single(h.Audit.Entries).Error);
+    }
+
+    /// <summary>
+    /// A challenge whose authorization has expired is not validated, whether or not the sweep has
+    /// reached it, and the authorization is marked expired.
+    /// </summary>
+    [Fact]
+    public async Task A_challenge_of_an_expired_authorization_is_refused()
+    {
+        var h = Build();
+        var order = ReadyOrder(h);
+        var authz = new AcmeAuthorizationEntity
+        {
+            OrderId = order.Id, IdentifierValue = "device-01.example.com",
+            Status = nameof(AcmeAuthorizationStatus.Pending), ExpiresAt = DateTime.UtcNow.AddMinutes(-1),
+        };
+        var challenge = new AcmeChallengeEntity
+        {
+            AuthorizationId = authz.Id, Type = "http-01", Token = "tok",
+            Status = nameof(AcmeChallengeStatus.Pending),
+        };
+        h.Db.AcmeAuthorizations.Add(authz);
+        h.Db.AcmeChallenges.Add(challenge);
+        await h.Db.SaveChangesAsync();
+
+        var service = new AcmeChallengeService(h.Db,
+            ModularCA.Tests.Api.InstanceCeremonyEndpointTests.Fake<IHttpClientFactory>.Create(),
+            ModularCA.Tests.Api.InstanceCeremonyEndpointTests.Fake<Microsoft.Extensions.DependencyInjection.IServiceScopeFactory>.Create(),
+            ModularCA.Tests.Api.InstanceCeremonyEndpointTests.Fake<IAcmeAccountRateLimiter>.Create(),
+            h.Audit, new ModularCA.Shared.Models.Config.SystemConfig());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.RespondAsync(challenge.Id, "thumbprint", "https://ca.example.com"));
+
+        Assert.Equal(nameof(AcmeChallengeStatus.Pending), (await h.Db.AcmeChallenges.FindAsync(challenge.Id))!.Status);
+        Assert.Equal(nameof(AcmeAuthorizationStatus.Expired), (await h.Db.AcmeAuthorizations.FindAsync(authz.Id))!.Status);
+    }
 }

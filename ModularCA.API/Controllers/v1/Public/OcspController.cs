@@ -44,7 +44,7 @@ public class OcspController(IOcspService ocspService) : ControllerBase
 
         if (derRequest.Length == 0)
         {
-            MetricsService.OcspRequests.WithLabels("malformedRequest", caLabel ?? string.Empty).Inc();
+            MetricsService.OcspRequests.WithLabels("malformedRequest", string.Empty).Inc();
             MetricsService.ProtocolRequestsTotal.WithLabels("OCSP", "error").Inc();
             return BadRequest();
         }
@@ -63,7 +63,7 @@ public class OcspController(IOcspService ocspService) : ControllerBase
         var ct = HttpContext.RequestAborted;
         if (!OcspGetDecoder.TryDecode(encodedRequest, out var derRequest) || derRequest == null)
         {
-            MetricsService.OcspRequests.WithLabels("malformedRequest", caLabel ?? string.Empty).Inc();
+            MetricsService.OcspRequests.WithLabels("malformedRequest", string.Empty).Inc();
             MetricsService.ProtocolRequestsTotal.WithLabels("OCSP", "error").Inc();
             return BadRequest();
         }

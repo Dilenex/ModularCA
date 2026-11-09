@@ -81,7 +81,9 @@ public class AcmeChallengeService(
 
     /// <summary>
     /// Marks a pending challenge processing and validates it in the background; returns the
-    /// challenge object, its URL under the path of its order's CA.
+    /// challenge object, its URL under the path of its order's CA. Refuses, with
+    /// <see cref="InvalidOperationException"/>, a challenge whose authorization or order has
+    /// passed its expiry, and marks a still-pending authorization expired.
     /// </summary>
     public async Task<AcmeChallengeDto> RespondAsync(Guid challengeId, string accountThumbprint, string baseUrl)
     {
@@ -94,6 +96,20 @@ public class AcmeChallengeService(
 
         if (entity.Status != nameof(AcmeChallengeStatus.Pending))
             return MapToDto(entity, baseUrl);
+
+        // An authorization or order past its expiry is not validated, whether or not the cleanup
+        // sweep has reached it yet; the controller answers the refusal as malformed.
+        var now = DateTime.UtcNow;
+        if (entity.Authorization is { } authz
+            && (authz.ExpiresAt <= now || (authz.Order != null && authz.Order.ExpiresAt <= now)))
+        {
+            if (authz.Status == nameof(AcmeAuthorizationStatus.Pending))
+            {
+                authz.Status = nameof(AcmeAuthorizationStatus.Expired);
+                await _db.SaveChangesAsync();
+            }
+            throw new InvalidOperationException("The challenge's authorization or order has expired.");
+        }
 
         // Stamp AttemptCount + NextAttemptAt so the cleanup
         // reconciler can rescue challenges stuck in Processing after a crash.

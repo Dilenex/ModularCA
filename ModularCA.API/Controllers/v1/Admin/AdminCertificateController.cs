@@ -924,12 +924,14 @@ public class AdminCertificateController(
     /// <summary>
     /// Retires a certificate: it stays valid until it expires, raises no expiry warning, and is
     /// never renewed, reissued or re-enrolled from; its subject needs a new enrollment. Not a
-    /// revocation: CRLs and OCSP are unchanged. Repeating it changes nothing.
+    /// revocation: CRLs and OCSP are unchanged. Repeating it changes nothing. Requires step-up MFA
+    /// (<see cref="StepUpOps.RetireCert"/>, for the serial).
     /// </summary>
     /// <param name="serial">The certificate's serial number.</param>
     /// <param name="request">An optional reason, kept with the certificate and in the audit row.</param>
     [HttpPost("{serial}/retire")]
     [Authorize(Policy = "CaOperator")]
+    [RequireStepUp(StepUpOps.RetireCert, "serial")]
     public Task<IActionResult> RetireCertificate(string serial,
         [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] RetireCertificateRequest? request)
     {
@@ -944,10 +946,14 @@ public class AdminCertificateController(
         }, reason);
     }
 
-    /// <summary>Undoes <see cref="RetireCertificate"/>: the certificate can be renewed again and warns before it expires.</summary>
+    /// <summary>
+    /// Undoes <see cref="RetireCertificate"/>: the certificate can be renewed again and warns before
+    /// it expires. Requires step-up MFA (<see cref="StepUpOps.UndoRetireCert"/>, for the serial).
+    /// </summary>
     /// <param name="serial">The certificate's serial number.</param>
     [HttpDelete("{serial}/retire")]
     [Authorize(Policy = "CaOperator")]
+    [RequireStepUp(StepUpOps.UndoRetireCert, "serial")]
     public Task<IActionResult> UndoRetireCertificate(string serial)
         => ChangeExpiryHandlingAsync(serial, AuditActionType.CertificateRetirementUndone, (cert, _) =>
         {

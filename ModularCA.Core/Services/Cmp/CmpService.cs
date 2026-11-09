@@ -106,8 +106,8 @@ public class CmpService : ICmpService, IEnrollmentProtocol
     private const int FailBadRequest = 2;
     private const int FailBadTime = 3;
     private const int FailBadDataFormat = 5;
-    private const int FailNotAuthorized = 6;
     private const int FailBadPop = 9;
+    private const int FailNotAuthorized = 23;
     private const int FailSystemFailure = 25;
 
     private readonly ModularCADbContext _db;
@@ -175,6 +175,12 @@ public class CmpService : ICmpService, IEnrollmentProtocol
     {
         public string? SourceIp { get; init; }
         public string? CaLabel { get; init; }
+
+        /// <summary>The CA the exchange resolved to, which the audit rows of refused requests name.</summary>
+        public CertificateAuthorityEntity? Ca { get; init; }
+
+        /// <summary>The request's PKIBody type as the audit row names it (ir, cr, kur, rr, ...), once read.</summary>
+        public string? RequestType { get; set; }
 
         /// <summary>
         /// The message's transactionID, hex. Carried into the audit row as CMP's own correlation
@@ -263,8 +269,8 @@ public class CmpService : ICmpService, IEnrollmentProtocol
 
     public async Task<byte[]> ProcessRequestAsync(byte[] derRequest, string? caLabel = null, string? sourceIp = null)
     {
-        var reqCtx = new CmpRequestContext { SourceIp = sourceIp, CaLabel = caLabel };
         var context = await _caResolver.ResolveAsync(caLabel, "CMP");
+        var reqCtx = new CmpRequestContext { SourceIp = sourceIp, CaLabel = caLabel, Ca = context.Ca };
         var (caCert, caKey, signerIssuer) = await ResolveSignerForCaAsync(context)
             ?? throw new InvalidOperationException("No CA signer available for CMP.");
         reqCtx.SignerIssuerCert = signerIssuer;
@@ -276,12 +282,13 @@ public class CmpService : ICmpService, IEnrollmentProtocol
         }
         catch (Exception)
         {
-            return BuildErrorResponse(caCert, caKey, null, reqCtx, StatusRejection, FailBadDataFormat,
+            return await BuildErrorResponseAsync(caCert, caKey, null, reqCtx, StatusRejection, FailBadDataFormat,
                 "Invalid CMP PKIMessage encoding.");
         }
 
         var header = request.Header;
         var body = request.Body;
+        reqCtx.RequestType = BodyTypeName(body.Type);
 
         // MessageTime freshness window (±300s). Clients with clocks
         // drifting more than five minutes get FailBadTime so captured messages can't be
@@ -294,13 +301,13 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                 var skew = Math.Abs((DateTime.UtcNow - clientTime).TotalSeconds);
                 if (skew > 300)
                 {
-                    return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadTime,
+                    return await BuildErrorResponseAsync(caCert, caKey, header, reqCtx, StatusRejection, FailBadTime,
                         "messageTime outside the acceptable freshness window.");
                 }
             }
             catch
             {
-                return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadTime,
+                return await BuildErrorResponseAsync(caCert, caKey, header, reqCtx, StatusRejection, FailBadTime,
                     "messageTime could not be parsed.");
             }
         }
@@ -312,12 +319,12 @@ public class CmpService : ICmpService, IEnrollmentProtocol
         // both out replayed indefinitely. They are required here for every request.
         if (header.MessageTime == null)
         {
-            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadTime,
+            return await BuildErrorResponseAsync(caCert, caKey, header, reqCtx, StatusRejection, FailBadTime,
                 "messageTime is required (RFC 9483 section 3.1).");
         }
         if (header.TransactionID == null)
         {
-            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadRequest,
+            return await BuildErrorResponseAsync(caCert, caKey, header, reqCtx, StatusRejection, FailBadRequest,
                 "transactionID is required (RFC 9483 section 3.1).");
         }
 
@@ -328,7 +335,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
         // nonces outright.
         if (header.SenderNonce != null && header.SenderNonce.GetOctets().Length < 16)
         {
-            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
+            return await BuildErrorResponseAsync(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
                 "senderNonce must be at least 16 octets.");
         }
 
@@ -339,11 +346,27 @@ public class CmpService : ICmpService, IEnrollmentProtocol
         {
             reqCtx.ProtectionMode = CmpProtectionMode.PbMac;
 
+            var pbmProblem = PbmParametersProblem(header.ProtectionAlg.Parameters);
+            if (pbmProblem != null)
+            {
+                return await BuildErrorResponseAsync(caCert, caKey, header, reqCtx, StatusRejection, FailBadAlg,
+                    pbmProblem);
+            }
+
+            // CmpRequireSignature means "signature protection specifically", not merely "protected",
+            // so it is enforced here where the protection mode is known, and before the credential
+            // is looked up so a refused request does not spend one of its uses.
+            if (context.Ca == null || await CaRequiresCmpSignatureAsync(_db, context.Ca.Id))
+            {
+                return await BuildErrorResponseAsync(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
+                    "This CA requires signature-based CMP protection; PBMAC is not accepted.");
+            }
+
             // Lookup per-reference-value secret via enrollment tokens.
             var pbmVerified = await TryVerifyPbmAsync(header, request, body, context.Ca?.Id, caLabel, reqCtx);
             if (!pbmVerified)
             {
-                return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadRequest,
+                return await BuildErrorResponseAsync(caCert, caKey, header, reqCtx, StatusRejection, FailBadRequest,
                     "PBMAC verification failed — unknown reference value or invalid shared secret.");
             }
         }
@@ -359,13 +382,13 @@ public class CmpService : ICmpService, IEnrollmentProtocol
             var sigError = await VerifySignatureProtectionAsync(request, header, body, verificationCaCert, reqCtx);
             if (sigError != null)
             {
-                return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
+                return await BuildErrorResponseAsync(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
                     sigError);
             }
         }
         else if (header.ProtectionAlg != null)
         {
-            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
+            return await BuildErrorResponseAsync(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
                 "Message protection is required but verification failed.");
         }
         else
@@ -378,27 +401,8 @@ public class CmpService : ICmpService, IEnrollmentProtocol
             // remaining gate, which an attacker satisfies by signing the CertRequest with their own
             // key. The result was that an unauthenticated remote could POST an unprotected `ir` and
             // receive a certificate. RFC 4210 §5.1.3 requires protection; reject outright.
-            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
+            return await BuildErrorResponseAsync(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
                 "CMP messages must carry signature-based or password-based MAC protection (RFC 4210 5.1.3).");
-        }
-
-        // CmpRequireSignature means "signature protection specifically", not merely "protected".
-        // This is enforced here rather than in EnrollmentAuthorizationService because the concrete
-        // protection mode is only known at this layer — the authorization service receives a bare
-        // bool and a null client certificate, which is why its own check could never work.
-        if (reqCtx.ProtectionMode == CmpProtectionMode.PbMac)
-        {
-            var sigRequired = await _db.CaProtocolConfigs
-                .AsNoTracking()
-                .Where(c => c.Protocol == "CMP" && (reqCtx.CaLabel == null || c.Ca.Label == reqCtx.CaLabel))
-                .Select(c => (bool?)c.CmpRequireSignature)
-                .FirstOrDefaultAsync() ?? false;
-
-            if (sigRequired)
-            {
-                return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadMessageCheck,
-                    "This CA requires signature-based CMP protection; PBMAC is not accepted.");
-            }
         }
 
         // TransactionId replay protection. Reject duplicates for IR/CR/KUR.
@@ -406,7 +410,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
         var replayCheck = await PersistOrCheckTransactionAsync(header, body.Type, context.Ca?.Id, reqCtx);
         if (replayCheck != null)
         {
-            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadRequest,
+            return await BuildErrorResponseAsync(caCert, caKey, header, reqCtx, StatusRejection, FailBadRequest,
                 replayCheck);
         }
 
@@ -420,7 +424,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                 TypeRr => await HandleRevocationRequestAsync(body, header, caCert, caKey, reqCtx),
                 TypeCertConf => HandleCertConfirm(body, header, caCert, caKey, reqCtx),
                 TypeGenm => HandleGeneralMessage(header, caCert, caKey, reqCtx),
-                _ => BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailBadRequest,
+                _ => await BuildErrorResponseAsync(caCert, caKey, header, reqCtx, StatusRejection, FailBadRequest,
                     $"Unsupported PKIBody type: {body.Type}.")
             };
         }
@@ -429,7 +433,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
             // Never leak exception text to unauthenticated remotes.
             var correlationId = Guid.NewGuid().ToString("N")[..12];
             _logger.LogError(ex, "CMP processing failure [{CorrelationId}] caLabel={CaLabel}", correlationId, caLabel);
-            return BuildErrorResponse(caCert, caKey, header, reqCtx, StatusRejection, FailSystemFailure,
+            return await BuildErrorResponseAsync(caCert, caKey, header, reqCtx, StatusRejection, FailSystemFailure,
                 $"Certificate issuance failed; contact administrator (ref {correlationId})");
         }
         finally
@@ -440,6 +444,98 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                 System.Security.Cryptography.CryptographicOperations.ZeroMemory(reqCtx.PbmSecret);
                 reqCtx.PbmSecret = null;
             }
+        }
+    }
+
+    /// <summary>
+    /// Whether the CA a CMP exchange resolved to requires signature-based protection, read from
+    /// that CA's own CMP configuration row. A CA with no CMP row does not require it.
+    /// </summary>
+    /// <remarks>
+    /// This used to take the first CMP row in the database matching the label, with no CA id and,
+    /// on the label-less route, no filter at all, so a PBMAC request to a CA that requires
+    /// signatures was judged by another CA's setting.
+    /// </remarks>
+    /// <param name="db">The database.</param>
+    /// <param name="caId">The CA the exchange resolved to.</param>
+    internal static async Task<bool> CaRequiresCmpSignatureAsync(ModularCADbContext db, Guid caId)
+        => await db.CaProtocolConfigs
+            .AsNoTracking()
+            .Where(c => c.CaId == caId && c.Protocol == Protocol)
+            .Select(c => (bool?)c.CmpRequireSignature)
+            .FirstOrDefaultAsync() ?? false;
+
+    /// <summary>
+    /// One-way functions accepted for PBMAC key derivation: the SHA-2 family. The refusal text in
+    /// <see cref="PbmParametersProblem(AlgorithmIdentifier?, AlgorithmIdentifier?, int)"/> lists them.
+    /// </summary>
+    private static readonly HashSet<string> AllowedPbmOwfs =
+    [
+        "2.16.840.1.101.3.4.2.4", // SHA-224
+        "2.16.840.1.101.3.4.2.1", // SHA-256
+        "2.16.840.1.101.3.4.2.2", // SHA-384
+        "2.16.840.1.101.3.4.2.3", // SHA-512
+    ];
+
+    /// <summary>
+    /// MAC algorithms accepted for PBMAC: HMAC over the SHA-2 family, and HMAC-SHA1, which is
+    /// RFC 4210's own default and the default <c>openssl cmp -mac</c> sends. HMAC-SHA1 is not
+    /// weakened by SHA-1 collisions; anything else (HMAC-MD5, truncated or block-cipher MACs) is.
+    /// </summary>
+    private static readonly HashSet<string> AllowedPbmMacs =
+    [
+        "1.3.6.1.5.5.8.1.2",      // hMAC-SHA1 (RFC 4210, OpenSSL's default)
+        "1.2.840.113549.2.7",     // hmacWithSHA1
+        "1.2.840.113549.2.8",     // hmacWithSHA224
+        "1.2.840.113549.2.9",     // hmacWithSHA256
+        "1.2.840.113549.2.10",    // hmacWithSHA384
+        "1.2.840.113549.2.11",    // hmacWithSHA512
+    ];
+
+    /// <summary>
+    /// Highest PBMAC iteration count accepted. OpenSSL sends 500 and BouncyCastle 1000 by default,
+    /// and RFC 4211 section 4.4 suggests 1000. The limit bounds the hashing an unauthenticated
+    /// request can make the server do before the MAC is checked.
+    /// </summary>
+    internal const int MaxPbmIterations = 10_000;
+
+    /// <summary>
+    /// Why the PBMAC parameters a request carries are refused, or null when they are acceptable.
+    /// The client chooses them and the server does the work they describe before it knows who is
+    /// asking, so they are held to SHA-2 one-way functions, HMAC (see
+    /// <see cref="AllowedPbmMacs"/>) and an iteration count from 1 to <see cref="MaxPbmIterations"/>.
+    /// </summary>
+    /// <param name="owf">The one-way function the request names.</param>
+    /// <param name="mac">The MAC algorithm the request names.</param>
+    /// <param name="iterationCount">The iteration count the request names.</param>
+    internal static string? PbmParametersProblem(AlgorithmIdentifier? owf, AlgorithmIdentifier? mac, int iterationCount)
+    {
+        if (owf == null || !AllowedPbmOwfs.Contains(owf.Algorithm.Id))
+            return $"PBMAC one-way function {owf?.Algorithm.Id ?? "(none)"} is not accepted; use SHA-224, SHA-256, SHA-384 or SHA-512.";
+        if (mac == null || !AllowedPbmMacs.Contains(mac.Algorithm.Id))
+            return $"PBMAC MAC algorithm {mac?.Algorithm.Id ?? "(none)"} is not accepted; use HMAC with SHA-1, SHA-224, SHA-256, SHA-384 or SHA-512.";
+        if (iterationCount < 1 || iterationCount > MaxPbmIterations)
+            return $"PBMAC iteration count {iterationCount} is outside 1 to {MaxPbmIterations}.";
+        return null;
+    }
+
+    /// <summary>
+    /// <see cref="PbmParametersProblem(AlgorithmIdentifier?, AlgorithmIdentifier?, int)"/> for the
+    /// encoded PBMParameter a protectionAlg carries; unreadable parameters are a problem too.
+    /// </summary>
+    /// <param name="parameters">The protectionAlg's parameters.</param>
+    internal static string? PbmParametersProblem(Asn1Encodable? parameters)
+    {
+        try
+        {
+            var pbm = PbmParameter.GetInstance(parameters);
+            if (pbm == null)
+                return "PBMAC parameters are missing.";
+            return PbmParametersProblem(pbm.Owf, pbm.Mac, pbm.IterationCount.IntValueExact);
+        }
+        catch (Exception)
+        {
+            return "PBMAC parameters could not be read.";
         }
     }
 
@@ -460,9 +556,9 @@ public class CmpService : ICmpService, IEnrollmentProtocol
             var owf = pbmParam.Owf;
             var macAlg = pbmParam.Mac;
 
-            // Reject absurd iteration counts — protects against DoS via
-            // attacker-controlled iteration parameter.
-            if (iterCount < 1 || iterCount > 500_000)
+            // Answered with badAlg by the caller already; kept so this method never derives a key
+            // under parameters it was not meant to accept.
+            if (PbmParametersProblem(owf, macAlg, iterCount) != null)
                 return false;
 
             // Resolve candidate secret(s): senderKID → EnrollmentToken.CmpReferenceValue.
@@ -1032,7 +1128,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
 
         if (reqMsgs.Length == 0)
         {
-            return BuildErrorResponse(caCert, caKey, requestHeader, reqCtx, StatusRejection, FailBadRequest,
+            return await BuildErrorResponseAsync(caCert, caKey, requestHeader, reqCtx, StatusRejection, FailBadRequest,
                 "No certificate request messages in PKIBody.");
         }
 
@@ -1060,7 +1156,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                     var popFail = new PkiStatusInfo(
                         StatusRejection,
                         new PkiFreeText(new DerUtf8String(popError ?? "Invalid or missing Proof of Possession")),
-                        new PkiFailureInfo(popFailInfo));
+                        FailureInfo(popFailInfo));
                     responses.Add(new CertResponse(certReqId, popFail));
                     continue;
                 }
@@ -1076,7 +1172,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                 var failStatus = new PkiStatusInfo(
                     StatusRejection,
                     new PkiFreeText(new DerUtf8String($"Certificate issuance failed; contact administrator (ref {correlationId})")),
-                    new PkiFailureInfo(FailSystemFailure));
+                    FailureInfo(FailSystemFailure));
                 responses.Add(new CertResponse(certReqId, failStatus));
             }
         }
@@ -1492,7 +1588,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
         }
         catch (Exception)
         {
-            return BuildErrorResponse(caCert, caKey, requestHeader, reqCtx, StatusRejection, FailBadDataFormat,
+            return await BuildErrorResponseAsync(caCert, caKey, requestHeader, reqCtx, StatusRejection, FailBadDataFormat,
                 "Invalid revocation request content.");
         }
 
@@ -1500,7 +1596,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
 
         if (revDetails.Length == 0)
         {
-            return BuildErrorResponse(caCert, caKey, requestHeader, reqCtx, StatusRejection, FailBadRequest,
+            return await BuildErrorResponseAsync(caCert, caKey, requestHeader, reqCtx, StatusRejection, FailBadRequest,
                 "Empty revocation request — no RevDetails provided.");
         }
 
@@ -1519,7 +1615,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                     statusList.Add(new PkiStatusInfo(
                         StatusRejection,
                         new PkiFreeText(new DerUtf8String("Missing serial number in revocation request.")),
-                        new PkiFailureInfo(FailBadRequest)));
+                        FailureInfo(FailBadRequest)));
                     continue;
                 }
 
@@ -1533,7 +1629,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                     statusList.Add(new PkiStatusInfo(
                         StatusRejection,
                         new PkiFreeText(new DerUtf8String($"Certificate with serial {serialHex} not found.")),
-                        new PkiFailureInfo(FailBadRequest)));
+                        FailureInfo(FailBadRequest)));
                     continue;
                 }
 
@@ -1551,7 +1647,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                             StatusRejection,
                             new PkiFreeText(new DerUtf8String(
                                 $"Certificate issuer does not match this CA. Cannot revoke certificates issued by another CA.")),
-                            new PkiFailureInfo(FailBadRequest)));
+                            FailureInfo(FailBadRequest)));
                         continue;
                     }
                 }
@@ -1568,7 +1664,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                         StatusRejection,
                         new PkiFreeText(new DerUtf8String(
                             $"Certificate with serial {serialHex} was not issued by this CA.")),
-                        new PkiFailureInfo(FailBadRequest)));
+                        FailureInfo(FailBadRequest)));
                     continue;
                 }
 
@@ -1591,7 +1687,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                         StatusRejection,
                         new PkiFreeText(new DerUtf8String(
                             "Not authorized to revoke this certificate.")),
-                        new PkiFailureInfo(FailNotAuthorized)));
+                        FailureInfo(FailNotAuthorized)));
                     continue;
                 }
 
@@ -1602,7 +1698,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                         StatusRejection,
                         new PkiFreeText(new DerUtf8String(
                             $"Certificate with serial {serialHex} is already revoked.")),
-                        new PkiFailureInfo(FailBadRequest)));
+                        FailureInfo(FailBadRequest)));
                     continue;
                 }
 
@@ -1637,7 +1733,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                 statusList.Add(new PkiStatusInfo(
                     StatusRejection,
                     new PkiFreeText(new DerUtf8String($"Revocation failed; contact administrator (ref {correlationId})")),
-                    new PkiFailureInfo(FailSystemFailure)));
+                    FailureInfo(FailSystemFailure)));
             }
         }
 
@@ -1895,6 +1991,89 @@ public class CmpService : ICmpService, IEnrollmentProtocol
         }
     }
 
+    /// <summary>Audit message type recorded for a request answered with a CMP error message.</summary>
+    private const string ErrorOperation = "Error";
+
+    /// <summary>
+    /// Writes the CMP audit row for a request answered with an error message, then builds that
+    /// answer. These refusals (bad encoding, stale messageTime, failed protection, PBMAC refused,
+    /// replay, unsupported body) were answered on the wire and recorded nowhere, so the CMP tab
+    /// showed none of them.
+    /// </summary>
+    /// <remarks>
+    /// The row names the request's body type and the failInfo with the text the client received.
+    /// An audit failure is logged and does not change the answer.
+    /// </remarks>
+    private async Task<byte[]> BuildErrorResponseAsync(
+        X509Certificate caCert,
+        CmpSignerKey caKey,
+        PkiHeader? requestHeader,
+        CmpRequestContext reqCtx,
+        int pkiStatus,
+        int failInfo,
+        string errorText)
+    {
+        try
+        {
+            await _protocolAudit.LogCmpAsync(ErrorOperation, subjectDN: null, certSerial: null,
+                keyAlgorithm: null, keySize: null, reqCtx.Ca?.Label ?? reqCtx.CaLabel, reqCtx.TransactionIdHex,
+                revocationReason: null, reqCtx.SourceIp,
+                success: false, errorMessage: $"{reqCtx.RequestType ?? "unreadable message"}: {errorText} ({FailInfoName(failInfo)})",
+                certificateAuthorityId: reqCtx.Ca?.Id, spaceId: reqCtx.Ca?.SpaceId,
+                callerPrincipal: reqCtx.CallerPrincipal);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "CMP error-response audit failed for CA {CaLabel}", reqCtx.CaLabel);
+        }
+
+        return BuildErrorResponse(caCert, caKey, requestHeader, reqCtx, pkiStatus, failInfo, errorText);
+    }
+
+    /// <summary>
+    /// A PKIFailureInfo with the one named bit set, numbered as RFC 4210 section 5.2.3 numbers
+    /// them (badAlg is 0, systemFailure 25).
+    /// </summary>
+    /// <remarks>
+    /// BouncyCastle's <c>PkiFailureInfo(int)</c> takes its own bit mask (<c>PkiFailureInfo.BadAlg</c>
+    /// is <c>1 &lt;&lt; 7</c>), not a bit number, so passing the RFC numbers to it put the wrong bits on
+    /// the wire: badRequest went out as wrongAuthority and badAlg as no bit at all.
+    /// </remarks>
+    /// <param name="bit">The RFC 4210 bit number.</param>
+    internal static PkiFailureInfo FailureInfo(int bit)
+    {
+        var bytes = new byte[bit / 8 + 1];
+        bytes[bit / 8] = (byte)(0x80 >> (bit % 8));
+        return new PkiFailureInfo(new DerBitString(bytes, 7 - bit % 8));
+    }
+
+    /// <summary>The RFC 4210 name of a request's PKIBody type, for the audit row.</summary>
+    private static string BodyTypeName(int type) => type switch
+    {
+        TypeIr => "ir",
+        TypeCr => "cr",
+        TypeKur => "kur",
+        TypeRr => "rr",
+        TypeCertConf => "certConf",
+        TypeGenm => "genm",
+        _ => $"body type {type}",
+    };
+
+    /// <summary>The RFC 4210 name of a PKIFailureInfo bit this responder sends.</summary>
+    private static string FailInfoName(int failInfo) => failInfo switch
+    {
+        FailBadAlg => "badAlg",
+        FailBadMessageCheck => "badMessageCheck",
+        FailBadRequest => "badRequest",
+        FailBadTime => "badTime",
+        FailBadDataFormat => "badDataFormat",
+        FailNotAuthorized => "notAuthorized",
+        FailBadPop => "badPOP",
+        FailSystemFailure => "systemFailure",
+        _ => $"failInfo {failInfo}",
+    };
+
+    /// <summary>Builds the CMP error message itself; see <see cref="BuildErrorResponseAsync"/>.</summary>
     private byte[] BuildErrorResponse(
         X509Certificate caCert,
         CmpSignerKey caKey,
@@ -1907,7 +2086,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
         var statusInfo = new PkiStatusInfo(
             pkiStatus,
             new PkiFreeText(new DerUtf8String(errorText)),
-            new PkiFailureInfo(failInfo));
+            FailureInfo(failInfo));
 
         var errorMsgContent = new ErrorMsgContent(statusInfo);
         var responseBody = new PkiBody(TypeError, errorMsgContent);

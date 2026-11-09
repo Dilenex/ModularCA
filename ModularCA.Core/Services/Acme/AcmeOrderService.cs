@@ -144,9 +144,11 @@ public class AcmeOrderService(
     }
 
     /// <summary>
-    /// Finalizes an ACME order: decodes the CSR, holds it to the identifiers the order
-    /// authorized, checks CAA, runs the shared enrollment middle, and moves the order to valid or
-    /// invalid on what came back.
+    /// Finalizes an ACME order: refuses an order that, or whose authorizations, have expired,
+    /// decodes the CSR, holds it to the identifiers the order authorized and its key to the system
+    /// key policy, checks CAA, runs the shared enrollment middle, and moves the order to valid or
+    /// invalid on what came back. Every refusal leaves one <c>FinalizeRefused</c> row on the ACME
+    /// audit tab.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -160,9 +162,16 @@ public class AcmeOrderService(
     /// <para>
     /// Every refusal below reaches the client as one RFC 8555 problem document, because that is
     /// what the controller has always rendered a failed finalize as: 403 with type
-    /// <c>urn:ietf:params:acme:error:orderNotReady</c> and a fixed detail. The sentence a refusal
-    /// carries is for the log and the ACME audit tab, and the order state machine is what the
-    /// client reads instead.
+    /// <c>urn:ietf:params:acme:error:orderNotReady</c> and a fixed detail. The exception is a
+    /// <see cref="ModularCA.Shared.Errors.CertificatePolicyViolationException"/>, a key or CSR the
+    /// certificate policy refuses, which the controller answers 400 <c>badPublicKey</c> or
+    /// <c>badCSR</c>. The sentence a refusal carries is for the log and the ACME audit tab, and
+    /// the order state machine is what the client reads instead.
+    /// </para>
+    /// <para>
+    /// Every refusal after the order moved to processing, the key policy included, leaves the
+    /// order invalid (RFC 8555 section 7.4 lets the server fail an order whose CSR it will not
+    /// accept); the client places a new order with an acceptable key.
     /// </para>
     /// </remarks>
     public async Task<AcmeOrderDto> FinalizeAsync(Guid orderId, string csrBase64Url, string baseUrl, CertificateAuthorityEntity addressedCa)
@@ -171,12 +180,34 @@ public class AcmeOrderService(
         var order = await _db.AcmeOrders.FindAsync(orderId)
             ?? throw new InvalidOperationException("Order not found.");
 
+        // The cleanup sweep moves expired orders to invalid, but only when it next runs; an order
+        // past its expiry, or one whose authorizations are, is refused here whatever the sweep has
+        // done (RFC 8555 section 7.1.3: an expired order is invalid).
+        var now = DateTime.UtcNow;
+        var expiry = await ExpiryRefusalAsync(order, now);
+        if (expiry != null)
+        {
+            if (order.Status is nameof(AcmeOrderStatus.Pending) or nameof(AcmeOrderStatus.Ready))
+            {
+                order.Status = nameof(AcmeOrderStatus.Invalid);
+                await _db.SaveChangesAsync();
+            }
+            await AuditFinalizeRefusalAsync(order, addressedCa, expiry);
+            throw new InvalidOperationException(expiry);
+        }
+
         if (order.Status != nameof(AcmeOrderStatus.Ready))
-            throw new InvalidOperationException($"Order is not ready for finalization. Current status: {order.Status}");
+        {
+            var notReady = $"Order is not ready for finalization. Current status: {order.Status}";
+            await AuditFinalizeRefusalAsync(order, addressedCa, notReady);
+            throw new InvalidOperationException(notReady);
+        }
 
         order.Status = nameof(AcmeOrderStatus.Processing);
         await _db.SaveChangesAsync();
 
+        // Set once the pipeline has written its own row, so a refusal is audited exactly once.
+        var pipelineAudited = false;
         try
         {
             // Decode the base64url CSR to DER, then convert to PEM
@@ -203,6 +234,11 @@ public class AcmeOrderService(
             // Validate that the CSR identifiers match the order identifiers
             var orderIdentifiers = JsonSerializer.Deserialize<List<AcmeIdentifier>>(order.IdentifiersJson) ?? [];
             ValidateCsrAgainstOrder(parsedCsr, orderIdentifiers);
+
+            // The system key policy, before CAA and the pipeline; issuance checks it again.
+            KeyAlgorithmPolicy.EnsureSubjectKeyAllowed(
+                Org.BouncyCastle.Security.PublicKeyFactory.CreateKey(parsedCsr.PublicKeyDer
+                    ?? throw new InvalidOperationException("The CSR carries no public key.")));
 
             // CAA record check (RFC 8659 / RFC 8555 §7.4.2)
             foreach (var identifier in orderIdentifiers)
@@ -240,7 +276,11 @@ public class AcmeOrderService(
                     SignatureAlgorithm = parsedCsr.SignatureAlgorithm,
                 },
                 CommonNameIfProfileRequiresOne = CommonNameFromSans(parsedCsr.SubjectAlternativeNames),
-                Audit = record => WriteAcmeAuditAsync(record, order, addressedCa),
+                Audit = record =>
+                {
+                    pipelineAudited = true;
+                    return WriteAcmeAuditAsync(record, order, addressedCa);
+                },
             };
 
             var outcome = await _pipeline.SubmitAsync(submission);
@@ -288,15 +328,47 @@ public class AcmeOrderService(
             order.Status = nameof(AcmeOrderStatus.Valid);
             await _db.SaveChangesAsync();
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             order.Status = nameof(AcmeOrderStatus.Invalid);
             await _db.SaveChangesAsync();
+            // A refusal before the pipeline ran (wrong CA, a CSR naming identifiers the order does
+            // not carry, CAA, an unreadable CSR) was audited nowhere.
+            if (!pipelineAudited)
+                await AuditFinalizeRefusalAsync(order, addressedCa, ex.Message);
             throw;
         }
 
         return await BuildOrderDto(order, baseUrl);
     }
+
+    /// <summary>
+    /// Why an order can no longer be finalized because it, or one of its authorizations, has
+    /// passed its expiry; null when neither has.
+    /// </summary>
+    /// <param name="order">The order being finalized.</param>
+    /// <param name="now">The current time, UTC.</param>
+    private async Task<string?> ExpiryRefusalAsync(AcmeOrderEntity order, DateTime now)
+    {
+        if (order.ExpiresAt <= now)
+            return $"Order expired at {order.ExpiresAt:u}.";
+        var authzExpired = await _db.AcmeAuthorizations.AsNoTracking()
+            .AnyAsync(a => a.OrderId == order.Id && a.ExpiresAt <= now);
+        return authzExpired ? "An authorization of this order has expired." : null;
+    }
+
+    /// <summary>
+    /// Writes the ACME tab's <c>FinalizeRefused</c> row for a refusal the shared middle did not
+    /// make (and so did not audit), under the CA the finalize addressed.
+    /// </summary>
+    /// <param name="order">The order being finalized.</param>
+    /// <param name="ca">The CA the finalize addressed.</param>
+    /// <param name="reason">The refusal, for the operator; the client sees a fixed detail.</param>
+    private Task AuditFinalizeRefusalAsync(AcmeOrderEntity order, CertificateAuthorityEntity ca, string reason)
+        => _protocolAudit.LogAcmeAsync("FinalizeRefused", order.AccountId, order.Id,
+            null, null, order.IdentifiersJson, null, null,
+            success: false, errorMessage: reason,
+            caLabel: ca.Label, certificateAuthorityId: ca.Id, spaceId: ca.SpaceId);
 
     /// <summary>
     /// Writes the shared audit fields the pipeline supplies as an ACME row, against the order the

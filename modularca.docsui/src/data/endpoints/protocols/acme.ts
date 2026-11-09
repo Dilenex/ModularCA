@@ -8,6 +8,7 @@ export const acme: ApiEndpoint[] = [
         auth: 'Anonymous',
         category: 'ACME',
         responseDescription: 'ACME directory object with newNonce, newAccount, newOrder URLs.',
+        notes: 'ACME is served over HTTPS only. From 0.4.3 a plain HTTP request to any ACME path (/acme/... or /api/v1/acme/...) is redirected with 308 to HTTPS on the public domain, so configure clients with the https:// directory URL. The http-01 challenge itself is unaffected: the CA still fetches http://{identifier}/.well-known/acme-challenge/{token} on port 80.',
     },
     {
         method: 'GET',
@@ -64,6 +65,7 @@ export const acme: ApiEndpoint[] = [
         auth: 'ACME JWS',
         category: 'ACME',
         responseDescription: 'Finalized order with certificate URL.',
+        notes: 'An order past its expiry, or one with an expired authorization, is refused (403 orderNotReady) and moved to invalid, whether or not the cleanup sweep has reached it. From 0.4.3 a CSR whose key the key policy refuses (MCA-POL-000: RSA 2048, 3072, 4096, 7680 or 8192, ECDSA P-256, P-384 or P-521, Ed25519, Ed448, ML-DSA or SLH-DSA are accepted; or below CertPolicy.MinRsaKeySize) is answered 400 badPublicKey, and a CSR another certificate-policy rule refuses 400 badCSR; before, both were 403 orderNotReady. The order is invalid after either, as after every other finalize refusal (RFC 8555 section 7.4), so the client places a new order. Every refusal writes a FinalizeRefused row on the ACME tab of the audit log with the reason; the client sees a fixed detail.',
     },
     {
         method: 'POST',
@@ -80,6 +82,7 @@ export const acme: ApiEndpoint[] = [
         auth: 'ACME JWS',
         category: 'ACME',
         responseDescription: 'Revocation confirmation.',
+        notes: 'Every refusal (a certificate not issued over ACME, one issued to another account, a reason an account holder may not set, an unreadable request) writes a RevokeRefused row on the ACME tab of the audit log.',
     },
     {
         method: 'POST',
@@ -96,5 +99,6 @@ export const acme: ApiEndpoint[] = [
         auth: 'ACME JWS',
         category: 'ACME',
         responseDescription: 'Challenge status.',
+        notes: 'A challenge whose authorization or order has passed its expiry is refused with 400 malformed and is not validated; a pending authorization is marked expired.',
     },
 ];

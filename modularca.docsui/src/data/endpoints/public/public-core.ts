@@ -7,7 +7,7 @@ export const publicCore: ApiEndpoint[] = [
         summary: 'Return the operator-configured public domain and canonical HTTPS base URL for clients that need to display URLs behind a reverse proxy.',
         auth: 'Anonymous',
         category: 'Public',
-        responseDescription: 'JSON { publicDomain, publicHttpsBaseUrl }. Falls back to the request scheme/host when PublicDomain is unset.',
+        responseDescription: 'JSON { publicDomain, publicHttpsBaseUrl, enabledProtocols, sourceCodeUrl, license }. publicHttpsBaseUrl is always an https:// URL. When PublicDomain is unset it is the request host: as requested over HTTPS, and over plain HTTP the HTTPS origin a plain-HTTP request is redirected to (the HTTPS listener port on the same host). Before 0.4.3 a plain-HTTP request without PublicDomain was answered with an http:// base.',
     },
     {
         method: 'GET',

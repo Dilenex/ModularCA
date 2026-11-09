@@ -195,4 +195,49 @@ public class OcspResponderReadinessTests
 
         Assert.Equal(new[] { wanted }, states.Keys);
     }
+
+    /// <summary>
+    /// A responder certificate carrying the CA's name as issuer but signed by another key: every
+    /// other rule passes it, and the responder used to sign with it. RFC 6960 section 4.2.2.2
+    /// authorizes only a responder the CA issued.
+    /// </summary>
+    private static X509Certificate ForgedResponder(TestCaMaterial ca)
+    {
+        var other = TestCaMaterial.CreateCa("CN=Somebody Else, O=Elsewhere");
+        var gen = new X509V3CertificateGenerator();
+        gen.SetSerialNumber(BigInteger.ValueOf(Random.Shared.NextInt64(2, long.MaxValue)));
+        gen.SetIssuerDN(new X509Name(ca.SubjectDn));
+        gen.SetSubjectDN(new X509Name("CN=Test OCSP Responder"));
+        gen.SetNotBefore(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        gen.SetNotAfter(new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        gen.SetPublicKey(other.KeyPair.Public);
+        gen.AddExtension(X509Extensions.ExtendedKeyUsage, false, new ExtendedKeyUsage(KeyPurposeID.id_kp_OCSPSigning));
+        gen.AddExtension(NoCheck, false, DerNull.Instance);
+        return gen.Generate(new Asn1SignatureFactory("SHA256WITHRSA", other.KeyPair.Private, new SecureRandom()));
+    }
+
+    [Fact]
+    public void A_responder_the_ca_did_not_sign_is_named_as_the_problem()
+    {
+        var ca = TestCaMaterial.CreateCa();
+        var forged = ForgedResponder(ca);
+
+        Assert.Null(OcspResponderRules.Problem(forged, requireNoCheck: true, Now));
+        Assert.Contains("does not verify", OcspResponderRules.IssuerProblem(forged, ca.Certificate));
+        Assert.Null(OcspResponderRules.IssuerProblem(Responder(ca), ca.Certificate));
+        Assert.Contains("not issued by this CA",
+            OcspResponderRules.IssuerProblem(Responder(TestCaMaterial.CreateCa("CN=Other CA")), ca.Certificate));
+    }
+
+    [Fact]
+    public async Task A_ca_pointing_at_a_responder_it_did_not_sign_is_reported()
+    {
+        var db = InMemoryDbContextFactory.Create($"ocsp-ready-{Guid.NewGuid():N}");
+        var ca = TestCaMaterial.CreateCa();
+        var id = SeedCa(db, ca, "forged", () => Row(ForgedResponder(ca), isCa: false));
+
+        var states = await Readiness(db).AssessAsync();
+
+        Assert.Contains("does not verify", states[id].Problem);
+    }
 }

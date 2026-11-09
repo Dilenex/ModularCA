@@ -64,6 +64,28 @@ public sealed class TimestampServiceTests
     }
 
     /// <summary>
+    /// A SHA-1 message imprint is refused with badAlg (RFC 3161 section 2.4.2) and nothing is
+    /// signed: a token over a SHA-1 imprint attests to every document that collides with it.
+    /// </summary>
+    [Fact]
+    public async Task A_sha1_message_imprint_is_refused_with_bad_alg()
+    {
+        var world = SignerTestWorld.Create();
+        var signer = TestSigner.Over(world.Keystore, world.DatabaseName);
+        using var db = world.OpenDb();
+        var service = new TimestampService(db, NullLogger<TimestampService>.Instance, signer);
+
+        var request = new TimeStampRequestGenerator().Generate(TspAlgorithms.Sha1, new byte[20], BigInteger.ValueOf(3));
+
+        var response = new TimeStampResponse(await service.ProcessTimestampRequestAsync(request.GetEncoded(), "signer-test-rsa"));
+
+        Assert.Equal(2, response.Status); // rejection
+        Assert.Null(response.TimeStampToken);
+        Assert.Equal(Org.BouncyCastle.Asn1.Cmp.PkiFailureInfo.BadAlg, response.GetFailInfo().IntValue);
+        Assert.Empty(await ReadAuditAsync(world));
+    }
+
+    /// <summary>
     /// The label-less TSA answers only as a CA marked default. Round one's deterministic default
     /// resolution let it fall back to whichever CA sorted first by name when none was marked, so
     /// a CA the operator never chose signed timestamp tokens; before that, it required a default.

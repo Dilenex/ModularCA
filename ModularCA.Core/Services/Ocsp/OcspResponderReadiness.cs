@@ -45,6 +45,27 @@ public static class OcspResponderRules
 
         return null;
     }
+
+    /// <summary>
+    /// Why <paramref name="responder"/> cannot sign for <paramref name="ca"/> because the CA did
+    /// not issue it, or null when it did: its issuer must be the CA's subject and its signature
+    /// must verify under the CA's public key. RFC 6960 section 4.2.2.2 authorizes a delegated
+    /// responder only when it is issued directly by the CA whose certificates it answers for.
+    /// </summary>
+    public static string? IssuerProblem(X509Certificate responder, X509Certificate ca)
+    {
+        if (!responder.IssuerDN.Equivalent(ca.SubjectDN))
+            return "The responder certificate was not issued by this CA.";
+        try
+        {
+            responder.Verify(ca.GetPublicKey());
+        }
+        catch (Exception)
+        {
+            return "The responder certificate's signature does not verify under this CA's key.";
+        }
+        return null;
+    }
 }
 
 /// <summary>How one CA answers OCSP, and what stops it when it cannot.</summary>
@@ -72,8 +93,8 @@ public interface IOcspResponderReadiness
 }
 
 /// <summary>
-/// Reads the same rows and applies the same certificate rules as the responder, without asking
-/// the signer anything, so it is cheap enough to run for every CA on a page load. It therefore
+/// Reads the same rows and applies the same certificate rules as the responder (the responder
+/// certificate's usage, window and that the CA issued it), without asking the signer anything, so it is cheap enough to run for every CA on a page load. It therefore
 /// does not see a responder key the signer has lost; the keystore checks report that.
 /// </summary>
 public sealed class OcspResponderReadiness(
@@ -96,6 +117,7 @@ public sealed class OcspResponderReadiness(
                 ca.OcspResponderCertificateId,
                 CaRevoked = ca.Certificate != null && ca.Certificate.Revoked,
                 CaNotAfter = ca.Certificate != null ? ca.Certificate.NotAfter : (DateTime?)null,
+                CaPem = ca.Certificate != null ? ca.Certificate.Pem : null,
             })
             .ToListAsync(ct);
 
@@ -148,7 +170,9 @@ public sealed class OcspResponderReadiness(
             {
                 try
                 {
-                    problem = OcspResponderRules.Problem(CertificateUtil.ParseFromPem(row.Pem), policy.RequireNoCheckExtension, now);
+                    var responder = CertificateUtil.ParseFromPem(row.Pem);
+                    problem = OcspResponderRules.Problem(responder, policy.RequireNoCheckExtension, now)
+                        ?? (ca.CaPem != null ? OcspResponderRules.IssuerProblem(responder, CertificateUtil.ParseFromPem(ca.CaPem)) : null);
                 }
                 catch (Exception)
                 {

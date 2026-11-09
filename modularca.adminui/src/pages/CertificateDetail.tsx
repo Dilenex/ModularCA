@@ -3,7 +3,7 @@ import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { Link, useParams, useNavigate } from 'react-router-dom';
-import { apiGet, apiPost, apiDelete, apiPostWithMfa, apiBlob } from '../api/client';
+import { apiGet, apiPost, apiDelete, apiPostWithMfa, apiDeleteWithMfa, apiBlob } from '../api/client';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
@@ -210,16 +210,19 @@ const CertificateDetail: React.FC = () => {
             setRetireOpen(false);
             setRefresh((r) => r + 1);
         } catch (err: any) {
-            setHandlingError(errorNotice(err, 'The change was not saved'));
+            if (err?.message !== 'Step-up MFA cancelled') setHandlingError(errorNotice(err, 'The change was not saved'));
         } finally {
             setHandlingBusy(false);
         }
     };
+    // Retire and undo stop or restart every renewal path, so they ask for step-up; dismiss and restore do not.
     const retire = () => changeExpiryHandling(
-        () => apiPost(`/api/v1/admin/certificates/${serial}/retire`, { reason: retireReason.trim() || null }),
+        () => apiPostWithMfa(`/api/v1/admin/certificates/${serial}/retire`, { reason: retireReason.trim() || null },
+            requireStepUp, StepUpOps.RetireCert, serial!),
         'Certificate retired. It is no longer renewed and raises no expiry warning.');
     const undoRetire = () => changeExpiryHandling(
-        () => apiDelete(`/api/v1/admin/certificates/${serial}/retire`), 'Retirement undone. The certificate can be renewed again.');
+        () => apiDeleteWithMfa(`/api/v1/admin/certificates/${serial}/retire`, requireStepUp, StepUpOps.UndoRetireCert, serial!),
+        'Retirement undone. The certificate can be renewed again.');
     const dismissWarning = () => changeExpiryHandling(
         () => apiPost(`/api/v1/admin/certificates/${serial}/expiry-warning/dismiss`, {}), 'Expiry warning dismissed.');
     const restoreWarning = () => changeExpiryHandling(

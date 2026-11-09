@@ -270,4 +270,44 @@ public class AcmeAccountBindingTests
         var f = Seed();
         Assert.Null(await DefaultCaCheck.WarningAsync(f.Db));
     }
+
+    /// <summary>
+    /// RFC 8555 §7.3.6 (bug hunt 2026-11, F2): a deactivated or revoked account is refused on
+    /// every account-signed request, at its own CA too. Status used to be checked only on account
+    /// update and key change, so deactivating an account whose key had leaked stopped nothing.
+    /// </summary>
+    [Theory]
+    [InlineData("Deactivated")]
+    [InlineData("Revoked")]
+    public async Task An_account_that_is_no_longer_valid_is_refused_at_its_own_ca(string status)
+    {
+        var f = Seed();
+        var account = await AccountAtAsync(f.Db, f.OpenCa.Id);
+        (await f.Db.AcmeAccounts.FindAsync(account))!.Status = status;
+        await f.Db.SaveChangesAsync();
+
+        var (refusal, _) = await RunFilterAsync(f.Db, account, "open");
+
+        Assert.NotNull(refusal);
+        Assert.Equal(403, refusal!.StatusCode);
+        var error = Assert.IsType<AcmeErrorResponse>(refusal.Value);
+        Assert.Equal("urn:ietf:params:acme:error:unauthorized", error.Type);
+    }
+
+    /// <summary>
+    /// new-account answers the lookup of an existing key itself, with its own refusal for a
+    /// deactivated account, so the filter lets it through to the controller.
+    /// </summary>
+    [Fact]
+    public async Task New_account_leaves_a_deactivated_accounts_lookup_to_the_controller()
+    {
+        var f = Seed();
+        var account = await AccountAtAsync(f.Db, f.OpenCa.Id);
+        (await f.Db.AcmeAccounts.FindAsync(account))!.Status = "Deactivated";
+        await f.Db.SaveChangesAsync();
+
+        var (refusal, _) = await RunFilterAsync(f.Db, account, "open", newAccount: true);
+
+        Assert.Null(refusal);
+    }
 }

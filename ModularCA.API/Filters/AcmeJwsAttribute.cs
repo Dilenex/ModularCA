@@ -75,8 +75,14 @@ public class AcmeJwsActionFilter(
         "This account is not bound to a CA. Post new-account with the account key to the directory of the CA it "
         + "should use; that binds it.";
 
+    /// <summary>The detail of the refusal of a request signed by a deactivated or revoked account.</summary>
+    public const string AccountNotValid =
+        "This account is deactivated or revoked and can no longer be used (RFC 8555 §7.3.6). Register a new account "
+        + "with a new key.";
+
     /// <summary>
-    /// Verifies the JWS, resolves the signing account, and decides which CA the request addresses.
+    /// Verifies the JWS, resolves the signing account, refuses a request signed by an account that
+    /// is no longer valid, and decides which CA the request addresses.
     /// A request signed by an account addresses the CA the account is bound to: on the label-less
     /// routes that CA, whatever the default is now, and on a labelled route only when the label
     /// names it; any other CA is refused (403 <c>unauthorized</c>). That covers new-order,
@@ -159,6 +165,26 @@ public class AcmeJwsActionFilter(
                 return;
             }
             jws.AccountId = existing.Id;
+        }
+
+        // RFC 8555 §7.3.6: a server refuses every request signed by a deactivated account. Status
+        // used to be checked only on account update and key change, so after an owner deactivated
+        // an account whose key they believed compromised, whoever held the key could still order,
+        // finalize, answer challenges and revoke. new-account answers an existing key's lookup
+        // itself (with the same refusal), so it is left to the controller.
+        if (jws.AccountId is Guid signer && !allowNewAccount)
+        {
+            var account = await accountService.GetByIdAsync(signer);
+            if (account == null)
+            {
+                context.Result = AcmeError(400, "urn:ietf:params:acme:error:accountDoesNotExist", "Account not found.");
+                return;
+            }
+            if (!string.Equals(account.Status, nameof(ModularCA.Shared.Enums.AcmeAccountStatus.Valid), StringComparison.OrdinalIgnoreCase))
+            {
+                context.Result = AcmeError(403, "urn:ietf:params:acme:error:unauthorized", AccountNotValid);
+                return;
+            }
         }
 
         var routeLabel = context.HttpContext.Request.RouteValues["caLabel"] as string;
