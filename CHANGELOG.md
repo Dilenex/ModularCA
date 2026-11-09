@@ -199,6 +199,9 @@ ones left for 0.4.4, are in `docs/plans/bug-hunt-2026-11.md`.
   answered a wrong code with 401, which the console reads as the end of the session, so a typo
   during first-time setup or on the security page signed the user out. It now answers 400 and the
   form asks again.
+- **The signer no longer watches its JSON configuration files.** It is configured from YAML, but
+  its web host still put an inotify watch on `appsettings.json`, using up one of the 128 a Linux
+  user gets by default. It now reads them once.
 
 ### Security
 

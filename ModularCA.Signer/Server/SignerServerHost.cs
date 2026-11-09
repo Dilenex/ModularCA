@@ -63,9 +63,15 @@ public static class SignerServerHost
     /// <summary>The route the health report is served on, over the same mutually authenticated listener.</summary>
     public const string HealthPath = "/health";
 
+    /// <summary>The host-configuration argument that keeps the default JSON configuration files unwatched.</summary>
+    internal const string NoConfigReloadArgument = "--hostBuilder:reloadConfigOnChange=false";
+
     /// <summary>
     /// Builds the host. <paramref name="configure"/> runs after Kestrel and gRPC are configured
     /// and before the application is built, and must register an <see cref="ISigningService"/>.
+    /// The default <c>appsettings*.json</c> sources are read once and not watched: the signer is
+    /// configured from YAML, and each watch costs an inotify instance, of which a Linux user gets
+    /// 128 by default.
     /// </summary>
     public static WebApplication Build(SignerServerOptions options, Action<WebApplicationBuilder> configure)
     {
@@ -76,7 +82,7 @@ public static class SignerServerHost
         if (SpkiPin.Normalize(options.PinnedClientSpki) == null)
             throw new ArgumentException("Signer.PinnedClientSpki is not a SHA-256 SPKI pin; the signer refuses to listen with no client to admit.", nameof(options));
 
-        var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = Array.Empty<string>() });
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = [NoConfigReloadArgument] });
 
         builder.WebHost.ConfigureKestrel(kestrel =>
         {
