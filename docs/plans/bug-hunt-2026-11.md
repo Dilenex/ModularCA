@@ -1,12 +1,15 @@
 # Bug hunt, November 2026: findings and the 0.4.3 / 0.4.4 split
 
-Status: **the 0.4.3 group is fixed** on `0.4.3-dev` (2026-11-08), one commit each with tests:
-F1 `0089e7e`, F2 `3a5d2eb`, F3 `2e15693`, F4 `f41135b`, F5 `162cc0c`, F6 `e1ca1ee`, F7 `ec901f2`,
-X1 `09791ef`, X2 `16bc9d7`, X3 `7448530`, X4 `cabf2e8`, X5 `2fd35db`. X4 and X5 were confirmed in
-the source before fixing. The 0.4.4 group is open.
+Status: **the 0.4.3 group is fixed and released in 0.4.3** (2026-11-08), each fix with tests. They
+were made one commit each, and the branch was regrouped by theme before the release: F2 and X5 are
+in "Enrollment protocols hardened", X2 and X3 in "Secrets are owner-only", F5, F6 and X1 in
+"Sign-in and sessions", and F1, F3, F4, F7 and X4 in "Issuance". The single-fix commits are kept on
+`backup/0.4.3-dev-pre-rebase-rc.1.4`: F1 `0089e7e`, F2 `3a5d2eb`, F3 `2e15693`, F4 `f41135b`, F5
+`162cc0c`, F6 `e1ca1ee`, F7 `ec901f2`, X1 `09791ef`, X2 `16bc9d7`, X3 `7448530`, X4 `cabf2e8`, X5
+`2fd35db`. X4 and X5 were confirmed in the source before fixing. The 0.4.4 group is open.
 
-Six read-only reviews of `0.4.3-dev` at `7bd74b9`
-(`0.4.3-rc.1.2`), 2026-11-07, one per area: API; Core; Auth; Keystore, Signer and Ssh; Bootstrap,
+Six read-only reviews of `0.4.3-dev` at `0.4.3-rc.1.2` (`7bd74b9` on the same backup branch),
+2026-11-07, one per area: API; Core; Auth; Keystore, Signer and Ssh; Bootstrap,
 Migrate and Database; the admin console with `shared/`. `ModularCA.Shared`, docsui, publicui and
 setupui were not covered. Every High and Medium-High finding was confirmed by reading the source a
 second time; findings marked *(reported)* rest on the review alone. Line numbers are a snapshot
