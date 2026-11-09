@@ -1116,8 +1116,9 @@ namespace ModularCA.Shared.Models.Config
         /// <summary>
         /// PEM/DER file paths of the CA certificates that anchor client-certificate
         /// validation, both at the TLS handshake (Kestrel's SNI-gated client-cert callback)
-        /// and in <c>MtlsMiddleware</c>. Relative paths resolve against the application
-        /// base directory.
+        /// and in <c>MtlsMiddleware</c>, which share one set loaded at start. Relative paths
+        /// resolve against the application base directory. When no path loads and mTLS is on,
+        /// both use the certificates of the CAs that groups name as their mTLS signing CA.
         /// <para>
         /// The handshake fails closed on an empty anchor set — a client certificate cannot
         /// be validated against zero anchors, so every certificate is rejected rather than

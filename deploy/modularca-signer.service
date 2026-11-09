@@ -85,6 +85,9 @@ SystemCallErrorNumber=EPERM
 ReadWritePaths=/opt/modularca/keystores -/opt/modularca/signer
 # A PKCS#11 module needs its device; add e.g. DeviceAllow= and drop PrivateDevices when using one.
 
+# Every file and directory the signer creates is its own alone.
+UMask=0077
+
 # Core dumps of this process would contain unwrapped key material.
 LimitCORE=0
 

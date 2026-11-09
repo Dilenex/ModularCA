@@ -20,6 +20,14 @@ public class DeploymentFileTests
         Assert.Contains("RestartPreventExitStatus=3", Directives(unit));
     }
 
+    [Theory]
+    [InlineData("deploy/modularca.service")]
+    [InlineData("deploy/modularca-signer.service")]
+    public void Both_units_create_files_owner_only(string unit)
+    {
+        Assert.Contains("UMask=0077", Directives(unit));
+    }
+
     [Fact]
     public void The_signer_starts_after_the_node_and_never_before_it()
     {

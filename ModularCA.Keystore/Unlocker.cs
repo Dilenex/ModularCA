@@ -214,13 +214,10 @@ public static class Unlocker
                                     $"{Path.GetFileNameWithoutExtension(outputName)}_{index}{Path.GetExtension(outputName)}")
                                 : outputName;
 
-                            // Restrict the file BEFORE the key material enters it. Writing
-                            // first left a window at default permissions (0644 under a typical
-                            // umask) in which another local user could open the file and keep
-                            // the descriptor — a later chmod does not revoke an open fd.
-                            File.WriteAllBytes(numberedPath, Array.Empty<byte>());
-                            FileSecurityUtil.SetOwnerOnly(numberedPath);
-                            File.WriteAllBytes(numberedPath, decrypted);
+                            // A new file, created owner-only: a descriptor opened on any earlier
+                            // file at this path (or during a create-then-chmod window, which the
+                            // previous empty-file-first approach still had) never sees the key.
+                            FileSecurityUtil.CreateOwnerOnly(numberedPath, decrypted, replaceExisting: true);
                             Console.WriteLine($"Entry {index} written to: {numberedPath}");
                         }
                     });

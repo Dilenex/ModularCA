@@ -128,19 +128,30 @@ public static class SignerRole
         }
 
         Pkcs11SessionManager? hsm = null;
-        if (config.Hsm?.Enabled == true && !string.IsNullOrEmpty(config.Hsm.ModulePath))
+        if (config.Hsm?.Enabled == true)
         {
             try
             {
+                if (string.IsNullOrEmpty(config.Hsm.ModulePath))
+                    throw new InvalidOperationException("Hsm.ModulePath is empty.");
                 hsm = new Pkcs11SessionManager(config.Hsm.ModulePath, config.Hsm.SlotId, config.Hsm.Pin);
                 foreach (var cert in bootstrap.AddHsmSigners(hsm, appConnStr))
                     Console.WriteLine($"[HSM] CA loaded: {cert.SubjectDN}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[HSM] Initialization failed: {ex.Message}");
-                Console.WriteLine("[HSM] Continuing with software-only keystore.");
-                hsm = null;
+                // The software keystore is not a stand-in for keys that live on the HSM.
+                hsm?.Dispose();
+                Console.Error.WriteLine($"[FATAL] Hsm.Enabled is true but the HSM could not be initialised: {ex.Message}");
+                Console.Error.WriteLine("        The signer refuses to start rather than continue with the software keystore. Check");
+                Console.Error.WriteLine($"        Hsm.ModulePath, Hsm.SlotId and the PIN (Hsm.Pin or MODULARCA__HSM__PIN) in {paths.ConfigPath}");
+                Console.Error.WriteLine("        and that the token is present, or set Hsm.Enabled: false there to run without the HSM.");
+                return 1;
+            }
+            finally
+            {
+                // The session manager keeps its own zeroable copy; the signer never writes its settings.
+                config.Hsm.Pin = string.Empty;
             }
         }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { advisoriesOf, protocolFindings } from '@adminui/pages/protocolAdvisories';
+import { advisoriesOf, openEnrollmentNotice, protocolFindings, SCEP_WITHOUT_CHALLENGE } from '@adminui/pages/protocolAdvisories';
 
 const scepOnEc = { reason: 'ScepRequiresRsaKey', message: 'SCEP cannot run on this CA: its key is ECDSA.' };
 
@@ -34,6 +34,26 @@ describe('which protocol configurations System Health lists', () => {
     it('is empty for an empty or missing feed', () => {
         expect(protocolFindings([])).toEqual([]);
         expect(protocolFindings(undefined as any)).toEqual([]);
+    });
+});
+
+describe('the notice for SCEP open to requests without a challenge password', () => {
+    it('is shown when the challenge password is off', () => {
+        expect(openEnrollmentNotice({ protocol: 'SCEP', enabled: true, scepChallengeRequired: false })).toBe(SCEP_WITHOUT_CHALLENGE);
+        expect(openEnrollmentNotice({ protocol: 'scep', enabled: false, scepChallengeRequired: false })).toBe(SCEP_WITHOUT_CHALLENGE);
+        expect(SCEP_WITHOUT_CHALLENGE.message).toContain('without a challenge password');
+    });
+
+    it('is not shown when it is on, unknown, or for another protocol', () => {
+        expect(openEnrollmentNotice({ protocol: 'SCEP', enabled: true, scepChallengeRequired: true })).toBeNull();
+        expect(openEnrollmentNotice({ protocol: 'SCEP', enabled: true })).toBeNull();
+        expect(openEnrollmentNotice({ protocol: 'EST', enabled: true, scepChallengeRequired: false })).toBeNull();
+        expect(openEnrollmentNotice(null)).toBeNull();
+    });
+
+    it('leaves out a disabled configuration where asked to', () => {
+        expect(openEnrollmentNotice({ protocol: 'SCEP', enabled: false, scepChallengeRequired: false }, true)).toBeNull();
+        expect(openEnrollmentNotice({ protocol: 'SCEP', enabled: true, scepChallengeRequired: false }, true)).toBe(SCEP_WITHOUT_CHALLENGE);
     });
 });
 

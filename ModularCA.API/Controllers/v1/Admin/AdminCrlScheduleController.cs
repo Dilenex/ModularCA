@@ -291,14 +291,6 @@ namespace ModularCA.API.Controllers.v1.Admin
         }
 
         /// <summary>
-        /// Applies a batch of enable/disable/delete actions across several CRL schedules behind a
-        /// SINGLE step-up token (<see cref="StepUpOps.BulkCrlSchedule"/>, batch-scoped / no target),
-        /// so a multi-row selection on the Distribution page prompts for MFA exactly once instead of
-        /// once per row. Each action is fenced independently (missing / cross-space rows are skipped,
-        /// not failed) and the batch never aborts on a single error; a per-id summary is returned.
-        /// Requires <c>CaOperator</c>.
-        /// </summary>
-        /// <summary>
         /// True when <paramref name="expression"/> is a cron expression NCrontab can parse.
         /// Used to reject a bad schedule at the API boundary rather than letting it throw out
         /// of the service layer as an unhandled 500.
@@ -307,6 +299,15 @@ namespace ModularCA.API.Controllers.v1.Admin
             !string.IsNullOrWhiteSpace(expression)
             && NCrontab.CrontabSchedule.TryParse(expression) != null;
 
+        /// <summary>
+        /// Applies a batch of enable/disable/delete actions across several CRL schedules behind a
+        /// SINGLE step-up token (<see cref="StepUpOps.BulkCrlSchedule"/>, batch-scoped / no target),
+        /// so a multi-row selection on the Distribution page prompts for MFA exactly once instead of
+        /// once per row. Each action is fenced independently (missing / cross-space rows are skipped,
+        /// not failed) and the batch never aborts on a single error; a per-id summary is returned.
+        /// A failed row carries a generic message and the correlation id under which its exception
+        /// is logged, not the exception's message. Requires <c>CaOperator</c>.
+        /// </summary>
         [HttpPost("bulk")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.CrlConfigurations, "request.Actions")]
@@ -381,7 +382,9 @@ namespace ModularCA.API.Controllers.v1.Admin
                 }
                 catch (Exception ex)
                 {
-                    results.Add(new { id, status = "failed", error = ex.Message });
+                    var correlationId = ModularCA.API.Middleware.CorrelationIdMiddleware.Of(HttpContext);
+                    Serilog.Log.Error(ex, "Bulk {Verb} of CRL schedule {ScheduleId} failed (correlationId={CorrelationId})", verb, id, correlationId);
+                    results.Add(new { id, status = "failed", error = $"The change failed. The server log has the cause under correlation id {correlationId}.", correlationId });
                     failed++;
                 }
             }

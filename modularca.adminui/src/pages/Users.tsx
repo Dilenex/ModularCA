@@ -152,7 +152,7 @@ const Users: React.FC = () => {
                             className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent" />
                         <input type="email" placeholder="Email" required value={createForm.email} onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })}
                             className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent" />
-                        <input type="password" placeholder="Password" required value={createForm.password} onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })}
+                        <input type="password" autoComplete="new-password" placeholder="Password" required value={createForm.password} onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })}
                             className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent" />
                         <input type="text" placeholder="First Name" required value={createForm.firstName} onChange={(e) => setCreateForm({ ...createForm, firstName: e.target.value })}
                             className="px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink placeholder-ink-faint focus:outline-none focus:border-accent" />

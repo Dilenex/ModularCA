@@ -11,7 +11,7 @@ import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { ocspStatus } from './ocspReadiness';
-import { advisoriesOf } from './protocolAdvisories';
+import { advisoriesOf, openEnrollmentNotice } from './protocolAdvisories';
 import InfrastructureProfiles from '../components/InfrastructureProfiles';
 
 function formatDate(d: string | null) {
@@ -180,6 +180,7 @@ const CaDetail: React.FC = () => {
                                         <span className="text-ink">
                                             {pc.protocol || pc.name}
                                             {advisoriesOf(pc).length > 0 && <span className="ml-2 text-xs font-medium text-warn">Cannot run on this CA</span>}
+                                            {openEnrollmentNotice(pc, true) && <span className="ml-2 text-xs font-medium text-warn">No challenge password</span>}
                                         </span>
                                     ) },
                                     { key: 'enabled', header: 'Enabled', defaultWidth: 100, truncate: false, sortable: true, sortValue: (pc: any) => !!pc.enabled, exportValue: (pc: any) => (pc.enabled ? 'Yes' : 'No'), render: (pc: any) => <StatusBadge status={pc.enabled ? 'enabled' : 'disabled'} /> },
@@ -195,6 +196,17 @@ const CaDetail: React.FC = () => {
                                 notice={{ title: `${pc.protocol} cannot run on this CA`, detail: a.message, code: a.reason }}
                             />
                         )))}
+                        {ca.protocolConfigs.map((pc: any) => {
+                            const open = openEnrollmentNotice(pc, true);
+                            return open && (
+                                <InlineNotice
+                                    key={`${pc.protocol}-${open.reason}`}
+                                    severity="warning"
+                                    className="mt-2"
+                                    notice={{ title: 'SCEP is open to anyone who can reach it', detail: open.message, code: open.reason }}
+                                />
+                            );
+                        })}
                     </DetailSection>
                 )}
 

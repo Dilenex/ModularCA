@@ -12,7 +12,7 @@ import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { StepUpOps } from '@shared/generated';
 import { ToggleField, labelClass } from '@shared/components/forms';
-import { advisoriesOf, type ProtocolAdvisory } from './protocolAdvisories';
+import { advisoriesOf, openEnrollmentNotice, type ProtocolAdvisory } from './protocolAdvisories';
 
 // MSAE is Windows autoenrollment (MS-WSTEP over HTTPS). Its own fields are the two authentication
 // modes: username (WS-Security UsernameToken / HTTP Basic) and Kerberos, which needs a realm bound
@@ -382,6 +382,9 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                 {advisories.length > 0 && (
                     <span className="text-xs font-medium text-warn">Cannot run on this CA</span>
                 )}
+                {openEnrollmentNotice(config, true) && (
+                    <span className="text-xs font-medium text-warn">No challenge password</span>
+                )}
                 {config?.signingProfileName && (
                     <span className="text-xs text-ink-muted ml-auto">Signing: {config.signingProfileName}</span>
                 )}
@@ -460,6 +463,13 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                         {protocol === 'SCEP' && (
                             <div className="space-y-2">
                                 <ToggleField size="md" labelSide="left" label="Require Challenge Password" description="CSR must include a challenge password for enrollment" checked={form.scepChallengeRequired} onChange={(v) => setForm({ ...form, scepChallengeRequired: v })} />
+                                {(() => {
+                                    const open = openEnrollmentNotice({ protocol, scepChallengeRequired: form.scepChallengeRequired });
+                                    return open && (
+                                        <InlineNotice severity="warning"
+                                            notice={{ title: 'SCEP is open to anyone who can reach it', detail: open.message, code: open.reason }} />
+                                    );
+                                })()}
                             </div>
                         )}
 

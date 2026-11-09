@@ -16,7 +16,7 @@ public class SchemaStartupOrderTests
     [InlineData("\"FeatureFlags\"")]
     [InlineData("SignerBootstrap.Unlock(")]
     [InlineData("signerBootstrap.AddHsmSigners(")]
-    [InlineData("using var anchorDb = new ModularCADbContext(")]
+    [InlineData("MtlsTrustAnchors.Load(")]
     [InlineData("estTrustAnchors.LoadNow()")]
     [InlineData("using var cmpDb = new ModularCADbContext(")]
     [InlineData("var app = builder.Build();")]

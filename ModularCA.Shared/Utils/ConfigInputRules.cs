@@ -139,6 +139,96 @@ public static class ConfigInputRules
     }
 
     /// <summary>
+    /// Parses one <c>Http.TrustedProxyCidrs</c> entry: an IPv4 or IPv6 address, a slash and a
+    /// prefix length within the address family's range, with no bits set after the prefix.
+    /// Returns null and the network when it parses, otherwise a message naming the entry.
+    /// </summary>
+    /// <param name="cidr">One trimmed entry.</param>
+    /// <param name="network">The network, when the entry parses.</param>
+    public static string? TrustedProxyCidrError(string cidr, out System.Net.IPNetwork network)
+    {
+        network = default;
+        var slash = cidr.IndexOf('/');
+        if (slash <= 0 || slash == cidr.Length - 1)
+            return $"Trusted proxy '{cidr}' in Http.TrustedProxyCidrs is not in CIDR form: write address/prefix, e.g. 10.0.1.5/32.";
+        if (!System.Net.IPAddress.TryParse(cidr[..slash], out var address) || address.ToString().Contains('%'))
+            return $"Trusted proxy '{cidr}' in Http.TrustedProxyCidrs does not start with an IP address.";
+        var max = address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork ? 32 : 128;
+        if (!int.TryParse(cidr[(slash + 1)..], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var prefix)
+            || prefix > max)
+            return $"Trusted proxy '{cidr}' in Http.TrustedProxyCidrs has a prefix length that is not from 0 to {max}.";
+
+        var bytes = address.GetAddressBytes();
+        var masked = (byte[])bytes.Clone();
+        for (var i = 0; i < masked.Length; i++)
+        {
+            var keep = Math.Clamp(prefix - i * 8, 0, 8);
+            masked[i] &= (byte)(0xFF << (8 - keep));
+        }
+        if (!bytes.AsSpan().SequenceEqual(masked))
+            return $"Trusted proxy '{cidr}' in Http.TrustedProxyCidrs has bits set after the /{prefix} prefix: write {new System.Net.IPAddress(masked)}/{prefix}, or /{max} for one address.";
+
+        network = new System.Net.IPNetwork(address, prefix);
+        return null;
+    }
+
+    /// <summary>
+    /// Validates the comma-separated <c>Http.TrustedProxyCidrs</c> list, split as startup splits
+    /// it (comma, entries trimmed, blanks dropped). Returns the first entry that does not parse
+    /// (<see cref="TrustedProxyCidrError"/>), or null when all do or the list is blank.
+    /// </summary>
+    /// <param name="csv">The Http.TrustedProxyCidrs value.</param>
+    public static string? TrustedProxyCidrsError(string? csv)
+    {
+        if (string.IsNullOrWhiteSpace(csv)) return null;
+        foreach (var cidr in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (TrustedProxyCidrError(cidr, out _) is { } error)
+                return error;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// The networks <c>Http.TrustedProxyCidrs</c> names. Throws when an entry does not parse;
+    /// check <see cref="TrustedProxyCidrsError"/> first.
+    /// </summary>
+    /// <param name="csv">The Http.TrustedProxyCidrs value.</param>
+    /// <exception cref="FormatException">An entry is not a usable CIDR.</exception>
+    public static IReadOnlyList<System.Net.IPNetwork> TrustedProxyNetworks(string? csv)
+    {
+        if (string.IsNullOrWhiteSpace(csv)) return [];
+        var networks = new List<System.Net.IPNetwork>();
+        foreach (var cidr in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (TrustedProxyCidrError(cidr, out var network) is { } error)
+                throw new FormatException(error);
+            networks.Add(network);
+        }
+        return networks;
+    }
+
+    /// <summary>
+    /// The reverse-proxy settings together: <c>Security.BehindReverseProxy</c> on with no trusted
+    /// proxy named is refused, because forwarded headers are then honoured from loopback only,
+    /// every request appears to come from the proxy, and an RFC1918 proxy address passes every
+    /// internal-only IP whitelist rule. Also refuses an entry that does not parse. Returns null
+    /// when the pair is usable.
+    /// </summary>
+    /// <param name="behindReverseProxy">Security.BehindReverseProxy.</param>
+    /// <param name="trustedProxyCidrs">Http.TrustedProxyCidrs.</param>
+    public static string? ReverseProxyError(bool behindReverseProxy, string? trustedProxyCidrs)
+    {
+        if (TrustedProxyCidrsError(trustedProxyCidrs) is { } error)
+            return error;
+        if (behindReverseProxy && string.IsNullOrWhiteSpace(trustedProxyCidrs))
+            return "Security.BehindReverseProxy is on but Http.TrustedProxyCidrs names no proxy. Every request would appear "
+                 + "to come from the proxy, and an internal proxy address passes the internal-only IP whitelist rules. "
+                 + "Name the proxy, e.g. 10.0.1.5/32, or turn BehindReverseProxy off.";
+        return null;
+    }
+
+    /// <summary>
     /// The origins a CORS origin list allows, split as startup splits it. None when the list is
     /// blank, or when any entry breaks the startup rules (<see cref="CorsOriginsError"/> without
     /// the bare-origin check): a list that would have stopped a start allows nothing.

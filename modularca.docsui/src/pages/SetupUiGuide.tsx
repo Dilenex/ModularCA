@@ -97,7 +97,15 @@ export default function SetupUiGuide() {
                     <li><strong>App Username:</strong> Runtime database user (default: modularca_app)</li>
                     <li><strong>Audit Database:</strong> Separate database for audit logs (default: modularca-audit)</li>
                     <li><strong>Audit Username:</strong> Runtime user for audit database (default: modularca_audit)</li>
+                    <li><strong>Erase existing audit history:</strong> Off by default, so audit records from a previous install on this host are kept</li>
                 </ul>
+                <h3 className="text-lg font-semibold text-ink mb-2">A database left by a previous install</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    When the application database already holds certificate authorities, the step offers to drop it
+                    before continuing. Only the application database is dropped; the audit database and its history are
+                    kept unless <strong>Erase existing audit history</strong> is ticked first, as a command-line reset
+                    keeps them unless given <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">--wipe-audit</code>.
+                </p>
                 <div className="border-l-4 border-info bg-info-soft p-4 rounded-r">
                     <p className="text-ink text-sm">
                         <span className="font-semibold">Tip:</span> The root credentials are used only during setup

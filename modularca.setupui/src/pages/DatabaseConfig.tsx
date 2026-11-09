@@ -82,10 +82,13 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
         setShowDropConfirm(false);
         setDroppingDb(true);
         setDropResult(null);
+        // The audit database is dropped only when the operator chose to erase its history.
+        const wipeAudit = data.wipeAuditDatabase === true;
         try {
             const res = await fetch('/api/v1/setup/database/drop', {
                 method: 'POST',
                 headers: setupHeaders(),
+                body: JSON.stringify({ wipeAudit }),
             });
             const data = await res.json();
             if (res.ok) {
@@ -208,10 +211,24 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                         <h3 className="text-sm font-semibold text-warn">Existing database detected</h3>
                         <p className="text-sm text-warn mt-1">
                             The application database identified in <code className="bg-warn-soft px-1 rounded">setup-database.yaml</code> already
-                            contains certificate authorities from a previous installation. Drop the existing databases to start fresh,
-                            or stop the wizard and back up the data first.
+                            contains certificate authorities from a previous installation. Drop it to start fresh,
+                            or stop the wizard and back up the data first. The audit database is kept unless you choose to erase it.
                         </p>
                     </div>
+                    <label className="flex items-start gap-2 cursor-pointer">
+                        <input type="checkbox" checked={data.wipeAuditDatabase}
+                            onChange={e => { setShowDropConfirm(false); onChange({ ...data, wipeAuditDatabase: e.target.checked }); }}
+                            disabled={droppingDb || dropResult?.ok === true}
+                            className="mt-1" />
+                        <span>
+                            <span className="text-sm text-ink">Erase existing audit history</span>
+                            <span className="block text-xs text-ink-muted">
+                                Leave unchecked to keep audit records from a previous install on this host.
+                                Preserved history is what makes the audit trail tamper-evident across a
+                                reinstall; checking this destroys it permanently.
+                            </span>
+                        </span>
+                    </label>
                     {!showDropConfirm && (
                         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-4">
                             <button
@@ -219,7 +236,7 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                                 disabled={droppingDb}
                                 className="px-4 py-2 bg-crit hover:bg-crit-hover disabled:bg-ink-faint text-on-accent text-sm font-medium rounded transition-colors disabled:cursor-not-allowed"
                             >
-                                {droppingDb ? 'Dropping...' : 'Drop existing databases'}
+                                {droppingDb ? 'Dropping...' : data.wipeAuditDatabase ? 'Drop existing databases' : 'Drop the application database'}
                             </button>
                             {dropResult && (
                                 <span className={`text-sm ${dropResult.ok ? 'text-ok' : 'text-crit'}`}>
@@ -236,16 +253,26 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                         <div className="bg-crit-soft border border-crit/40 rounded-lg p-4 space-y-3">
                             <div>
                                 <h4 className="text-sm font-semibold text-crit">
-                                    Permanently drop existing databases?
+                                    {data.wipeAuditDatabase ? 'Permanently drop existing databases?' : 'Permanently drop the application database?'}
                                 </h4>
-                                <p className="text-sm text-crit mt-1">
-                                    This will <strong>permanently DROP</strong> the application database
-                                    (<code className="bg-crit-soft px-1 rounded">{data.appDatabase}</code>)
-                                    and the audit database
-                                    (<code className="bg-crit-soft px-1 rounded">{data.auditDatabase}</code>),
-                                    including all certificate authorities, audit logs, and settings from the previous installation.
-                                    This action cannot be undone.
-                                </p>
+                                {data.wipeAuditDatabase ? (
+                                    <p className="text-sm text-crit mt-1">
+                                        This will <strong>permanently DROP</strong> the application database
+                                        (<code className="bg-crit-soft px-1 rounded">{data.appDatabase}</code>)
+                                        and the audit database
+                                        (<code className="bg-crit-soft px-1 rounded">{data.auditDatabase}</code>),
+                                        including all certificate authorities, audit logs, and settings from the previous installation.
+                                        This action cannot be undone.
+                                    </p>
+                                ) : (
+                                    <p className="text-sm text-crit mt-1">
+                                        This will <strong>permanently DROP</strong> the application database
+                                        (<code className="bg-crit-soft px-1 rounded">{data.appDatabase}</code>),
+                                        including all certificate authorities and settings from the previous installation.
+                                        This action cannot be undone. The audit database
+                                        (<code className="bg-crit-soft px-1 rounded">{data.auditDatabase}</code>) and its history are kept.
+                                    </p>
+                                )}
                             </div>
                             <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
                                 <button
@@ -253,7 +280,7 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                                     disabled={droppingDb}
                                     className="px-4 py-2 bg-crit hover:bg-crit-hover disabled:bg-ink-faint text-on-accent text-sm font-medium rounded transition-colors disabled:cursor-not-allowed"
                                 >
-                                    {droppingDb ? 'Dropping...' : 'Yes, drop databases permanently'}
+                                    {droppingDb ? 'Dropping...' : data.wipeAuditDatabase ? 'Yes, drop both databases permanently' : 'Yes, drop the application database permanently'}
                                 </button>
                                 <button
                                     onClick={() => setShowDropConfirm(false)}
@@ -303,7 +330,7 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
                         </div>
                         <div>
                             <label className={labelClass}>Superuser Password</label>
-                            <input type="password" value={data.rootPassword}
+                            <input type="password" value={data.rootPassword} autoComplete="new-password"
                                 onChange={e => onChange({ ...data, rootPassword: e.target.value })}
                                 placeholder="Enter superuser password" className={inputClass} />
                         </div>

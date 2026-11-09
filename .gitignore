@@ -375,6 +375,10 @@ config/backup-password.key
 config/dp-keys/
 config/ssh-ca-keys/
 keystores/
+# PKCS#12 under its other extension (*.pfx is covered above), and the backup directory, whose
+# archives carry the keystores and config/ of the instance they were taken from.
+*.p12
+backups/
 # Vite reads .env at build time; the only value is VITE_API_URL. Track an example, not the file,
 # so a real value someone adds locally is never committed.
 .env

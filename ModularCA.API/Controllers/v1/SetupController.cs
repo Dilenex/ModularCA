@@ -339,13 +339,18 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
     }
 
     /// <summary>
-    /// Drops the application database and audit database identified in
-    /// <c>config/setup-database.yaml</c>, using the stored root credentials. Used by the
-    /// setup wizard's stale-state recovery flow when the DB has CAs from a previous install
-    /// but the on-disk config is fresh. Refuses to run once <c>config.yaml</c> exists.
+    /// Drops the application database identified in <c>config/setup-database.yaml</c>, and the
+    /// audit database only when <see cref="SetupDropDatabasesRequest.WipeAudit"/> is set, using
+    /// the stored root credentials. Used by the setup wizard's stale-state recovery flow when the
+    /// DB has CAs from a previous install but the on-disk config is fresh. Audit history is kept
+    /// by default, as across a command-line reset and bootstrap (<c>--wipe-audit</c>), and the
+    /// bootstrap that follows keeps the audit database unless told to erase it too. A request
+    /// without a body keeps it. Refuses to run once <c>config.yaml</c> exists.
     /// </summary>
+    /// <param name="request">Whether to drop the audit database as well; optional.</param>
     [HttpPost("database/drop")]
-    public IActionResult DropDatabases()
+    public IActionResult DropDatabases(
+        [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] SetupDropDatabasesRequest? request = null)
     {
         var rejected = RejectNonLocalRequest();
         if (rejected != null) return rejected;
@@ -371,11 +376,10 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
             using var conn = new Npgsql.NpgsqlConnection(rootConnStr);
             conn.Open();
 
+            var wipeAudit = request?.WipeAudit == true;
             var dropped = new List<string>();
-            foreach (var schema in new[] { setupDb.SqlApp.Database, setupDb.SqlAudit.Database })
+            foreach (var schema in DatabasesToDrop(setupDb.SqlApp.Database, setupDb.SqlAudit.Database, wipeAudit))
             {
-                if (string.IsNullOrWhiteSpace(schema))
-                    continue;
                 using var cmd = conn.CreateCommand();
                 // WITH (FORCE) terminates sessions still attached to the database. Without it a
                 // single leftover connection from the failed install this recovery flow exists
@@ -390,15 +394,36 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
             ModularCA.API.Middleware.SetupRedirectMiddleware.InvalidateCache();
 
             Log.Warning(
-                "Setup wizard: database DROP executed from {CallerIp} — dropped schemas: {Schemas}",
-                HttpContext.Connection.RemoteIpAddress, dropped);
-            return Ok(new { dropped, message = $"Dropped {dropped.Count} database(s). You can now continue with setup." });
+                "Setup wizard: database DROP executed from {CallerIp} — dropped schemas: {Schemas}; audit database {AuditOutcome}",
+                HttpContext.Connection.RemoteIpAddress, dropped, wipeAudit ? "erased" : "kept");
+            var kept = wipeAudit || string.IsNullOrWhiteSpace(setupDb.SqlAudit.Database)
+                ? string.Empty
+                : $" The audit database '{setupDb.SqlAudit.Database}' was kept, with its history.";
+            return Ok(new { dropped, auditKept = !wipeAudit, message = $"Dropped {dropped.Count} database(s).{kept} You can now continue with setup." });
         }
         catch (Exception ex)
         {
             Log.Error(ex, "Setup wizard recovery: failed to drop databases");
             return StatusCode(500, new { error = "Failed to drop databases. See server logs for details." });
         }
+    }
+
+    /// <summary>
+    /// The databases the stale-state recovery drops: the application database, and the audit
+    /// database only when <paramref name="wipeAudit"/> is set and it is a different database.
+    /// Blank names are skipped.
+    /// </summary>
+    /// <param name="appDatabase">The application database name.</param>
+    /// <param name="auditDatabase">The audit database name.</param>
+    /// <param name="wipeAudit">Whether audit history is to be erased.</param>
+    public static IReadOnlyList<string> DatabasesToDrop(string? appDatabase, string? auditDatabase, bool wipeAudit)
+    {
+        var names = new List<string>();
+        if (!string.IsNullOrWhiteSpace(appDatabase))
+            names.Add(appDatabase);
+        if (wipeAudit && !string.IsNullOrWhiteSpace(auditDatabase) && !names.Contains(auditDatabase))
+            names.Add(auditDatabase);
+        return names;
     }
 
     /// <summary>
@@ -1026,6 +1051,16 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
             return true;
         }
     }
+}
+
+/// <summary>Body of <c>POST /api/v1/setup/database/drop</c>.</summary>
+public sealed class SetupDropDatabasesRequest
+{
+    /// <summary>
+    /// Drop the audit database too, erasing the previous install's audit history. False by
+    /// default: the history is kept, as a command-line reset keeps it without <c>--wipe-audit</c>.
+    /// </summary>
+    public bool WipeAudit { get; set; }
 }
 
 /// <summary>

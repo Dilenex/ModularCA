@@ -76,13 +76,16 @@ const FieldBadges: React.FC<{ path?: string }> = ({ path }) => {
 const useLocked = (path?: string) => fieldLocked(describeField(React.useContext(SettingsMetaContext), path));
 
 /* Every primitive takes `hint`: what the value does, or what saving it causes, shown under the
-   control. The label names the setting; the hint says what happens when you change it. */
+   control. The label names the setting; the hint says what happens when you change it.
+   A password-type field here is always a service secret (bind password, SMTP, API keys), never
+   the operator's own sign-in, so the browser is told not to fill in the saved console password. */
 const ConfigInput: React.FC<{ label: string; value: any; onChange: (v: string) => void; type?: string; placeholder?: string; hint?: React.ReactNode; disabled?: boolean; path?: string }> = ({ label, value, onChange, type = 'text', placeholder, hint, disabled, path }) => {
     const locked = useLocked(path);
     return (
         <div>
             <label className={labelClass}>{label}<FieldBadges path={path} /></label>
-            <input type={type} value={value ?? ''} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className={inputClass} disabled={disabled || locked} />
+            <input type={type} value={value ?? ''} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className={inputClass} disabled={disabled || locked}
+                autoComplete={type === 'password' ? 'new-password' : undefined} />
             {hint && <FieldHint>{hint}</FieldHint>}
         </div>
     );
@@ -954,11 +957,11 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                 <ConfigToggle label="Behind Reverse Proxy" checked={config.security.behindReverseProxy ?? false} path="security.behindReverseProxy" onChange={(v) => update('security', 'behindReverseProxy', v)}
                                     hintTone={config.security.behindReverseProxy && !config.http.trustedProxyCidrs ? 'warn' : 'muted'}
                                     hint={config.security.behindReverseProxy && !config.http.trustedProxyCidrs
-                                        ? 'On, but no trusted CIDRs are listed: only loopback is trusted, so every client will appear to come from the proxy and per-IP limits and bindings collapse onto one address.'
+                                        ? 'On, but no trusted CIDRs are listed. This is refused on save and at startup, because every client would appear to come from the proxy. Save the proxy\'s CIDR below first.'
                                         : 'Rate limiting and IP binding use the client address from X-Forwarded-For sent by a proxy in the ranges below. If on with no proxy in front, any client can forge its address.'} />
                                 <SaveButton saving={saving === 'securityProxy'} onClick={() => saveSecurityFields(['behindReverseProxy'], 'securityProxy')} label="Save Proxy Mode" />
                                 <ConfigInput label="Trusted Proxy CIDRs" value={config.http.trustedProxyCidrs} path="http.trustedProxyCidrs" onChange={(v) => update('http', 'trustedProxyCidrs', v)} placeholder="10.0.0.0/8, 172.16.0.0/12"
-                                    hint="Only proxies in these ranges may set forwarded headers. Empty means loopback only. Name the actual proxy subnet, not RFC1918 wholesale." />
+                                    hint="Only proxies in these ranges may set forwarded headers. Empty means loopback only, and is refused while Behind Reverse Proxy is on. Each entry is address/prefix, e.g. 10.0.1.5/32. Name the actual proxy subnet, not RFC1918 wholesale." />
                                 <SaveButton saving={saving === 'http'} onClick={() => saveSection('http', config.http, 'http')} label="Save HTTP Section" blockedReason={httpBlocked} />
                             </div>
                         )}

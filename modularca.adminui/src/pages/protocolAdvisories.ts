@@ -14,6 +14,25 @@ export interface ProtocolFinding {
     advisory: ProtocolAdvisory;
 }
 
+/** The notice for SCEP that accepts requests without a challenge password. */
+export const SCEP_WITHOUT_CHALLENGE: ProtocolAdvisory = {
+    reason: 'ScepWithoutChallenge',
+    message: 'SCEP accepts requests without a challenge password: anyone who can reach this CA\'s SCEP endpoint '
+        + 'can enroll. Turn on Require Challenge Password unless open enrollment is intended.',
+};
+
+/**
+ * The notice for a protocol configuration that can run but is open by its own setting, unlike the
+ * server's advisories, which say it cannot run: today SCEP with the challenge password off. Keyed
+ * on the setting alone, so the protocol page can show it as the toggle changes; `requireEnabled`
+ * leaves out a disabled row, for the CA page. A feed without the setting gives no notice.
+ */
+export function openEnrollmentNotice(config: any, requireEnabled = false): ProtocolAdvisory | null {
+    if ((config?.protocol || '').toUpperCase() !== 'SCEP') return null;
+    if (requireEnabled && !config?.enabled) return null;
+    return config?.scepChallengeRequired === false ? SCEP_WITHOUT_CHALLENGE : null;
+}
+
 /** The advisories the server attached to one protocol configuration; empty when there are none. */
 export function advisoriesOf(config: any): ProtocolAdvisory[] {
     return Array.isArray(config?.advisories) ? (config.advisories as ProtocolAdvisory[]) : [];

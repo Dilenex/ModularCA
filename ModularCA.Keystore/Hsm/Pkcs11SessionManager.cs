@@ -86,7 +86,8 @@ public sealed class Pkcs11SessionManager : IDisposable
     /// <summary>
     /// Convenience constructor for callers that still supply the PIN as a
     /// <see cref="string"/>. Prefer the <see cref="ReadOnlySpan{Char}"/> overload where
-    /// possible because an immutable <c>string</c> cannot be zeroed in managed memory.
+    /// possible because an immutable <c>string</c> cannot be zeroed in managed memory; a caller
+    /// holding the PIN in configuration should drop its reference once this returns.
     /// </summary>
     public Pkcs11SessionManager(string modulePath, ulong slotId, string pin)
         : this(modulePath, slotId, (pin ?? throw new ArgumentNullException(nameof(pin))).AsSpan())
@@ -95,7 +96,8 @@ public sealed class Pkcs11SessionManager : IDisposable
 
     /// <summary>
     /// Opens a new read/write session and logs in with the user PIN if no
-    /// active session exists.
+    /// active session exists. The PIN is passed to the module as UTF-8 bytes in a buffer that
+    /// is zeroed as soon as the login returns, so no immutable string copy of it is made.
     /// </summary>
     private void EnsureSession()
     {
@@ -105,9 +107,27 @@ public sealed class Pkcs11SessionManager : IDisposable
             throw new ObjectDisposedException(nameof(Pkcs11SessionManager), "PIN has been cleared.");
 
         _session = _slot.OpenSession(SessionType.ReadWrite);
-        // The Pkcs11Interop session wants a string here — we materialize it
-        // from our char[], then let it go out of scope so only our char[] copy persists.
-        _session.Login(CKU.CKU_USER, new string(_pin));
+        var pinBytes = PinBytes(_pin);
+        try
+        {
+            _session.Login(CKU.CKU_USER, pinBytes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(pinBytes);
+        }
+    }
+
+    /// <summary>
+    /// The PIN as the UTF-8 bytes PKCS#11 <c>C_Login</c> takes, in a new buffer the caller
+    /// must zero after use.
+    /// </summary>
+    /// <param name="pin">The PIN.</param>
+    private static byte[] PinBytes(ReadOnlySpan<char> pin)
+    {
+        var bytes = new byte[System.Text.Encoding.UTF8.GetByteCount(pin)];
+        System.Text.Encoding.UTF8.GetBytes(pin, bytes);
+        return bytes;
     }
 
     /// <summary>

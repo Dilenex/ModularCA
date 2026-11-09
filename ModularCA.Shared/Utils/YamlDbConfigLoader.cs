@@ -21,6 +21,10 @@ public static class YamlDbConfigLoader
         return deserializer.Deserialize<DbYamlConfig>(yaml);
     }
 
+    /// <summary>
+    /// Writes <c>db.yaml</c>, which holds the runtime database passwords, owner-only from the
+    /// start (<see cref="FileSecurityUtil.WriteOwnerOnly(string, string)"/>).
+    /// </summary>
     public static void Write(string path, DbYamlConfig config)
     {
         var serializer = new SerializerBuilder()
@@ -28,8 +32,7 @@ public static class YamlDbConfigLoader
             .Build();
         var yaml = "# Auto-generated runtime database credentials — do not edit unless you know what you're doing\n"
             + serializer.Serialize(config);
-        File.WriteAllText(path, yaml);
-        FileSecurityUtil.SetOwnerOnly(path);
+        FileSecurityUtil.WriteOwnerOnly(path, yaml);
     }
 
     public class DbYamlConfig

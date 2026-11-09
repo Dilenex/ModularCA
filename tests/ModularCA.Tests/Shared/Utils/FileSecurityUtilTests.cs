@@ -124,6 +124,113 @@ public class FileSecurityUtilTests : IDisposable
         Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(file));
     }
 
+    [Fact]
+    public void WriteOwnerOnly_creates_a_secret_file_owner_only_with_its_contents()
+    {
+        var file = Path.Combine(_root, "backup.key");
+        var key = new byte[] { 1, 2, 3, 4 };
+
+        FileSecurityUtil.WriteOwnerOnly(file, key);
+
+        Assert.Equal(key, File.ReadAllBytes(file));
+        if (OperatingSystem.IsWindows())
+        {
+            AssertWindowsOwnerOnly(file, isDirectory: false);
+            return;
+        }
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(file));
+    }
+
+    [Fact]
+    public void WriteOwnerOnly_replaces_an_existing_file_and_tightens_it()
+    {
+        var file = Path.Combine(_root, "keystore.yaml");
+        File.WriteAllText(file, "old contents that are longer than the new ones");
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+        FileSecurityUtil.WriteOwnerOnly(file, "ks: secret\n");
+
+        Assert.Equal("ks: secret\n", File.ReadAllText(file));
+        if (OperatingSystem.IsWindows())
+        {
+            AssertWindowsOwnerOnly(file, isDirectory: false);
+            return;
+        }
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(file));
+    }
+
+    /// <summary>
+    /// Bug hunt 2026-11, X2: decrypted keys and archives go into a NEW owner-only file. The
+    /// unlocker wrote an empty file, restricted it, then wrote into it, and restore wrote the
+    /// archive and restricted it afterwards; either way a descriptor opened in that window kept
+    /// reading after the chmod.
+    /// </summary>
+    [Fact]
+    public void CreateOwnerOnly_creates_a_new_owner_only_file()
+    {
+        var file = Path.Combine(_root, "entry.p8");
+        var key = new byte[] { 9, 8, 7 };
+
+        FileSecurityUtil.CreateOwnerOnly(file, key);
+
+        Assert.Equal(key, File.ReadAllBytes(file));
+        if (OperatingSystem.IsWindows())
+        {
+            AssertWindowsOwnerOnly(file, isDirectory: false);
+            return;
+        }
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(file));
+    }
+
+    /// <summary>A file someone else put at the path first is refused, not written into.</summary>
+    [Fact]
+    public void CreateOwnerOnly_refuses_a_file_that_is_already_there()
+    {
+        var file = Path.Combine(_root, "modularca-restore.zip");
+        File.WriteAllText(file, "planted");
+
+        Assert.Throws<IOException>(() => FileSecurityUtil.CreateOwnerOnly(file, [1, 2, 3]));
+        Assert.Equal("planted", File.ReadAllText(file));
+    }
+
+    /// <summary>
+    /// Asked to replace, it writes a new file: a reader that held the old one open sees the old
+    /// contents, never the key.
+    /// </summary>
+    [Fact]
+    public void CreateOwnerOnly_replaces_with_a_new_file_that_an_open_reader_does_not_see()
+    {
+        if (OperatingSystem.IsWindows()) return; // an open file cannot be deleted on Windows
+        var file = Path.Combine(_root, "unlocked.p8");
+        File.WriteAllText(file, "old");
+        using var reader = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+
+        FileSecurityUtil.CreateOwnerOnly(file, [1, 2, 3], replaceExisting: true);
+
+        Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(file));
+        using var old = new StreamReader(reader);
+        Assert.Equal("old", old.ReadToEnd());
+    }
+
+    [Fact]
+    public void Bootstrap_writes_keystore_yaml_owner_only_with_one_line_per_keystore()
+    {
+        ModularCA.Bootstrap.BootstrapKeystoreWriter.WriteKeystorePasswordsToFile(
+            _root,
+            new Dictionary<string, string> { ["ca"] = "p1", ["sys"] = "p2" },
+            new Dictionary<string, string> { ["ca"] = "s1" });
+
+        var file = Path.Combine(_root, "keystore.yaml");
+        Assert.Equal(new[] { "ca: s1", "sys: " }, File.ReadAllLines(file));
+        if (OperatingSystem.IsWindows())
+        {
+            AssertWindowsOwnerOnly(file, isDirectory: false);
+            return;
+        }
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(file));
+    }
+
     /// <summary>
     /// Windows equivalent of the mode assertions: inheritance is off (so parent-folder ACEs
     /// cannot leak access into a directory holding CA private keys) and the only explicit

@@ -214,7 +214,7 @@ public static class BackupKeyManager
             }
 
             var tempPath = path + ".tmp";
-            File.WriteAllBytes(tempPath, buffer);
+            FileSecurityUtil.WriteOwnerOnly(tempPath, buffer);
             File.Move(tempPath, path, overwrite: true);
             FileSecurityUtil.SetOwnerOnly(path);
         }

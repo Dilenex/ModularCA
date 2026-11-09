@@ -215,7 +215,10 @@ public class AdminConfigController(
     /// CORS and the public port apply at once; the port, Swagger and the trusted proxies at the
     /// next start. CORS origins are checked here with the startup rules
     /// plus a bare-origin check (<see cref="ConfigInputRules.CorsOriginsError"/>), because an origin
-    /// startup rejects would otherwise be saved and stop the next start.
+    /// startup rejects would otherwise be saved and stop the next start. The trusted proxy CIDRs
+    /// are written as sent, so an empty value clears them; an entry that does not parse, or no
+    /// entry while <c>Security.BehindReverseProxy</c> is on, is refused with 400
+    /// (<see cref="ConfigInputRules.ReverseProxyError"/>), since startup refuses the same.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
     [HttpPut("http")]
@@ -229,13 +232,16 @@ public class AdminConfigController(
             return BadRequest(new { error = "PublicPort must be between 1 and 65535." });
         if (ConfigInputRules.CorsOriginsError(update.CorsOrigins, requireBareOrigin: true) is { } corsError)
             return BadRequest(new { error = corsError });
+        var trustedProxyCidrs = update.TrustedProxyCidrs?.Trim() ?? string.Empty;
+        if (ConfigInputRules.ReverseProxyError(_config.Security.BehindReverseProxy, trustedProxyCidrs) is { } proxyError)
+            return BadRequest(new { error = proxyError });
 
         _config.Http.CorsOrigins = update.CorsOrigins ?? _config.Http.CorsOrigins;
         _config.Http.SwaggerEnabled = update.SwaggerEnabled;
         if (update.Port >= 0) _config.Http.Port = update.Port;
         if (update.PublicPort.HasValue) _config.Http.PublicPort = update.PublicPort;
         _config.Http.EnableCors = update.EnableCors;
-        if (!string.IsNullOrEmpty(update.TrustedProxyCidrs)) _config.Http.TrustedProxyCidrs = update.TrustedProxyCidrs;
+        _config.Http.TrustedProxyCidrs = trustedProxyCidrs;
         if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
         await AuditConfigChange("Http", new { update.Port, update.PublicPort, update.CorsOrigins, update.SwaggerEnabled, update.EnableCors, update.TrustedProxyCidrs });
         return Ok(new { message = "HTTP config updated. CORS applies now; port, Swagger and trusted proxy changes require restart.", config = _config.Http });
@@ -293,7 +299,9 @@ public class AdminConfigController(
 
     /// <summary>
     /// Updates the middleware-wired security configuration — JWT / refresh-token binding,
-    /// per-username rate limits, and reverse-proxy trust. Requires step-up MFA.
+    /// per-username rate limits, and reverse-proxy trust. Requires step-up MFA. Turning
+    /// <c>BehindReverseProxy</c> on while <c>Http.TrustedProxyCidrs</c> names no proxy is refused
+    /// with 400, as startup would refuse it.
     /// Runtime-tunable policy (lockout, MFA TTLs, OCSP posture, login banner) is
     /// managed via <c>PUT /api/v1/admin/security-policy</c> and lives in the
     /// <c>SecurityPolicy</c> table.
@@ -305,6 +313,9 @@ public class AdminConfigController(
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null)
             return Unauthorized();
+        if (update.BehindReverseProxy == true
+            && ConfigInputRules.ReverseProxyError(true, _config.Http.TrustedProxyCidrs) is { } proxyError)
+            return BadRequest(new { error = proxyError + " Save the trusted proxy CIDRs first." });
 
         // Apply only what was sent. Binding SecurityConfig directly meant an omitted field
         // arrived as its constructor default and was written over the stored value — so a
@@ -893,7 +904,8 @@ public class AdminConfigController(
     /// <summary>
     /// Calls <see cref="PersistConfigAsync"/>; on failure returns an <see cref="IActionResult"/>
     /// the caller can return directly: 400 for a value the settings store refuses, 409 when other
-    /// changes kept getting in first, 500 otherwise. Use as <c>if (await TryPersistOrErrorAsync() is { } err) return err;</c>
+    /// changes kept getting in first, 500 otherwise, with a generic message and the correlation
+    /// id under which the exception is logged (its message can name paths and hosts). Use as <c>if (await TryPersistOrErrorAsync() is { } err) return err;</c>
     /// — keeps the 26-ish PUT handlers terse while still surfacing persist failures as 500
     /// to the operator instead of silently returning 200 with a divergent on-disk YAML.
     /// </summary>
@@ -910,7 +922,13 @@ public class AdminConfigController(
         }
         catch (Exception ex)
         {
-            return StatusCode(500, new { error = "Failed to save the configuration.", details = ex.Message });
+            var correlationId = ModularCA.API.Middleware.CorrelationIdMiddleware.Of(HttpContext);
+            Serilog.Log.Error(ex, "Saving the configuration failed (correlationId={CorrelationId})", correlationId);
+            return StatusCode(500, new
+            {
+                error = $"Failed to save the configuration. The server log has the cause under correlation id {correlationId}.",
+                correlationId,
+            });
         }
     }
 

@@ -129,7 +129,7 @@ Http:
   EnableCors: false             # Explicit opt-in; Development env is NOT enough
   CorsOrigins: ""               # Comma-separated HTTPS origin allow-list
   SwaggerEnabled: false
-  TrustedProxyCidrs: ""         # Defaults to loopback-only when empty
+  TrustedProxyCidrs: ""         # address/prefix list; empty = loopback only. A bad entry stops the start
   Hsts:
     MaxAgeSeconds: 31536000
     IncludeSubDomains: true
@@ -153,7 +153,7 @@ Security:
   AllowRefreshTokenMismatch: false
   MaxPerUsernameLoginFailures: 20
   PerUsernameLoginFailureWindowMinutes: 30
-  BehindReverseProxy: false
+  BehindReverseProxy: false     # true needs Http.TrustedProxyCidrs, or the start is refused
 
 JWT:
   Secret: "..."                 # Usually injected via MODULARCA__JWT__SECRET

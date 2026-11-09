@@ -9,6 +9,58 @@ namespace ModularCA.Tests.Shared.Utils;
 /// </summary>
 public class ConfigInputRulesTests
 {
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("10.0.1.5/32")]
+    [InlineData("10.0.1.0/24, 10.0.2.0/24,")]
+    [InlineData("2001:db8::/32,::1/128")]
+    public void Accepts_usable_trusted_proxy_lists(string? csv)
+    {
+        Assert.Null(ConfigInputRules.TrustedProxyCidrsError(csv));
+        Assert.Null(ConfigInputRules.ReverseProxyError(behindReverseProxy: false, csv));
+    }
+
+    [Theory]
+    [InlineData("10.0.1.5", "10.0.1.5")]
+    [InlineData("10.0.1.0/24, proxy.example/32", "proxy.example/32")]
+    [InlineData("10.0.1.0/33", "10.0.1.0/33")]
+    [InlineData("10.0.1.0/-1", "10.0.1.0/-1")]
+    [InlineData("2001:db8::/129", "2001:db8::/129")]
+    [InlineData("10.0.1.5/24", "10.0.1.0/24")]
+    [InlineData("10.0.1.0/", "10.0.1.0/")]
+    public void Names_the_trusted_proxy_entry_that_does_not_parse(string csv, string named)
+    {
+        // Such an entry used to be skipped with a console line, so the proxy it meant to trust
+        // was not trusted and nothing else said so.
+        var error = ConfigInputRules.TrustedProxyCidrsError(csv);
+        Assert.NotNull(error);
+        Assert.Contains(named, error);
+        Assert.Equal(error, ConfigInputRules.ReverseProxyError(behindReverseProxy: false, csv));
+        var thrown = Assert.Throws<FormatException>(() => ConfigInputRules.TrustedProxyNetworks(csv));
+        Assert.Equal(error, thrown.Message);
+    }
+
+    [Fact]
+    public void Trusted_proxy_networks_are_the_entries_listed()
+    {
+        var networks = ConfigInputRules.TrustedProxyNetworks(" 10.0.1.5/32 , 2001:db8::/32 ");
+        Assert.Equal(new[] { "10.0.1.5/32", "2001:db8::/32" }, networks.Select(n => n.ToString()));
+        Assert.Empty(ConfigInputRules.TrustedProxyNetworks(""));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    public void Behind_a_proxy_with_no_proxy_named_is_refused(string? csv)
+    {
+        var error = ConfigInputRules.ReverseProxyError(behindReverseProxy: true, csv);
+        Assert.NotNull(error);
+        Assert.Contains("TrustedProxyCidrs", error);
+        Assert.Null(ConfigInputRules.ReverseProxyError(behindReverseProxy: true, "203.0.113.2/32"));
+    }
+
     [Fact]
     public void Warning_days_must_each_be_from_1_to_3650()
     {

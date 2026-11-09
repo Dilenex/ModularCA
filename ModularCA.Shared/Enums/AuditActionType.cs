@@ -88,6 +88,13 @@ public static class AuditActionType
     /// <summary>The advisory review date of an SSH CA key was moved; the details name the key, the new date and the one before.</summary>
     public const string SshCaKeyReviewDateChanged = "SshCaKeyReviewDateChanged";
 
+    /// <summary>
+    /// A host started with its configured Web TLS certificate missing and serves a temporary
+    /// self-signed one instead; the details name the path, the mode and the temporary
+    /// certificate's SHA-256 fingerprint.
+    /// </summary>
+    public const string WebTlsTemporaryCertificateServed = "WebTlsTemporaryCertificateServed";
+
     // Scheduled jobs
     public const string TlsCertificateRenewed = "TlsCertificateRenewed";
     public const string CrlExported = "CrlExported";

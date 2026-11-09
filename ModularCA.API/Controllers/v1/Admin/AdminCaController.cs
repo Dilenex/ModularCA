@@ -275,6 +275,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                         SigningProfileName = pc.SigningProfile?.Name,
                         CertProfileId = pc.CertProfileId,
                         CertProfileName = pc.CertProfile?.Name,
+                        // The console warns on the CA page when SCEP takes requests without one.
+                        pc.ScepChallengeRequired,
                         Advisories = ModularCA.Shared.Enrollment.ProtocolCompatibility.Advisories(pc.Protocol, keyAlgorithm),
                     })
                     .ToList();

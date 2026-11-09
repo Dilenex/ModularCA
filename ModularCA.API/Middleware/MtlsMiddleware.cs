@@ -1,4 +1,5 @@
-﻿using ModularCA.Shared.Models.Config;
+﻿using ModularCA.API.Startup;
+using ModularCA.Shared.Models.Config;
 using System.Security.Cryptography.X509Certificates;
 
 namespace ModularCA.API.Middleware;
@@ -6,8 +7,8 @@ namespace ModularCA.API.Middleware;
 /// <summary>
 /// Enforces mutual TLS (client certificate) authentication on configured paths.
 /// When enabled, requests to admin API paths must present a valid client certificate
-/// issued by one of the configured trusted CAs. Whether mTLS is on and which CAs are trusted
-/// are fixed at start, as the listener's handshake is; the required paths are read on every
+/// issued by one of the trusted CAs (<see cref="MtlsTrustAnchors"/>, shared with the handshake).
+/// Whether mTLS is on and which CAs are trusted are fixed at start, as the listener's handshake is; the required paths are read on every
 /// request, so a saved change to them applies to the next one.
 /// </summary>
 public class MtlsMiddleware
@@ -15,31 +16,36 @@ public class MtlsMiddleware
     private readonly RequestDelegate _next;
     private readonly SystemConfig _config;
     private readonly bool _enabled;
-    private readonly List<X509Certificate2> _trustedCas;
+    private readonly IReadOnlyList<X509Certificate2> _trustedCas;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="MtlsMiddleware"/> class.
-    /// Loads trusted CA certificates from the paths specified in <paramref name="config"/>.
+    /// Initializes a new instance of the <see cref="MtlsMiddleware"/> class with the trust
+    /// anchors loaded at start, the set the TLS handshake on the mTLS auth subdomain validates
+    /// against: the configured paths resolved against the application base directory, or the
+    /// enrolled mTLS signing CAs from the database when none loads.
     /// </summary>
     /// <param name="next">The next middleware in the pipeline.</param>
     /// <param name="config">System configuration containing mTLS settings.</param>
-    public MtlsMiddleware(RequestDelegate next, SystemConfig config)
+    /// <param name="anchors">The trust anchors loaded at start.</param>
+    [ActivatorUtilitiesConstructor]
+    public MtlsMiddleware(RequestDelegate next, SystemConfig config, MtlsTrustAnchors anchors)
     {
         _next = next;
         _config = config;
         _enabled = config.Mtls.Enabled;
-        _trustedCas = new();
+        _trustedCas = anchors.Certificates;
+    }
 
-        // Load trusted CA certs from configured paths
-        foreach (var path in config.Mtls.TrustedCaCertPaths)
-        {
-            try
-            {
-                if (File.Exists(path))
-                    _trustedCas.Add(X509CertificateLoader.LoadCertificateFromFile(path));
-            }
-            catch (Exception ex) { Serilog.Log.Warning(ex, "Failed to load trusted CA certificate from {Path}", path); }
-        }
+    /// <summary>
+    /// Initializes a new instance of the <see cref="MtlsMiddleware"/> class with the anchors in
+    /// the configured paths only (<see cref="MtlsTrustAnchors.Load"/> without a database), for a
+    /// host that registered no <see cref="MtlsTrustAnchors"/>.
+    /// </summary>
+    /// <param name="next">The next middleware in the pipeline.</param>
+    /// <param name="config">System configuration containing mTLS settings.</param>
+    public MtlsMiddleware(RequestDelegate next, SystemConfig config)
+        : this(next, config, MtlsTrustAnchors.Load(config, appConnStr: null, isSetupMode: false))
+    {
     }
 
     /// <summary>

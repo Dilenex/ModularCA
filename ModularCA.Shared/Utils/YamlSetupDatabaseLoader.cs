@@ -65,15 +65,15 @@ public static class YamlSetupDatabaseLoader
     }
 
     /// <summary>
-    /// Writes a <see cref="SetupDatabaseConfig"/> to the specified path as YAML.
+    /// Writes a <see cref="SetupDatabaseConfig"/> to the specified path as YAML, owner-only from
+    /// the start: it holds the PostgreSQL superuser password.
     /// </summary>
     public static void Write(string path, SetupDatabaseConfig config)
     {
         var serializer = new SerializerBuilder()
             .WithNamingConvention(PascalCaseNamingConvention.Instance)
             .Build();
-        File.WriteAllText(path, serializer.Serialize(config));
-        FileSecurityUtil.SetOwnerOnly(path);
+        FileSecurityUtil.WriteOwnerOnly(path, serializer.Serialize(config));
     }
 
     public class SetupDatabaseConfig
