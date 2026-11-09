@@ -83,7 +83,11 @@ export default function AuthFlowDiagram() {
                 <h3 className="text-lg font-semibold text-ink mb-2 mt-4">Password Authentication (Local + LDAP)</h3>
                 <p className="text-ink leading-relaxed mb-3">
                     The primary login factor. When LDAP is enabled, credentials are tried against the directory
-                    first; on failure, the local password hash is checked. Local passwords are hashed using
+                    first. A bind the directory refuses is final; the local password hash is checked only for an
+                    account the directory has no entry for (a local-only account such as the bootstrap
+                    administrator), which needs a service account to look users up. While the directory cannot be
+                    reached, password sign-in is refused without counting a failed attempt; WebAuthn and mTLS
+                    sign-in do not depend on it. Local passwords are hashed using
                     PBKDF2-SHA256 with a minimum of 600,000 iterations (auto-rehashed from legacy 100k hashes on
                     successful login). The password policy requires a minimum of 16 characters with uppercase,
                     lowercase, digit, and special character requirements.

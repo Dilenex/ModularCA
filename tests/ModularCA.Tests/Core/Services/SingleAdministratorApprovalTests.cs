@@ -19,7 +19,6 @@ public class SingleAdministratorApprovalTests
         public SingleAdminWorld W { get; } = new(requireCeremony: false);
         public SigningProfileEntity Signing { get; }
         public RequestProfileEntity Gated { get; }
-        public CaGroupAuthorizationService Auth { get; }
 
         public World(bool selfApproval)
         {
@@ -29,13 +28,12 @@ public class SingleAdministratorApprovalTests
             W.Db.SigningProfiles.Add(Signing);
             W.Db.RequestProfiles.Add(Gated);
             W.Db.SaveChanges();
-            Auth = new CaGroupAuthorizationService(W.Db, NullLogger<CaGroupAuthorizationService>.Instance);
         }
 
         public SecurityPolicyEntity Policy => W.Db.SecurityPolicies.Single();
 
         public Task<ApprovalOutlook> OutlookAsync(Guid requester, params Guid[] approvedBy)
-            => RequestApprovers.OutlookAsync(W.Db, Auth, Policy, 2, Signing.Id, null, requester, approvedBy);
+            => RequestApprovers.OutlookAsync(W.Db, Policy, 2, Signing.Id, null, requester, approvedBy);
 
         public Guid Operator(string name)
         {

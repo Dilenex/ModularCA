@@ -30,8 +30,10 @@ namespace ModularCA.Auth.Services;
 ///     endpoint into an account enumerator.
 ///   </description></item>
 ///   <item><description>
-///     <b>LDAP first, local second</b>, matching interactive login, so an environment that moved
-///     authentication to a directory does not find EST still accepting a stale local hash.
+///     <b>LDAP first, local only for accounts the directory does not know</b>, by the same
+///     <see cref="PasswordCredentialCheck"/> interactive login uses, so an environment that moved
+///     authentication to a directory does not find EST still accepting a stale local hash. A
+///     directory that cannot be reached refuses the request without counting a failure.
 ///   </description></item>
 ///   <item><description>
 ///     <b>Failed attempts increment and lock.</b> Basic auth over a protocol endpoint is the most
@@ -108,18 +110,21 @@ public class ProtocolCredentialService(
             && user.PasswordExpirationDate.HasValue
             && user.PasswordExpirationDate < DateTime.UtcNow;
 
-        var passwordValid = false;
-        var viaLdap = false;
-        if (config.LdapAuth.Enabled)
-        {
-            var (ldapSuccess, _) = await ldapAuth.AuthenticateAsync(username, password);
-            passwordValid = ldapSuccess;
-            viaLdap = ldapSuccess;
-        }
-        if (!passwordValid)
-            passwordValid = PasswordUtil.VerifyPassword(password, user.PasswordHash);
+        var check = await PasswordCredentialCheck.VerifyAsync(config, ldapAuth, username, password, user.PasswordHash);
+        var viaLdap = check == PasswordCheckResult.ValidViaLdap;
 
-        if (!passwordValid)
+        if (check == PasswordCheckResult.DirectoryUnavailable)
+        {
+            // The password was never checked, so this is not a failed attempt: counting it would
+            // lock every EST client out during a directory outage.
+            await audit.LogAsync(AuditActionType.UserLoginFailed, user.Id, user.Username,
+                sourceIp: sourceIp, success: false,
+                details: new { reason = "directory_unavailable", protocol },
+                errorMessage: "LoginFailed");
+            return null;
+        }
+
+        if (check == PasswordCheckResult.Invalid)
         {
             await db.Users
                 .Where(u => u.Id == user.Id)

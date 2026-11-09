@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using ModularCA.Database;
 using ModularCA.Shared.Authorization;
 using ModularCA.Shared.Entities;
@@ -38,6 +39,20 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
         _httpContextAccessor = httpContextAccessor;
         _badges = badges;
     }
+
+    /// <summary>
+    /// A resolver for asking what an account other than the caller could do, such as who could
+    /// approve a request. It counts every grant source the account holds, because a worn badge
+    /// belongs to the caller's token and says nothing about anyone else (applied to another
+    /// account it names nothing they hold, so they would appear to hold nothing). It writes no
+    /// audit rows, because nobody is acting: a <see cref="AuditActionType.SystemAdminElevatedAccess"/>
+    /// row for a hypothetical check would record an access that never happened, under the caller's
+    /// address and path.
+    /// </summary>
+    /// <param name="db">The application database.</param>
+    /// <returns>A resolver with no badge context, no HTTP context and no audit.</returns>
+    public static CaGroupAuthorizationService ForAnotherAccount(ModularCADbContext db)
+        => new(db, NullLogger<CaGroupAuthorizationService>.Instance);
 
     /// <summary>
     /// The worn badge as query filters. Every grant-source query below carries

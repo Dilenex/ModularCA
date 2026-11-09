@@ -40,14 +40,14 @@ public class ProtocolCredentialServiceTests
         }
     }
 
-    private sealed class StubLdap(bool succeeds) : ILdapAuthService
+    private sealed class StubLdap(LdapBindOutcome outcome) : ILdapAuthService
     {
         public int Calls { get; private set; }
 
-        public Task<(bool Success, string? Error)> AuthenticateAsync(string username, string password)
+        public Task<LdapBindOutcome> AuthenticateAsync(string username, string password)
         {
             Calls++;
-            return Task.FromResult((succeeds, (string?)null));
+            return Task.FromResult(outcome);
         }
 
         public Task<List<string>?> GetUserGroupsAsync(string username) => Task.FromResult<List<string>?>(new List<string>());
@@ -121,10 +121,10 @@ public class ProtocolCredentialServiceTests
 
     private static (ProtocolCredentialService Service, RecordingAudit Audit, StubLdap Ldap) Build(
         ModularCADbContext db, bool ldapEnabled = false, bool ldapSucceeds = false,
-        int maxAttempts = 3, int lockoutMinutes = 15)
+        int maxAttempts = 3, int lockoutMinutes = 15, LdapBindOutcome? ldapOutcome = null)
     {
         var audit = new RecordingAudit();
-        var ldap = new StubLdap(ldapSucceeds);
+        var ldap = new StubLdap(ldapOutcome ?? (ldapSucceeds ? LdapBindOutcome.Succeeded : LdapBindOutcome.Refused));
         var config = new SystemConfig();
         config.LdapAuth.Enabled = ldapEnabled;
         var service = new ProtocolCredentialService(
@@ -314,16 +314,48 @@ public class ProtocolCredentialServiceTests
     }
 
     [Fact]
-    public async Task The_local_hash_still_answers_when_ldap_rejects()
+    public async Task A_refused_ldap_bind_does_not_fall_back_to_the_local_hash()
     {
         using var fixture = new TestDb();
         var db = fixture.Context;
         AddUser(db, "device1", "Correct-Horse-1");
         var (service, audit, ldap) = Build(db, ldapEnabled: true, ldapSucceeds: false);
 
+        // The directory refused the bind, so it is authoritative for this account: the local hash
+        // may be a stale password the directory has since rotated or disabled.
+        Assert.Null(await service.VerifyAsync("device1", "Correct-Horse-1", "EST", null));
+        Assert.Equal(1, ldap.Calls);
+        Assert.Contains("invalid_password", Assert.Single(audit.Entries).Details?.ToString());
+    }
+
+    [Fact]
+    public async Task An_account_the_directory_does_not_know_still_verifies_against_the_local_hash()
+    {
+        using var fixture = new TestDb();
+        var db = fixture.Context;
+        AddUser(db, "device1", "Correct-Horse-1");
+        var (service, audit, ldap) = Build(db, ldapEnabled: true, ldapOutcome: LdapBindOutcome.UserNotFound);
+
+        // A local-only account, such as the bootstrap administrator, keeps working with LDAP on.
         Assert.Equal("device1", await service.VerifyAsync("device1", "Correct-Horse-1", "EST", null));
         Assert.Equal(1, ldap.Calls);
         Assert.Contains("password", Assert.Single(audit.Entries).Details?.ToString());
+    }
+
+    [Fact]
+    public async Task An_unreachable_directory_refuses_without_the_local_hash_or_a_failed_attempt()
+    {
+        using var fixture = new TestDb();
+        var db = fixture.Context;
+        var user = AddUser(db, "device1", "Correct-Horse-1");
+        var (service, audit, _) = Build(db, ldapEnabled: true, ldapOutcome: LdapBindOutcome.Unavailable);
+
+        Assert.Null(await service.VerifyAsync("device1", "Correct-Horse-1", "EST", null));
+        Assert.Contains("directory_unavailable", Assert.Single(audit.Entries).Details?.ToString());
+
+        // The password was never checked, so an outage does not walk accounts toward lockout.
+        db.ChangeTracker.Clear();
+        Assert.Equal(0, (await db.Users.AsNoTracking().FirstAsync(u => u.Id == user.Id)).FailedLoginAttempts);
     }
 
     [Fact]

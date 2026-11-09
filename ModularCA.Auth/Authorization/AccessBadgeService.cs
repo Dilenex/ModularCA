@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using ModularCA.Auth.Interfaces;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Models.AccessBadges;
@@ -55,6 +56,20 @@ public sealed class AccessBadgeService
     /// <summary>The badge a new session of this user starts on, or null.</summary>
     public Task<AccessBadgeEntity?> GetDefaultAsync(Guid userId)
         => _db.AccessBadges.AsNoTracking().FirstOrDefaultAsync(b => b.UserId == userId && b.IsDefault);
+
+    /// <summary>
+    /// The token claim for the badge a new session of this user starts wearing, or null when the
+    /// user has no default badge. Every sign-in path that issues a session (password, password with
+    /// TOTP, WebAuthn or a client certificate, and certificate-first sign-in) puts this in the
+    /// access token and its id on the refresh token, so the session starts narrowed whichever factor
+    /// opened it.
+    /// </summary>
+    /// <param name="userId">The user signing in.</param>
+    public async Task<AccessBadgeClaim?> GetDefaultClaimAsync(Guid userId)
+    {
+        var badge = await GetDefaultAsync(userId);
+        return badge == null ? null : new AccessBadgeClaim(badge.Id, badge.Name);
+    }
 
     /// <summary>Creates a badge for the user from sources they hold.</summary>
     public async Task<AccessBadgeDto> CreateAsync(Guid userId, AccessBadgeWriteRequest request, Guid? actorUserId)

@@ -176,7 +176,7 @@ public class WebAuthnController : ControllerBase
         // stays open so `mfa_setup_required` users can enroll their first key.
         var hasTotpPrecheck = await _db.TotpSecrets.AnyAsync(t => t.UserId == userId.Value && t.IsVerified);
         var hasWebAuthnPrecheck = await _db.Fido2Credentials.AnyAsync(c => c.UserId == userId.Value);
-        var hasMtlsPrecheck = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
+        var hasMtlsPrecheck = await _db.MtlsCredentials.Where(await ModularCA.Core.Helpers.MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
         if (hasTotpPrecheck || hasWebAuthnPrecheck || hasMtlsPrecheck)
         {
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.WebAuthnRegister))
@@ -312,6 +312,7 @@ public class WebAuthnController : ControllerBase
     /// Username-only resolution removed — MFA token is now mandatory to prevent
     /// assertion without prior password authentication.
     /// AUTH-009: Per-user failure counter added to match TOTP brute-force protection.
+    /// The issued session wears the user's default access badge when they have one.
     /// </summary>
     [AllowAnonymous]
     [HttpPost("assertion")]
@@ -481,10 +482,13 @@ public class WebAuthnController : ControllerBase
             .Include(gm => gm.Group)
             .Select(gm => gm.Group)
             .ToListAsync();
-        var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp);
+        // A default access badge starts the session narrowed, as on every sign-in path.
+        var defaultBadge = await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeService>().GetDefaultClaimAsync(user.Id);
+        var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, badge: defaultBadge);
         var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
         var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash,
             await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Services.IDpopProofService>().GetValidatedJktAsync(HttpContext));
+        refreshToken.AccessBadgeId = defaultBadge?.Id;
         // Plaintext goes to the client; DB stores the hash.
         var refreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
 
@@ -585,7 +589,7 @@ public class WebAuthnController : ControllerBase
         // Prevent removal of last MFA method
         var webAuthnCount = await _db.Fido2Credentials.CountAsync(c => c.UserId == userId.Value);
         var hasTotp = await _db.TotpSecrets.AnyAsync(t => t.UserId == userId.Value && t.IsVerified);
-        var hasActiveMtls = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
+        var hasActiveMtls = await _db.MtlsCredentials.Where(await ModularCA.Core.Helpers.MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
         if (webAuthnCount <= 1 && !hasTotp && !hasActiveMtls)
             return StatusCode(409, new { error = "Cannot remove your only MFA method. Set up TOTP, register another security key, or enroll an mTLS certificate first." });
 

@@ -225,8 +225,9 @@ namespace ModularCA.API.Controllers.v1.Account
         /// <summary>
         /// Returns the authenticated user's MFA enrollment status, including
         /// which methods are configured and their details. Only mTLS credentials that would
-        /// authenticate are listed (<see cref="MtlsCredentialStatus.Usable"/>): one that is expired,
-        /// or whose certificate is revoked, on hold or no longer on record, is left out.
+        /// authenticate are listed (<see cref="MtlsCredentialStatus.UsableAsync"/>): one that is expired,
+        /// whose certificate is revoked, on hold or no longer on record, or whose issuing CA or a CA
+        /// above it is revoked, on hold, disabled or deleted, is left out.
         /// </summary>
         [HttpGet("mfa")]
         public async Task<IActionResult> GetMfaStatus()
@@ -247,7 +248,7 @@ namespace ModularCA.API.Controllers.v1.Account
                 .ToListAsync();
 
             var mtlsCreds = await _db.MtlsCredentials
-                .Where(MtlsCredentialStatus.Usable(DateTime.UtcNow))
+                .Where(await MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow))
                 .Where(c => c.UserId == userId)
                 .Select(c => new { c.Id, c.DeviceName, c.SerialNumber, c.IssuedAt, c.ExpiresAt, c.SigningCaId })
                 .OrderByDescending(c => c.IssuedAt)

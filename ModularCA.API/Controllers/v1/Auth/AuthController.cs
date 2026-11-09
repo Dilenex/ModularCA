@@ -114,8 +114,12 @@ namespace ModularCA.API.Controllers.v1.Auth
 
         /// <summary>
         /// Password login. With a second factor enrolled, returns a pending-MFA token recorded as
-        /// password-first; otherwise issues the session.
+        /// password-first; otherwise issues the session, wearing the user's default access badge
+        /// when they have one. With LDAP sign-in on, the password is
+        /// checked by <see cref="PasswordCredentialCheck"/>: a refused directory bind never falls
+        /// back to the local hash, and an unreachable directory refuses the sign-in.
         /// </summary>
+        /// <param name="request">The username and password.</param>
         [AllowAnonymous]
         [HttpPost("login")]
         public async Task<IActionResult> Login([FromBody] ModularCA.Auth.Models.LoginRequest request)
@@ -172,19 +176,28 @@ namespace ModularCA.API.Controllers.v1.Auth
             bool isHardLocked = user.IsLocked;
             bool isTempLocked = user.LockoutEndUtc.HasValue && user.LockoutEndUtc > DateTime.UtcNow;
 
-            // Password verification — try LDAP first if enabled, then fall back to local
-            var passwordValid = false;
-            var ldapAuthenticated = false;
-            if (_config.LdapAuth.Enabled)
-            {
-                var (ldapSuccess, _) = await _ldapAuth.AuthenticateAsync(request.Username, request.Password);
-                passwordValid = ldapSuccess;
-                ldapAuthenticated = ldapSuccess;
-            }
-            if (!passwordValid)
-                passwordValid = PasswordUtil.VerifyPassword(request.Password, user.PasswordHash);
+            // Password verification — LDAP first if enabled. The local hash answers only when LDAP
+            // is off or the directory has no entry for the user; a refused bind is final, and an
+            // unreachable directory refuses the sign-in (see PasswordCredentialCheck).
+            var passwordCheck = await PasswordCredentialCheck.VerifyAsync(
+                _config, _ldapAuth, request.Username, request.Password, user.PasswordHash);
+            var ldapAuthenticated = passwordCheck == PasswordCheckResult.ValidViaLdap;
 
-            if (!passwordValid)
+            if (passwordCheck == PasswordCheckResult.DirectoryUnavailable)
+            {
+                // The password was never checked, so no failed attempt is counted: an outage must
+                // not lock accounts. The answer is the same generic 401 as a wrong password.
+                MetricsService.AuthLoginTotal.WithLabels("ldap", "false").Inc();
+                MetricsService.AuthLoginFailures.WithLabels("directory_unavailable").Inc();
+                await _audit.LogAsync(AuditActionType.UserLoginFailed, user.Id, user.Username,
+                    sourceIp: sourceIp, success: false,
+                    details: new { reason = "directory_unavailable" },
+                    errorMessage: "LoginFailed");
+                await DelayToBudgetAsync(sw);
+                return Unauthorized(new { error = "Invalid username or password" });
+            }
+
+            if (passwordCheck == PasswordCheckResult.Invalid)
             {
                 MetricsService.AuthLoginTotal.WithLabels(ldapAuthenticated ? "ldap" : "password", "false").Inc();
                 MetricsService.AuthLoginFailures.WithLabels("invalid_password").Inc();
@@ -333,7 +346,7 @@ namespace ModularCA.API.Controllers.v1.Auth
             }
 
             // Check mTLS credentials
-            var hasMtls = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == user.Id);
+            var hasMtls = await _db.MtlsCredentials.Where(await ModularCA.Core.Helpers.MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow)).AnyAsync(c => c.UserId == user.Id);
             if (hasMtls) availableMfaMethods.Add("mtls");
 
             // Check if MFA is enforced for any of the user's groups
@@ -452,9 +465,8 @@ namespace ModularCA.API.Controllers.v1.Auth
             // Reuse userGroups (already queried above) instead of a duplicate DB round-trip
             var groups = userGroups;
             // A default access badge starts the session narrowed; badgeless otherwise.
-            var defaultBadge = await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeService>().GetDefaultAsync(user.Id);
-            var badgeClaim = defaultBadge == null ? null : new ModularCA.Auth.Interfaces.AccessBadgeClaim(defaultBadge.Id, defaultBadge.Name);
-            var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired, badge: badgeClaim);
+            var defaultBadge = await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeService>().GetDefaultClaimAsync(user.Id);
+            var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired, badge: defaultBadge);
             var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
             var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash,
                 await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Services.IDpopProofService>().GetValidatedJktAsync(HttpContext));
@@ -684,7 +696,7 @@ namespace ModularCA.API.Controllers.v1.Auth
             // Preserve MFA setup requirement on refreshed tokens
             var hasTotp = await _db.TotpSecrets.AnyAsync(t => t.UserId == user.Id && t.IsVerified);
             var hasWebAuthn = await _db.Fido2Credentials.AnyAsync(c => c.UserId == user.Id);
-            var hasMtlsCreds = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == user.Id);
+            var hasMtlsCreds = await _db.MtlsCredentials.Where(await ModularCA.Core.Helpers.MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow)).AnyAsync(c => c.UserId == user.Id);
 
             // All system group members must have TOTP or WebAuthn — mTLS alone is insufficient
             var isAdminOnRefresh = groups.Any(g => g.IsSystemGroup);
@@ -997,7 +1009,8 @@ namespace ModularCA.API.Controllers.v1.Auth
         /// <summary>
         /// Client-certificate login. With TOTP or WebAuthn enrolled, returns a pending-MFA token
         /// recorded as certificate-first, which certificate completion refuses. A credential whose
-        /// certificate is revoked, on hold or no longer on record is refused and audited.
+        /// certificate is revoked, on hold or no longer on record is refused and audited. A session
+        /// issued here starts wearing the user's default access badge.
         /// </summary>
         [AllowAnonymous]
         [HttpPost("cert-login")]
@@ -1137,10 +1150,13 @@ namespace ModularCA.API.Controllers.v1.Auth
                     requiresMfaEnrollment = true
                 });
             }
-            var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired);
+            // A default access badge starts the session narrowed, as on every sign-in path.
+            var defaultBadge = await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeService>().GetDefaultClaimAsync(user.Id);
+            var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired, badge: defaultBadge);
             var certUserAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
             var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, certUserAgentHash,
                 await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Services.IDpopProofService>().GetValidatedJktAsync(HttpContext));
+            refreshToken.AccessBadgeId = defaultBadge?.Id;
             var certRefreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
 
             user.LastLoginAt = DateTime.UtcNow;

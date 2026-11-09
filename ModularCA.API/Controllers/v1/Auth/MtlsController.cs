@@ -56,10 +56,23 @@ public class MtlsController : ControllerBase
     private readonly ISigningService _signer;
     private readonly SystemConfig _config;
     private readonly ISecurityPolicyService _securityPolicy;
+    private readonly ICertificateRevocationService _revocation;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="MtlsController"/> class.
     /// </summary>
+    /// <param name="db">The application database.</param>
+    /// <param name="cache">Distributed cache for step-up tokens, pending MFA tokens and security stamps.</param>
+    /// <param name="jwt">Issues the session tokens a certificate sign-in opens.</param>
+    /// <param name="currentUser">The signed-in caller.</param>
+    /// <param name="audit">Audit log.</param>
+    /// <param name="signer">Signs enrolled mTLS certificates.</param>
+    /// <param name="config">System configuration.</param>
+    /// <param name="securityPolicy">Security policy (lockout, OCSP requirement).</param>
+    /// <param name="revocation">
+    /// Revokes the certificate behind a credential its holder revokes, as every other revocation
+    /// path does, so the CRL is regenerated and the revocation notified.
+    /// </param>
     public MtlsController(
         ModularCADbContext db,
         IDistributedCache cache,
@@ -68,7 +81,8 @@ public class MtlsController : ControllerBase
         IAuditService audit,
         ISigningService signer,
         SystemConfig config,
-        ISecurityPolicyService securityPolicy)
+        ISecurityPolicyService securityPolicy,
+        ICertificateRevocationService revocation)
     {
         _db = db;
         _cache = cache;
@@ -78,6 +92,7 @@ public class MtlsController : ControllerBase
         _signer = signer;
         _config = config;
         _securityPolicy = securityPolicy;
+        _revocation = revocation;
     }
 
     /// <summary>
@@ -158,7 +173,7 @@ public class MtlsController : ControllerBase
         // factor at all (bootstrap), mirroring TOTP `setup`/WebAuthn `register`.
         var hasTotpPrecheck = await _db.TotpSecrets.AnyAsync(t => t.UserId == userId.Value && t.IsVerified);
         var hasWebAuthnPrecheck = await _db.Fido2Credentials.AnyAsync(c => c.UserId == userId.Value);
-        var hasActiveMtlsPrecheck = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
+        var hasActiveMtlsPrecheck = await _db.MtlsCredentials.Where(await ModularCA.Core.Helpers.MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
         if (hasTotpPrecheck || hasWebAuthnPrecheck || hasActiveMtlsPrecheck)
         {
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.MtlsEnroll))
@@ -391,10 +406,13 @@ public class MtlsController : ControllerBase
 
     /// <summary>
     /// Revokes an mTLS credential by ID. Requires step-up MFA verification via X-MFA-Token header.
-    /// Cannot revoke the user's last remaining MFA method. Also revokes the underlying certificate,
-    /// and ends every session of the account (the current one included) in the same save, since a
-    /// session does not record which credential opened it.
+    /// Cannot revoke the user's last remaining MFA method. Revokes the credential and ends every
+    /// session of the account (the current one included) in one save, since a session does not
+    /// record which credential opened it; then revokes the underlying certificate through the
+    /// revocation service (<see cref="RevokeCredentialCertificateAsync"/>).
     /// </summary>
+    /// <param name="id">The credential to revoke; it must belong to the caller.</param>
+    /// <param name="mfaToken">The step-up token for <see cref="StepUpOps.MtlsDelete"/> on this credential.</param>
     [Authorize]
     [HttpDelete("credentials/{id}")]
     public async Task<IActionResult> RevokeCredential(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -417,7 +435,7 @@ public class MtlsController : ControllerBase
         // Prevent removal of last MFA method
         var hasTotp = await _db.TotpSecrets.AnyAsync(t => t.UserId == userId.Value && t.IsVerified);
         var hasWebAuthn = await _db.Fido2Credentials.AnyAsync(c => c.UserId == userId.Value);
-        var otherActiveMtls = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c =>
+        var otherActiveMtls = await _db.MtlsCredentials.Where(await ModularCA.Core.Helpers.MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow)).AnyAsync(c =>
             c.UserId == userId.Value && c.Id != id);
 
         if (!hasTotp && !hasWebAuthn && !otherActiveMtls)
@@ -426,18 +444,6 @@ public class MtlsController : ControllerBase
         var now = DateTime.UtcNow;
         credential.IsRevoked = true;
         credential.RevokedAt = now;
-
-        // Also revoke the underlying certificate if it exists
-        if (credential.CertificateId.HasValue)
-        {
-            var cert = await _db.Certificates.FindAsync(credential.CertificateId.Value);
-            if (cert != null && !cert.Revoked)
-            {
-                cert.Revoked = true;
-                cert.RevocationReason = "Superseded";
-                cert.RevocationDate = now;
-            }
-        }
 
         // Refresh tokens do not record the credential that opened them, so every session ends.
         var ended = await UserSessionTermination.EndAllSessionsAsync(_db, [userId.Value], now);
@@ -467,7 +473,48 @@ public class MtlsController : ControllerBase
                 sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());
         }
 
+        if (credential.CertificateId is Guid certificateId)
+            await RevokeCredentialCertificateAsync(certificateId, id, userId.Value);
+
         return Ok(new { message = "mTLS credential revoked. Every session of this account has been signed out; sign in again." });
+    }
+
+    /// <summary>
+    /// Revokes the certificate behind a credential its holder has just revoked, through the
+    /// revocation service as every other revocation path does, so the issuing CA's CRL is
+    /// regenerated and the revocation notified, and audits it as <c>CertificateRevoked</c>. This
+    /// used to set the certificate row's revocation fields directly, which did none of that. The
+    /// credential is already revoked and its holder's sessions ended, so the service finds no
+    /// holder left to sign out. A certificate already revoked or on hold is left as it is, as
+    /// before; one revoked by another path between the check and the call is not an error.
+    /// </summary>
+    /// <param name="certificateId">The credential's certificate.</param>
+    /// <param name="credentialId">The credential that was revoked.</param>
+    /// <param name="userId">The holder, who revoked it.</param>
+    private async Task RevokeCredentialCertificateAsync(Guid certificateId, Guid credentialId, Guid userId)
+    {
+        if (!await _db.Certificates.AsNoTracking().AnyAsync(c => c.CertificateId == certificateId && !c.Revoked))
+            return;
+
+        try
+        {
+            await _revocation.RevokeCertificateAsync(certificateId, null, RevocationReason.Superseded);
+        }
+        catch (InvalidOperationException)
+        {
+            if (await _db.Certificates.AsNoTracking().AnyAsync(c => c.CertificateId == certificateId && c.Revoked))
+                return;
+            throw;
+        }
+
+        await _audit.LogAsync(
+            Shared.Enums.AuditActionType.CertificateRevoked,
+            userId,
+            _currentUser.User?.Username,
+            targetEntityType: "Certificate",
+            targetEntityId: certificateId.ToString(),
+            details: new { Reason = nameof(RevocationReason.Superseded), SelfService = true, CredentialId = credentialId },
+            sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());
     }
 
     /// <summary>
@@ -476,7 +523,8 @@ public class MtlsController : ControllerBase
     /// Accepts the temporary MFA token from the login endpoint (no JWT required), consumed once;
     /// a token minted by a certificate login is refused, since one certificate is not two factors.
     /// A credential whose certificate is revoked or on hold is refused and audited, and a valid
-    /// DPoP proof binds the new session's refresh token to the proving key.
+    /// DPoP proof binds the new session's refresh token to the proving key. The session wears the
+    /// user's default access badge when they have one.
     /// </summary>
     /// <remarks>
     /// <c>[AllowAnonymous]</c> is required, not optional. <c>StartModularCA</c> sets a
@@ -613,9 +661,11 @@ public class MtlsController : ControllerBase
                 requiresMfaEnrollment = true
             });
         }
-        var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired);
+        var defaultBadge = await GetDefaultBadgeAsync(user.Id);
+        var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired, badge: defaultBadge);
         var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
         var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash, await GetDpopJktAsync());
+        refreshToken.AccessBadgeId = defaultBadge?.Id;
         // Plaintext is returned to the client; DB stores the hash.
         var refreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
 
@@ -750,7 +800,8 @@ public class MtlsController : ControllerBase
     /// <see cref="PrepareRedirect"/>; there is no query-string form. The cookie keeps the token
     /// out of referer headers, server logs, and browser history.
     /// </para>
-    /// The token is consumed once, and one minted by a certificate login is refused.
+    /// The token is consumed once, and one minted by a certificate login is refused. The session
+    /// wears the user's default access badge when they have one.
     /// </summary>
     /// <remarks>
     /// <c>[AllowAnonymous]</c> for the same reason as <see cref="Verify"/>: the caller is
@@ -879,9 +930,11 @@ public class MtlsController : ControllerBase
                 requiresMfaEnrollment = true
             });
         }
-        var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired);
+        var defaultBadge = await GetDefaultBadgeAsync(user.Id);
+        var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired, badge: defaultBadge);
         var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
         var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash);
+        refreshToken.AccessBadgeId = defaultBadge?.Id;
         var refreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
 
         user.LastLoginAt = DateTime.UtcNow;
@@ -933,7 +986,8 @@ public class MtlsController : ControllerBase
     /// JWT (if no other MFA methods) or redirects to MFA verification with a pending-MFA token
     /// recorded as certificate-first. A credential whose certificate is revoked or on hold is
     /// refused and audited. Tokens leave through a one-time code whose exchange
-    /// (<see cref="ExchangeCode"/>) binds the session to a DPoP key.
+    /// (<see cref="ExchangeCode"/>) binds the session to a DPoP key. The session wears the user's
+    /// default access badge when they have one.
     /// </summary>
     [HttpGet("login-redirect")]
     [AllowAnonymous]
@@ -1042,9 +1096,11 @@ public class MtlsController : ControllerBase
                 requiresMfaEnrollment = true
             });
         }
-        var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired);
+        var defaultBadge = await GetDefaultBadgeAsync(user.Id);
+        var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired, badge: defaultBadge);
         var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
         var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash);
+        refreshToken.AccessBadgeId = defaultBadge?.Id;
         var refreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
 
         user.LastLoginAt = DateTime.UtcNow;
@@ -1180,6 +1236,15 @@ public class MtlsController : ControllerBase
     private Task<string?> GetDpopJktAsync()
         => HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Services.IDpopProofService>()
             .GetValidatedJktAsync(HttpContext, HttpContext.RequestAborted);
+
+    /// <summary>
+    /// The default access badge a new session of <paramref name="userId"/> starts wearing, or null.
+    /// Every session this controller issues carries it, as every other sign-in path does.
+    /// </summary>
+    /// <param name="userId">The user signing in.</param>
+    private Task<ModularCA.Auth.Interfaces.AccessBadgeClaim?> GetDefaultBadgeAsync(Guid userId)
+        => HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeService>()
+            .GetDefaultClaimAsync(userId);
 
     /// <summary>
     /// Resolves the main application origin URL for redirect purposes.

@@ -95,7 +95,7 @@ public class TotpController : ControllerBase
         // bootstrap case — no existing factor — stays open so `mfa_setup_required`
         // users can enroll their first method without chicken-and-egg deadlock.
         var hasWebAuthn = await _db.Fido2Credentials.AnyAsync(c => c.UserId == userId.Value);
-        var hasActiveMtls = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
+        var hasActiveMtls = await _db.MtlsCredentials.Where(await ModularCA.Core.Helpers.MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
         if (hasWebAuthn || hasActiveMtls)
         {
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.TotpSetup))
@@ -157,7 +157,7 @@ public class TotpController : ControllerBase
         // another verified factor, VerifySetup requires step-up. Bootstrap users
         // without any factor can still complete first-time enrollment.
         var hasWebAuthnPrecheck = await _db.Fido2Credentials.AnyAsync(c => c.UserId == userId.Value);
-        var hasMtlsPrecheck = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
+        var hasMtlsPrecheck = await _db.MtlsCredentials.Where(await ModularCA.Core.Helpers.MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
         if (hasWebAuthnPrecheck || hasMtlsPrecheck)
         {
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.TotpVerifySetup))
@@ -385,8 +385,10 @@ public class TotpController : ControllerBase
     /// <summary>
     /// Verifies a TOTP code during the login MFA flow. Accepts the temporary MFA token
     /// issued by the login endpoint (no JWT required), whether the first factor was a password or
-    /// a client certificate. On success, issues a full JWT token.
+    /// a client certificate. On success, issues a full JWT token, wearing the user's default
+    /// access badge when they have one.
     /// </summary>
+    /// <param name="request">The pending-MFA token and the TOTP code.</param>
     [AllowAnonymous]
     [HttpPost("verify")]
     public async Task<IActionResult> Verify([FromBody] TotpMfaVerifyRequest request)
@@ -500,10 +502,13 @@ public class TotpController : ControllerBase
             .Include(gm => gm.Group)
             .Select(gm => gm.Group)
             .ToListAsync();
-        var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp);
+        // A default access badge starts the session narrowed, as on every sign-in path.
+        var defaultBadge = await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeService>().GetDefaultClaimAsync(user.Id);
+        var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, badge: defaultBadge);
         var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
         var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash,
             await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Services.IDpopProofService>().GetValidatedJktAsync(HttpContext));
+        refreshToken.AccessBadgeId = defaultBadge?.Id;
         // Hand the plaintext back to the client; the DB stores the hash.
         var refreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
 
@@ -573,7 +578,7 @@ public class TotpController : ControllerBase
 
         // Prevent removal of last MFA method
         var hasWebAuthn = await _db.Fido2Credentials.AnyAsync(c => c.UserId == userId.Value);
-        var hasActiveMtls = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
+        var hasActiveMtls = await _db.MtlsCredentials.Where(await ModularCA.Core.Helpers.MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
         if (!hasWebAuthn && !hasActiveMtls)
             return StatusCode(409, new { error = "Cannot remove your only MFA method. Register a security key or enroll an mTLS certificate before removing TOTP." });
 

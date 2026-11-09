@@ -1513,10 +1513,16 @@ if (config.Redis.Enabled && !string.IsNullOrWhiteSpace(config.Redis.ConnectionSt
     var redis = StackExchange.Redis.ConnectionMultiplexer.Connect(config.Redis.ConnectionString);
     dpBuilder.PersistKeysToStackExchangeRedis(redis, "ModularCA:DataProtection-Keys");
     Console.WriteLine("[DataProtection] Keyring persisted to Redis");
+    // Single-use claims (DPoP jti) need an atomic add-if-absent, which IDistributedCache lacks.
+    // SET NX on the same connection keeps the guarantee across nodes.
+    builder.Services.AddSingleton<ModularCA.Auth.Services.IReplayGuard>(
+        new ModularCA.API.Services.RedisReplayGuard(redis, (config.Redis.InstanceName ?? "ModularCA:") + "replay:"));
 }
 else
 {
     dpBuilder.PersistKeysToFileSystem(new DirectoryInfo(dpKeysDir));
+    // Process-local, like the memory cache this branch runs with.
+    builder.Services.AddSingleton<ModularCA.Auth.Services.IReplayGuard>(new ModularCA.Auth.Services.InProcessReplayGuard());
 }
 
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();

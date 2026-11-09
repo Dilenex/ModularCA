@@ -145,8 +145,9 @@ public static class ControlledCredentials
     /// <summary>
     /// SHA-256 over the account's MFA enrolment time and the ids of its TOTP secrets (with their
     /// verified flag), WebAuthn credentials, usable mTLS credentials and unused recovery codes.
-    /// An mTLS credential counts by the authentication rule (<see cref="MtlsCredentialStatus.Usable"/>),
-    /// so revoking, holding or losing its certificate, or its expiry, changes the marker.
+    /// An mTLS credential counts by the authentication rule (<see cref="MtlsCredentialStatus.UsableAsync"/>),
+    /// so revoking, holding or losing its certificate, its expiry, or a change in the standing of a
+    /// CA above it, changes the marker.
     /// Counters that change on every sign-in are left out.
     /// </summary>
     private static async Task<string> MfaMarkerAsync(ModularCADbContext db, Guid userId, DateTime? mfaEnrolledAt)
@@ -156,7 +157,7 @@ public static class ControlledCredentials
             .Select(t => new { t.Id, t.IsVerified }).ToListAsync()).Select(t => $"t:{t.Id}:{t.IsVerified}"));
         parts.AddRange((await db.Fido2Credentials.AsNoTracking().Where(c => c.UserId == userId)
             .Select(c => c.Id).ToListAsync()).Select(id => $"f:{id}"));
-        parts.AddRange((await db.MtlsCredentials.AsNoTracking().Where(MtlsCredentialStatus.Usable(DateTime.UtcNow))
+        parts.AddRange((await db.MtlsCredentials.AsNoTracking().Where(await MtlsCredentialStatus.UsableAsync(db, DateTime.UtcNow))
             .Where(c => c.UserId == userId)
             .Select(c => c.Id).ToListAsync()).Select(id => $"m:{id}"));
         parts.AddRange((await db.TotpRecoveryCodes.AsNoTracking().Where(c => c.UserId == userId && c.UsedAt == null)
