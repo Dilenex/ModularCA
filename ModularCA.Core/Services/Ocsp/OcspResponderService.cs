@@ -100,6 +100,10 @@ public class OcspResponderService : IOcspService
     /// abuse paths (oversized nonce, duplicate extensions, unknown hash alg,
     /// etc.) so DoS amplification cannot force an HSM operation. A serial is looked up among
     /// certificates issued under any of the CA's certificates sharing the key the request names.
+    /// The signing CA is resolved from the first single request, and a request in which any other
+    /// single request names a different issuer is refused as a whole with <c>unauthorized</c>
+    /// (<see cref="NamesIssuer"/>): one response has one signer, and that signer is authorized
+    /// only for its own CA's certificates (RFC 6960 §4.2.2.2).
     /// </summary>
     public async Task<byte[]> ProcessOcspRequestAsync(
         byte[] derRequest,
@@ -225,6 +229,23 @@ public class OcspResponderService : IOcspService
         var signingContext = resolved.SigningContext;
         var signingCaEntity = resolved.CaEntity;
         var isOurIssuer = resolved.IsOurIssuer;
+
+        // Every single request must name the issuer the first one resolved to. Each used to be
+        // looked up in the first request's issuer scope and answered under its responder, so a
+        // CertID naming another issuer got a status this responder is not authorized to give:
+        // "good" for one of this CA's serials, or "revoked" under extended-revoke for anything
+        // else. One response has one signer, so a request spanning issuers is refused as a
+        // whole, as an unrecognised first issuer already is.
+        for (var i = 1; i < requests.Length; i++)
+        {
+            if (!NamesIssuer(requests[i].GetCertID(), caCert))
+            {
+                _logger.LogWarning(
+                    "OCSP: single request {Index} names a different issuer than the first (resolved to '{Subject}'); refusing the request",
+                    i, caCert.SubjectDN);
+                return BuildStatusResponse(OcspRespStatus.Unauthorized, result);
+            }
+        }
 
         // Explicit thisUpdate/nextUpdate. Backdate thisUpdate
         // slightly for clock skew.
@@ -737,6 +758,31 @@ public class OcspResponderService : IOcspService
             ResponderCert = responderCert,
             ResponderKey = responderKey,
         };
+    }
+
+    /// <summary>
+    /// True when <paramref name="certId"/>'s issuer name and key hashes are those of
+    /// <paramref name="caCert"/>, computed under the CertID's own hash algorithm, so one issuer
+    /// named under SHA-1 in one single request and SHA-256 in another is still one issuer. The
+    /// same comparison <see cref="ResolveSigningCaAsync"/> uses to match a signer.
+    /// </summary>
+    /// <param name="certId">The single request's CertID.</param>
+    /// <param name="caCert">The CA certificate the request was resolved to.</param>
+    private bool NamesIssuer(CertificateID certId, X509Certificate caCert)
+    {
+        try
+        {
+#pragma warning disable CS0618 // CertificateID string constructor — no non-deprecated overload available
+            var computed = new CertificateID(certId.HashAlgOid, caCert, certId.SerialNumber);
+#pragma warning restore CS0618
+            return AreEqual(computed.GetIssuerKeyHash(), certId.GetIssuerKeyHash())
+                && AreEqual(computed.GetIssuerNameHash(), certId.GetIssuerNameHash());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "OCSP: error computing CertificateID for issuer '{Subject}'", caCert.SubjectDN);
+            return false;
+        }
     }
 
     private static bool AreEqual(byte[] a, byte[] b)

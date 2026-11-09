@@ -73,16 +73,38 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
-        /// Checks that the requested NotAfter date does not exceed the maximum validity period
-        /// defined by the effective certificate profile. A null <paramref name="notAfter"/> is
-        /// treated as "use the profile default" and is always considered within bounds — the
-        /// issuance pipeline substitutes <c>now + ValidityPeriodMax</c> in that case, which is
-        /// by construction ≤ <c>maxDate</c>.
+        /// The latest NotAfter the effective certificate profile permits for a certificate starting
+        /// at <paramref name="notBefore"/>: that start plus <c>ValidityPeriodMax</c> (default
+        /// <c>P1Y</c>). With no requested start it is measured from now, so the default skew
+        /// backdate applied at issuance is not counted against the profile.
+        /// <para>
+        /// The maximum bounds the certificate's lifetime. It used to be measured from now whatever
+        /// the start, so an explicitly backdated notBefore, which issuance honours as given, gave a
+        /// certificate up to the backdate longer than the profile allows.
+        /// </para>
         /// </summary>
+        /// <param name="notBefore">The requested NotBefore, or null when the pipeline chooses the start.</param>
+        /// <param name="certProfile">The resolved effective certificate profile with validity constraints.</param>
+        /// <returns>The latest permitted NotAfter, as UTC.</returns>
+        public DateTime MaximumNotAfter(DateTime? notBefore, EffectiveCertProfile certProfile)
+        {
+            var from = CertificateValidityUtil.AsUtc(notBefore) ?? DateTime.UtcNow;
+            return from.Add(Iso8601ParserUtil.ParseIso8601(certProfile.ValidityPeriodMax ?? "P1Y"));
+        }
+
+        /// <summary>
+        /// Checks that the requested NotAfter date does not exceed the maximum validity period
+        /// defined by the effective certificate profile, measured from the certificate's start
+        /// (<see cref="MaximumNotAfter"/>), so <c>notAfter - notBefore</c> never exceeds
+        /// <c>ValidityPeriodMax</c>. A null <paramref name="notAfter"/> is treated as "use the
+        /// profile default" and is always considered within bounds: the issuance pipeline
+        /// substitutes <see cref="MaximumNotAfter"/> in that case.
+        /// </summary>
+        /// <param name="notBefore">The requested NotBefore date, or null when the pipeline chooses the start.</param>
         /// <param name="notAfter">The requested NotAfter date, or null to use the profile default.</param>
         /// <param name="certProfile">The resolved effective certificate profile with validity constraints.</param>
         /// <returns><c>true</c> if the date is within the allowed range or null; otherwise <c>false</c>.</returns>
-        public bool NotBeyondMaximumDate(DateTime? notAfter, EffectiveCertProfile certProfile)
+        public bool NotBeyondMaximumDate(DateTime? notBefore, DateTime? notAfter, EffectiveCertProfile certProfile)
         {
             // A null notAfter used to silently return false because
             // `null <= maxDate` evaluates to false in C#'s nullable relational
@@ -91,8 +113,7 @@ namespace ModularCA.Core.Services
             // circuits to true.
             if (notAfter == null)
                 return true;
-            var maxDate = DateTime.UtcNow.Add(Iso8601ParserUtil.ParseIso8601(certProfile.ValidityPeriodMax ?? "P1Y"));
-            return notAfter <= maxDate;
+            return CertificateValidityUtil.AsUtc(notAfter.Value) <= MaximumNotAfter(notBefore, certProfile);
         }
 
         /// <summary>
@@ -185,6 +206,13 @@ namespace ModularCA.Core.Services
         /// Resolves the effective extended key usages by intersecting the cert profile EKUs
         /// with the signing profile's hard-constraint AllowedEKUs, then filtering against
         /// the OID options table.
+        /// <para>
+        /// Fails closed. The signing profile restricts whenever its AllowedEKUs lists anything,
+        /// whether or not those entries resolve in the catalog. Under a restricting signing profile
+        /// an empty cert-profile list is refused unless <paramref name="allowNoExtendedKeyUsage"/>
+        /// is set, because an empty result emits no ExtendedKeyUsage extension and a leaf without
+        /// one is valid for every purpose (RFC 5280 §4.2.1.12).
+        /// </para>
         /// </summary>
         /// <param name="certProfileEkus">JSON array of EKU OIDs from the certificate profile.</param>
         /// <param name="signingProfileAllowedEkus">JSON array of allowed EKU OIDs from the signing profile.</param>
@@ -196,15 +224,38 @@ namespace ModularCA.Core.Services
         /// background renewal jobs. Null means nobody is listening, which is the correct
         /// behaviour for callers that only want the resolved list.
         /// </param>
+        /// <param name="allowNoExtendedKeyUsage">
+        /// True when the certificate may legitimately carry no ExtendedKeyUsage extension even
+        /// though the signing profile restricts: a CA certificate (which must not carry one, see
+        /// <c>CaCertificateRules.EnsureNoExtendedKeyUsage</c>) or a system-issued infrastructure
+        /// certificate such as the CMP signer. False for every caller-requested leaf.
+        /// </param>
         /// <returns>List of validated EKU OID strings.</returns>
         public List<string> SetupAllowedExtendedOids(
             string certProfileEkus,
             string signingProfileAllowedEkus,
-            ICollection<Diagnostic>? diagnostics = null)
+            ICollection<Diagnostic>? diagnostics = null,
+            bool allowNoExtendedKeyUsage = false)
         {
-            var certEkus = JsonSerializer.Deserialize<List<string>>(certProfileEkus ?? "[]", SafeJsonOptions.Default) ?? new List<string>();
+            var certEkus = ParseUsageList(certProfileEkus);
             if (certEkus.Count == 0)
+            {
+                // An empty cert-profile list asks for no EKU extension, which leaves a leaf valid
+                // for every purpose. That is only consistent with a signing profile that restricts
+                // nothing. Under one that does, this used to return an empty list and escape the
+                // allow-list entirely.
+                if (!allowNoExtendedKeyUsage && ListsAnyUsage(ParseUsageList(signingProfileAllowedEkus)))
+                {
+                    throw new CertificatePolicyViolationException(
+                    [
+                        "[ExtendedKeyUsage] The certificate profile lists no extended key usages, but the "
+                        + "signing profile's AllowedEKUs restricts them. Issuing would emit no ExtendedKeyUsage "
+                        + "extension at all, which leaves the certificate valid for every purpose and outside "
+                        + "the signing profile's allow-list. Add the intended usages to the certificate profile."
+                    ]);
+                }
                 return new List<string>();
+            }
 
             // anyExtendedKeyUsage (OID 2.5.29.37.0) MUST NOT appear in
             // publicly-trusted subscriber certificates per RFC 5280 §4.2.1.12 and
@@ -219,7 +270,7 @@ namespace ModularCA.Core.Services
                     "Remove it from the profile's ExtendedKeyUsages list.");
             }
 
-            var sigEkus = JsonSerializer.Deserialize<List<string>>(signingProfileAllowedEkus ?? "[]", SafeJsonOptions.Default) ?? new List<string>();
+            var sigEkus = ParseUsageList(signingProfileAllowedEkus);
             if (sigEkus.Any(e => string.Equals(e, AnyExtendedKeyUsageOid, StringComparison.Ordinal)))
             {
                 throw new InvalidOperationException(
@@ -269,9 +320,14 @@ namespace ModularCA.Core.Services
             var certOids = certEkus.Select(ResolveEku).Where(o => o != null).Select(o => o!).Distinct().ToList();
             var sigOids = sigEkus.Select(ResolveEku).Where(o => o != null).Select(o => o!).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+            // The signing profile restricts because it lists something, not because what it lists
+            // resolved. Keying this on the resolved set let an allow-list of only misspelled or
+            // uncatalogued entries collapse to empty and read as "no restriction".
+            var signingProfileRestricts = ListsAnyUsage(sigEkus);
+
             var allowedExtended = certOids
                 .Where(oid => !string.Equals(oid, AnyExtendedKeyUsageOid, StringComparison.Ordinal))
-                .Where(oid => sigOids.Count == 0 || sigOids.Contains(oid))
+                .Where(oid => !signingProfileRestricts || sigOids.Contains(oid))
                 .ToList();
 
             // Usages the signing profile's hard constraint removed. Distinct from an unresolved
@@ -283,7 +339,7 @@ namespace ModularCA.Core.Services
             // looking. The certificate came out missing smartcardLogon, Windows answered
             // CERT_E_WRONG_USAGE, and nothing on screen joined the two. Detection was never the
             // problem; the finding had no route to the caller.
-            if (sigOids.Count > 0)
+            if (signingProfileRestricts)
             {
                 var droppedByPolicy = certOids.Where(o => !sigOids.Contains(o)).ToList();
                 if (droppedByPolicy.Count > 0)
@@ -331,6 +387,24 @@ namespace ModularCA.Core.Services
 
             return allowedExtended;
         }
+
+        /// <summary>
+        /// Parses a JSON array of usage identifiers as stored on a profile. Null or whitespace is
+        /// an empty list; malformed JSON throws, as it did before this helper existed.
+        /// </summary>
+        /// <param name="json">The stored JSON array, or null.</param>
+        private static List<string> ParseUsageList(string? json)
+            => string.IsNullOrWhiteSpace(json)
+                ? new List<string>()
+                : JsonSerializer.Deserialize<List<string>>(json, SafeJsonOptions.Default) ?? new List<string>();
+
+        /// <summary>
+        /// True when <paramref name="usages"/> holds at least one non-blank entry, which is what
+        /// makes a signing profile's AllowedEKUs a restriction.
+        /// </summary>
+        /// <param name="usages">The parsed usage list.</param>
+        private static bool ListsAnyUsage(IEnumerable<string?> usages)
+            => usages.Any(u => !string.IsNullOrWhiteSpace(u));
 
         /// <summary>
         /// Resolves the allowed standard (non-extended) key usages from the certificate profile's

@@ -150,6 +150,30 @@ public class XcepPolicyServiceTests
         Assert.Equal(["RsaDevice"], policy.Templates.Select(t => t.Name));
     }
 
+    /// <summary>
+    /// A template whose certificate profile lists no EKUs, under a signing profile that restricts
+    /// them, cannot be issued (the issuance check refuses it), so it is left out of the policy with
+    /// a warning; the other templates are still offered rather than the whole listing failing.
+    /// </summary>
+    [Fact]
+    public async Task A_template_that_could_not_be_issued_for_its_ekus_is_skipped_not_advertised()
+    {
+        var h = Build();
+        h.Signing.AllowedEKUs = """["clientAuth","serverAuth"]""";
+        var noEku = new CertProfileEntity
+        {
+            Id = Guid.NewGuid(), Name = "No EKU", AllowedKeyAlgorithms = """["RSA"]""", KeyUsages = "[]", ExtendedKeyUsages = "[]",
+        };
+        h.Db.CertProfiles.Add(noEku);
+        h.Db.SaveChanges();
+        h.AddTemplate("NoEku", noEku, "2.25.70");
+        h.AddTemplate("RsaDevice", h.DeviceProfile, "2.25.71");
+
+        var policy = await h.Service.GetPoliciesAsync("lab", "svc-enroll");
+
+        Assert.Equal(["RsaDevice"], policy.Templates.Select(t => t.Name));
+    }
+
     [Fact]
     public async Task Template_attributes_come_from_the_certificate_profile()
     {

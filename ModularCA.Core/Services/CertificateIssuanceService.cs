@@ -1,5 +1,6 @@
 using ModularCA.Shared.Errors;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using ModularCA.Core.Models;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
@@ -143,6 +144,17 @@ namespace ModularCA.Core.Services
         /// <summary>
         /// Issues the CSR's certificate. A leaf profile outside the issuing CA's scope is refused
         /// (<see cref="ModularCA.Core.Authorization.CertProfileScope"/>), whatever the entry point.
+        /// The request is reserved first (<see cref="ReserveRequestAsync"/>) and stays reserved until
+        /// the certificate and the request's Issued status commit together, so concurrent issuances
+        /// of one request sign and store one certificate; the others are refused with
+        /// <see cref="ErrorCodes.CsrStateNotEligible"/> before they sign. Certificate Transparency
+        /// submission, metrics and the audit record follow the commit.
+        /// A leaf whose profile lists no extended key usages is refused under a signing profile
+        /// that restricts them; only CA and infrastructure certificates may be issued with none
+        /// (<see cref="IssuanceValidationService.SetupAllowedExtendedOids"/>). The profile's
+        /// maximum validity is measured from the requested notBefore when one is given
+        /// (<see cref="IssuanceValidationService.MaximumNotAfter"/>), so a backdated start cannot
+        /// lengthen the certificate.
         /// </summary>
         /// <param name="allowCaProfile">
         /// Whether a cert profile carrying <c>IsCaProfile</c> may be used. False on every public
@@ -167,12 +179,27 @@ namespace ModularCA.Core.Services
             CancellationToken cancellationToken = default)
         {
             var issuanceDiagnostics = new List<Diagnostic>();
+
+            // Reserve the request before anything is judged or signed: the request's row is locked
+            // until the certificate and the request's Issued status commit together, so a second
+            // issuance of the same request waits here and then reads it as Issued. Without this,
+            // both read the request as Approved, both signed, and both stored a certificate; the
+            // loser's xmin conflict came only when it marked the request, after its certificate
+            // was already signed and committed.
+            var alreadyTracked = _db.ChangeTracker.Entries<CertRequestEntity>().Any(e => e.Entity.Id == csrId);
+            await using var issuanceTransaction = await ReserveRequestAsync(csrId, cancellationToken);
+
             var csrEntity = await _db.CertificateRequests
                 .Include(c => c.SigningProfile)
                 .FirstOrDefaultAsync(c => c.Id == csrId);
 
             if (csrEntity == null)
                 throw new ResourceNotFoundException("CSR", "CSR not found.");
+
+            // A request the caller's context already tracked is not re-read by the query above, so
+            // its state is refreshed from the locked row before it is judged.
+            if (alreadyTracked && _db.Database.IsNpgsql() && _db.Entry(csrEntity).State == EntityState.Unchanged)
+                await _db.Entry(csrEntity).ReloadAsync(cancellationToken);
 
             if (ValidateCsrStatus(csrEntity) == false)
                 throw new ResourceConflictException("CSR is not in a valid state for issuance", ErrorCodes.CsrStateNotEligible);
@@ -246,12 +273,12 @@ namespace ModularCA.Core.Services
                     "CA certificates are created through the CA creation workflow.", ErrorCodes.CaProfileOnLeafIssuance);
             }
 
-            if (!_validation.NotBeyondMaximumDate(notAfter, effectiveCertProfile))
+            // Measured from the requested start, not from now: an explicit notBefore is honoured
+            // as given below, so measuring from now let a backdated start stretch the lifetime.
+            if (!_validation.NotBeyondMaximumDate(notBefore, notAfter, effectiveCertProfile))
             {
-                var maxNotAfter = effectiveCertProfile.ValidityPeriodMax != null
-                    ? DateTime.UtcNow.Add(System.Xml.XmlConvert.ToTimeSpan(effectiveCertProfile.ValidityPeriodMax))
-                    : (DateTime?)null;
-                throw new Exception($"NotAfter date exceeds the certificate profile's maximum validity. Max allowed: {effectiveCertProfile.ValidityPeriodMax ?? "not set"} (until {maxNotAfter?.ToString("yyyy-MM-dd") ?? "unknown"}). Reduce the validity period or update the cert profile.");
+                var maxNotAfter = _validation.MaximumNotAfter(notBefore, effectiveCertProfile);
+                throw new Exception($"NotAfter date exceeds the certificate profile's maximum validity. Max allowed: {effectiveCertProfile.ValidityPeriodMax ?? "P1Y (default)"} from the certificate's start (until {maxNotAfter:yyyy-MM-dd}). Reduce the validity period or update the cert profile.");
             }
 
             // For infrastructure certs, skip the pre-clamp minimum check — the caller may have
@@ -324,7 +351,9 @@ namespace ModularCA.Core.Services
             }
 
             var now = DateTime.UtcNow;
-            var timeMax = DateTime.UtcNow + Iso8601ParserUtil.ParseIso8601(effectiveCertProfile.ValidityPeriodMax ?? "P1Y");
+            // The default expiry is the profile maximum from the requested start (from now when
+            // none was requested), so a backdated start without an expiry cannot outlive it either.
+            var timeMax = _validation.MaximumNotAfter(notBefore, effectiveCertProfile);
 
             // Backdate an auto-generated start time so the certificate is valid on verifiers whose
             // clocks trail ours. An explicitly requested notBefore is honoured as given.
@@ -427,7 +456,8 @@ namespace ModularCA.Core.Services
             await ValidateNameConstraintsAsync(caMatch, refCACert, subjectDn, ParseSanJson(effectiveSans),
                 isCaCertificate: allowCaProfile || effectiveCertProfile.IsCaProfile, cancellationToken);
 
-            var extendedOids = _validation.SetupAllowedExtendedOids(effectiveCertProfile.ExtendedKeyUsages, csrEntity.SigningProfile.AllowedEKUs, issuanceDiagnostics);
+            var extendedOids = _validation.SetupAllowedExtendedOids(effectiveCertProfile.ExtendedKeyUsages, csrEntity.SigningProfile.AllowedEKUs, issuanceDiagnostics,
+                allowNoExtendedKeyUsage: effectiveCertProfile.IsCaProfile || csrEntity.IsInfrastructureCert);
             var standardOids = _validation.SetupAllowedStandardOids(effectiveCertProfile.KeyUsages);
 
             // Refuse a subject the Certificates row cannot hold. Signing happens on the next line
@@ -467,10 +497,16 @@ namespace ModularCA.Core.Services
 
             await _certStore.SaveCertificateAsync(issuedCert.GetEncoded(), certModel);
 
-            // Submit to Certificate Transparency logs (fire-and-forget — never blocks issuance)
-            await SubmitToCTLogsIfEnabledAsync(issuedCert, caMatch, effectiveCertProfile, certModel.SerialNumber);
-
             await SetCsrStatus(_db, csrEntity, certModel.SerialNumber);
+
+            // The certificate row and the request's Issued status commit together, releasing the
+            // reservation taken at the top. Nothing after this point can undo the issuance.
+            if (issuanceTransaction != null)
+                await issuanceTransaction.CommitAsync(cancellationToken);
+
+            // Submit to Certificate Transparency logs (fire-and-forget — never blocks issuance).
+            // After the commit, so the request's lock is not held across calls to the logs.
+            await SubmitToCTLogsIfEnabledAsync(issuedCert, caMatch, effectiveCertProfile, certModel.SerialNumber);
 
             // Increment Prometheus metrics for certificate issuance
             var caLabel = caMatch.SubjectDN?.ToString() ?? "unknown";
@@ -540,7 +576,13 @@ namespace ModularCA.Core.Services
         /// certificate revoked as Superseded (when it is not already revoked or expired), so a
         /// refused reissue leaves the predecessor in service. Should that final revocation fail,
         /// the replacement stands, the predecessor is marked reissued, and the error says to revoke
-        /// it by hand.
+        /// it by hand. The request is reserved before the predecessor is read
+        /// (<see cref="ReserveRequestAsync"/>) until the replacement, the request's status, the
+        /// predecessor's reissued flag and the link commit together, so a concurrent reissue of the
+        /// same certificate is refused with <see cref="ErrorCodes.AlreadyReissued"/> before it signs.
+        /// it by hand. As on first issuance, a leaf whose profile lists no extended key usages is
+        /// refused under a signing profile that restricts them, and the profile's maximum validity
+        /// is measured from the requested notBefore when one is given.
         /// </summary>
         /// <param name="certId">Optional certificate ID to look up the original CSR.</param>
         /// <param name="certSN">Optional serial number to look up the original CSR.</param>
@@ -609,12 +651,23 @@ namespace ModularCA.Core.Services
             // for a certificate with a matching subject DN.
             var predecessorCertId = csrEntity.IssuedCertificateId;
 
+            // Reserve the request as a fresh issuance does (see ReserveRequestAsync): a second
+            // reissue of the same certificate waits here, then finds the predecessor already marked
+            // reissued and is refused before it signs. Both rows were read before the lock, so they
+            // are refreshed from the database once it is held.
+            await using var issuanceTransaction = await ReserveRequestAsync(csrEntity.Id, CancellationToken.None);
+            if (_db.Database.IsNpgsql() && _db.Entry(csrEntity).State == EntityState.Unchanged)
+                await _db.Entry(csrEntity).ReloadAsync();
+
             var prevCert = await _db.Certificates
-                .Where(c => c.CertificateId == csrEntity.IssuedCertificateId)
+                .Where(c => c.CertificateId == predecessorCertId)
                 .FirstOrDefaultAsync();
 
             if (prevCert == null)
                 throw new ResourceNotFoundException("Certificate", "Previous certificate not found for reissue.");
+
+            if (_db.Database.IsNpgsql() && _db.Entry(prevCert).State == EntityState.Unchanged)
+                await _db.Entry(prevCert).ReloadAsync();
 
             if (prevCert.IsReissued)
                 throw new ResourceConflictException("Certificate has already been reissued", ErrorCodes.AlreadyReissued);
@@ -693,7 +746,8 @@ namespace ModularCA.Core.Services
                 var sanlessProfile = await _profileResolver.ResolveCertProfileAsync(sanlessProfileId);
                 EnsureSanlessCertificateIsValid(
                     string.IsNullOrWhiteSpace(newSubjectDn) ? prevCert.SubjectDN : newSubjectDn,
-                    _validation.SetupAllowedExtendedOids(sanlessProfile.ExtendedKeyUsages, csrEntity.SigningProfile.AllowedEKUs));
+                    _validation.SetupAllowedExtendedOids(sanlessProfile.ExtendedKeyUsages, csrEntity.SigningProfile.AllowedEKUs,
+                        allowNoExtendedKeyUsage: sanlessProfile.IsCaProfile || csrEntity.IsInfrastructureCert));
             }
 
             // Reissue requires the previous certificate to be revoked with a non-compromise reason
@@ -751,7 +805,7 @@ namespace ModularCA.Core.Services
             // Resolve the effective (merged/inherited) cert profile instead of using the raw entity
             var effectiveCertProfile = await _profileResolver.ResolveCertProfileAsync(csrEntity.CertProfileId.Value);
 
-            if (!_validation.NotBeyondMaximumDate(notAfter, effectiveCertProfile))
+            if (!_validation.NotBeyondMaximumDate(notBefore, notAfter, effectiveCertProfile))
                 throw new Exception("NotAfter date is beyond the maximum allowed date");
 
             if (!_validation.ValidityDurationMeetsMinimum(notBefore, notAfter, effectiveCertProfile))
@@ -766,7 +820,9 @@ namespace ModularCA.Core.Services
                 await EnforceQuotaAsync(csrEntity.SigningProfile);
 
             var now = DateTime.UtcNow;
-            var timeMax = DateTime.UtcNow + Iso8601ParserUtil.ParseIso8601(effectiveCertProfile.ValidityPeriodMax ?? "P1Y");
+            // The default expiry is the profile maximum from the requested start (from now when
+            // none was requested), so a backdated start without an expiry cannot outlive it either.
+            var timeMax = _validation.MaximumNotAfter(notBefore, effectiveCertProfile);
 
             // Backdate an auto-generated start time so the certificate is valid on verifiers whose
             // clocks trail ours. An explicitly requested notBefore is honoured as given.
@@ -879,7 +935,8 @@ namespace ModularCA.Core.Services
             // Validate subject DN and SANs against issuing CA name constraints
             await ValidateNameConstraintsAsync(caMatch, refCACert, reissueSubjectDn, ParseSanJson(reissueEffectiveSans), isCaCertificate: false);
 
-            var extendedOids = _validation.SetupAllowedExtendedOids(effectiveCertProfile.ExtendedKeyUsages, csrEntity.SigningProfile.AllowedEKUs, issuanceDiagnostics);
+            var extendedOids = _validation.SetupAllowedExtendedOids(effectiveCertProfile.ExtendedKeyUsages, csrEntity.SigningProfile.AllowedEKUs, issuanceDiagnostics,
+                allowNoExtendedKeyUsage: effectiveCertProfile.IsCaProfile || csrEntity.IsInfrastructureCert);
             var standardOids = _validation.SetupAllowedStandardOids(effectiveCertProfile.KeyUsages);
 
             // Refuse a subject the Certificates row cannot hold. Signing happens on the next line
@@ -910,22 +967,7 @@ namespace ModularCA.Core.Services
 
             await _certStore.SaveCertificateAsync(issuedCert.GetEncoded(), certModel);
 
-            // Submit to Certificate Transparency logs (fire-and-forget — never blocks issuance)
-            await SubmitToCTLogsIfEnabledAsync(issuedCert, caMatch, effectiveCertProfile, certModel.SerialNumber);
-
             await SetCsrStatus(_db, csrEntity, certModel.SerialNumber);
-
-            // Increment Prometheus metrics for certificate reissuance
-            var reissueCaLabel = caMatch.SubjectDN?.ToString() ?? "unknown";
-            var reissueProfileName = csrEntity.SigningProfile?.Name ?? "unknown";
-            MetricsService.CertsIssued.WithLabels(reissueCaLabel, reissueProfileName).Inc();
-
-            // Always emit CertificateIssued to the general audit log
-            // after a successful reissue too, so the cross-channel query surface has a
-            // single table with every issuance event. Reissue path already resolved the
-            // CA entity earlier in the method (reissueCaEntity) for the space-enabled
-            // check — reuse it here.
-            await EmitCertificateIssuedAuditAsync(csrEntity, certModel, reissueCaEntity);
 
             // Re-query the previous certificate to avoid overwriting concurrent changes
             await _db.Entry(prevCert).ReloadAsync();
@@ -960,6 +1002,26 @@ namespace ModularCA.Core.Services
                 _db.CertificateRequests.Add(reissueCsr);
                 await _db.SaveChangesAsync();
             }
+
+            // The replacement, the request's status, the predecessor's reissued flag and the link
+            // commit together, releasing the reservation taken above.
+            if (issuanceTransaction != null)
+                await issuanceTransaction.CommitAsync();
+
+            // Submit to Certificate Transparency logs (fire-and-forget — never blocks issuance)
+            await SubmitToCTLogsIfEnabledAsync(issuedCert, caMatch, effectiveCertProfile, certModel.SerialNumber);
+
+            // Increment Prometheus metrics for certificate reissuance
+            var reissueCaLabel = caMatch.SubjectDN?.ToString() ?? "unknown";
+            var reissueProfileName = csrEntity.SigningProfile?.Name ?? "unknown";
+            MetricsService.CertsIssued.WithLabels(reissueCaLabel, reissueProfileName).Inc();
+
+            // Always emit CertificateIssued to the general audit log
+            // after a successful reissue too, so the cross-channel query surface has a
+            // single table with every issuance event. Reissue path already resolved the
+            // CA entity earlier in the method (reissueCaEntity) for the space-enabled
+            // check — reuse it here.
+            await EmitCertificateIssuedAuditAsync(csrEntity, certModel, reissueCaEntity);
 
             // Copy ACLs from the old certificate to the newly issued certificate
             try
@@ -1626,8 +1688,17 @@ namespace ModularCA.Core.Services
 
         /// <summary>
         /// Resolves the CA from the signing profile's issuer and checks whether the certificate
-        /// quota allows another issuance. Throws <see cref="InvalidOperationException"/> if the quota is exceeded.
+        /// quota allows another issuance. Throws <see cref="ResourceConflictException"/>
+        /// (<see cref="ErrorCodes.QuotaExceeded"/>) if the quota is exceeded.
         /// </summary>
+        /// <remarks>
+        /// The quota counts the CA's live certificates, so two issuances that counted at the same
+        /// time both saw room for one more and the CA overshot its quota. For a CA with a limit,
+        /// the count is taken under <see cref="LockCaQuotaAsync"/>, which holds until the issuance
+        /// commits its certificate: the next issuance for that CA counts only once the previous
+        /// one's certificate is stored or rolled back. A CA without a limit takes no lock, so its
+        /// issuances still run side by side.
+        /// </remarks>
         /// <param name="signingProfile">The signing profile whose issuer identifies the CA.</param>
         private async Task EnforceQuotaAsync(SigningProfileEntity signingProfile)
         {
@@ -1641,10 +1712,41 @@ namespace ModularCA.Core.Services
             if (ca == null)
                 return; // CA entity not registered; skip quota check
 
+            if ((await _quotaService.CheckQuotaAsync(ca.Id)).MaxCertificates == 0)
+                return; // Unlimited
+
+            await LockCaQuotaAsync(ca.Id);
             var canIssue = await _quotaService.CanIssueCertificateAsync(ca.Id);
             if (!canIssue)
                 throw new ResourceConflictException(
                     $"Certificate quota exceeded for CA '{ca.Name}'. No further certificates can be issued until the quota is increased or existing certificates expire/are revoked.", ErrorCodes.QuotaExceeded);
+        }
+
+        /// <summary>
+        /// Takes a transaction-scoped PostgreSQL advisory lock on the CA's quota, held until the
+        /// issuance's transaction (<see cref="ReserveRequestAsync"/>) commits or rolls back, so
+        /// counting a limited CA's certificates and storing the new one happen one issuance at a
+        /// time. An advisory lock rather than a counter column: the quota counts live certificates,
+        /// and a stored counter could not follow certificates leaving the count by expiry. A no-op
+        /// without a transaction or on providers without advisory locks (the unit tests).
+        /// </summary>
+        /// <param name="caId">The CA whose quota is about to be counted.</param>
+        private async Task LockCaQuotaAsync(Guid caId)
+        {
+            if (!_db.Database.IsNpgsql() || _db.Database.CurrentTransaction == null)
+                return;
+            await _db.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT pg_advisory_xact_lock({QuotaLockNamespace}, {QuotaLockKey(caId)})");
+        }
+
+        /// <summary>First key of the two-key advisory lock <see cref="LockCaQuotaAsync"/> takes ("QUOT").</summary>
+        private const int QuotaLockNamespace = 0x51554F54;
+
+        /// <summary>Folds a CA id into the second key of its quota lock.</summary>
+        private static int QuotaLockKey(Guid caId)
+        {
+            var bytes = caId.ToByteArray();
+            return BitConverter.ToInt32(bytes, 0) ^ BitConverter.ToInt32(bytes, 4) ^ BitConverter.ToInt32(bytes, 8) ^ BitConverter.ToInt32(bytes, 12);
         }
 
         /// <summary>The caller identity issuance signs under; the signer audits it with every decision.</summary>
@@ -1856,6 +1958,39 @@ namespace ModularCA.Core.Services
                 { "SHA 256", sha256thumbprint }
             };
             return JsonSerializer.Serialize(thumbprintDict);
+        }
+
+        /// <summary>
+        /// Reserves a request for issuance: opens a transaction, unless the caller already has one,
+        /// and takes a row lock on the request for the rest of it (PostgreSQL only). A concurrent
+        /// issuance of the same request waits on the lock and then reads the first one's committed
+        /// outcome, so it is refused before it signs anything. Returns the transaction this call
+        /// opened, which the caller commits once the certificate and the request's status are
+        /// saved, or null when there is none to commit here (the caller's own transaction, or a
+        /// provider without row locks, as in the unit tests).
+        /// </summary>
+        /// <param name="csrId">The request about to be issued.</param>
+        /// <param name="cancellationToken">Cancels the wait for the lock.</param>
+        private async Task<IDbContextTransaction?> ReserveRequestAsync(Guid csrId, CancellationToken cancellationToken)
+        {
+            if (!_db.Database.IsNpgsql())
+                return null;
+
+            var transaction = _db.Database.CurrentTransaction == null
+                ? await _db.Database.BeginTransactionAsync(cancellationToken)
+                : null;
+            try
+            {
+                await _db.Database.ExecuteSqlInterpolatedAsync(
+                    $"SELECT 1 FROM \"CertificateRequests\" WHERE \"Id\" = {csrId} FOR UPDATE", cancellationToken);
+            }
+            catch
+            {
+                if (transaction != null)
+                    await transaction.DisposeAsync();
+                throw;
+            }
+            return transaction;
         }
 
         /// <summary>

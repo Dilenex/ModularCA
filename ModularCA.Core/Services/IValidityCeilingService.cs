@@ -22,7 +22,9 @@ public interface IValidityCeilingService
     /// <param name="certProfileId">The certificate profile, whose <c>ValidityPeriodMax</c> is the baseline.</param>
     /// <param name="notBefore">
     /// The start the request would carry. Null uses the backdated default that issuance itself
-    /// would apply, so the answer matches what the operator would actually get.
+    /// would apply, so the answer matches what the operator would actually get. The certificate
+    /// profile's maximum is measured from this start when given, and from now when null, as
+    /// issuance measures it.
     /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>

@@ -122,6 +122,9 @@ public class ValidityCeilingService : IValidityCeilingService
 
         var now = _timeProvider.GetUtcNow().UtcDateTime;
         var start = CertificateValidityUtil.AsUtc(notBefore) ?? CertificateValidityUtil.DefaultNotBefore();
+        // Issuance measures the cert profile's maximum from the requested start, or from now when
+        // none is requested (IssuanceValidationService.MaximumNotAfter); the pre-flight does too.
+        var profileStart = CertificateValidityUtil.AsUtc(notBefore) ?? now;
 
         // A CA certificate is exempt from the space ceiling — shortening a ten-year intermediate
         // to two years takes everything beneath it down with it — so the pre-flight must not
@@ -131,7 +134,7 @@ public class ValidityCeilingService : IValidityCeilingService
 
         var resolution = CertificateValidityUtil.ResolveCeiling(
             start,
-            now,
+            profileStart,
             certProfileMax,
             spaceCeilingApplies ? spaceMaxValidityDays : 0,
             issuingCaNotAfter);
