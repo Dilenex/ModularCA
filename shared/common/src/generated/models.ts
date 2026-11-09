@@ -1625,6 +1625,7 @@ export interface SystemConfig {
     mtls: MtlsConfig;
     acme: AcmeConfig;
     est: EstConfig;
+    tsa: TsaConfig;
     protocolCleanup: ProtocolCleanupConfig;
     sshLoginNameSweep: SshLoginNameSweepConfig;
     backup: BackupConfig;
@@ -1662,6 +1663,11 @@ export interface TrustAnchorDto {
     importedByUsername?: string | null;
     importedAt: string;
     thumbprints?: string | null;
+}
+
+/** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
+export interface TsaConfig {
+    policyOid: string;
 }
 
 /** From `ModularCA.Shared/Models/Acme/UpdateAcmeAccountRequest.cs`. */

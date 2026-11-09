@@ -58,11 +58,11 @@ public sealed class X509SignerKeysTests
         using var db = world.OpenDb();
         var request = new TimeStampRequestGenerator().Generate(TspAlgorithms.Sha256, new byte[32], BigInteger.One);
 
-        var held = new TimeStampResponse(await new TimestampService(db, NullLogger<TimestampService>.Instance, TestSigner.Over(world.Keystore, world.DatabaseName))
+        var held = new TimeStampResponse(await new TimestampService(db, NullLogger<TimestampService>.Instance, TestSigner.Over(world.Keystore, world.DatabaseName), new SystemConfig())
             .ProcessTimestampRequestAsync(request.GetEncoded(), "signer-test-rsa"));
         Assert.Equal(0, held.Status);
 
-        var response = new TimeStampResponse(await new TimestampService(db, NullLogger<TimestampService>.Instance, ListingOnlySshKeys(world))
+        var response = new TimeStampResponse(await new TimestampService(db, NullLogger<TimestampService>.Instance, ListingOnlySshKeys(world), new SystemConfig())
             .ProcessTimestampRequestAsync(request.GetEncoded(), "signer-test-rsa"));
 
         Assert.NotEqual(0, response.Status);

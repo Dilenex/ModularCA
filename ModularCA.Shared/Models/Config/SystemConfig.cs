@@ -48,6 +48,9 @@ namespace ModularCA.Shared.Models.Config
         public MtlsConfig Mtls { get; set; } = new();
         public AcmeConfig Acme { get; set; } = new();
         public EstConfig Est { get; set; } = new();
+
+        /// <summary>The time-stamp authority (RFC 3161): the policy its tokens name.</summary>
+        public TsaConfig Tsa { get; set; } = new();
         public ProtocolCleanupConfig ProtocolCleanup { get; set; } = new();
         public SshLoginNameSweepConfig SshLoginNameSweep { get; set; } = new();
         public BackupConfig Backup { get; set; } = new();
@@ -1205,6 +1208,22 @@ namespace ModularCA.Shared.Models.Config
         /// </remarks>
         [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int TrustAnchorRefreshSeconds { get; set; } = 60;
+    }
+
+    /// <summary>Instance-wide settings of the time-stamp authority (RFC 3161).</summary>
+    public class TsaConfig
+    {
+        /// <summary>The policy ModularCA's TSA names by default, under Dilenex's enterprise arc (<c>docs/oid-allocation.md</c>).</summary>
+        public const string DefaultPolicyOid = "1.3.6.1.4.1.66874.1.5.1";
+
+        /// <summary>
+        /// The TSA policy, as a dotted object identifier: every timestamp token names it in
+        /// TSTInfo.policy, and a request whose reqPolicy names another is refused with
+        /// failInfo unacceptedPolicy (RFC 3161 section 2.4.2). Set it to assert a policy of
+        /// your own. Default <see cref="DefaultPolicyOid"/>.
+        /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        public string PolicyOid { get; set; } = DefaultPolicyOid;
     }
 
     /// <summary>

@@ -64,6 +64,7 @@ export const publicCore: ApiEndpoint[] = [
         auth: 'Anonymous',
         category: 'Public',
         responseDescription: 'TSA response (application/timestamp-reply).',
+        notes: 'Tokens name the TSA policy in TSTInfo.policy: the instance-wide setting Tsa.PolicyOid, by default 1.3.6.1.4.1.66874.1.5.1 (from 0.4.3; tokens issued before name 1.2.3.4.1). A request whose reqPolicy names another policy is answered with status rejection and failInfo unacceptedPolicy. The message imprint must be SHA-256, SHA-384 or SHA-512.',
     },
     {
         method: 'GET',

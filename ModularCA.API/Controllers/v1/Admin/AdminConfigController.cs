@@ -142,6 +142,7 @@ public class AdminConfigController(
             ComplianceScan = _config.ComplianceScan,
             CertExpiryNotification = _config.CertExpiryNotification,
             Acme = _config.Acme,
+            Tsa = _config.Tsa,
             Alert = _config.Alert,
             Webhook = new { _config.Webhook.Enabled, _config.Webhook.MaxRetries, _config.Webhook.RetryDelaySeconds },
             PolicySync = _config.PolicySync,
@@ -782,6 +783,27 @@ public class AdminConfigController(
     }
 
     /// <summary>
+    /// Updates the time-stamp authority's policy OID, which applies to the next timestamp request.
+    /// An empty value restores <see cref="TsaConfig.DefaultPolicyOid"/>. A value that is not a
+    /// dotted object identifier (<see cref="ConfigInputRules.ObjectIdentifierError"/>) is refused
+    /// with 400. Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
+    /// </summary>
+    [HttpPut("tsa")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
+    public async Task<IActionResult> UpdateTsa([FromBody] TsaUpdateRequest request)
+    {
+        var policyOid = string.IsNullOrWhiteSpace(request.PolicyOid) ? TsaConfig.DefaultPolicyOid : request.PolicyOid.Trim();
+        if (ConfigInputRules.ObjectIdentifierError(policyOid, "PolicyOid") is { } oidError)
+            return BadRequest(new { error = oidError });
+
+        var previous = _config.Tsa.PolicyOid;
+        _config.Tsa.PolicyOid = policyOid;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
+        await AuditConfigChange("Tsa", new { PolicyOid = new { Before = previous, After = policyOid } });
+        return Ok(new { message = "TSA policy updated", config = _config.Tsa });
+    }
+
+    /// <summary>
     /// Updates the security alert configuration.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
@@ -1037,6 +1059,13 @@ public class AcmePoliciesUpdateRequest
     /// <c>new-account</c> require <c>termsOfServiceAgreed</c> (RFC 8555 §7.3.3).
     /// </summary>
     public string? TermsOfServiceUrl { get; set; }
+}
+
+/// <summary>Request body for PUT /config/tsa.</summary>
+public class TsaUpdateRequest
+{
+    /// <summary>The TSA policy as a dotted object identifier; null or empty restores the default.</summary>
+    public string? PolicyOid { get; set; }
 }
 
 /// <summary>Request body for PUT /config/alert.</summary>

@@ -3,8 +3,9 @@ using System.Net.Mail;
 namespace ModularCA.Shared.Utils;
 
 /// <summary>
-/// Save-time checks for list-valued settings written through PUT /admin/config/*. Each method
-/// returns null when the value is acceptable, otherwise a message for a 400 response.
+/// Save-time checks for settings written through PUT /admin/config/* or the settings store
+/// (<see cref="StoredSettingError"/>). Each method returns null when the value is acceptable,
+/// otherwise a message for a 400 response or a refused write.
 /// </summary>
 public static class ConfigInputRules
 {
@@ -227,6 +228,44 @@ public static class ConfigInputRules
                  + "Name the proxy, e.g. 10.0.1.5/32, or 127.0.0.1/32,::1/128 for a proxy on this host, or turn BehindReverseProxy off.";
         return null;
     }
+
+    /// <summary>
+    /// Validates a dotted object identifier as X.660 writes it: at least two arcs of decimal
+    /// digits separated by dots, no leading zeros, the first arc 0, 1 or 2, and the second at most
+    /// 39 under 0 or 1. Returns null when it is one, otherwise a message naming
+    /// <paramref name="field"/>.
+    /// </summary>
+    /// <param name="oid">The value from the request body or the settings store.</param>
+    /// <param name="field">The setting name used in the message, e.g. <c>Tsa.PolicyOid</c>.</param>
+    public static string? ObjectIdentifierError(string? oid, string field)
+    {
+        var example = "e.g. 1.3.6.1.4.1.66874.1.5.1";
+        if (string.IsNullOrWhiteSpace(oid))
+            return $"{field} must be an object identifier written with dots, {example}.";
+        var arcs = oid.Split('.');
+        if (arcs.Length < 2
+            || arcs.Any(a => a.Length == 0 || !a.All(char.IsAsciiDigit) || (a.Length > 1 && a[0] == '0')))
+            return $"{field} '{oid}' is not an object identifier: write decimal arcs separated by dots, with no spaces or leading zeros, {example}.";
+        if (arcs[0] is not ("0" or "1" or "2"))
+            return $"{field} '{oid}' is not an object identifier: the first arc must be 0, 1 or 2.";
+        if (arcs[0] != "2" && (arcs[1].Length > 2 || int.Parse(arcs[1], System.Globalization.CultureInfo.InvariantCulture) > 39))
+            return $"{field} '{oid}' is not an object identifier: under {arcs[0]} the second arc must be from 0 to 39.";
+        return null;
+    }
+
+    /// <summary>
+    /// The rule a stored setting's value must pass beyond its type, for settings that no console
+    /// endpoint checks before they reach the settings store: null when the value passes or the
+    /// setting has no such rule. The store applies it to every write, from the console or
+    /// <c>--settings set</c>. The value must already be of the setting's type.
+    /// </summary>
+    /// <param name="key">The store key, with underscores.</param>
+    /// <param name="value">The value being stored.</param>
+    public static string? StoredSettingError(string key, System.Text.Json.Nodes.JsonNode? value) => key switch
+    {
+        "Tsa_PolicyOid" => ObjectIdentifierError(value is System.Text.Json.Nodes.JsonValue text && text.TryGetValue<string>(out var oid) ? oid : null, "Tsa.PolicyOid"),
+        _ => null,
+    };
 
     /// <summary>
     /// The origins a CORS origin list allows, split as startup splits it. None when the list is

@@ -171,6 +171,7 @@ the state when this was drawn (2026-10-05); the readers made live since are list
 | `Acme.CleanupSchedule`, `ExternalAccountRequired`, `TermsOfServiceUrl`, `EnforceCaa`, `NonceLifetimeSeconds`, `Http01.MaxAddresses`, `Http01.TimeoutSeconds`, `ChallengeProcessingTimeoutMinutes`, `ChallengeMaxAttempts` | d | ACME controllers, `AcmeNonceService`, `AcmeChallengeService`, `CaaCheckService`, `AcmeCleanupJob` | live | live |
 | `Est.AuthSubdomain` | d | Kestrel SNI callback | restart | restart |
 | `Est.TrustAnchorRefreshSeconds` | d | `EstTrustAnchorCache` (captured) | restart | live |
+| `Tsa.PolicyOid` | d | `TimestampService`, per request | live | live |
 | `ProtocolCleanup.Schedule`, `OrphanRequestGraceMinutes` | d | `ProtocolCleanupJob` | live | live |
 | `SshLoginNameSweep.Schedule` | d | `SshLoginNameSweepJob`, registry | live | live |
 | `Backup.Enabled`, `RetentionCount`, `Schedule`, `MaxBackupAgeDays`, `VerifyOnSchedule`, `CreateOnSchedule`, `VerifyCount`, `MinimumRetentionDays` | d | backup creation and verification jobs, registry, `AdminBackupController` | live | live |
@@ -248,7 +249,10 @@ will list settings from, so they cannot drift from the code.
 A list or a dictionary is one setting. The element types (`WebhookEndpoint`, `IngressRouteConfig`,
 `HsmKeyMapping`) declare nothing, so the catalog holds 216 settings where the table above counts
 223 properties. `Backup.DatabaseTimeoutMinutes`, added after the table was drawn, is
-instance-wide and live. So is `SshLoginNameSweep.Schedule`, added in 0.4.2.
+instance-wide and live. So is `SshLoginNameSweep.Schedule`, added in 0.4.2, and so is
+`Tsa.PolicyOid`, added in 0.4.3. The store refuses a `Tsa.PolicyOid` that is not a dotted object
+identifier (`ConfigInputRules.StoredSettingError`), the one value rule it applies itself, because
+no console endpoint checks that setting first.
 
 ## 2. Storage model
 

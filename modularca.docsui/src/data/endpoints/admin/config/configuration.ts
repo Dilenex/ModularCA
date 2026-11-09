@@ -233,6 +233,22 @@ export const adminConfiguration: ApiEndpoint[] = [
     },
     {
         method: 'PUT',
+        path: '/api/v1/admin/config/tsa',
+        summary: 'Update the time-stamp authority policy OID.',
+        auth: 'Authorize (SystemAdmin)',
+        category: 'Admin Configuration',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token scoped to update-config.' },
+        ],
+        requestBody: [
+            { name: 'policyOid', type: 'string', required: false, description: 'Dotted object identifier, e.g. 1.3.6.1.4.1.66874.1.5.1. Empty restores the default.' },
+        ],
+        responseDescription: 'Update confirmation with the refreshed TSA config.',
+        notes: 'Applies to the next timestamp request. Every token names this policy in TSTInfo.policy, and a request whose reqPolicy names another is refused with failInfo unacceptedPolicy. An empty policyOid restores the default, 1.3.6.1.4.1.66874.1.5.1. A value that is not a dotted object identifier is refused with 400.',
+    },
+    {
+        method: 'PUT',
         path: '/api/v1/admin/config/alert',
         summary: 'Update the security alert configuration (enable/disable, minimum severity, cooldown minutes).',
         auth: 'Authorize (SystemAdmin)',

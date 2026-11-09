@@ -10,6 +10,42 @@ namespace ModularCA.Tests.Shared.Utils;
 public class ConfigInputRulesTests
 {
     [Theory]
+    [InlineData("1.3.6.1.4.1.66874.1.5.1")]
+    [InlineData("2.999.1")]
+    [InlineData("0.39")]
+    [InlineData("1.2.840.113549.1.9.16.1.4")]
+    public void Accepts_dotted_object_identifiers(string oid)
+    {
+        Assert.Null(ConfigInputRules.ObjectIdentifierError(oid, "Tsa.PolicyOid"));
+        Assert.Null(ConfigInputRules.StoredSettingError("Tsa_PolicyOid", System.Text.Json.Nodes.JsonValue.Create(oid)));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("1")]
+    [InlineData("1.3.6.1.")]
+    [InlineData(".1.3")]
+    [InlineData("1..3")]
+    [InlineData("1.3.06")]
+    [InlineData("1.3.6 .1")]
+    [InlineData("3.1")]
+    [InlineData("1.40")]
+    [InlineData("urn:oid:1.3.6")]
+    [InlineData("1.3.-6")]
+    public void Refuses_what_is_not_a_dotted_object_identifier(string? oid)
+    {
+        Assert.Contains("Tsa.PolicyOid", ConfigInputRules.ObjectIdentifierError(oid, "Tsa.PolicyOid"));
+        Assert.NotNull(ConfigInputRules.StoredSettingError("Tsa_PolicyOid", System.Text.Json.Nodes.JsonValue.Create(oid)));
+    }
+
+    [Fact]
+    public void Only_settings_with_a_value_rule_are_checked_beyond_their_type()
+    {
+        Assert.Null(ConfigInputRules.StoredSettingError("Acme_TermsOfServiceUrl", System.Text.Json.Nodes.JsonValue.Create("not checked here")));
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("10.0.1.5/32")]

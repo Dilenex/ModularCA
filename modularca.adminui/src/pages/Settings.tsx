@@ -172,6 +172,9 @@ const listBlocked = (fields: [string, unknown, Validator][]): string | null => {
 
 const FORBIDDEN_ALGORITHM_SUGGESTIONS: ChipSuggestion[] = POLICY_SIGNATURE_ALGORITHMS.map((value) => ({ value }));
 const DEPRECATED_SUGGESTIONS: ChipSuggestion[] = DEPRECATED_ALGORITHM_SUGGESTIONS.map((value) => ({ value }));
+
+/** TsaConfig.DefaultPolicyOid on the server: the TSA policy under Dilenex's arc (docs/oid-allocation.md). */
+const TSA_DEFAULT_POLICY_OID = '1.3.6.1.4.1.66874.1.5.1';
 const validateWarningDay: Validator = (v) => validatePositiveInteger(v, 3650);
 
 /* Note shown on cards whose cron schedule is owned by the scheduler job's detail page. The card's
@@ -1496,6 +1499,21 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                 </div>
                                 <ScheduleMovedNote job="Compliance" />
                                 <SaveButton saving={saving === 'complianceScan'} onClick={() => saveSection('compliance-scan', { ...config.complianceScan, schedule: '' }, 'complianceScan')} />
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Time-Stamp Authority */}
+                    <div className={cardClass}>
+                        <SectionHeader fields={CARD_FIELDS.tsa} title="Time-Stamp Authority" expanded={expanded === 'tsa'} onToggle={() => toggle('tsa')}
+                            description={`Policy ${config.tsa?.policyOid || TSA_DEFAULT_POLICY_OID}${(config.tsa?.policyOid || TSA_DEFAULT_POLICY_OID) === TSA_DEFAULT_POLICY_OID ? ' (default)' : ''}`} tag="live" />
+                        {expanded === 'tsa' && (
+                            <div className="p-4 border-t border-line space-y-4">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    <ConfigInput label="Policy OID" value={config.tsa?.policyOid} path="tsa.policyOid" onChange={(v) => update('tsa', 'policyOid', v)} placeholder={TSA_DEFAULT_POLICY_OID}
+                                        hint={<>Every timestamp names this policy, and a request asking for another policy is refused. Leave it empty to restore the default, {TSA_DEFAULT_POLICY_OID} (Dilenex&apos;s arc). Set your own when your time-stamping policy document has an OID of its own.</>} />
+                                </div>
+                                <SaveButton saving={saving === 'tsa'} onClick={() => saveSection('tsa', { policyOid: config.tsa?.policyOid ?? '' }, 'tsa')} />
                             </div>
                         )}
                     </div>
