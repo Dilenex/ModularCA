@@ -30,6 +30,8 @@ public class ReservedCaLabelGuardMiddleware
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
+    /// <summary>Initializes a new <see cref="ReservedCaLabelGuardMiddleware"/>.</summary>
+    /// <param name="next">The next delegate in the pipeline.</param>
     public ReservedCaLabelGuardMiddleware(RequestDelegate next)
     {
         _next = next;

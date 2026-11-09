@@ -13,6 +13,11 @@ namespace ModularCA.API.Filters;
 [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
 public class AcmeJwsAttribute : Attribute, IFilterFactory
 {
+    /// <summary>
+    /// Marks the newAccount endpoint: an inline <c>jwk</c> is accepted and need not belong to an
+    /// existing account, and the deactivated-account and unbound-account refusals are left to the
+    /// controller. Implies <see cref="AllowJwk"/>.
+    /// </summary>
     public bool AllowNewAccount { get; set; }
 
     /// <summary>
@@ -27,8 +32,12 @@ public class AcmeJwsAttribute : Attribute, IFilterFactory
     /// replayable. <see cref="AllowNewAccount"/> implies this.
     /// </remarks>
     public bool AllowJwk { get; set; }
+    /// <summary>False: a new filter instance is created for every request.</summary>
     public bool IsReusable => false;
 
+    /// <summary>Creates the <see cref="AcmeJwsActionFilter"/> for one request with this attribute's settings.</summary>
+    /// <param name="serviceProvider">The request's service provider, which supplies the ACME services.</param>
+    /// <returns>The filter instance.</returns>
     public IFilterMetadata CreateInstance(IServiceProvider serviceProvider)
     {
         return new AcmeJwsActionFilter(

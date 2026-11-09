@@ -272,6 +272,11 @@ public class AdminEnrollmentTokenController(
         return Ok(new { token, expiresIn = expiresIn.TotalHours });
     }
 
+    /// <summary>
+    /// Revokes an enrollment token or CMP shared secret so it is no longer accepted. Requires the
+    /// <c>CaOperator</c> policy; a token outside the caller's <see cref="SpaceFence"/>, or a
+    /// system-wide token for a caller who is not instance-wide, answers 404 like a missing one.
+    /// </summary>
     [HttpDelete("{id:guid}")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> RevokeToken(Guid id)
@@ -308,18 +313,33 @@ public class GenerateCmpSharedSecretRequest
 {
     /// <summary>The CMP <c>senderKID</c> / referenceValue the client will present.</summary>
     public string ReferenceValue { get; set; } = string.Empty;
+    /// <summary>Lifetime of the secret in hours; null means 30 days.</summary>
     public double? ExpiresInHours { get; set; }
+    /// <summary>How many enrolments the secret allows; null or zero means unlimited.</summary>
     public int? MaxUses { get; set; }
     /// <summary>Signing profile used to resolve the target CA for space enforcement.</summary>
     public Guid? SigningProfileId { get; set; }
 }
 
+/// <summary>Request body for generating an enrollment token.</summary>
 public class GenerateEnrollmentTokenRequest
 {
+    /// <summary>Lifetime of the token in hours; null means 24.</summary>
     public double? ExpiresInHours { get; set; }
+    /// <summary>How many enrolments the token allows; null means one, zero or less means unlimited.</summary>
     public int? MaxUses { get; set; }
+    /// <summary>
+    /// Patterns the CSR subject must match, at most 255 characters: a DN component such as
+    /// <c>O=Acme Corp</c>, or a DNS name that the CN must equal or fall under. Null leaves the subject
+    /// unrestricted. See <see cref="ModularCA.Shared.Utils.EnrollmentNameRestriction"/>.
+    /// </summary>
     public string? SubjectRestriction { get; set; }
+    /// <summary>
+    /// DNS-name patterns every SAN in the CSR must equal or fall under, at most 500 characters. Null
+    /// leaves the SANs unrestricted. See <see cref="ModularCA.Shared.Utils.EnrollmentNameRestriction"/>.
+    /// </summary>
     public string? SANRestriction { get; set; }
+    /// <summary>The only enrollment protocol the token is accepted on (e.g. <c>SCEP</c>, or <c>QR</c> for link enrollment); null or empty accepts any.</summary>
     public string? Protocol { get; set; }
     /// <summary>Pre-selected request profile for QR/link enrollment.</summary>
     public Guid? RequestProfileId { get; set; }

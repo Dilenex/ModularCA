@@ -167,26 +167,34 @@ public class AdminServiceIdentityController(
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public class ServiceIdentityRequest
 {
+    /// <summary>Account name, 3 to 64 characters with no spaces or <c>@</c>; must not be taken by any user.</summary>
     public string Username { get; set; } = string.Empty;
+    /// <summary>Name shown in the console; empty uses <see cref="Username"/>.</summary>
     public string? DisplayName { get; set; }
+    /// <summary>What the identity is for; optional.</summary>
     public string? Description { get; set; }
     /// <summary>Space scope. Ignored when <see cref="CaId"/> is set, since a CA carries its space.</summary>
     public Guid? SpaceId { get; set; }
     /// <summary>CA scope.</summary>
     public Guid? CaId { get; set; }
+    /// <summary>Groups to put the identity in; each must lie within its scope. Null means none.</summary>
     public List<Guid>? GroupIds { get; set; }
 }
 
 /// <summary>Body for updating a service identity's non-structural fields.</summary>
 public class ServiceIdentityUpdateRequest
 {
+    /// <summary>Name shown in the console; empty resets it to the username.</summary>
     public string? DisplayName { get; set; }
+    /// <summary>What the identity is for; null clears it.</summary>
     public string? Description { get; set; }
+    /// <summary>Whether the identity may act; deactivating it also revokes its live SSH certificates.</summary>
     public bool IsActive { get; set; } = true;
 }
 
 /// <summary>Body for replacing a service identity's group memberships.</summary>
 public class ServiceIdentityGroupsRequest
 {
+    /// <summary>The complete set of groups the identity should belong to, each within its scope; null or empty removes every membership. Leaving a group revokes SSH certificates that relied on a login name it gave.</summary>
     public List<Guid>? GroupIds { get; set; }
 }

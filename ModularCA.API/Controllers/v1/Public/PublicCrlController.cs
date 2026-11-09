@@ -9,6 +9,10 @@ using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Public;
 
+/// <summary>
+/// Anonymous CRL distribution points: the latest full and delta CRL of a CA, DER-encoded, by the
+/// CA certificate's serial, with caching headers.
+/// </summary>
 [ApiController]
 [Route("api/v1/public/crl")]
 [AllowAnonymous]

@@ -548,70 +548,98 @@ public class AdminLdapPublishersController(
 /// <summary>Request DTO for creating an LDAP publisher configuration.</summary>
 public class CreateLdapPublisherRequest
 {
+    /// <summary>Display name of the publisher.</summary>
     [Required, MaxLength(255)]
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>Directory server host name or address.</summary>
     [Required, MaxLength(255)]
     public string Host { get; set; } = string.Empty;
 
+    /// <summary>Directory server port; 389 by default.</summary>
     public int Port { get; set; } = 389;
+    /// <summary>Whether to connect to the directory over SSL/TLS (LDAPS).</summary>
     public bool UseSsl { get; set; }
 
+    /// <summary>Bind identity for the directory; null stores an empty value.</summary>
     [MaxLength(255)]
     public string? Username { get; set; }
 
+    /// <summary>Bind password, stored encrypted and never returned.</summary>
     [MaxLength(512)]
     public string? Password { get; set; }
 
+    /// <summary>DN of the entry whose <c>cACertificate</c>, <c>certificateRevocationList</c> and <c>deltaRevocationList</c> attributes are replaced.</summary>
     [Required, MaxLength(1024)]
     public string BaseDn { get; set; } = string.Empty;
 
+    /// <summary>Whether the CA certificate is published.</summary>
     public bool PublishCACert { get; set; }
+    /// <summary>Whether the full CRL is published.</summary>
     public bool PublishCRL { get; set; }
+    /// <summary>Whether delta CRLs are published alongside the full CRL.</summary>
     public bool PublishDelta { get; set; }
+    /// <summary>Whether recently issued end-entity certificates are published to user entries.</summary>
     public bool PublishUserCerts { get; set; }
 
+    /// <summary>DN template for a user certificate's entry, with <c>{email}</c> and <c>{cn}</c> taken from the subject, e.g. <c>uid={email},ou=People,dc=example,dc=com</c>.</summary>
     [MaxLength(1024)]
     public string? UserDnTemplate { get; set; }
 
+    /// <summary>Cron expression for publisher runs; empty or invalid means hourly.</summary>
     [MaxLength(100)]
     public string? UpdateInterval { get; set; }
 
+    /// <summary>Whether the publisher runs.</summary>
     public bool Enabled { get; set; } = true;
 }
 
 /// <summary>Request DTO for updating an LDAP publisher configuration. Non-null fields are applied.</summary>
 public class UpdateLdapPublisherRequest
 {
+    /// <summary>Display name of the publisher.</summary>
     [MaxLength(255)]
     public string? Name { get; set; }
 
+    /// <summary>Directory server host name or address. Changing it while a password is stored needs the password re-entered.</summary>
     [MaxLength(255)]
     public string? Host { get; set; }
 
+    /// <summary>Directory server port. Changing it while a password is stored needs the password re-entered.</summary>
     public int? Port { get; set; }
+    /// <summary>Whether to connect over SSL/TLS (LDAPS). Changing it while a password is stored needs the password re-entered.</summary>
     public bool? UseSsl { get; set; }
 
+    /// <summary>Bind identity for the directory.</summary>
     [MaxLength(255)]
     public string? Username { get; set; }
 
+    /// <summary>New bind password, stored encrypted; null or <c>***</c> keeps the stored one.</summary>
     [MaxLength(512)]
     public string? Password { get; set; }
 
+    /// <summary>DN of the entry whose <c>cACertificate</c>, <c>certificateRevocationList</c> and <c>deltaRevocationList</c> attributes are replaced.</summary>
     [MaxLength(1024)]
     public string? BaseDn { get; set; }
 
+    /// <summary>Whether the CA certificate is published.</summary>
     public bool? PublishCACert { get; set; }
+    /// <summary>Whether the full CRL is published.</summary>
     public bool? PublishCRL { get; set; }
+    /// <summary>Whether delta CRLs are published alongside the full CRL.</summary>
     public bool? PublishDelta { get; set; }
+    /// <summary>Whether recently issued end-entity certificates are published to user entries.</summary>
     public bool? PublishUserCerts { get; set; }
 
+    /// <summary>DN template for a user certificate's entry, with <c>{email}</c> and <c>{cn}</c> taken from the subject.</summary>
     [MaxLength(1024)]
     public string? UserDnTemplate { get; set; }
 
+    /// <summary>Cron expression for publisher runs; empty or invalid means hourly.</summary>
     [MaxLength(100)]
     public string? UpdateInterval { get; set; }
 
+    /// <summary>Whether the publisher runs.</summary>
     public bool? Enabled { get; set; }
 }
 

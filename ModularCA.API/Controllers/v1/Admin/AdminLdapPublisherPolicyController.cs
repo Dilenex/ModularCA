@@ -78,7 +78,10 @@ public class AdminLdapPublisherPolicyController(
 /// <summary>Partial-update DTO. Null fields are left untouched.</summary>
 public class LdapPublisherPolicyUpdateRequest
 {
+    /// <summary>Master switch for the LDAP publisher job; while false no publisher runs, however many are configured.</summary>
     public bool? Enabled { get; set; }
+    /// <summary>Window in hours of recent certificates to publish when a publisher has no last-run time; values under 1 are ignored.</summary>
     public int? SinceFallbackHours { get; set; }
+    /// <summary>Timeout in seconds for LDAP bind and publish operations; values under 5 are ignored.</summary>
     public int? ConnectionTimeoutSeconds { get; set; }
 }

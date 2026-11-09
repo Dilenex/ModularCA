@@ -191,6 +191,12 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
     /// </remarks>
     private static bool IsRfc1918(IPAddress ip) => PrivateNetwork.IsPrivate(ip);
 
+    /// <summary>
+    /// The SHA-256 fingerprint of the setup listener's self-signed certificate, the value the server
+    /// printed at boot, so the operator can compare the two before entering any credentials. Needs no
+    /// setup token, only a caller on localhost (or a private network when allowed). 404 once the system
+    /// is configured or when no fingerprint is held.
+    /// </summary>
     [HttpGet("fingerprint")]
     public IActionResult GetSetupFingerprint()
     {

@@ -117,6 +117,8 @@ public class AdminRateLimitPolicyController(
 /// <summary>Partial-update DTO for a single protocol's rate limits.</summary>
 public class RateLimitUpdateRequest
 {
+    /// <summary>Most requests one source IP may make to the protocol per window; at least 1. Null keeps the stored value.</summary>
     public int? MaxRequests { get; set; }
+    /// <summary>Length of the sliding window in minutes; at least 1. Null keeps the stored value.</summary>
     public int? WindowMinutes { get; set; }
 }

@@ -1503,10 +1503,18 @@ public class RetireCertificateRequest
     public string? Reason { get; set; }
 }
 
+/// <summary>
+/// Request body for the admin certificate export. The admin export no longer hands out private
+/// keys in any format, so every format is refused with 400 once the caller is authorised; holders
+/// export PKCS#12 from the User Portal.
+/// </summary>
 public class CertExportRequest
 {
+    /// <summary>Requested export format. <c>pem-key</c> is refused with an explanation; anything else is refused as unsupported.</summary>
     public string Format { get; set; } = "pfx";
+    /// <summary>Password for a PKCS#12 export. Not read by the admin export, which refuses every format.</summary>
     public string? Password { get; set; }
+    /// <summary>Whether to bundle the issuer chain. Not read by the admin export, which refuses every format.</summary>
     public bool? IncludeChain { get; set; }
 }
 

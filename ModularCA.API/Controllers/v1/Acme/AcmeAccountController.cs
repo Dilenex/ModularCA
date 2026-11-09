@@ -17,6 +17,12 @@ using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Acme;
 
+/// <summary>
+/// ACME account endpoints (RFC 8555 §7.3): registration, account update and deactivation, and key
+/// rollover. Open to anonymous callers; each request is a JWS verified by
+/// <see cref="AcmeJwsAttribute"/>, so the account key is the credential. Served for the default CA
+/// on <c>/api/v1/acme</c> and per CA label, and refused with 503 while the signer is locked.
+/// </summary>
 [ApiController]
 [Route("api/v1/acme")]
 [Route("api/v1/acme/{caLabel}")]

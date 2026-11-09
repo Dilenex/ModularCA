@@ -23,6 +23,7 @@ namespace ModularCA.API.Validation.Issuance
             RegexOptions.CultureInvariant | RegexOptions.NonBacktracking)]
         private static partial Regex CsrPemRegex();
 
+        /// <summary>Builds the rules: a CSR PEM matching the PKCS#10 PEM pattern within <see cref="MaxCsrPemLength"/>, and a signing profile.</summary>
         public SubmitCertificateRequestValidator()
         {
             RuleFor(x => x.CsrPem)

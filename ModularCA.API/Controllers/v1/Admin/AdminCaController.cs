@@ -49,6 +49,12 @@ namespace ModularCA.API.Controllers.v1.Admin
         private readonly IFeatureFlagService _featureFlags = featureFlags;
         private readonly ModularCA.Core.Services.Ocsp.IOcspResponderReadiness _ocspReadiness = ocspReadiness;
 
+        /// <summary>
+        /// Lists the X.509 CAs the caller's <see cref="SpaceFence"/> lets them see, with each CA's
+        /// type, default and enabled flags, parent, and its certificate's id, serial, subject DN
+        /// and expiry. SSH CAs are left out; they are listed under <c>/api/v1/admin/ssh</c>.
+        /// Requires the <c>CaAuditor</c> policy.
+        /// </summary>
         [HttpGet]
         [Authorize(Policy = "CaAuditor")]
         public async Task<IActionResult> GetCertificateAuthorities()
@@ -1122,13 +1128,20 @@ namespace ModularCA.API.Controllers.v1.Admin
     /// </summary>
     public class UpdateCaRequest
     {
+        /// <summary>New display name; null leaves it unchanged. Must be unique across the instance, deleted CAs included.</summary>
         [MaxLength(255)]
         public string? Name { get; set; }
 
+        /// <summary>
+        /// New label, the path segment of the CA's CRL, OCSP, AIA and enrolment URLs; null leaves it
+        /// unchanged. Refused once anything references the current label.
+        /// </summary>
         [MaxLength(255)]
         public string? Label { get; set; }
 
+        /// <summary>True makes this the instance's default CA and clears the flag on every other CA; null leaves it unchanged.</summary>
         public bool? IsDefault { get; set; }
+        /// <summary>Enables or disables the CA; null leaves it unchanged.</summary>
         public bool? IsEnabled { get; set; }
     }
 
@@ -1139,24 +1152,31 @@ namespace ModularCA.API.Controllers.v1.Admin
     [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public class CreateIntermediateCaRequest
     {
+        /// <summary>Subject common name of the new CA certificate. Also becomes the CA's name, and its label when <see cref="Label"/> is omitted.</summary>
         [Required, MaxLength(256)]
         public string SubjectCN { get; set; } = string.Empty;
 
+        /// <summary>Subject organisation (O).</summary>
         [MaxLength(256)]
         public string SubjectO { get; set; } = string.Empty;
 
+        /// <summary>Subject organisational unit (OU), optional.</summary>
         [MaxLength(256)]
         public string? SubjectOU { get; set; }
 
+        /// <summary>Subject locality (L), optional.</summary>
         [MaxLength(256)]
         public string? SubjectL { get; set; }
 
+        /// <summary>Subject state or province (ST), optional.</summary>
         [MaxLength(256)]
         public string? SubjectST { get; set; }
 
+        /// <summary>Subject country (C), optional; a two-letter ISO 3166 code.</summary>
         [MaxLength(256)]
         public string? SubjectC { get; set; }
 
+        /// <summary>The CA that signs the new intermediate. It must have a certificate that is unrevoked and within its validity, and may not be the system signing CA.</summary>
         public Guid ParentCaId { get; set; }
         /// <summary>Space that owns this CA. <see cref="Guid.Empty"/> reads as none; with none, <see cref="Scope"/> must be "instance".</summary>
         public Guid? SpaceId { get => _spaceId; set => _spaceId = value == Guid.Empty ? null : value; }
@@ -1165,12 +1185,16 @@ namespace ModularCA.API.Controllers.v1.Admin
         [MaxLength(20)]
         public string? Scope { get; set; }
 
+        /// <summary>Key algorithm of the new CA key: <c>RSA</c>, <c>ECDSA</c>, <c>Ed25519</c>, <c>Ed448</c>, an ML-DSA or an SLH-DSA parameter set.</summary>
         [Required, MaxLength(50)]
         public string KeyAlgorithm { get; set; } = "ECDSA";
 
+        /// <summary>RSA modulus length in bits (2048, 3072, 4096, 7680 or 8192) or ECDSA curve size (256, 384 or 521 for P-256, P-384, P-521). Ignored for EdDSA and post-quantum algorithms.</summary>
         public int KeySize { get; set; } = 384;
+        /// <summary>Requested validity in years from issuance; clamped to the parent CA certificate's expiry.</summary>
         public int ValidityYears { get; set; } = 10;
 
+        /// <summary>CA label, the path segment of its CRL, OCSP, AIA and enrolment URLs. Must match <c>^[a-z0-9][a-z0-9-]{0,62}$</c> without a reserved prefix; omitted, it is derived from <see cref="SubjectCN"/>.</summary>
         [MaxLength(255)]
         public string? Label { get; set; }
         /// <summary>Optional CA certificate profile ID. Defaults to "Main CA Certificate Profile" when not specified.</summary>
@@ -1205,21 +1229,27 @@ namespace ModularCA.API.Controllers.v1.Admin
     [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public class CreateRootCaRequest
     {
+        /// <summary>Subject common name of the new CA certificate. Also becomes the CA's name, and its label when <see cref="Label"/> is omitted.</summary>
         [Required, MaxLength(256)]
         public string SubjectCN { get; set; } = string.Empty;
 
+        /// <summary>Subject organisation (O), optional.</summary>
         [MaxLength(256)]
         public string? SubjectO { get; set; }
 
+        /// <summary>Subject organisational unit (OU), optional.</summary>
         [MaxLength(256)]
         public string? SubjectOU { get; set; }
 
+        /// <summary>Subject locality (L), optional.</summary>
         [MaxLength(256)]
         public string? SubjectL { get; set; }
 
+        /// <summary>Subject state or province (ST), optional.</summary>
         [MaxLength(256)]
         public string? SubjectST { get; set; }
 
+        /// <summary>Subject country (C), optional; a two-letter ISO 3166 code.</summary>
         [MaxLength(256)]
         public string? SubjectC { get; set; }
 
@@ -1230,12 +1260,16 @@ namespace ModularCA.API.Controllers.v1.Admin
         [MaxLength(20)]
         public string? Scope { get; set; }
 
+        /// <summary>Key algorithm of the new CA key: <c>RSA</c>, <c>ECDSA</c>, <c>Ed25519</c>, <c>Ed448</c>, an ML-DSA or an SLH-DSA parameter set.</summary>
         [Required, MaxLength(50)]
         public string KeyAlgorithm { get; set; } = "ECDSA";
 
+        /// <summary>RSA modulus length in bits (2048, 3072, 4096, 7680 or 8192) or ECDSA curve size (256, 384 or 521 for P-256, P-384, P-521). Ignored for EdDSA and post-quantum algorithms.</summary>
         public int KeySize { get; set; } = 384;
+        /// <summary>Validity of the self-signed certificate in years from issuance.</summary>
         public int ValidityYears { get; set; } = 25;
 
+        /// <summary>CA label, the path segment of its CRL, OCSP, AIA and enrolment URLs. Must match <c>^[a-z0-9][a-z0-9-]{0,62}$</c> without a reserved prefix; omitted, it is derived from <see cref="SubjectCN"/>.</summary>
         [MaxLength(255)]
         public string? Label { get; set; }
         /// <summary>Optional CA certificate profile ID. Defaults to "Main CA Certificate Profile" when not specified.</summary>

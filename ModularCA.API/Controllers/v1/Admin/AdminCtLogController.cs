@@ -26,6 +26,7 @@ public class AdminCtLogController(
     IAuditService audit,
     ICurrentUserService currentUser) : ControllerBase
 {
+    /// <summary>Lists every configured CT log, public key included, ordered by name. Requires the <c>SystemOperator</c> policy.</summary>
     [HttpGet]
     public async Task<IActionResult> GetAll()
     {
@@ -33,6 +34,7 @@ public class AdminCtLogController(
         return Ok(logs);
     }
 
+    /// <summary>One CT log, or 404. Requires the <c>SystemOperator</c> policy.</summary>
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> GetById(Guid id)
     {
@@ -41,6 +43,7 @@ public class AdminCtLogController(
         return Ok(log);
     }
 
+    /// <summary>Adds a CT log; it is enabled unless the request says otherwise. Requires the <c>SystemOperator</c> policy and step-up MFA.</summary>
     [HttpPost]
     [RequireStepUp(StepUpOps.CreateCtLog)]
     public async Task<IActionResult> Create([FromBody] CreateCtLogRequest request)
@@ -63,6 +66,7 @@ public class AdminCtLogController(
         return Ok(entity);
     }
 
+    /// <summary>Changes the fields the request sets on a CT log, or 404. Requires the <c>SystemOperator</c> policy and step-up MFA.</summary>
     [HttpPut("{id:guid}")]
     [RequireStepUp(StepUpOps.UpdateCtLog, "id")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateCtLogRequest request)
@@ -85,6 +89,7 @@ public class AdminCtLogController(
         return Ok(log);
     }
 
+    /// <summary>Removes a CT log, or 404. Requires the <c>SystemOperator</c> policy and step-up MFA.</summary>
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.DeleteCtLog, "id")]
     public async Task<IActionResult> Delete(Guid id)
@@ -135,18 +140,28 @@ public class AdminCtLogOptionsController(ModularCADbContext db) : ControllerBase
 /// <summary>One CT log as <see cref="AdminCtLogOptionsController.GetOptions"/> returns it.</summary>
 public record CtLogOption(Guid Id, string Name, string Url, bool Enabled);
 
+/// <summary>Request body for adding a CT log.</summary>
 public class CreateCtLogRequest
 {
+    /// <summary>Display name of the log, at most 200 characters.</summary>
     public string Name { get; set; } = string.Empty;
+    /// <summary>Base URL of the log; certificates are posted to <c>{Url}/ct/v1/add-chain</c> (RFC 6962 §4.1). At most 500 characters.</summary>
     public string Url { get; set; } = string.Empty;
+    /// <summary>The log's public key in Base64, stored for reference; null stores an empty value.</summary>
     public string? PublicKeyBase64 { get; set; }
+    /// <summary>Whether certificates are submitted to this log; null means enabled.</summary>
     public bool? IsEnabled { get; set; }
 }
 
+/// <summary>Request body for changing a CT log. Each field left null keeps its current value.</summary>
 public class UpdateCtLogRequest
 {
+    /// <summary>Display name of the log, at most 200 characters.</summary>
     public string? Name { get; set; }
+    /// <summary>Base URL of the log; certificates are posted to <c>{Url}/ct/v1/add-chain</c> (RFC 6962 §4.1).</summary>
     public string? Url { get; set; }
+    /// <summary>The log's public key in Base64, stored for reference.</summary>
     public string? PublicKeyBase64 { get; set; }
+    /// <summary>Whether certificates are submitted to this log.</summary>
     public bool? IsEnabled { get; set; }
 }

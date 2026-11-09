@@ -340,10 +340,18 @@ public class AdminProtocolConfigController(
     }
 }
 
+/// <summary>
+/// Request body for creating or updating one protocol's configuration on a CA. The
+/// protocol-specific fields apply only to their protocol; each nullable field left null keeps its
+/// stored value.
+/// </summary>
 public class ProtocolConfigUpdateRequest
 {
+    /// <summary>Whether the protocol serves this CA. Turning it on is refused when the protocol cannot work with the CA's key, e.g. SCEP on a non-RSA CA.</summary>
     public bool Enabled { get; set; }
+    /// <summary>Signing profile for certificates the protocol issues; must issue from this CA's current certificate. Null keeps the stored one.</summary>
     public Guid? SigningProfileId { get; set; }
+    /// <summary>Certificate profile for certificates the protocol issues; must be within the CA's scope. Null keeps the stored one.</summary>
     public Guid? CertProfileId { get; set; }
 
     /// <summary>
@@ -352,17 +360,25 @@ public class ProtocolConfigUpdateRequest
     /// </summary>
     public bool? IsPublicVisible { get; set; }
     // EST
+    /// <summary>EST: require a client certificate (mTLS) for enrollment. Only reachable through the configured EST host name.</summary>
     public bool? EstRequireClientCert { get; set; }
+    /// <summary>EST: accept HTTP authentication (Basic or bearer) for enrollment. With neither EST method on, enrollment is refused.</summary>
     public bool? EstHttpAuthEnabled { get; set; }
     // SCEP
+    /// <summary>SCEP: require a challenge password in the CSR. Turning it off lets any PKCSReq enroll without authentication.</summary>
     public bool? ScepChallengeRequired { get; set; }
     // CMP
+    /// <summary>CMP: accept only signature-protected messages; when false, PBMAC (shared secret) protection is accepted too.</summary>
     public bool? CmpRequireSignature { get; set; }
     // ACME
+    /// <summary>ACME: require an external account binding when an account registers (RFC 8555 §7.3.4).</summary>
     public bool? AcmeRequireEab { get; set; }
+    /// <summary>ACME: comma-separated challenge types offered, e.g. <c>http-01,dns-01,tls-alpn-01</c>; empty allows all.</summary>
     public string? AcmeAllowedChallengeTypes { get; set; }
+    /// <summary>ACME: let the http-01 validator connect to private, loopback and link-local addresses, for private PKI.</summary>
     public bool? AcmeAllowPrivateAddressValidation { get; set; }
     // OCSP
+    /// <summary>OCSP: whether responses are signed. Stored and shown only; the OCSP responder does not read it.</summary>
     public bool? OcspSignResponses { get; set; }
 
     /// <summary>MSAE: accept UsernameToken and Basic credentials. Null leaves the setting unchanged.</summary>

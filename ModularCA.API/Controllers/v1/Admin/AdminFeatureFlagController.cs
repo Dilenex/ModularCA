@@ -80,8 +80,11 @@ public class AdminFeatureFlagController(
     }
 }
 
+/// <summary>Request body for updating a feature flag.</summary>
 public class FeatureFlagUpdateRequest
 {
+    /// <summary>The flag's new state.</summary>
     public bool Enabled { get; set; }
+    /// <summary>The flag's optional setting, as text (a port, an address, an interval and so on); null keeps the current value.</summary>
     public string? Value { get; set; }
 }

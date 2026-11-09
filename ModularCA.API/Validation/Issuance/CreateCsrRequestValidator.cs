@@ -3,8 +3,14 @@ using ModularCA.Shared.Models.Csr;
 
 namespace ModularCA.API.Validation.Issuance
 {
+    /// <summary>
+    /// Validator for <see cref="CreateCsrRequest"/>: certificate profile, signing profile and subject
+    /// name are required; the key is RSA or ECDSA of a size <see cref="ValidKeySize"/> accepts; and the
+    /// signature algorithm suits the key (<see cref="ValidSignatureAlgorithm"/>).
+    /// </summary>
     public class CreateCsrRequestValidator : AbstractValidator<CreateCsrRequest>
     {
+        /// <summary>Builds the rules.</summary>
         public CreateCsrRequestValidator()
         {
             RuleFor(x => x.CertificateProfileId)
@@ -29,6 +35,13 @@ namespace ModularCA.API.Validation.Issuance
                 .WithMessage(string.Format("Signature algorithm {0} is not valid for key algorithm {1}.", "{PropertyValue}", "{KeyAlgorithm}"));
         }
 
+        /// <summary>
+        /// Whether <paramref name="keySize"/> is allowed for <paramref name="keyAlgorithm"/>: 2048, 3072,
+        /// 4096, 7680 or 8192 for <c>RSA</c>; <c>P-256</c>, <c>P-384</c> or <c>P-521</c> for <c>ECDSA</c>.
+        /// Any other algorithm is refused.
+        /// </summary>
+        /// <param name="keySize">RSA modulus length in bits, or ECDSA curve name.</param>
+        /// <param name="keyAlgorithm"><c>RSA</c> or <c>ECDSA</c>, case-sensitive.</param>
         public static bool ValidKeySize(string keySize, string keyAlgorithm)
         {
             if (keyAlgorithm == "RSA")

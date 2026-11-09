@@ -153,6 +153,13 @@ public class UserCertificateController(
         });
     }
 
+    /// <summary>
+    /// Details of an end-entity certificate the caller may view (through a CA-scoped role or an ACL
+    /// entry), marked when it has been replaced, with the successor's serial when the caller may view
+    /// that too. Requires the <c>CaUser</c> policy. CA certificates, the System Signing CA and
+    /// certificates the caller may not view all answer 404.
+    /// </summary>
+    /// <param name="serial">Serial number of the certificate.</param>
     [HttpGet("{serial}")]
     public async Task<ActionResult<CertificateInfoModel>> GetCertificateInfo(string serial)
     {
@@ -197,6 +204,13 @@ public class UserCertificateController(
         }
     }
 
+    /// <summary>
+    /// Downloads an end-entity certificate the caller may view: PEM when <c>Accept</c> names
+    /// <c>application/x-pem-file</c>, DER (<c>application/pkix-cert</c>) otherwise. Requires the
+    /// <c>CaUser</c> policy. CA certificates, the System Signing CA and certificates the caller may not
+    /// view all answer 404.
+    /// </summary>
+    /// <param name="serial">Serial number of the certificate.</param>
     [HttpGet("{serial}/file")]
     public async Task<IActionResult> GetCertificate(string serial)
     {

@@ -123,6 +123,7 @@ public static partial class UserFieldValidators
 /// </summary>
 public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
 {
+    /// <summary>Builds the rules.</summary>
     public CreateUserRequestValidator()
     {
         RuleFor(x => x.Username).ValidUsername();
@@ -143,6 +144,7 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
 /// </summary>
 public class UpdateUserRequestValidator : AbstractValidator<UpdateUserRequest>
 {
+    /// <summary>Builds the rules.</summary>
     public UpdateUserRequestValidator()
     {
         RuleFor(x => x.Username).ValidOptionalUsername();
@@ -164,6 +166,7 @@ public class UpdateUserRequestValidator : AbstractValidator<UpdateUserRequest>
 /// </summary>
 public class LoginRequestValidator : AbstractValidator<LoginRequest>
 {
+    /// <summary>Builds the rules.</summary>
     public LoginRequestValidator()
     {
         RuleFor(x => x.Username).ValidUsername();
@@ -181,6 +184,7 @@ public class LoginRequestValidator : AbstractValidator<LoginRequest>
 /// </summary>
 public class PreJwtChangePasswordRequestValidator : AbstractValidator<PreJwtChangePasswordRequest>
 {
+    /// <summary>Builds the rules.</summary>
     public PreJwtChangePasswordRequestValidator()
     {
         RuleFor(x => x.Username).ValidUsername();

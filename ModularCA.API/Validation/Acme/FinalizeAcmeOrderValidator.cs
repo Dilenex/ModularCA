@@ -3,8 +3,13 @@ using ModularCA.Shared.Models.Acme;
 
 namespace ModularCA.API.Validation.Acme;
 
+/// <summary>
+/// Validator for <see cref="FinalizeAcmeOrderRequest"/>: the CSR must be present and consist only of
+/// base64url characters (<c>A–Z a–z 0–9 - _</c>, no padding).
+/// </summary>
 public class FinalizeAcmeOrderValidator : AbstractValidator<FinalizeAcmeOrderRequest>
 {
+    /// <summary>Builds the rules.</summary>
     public FinalizeAcmeOrderValidator()
     {
         RuleFor(x => x.Csr)

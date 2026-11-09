@@ -20,6 +20,7 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [NodeRole(ProcessRole.Control)]
 public class AdminNotificationController(ModularCADbContext db, IEmailService emailService, IWebhookService webhookService, SystemConfig config) : ControllerBase
 {
+    /// <summary>Lists the per-event notification preferences (enabled flag, recipients, expiry lead time), ordered by event type. Requires the <c>SystemOperator</c> policy.</summary>
     [HttpGet]
     public async Task<IActionResult> GetPreferences()
     {
@@ -67,6 +68,10 @@ public class AdminNotificationController(ModularCADbContext db, IEmailService em
         return Ok(pref);
     }
 
+    /// <summary>
+    /// Sends a test email to the admin recipients through the configured SMTP settings. Answers 500
+    /// with a generic message when sending fails; the cause goes to the log only.
+    /// </summary>
     [HttpPost("test")]
     public async Task<IActionResult> SendTestEmail()
     {
@@ -141,9 +146,13 @@ public class AdminNotificationController(ModularCADbContext db, IEmailService em
     }
 }
 
+/// <summary>Request body for updating a notification preference. Each field left null keeps its current value.</summary>
 public class UpdateNotificationRequest
 {
+    /// <summary>Whether email is sent for this event type.</summary>
     public bool? Enabled { get; set; }
+    /// <summary>Comma-separated addresses for this event; empty sends to the admin recipients instead.</summary>
     public string? Recipients { get; set; }
+    /// <summary>Lead time in days for the expiry events (<c>CertExpiring</c>, <c>PasswordExpiring</c>). Stored only; no notification sender reads it yet.</summary>
     public int? DaysBeforeExpiry { get; set; }
 }

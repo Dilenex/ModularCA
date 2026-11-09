@@ -209,6 +209,11 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         }
 
         // Grant read or manage access
+        /// <summary>
+        /// Gives a user View access to a certificate (by certificate id) through its ACL, lowering an
+        /// existing Manage entry to View. Needs cert.revoke on the certificate's CA and step-up MFA. A
+        /// certId or userId that is not a GUID is 400, as is an unknown user.
+        /// </summary>
         [HttpPost("allow/view")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
@@ -249,6 +254,11 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             return BadRequest();
         }
 
+        /// <summary>
+        /// Gives a user Manage access to a certificate (by certificate id) through its ACL, raising an
+        /// existing View entry. Needs cert.revoke on the certificate's CA and step-up MFA. A certId or
+        /// userId that is not a GUID is 400, as is an unknown user.
+        /// </summary>
         [HttpPost("allow/manage")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
@@ -285,6 +295,11 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         }
 
         // Downgrade manage to read
+        /// <summary>
+        /// Lowers a user's ACL entry on a certificate from Manage to View; an entry already at View is left
+        /// as it is. Needs cert.revoke on the certificate's CA and step-up MFA. 400 when either id is not a
+        /// GUID or the user has no entry.
+        /// </summary>
         [HttpPost("downgrade")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
@@ -321,6 +336,11 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         }
 
         // Revoke access
+        /// <summary>
+        /// Removes a user's ACL entry on a certificate (by certificate id). Access the user has through
+        /// CA-scoped capabilities, or as the requester, is unaffected. Needs cert.revoke on the
+        /// certificate's CA and step-up MFA. 400 when either id is not a GUID or the user has no entry.
+        /// </summary>
         [HttpPost("revoke")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]

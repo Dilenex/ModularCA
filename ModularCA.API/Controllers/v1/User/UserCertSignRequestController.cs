@@ -526,6 +526,7 @@ public class UserCertSignRequestController(
 /// <summary>Request body for the CSR parse endpoint.</summary>
 public class ParseCsrRequest
 {
+    /// <summary>The PKCS#10 certificate signing request, PEM-encoded; at most 65,536 characters.</summary>
     [Required, MaxLength(65536)]
     public string Pem { get; set; } = string.Empty;
 }

@@ -27,6 +27,8 @@ public sealed class CorrelationIdMiddleware
 
     private readonly RequestDelegate _next;
 
+    /// <summary>Initializes a new <see cref="CorrelationIdMiddleware"/>.</summary>
+    /// <param name="next">The next delegate in the pipeline.</param>
     public CorrelationIdMiddleware(RequestDelegate next)
     {
         _next = next;

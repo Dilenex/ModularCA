@@ -67,6 +67,8 @@ public class CsrfProtectionMiddleware
         "/api/v1/auth/change-password",
     };
 
+    /// <summary>Initializes a new <see cref="CsrfProtectionMiddleware"/>.</summary>
+    /// <param name="next">The next delegate in the pipeline.</param>
     public CsrfProtectionMiddleware(RequestDelegate next)
     {
         _next = next;

@@ -271,9 +271,13 @@ namespace ModularCA.API.Controllers.v1.Account
     /// </summary>
     public class UpdateAccountProfileRequest
     {
+        /// <summary>Name shown in the console, trimmed; empty clears it.</summary>
         public string? DisplayName { get; set; }
+        /// <summary>Given name, trimmed.</summary>
         public string? FirstName { get; set; }
+        /// <summary>Family name, trimmed.</summary>
         public string? LastName { get; set; }
+        /// <summary>New email address; must be valid and not used by another account, and needs step-up MFA. Empty leaves it unchanged.</summary>
         public string? Email { get; set; }
     }
 }

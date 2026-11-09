@@ -102,6 +102,13 @@ namespace ModularCA.API.Controllers.v1.User
             return ca != null && fence.Allows(ca.SpaceId);
         }
 
+        /// <summary>
+        /// Details of a CA certificate by serial. Requires the <c>CaUser</c> policy. 404 for an unknown
+        /// serial, for the System Signing CA, and, for a caller who is not instance-wide, for anything but
+        /// the certificate of a CA inside their <see cref="SpaceFence"/>. An instance-wide caller is not
+        /// held to CA certificates and gets any certificate's details.
+        /// </summary>
+        /// <param name="serial">Serial number of the certificate.</param>
         [HttpGet("{serial}")]
         public async Task<ActionResult<CertificateInfoModel>> GetCertificateInfo(string serial)
         {
@@ -121,6 +128,14 @@ namespace ModularCA.API.Controllers.v1.User
             return Ok(cert);
         }
 
+        /// <summary>
+        /// Meant to download a CA certificate, as PEM when <c>Accept</c> names PEM or as DER for
+        /// <c>application/pkix-cert</c>, <c>application/x-x509-ca-cert</c> or <c>application/octet-stream</c>
+        /// (404 for any other <c>Accept</c>). As written it refuses every CA certificate with 404, so a
+        /// caller who is not instance-wide always gets 404 and an instance-wide caller can download only
+        /// certificates that are not CA certificates. Requires the <c>CaUser</c> policy.
+        /// </summary>
+        /// <param name="serial">Serial number of the certificate.</param>
         [HttpGet("{serial}/file")]
         public async Task<IActionResult> GetCertificate(string serial)
         {
