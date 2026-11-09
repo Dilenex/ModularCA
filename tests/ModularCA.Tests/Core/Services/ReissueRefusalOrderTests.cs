@@ -66,6 +66,46 @@ public sealed class ReissueRefusalOrderTests
         Assert.Equal(before + 1, w.Db.Certificates.AsNoTracking().Count());
     }
 
+    /// <summary>
+    /// CLM-007 (bug hunt 2026-11, F3): an expired certificate revoked for key compromise is not
+    /// reissued with the same key. The refusal used to be swallowed by a catch meant for other
+    /// errors, and the CA signed a fresh certificate for the compromised key.
+    /// </summary>
+    [Theory]
+    [InlineData("KeyCompromise")]
+    [InlineData("CACompromise")]
+    public async Task A_compromised_and_expired_certificate_is_not_reissued_with_its_key(string reason)
+    {
+        var (w, csrId, predecessorId) = await IssuedAsync();
+        var predecessor = await w.Db.Certificates.SingleAsync(c => c.CertificateId == predecessorId);
+        predecessor.Revoked = true;
+        predecessor.RevocationReason = reason;
+        predecessor.RevocationDate = DateTime.UtcNow.AddDays(-2);
+        predecessor.NotAfter = DateTime.UtcNow.AddDays(-1);
+        await w.Db.SaveChangesAsync();
+
+        var before = w.Db.Certificates.AsNoTracking().Count();
+        var ex = await Record.ExceptionAsync(() => w.Issuance.ReissueCertificateAsync(null, null, csrId, null, null, null, null));
+
+        Assert.Equal(ErrorCodes.KeyReuseAfterCompromise, Assert.IsType<ConfigurationValidationException>(ex).Code);
+        Assert.Equal(before, w.Db.Certificates.AsNoTracking().Count());
+    }
+
+    /// <summary>A compromise check that cannot compare the keys refuses rather than allows.</summary>
+    [Fact]
+    public async Task An_unreadable_compromised_certificate_counts_as_reused()
+    {
+        var (w, csrId, _) = await IssuedAsync();
+        var pem = w.Db.CertificateRequests.AsNoTracking().Single(r => r.Id == csrId).CSR;
+        var csr = new CsrParserService().ParseFromPem(pem);
+
+        var reused = CertificateIssuanceService.ReusesCompromisedKey(
+            new CertificateEntity { RawCertificate = [0x30, 0x01, 0x00] }, csr, out var error);
+
+        Assert.True(reused);
+        Assert.NotNull(error);
+    }
+
     /// <summary>A CA permitted <c>.acme.test</c>, and a leaf issued under it, ready to reissue.</summary>
     private static async Task<(NameConstraintIssuanceTests.IssuanceWorld World, Guid CsrId, Guid PredecessorId)> IssuedAsync()
     {

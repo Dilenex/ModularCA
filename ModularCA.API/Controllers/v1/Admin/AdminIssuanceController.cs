@@ -525,10 +525,26 @@ namespace ModularCA.API.Controllers.v1.Admin
             return string.Join(",", parts);
         }
 
+        /// <summary>
+        /// Reissues the certificate named in the route. Emits a
+        /// <see cref="AuditActionType.CertificateReissued"/> record after the new cert is
+        /// persisted. Enforces space fence, profile.use capability, and step-up MFA before
+        /// delegating to the issuance service. A body <c>CertificateId</c> must be empty or
+        /// match the route: the route is what the CA-scoped policy authorized.
+        /// </summary>
         [HttpPost("{certId:guid}/reissue")]
         [Authorize(Policy = "CaOperator")]
-        public async Task<IActionResult> ReissueCertId([FromBody] ReissueCertificateRequestByCertId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
+        public async Task<IActionResult> ReissueCertId(Guid certId, [FromBody] ReissueCertificateRequestByCertId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
         {
+            // The {certId} route segment was declared but never bound, so this action reissued
+            // request.CertificateId from the BODY while CaGroupAuthorizationHandler authorized the
+            // CA of the ROUTE's certificate. An operator on one CA could name one of its
+            // certificates in the path and another CA's in the body (within the space fence).
+            // The same split was closed in AdminRevocationController; the route is the identity.
+            if (request.CertificateId != Guid.Empty && request.CertificateId != certId)
+                return BadRequest(new { error = "Certificate id in the request body does not match the URL." });
+            request.CertificateId = certId;
+
             await _currentUser.EnsureLoadedAsync();
             if (!_currentUser.IsAuthenticated || _currentUser.User == null)
                 return Unauthorized();
@@ -618,11 +634,19 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// <see cref="AuditActionType.CertificateReissued"/> record after the new cert is
         /// persisted, mirroring <see cref="ReissueCertId"/>. Enforces space fence,
         /// profile.use capability, and step-up MFA before delegating to the issuance service.
+        /// The body's <c>SerialNumber</c> must match the route's, which is what the CA-scoped
+        /// policy authorized.
         /// </summary>
         [HttpPost("serial/{serial}/reissue")]
         [Authorize(Policy = "CaOperator")]
-        public async Task<IActionResult> ReissueCertSn([FromBody] ReissueCertificateRequestByCertSn request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
+        public async Task<IActionResult> ReissueCertSn(string serial, [FromBody] ReissueCertificateRequestByCertSn request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
         {
+            // See ReissueCertId: the policy authorizes the route's serial, so the body may not
+            // name a different one.
+            if (string.IsNullOrWhiteSpace(serial)
+                || !string.Equals(serial, request.SerialNumber, StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new { error = "Serial number in the URL does not match the request body." });
+
             await _currentUser.EnsureLoadedAsync();
             if (!_currentUser.IsAuthenticated || _currentUser.User == null)
                 return Unauthorized();
@@ -712,11 +736,18 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// <see cref="AuditActionType.CertificateReissued"/> record (target type
         /// <c>CertificateRequest</c>) after the new cert is persisted. Enforces space fence,
         /// profile.use capability, and step-up MFA before delegating to the issuance service.
+        /// A body <c>CsrId</c> must be empty or match the route, which is what the CA-scoped
+        /// policy authorized.
         /// </summary>
         [HttpPost("csr/{csrId:guid}/reissue")]
         [Authorize(Policy = "CaOperator")]
-        public async Task<IActionResult> ReissueCsrId([FromBody] ReissueCertificateRequestByCsrId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
+        public async Task<IActionResult> ReissueCsrId(Guid csrId, [FromBody] ReissueCertificateRequestByCsrId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
         {
+            // See ReissueCertId: the policy authorizes the route's request, so the body may not
+            // name a different one.
+            if (request.CsrId != Guid.Empty && request.CsrId != csrId)
+                return BadRequest(new { error = "Request id in the request body does not match the URL." });
+            request.CsrId = csrId;
 
             await _currentUser.EnsureLoadedAsync();
             if (!_currentUser.IsAuthenticated || _currentUser.User == null)

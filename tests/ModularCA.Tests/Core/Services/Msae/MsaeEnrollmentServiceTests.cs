@@ -691,4 +691,46 @@ public class MsaeEnrollmentServiceTests
         Assert.Equal("CN=alice", userRequest.Subject);
         Assert.Contains("UPN:alice@corp.lab.test", userRequest.SubjectAlternativeNames);
     }
+
+    /// <summary>
+    /// The subject real issuance builds from a request row: the CSR's own subject with the row's
+    /// overrides applied (the fake signer above reads the row's subject instead, which is why the
+    /// test above could not see the certificate disagree with the row).
+    /// </summary>
+    private static string IssuedSubject(CertRequestEntity row)
+    {
+        using var reader = new StringReader(row.CSR);
+        var csr = (Org.BouncyCastle.Pkcs.Pkcs10CertificationRequest)new Org.BouncyCastle.OpenSsl.PemReader(reader).ReadObject();
+        return CertificateIssuanceService.ApplySubjectOverrides(CertificateBuilderService.SubjectOf(csr, row), row.SubjectOverrides).ToString();
+    }
+
+    /// <summary>
+    /// Bug hunt 2026-11, F4: the identity names the CERTIFICATE, not just the request row. The
+    /// row said <c>CN=alice</c> while issuance built the subject from the CSR, so a caller with
+    /// alice's ticket could have <c>CN=Administrator,O=Corp</c> signed, which subject-based
+    /// mappings (<c>X509:&lt;I&gt;&lt;S&gt;</c>, RADIUS, VPN) would trust.
+    /// </summary>
+    [Fact]
+    public async Task A_kerberos_callers_identity_is_the_whole_subject_of_the_certificate()
+    {
+        var user = Build();
+        await user.Service.EnrollAsync(Csr("CN=Administrator, O=Corp, OU=Domain Admins"), MsaeCaller.FromKerberos(KerberosCallerFor("alice")), null, caLabel: null);
+        Assert.Equal("CN=alice", IssuedSubject(Assert.Single(await user.Db.CertificateRequests.ToListAsync())));
+
+        var machine = Build();
+        await machine.Service.EnrollAsync(Csr("CN=dc01.corp.lab.test, O=Corp"), MsaeCaller.FromKerberos(KerberosCallerFor("WS-042$")), null, caLabel: null);
+        Assert.Equal("CN=ws-042.corp.lab.test", IssuedSubject(Assert.Single(await machine.Db.CertificateRequests.ToListAsync())));
+    }
+
+    /// <summary>Replacing overrides drop every component the CSR carried; ordinary ones keep them.</summary>
+    [Fact]
+    public void Replacing_overrides_are_the_whole_subject()
+    {
+        var csrSubject = new Org.BouncyCastle.Asn1.X509.X509Name("CN=Administrator, O=Corp");
+
+        Assert.Equal("CN=alice", CertificateIssuanceService.ApplySubjectOverrides(
+            csrSubject, RequestProfileEnforcement.ReplacingSubjectOverrides("CN=alice")).ToString());
+        Assert.Equal("CN=alice,O=Corp", CertificateIssuanceService.ApplySubjectOverrides(
+            csrSubject, "{\"CN\":\"alice\"}").ToString());
+    }
 }

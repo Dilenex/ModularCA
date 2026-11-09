@@ -723,34 +723,25 @@ namespace ModularCA.Core.Services
             // compromise revocation is that the key material is no longer trustworthy.
             // Compare the SubjectPublicKeyInfo DER bytes of the old cert against the
             // new CSR's public key; if they match, reject with a clear message.
+            //
+            // The refusal used to be thrown inside a try whose `catch (InvalidOperationException)
+            // { throw; }` was meant to pass it on. ConfigurationValidationException is not an
+            // InvalidOperationException, so the general catch swallowed it, logged "allowing
+            // reissue" and the CA signed a fresh certificate for the compromised key. The
+            // comparison now runs on its own, and a comparison that cannot be made refuses
+            // rather than allows: a compromise check that fails open is no check.
             if (string.Equals(prevCert.RevocationReason, nameof(RevocationReason.KeyCompromise), StringComparison.OrdinalIgnoreCase)
                 || string.Equals(prevCert.RevocationReason, nameof(RevocationReason.CACompromise), StringComparison.OrdinalIgnoreCase))
             {
-                try
+                if (ReusesCompromisedKey(prevCert, csr, out var compareError))
                 {
-                    var prevBcCert = new X509CertificateParser().ReadCertificate(prevCert.RawCertificate);
-                    if (prevBcCert != null)
-                    {
-                        var oldPubKeyDer = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(prevBcCert.GetPublicKey()).GetEncoded();
-                        var newPubKeyDer = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(csr.GetPublicKey()).GetEncoded();
-
-                        if (oldPubKeyDer.AsSpan().SequenceEqual(newPubKeyDer))
-                        {
-                            throw new ConfigurationValidationException(
-                                "Cannot reuse the same key for a certificate that was revoked due to key compromise. " +
-                                "Generate a new key pair and submit a fresh CSR.", ErrorCodes.KeyReuseAfterCompromise);
-                        }
-                    }
-                }
-                catch (InvalidOperationException)
-                {
-                    throw; // Re-throw our own rejection
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex,
-                        "CLM-007: Could not compare public keys for key-compromise reuse check on certificate {CertId}. " +
-                        "Allowing reissue to proceed — manual review recommended.", prevCert.CertificateId);
+                    if (compareError != null)
+                        _logger.LogWarning(compareError,
+                            "CLM-007: Could not compare public keys for key-compromise reuse check on certificate {CertId}; refusing the reissue.",
+                            prevCert.CertificateId);
+                    throw new ConfigurationValidationException(
+                        "Cannot reuse the same key for a certificate that was revoked due to key compromise. " +
+                        "Generate a new key pair and submit a fresh CSR.", ErrorCodes.KeyReuseAfterCompromise);
                 }
             }
 
@@ -1094,9 +1085,46 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
+        /// Whether <paramref name="csr"/> carries the same public key as the compromised
+        /// certificate <paramref name="compromised"/> (CLM-007). Fails closed: when the keys
+        /// cannot be compared (an unreadable certificate or key), this returns true and sets
+        /// <paramref name="error"/>, so the caller refuses rather than reissues.
+        /// </summary>
+        /// <param name="compromised">The predecessor, revoked for KeyCompromise or CACompromise.</param>
+        /// <param name="csr">The request the reissue would sign.</param>
+        /// <param name="error">Why the comparison could not be made, or null when it was.</param>
+        /// <returns>True when the key is reused, or when that cannot be ruled out.</returns>
+        internal static bool ReusesCompromisedKey(CertificateEntity compromised, Pkcs10CertificationRequest csr, out Exception? error)
+        {
+            error = null;
+            try
+            {
+                var prevBcCert = new X509CertificateParser().ReadCertificate(compromised.RawCertificate)
+                    ?? throw new InvalidDataException("The compromised certificate could not be read.");
+                var oldPubKeyDer = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(prevBcCert.GetPublicKey()).GetEncoded();
+                var newPubKeyDer = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(csr.GetPublicKey()).GetEncoded();
+                return oldPubKeyDer.AsSpan().SequenceEqual(newPubKeyDer);
+            }
+            catch (Exception e)
+            {
+                error = e;
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// The key that, present in a subject-override dictionary, makes the overrides the whole
+        /// subject rather than changes to the CSR's (see <see cref="ApplySubjectOverrides"/>). Not
+        /// a valid attribute name, so no ordinary override can collide with it.
+        /// </summary>
+        internal const string ReplaceSubjectKey = "*";
+
+        /// <summary>
         /// Applies subject DN overrides from the CSR entity. Parses the JSON dictionary of
         /// field overrides and reconstructs the X509Name by replacing matched RDN components.
-        /// Returns the original subject DN unchanged when no overrides are present.
+        /// Returns the original subject DN unchanged when no overrides are present. When the
+        /// dictionary carries <see cref="ReplaceSubjectKey"/>, the overrides are the whole subject
+        /// and nothing of <paramref name="originalSubject"/> survives.
         /// </summary>
         /// <param name="originalSubject">The original subject DN resolved from the CSR.</param>
         /// <param name="subjectOverridesJson">JSON dictionary of subject field overrides, or null.</param>
@@ -1118,6 +1146,10 @@ namespace ModularCA.Core.Services
 
             if (overrides == null || overrides.Count == 0)
                 return originalSubject;
+
+            // A protocol that settled the subject itself (MSAE with a Kerberos identity) asks for
+            // exactly that subject: the CSR's own components are dropped, not merely overridden.
+            var replace = overrides.Remove(ReplaceSubjectKey);
 
             // Run every override value through the DN sanitizer before
             // we touch the X509Name. This blocks NULs, control chars, BIDI overrides,
@@ -1150,9 +1182,9 @@ namespace ModularCA.Core.Services
                 ["STREET"] = X509Name.Street,
             };
 
-            // Extract current RDN OIDs and values
-            var oids = originalSubject.GetOidList().Cast<DerObjectIdentifier>().ToList();
-            var values = originalSubject.GetValueList().Cast<string>().ToList();
+            // Extract current RDN OIDs and values (none, when the overrides replace the subject)
+            var oids = replace ? new List<DerObjectIdentifier>() : originalSubject.GetOidList().Cast<DerObjectIdentifier>().ToList();
+            var values = replace ? new List<string>() : originalSubject.GetValueList().Cast<string>().ToList();
 
             // Apply overrides
             var appliedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

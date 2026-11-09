@@ -270,6 +270,23 @@ public sealed class SshEndpointTests
         Assert.Contains("not unlocked", AssertUnavailable(locked, await Call(locked, "SignUserKey", Request("ssh-operator"))));
 
         Assert.IsType<BadRequestObjectResult>(await Call(Controller(node.Service), "SignUserKey", Request()));
+
+        // Bug hunt 2026-11, X4: another CA's request profile (no approval, any profile) paired
+        // with this CA's signing profile is refused, not used to skip this CA's own rules.
+        var other = await node.CreateCaAsync("Other SSH");
+        var foreign = new SshRequestProfileEntity
+        {
+            Id = Guid.NewGuid(), Name = "other CA, anything goes", MaxValidityHours = 24, CertificateAuthorityId = other.CertificateAuthorityId,
+            AllowedSshSigningProfileIds = "[]", AllowedSshCertProfileIds = "[]",
+        };
+        node.Db.SshRequestProfiles.Add(foreign);
+        node.Db.SaveChanges();
+        var before = node.Audit.Of(AuditActionType.SshCertIssued).Count();
+        var crossed = Assert.IsType<BadRequestObjectResult>(await Call(Controller(node.Service), "SignUserKey", Body("ModularCA.API.Controllers.v1.User.UserSshSignRequest",
+            ("PublicKey", SshNode.SubjectKey()), ("Principals", new List<string> { "ssh-operator" }), ("ValidityHours", (int?)1),
+            ("SshRequestProfileId", foreign.Id), ("SshSigningProfileId", (Guid?)signing), ("SshCertProfileId", (Guid?)certProfile))));
+        Assert.Contains("different CA", JsonSerializer.Serialize(crossed.Value));
+        Assert.Equal(before, node.Audit.Of(AuditActionType.SshCertIssued).Count());
     }
 
     // ---- Create ------------------------------------------------------------------------------

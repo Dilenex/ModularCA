@@ -26,6 +26,15 @@ public sealed record EnrollmentRequestMaterial
     public string? Subject { get; init; }
 
     /// <summary>
+    /// True when <see cref="Subject"/> replaces the CSR's subject entirely, as a Kerberos identity
+    /// does in MSAE. Issuance builds the certificate's subject from the CSR and applies overrides
+    /// on top, which can change or add a name component but never drop one; without this flag a
+    /// client could put any subject in its CSR and have it signed beside the identity it proved.
+    /// When set, the certificate carries exactly the settled subject and nothing from the CSR.
+    /// </summary>
+    public bool SubjectReplacesCsr { get; init; }
+
+    /// <summary>
     /// The alternative names requested, in the <c>TYPE:value</c> form the rest of the system uses
     /// (<c>DNS:host.example.com</c>).
     /// </summary>

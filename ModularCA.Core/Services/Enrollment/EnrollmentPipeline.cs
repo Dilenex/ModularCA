@@ -205,6 +205,14 @@ public class EnrollmentPipeline : IEnrollmentPipeline
                 effective, request.CsrPem, sanJson, subject);
         }
 
+        // A protocol that settled the subject itself (MSAE: a Kerberos identity, or the
+        // certificate being renewed) wants exactly that subject in the certificate. Overrides on
+        // top of the CSR's subject only add or change components, so the CSR's other components
+        // used to survive: a caller with alice's ticket could send CN=Administrator,O=Corp and
+        // have it signed, while the row said CN=alice.
+        if (request.SubjectReplacesCsr && !string.IsNullOrWhiteSpace(request.CsrPem))
+            subjectOverrides = RequestProfileEnforcement.ReplacingSubjectOverrides(subject);
+
         // 7. The protocol's own check, now that the profile is known.
         if (submission.AfterProfileValidation != null)
         {
