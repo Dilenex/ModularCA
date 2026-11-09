@@ -69,8 +69,11 @@ public static class FileSecurityUtil
     /// (<see cref="FileShare.None"/>), and gets the owner-only DACL of <see cref="SetOwnerOnly"/>
     /// only after the write, so for that moment the folder's permissions apply. On every platform
     /// an existing file is tightened before the new contents go in and then truncated and
-    /// rewritten. Failures to restrict permissions are reported as warnings, as in
-    /// <see cref="SetOwnerOnly"/>; failures to write throw.
+    /// rewritten. Tightening an existing file never grants: on POSIX it only takes the group's and
+    /// others' bits away, so a file its owner made read-only stays read-only and the write is
+    /// refused, as it is on Windows, where the read-only attribute survives the DACL. Failures to
+    /// restrict permissions are reported as warnings, as in <see cref="SetOwnerOnly"/>; failures
+    /// to write throw.
     /// </summary>
     /// <param name="filePath">The file to create or replace.</param>
     /// <param name="contents">The bytes to write.</param>
@@ -78,7 +81,7 @@ public static class FileSecurityUtil
     {
         ArgumentNullException.ThrowIfNull(contents);
         if (File.Exists(filePath))
-            SetOwnerOnly(filePath);
+            RestrictExistingToOwner(filePath);
 
         var options = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write, Share = FileShare.None };
         if (!OperatingSystem.IsWindows())
@@ -86,6 +89,33 @@ public static class FileSecurityUtil
         using (var stream = new FileStream(filePath, options))
             stream.Write(contents);
         SetOwnerOnly(filePath);
+    }
+
+    /// <summary>
+    /// Takes every right but the owner's away from an existing file without giving the owner any:
+    /// on POSIX the group and other bits are cleared and the owner's left as they were (so 0444
+    /// becomes 0400, not 0600); on Windows the owner-only DACL of <see cref="SetOwnerOnly"/>,
+    /// which leaves the read-only attribute alone. Failures are warnings, as there.
+    /// </summary>
+    private static void RestrictExistingToOwner(string filePath)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            SetOwnerOnly(filePath);
+            return;
+        }
+
+        try
+        {
+            const UnixFileMode ownerBits = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+            File.SetUnixFileMode(filePath, File.GetUnixFileMode(filePath) & ownerBits);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"[WARNING] FileSecurityUtil.WriteOwnerOnly: failed to restrict '{filePath}' to its owner before writing: {ex.Message}. " +
+                "Other local users may be able to read it; fix its owner and mode by hand.");
+        }
     }
 
     /// <summary>

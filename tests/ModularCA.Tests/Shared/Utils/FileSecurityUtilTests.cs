@@ -161,6 +161,35 @@ public class FileSecurityUtilTests : IDisposable
     }
 
     /// <summary>
+    /// Tightening never grants: a file its owner made read-only is refused, not rewritten. Until
+    /// 0.4.3's release run, WriteOwnerOnly set an existing file to 0600 before writing, which on
+    /// POSIX gave a read-only file its write bit back and overwrote it (the migrate tool's
+    /// ConfigUpdateTests caught it on Linux).
+    /// </summary>
+    [Fact]
+    public void WriteOwnerOnly_refuses_a_file_its_owner_made_read_only()
+    {
+        var file = Path.Combine(_root, "db.yaml");
+        File.WriteAllText(file, "kept");
+        if (OperatingSystem.IsWindows())
+            File.SetAttributes(file, FileAttributes.ReadOnly);
+        else
+            File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+        try
+        {
+            Assert.Throws<UnauthorizedAccessException>(() => FileSecurityUtil.WriteOwnerOnly(file, "replaced"));
+            Assert.Equal("kept", File.ReadAllText(file));
+            if (!OperatingSystem.IsWindows())
+                Assert.Equal(UnixFileMode.UserRead, File.GetUnixFileMode(file)); // still restricted to its owner
+        }
+        finally
+        {
+            File.SetAttributes(file, FileAttributes.Normal);
+        }
+    }
+
+    /// <summary>
     /// Bug hunt 2026-11, X2: decrypted keys and archives go into a NEW owner-only file. The
     /// unlocker wrote an empty file, restricted it, then wrote into it, and restore wrote the
     /// archive and restricted it afterwards; either way a descriptor opened in that window kept
