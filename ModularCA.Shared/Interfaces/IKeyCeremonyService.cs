@@ -4,7 +4,8 @@ namespace ModularCA.Shared.Interfaces;
 
 /// <summary>
 /// Manages key ceremony workflows for catastrophic CA operations requiring multi-party approval.
-/// Ceremonies enforce quorum-based authorization, self-approval prevention, and 24-hour expiry.
+/// Ceremonies enforce quorum-based authorization, self-approval prevention, a 24-hour approval
+/// window, and an execution deadline once approved.
 /// </summary>
 public interface IKeyCeremonyService
 {
@@ -82,9 +83,18 @@ public interface IKeyCeremonyService
     Task<List<KeyCeremonyEntity>> ListBySpacesAsync(IEnumerable<Guid> spaceIds, string? statusFilter = null, bool includeInstance = false);
 
     /// <summary>
-    /// Expires all pending ceremonies whose ExpiresAt has passed.
+    /// Expires every pending ceremony whose approval window, and every approved ceremony whose
+    /// execution deadline, has passed (<see cref="KeyCeremonyEntity.ExpiresAt"/>), auditing each.
     /// </summary>
     Task<int> ExpireStaleCeremoniesAsync();
+
+    /// <summary>
+    /// Expires the ceremony and audits it when it is pending or approved and its
+    /// <see cref="KeyCeremonyEntity.ExpiresAt"/> has passed; returns whether it did. Execute calls
+    /// this before running an approved ceremony and refuses when it returns true.
+    /// <paramref name="actorUserId"/> and <paramref name="actorUsername"/> name who attempted it.
+    /// </summary>
+    Task<bool> ExpireIfPastDeadlineAsync(Guid ceremonyId, Guid? actorUserId = null, string? actorUsername = null);
 }
 
 /// <summary>

@@ -8,14 +8,26 @@ namespace ModularCA.API.Middleware;
 /// isn't auto-sent by browsers. This middleware protects endpoints that don't use JWT.
 ///
 /// Flow:
-/// 1. On any GET request, sets a CSRF-TOKEN cookie with a random value (if not already set)
+/// 1. On any request, sets the token cookie with a random value (if not already set)
 /// 2. On POST/PUT/DELETE to protected paths, validates that X-CSRF-Token header matches the cookie
 /// 3. SPAs read the cookie via JavaScript and include the header on mutations
+///
+/// Over HTTPS the cookie is <c>__Host-CSRF-TOKEN</c>: the prefix makes the browser refuse it unless
+/// it is Secure, host-only and on <c>/</c>, so a sibling subdomain cannot plant a token of its own
+/// (cookie tossing). Plain HTTP (development) keeps <c>CSRF-TOKEN</c>, since a browser drops a
+/// <c>__Host-</c> cookie that is not Secure. On HTTPS a leftover <c>CSRF-TOKEN</c> from an older
+/// release is deleted and never accepted.
 /// </summary>
 public class CsrfProtectionMiddleware
 {
     private readonly RequestDelegate _next;
-    private const string CookieName = "CSRF-TOKEN";
+
+    /// <summary>The token cookie on HTTPS.</summary>
+    internal const string SecureCookieName = "__Host-CSRF-TOKEN";
+
+    /// <summary>The token cookie on plain HTTP, and the name used before 0.4.3.</summary>
+    internal const string PlainCookieName = "CSRF-TOKEN";
+
     private const string HeaderName = "X-CSRF-Token";
 
     /// <summary>
@@ -60,6 +72,11 @@ public class CsrfProtectionMiddleware
         _next = next;
     }
 
+    /// <summary>
+    /// Issues the token cookie for the request's scheme when it is missing, drops a legacy
+    /// unprefixed cookie on HTTPS, and refuses a state-changing request to a protected path with 403
+    /// unless its <c>X-CSRF-Token</c> header equals that cookie.
+    /// </summary>
     public async Task InvokeAsync(HttpContext context)
     {
         var path = context.Request.Path.Value ?? "";
@@ -71,11 +88,13 @@ public class CsrfProtectionMiddleware
         // so CSRF validation can't be bypassed via the short-URL twin.
         var normalizedPath = NormalizeAuthPath(path);
 
+        var cookieName = CookieNameFor(context.Request.IsHttps);
+
         // Issue CSRF token cookie on any request if not already set
-        if (!context.Request.Cookies.ContainsKey(CookieName))
+        if (!context.Request.Cookies.ContainsKey(cookieName))
         {
             var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
-            context.Response.Cookies.Append(CookieName, token, new CookieOptions
+            context.Response.Cookies.Append(cookieName, token, new CookieOptions
             {
                 HttpOnly = false, // JS must read this to send in header
                 Secure = context.Request.IsHttps,
@@ -85,6 +104,11 @@ public class CsrfProtectionMiddleware
             });
         }
 
+        // An older release's unprefixed cookie would shadow the new one in clients that read the
+        // first match; it is never accepted on HTTPS, so drop it.
+        if (context.Request.IsHttps && context.Request.Cookies.ContainsKey(PlainCookieName))
+            context.Response.Cookies.Delete(PlainCookieName, new CookieOptions { Path = "/", Secure = true, SameSite = SameSiteMode.Strict });
+
         // Validate CSRF on state-changing requests to protected paths
         if (method is "POST" or "PUT" or "DELETE")
         {
@@ -93,7 +117,7 @@ public class CsrfProtectionMiddleware
 
             if (isProtected)
             {
-                var cookieToken = context.Request.Cookies[CookieName];
+                var cookieToken = context.Request.Cookies[cookieName];
                 var headerToken = context.Request.Headers[HeaderName].FirstOrDefault();
 
                 if (string.IsNullOrEmpty(cookieToken) ||
@@ -103,7 +127,7 @@ public class CsrfProtectionMiddleware
                     context.Response.StatusCode = 403;
                     context.Response.ContentType = "application/json";
                     await context.Response.WriteAsync(
-                        "{\"error\":\"CSRF validation failed. Include the X-CSRF-Token header matching the CSRF-TOKEN cookie.\"}");
+                        $"{{\"error\":\"CSRF validation failed. Include the X-CSRF-Token header matching the {cookieName} cookie.\"}}");
                     return;
                 }
             }
@@ -111,6 +135,12 @@ public class CsrfProtectionMiddleware
 
         await _next(context);
     }
+
+    /// <summary>
+    /// The token cookie's name for a request: <see cref="SecureCookieName"/> over HTTPS,
+    /// <see cref="PlainCookieName"/> over plain HTTP.
+    /// </summary>
+    internal static string CookieNameFor(bool isHttps) => isHttps ? SecureCookieName : PlainCookieName;
 
     /// <summary>
     /// Maps the short-URL <c>/auth/*</c> alias to the canonical <c>/api/v1/auth/*</c>

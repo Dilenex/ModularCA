@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Caching.Distributed;
+using ModularCA.API.Controllers.v1.Auth;
 using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Shared.Enums;
@@ -12,7 +14,9 @@ namespace ModularCA.API.Controllers.v1.Account;
 /// <summary>
 /// A user's own access badges: list, the grant sources available to build one from, create,
 /// edit, delete. A badge can only keep sources the user already holds, so self-management
-/// cannot escalate; it can only narrow.
+/// cannot escalate past the user's own rights. Editing or deleting the badge the session is
+/// wearing so that the session gains rights asks for the same step-up as switching to a wider
+/// badge (<see cref="AccessBadgePolicy.EditWidensSession"/>).
 /// </summary>
 [ApiController]
 [Route("api/v1/account/badges")]
@@ -21,12 +25,45 @@ namespace ModularCA.API.Controllers.v1.Account;
 public class AccountBadgesController(
     ICurrentUserService currentUser,
     AccessBadgeService badges,
-    IAuditService audit) : ControllerBase
+    IAuditService audit,
+    IAccessBadgeContext badgeContext,
+    IDistributedCache cache) : ControllerBase
 {
     private async Task<Guid?> CallerAsync()
     {
         await currentUser.EnsureLoadedAsync();
         return currentUser.IsAuthenticated ? currentUser.User?.Id : null;
+    }
+
+    /// <summary>
+    /// The refusal of an edit that widens the session making it without step-up MFA, or null
+    /// when the edit does not widen it or the step-up token (<c>X-MFA-Token</c>, operation
+    /// <see cref="StepUpOps.SwitchBadge"/>) is valid. The worn badge is read live on every
+    /// request, so without this a stolen access token wearing a narrow badge could edit or
+    /// delete that badge and undo its own narrowing.
+    /// </summary>
+    /// <param name="userId">The caller.</param>
+    /// <param name="badgeId">The badge being edited or deleted.</param>
+    /// <param name="edited">Its sources afterwards; null when it is being deleted.</param>
+    private async Task<IActionResult?> RefuseWideningWithoutStepUpAsync(Guid userId, Guid badgeId, IReadOnlySet<AccessBadgePolicy.SourceKey>? edited)
+    {
+        var wornBadgeId = (await badgeContext.GetWornAsync(userId))?.BadgeId;
+        if (wornBadgeId != badgeId) return null;
+        var stored = await badges.GetAsync(userId, badgeId);
+        if (stored == null) return null;
+        var storedKeys = stored.Sources.Select(s => new AccessBadgePolicy.SourceKey(s.Kind, s.SourceId)).ToHashSet();
+        if (!AccessBadgePolicy.EditWidensSession(wornBadgeId, badgeId, storedKeys, edited))
+            return null;
+
+        var mfaToken = Request.Headers.TryGetValue("X-MFA-Token", out var h) ? h.ToString() : null;
+        if (await MfaStepUpController.ValidateStepUpTokenAsync(cache, User, mfaToken, StepUpOps.SwitchBadge))
+            return null;
+        return StatusCode(403, new
+        {
+            error = "This change widens what this session may do and needs MFA re-verification. Call /api/v1/auth/mfa/verify-stepup first.",
+            requiresStepUp = true,
+            operation = StepUpOps.SwitchBadge,
+        });
     }
 
     /// <summary>The caller's badges.</summary>
@@ -72,11 +109,16 @@ public class AccountBadgesController(
         return badge == null ? NotFound() : Ok(badge);
     }
 
-    /// <summary>Replaces a badge's name, description, default flag and sources.</summary>
+    /// <summary>
+    /// Replaces a badge's name, description, default flag and sources. Giving the worn badge a
+    /// source it lacked needs step-up MFA.
+    /// </summary>
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(Guid id, [FromBody] AccessBadgeWriteRequest request)
     {
         if (await CallerAsync() is not Guid userId) return Unauthorized();
+        var edited = request.Sources.Select(s => new AccessBadgePolicy.SourceKey(s.Kind, s.SourceId)).ToHashSet();
+        if (await RefuseWideningWithoutStepUpAsync(userId, id, edited) is { } refusal) return refusal;
         try
         {
             var updated = await badges.UpdateAsync(userId, id, request);
@@ -91,11 +133,15 @@ public class AccountBadgesController(
         }
     }
 
-    /// <summary>Deletes a badge and takes it off every session that carried it.</summary>
+    /// <summary>
+    /// Deletes a badge and takes it off every session that carried it. Deleting the worn badge
+    /// takes it off this session too, which widens it, so that needs step-up MFA.
+    /// </summary>
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id)
     {
         if (await CallerAsync() is not Guid userId) return Unauthorized();
+        if (await RefuseWideningWithoutStepUpAsync(userId, id, edited: null) is { } refusal) return refusal;
         if (!await badges.DeleteAsync(userId, id)) return NotFound();
         await audit.LogAsync(AuditActionType.BadgeDeleted, userId, currentUser.User!.Username, "AccessBadge", id.ToString(),
             sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());

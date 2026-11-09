@@ -26,7 +26,8 @@ public class AccessBadgeTests
 
     private sealed class World
     {
-        public ModularCADbContext Db { get; } = InMemoryDbContextFactory.Create();
+        public string DbName { get; } = $"badges-{Guid.NewGuid():N}";
+        public ModularCADbContext Db { get; }
         public Guid UserId { get; } = Guid.NewGuid();
         public CertificateAuthorityEntity CaA { get; }
         public CertificateAuthorityEntity CaB { get; }
@@ -37,6 +38,7 @@ public class AccessBadgeTests
 
         public World()
         {
+            Db = InMemoryDbContextFactory.Create(DbName);
             Db.Users.Add(new UserEntity { Id = UserId, Username = "sam", Email = "sam@example.test" });
             CaA = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "A", Label = "ca-a", SpaceId = Space };
             CaB = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "B", Label = "ca-b", SpaceId = Space };
@@ -217,5 +219,34 @@ public class AccessBadgeTests
         Assert.Null(w.Db.RefreshTokens.Single().AccessBadgeId);
         Assert.Null(await service.GetDefaultAsync(w.UserId));
         Assert.False(await service.DeleteAsync(Guid.NewGuid(), first.Id)); // someone else's id cannot delete it
+    }
+
+    /// <summary>
+    /// Editing a badge in a later request (a fresh context, as the API has) keeps, adds and drops
+    /// sources and saves: the new source rows are inserted, not taken for existing rows to update.
+    /// </summary>
+    [Fact]
+    public async Task Editing_a_badge_in_a_later_request_replaces_its_sources()
+    {
+        var w = new World();
+        var group = new AccessBadgeSourceRef { Kind = AccessBadgeSourceKind.Group, SourceId = w.AuditorOnB.Id };
+        var grant = new AccessBadgeSourceRef { Kind = AccessBadgeSourceKind.CapabilityGrant, SourceId = w.DirectBackup.Id };
+        var role = new AccessBadgeSourceRef { Kind = AccessBadgeSourceKind.RoleAssignment, SourceId = w.DirectRole.Id };
+        var created = await new AccessBadgeService(w.Db).CreateAsync(w.UserId, new AccessBadgeWriteRequest { Name = "narrow", Sources = [group, grant] }, w.UserId);
+
+        using (var later = InMemoryDbContextFactory.Create(w.DbName))
+        {
+            var updated = await new AccessBadgeService(later).UpdateAsync(w.UserId, created.Id,
+                new AccessBadgeWriteRequest { Name = "renamed", Sources = [group, role] });
+            Assert.NotNull(updated);
+        }
+
+        using var check = InMemoryDbContextFactory.Create(w.DbName);
+        var stored = await new AccessBadgeService(check).GetAsync(w.UserId, created.Id);
+        Assert.Equal("renamed", stored!.Name);
+        Assert.Equal(
+            new[] { (AccessBadgeSourceKind.Group, w.AuditorOnB.Id), (AccessBadgeSourceKind.RoleAssignment, w.DirectRole.Id) }.OrderBy(x => x.Item2),
+            stored.Sources.Select(s => (s.Kind, s.SourceId)).OrderBy(x => x.Item2));
+        Assert.Equal(2, check.AccessBadgeSources.Count(s => s.BadgeId == created.Id));
     }
 }

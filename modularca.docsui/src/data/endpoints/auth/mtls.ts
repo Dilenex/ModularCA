@@ -57,7 +57,7 @@ export const mtls: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup. Required for this operation.' },
         ],
         responseDescription: 'Confirmation that the mTLS credential was revoked.',
-        notes: 'Also revokes the underlying certificate. Blocked if this is the user\'s only remaining MFA method.',
+        notes: 'Also revokes the underlying certificate and signs the account out of every session, this one included, since a session does not record which credential opened it. Blocked if this is the user\'s only remaining MFA method.',
     },
     {
         method: 'POST',
@@ -68,8 +68,11 @@ export const mtls: ApiEndpoint[] = [
         requestBody: [
             { name: 'mfaToken', type: 'string', required: true, description: 'Temporary MFA token from the login endpoint' },
         ],
+        headers: [
+            { name: 'DPoP', type: 'string', required: false, description: 'DPoP proof for POST to this URL. Binds the session\'s refresh token to the proving key.' },
+        ],
         responseDescription: 'JWT token pair on successful mTLS verification.',
-        notes: 'Client certificate must be presented at the TLS layer.',
+        notes: 'Client certificate must be presented at the TLS layer. A certificate that is revoked or on hold is refused with 401 and audited.',
     },
     {
         method: 'GET',
@@ -81,7 +84,7 @@ export const mtls: ApiEndpoint[] = [
             { name: 'mfaToken', type: 'string', required: true, description: 'Temporary MFA token from the login endpoint' },
         ],
         responseDescription: 'Redirect to the admin UI with a one-time authorization code in the URL.',
-        notes: 'Designed for browser navigation to trigger the certificate picker dialog.',
+        notes: 'Designed for browser navigation to trigger the certificate picker dialog. A revoked or held certificate redirects to /login?error=cert_revoked. Rate limited per IP (25 requests per 5 minutes).',
     },
     {
         method: 'GET',
@@ -90,7 +93,7 @@ export const mtls: ApiEndpoint[] = [
         auth: 'Anonymous',
         category: 'mTLS Authentication',
         responseDescription: 'Redirect to admin UI with auth code (if sole factor) or to MFA verify page.',
-        notes: 'Client certificate must be presented at the TLS layer. Generates one-time auth code for token exchange.',
+        notes: 'Client certificate must be presented at the TLS layer. Generates one-time auth code for token exchange. A revoked or held certificate redirects to /login?error=cert_revoked. Rate limited per IP (10 requests per 5 minutes).',
     },
     {
         method: 'POST',
@@ -101,7 +104,10 @@ export const mtls: ApiEndpoint[] = [
         requestBody: [
             { name: 'code', type: 'string', required: true, description: 'The one-time authorization code received from the mTLS redirect' },
         ],
+        headers: [
+            { name: 'DPoP', type: 'string', required: false, description: 'DPoP proof for POST to this URL. Binds the session\'s refresh token to the proving key; the redirect itself cannot carry one.' },
+        ],
         responseDescription: 'JWT access token, expiration, and refresh token.',
-        notes: 'Code is single-use and expires after 30 seconds.',
+        notes: 'Code is single-use and expires after 30 seconds. Send a DPoP proof here: the redirect sign-in is a browser navigation, so this is where the session is bound to the client\'s key. Rate limited per IP (20 requests per 5 minutes).',
     },
 ];

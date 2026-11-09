@@ -463,14 +463,13 @@ namespace ModularCA.Shared.Models.Config
         public bool EnableCors { get; set; } = false;
 
         /// <summary>
-        /// Optional CIDRs of trusted reverse proxies. Only populated
-        /// when the deployment sits behind a proxy. Consumed by the forwarded-headers
-        /// pipeline in conjunction with <see cref="SecurityConfig.BehindReverseProxy"/>.
-        /// Example: "10.0.1.0/24,10.0.2.0/24". The default is now
-        /// <b>loopback-only</b> — operators who run behind a reverse proxy must
-        /// enumerate trusted proxy subnets explicitly. Leaving this empty with
-        /// <see cref="SecurityConfig.BehindReverseProxy"/>=true falls back to
-        /// loopback-only (the old RFC1918 default has been removed).
+        /// CIDRs of trusted reverse proxies, comma-separated, each <c>address/prefix</c> with no
+        /// bits set after the prefix. Consumed by the forwarded-headers pipeline with
+        /// <see cref="SecurityConfig.BehindReverseProxy"/>. Example: "10.0.1.0/24,10.0.2.0/24".
+        /// Loopback is always trusted. Leaving this empty with
+        /// <see cref="SecurityConfig.BehindReverseProxy"/>=true stops the start (status 1), a proxy
+        /// on the same host included: name it as "127.0.0.1/32,::1/128". An entry that does not
+        /// parse stops the start too.
         /// </summary>
         [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public string TrustedProxyCidrs { get; set; } = string.Empty;
@@ -731,12 +730,14 @@ namespace ModularCA.Shared.Models.Config
         /// <summary>
         /// Hard-enforce DPoP proof-of-possession on refresh: when a session was bound to a client key
         /// (<c>RefreshTokenEntity.CnfJkt</c>), reject the refresh (401 <c>REFRESH_POP_INVALID</c>) unless
-        /// it carries a matching proof. Default <b>false</b> = observe mode: bind + audit-log mismatches
-        /// but allow the refresh (rebinding to the presented key), so the binding can be validated in
-        /// production before enforcement is switched on. The theft defense is only active once enforced.
+        /// it carries a matching proof. Default <b>true</b>: every sign-in path binds the session to the
+        /// browser's key when the client sends a proof (password, certificate, TOTP, WebAuthn, and the
+        /// mTLS code exchange). <b>false</b> = observe mode: audit-log mismatches but allow the refresh,
+        /// rebinding to the presented key. A session that was never bound (a client that sends no proof)
+        /// is not checked in either mode.
         /// </summary>
         [Setting(SettingClass.InstanceWide, SettingReload.Live)]
-        public bool EnforceRefreshTokenPoP { get; set; } = false;
+        public bool EnforceRefreshTokenPoP { get; set; } = true;
 
         /// <summary>
         /// Per-username rate-limit bucket floor. This is the maximum

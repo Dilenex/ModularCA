@@ -25,6 +25,7 @@ import { problemNotice } from './notices';
 import { ApiError, parseProblem, type ApiProblem } from './problem';
 import type { NoticeInput, NoticeSeverity } from '@shared/notifications/notice';
 import { noteReported } from '@shared/notifications/reported';
+import { readCsrfCookie as readSharedCsrfCookie } from '@shared/csrf';
 
 /**
  * A toast notifier supplied by the consuming app.
@@ -348,12 +349,11 @@ export function createAuthClient(config: AuthClientConfig) {
     }
 
     /**
-     * Reads the CSRF double-submit cookie set by the backend. Centralized so every
-     * helper uses the same regex and decoding rules.
+     * Reads the CSRF double-submit cookie set by the backend (`__Host-CSRF-TOKEN` over HTTPS,
+     * `CSRF-TOKEN` over plain HTTP). Centralized so every helper uses the same rules.
      */
     function readCsrfCookie(): string | null {
-      const m = document.cookie.match(/(?:^|;\s*)CSRF-TOKEN=([^;]*)/);
-      return m ? decodeURIComponent(m[1]) : null;
+      return readSharedCsrfCookie();
     }
 
     function buildAuthHeaders(extra?: Record<string, string>): Record<string, string> {

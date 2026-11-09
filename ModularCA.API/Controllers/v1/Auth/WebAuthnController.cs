@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 using Fido2NetLib;
 using Fido2NetLib.Objects;
+using ModularCA.API.Services;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Auth.Utils;
 using ModularCA.Auth.Models;
@@ -175,7 +176,7 @@ public class WebAuthnController : ControllerBase
         // stays open so `mfa_setup_required` users can enroll their first key.
         var hasTotpPrecheck = await _db.TotpSecrets.AnyAsync(t => t.UserId == userId.Value && t.IsVerified);
         var hasWebAuthnPrecheck = await _db.Fido2Credentials.AnyAsync(c => c.UserId == userId.Value);
-        var hasMtlsPrecheck = await _db.MtlsCredentials.AnyAsync(c => c.UserId == userId.Value && !c.IsRevoked && c.ExpiresAt > DateTime.UtcNow);
+        var hasMtlsPrecheck = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
         if (hasTotpPrecheck || hasWebAuthnPrecheck || hasMtlsPrecheck)
         {
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.WebAuthnRegister))
@@ -377,6 +378,16 @@ public class WebAuthnController : ControllerBase
 
         var assertionOpts = Fido2NetLib.AssertionOptions.FromJson(optionsJson);
 
+        // Fido2 enforces user verification only when the ORIGINAL options asked for Required, so
+        // the posture is checked against the options, wherever they were issued: the login
+        // endpoint used to issue its own with Preferred, and options cached before the policy was
+        // tightened would otherwise still verify without UV.
+        if (!WebAuthnPosture.OptionsMeetPolicy(assertionOpts, (await _securityPolicy.GetAsync()).RequireWebAuthnUserVerification))
+        {
+            await _cache.RemoveAsync(cacheKey);
+            return BadRequest(new { error = "This sign-in was started without user verification, which the security policy requires. Sign in again." });
+        }
+
         // Find the credential in our database by matching the raw credential ID bytes
         var assertionCredIdBytes = Microsoft.AspNetCore.WebUtilities.WebEncoders.Base64UrlDecode(request.AssertionResponse.Id);
         var allUserCreds = await _db.Fido2Credentials
@@ -425,8 +436,8 @@ public class WebAuthnController : ControllerBase
             return Unauthorized(new { error = "WebAuthn verification failed. Contact administrator if the problem persists." });
         }
 
-        // When RequireWebAuthnUserVerification is true, the
-        // assertion-options endpoint above issued UserVerification=Required, so
+        // When RequireWebAuthnUserVerification is true, the options were checked above
+        // to carry UserVerification=Required, so
         // MakeAssertionAsync's internal validator already throws when UV was not
         // satisfied. The catch block above handles that case — no extra branch
         // needed here.
@@ -574,7 +585,7 @@ public class WebAuthnController : ControllerBase
         // Prevent removal of last MFA method
         var webAuthnCount = await _db.Fido2Credentials.CountAsync(c => c.UserId == userId.Value);
         var hasTotp = await _db.TotpSecrets.AnyAsync(t => t.UserId == userId.Value && t.IsVerified);
-        var hasActiveMtls = await _db.MtlsCredentials.AnyAsync(c => c.UserId == userId.Value && !c.IsRevoked && c.ExpiresAt > DateTime.UtcNow);
+        var hasActiveMtls = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
         if (webAuthnCount <= 1 && !hasTotp && !hasActiveMtls)
             return StatusCode(409, new { error = "Cannot remove your only MFA method. Set up TOTP, register another security key, or enroll an mTLS certificate first." });
 

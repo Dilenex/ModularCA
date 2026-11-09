@@ -289,6 +289,55 @@ public sealed class CeremonyEndpointPipelineTests
         Assert.Single(w.Audit.Entries.Where(e => e.Action == AuditActionType.ControlledUserChangeApplied));
     }
 
+    /// <summary>
+    /// Reaching the quorum moves the ceremony's expiry to an execution deadline; an execute after it
+    /// is refused with 409, expires the ceremony, audits the expiry and applies nothing.
+    /// </summary>
+    [Fact]
+    public async Task An_approved_ceremony_executed_after_its_deadline_is_refused_and_expires()
+    {
+        var w = new World();
+        var initiator = w.W.User("a1-initiator", w.W.A1Admin);
+        var id = w.GrantOnA1(w.W.Plain, initiator);
+        var approvedAt = DateTime.UtcNow;
+        w.Approve(id, w.W.A1AdminUser);
+
+        var ceremony = w.Db.KeyCeremonies.Single(c => c.Id == id);
+        Assert.Equal("Approved", ceremony.Status);
+        Assert.InRange(ceremony.ExpiresAt,
+            approvedAt.Add(KeyCeremonyService.ApprovedExecutionWindow).AddMinutes(-1),
+            DateTime.UtcNow.Add(KeyCeremonyService.ApprovedExecutionWindow).AddMinutes(1));
+
+        ceremony.ExpiresAt = DateTime.UtcNow.AddMinutes(-1);
+        w.Db.SaveChanges();
+
+        var result = await w.Send(initiator, null, "Execute", id, w.StepUp(initiator, StepUpOps.ExecuteCeremony, id));
+
+        Assert.Equal(409, Status(result));
+        Assert.Contains("deadline", System.Text.Json.JsonSerializer.Serialize(((ObjectResult)result).Value));
+        Assert.Equal("Expired", w.Db.KeyCeremonies.Single(c => c.Id == id).Status);
+        Assert.Contains(w.Audit.Entries, e => e.Action == AuditActionType.KeyCeremonyExpired && e.TargetId == id.ToString());
+        Assert.Empty(w.Db.UserCapabilityGrants.Where(g => g.UserId == w.W.Plain && g.Capability == Capabilities.SystemManage));
+    }
+
+    [Fact]
+    public async Task The_sweep_expires_an_approved_ceremony_past_its_deadline_and_keeps_one_within_it()
+    {
+        var w = new World();
+        var initiator = w.W.User("a1-initiator", w.W.A1Admin);
+        var stale = w.GrantOnA1(w.W.Plain, initiator);
+        var fresh = w.GrantOnA1(w.W.Plain, initiator);
+        w.Approve(stale, w.W.A1AdminUser);
+        w.Approve(fresh, w.W.A1AdminUser);
+        w.Db.KeyCeremonies.Single(c => c.Id == stale).ExpiresAt = DateTime.UtcNow.AddMinutes(-1);
+        w.Db.SaveChanges();
+
+        Assert.Equal(1, await w.Ceremonies.ExpireStaleCeremoniesAsync());
+
+        Assert.Equal("Expired", w.Db.KeyCeremonies.Single(c => c.Id == stale).Status);
+        Assert.Equal("Approved", w.Db.KeyCeremonies.Single(c => c.Id == fresh).Status);
+    }
+
     [Fact]
     public async Task An_apply_that_read_the_ceremony_before_a_concurrent_execute_committed_is_refused()
     {

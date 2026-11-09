@@ -7,6 +7,7 @@ import { apiLogin, apiChangePassword, apiGet } from '../api/client';
 import { setMfaSetupRequired } from '../components/auth';
 import { useAuth } from '../context/AuthContext';
 import { rememberReturnUrl, consumeReturnUrl, homeFor, type PortalUser } from '../portal';
+import { CERTIFICATE_PICKER_HINT, loginErrorMessage, withLoginError } from './loginErrors';
 
 const Login: React.FC = () => {
     const navigate = useNavigate();
@@ -27,7 +28,18 @@ const Login: React.FC = () => {
     useEffect(() => {
         // A portal page that found no session sends the browser here with returnUrl. Keep it
         // for the end of the flow, which may pass through MFA pages that drop the query.
-        rememberReturnUrl(new URLSearchParams(window.location.search).get('returnUrl'));
+        const params = new URLSearchParams(window.location.search);
+        rememberReturnUrl(params.get('returnUrl'));
+        // A failed certificate sign-in comes back with ?error=<code>. Show its message, then drop
+        // the code from the address bar so a reload does not show it again.
+        const errorCode = params.get('error');
+        const redirectError = loginErrorMessage(errorCode);
+        if (redirectError) {
+            setError(redirectError);
+            params.delete('error');
+            const query = params.toString();
+            window.history.replaceState(window.history.state, '', window.location.pathname + (query ? `?${query}` : ''));
+        }
         apiGet('/auth/mtls/auth-info').then(setMtlsInfo).catch(() => {});
         // Pre-login banner gate: if the server has a banner configured and the user has not
         // acknowledged it in this browser session, bounce to the dedicated consent page.
@@ -35,7 +47,7 @@ const Login: React.FC = () => {
         apiGet<{ banner: string | null; title: string | null }>('/auth/login-banner')
             .then(d => {
                 if (d.banner && sessionStorage.getItem('loginBannerAcknowledged') !== '1') {
-                    navigate('/banner', { replace: true });
+                    navigate(withLoginError('/banner', redirectError ? errorCode : null), { replace: true });
                 }
             })
             .catch(() => { /* no banner configured or endpoint unreachable — fall through */ });
@@ -205,6 +217,7 @@ const Login: React.FC = () => {
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg>
                                 Sign in with Certificate
                             </button>
+                            <p className="text-xs text-ink-muted text-center mt-2">{CERTIFICATE_PICKER_HINT}</p>
                         </>
                     )}
                 </form>

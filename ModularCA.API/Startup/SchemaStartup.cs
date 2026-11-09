@@ -60,8 +60,9 @@ public static partial class SchemaStartup
 {
     /// <summary>
     /// The exit code when the operator must act: a schema this build does not match, a
-    /// misconfigured connection, broken ownership, or a migration that failed for good. Units
-    /// carry <c>RestartPreventExitStatus=3</c>.
+    /// misconfigured connection, broken ownership, or a migration that failed for good. An enabled
+    /// HSM that cannot be initialised exits with it too: each restart would try the PIN again, and a
+    /// wrong one locks a token after a few tries. Units carry <c>RestartPreventExitStatus=3</c>.
     /// </summary>
     public const int ExitCode = 3;
 

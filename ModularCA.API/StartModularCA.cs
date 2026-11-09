@@ -775,13 +775,8 @@ var aspNetLevel = verboseErrors ? LogEventLevel.Warning : LogEventLevel.Warning;
 
 builder.Host.UseSerilog((context, services, configuration) =>
 {
-    configuration
-        .MinimumLevel.ControlledBy(loggingLevelSwitch)
-        // Positive override so ModularCA.* logs are not clamped by the
-        // Microsoft.AspNetCore warning override (which also affects MVC-sourced events).
-        .MinimumLevel.Override("ModularCA", LogEventLevel.Information)
-        .MinimumLevel.Override("Microsoft.AspNetCore", aspNetLevel)
-        .MinimumLevel.Override("Microsoft.EntityFrameworkCore", efCoreLevel)
+    configuration.MinimumLevel.ControlledBy(loggingLevelSwitch);
+    ModularCA.Core.Logging.LogLevelOverrides.Apply(configuration, aspNetLevel, efCoreLevel)
         .Enrich.FromLogContext()
         .Enrich.WithProperty("Application", "ModularCA")
         // Enrollment tokens travel in the path; no sink may keep them (AuditPathRedaction).
@@ -1639,7 +1634,9 @@ if (!signerIsRemote && !ingressOnly && config.Hsm?.Enabled == true)
         Console.Error.WriteLine("        Hsm.SlotId and the PIN (Hsm.Pin or MODULARCA__HSM__PIN) and that the token is present,");
         Console.Error.WriteLine("        or set Hsm.Enabled: false in config.yaml to run without the HSM.");
         Log.Fatal(ex, "[HSM] Initialization failed; refusing to start.");
-        Environment.Exit(1);
+        // Not 1: a restart would try the PIN again, and a token locks after a few wrong ones.
+        Log.CloseAndFlush();
+        Environment.Exit(ModularCA.API.Startup.SchemaStartup.ExitCode);
     }
     finally
     {
@@ -3119,6 +3116,15 @@ app.UseExceptionHandler(errorApp =>
         await context.Response.WriteAsync(body);
     });
 });
+
+// The hostnames whose handshake differs, resolved from the same settings as at the listener above.
+var misdirectedGatedHosts = new[]
+{
+    ModularCA.Shared.Utils.SubdomainUtil.ResolveFqdn(config.Mtls.AuthSubdomain, config.Https.PublicDomain),
+    isSetupMode ? null : ModularCA.Shared.Utils.SubdomainUtil.ResolveFqdn(config.Est.AuthSubdomain, config.Https.PublicDomain),
+}.OfType<string>().ToArray();
+if (misdirectedGatedHosts.Length > 0)
+    app.UseMiddleware<ModularCA.API.Middleware.MisdirectedRequestMiddleware>((IReadOnlyList<string>)misdirectedGatedHosts);
 
 // HSTS where ASP.NET Core's UseHsts set it, so the host-level hardening applies
 // when TLS is active, from Http.Hsts as it is saved rather than as it was at start. The

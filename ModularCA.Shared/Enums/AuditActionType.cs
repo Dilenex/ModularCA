@@ -17,6 +17,13 @@ public static class AuditActionType
     public const string SessionRefreshNotice = "SessionRefreshNotice";
     public const string UserCertLogin = "UserCertLogin";
     public const string UserLogout = "UserLogout";
+    /// <summary>
+    /// Every session of an account was ended (security stamp rotated, refresh tokens revoked)
+    /// because an mTLS sign-in credential of it was revoked, or its certificate was revoked or put
+    /// on hold. Details name the reason, the credential or certificate, and how many refresh tokens
+    /// were revoked.
+    /// </summary>
+    public const string UserSessionsEnded = "UserSessionsEnded";
 
     // MFA
     public const string MfaTokenInvalid = "MfaTokenInvalid";

@@ -20,7 +20,8 @@ public static class FileSecurityUtil
     /// disabled so parent-folder ACEs do not leak access. A failure is written to standard error
     /// as a warning rather than thrown, so a permission-tightening failure does not crash callers
     /// writing secrets to disk. To create a secret file, prefer
-    /// <see cref="WriteOwnerOnly(string, byte[])"/>, which never leaves it readable in between.
+    /// <see cref="WriteOwnerOnly(string, byte[])"/>, which on POSIX never leaves it readable in
+    /// between.
     /// </summary>
     /// <param name="filePath">Absolute path to the file whose ACL should be tightened.</param>
     public static void SetOwnerOnly(string filePath)
@@ -60,12 +61,16 @@ public static class FileSecurityUtil
     }
 
     /// <summary>
-    /// Writes a secret file so that it is never readable by anyone but its owner, not even for the
-    /// moment between creating it and tightening it. A new file is created with mode 0600 through
-    /// <see cref="FileStreamOptions.UnixCreateMode"/>; an existing file is tightened before the new
-    /// contents go in and then truncated and rewritten. On Windows the owner-only DACL of
-    /// <see cref="SetOwnerOnly"/> is applied as well. Failures to restrict permissions are
-    /// reported as warnings, as in <see cref="SetOwnerOnly"/>; failures to write throw.
+    /// Writes a secret file restricted to its owner. On Linux and other POSIX systems it is never
+    /// readable by anyone else, not even for the moment between creating it and tightening it: a
+    /// new file is created with mode 0600 through <see cref="FileStreamOptions.UnixCreateMode"/>.
+    /// On Windows there is no create-time equivalent here: a new file starts with the ACL it
+    /// inherits from its folder, is written while no other handle may open it
+    /// (<see cref="FileShare.None"/>), and gets the owner-only DACL of <see cref="SetOwnerOnly"/>
+    /// only after the write, so for that moment the folder's permissions apply. On every platform
+    /// an existing file is tightened before the new contents go in and then truncated and
+    /// rewritten. Failures to restrict permissions are reported as warnings, as in
+    /// <see cref="SetOwnerOnly"/>; failures to write throw.
     /// </summary>
     /// <param name="filePath">The file to create or replace.</param>
     /// <param name="contents">The bytes to write.</param>

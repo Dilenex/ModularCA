@@ -5,6 +5,7 @@ import type { AdminAccountData } from './AdminAccount';
 import type { SecurityData } from './SecurityFeatures';
 import type { NetworkData } from './NetworkAdvanced';
 import type { WebTlsCertificateData } from './WebTlsCertificate';
+import { getCsrfToken } from '../utils/csrf';
 
 interface DatabaseConfig {
     rootHost: string;
@@ -181,10 +182,10 @@ const Review: React.FC<ReviewProps> = ({ database, organization, rootCa, admin, 
         };
 
         try {
-            const csrfToken = document.cookie.match(/(?:^|;\s*)CSRF-TOKEN=([^;]*)/)?.[1] || '';
+            const csrfToken = getCsrfToken();
             const headers: Record<string, string> = {
                 'Content-Type': 'application/json',
-                'X-CSRF-Token': decodeURIComponent(csrfToken),
+                'X-CSRF-Token': csrfToken,
             };
             // KC-11: include the one-time setup token
             if (setupToken) {

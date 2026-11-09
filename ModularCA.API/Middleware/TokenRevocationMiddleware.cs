@@ -78,7 +78,7 @@ public class TokenRevocationMiddleware
             if (Guid.TryParse(subClaim, out var userId) && !string.IsNullOrEmpty(stampClaim))
             {
                 // Cache slot: "user-stamp:{id}" => "{stamp}|{ghash}"
-                var cacheKey = $"user-stamp:{userId:N}";
+                var cacheKey = ModularCA.Core.Helpers.UserSessionTermination.StampCacheKey(userId);
                 var cached = await _cache.GetStringAsync(cacheKey);
                 string? dbStamp;
                 string? dbGhash;
@@ -142,7 +142,7 @@ public class TokenRevocationMiddleware
     /// </summary>
     public static Task InvalidateUserStampCacheAsync(IDistributedCache cache, Guid userId)
     {
-        return cache.RemoveAsync($"user-stamp:{userId:N}");
+        return cache.RemoveAsync(ModularCA.Core.Helpers.UserSessionTermination.StampCacheKey(userId));
     }
 
     private static async Task Write401(HttpContext context, string error, string code)

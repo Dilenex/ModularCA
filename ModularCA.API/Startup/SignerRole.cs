@@ -146,7 +146,8 @@ public static class SignerRole
                 Console.Error.WriteLine("        The signer refuses to start rather than continue with the software keystore. Check");
                 Console.Error.WriteLine($"        Hsm.ModulePath, Hsm.SlotId and the PIN (Hsm.Pin or MODULARCA__HSM__PIN) in {paths.ConfigPath}");
                 Console.Error.WriteLine("        and that the token is present, or set Hsm.Enabled: false there to run without the HSM.");
-                return 1;
+                // Not 1: a restart would try the PIN again, and a token locks after a few wrong ones.
+                return SchemaStartup.ExitCode;
             }
             finally
             {

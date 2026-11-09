@@ -21,6 +21,10 @@ worth running: a constant the generated file no longer defines means the checked
 stale, and a bare string literal means a call site escaped the migration and is back to failing
 at runtime instead of at build time. Both are reported.
 
+A plain helper inside a `runWithOneStepUp(...)` callback is not a finding when it passes the
+callback's headers parameter on and the batch asks for the operation the route requires; a batch
+that asks for another operation is reported.
+
 Usage:  python scripts/stepup_contract.py
 Exit 1 if any mismatch is found.
 """
@@ -107,15 +111,71 @@ UI_CALL_RE = re.compile(
 UI_OP_CONST_RE = re.compile(r"requireStepUp\s*,\s*StepUpOps\.(\w+)")
 UI_OP_LITERAL_RE = re.compile(r"requireStepUp\s*,\s*'([^']+)'")
 
+# Bulk actions take one step-up for many rows: runWithOneStepUp(rows, idOf, requireStepUp, op,
+# (row, headers) => apiPost(url, body, { headers })). The plain helper is right there, because the
+# token arrives as the callback's second parameter, so such a call is guarded when it passes that
+# parameter on and the operation named is the one its route requires.
+BATCH_RE = re.compile(r"\brunWithOneStepUp\s*\(")
+BATCH_CALLBACK_RE = re.compile(r"^\(\s*\w+\s*,\s*(\w+)\s*\)\s*=>")
+OPEN, CLOSE = "([{", ")]}"
+
+
+def call_args(text: str, open_paren: int) -> tuple[list[tuple[int, int]], int]:
+    """
+    The top-level arguments of the call whose '(' is at `open_paren`, as (start, end) spans, and
+    the index of its ')'. Quoted strings and template literals are skipped whole.
+    """
+    depth, i, start, spans = 0, open_paren, open_paren + 1, []
+    while i < len(text):
+        ch = text[i]
+        if ch in "'\"`":
+            j = i + 1
+            while j < len(text) and text[j] != ch:
+                j += 2 if text[j] == "\\" else 1
+            i = j + 1
+            continue
+        if ch in OPEN:
+            depth += 1
+        elif ch in CLOSE:
+            depth -= 1
+            if depth == 0:
+                spans.append((start, i))
+                return spans, i
+        elif ch == "," and depth == 1:
+            spans.append((start, i))
+            start = i + 1
+        i += 1
+    return spans, len(text)
+
+
+def batch_calls(text: str) -> list[tuple[int, int, str, set[str]]]:
+    """
+    Each runWithOneStepUp callback in `text`: the span of the callback, the name of its headers
+    parameter, and the StepUpOps constants its operation argument names (both arms of a ternary).
+    """
+    found = []
+    for m in BATCH_RE.finditer(text):
+        spans, _ = call_args(text, m.end() - 1)
+        if len(spans) != 5:
+            continue
+        op_text = text[spans[3][0]:spans[3][1]]
+        start, end = spans[4]
+        callback = BATCH_CALLBACK_RE.match(text[start:end].strip())
+        if callback:
+            found.append((start, end, callback.group(1), set(re.findall(r"StepUpOps\.(\w+)", op_text))))
+    return found
+
 
 def main() -> int:
     stepup_routes = server_stepup_routes()
     allowed = allowed_ops()
 
     unguarded: list[str] = []
+    wrong_op: list[str] = []
     bad_ops: list[str] = []
     literals: list[str] = []
     checked_ops = 0
+    batched = 0
 
     # .ts as well as .tsx: src/api/scheduler.ts holds ten step-up call sites and was invisible to
     # this auditor while it only globbed components.
@@ -126,6 +186,7 @@ def main() -> int:
         text = f.read_text(encoding="utf-8", errors="replace")
         rel = f.relative_to(ROOT).as_posix()
 
+        batches = batch_calls(text)
         for m in UI_CALL_RE.finditer(text):
             verb, with_mfa, path = m.group(1).upper(), m.group(2), m.group(3)
             if not path.startswith("/api/"):
@@ -134,6 +195,21 @@ def main() -> int:
             if key in stepup_routes and not with_mfa:
                 op, where = stepup_routes[key]
                 line = text.count("\n", 0, m.start()) + 1
+                batch = next((b for b in batches if b[0] <= m.start() < b[1]), None)
+                if batch:
+                    call_spans, _ = call_args(text, text.index("(", m.start()))
+                    passes_headers = any(re.search(rf"\b{re.escape(batch[2])}\b", text[s:e]) for s, e in call_spans[1:])
+                    if passes_headers and op in batch[3]:
+                        batched += 1
+                        continue
+                    if passes_headers:
+                        wrong_op.append(
+                            f"  {rel}:{line}\n"
+                            f"      {verb} {path}\n"
+                            f"      requires StepUpOps.{op}  ({where}); the batch asks for "
+                            + ", ".join(f"StepUpOps.{o}" for o in sorted(batch[3]) or ["nothing it can read"])
+                        )
+                        continue
                 unguarded.append(
                     f"  {rel}:{line}\n"
                     f"      {verb} {path}\n"
@@ -162,6 +238,7 @@ def main() -> int:
     print(f"step-up endpoints  : {len(stepup_routes)}")
     print(f"allowed operations : {len(allowed)}")
     print(f"client op usages   : {checked_ops}")
+    print(f"batched calls      : {batched}  (runWithOneStepUp, token passed on)")
     print()
 
     # A zero here means the extraction stopped matching, not that the code is clean. The op
@@ -178,6 +255,12 @@ def main() -> int:
         print("\n\n".join(unguarded))
         print()
 
+    if wrong_op:
+        print(f"{len(wrong_op)} batched call(s) whose step-up names another operation than the route requires:")
+        print("  (the token is refused for the route, so every row fails after MFA)\n")
+        print("\n\n".join(wrong_op))
+        print()
+
     if bad_ops:
         print(f"{len(bad_ops)} step-up operation string(s) the server will reject:")
         print("  (MfaStepUpController answers 400 invalid_step_up_operation)\n")
@@ -190,7 +273,7 @@ def main() -> int:
         print("\n".join(literals))
         print()
 
-    if not unguarded and not bad_ops and not literals:
+    if not unguarded and not wrong_op and not bad_ops and not literals:
         print("No step-up contract mismatches found.")
         return 0
     return 1

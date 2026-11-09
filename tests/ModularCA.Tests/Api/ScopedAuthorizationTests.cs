@@ -721,13 +721,13 @@ public sealed class ScopedAuthorizationTests
 
     // ---- unreadable ceremony parameters ------------------------------------------------------
 
-    private static void OpenCeremony(ControlledUserWorld w, string parametersJson, string status = "Pending")
+    private static void OpenCeremony(ControlledUserWorld w, string parametersJson, string status = "Pending", DateTime? expiresAt = null)
     {
         w.Db.KeyCeremonies.Add(new KeyCeremonyEntity
         {
             Id = Guid.NewGuid(), OperationType = "ControlledUserChange", Description = "unreadable", TargetEntityId = "",
             InitiatedByUserId = w.SystemAdmin, InitiatedByUsername = "sysadmin", RequiredApprovals = 1, Status = status,
-            CreatedAt = DateTime.UtcNow, ExpiresAt = DateTime.UtcNow.AddDays(1), ParametersJson = parametersJson, ApprovalsJson = "[]",
+            CreatedAt = DateTime.UtcNow, ExpiresAt = expiresAt ?? DateTime.UtcNow.AddDays(1), ParametersJson = parametersJson, ApprovalsJson = "[]",
         });
         w.Db.SaveChanges();
     }
@@ -753,6 +753,28 @@ public sealed class ScopedAuthorizationTests
         var reset = await Call(UserManager(w, w.A1AdminUser, cache), "ResetUserPassword", w.Plain,
             StepUp(cache, w.A1AdminUser, StepUpOps.ResetPassword, w.Plain));
         Assert.Equal(409, Status(reset));
+    }
+
+    /// <summary>
+    /// An approved promotion past its expiry can no longer be executed, so, like a lapsed pending
+    /// one, it no longer blocks the target's credential resets with 409.
+    /// </summary>
+    [Fact]
+    public async Task A_lapsed_approved_promotion_does_not_block_credential_resets()
+    {
+        var w = new ControlledUserWorld();
+        var promotion = $"{{\"ChangeType\":\"AddGroupMember\",\"TargetUserId\":\"{w.Plain}\"}}";
+        OpenCeremony(w, promotion, status: "Approved", expiresAt: DateTime.UtcNow.AddMinutes(-1));
+        OpenCeremony(w, promotion, status: "Pending", expiresAt: DateTime.UtcNow.AddMinutes(-1));
+        Assert.False(await w.Controlled.HasOpenPromotionAsync(w.Plain));
+
+        var cache = NewCache();
+        var reset = await Call(UserManager(w, w.A1AdminUser, cache), "ResetUserPassword", w.Plain,
+            StepUp(cache, w.A1AdminUser, StepUpOps.ResetPassword, w.Plain));
+        Assert.NotEqual(409, Status(reset));
+
+        OpenCeremony(w, promotion, status: "Approved");
+        Assert.True(await w.Controlled.HasOpenPromotionAsync(w.Plain));
     }
 
     /// <summary>

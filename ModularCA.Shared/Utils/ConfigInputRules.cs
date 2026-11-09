@@ -224,7 +224,7 @@ public static class ConfigInputRules
         if (behindReverseProxy && string.IsNullOrWhiteSpace(trustedProxyCidrs))
             return "Security.BehindReverseProxy is on but Http.TrustedProxyCidrs names no proxy. Every request would appear "
                  + "to come from the proxy, and an internal proxy address passes the internal-only IP whitelist rules. "
-                 + "Name the proxy, e.g. 10.0.1.5/32, or turn BehindReverseProxy off.";
+                 + "Name the proxy, e.g. 10.0.1.5/32, or 127.0.0.1/32,::1/128 for a proxy on this host, or turn BehindReverseProxy off.";
         return null;
     }
 

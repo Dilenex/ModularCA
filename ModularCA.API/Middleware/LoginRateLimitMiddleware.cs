@@ -54,18 +54,27 @@ public class LoginRateLimitMiddleware
     private static readonly Dictionary<string, (int maxAttempts, int windowMinutes)> RateLimitedPaths = new()
     {
         ["/api/v1/auth/login"] = (10, 5),
+        // A certificate sign-in is a primary login, so it gets the password login's budget.
+        ["/api/v1/auth/cert-login"] = (10, 5),
+        // Every open console tab refreshes once per access-token lifetime; the budget is sized for
+        // many users behind one address and only stops floods of guessed or replayed tokens.
+        ["/api/v1/auth/refresh"] = (120, 5),
         ["/api/v1/auth/totp/verify"] = (25, 5),
         ["/api/v1/auth/totp/verify-setup"] = (5, 5),
         // Unauthenticated and credential-checking: a recovery code is a bearer credential, so
-        // leaving this endpoint unthrottled made it a guessing oracle against 50-bit codes that
-        // are stored as unsalted single-round SHA-256. Tighter than the TOTP buckets because a
-        // recovery code is used once, by a human, in an already-bad day — not repeatedly.
+        // leaving this endpoint unthrottled made it a guessing oracle against 50-bit codes.
+        // Tighter than the TOTP buckets because a recovery code is used once, by a human, in an
+        // already-bad day — not repeatedly.
         ["/api/v1/auth/totp/recovery"] = (5, 15),
         ["/api/v1/auth/webauthn/assertion"] = (50, 5),
         ["/api/v1/auth/mtls/verify"] = (25, 5),
+        // One exchange per redirect sign-in; the code is single-use and lives 30 seconds.
+        ["/api/v1/auth/mtls/exchange"] = (20, 5),
+        ["/api/v1/auth/mtls/prepare-redirect"] = (20, 5),
         ["/api/v1/auth/change-password"] = (5, 5),
         ["/api/v1/auth/mfa/verify-stepup/totp"] = (25, 5),
         ["/api/v1/auth/mfa/verify-stepup/webauthn"] = (50, 5),
+        ["/api/v1/auth/mfa/verify-stepup/mtls"] = (25, 5),
         ["/api/v1/setup/database/test"] = (5, 5),
         ["/api/v1/setup/database/save"] = (3, 10),
         ["/api/v1/setup/initialize"] = (3, 10),
@@ -73,6 +82,17 @@ public class LoginRateLimitMiddleware
         // other auth-style endpoints so a rotating client cannot spray guesses at the
         // 256-bit token without tripping the per-IP 429.
         ["/api/v1/setup/validate-token"] = (10, 5),
+    };
+
+    /// <summary>
+    /// Rate-limited GET paths. The mTLS redirect sign-ins are browser navigations, so they arrive
+    /// as GET and would pass the POST table untouched; each one checks a client certificate and
+    /// can mint a session.
+    /// </summary>
+    private static readonly Dictionary<string, (int maxAttempts, int windowMinutes)> RateLimitedGetPaths = new()
+    {
+        ["/api/v1/auth/mtls/login-redirect"] = (10, 5),
+        ["/api/v1/auth/mtls/verify-redirect"] = (25, 5),
     };
 
     /// <summary>
@@ -117,23 +137,27 @@ public class LoginRateLimitMiddleware
     }
 
     /// <summary>
-    /// Checks whether the incoming request matches a rate-limited path and, if so,
-    /// enforces the per-IP and per-username limits. Returns 429 when either is exceeded.
+    /// Checks whether the incoming request matches a rate-limited path (POST table, or the GET
+    /// table for the mTLS redirect sign-ins) and, if so, enforces the per-IP and per-username
+    /// limits. Returns 429 when either is exceeded.
     /// </summary>
     public async Task InvokeAsync(HttpContext context)
     {
+        if (HttpMethods.IsGet(context.Request.Method)
+            && FindBucket(context.Request.Method, context.Request.Path.Value) is { } getBucket)
+        {
+            var ip = GetClientIp(context);
+            var window = TimeSpan.FromMinutes(getBucket.WindowMinutes);
+            if (ip != null && await IsRateLimitedAsync(context, $"rl:ip:{ip}:{getBucket.Prefix}", getBucket.MaxAttempts, window))
+            {
+                await Write429(context, window);
+                return;
+            }
+        }
+
         if (context.Request.Method == "POST")
         {
-            var requestPath = context.Request.Path.Value?.TrimEnd('/') ?? string.Empty;
-            var semicolonIndex = requestPath.IndexOf(';');
-            if (semicolonIndex >= 0)
-                requestPath = requestPath[..semicolonIndex];
-
-            // Short-URL normalization: AuthController, TotpController, WebAuthnController
-            // and MtlsController expose both [Route("api/v1/auth")] and [Route("auth")].
-            // Map /auth/* to /api/v1/auth/* so the existing allow-lists above stay
-            // authoritative and cover both route shapes.
-            requestPath = NormalizeAuthPath(requestPath);
+            var requestPath = NormalizeRequestPath(context.Request.Path.Value);
 
             if (IsEstBasicAttempt(requestPath, context.Request.Headers.Authorization.ToString()))
             {
@@ -183,6 +207,41 @@ public class LoginRateLimitMiddleware
         }
 
         await _next(context);
+    }
+
+    /// <summary>
+    /// The bucket a request draws from: the first prefix of the POST or GET table that its
+    /// normalised path starts with, with that bucket's limit and window; null when it has none.
+    /// The EST Basic and per-username buckets are separate and not reported here.
+    /// </summary>
+    internal static (string Prefix, int MaxAttempts, int WindowMinutes)? FindBucket(string method, string? path)
+    {
+        var table = HttpMethods.IsPost(method) ? RateLimitedPaths
+            : HttpMethods.IsGet(method) ? RateLimitedGetPaths
+            : null;
+        if (table == null)
+            return null;
+        var requestPath = NormalizeRequestPath(path);
+        foreach (var (prefix, (maxAttempts, windowMinutes)) in table)
+        {
+            if (requestPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return (prefix, maxAttempts, windowMinutes);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Trims a trailing slash, drops a <c>;</c> path parameter, and maps the short-URL
+    /// <c>/auth/*</c> alias onto <c>/api/v1/auth/*</c>. AuthController, TotpController,
+    /// WebAuthnController and MtlsController expose both route shapes, so both must share a bucket.
+    /// </summary>
+    private static string NormalizeRequestPath(string? path)
+    {
+        var requestPath = path?.TrimEnd('/') ?? string.Empty;
+        var semicolonIndex = requestPath.IndexOf(';');
+        if (semicolonIndex >= 0)
+            requestPath = requestPath[..semicolonIndex];
+        return NormalizeAuthPath(requestPath);
     }
 
     /// <summary>

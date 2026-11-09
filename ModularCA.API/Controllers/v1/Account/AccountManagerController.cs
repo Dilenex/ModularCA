@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 using ModularCA.API.Controllers.v1.Auth;
 using ModularCA.Auth.Interfaces;
+using ModularCA.Core.Helpers;
 using ModularCA.Database;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
@@ -151,6 +152,8 @@ namespace ModularCA.API.Controllers.v1.Account
         /// <summary>
         /// Changes the authenticated user's password. Requires a valid step-up MFA token
         /// via the X-MFA-Token header to prevent unauthorized password changes from hijacked sessions.
+        /// A successful change rotates the security stamp and drops its cached copy, so every JWT
+        /// issued before it stops working at once rather than when the cache entry expires.
         /// Audit findings #32: emits <see cref="AuditActionType.UserPasswordChanged"/> with
         /// <c>success=false</c> when the underlying call returns false or throws — restoring the
         /// credential-stuffing signal that previously only fired on successful changes.
@@ -195,6 +198,7 @@ namespace ModularCA.API.Controllers.v1.Account
 
             if (result)
             {
+                await ModularCA.API.Middleware.TokenRevocationMiddleware.InvalidateUserStampCacheAsync(_cache, _currentUser.User.Id);
                 await _audit.LogAsync(AuditActionType.UserPasswordChanged, _currentUser.User.Id, _currentUser.User.Username,
                     "User", _currentUser.User.Id.ToString(),
                     sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());
@@ -220,7 +224,9 @@ namespace ModularCA.API.Controllers.v1.Account
 
         /// <summary>
         /// Returns the authenticated user's MFA enrollment status, including
-        /// which methods are configured and their details.
+        /// which methods are configured and their details. Only mTLS credentials that would
+        /// authenticate are listed (<see cref="MtlsCredentialStatus.Usable"/>): one that is expired,
+        /// or whose certificate is revoked, on hold or no longer on record, is left out.
         /// </summary>
         [HttpGet("mfa")]
         public async Task<IActionResult> GetMfaStatus()
@@ -241,7 +247,8 @@ namespace ModularCA.API.Controllers.v1.Account
                 .ToListAsync();
 
             var mtlsCreds = await _db.MtlsCredentials
-                .Where(c => c.UserId == userId && !c.IsRevoked)
+                .Where(MtlsCredentialStatus.Usable(DateTime.UtcNow))
+                .Where(c => c.UserId == userId)
                 .Select(c => new { c.Id, c.DeviceName, c.SerialNumber, c.IssuedAt, c.ExpiresAt, c.SigningCaId })
                 .OrderByDescending(c => c.IssuedAt)
                 .ToListAsync();

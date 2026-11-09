@@ -1,12 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { API_BASE, apiGet } from '../api/client';
+import { createDpopProof } from '@shared-auth/api/dpop';
+import { csrfHeader } from '@shared/csrf';
 import { consumeReturnUrl, homeFor, type PortalUser } from '../portal';
 import { useNavigate } from 'react-router-dom';
 
 /**
  * Callback page for mTLS MFA verification. The server redirects here with
  * a one-time authorization code in the query string. This page exchanges
- * the code for JWT tokens via a POST request, stores them in localStorage,
+ * the code for JWT tokens via a POST request carrying a DPoP proof (which
+ * binds the session to this device's key), stores them in localStorage,
  * and shows a disclaimer recommending TOTP/WebAuthn setup if mTLS is the
  * user's only MFA method.
  */
@@ -19,15 +22,16 @@ const MfaCallback: React.FC = () => {
         const code = queryParams.get('code');
 
         if (code) {
-            // Exchange one-time authorization code for tokens
-            const csrfMatch = document.cookie.match(/(?:^|;\s*)CSRF-TOKEN=([^;]*)/);
-            const csrfHeaders: Record<string, string> = {};
-            if (csrfMatch) csrfHeaders['X-CSRF-Token'] = decodeURIComponent(csrfMatch[1]);
-            fetch(`${API_BASE}/auth/mtls/exchange`, {
+            // Exchange one-time authorization code for tokens. The redirect sign-in was a browser
+            // navigation and could not prove possession of this device's PoP key; the exchange
+            // does, and the server binds the session's refresh token to it.
+            const exchangeUrl = `${API_BASE}/auth/mtls/exchange`;
+            createDpopProof('POST', exchangeUrl)
+            .then(proof => fetch(exchangeUrl, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...csrfHeaders },
+                headers: { 'Content-Type': 'application/json', ...csrfHeader(), ...(proof ? { DPoP: proof } : {}) },
                 body: JSON.stringify({ code }),
-            })
+            }))
             .then(r => { if (!r.ok) throw new Error('Exchange failed'); return r.json(); })
             .then(data => {
                 // The certificate identified a user who also has TOTP or WebAuthn. Continue on

@@ -2,7 +2,9 @@
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { API_BASE, apiGet } from '../api/client';
 import { createDpopProof } from '@shared-auth/api/dpop';
+import { csrfHeader } from '@shared/csrf';
 import { consumeReturnUrl, homeFor, type PortalUser } from '../portal';
+import { CERTIFICATE_PICKER_HINT } from './loginErrors';
 
 interface MfaVerifyState {
     mfaToken: string;
@@ -60,9 +62,7 @@ const MfaVerify: React.FC = () => {
         setLoading(true);
         setError(null);
         try {
-            const csrfMatch = document.cookie.match(/(?:^|;\s*)CSRF-TOKEN=([^;]*)/);
-            const csrfHeaders: Record<string, string> = {};
-            if (csrfMatch) csrfHeaders['X-CSRF-Token'] = decodeURIComponent(csrfMatch[1]);
+            const csrfHeaders: Record<string, string> = csrfHeader();
             // Bind the session to this device's PoP key as MFA completes.
             const totpProof = await createDpopProof('POST', `${API_BASE}/auth/totp/verify`);
             if (totpProof) csrfHeaders['DPoP'] = totpProof;
@@ -102,9 +102,7 @@ const MfaVerify: React.FC = () => {
             // doesn't carry the token in the URL (referer headers, server logs, browser
             // history). Backend's prepare-redirect sets the cookie; the verify-redirect on
             // the mTLS subdomain reads it.
-            const csrfMatch = document.cookie.match(/(?:^|;\s*)CSRF-TOKEN=([^;]*)/);
-            const csrfHeaders: Record<string, string> = {};
-            if (csrfMatch) csrfHeaders['X-CSRF-Token'] = decodeURIComponent(csrfMatch[1]);
+            const csrfHeaders: Record<string, string> = csrfHeader();
 
             const prepResp = await fetch(`${API_BASE}/auth/mtls/prepare-redirect`, {
                 method: 'POST',
@@ -129,9 +127,7 @@ const MfaVerify: React.FC = () => {
         setError(null);
         try {
             // Get assertion options
-            const csrfMatch = document.cookie.match(/(?:^|;\s*)CSRF-TOKEN=([^;]*)/);
-            const csrfHeaders: Record<string, string> = {};
-            if (csrfMatch) csrfHeaders['X-CSRF-Token'] = decodeURIComponent(csrfMatch[1]);
+            const csrfHeaders: Record<string, string> = csrfHeader();
             const optionsResp = await fetch(`${API_BASE}/auth/webauthn/assertion-options`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...csrfHeaders },
@@ -306,6 +302,7 @@ const MfaVerify: React.FC = () => {
                         <p className="text-xs text-ink-muted text-center">
                             Make sure your mTLS certificate (.pfx) is imported in your browser's certificate store.
                         </p>
+                        <p className="text-xs text-ink-muted text-center">{CERTIFICATE_PICKER_HINT}</p>
                     </div>
                 )}
 

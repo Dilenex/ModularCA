@@ -176,11 +176,11 @@ const CaDetail: React.FC = () => {
                                 empty="No protocol configuration"
                                 disableExport
                                 columns={[
-                                    { key: 'protocol', header: 'Protocol', defaultWidth: 120, sortable: true, exportValue: (pc: any) => pc.protocol || pc.name, render: (pc: any) => (
-                                        <span className="text-ink">
-                                            {pc.protocol || pc.name}
-                                            {advisoriesOf(pc).length > 0 && <span className="ml-2 text-xs font-medium text-warn">Cannot run on this CA</span>}
-                                            {openEnrollmentNotice(pc, true) && <span className="ml-2 text-xs font-medium text-warn">No challenge password</span>}
+                                    { key: 'protocol', header: 'Protocol', defaultWidth: 260, minWidth: 120, truncate: false, sortable: true, exportValue: (pc: any) => pc.protocol || pc.name, render: (pc: any) => (
+                                        <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
+                                            <span className="text-ink">{pc.protocol || pc.name}</span>
+                                            {advisoriesOf(pc).length > 0 && <span className="text-xs font-medium text-warn whitespace-nowrap">Cannot run on this CA</span>}
+                                            {openEnrollmentNotice(pc, true) && <span className="text-xs font-medium text-warn whitespace-nowrap">No challenge password</span>}
                                         </span>
                                     ) },
                                     { key: 'enabled', header: 'Enabled', defaultWidth: 100, truncate: false, sortable: true, sortValue: (pc: any) => !!pc.enabled, exportValue: (pc: any) => (pc.enabled ? 'Yes' : 'No'), render: (pc: any) => <StatusBadge status={pc.enabled ? 'enabled' : 'disabled'} /> },

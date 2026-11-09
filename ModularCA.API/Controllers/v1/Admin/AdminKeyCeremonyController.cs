@@ -603,6 +603,8 @@ public class AdminKeyCeremonyController : ControllerBase
     /// CA certificate profile outside the new CA's scope 404. A controlled-user password reset
     /// returns the temporary password it generates (<c>temporaryPassword</c>) in this response only,
     /// to the caller who executes it; it is not stored, audited or shown again.
+    /// An approved ceremony past its execution deadline (<see cref="KeyCeremonyEntity.ExpiresAt"/>)
+    /// is expired, audited and refused with 409 (<c>ceremonyExpired: true</c>).
     /// Requires step-up MFA verification.
     /// </summary>
     [HttpPost("{id:guid}/execute")]
@@ -636,6 +638,12 @@ public class AdminKeyCeremonyController : ControllerBase
             return NotFound(new { error = "Ceremony not found." });
         if (ceremony.Status != "Approved")
             return Conflict(new { error = $"Ceremony is '{ceremony.Status}', not 'Approved'. Only approved ceremonies can be executed." });
+        if (await _ceremonySvc.ExpireIfPastDeadlineAsync(id, _currentUser.User.Id, _currentUser.User.Username))
+            return Conflict(new
+            {
+                error = $"This ceremony was approved but not executed by its deadline ({ceremony.ExpiresAt:yyyy-MM-dd HH:mm} UTC), so it has expired. Open a new ceremony to perform the operation.",
+                ceremonyExpired = true,
+            });
 
         // Verify the caller is the initiator or an approver
         var userId = _currentUser.User.Id;

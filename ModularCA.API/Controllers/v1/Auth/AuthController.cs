@@ -163,11 +163,7 @@ namespace ModularCA.API.Controllers.v1.Auth
 
             // Clear expired lockout BEFORE evaluating account state gates so a user whose
             // temporary lockout has elapsed can verify their password normally.
-            if (user.LockoutEndUtc.HasValue && user.LockoutEndUtc <= DateTime.UtcNow)
-            {
-                user.FailedLoginAttempts = 0;
-                user.LockoutEndUtc = null;
-            }
+            await ModularCA.Core.Helpers.AccountLockout.ClearElapsedAsync(_db, user, DateTime.UtcNow);
 
             // Pre-compute account gating flags — do NOT return yet. These are applied
             // AFTER password verification so an attacker who doesn't have the password
@@ -337,7 +333,7 @@ namespace ModularCA.API.Controllers.v1.Auth
             }
 
             // Check mTLS credentials
-            var hasMtls = await _db.MtlsCredentials.AnyAsync(c => c.UserId == user.Id && !c.IsRevoked && c.ExpiresAt > DateTime.UtcNow);
+            var hasMtls = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == user.Id);
             if (hasMtls) availableMfaMethods.Add("mtls");
 
             // Check if MFA is enforced for any of the user's groups
@@ -403,13 +399,22 @@ namespace ModularCA.API.Controllers.v1.Auth
                             .Where(c => c.UserId == user.Id)
                             .Select(c => new PublicKeyCredentialDescriptor(c.CredentialId))
                             .ToListAsync();
+                        // The same posture as WebAuthnController's assertion-options endpoint. These
+                        // options are cached under the key its verify step reads, and Fido2 enforces
+                        // user verification only when the original options asked for Required, so
+                        // the hard-coded Preferred here let a security key sign in without its PIN
+                        // under RequireWebAuthnUserVerification.
+                        var webAuthnPolicy = await _securityPolicy.GetAsync();
                         var assertionOptions = _fido2.GetAssertionOptions(new GetAssertionOptionsParams
                         {
                             AllowedCredentials = existingKeys,
-                            UserVerification = UserVerificationRequirement.Preferred
+                            UserVerification = WebAuthnPosture.For(webAuthnPolicy.RequireWebAuthnUserVerification)
                         });
                         await _cache.SetStringAsync($"webauthn:assert:{user.Id}", assertionOptions.ToJson(),
-                            new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5) });
+                            new DistributedCacheEntryOptions
+                            {
+                                AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(Math.Clamp(webAuthnPolicy.WebAuthnChallengeTtlSeconds, 30, 600))
+                            });
                         // Embed as a parsed JsonNode so the global JsonStringEnumConverter does
                         // not stringify the WebAuthn enums (alg/type) into values the browser
                         // rejects. ToJson() is the library's spec-correct serializer.
@@ -679,7 +684,7 @@ namespace ModularCA.API.Controllers.v1.Auth
             // Preserve MFA setup requirement on refreshed tokens
             var hasTotp = await _db.TotpSecrets.AnyAsync(t => t.UserId == user.Id && t.IsVerified);
             var hasWebAuthn = await _db.Fido2Credentials.AnyAsync(c => c.UserId == user.Id);
-            var hasMtlsCreds = await _db.MtlsCredentials.AnyAsync(c => c.UserId == user.Id && !c.IsRevoked && c.ExpiresAt > DateTime.UtcNow);
+            var hasMtlsCreds = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == user.Id);
 
             // All system group members must have TOTP or WebAuthn — mTLS alone is insufficient
             var isAdminOnRefresh = groups.Any(g => g.IsSystemGroup);
@@ -771,12 +776,7 @@ namespace ModularCA.API.Controllers.v1.Auth
                 return Unauthorized(new { error = "Invalid username or password" });
             }
 
-            // Clear expired lockout
-            if (user.LockoutEndUtc.HasValue && user.LockoutEndUtc <= DateTime.UtcNow)
-            {
-                user.FailedLoginAttempts = 0;
-                user.LockoutEndUtc = null;
-            }
+            await ModularCA.Core.Helpers.AccountLockout.ClearElapsedAsync(_db, user, DateTime.UtcNow);
 
             // Defer account-state gates until AFTER password verification.
             bool isDisabled = !user.IsActive || user.IsServiceIdentity;
@@ -996,7 +996,8 @@ namespace ModularCA.API.Controllers.v1.Auth
 
         /// <summary>
         /// Client-certificate login. With TOTP or WebAuthn enrolled, returns a pending-MFA token
-        /// recorded as certificate-first, which certificate completion refuses.
+        /// recorded as certificate-first, which certificate completion refuses. A credential whose
+        /// certificate is revoked, on hold or no longer on record is refused and audited.
         /// </summary>
         [AllowAnonymous]
         [HttpPost("cert-login")]
@@ -1014,7 +1015,8 @@ namespace ModularCA.API.Controllers.v1.Auth
             }
 
             var thumbprint = clientCert.GetCertHashString(System.Security.Cryptography.HashAlgorithmName.SHA256);
-            var credential = await _db.MtlsCredentials.Include(m => m.User).FirstOrDefaultAsync(m => m.Thumbprint == thumbprint && !m.IsRevoked && m.ExpiresAt > DateTime.UtcNow);
+            var match = await ModularCA.Core.Helpers.MtlsCredentialStatus.FindForAuthenticationAsync(_db, thumbprint, null, DateTime.UtcNow);
+            var credential = match.Credential;
             var user = credential?.User;
             if (user == null)
             {
@@ -1024,6 +1026,17 @@ namespace ModularCA.API.Controllers.v1.Auth
                     errorMessage: "LoginFailed");
                 return Unauthorized(new { error = "No user associated with this certificate" });
             }
+            if (!match.Authenticates)
+            {
+                await _audit.LogAsync(AuditActionType.UserLoginFailed, user.Id, user.Username,
+                    sourceIp: sourceIp, success: false,
+                    details: new { reason = match.AuditReason, thumbprint, credentialId = credential!.Id, certificateId = credential.CertificateId },
+                    errorMessage: "LoginFailed");
+                MetricsService.AuthLoginFailures.WithLabels("cert_revoked").Inc();
+                return Unauthorized(new { error = "This client certificate has been revoked and can no longer be used to sign in" });
+            }
+
+            await ModularCA.Core.Helpers.AccountLockout.ClearElapsedAsync(_db, user, DateTime.UtcNow);
 
             // Full chain validation against the credential's enrolled
             // signing CA. Thumbprint equality alone is not proof of issuer binding —

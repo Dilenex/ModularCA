@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useAutoFocus } from '../hooks/useAutoFocus';
+import { getCsrfToken } from '../utils/csrf';
 
 export interface DatabaseData {
     rootHost: string;
@@ -60,10 +61,10 @@ const DatabaseConfig: React.FC<DatabaseConfigProps> = ({
     const [showDropConfirm, setShowDropConfirm] = useState(false);
 
     const setupHeaders = (extra?: Record<string, string>): Record<string, string> => {
-        const csrfToken = document.cookie.match(/(?:^|;\s*)CSRF-TOKEN=([^;]*)/)?.[1] || '';
+        const csrfToken = getCsrfToken();
         const headers: Record<string, string> = {
             'Content-Type': 'application/json',
-            'X-CSRF-Token': decodeURIComponent(csrfToken),
+            'X-CSRF-Token': csrfToken,
             ...extra,
         };
         if (setupToken) headers['X-Setup-Token'] = setupToken;
