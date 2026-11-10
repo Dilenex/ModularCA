@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Database;
 using ModularCA.Tests.Core.Services.Acme;
+using ModularCA.Tests.TestUtils;
 using Npgsql;
 using Xunit;
 
@@ -14,6 +15,8 @@ namespace ModularCA.Tests.Database;
 /// <see cref="PostgresUpgradeHarnessTests"/>.
 /// </summary>
 [Trait("Category", "PostgreSQL")]
+[Trait(TestTier.Name, TestTier.Slow)]
+[Collection(PostgresLane.Four)]
 public class PostgresAcmeEabTests
 {
     private const string ServerVariable = "MODULARCA_TEST_PG";
@@ -28,8 +31,7 @@ public class PostgresAcmeEabTests
     public async Task Concurrent_new_accounts_with_one_eab_key_create_one_account()
     {
         var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var name = $"modularca_eab_{Guid.NewGuid():N}"[..32];
-        await ExecAsync(server, $"CREATE DATABASE \"{name}\"");
+        var name = await PostgresTestDatabase.CreateMigratedAsync(server, "modularca_eab");
         try
         {
             var connection = new NpgsqlConnectionStringBuilder(server) { Database = name, MaxPoolSize = Requests + 4 }.ConnectionString;
@@ -39,7 +41,6 @@ public class PostgresAcmeEabTests
             byte[] hmac;
             await using (var db = Open())
             {
-                await db.Database.MigrateAsync();
                 ca = await AcmeEabHarness.SeedCaAsync(db);
                 hmac = await AcmeEabHarness.SeedEabKeyAsync(db, "eab-race");
             }

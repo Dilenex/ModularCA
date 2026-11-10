@@ -293,12 +293,15 @@ public sealed class MfaSingleUseConcurrencyTests
 
         Assert.Single(results, r => r is OkObjectResult);
         Assert.Equal(1, w.RefreshTokenCount());
-        // Every request that lost is refused and audited as a failed TOTP attempt. Which check
-        // stops it depends on timing: one that reaches the time-step claim after the winner made
-        // it is "TOTP code already used"; one that reads the winner's stored LastUsedTimeStep
-        // first fails the code check itself ("Invalid TOTP code"). Both refuse; the label differs.
+        // Every request that lost is refused. Which check stops it depends on timing: one that
+        // reaches the time-step claim after the winner made it is "TOTP code already used"; one
+        // that reads the winner's stored LastUsedTimeStep first fails the code check itself
+        // ("Invalid TOTP code"); and once five failures are counted, a later one is refused with
+        // 429 before its code is looked at, with no failed-TOTP row. So the number of rows varies,
+        // from one up to every request that lost.
+        Assert.Equal(Parallel - 1, results.Count(r => r is not OkObjectResult));
         var refusals = w.Audit.Entries.Where(e => e.Action == ModularCA.Shared.Enums.AuditActionType.MfaTotpFailed).ToList();
-        Assert.Equal(Parallel - 1, refusals.Count);
+        Assert.InRange(refusals.Count, 1, Parallel - 1);
         Assert.All(refusals, e => Assert.Contains(e.ErrorMessage, new[] { "TOTP code already used", "Invalid TOTP code" }));
     }
 

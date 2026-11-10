@@ -130,10 +130,13 @@ internal sealed class HostedSigner : IAsyncDisposable
 }
 
 /// <summary>
-/// The test classes that host a gRPC signer on loopback. They run alone, never beside the rest
-/// of the suite: under full parallelism a starved thread pool let calls miss their deadline.
+/// The test classes that host a gRPC signer on loopback. They run one at a time among
+/// themselves, beside the rest of the suite. They used to run alone, after everything else,
+/// because a starved thread pool let calls miss their deadline; the test project now starts
+/// with enough thread pool threads (<c>ThreadPoolMinThreads</c> in its project file) that a
+/// burst of blocked work elsewhere does not hold a handshake up.
 /// </summary>
-[CollectionDefinition(Name, DisableParallelization = true)]
+[CollectionDefinition(Name)]
 public sealed class RemoteSignerCollection
 {
     /// <summary>The collection's name.</summary>

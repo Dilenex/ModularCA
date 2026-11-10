@@ -15,7 +15,6 @@ namespace ModularCA.Tests.Database;
 /// console. The server is <see cref="RefusingPostgres"/>, so no PostgreSQL is needed; the outcomes
 /// that need a real schema are in the opt-in harness.
 /// </summary>
-[Collection(SerilogCaptureCollection.Name)]
 public sealed class SchemaStartupExitCodeTests
 {
     private static readonly SchemaConfig ShortWait = new() { WaitSeconds = 1 };
@@ -188,12 +187,4 @@ public sealed class SchemaStartupExitCodeTests
     /// <summary>Every captured event, for an assertion message.</summary>
     private static string Dump(CapturedSerilog log) =>
         string.Join(Environment.NewLine, log.Events.Select(e => $"{e.Level}: {e.Text}"));
-}
-
-/// <summary>Tests that replace the global Serilog logger run one at a time.</summary>
-[CollectionDefinition(Name, DisableParallelization = true)]
-public sealed class SerilogCaptureCollection
-{
-    /// <summary>The collection name.</summary>
-    public const string Name = "Serilog capture";
 }

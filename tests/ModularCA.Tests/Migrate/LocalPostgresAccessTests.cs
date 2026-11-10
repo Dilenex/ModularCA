@@ -1,6 +1,7 @@
 using ModularCA.Migrate;
 using ModularCA.Tests.Database;
 using Npgsql;
+using ModularCA.Tests.TestUtils;
 using Xunit;
 
 namespace ModularCA.Tests.Migrate;
@@ -38,6 +39,7 @@ public sealed class LocalPostgresAccessTests
     /// <summary>A role created with the verifier signs in with the password, so the verifier is the one PostgreSQL computes.</summary>
     [RequiresEnvironmentFact(ServerVariable)]
     [Trait("Category", "PostgreSQL")]
+    [Trait(TestTier.Name, TestTier.Slow)]
     public async Task A_role_created_with_the_verifier_signs_in_with_the_password()
     {
         var admin = Environment.GetEnvironmentVariable(ServerVariable)!;

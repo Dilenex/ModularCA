@@ -15,7 +15,16 @@ namespace ModularCA.Tests.Database;
 /// replay from writing them again runs on the real provider. Opt-in through
 /// <c>MODULARCA_TEST_PG</c>.
 /// </summary>
-[Collection(BootstrapAuditLogCollection.Name)]
+/// <remarks>
+/// It points <see cref="BootstrapAuditLog.LogDirectory"/>, which is one for the process, at a
+/// directory of its own, as the classes of <see cref="BootstrapAuditLogCollection"/> do. It is
+/// not in that collection but in a PostgreSQL lane: the lanes start only after every other
+/// parallel collection has finished (<see cref="PhasedTestFramework"/>), so it never runs beside
+/// those classes, and no other PostgreSQL test writes the bootstrap audit log.
+/// </remarks>
+[Trait("Category", "PostgreSQL")]
+[Trait(TestTier.Name, TestTier.Slow)]
+[Collection(PostgresLane.Six)]
 public sealed class PostgresBootstrapAuditDrainTests : IDisposable
 {
     private const string ServerVariable = "MODULARCA_TEST_PG";

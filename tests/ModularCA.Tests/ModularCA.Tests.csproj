@@ -6,6 +6,11 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <!-- The test host starts with this many thread pool threads instead of one per core. Tests
+         run in parallel, some block pool threads (processes, synchronous database calls), and
+         the pool adds threads only a couple a second: the loopback gRPC and Kestrel tests then
+         missed their deadlines. Written to the test project's runtimeconfig.json only. -->
+    <ThreadPoolMinThreads>64</ThreadPoolMinThreads>
   </PropertyGroup>
 
   <ItemGroup>

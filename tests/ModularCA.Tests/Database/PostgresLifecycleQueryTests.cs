@@ -8,6 +8,7 @@ using ModularCA.Shared.Entities;
 using ModularCA.Shared.Utils;
 using ModularCA.Tests.Api;
 using ModularCA.Tests.Core.Services;
+using ModularCA.Tests.TestUtils;
 using Npgsql;
 using Xunit;
 
@@ -22,6 +23,8 @@ namespace ModularCA.Tests.Database;
 /// Opt-in through <c>MODULARCA_TEST_PG</c>, as <see cref="PostgresUpgradeHarnessTests"/>.
 /// </summary>
 [Trait("Category", "PostgreSQL")]
+[Trait(TestTier.Name, TestTier.Slow)]
+[Collection(PostgresLane.Six)]
 public class PostgresLifecycleQueryTests
 {
     private const string ServerVariable = "MODULARCA_TEST_PG";
@@ -179,19 +182,17 @@ public class PostgresLifecycleQueryTests
         });
 
     /// <summary>
-    /// Creates a database on the <c>MODULARCA_TEST_PG</c> server, applies every application
-    /// migration, runs <paramref name="scenario"/> over it and drops it, whatever the outcome.
+    /// Copies the run's migrated template to a new database on the <c>MODULARCA_TEST_PG</c> server (every application
+    /// migration applied), runs <paramref name="scenario"/> over it and drops it, whatever the outcome.
     /// </summary>
     private static async Task OnPostgresAsync(Func<ModularCADbContext, Task> scenario)
     {
         var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var name = $"modularca_lifecycle_{Guid.NewGuid():N}"[..32];
-        await ExecAsync(server, $"CREATE DATABASE \"{name}\"");
+        var name = await PostgresTestDatabase.CreateMigratedAsync(server, "modularca_lifecycle");
         try
         {
             var connection = new NpgsqlConnectionStringBuilder(server) { Database = name, Pooling = false }.ConnectionString;
             await using var db = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>().UseNpgsql(connection).Options);
-            await db.Database.MigrateAsync();
             await scenario(db);
         }
         finally

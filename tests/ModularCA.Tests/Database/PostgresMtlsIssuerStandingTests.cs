@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using ModularCA.Core.Helpers;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
+using ModularCA.Tests.TestUtils;
 using Npgsql;
 using Xunit;
 
@@ -16,6 +17,8 @@ namespace ModularCA.Tests.Database;
 /// revoked, released and deleted. Opt-in through <c>MODULARCA_TEST_PG</c>.
 /// </summary>
 [Trait("Category", "PostgreSQL")]
+[Trait(TestTier.Name, TestTier.Slow)]
+[Collection(PostgresLane.Four)]
 public class PostgresMtlsIssuerStandingTests
 {
     private const string ServerVariable = "MODULARCA_TEST_PG";
@@ -82,13 +85,11 @@ public class PostgresMtlsIssuerStandingTests
     private static async Task OnPostgresAsync(Func<ModularCADbContext, Task> scenario)
     {
         var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var name = $"modularca_mtls_{Guid.NewGuid():N}"[..32];
-        await ExecAsync(server, $"CREATE DATABASE \"{name}\"");
+        var name = await PostgresTestDatabase.CreateMigratedAsync(server, "modularca_mtls");
         try
         {
             var connection = new NpgsqlConnectionStringBuilder(server) { Database = name, Pooling = false }.ConnectionString;
             await using var db = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>().UseNpgsql(connection).Options);
-            await db.Database.MigrateAsync();
             await scenario(db);
         }
         finally

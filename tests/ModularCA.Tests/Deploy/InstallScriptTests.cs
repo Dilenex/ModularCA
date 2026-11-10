@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
+using ModularCA.Tests.TestUtils;
 using Xunit;
 
 namespace ModularCA.Tests.Deploy;
@@ -13,6 +14,7 @@ namespace ModularCA.Tests.Deploy;
 public class InstallScriptTests
 {
     [RequiresBashFact]
+    [Trait(TestTier.Name, TestTier.Slow)]
     public void The_upgrade_check_decisions_pass_under_bash_with_stubs()
     {
         var start = new ProcessStartInfo(DbOwnershipScriptTests.FindBash()!)

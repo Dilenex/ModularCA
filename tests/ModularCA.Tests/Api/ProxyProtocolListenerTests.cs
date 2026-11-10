@@ -256,7 +256,10 @@ public sealed class ProxyProtocolListenerTests : IAsyncLifetime
         var started = System.Diagnostics.Stopwatch.StartNew();
         await AssertClosedAsync(silent.GetStream());
         await AssertClosedAsync(half.GetStream());
-        Assert.InRange(started.Elapsed, TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(8));
+        // Not at once (the deadline is one second), and closed by the server: each read above gives
+        // up after ten seconds, which fails the test. The upper bound is those two reads, not the
+        // deadline, because under a loaded test run the close can arrive seconds late.
+        Assert.InRange(started.Elapsed, TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(20));
     }
 
     [Fact]

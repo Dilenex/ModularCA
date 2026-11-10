@@ -27,7 +27,7 @@ namespace ModularCA.Tests.Signer;
 /// away arrives later, in order; a second delivery adds nothing; nothing the node can send
 /// changes the journal; and no row, wire message or journal line holds a secret.
 /// </summary>
-[Collection(RemoteSignerCollection.Name)]
+[Collection(KeystoreAuditLogCollection.Name)]
 public sealed class SignerKeystoreEventDeliveryTests : IDisposable
 {
     private const string Caller = "delivery-test";
@@ -483,4 +483,17 @@ public sealed class SignerKeystoreEventDeliveryTests : IDisposable
                 : inner.LogAsync(actionType, actorUserId, actorUsername, targetEntityType, targetEntityId, details,
                     sourceIp, success, errorMessage, certificateAuthorityId, spaceId);
     }
+}
+
+/// <summary>
+/// Runs alone, after every other collection: <see cref="SignerKeystoreEventDeliveryTests"/> points
+/// <see cref="KeystoreService.AuditLogDirectory"/>, which is one for the process, at its own
+/// journal and counts the events in it, so a keystore opened or written by any other test while
+/// it runs would land in the journal it reads.
+/// </summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class KeystoreAuditLogCollection
+{
+    /// <summary>The collection's name.</summary>
+    public const string Name = "Keystore audit log";
 }

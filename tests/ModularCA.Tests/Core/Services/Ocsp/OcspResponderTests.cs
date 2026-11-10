@@ -114,7 +114,7 @@ public class OcspResponderTests
             Revoked = revoked,
             RevocationDate = revokedAt,
             NotBefore = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
-            NotAfter = new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            NotAfter = new DateTime(2049, 1, 1, 0, 0, 0, DateTimeKind.Utc),
         };
 
     /// <summary>Runs a request through the responder and returns the single certificate status.</summary>

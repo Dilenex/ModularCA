@@ -162,18 +162,35 @@ public class RecordingNotifier : DispatchProxy
 }
 
 /// <summary>
-/// Replaces the global Serilog logger with one that keeps every event, for the lifetime of the
-/// instance, and puts the previous logger back on dispose.
+/// Keeps every Serilog event logged by the async flow that created it, from its creation to its
+/// disposal. The product logs through the static <see cref="Log"/>, which is one logger for the
+/// process; the first capture replaces it, for the rest of the run, with a logger that hands each
+/// event to the capture of the flow that logged it and drops an event logged outside any
+/// capture. So a test that captures sees its own events only, whatever else is running, and
+/// tests that capture need not run one at a time.
 /// </summary>
 internal sealed class CapturedSerilog : IDisposable, ILogEventSink
 {
-    private readonly ILogger _previous = Log.Logger;
+    private static readonly AsyncLocal<CapturedSerilog?> Current = new();
+    private static readonly object InstallLock = new();
+    private static bool _installed;
+
+    private readonly CapturedSerilog? _outer;
     private readonly ConcurrentQueue<LogEvent> _events = new();
 
-    /// <summary>Starts capturing.</summary>
+    /// <summary>Starts capturing what this async flow, and whatever it starts, logs.</summary>
     public CapturedSerilog()
     {
-        Log.Logger = new LoggerConfiguration().MinimumLevel.Verbose().WriteTo.Sink(this).CreateLogger();
+        lock (InstallLock)
+        {
+            if (!_installed)
+            {
+                Log.Logger = new LoggerConfiguration().MinimumLevel.Verbose().WriteTo.Sink(new FlowRouter()).CreateLogger();
+                _installed = true;
+            }
+        }
+        _outer = Current.Value;
+        Current.Value = this;
     }
 
     /// <summary>Every event so far, rendered, with its level.</summary>
@@ -186,8 +203,15 @@ internal sealed class CapturedSerilog : IDisposable, ILogEventSink
     /// <inheritdoc/>
     public void Emit(LogEvent logEvent) => _events.Enqueue(logEvent);
 
-    /// <summary>Restores the previous logger.</summary>
-    public void Dispose() => Log.Logger = _previous;
+    /// <summary>Stops capturing; the flow's events go to the capture that was open before this one, if any.</summary>
+    public void Dispose() => Current.Value = _outer;
+
+    /// <summary>The process-wide sink: gives each event to the capture of the flow that logged it.</summary>
+    private sealed class FlowRouter : ILogEventSink
+    {
+        /// <inheritdoc/>
+        public void Emit(LogEvent logEvent) => Current.Value?.Emit(logEvent);
+    }
 }
 
 /// <summary>

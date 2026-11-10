@@ -33,6 +33,8 @@ namespace ModularCA.Tests.Database;
 /// <see cref="PostgresLifecycleQueryTests"/>.
 /// </summary>
 [Trait("Category", "PostgreSQL")]
+[Trait(TestTier.Name, TestTier.Slow)]
+[Collection(PostgresLane.Five)]
 public class PostgresIssuanceRaceTests
 {
     private const string ServerVariable = "MODULARCA_TEST_PG";
@@ -382,20 +384,17 @@ public class PostgresIssuanceRaceTests
     }
 
     /// <summary>
-    /// Creates a database on the <c>MODULARCA_TEST_PG</c> server, applies every application
-    /// migration, seeds a <see cref="RaceWorld"/> with the in-process signer's scopes over the same
+    /// Copies the run's migrated template to a new database on the <c>MODULARCA_TEST_PG</c> server (every application
+    /// migration applied), seeds a <see cref="RaceWorld"/> with the in-process signer's scopes over the same
     /// database, runs <paramref name="scenario"/> and drops the database, whatever the outcome.
     /// </summary>
     private static async Task OnPostgresAsync(Func<RaceWorld, Task> scenario)
     {
         var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var name = $"modularca_race_{Guid.NewGuid():N}"[..32];
-        await ExecAsync(server, $"CREATE DATABASE \"{name}\"");
+        var name = await PostgresTestDatabase.CreateMigratedAsync(server, "modularca_race");
         try
         {
             var connection = new NpgsqlConnectionStringBuilder(server) { Database = name, Pooling = false }.ConnectionString;
-            await using (var db = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>().UseNpgsql(connection).Options))
-                await db.Database.MigrateAsync();
 
             var services = new ServiceCollection();
             services.AddDbContext<ModularCADbContext>(o => o.UseNpgsql(connection));
