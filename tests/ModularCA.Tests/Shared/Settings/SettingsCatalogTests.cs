@@ -87,6 +87,7 @@ public class SettingsCatalogTests
     [InlineData("Http_ProxyProtocolTrustedCidrs")]
     [InlineData("Http_ProxyProtocol")]
     [InlineData("Https_ProxyProtocol")]
+    [InlineData("Health_LoopbackPort")]
     [InlineData("Security_BehindReverseProxy")]
     [InlineData("Logging_FilePath")]
     [InlineData("Backup_OutputPath")]

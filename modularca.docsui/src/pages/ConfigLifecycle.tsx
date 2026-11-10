@@ -147,6 +147,9 @@ Https:
   ProxyProtocol: false          # HTTPS listener requires a PROXY header, read before TLS
   RenewalWindow: "P30D"
 
+Health:
+  LoopbackPort: 0               # loopback-only health listener for --check-ready: /health* only, never PROXY; 0 = off
+
 Security:
   # Middleware-wired knobs only — read before the DB is available.
   # Session/lockout, MFA, OCSP posture, login banner, and approval policy

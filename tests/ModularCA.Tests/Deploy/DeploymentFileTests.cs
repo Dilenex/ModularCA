@@ -160,6 +160,22 @@ public class DeploymentFileTests
             Assert.Contains($"mv /opt/modularca/share/{directory} /usr/share/modularca/{directory}", image);
     }
 
+    /// <summary>
+    /// The node requires a backup directory only its own account can reach, and restricts one that
+    /// is not at the first backup; the image creates it that way, so a fresh volume starts 0700
+    /// and nothing has to be tightened.
+    /// </summary>
+    [Fact]
+    public void The_image_creates_the_backup_directory_owner_only()
+    {
+        var image = string.Join("\n", CodeLines(Read("deploy/container/Containerfile")));
+        Assert.Contains("install -d -o modularca -g modularca -m 0700 /opt/modularca/backups", image);
+        // Not in the loop that makes the other runtime directories 0750.
+        var loop = Regex.Match(image, @"for dir in ([^;]+); do");
+        Assert.True(loop.Success);
+        Assert.DoesNotContain("backups", loop.Groups[1].Value.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+    }
+
     /// <summary>The non-blank, non-comment lines of a unit, trimmed.</summary>
     private static List<string> Directives(string relativePath) =>
         CodeLines(Read(relativePath)).Select(l => l.Trim()).ToList();

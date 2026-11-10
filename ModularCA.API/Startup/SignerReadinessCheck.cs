@@ -14,7 +14,9 @@ namespace ModularCA.API.Startup;
 /// <c>--role signer --check-ready</c>: whether the local signer is listening and answering, for a
 /// container manager's health command (Quadlet's <c>HealthCmd=</c>, a Kubernetes exec probe). It
 /// exits 0 when a TLS server at <c>Signer.Listen</c> completes a handshake with the signer's own
-/// server certificate, the one <c>Signer.ServerCertificate</c> names, and 1 otherwise.
+/// server certificate, the one <c>Signer.ServerCertificate</c> names, and 1 otherwise. Without
+/// <c>--role signer</c>, <c>--check-ready</c> checks the local node instead
+/// (<see cref="NodeReadinessCheck"/>).
 /// </summary>
 /// <remarks>
 /// <para>

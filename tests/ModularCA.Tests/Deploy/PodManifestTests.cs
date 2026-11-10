@@ -9,7 +9,9 @@ namespace ModularCA.Tests.Deploy;
 /// containers fill the signer's directory, create its identity and apply the node's, in that
 /// order and each with <c>--signer-dir</c>, the last with both volumes read-write so it can clean
 /// the signer's files out of the node's; the signer's probes are <c>--check-ready</c> on the
-/// same directory; and the image has the directory the volume is mounted on, owner-only.
+/// same directory, the node's <c>--role node --check-ready --live</c>, which ask the node's
+/// loopback-only health port, set in its environment and published by nothing; and the image
+/// has the directory the volume is mounted on, owner-only.
 /// </summary>
 public sealed class PodManifestTests
 {
@@ -67,6 +69,60 @@ public sealed class PodManifestTests
             var command = ((YamlSequenceNode)((YamlMappingNode)((YamlMappingNode)signer[probe])["exec"])["command"]).Children.Select(c => c.ToString()).ToList();
             Assert.Equal(["/opt/modularca/ModularCA.API", "--role", "signer", "--signer-dir", SignerDir, "--check-ready"], command);
         }
+    }
+
+    [Fact]
+    public void The_node_has_a_loopback_health_port_of_its_own_that_nothing_publishes()
+    {
+        var pod = Pod();
+        var node = Container(pod, "containers", "node");
+
+        // Set in the container's environment, which its probes run with too.
+        var env = ((YamlSequenceNode)node["env"]).Children.Cast<YamlMappingNode>()
+            .ToDictionary(e => e["name"].ToString(), e => e["value"].ToString());
+        Assert.True(env.TryGetValue("MODULARCA__HEALTH__LOOPBACKPORT", out var value), "the node has no health port");
+        var port = int.Parse(value!, System.Globalization.CultureInfo.InvariantCulture);
+
+        // A port of its own: not the node's listeners, not the signer's.
+        var published = ((YamlSequenceNode)node["ports"]).Children.Cast<YamlMappingNode>()
+            .Select(p => int.Parse(p["containerPort"].ToString(), System.Globalization.CultureInfo.InvariantCulture)).ToList();
+        Assert.DoesNotContain(port, published);
+        Assert.NotEqual(8446, port);
+        Assert.InRange(port, 1, 65535);
+
+        // Nothing in the pod publishes it.
+        foreach (var container in ((YamlSequenceNode)pod["containers"]).Children.Cast<YamlMappingNode>())
+        {
+            if (!container.Children.TryGetValue(new YamlScalarNode("ports"), out var ports))
+                continue;
+            Assert.DoesNotContain(((YamlSequenceNode)ports).Children.Cast<YamlMappingNode>(),
+                p => p["containerPort"].ToString() == value || (p.Children.TryGetValue(new YamlScalarNode("hostPort"), out var host) && host.ToString() == value));
+        }
+    }
+
+    [Fact]
+    public void The_nodes_probes_ask_whether_it_is_alive_so_a_node_waiting_for_its_signer_is_not_restarted()
+    {
+        var node = Container(Pod(), "containers", "node");
+        foreach (var probe in new[] { "startupProbe", "livenessProbe" })
+        {
+            var spec = (YamlMappingNode)node[probe];
+            var command = ((YamlSequenceNode)((YamlMappingNode)spec["exec"])["command"]).Children.Select(c => c.ToString()).ToList();
+            // The node's role and the node's check: never the signer's, and never an httpGet,
+            // which Podman runs as curl, which the image does not have.
+            Assert.Equal(["/opt/modularca/ModularCA.API", "--role", "node", "--check-ready", "--live"], command);
+            Assert.False(spec.Children.ContainsKey(new YamlScalarNode("httpGet")));
+            // Each run starts a .NET process: give it time, and do not run it every second.
+            Assert.True(int.Parse(spec["timeoutSeconds"].ToString()) >= 10, $"{probe} timeoutSeconds");
+            Assert.True(int.Parse(spec["periodSeconds"].ToString()) >= 5, $"{probe} periodSeconds");
+        }
+
+        // The startup window covers Schema.WaitSeconds (900 s by default), as the signer's does.
+        var startup = (YamlMappingNode)node["startupProbe"];
+        Assert.True(int.Parse(startup["periodSeconds"].ToString()) * int.Parse(startup["failureThreshold"].ToString()) >= 900);
+
+        // Readiness answers 503 while the signer is locked or away; it gates no restart and no Service here.
+        Assert.False(node.Children.ContainsKey(new YamlScalarNode("readinessProbe")));
     }
 
     [Fact]

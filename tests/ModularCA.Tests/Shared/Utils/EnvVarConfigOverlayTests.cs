@@ -191,4 +191,66 @@ public class EnvVarConfigOverlayTests
     [Fact]
     public void Release_refuses_a_path_that_is_not_a_secret()
         => Assert.Throws<ArgumentException>(() => new EnvVarConfigOverlay().Release(new SystemConfig(), "Http.Port", () => null));
+
+    /// <summary>Sets <see cref="EnvVarConfigOverlay.HealthLoopbackPortVariable"/> for the length of <paramref name="body"/>.</summary>
+    private static void WithHealthPortEnvVar(string? value, Action body)
+    {
+        var original = Environment.GetEnvironmentVariable(EnvVarConfigOverlay.HealthLoopbackPortVariable);
+        Environment.SetEnvironmentVariable(EnvVarConfigOverlay.HealthLoopbackPortVariable, value);
+        try { body(); }
+        finally { Environment.SetEnvironmentVariable(EnvVarConfigOverlay.HealthLoopbackPortVariable, original); }
+    }
+
+    [Fact]
+    public void The_health_port_from_the_environment_applies_and_is_never_written_to_the_file()
+    {
+        WithHealthPortEnvVar("8081", () =>
+        {
+            var config = new SystemConfig { Health = { LoopbackPort = 9090 } };
+            var overlay = new EnvVarConfigOverlay();
+            using var log = new StringWriter();
+            overlay.Apply(config, log);
+
+            Assert.Equal(8081, config.Health.LoopbackPort);
+            Assert.Contains("Health.LoopbackPort", overlay.EnvSourcedPaths);
+            Assert.Contains("Health.LoopbackPort", log.ToString());
+            Assert.DoesNotContain("8081", log.ToString());
+
+            // A config.yaml write sees the file's own value, and the running value comes back.
+            var sawDuringBody = -2;
+            overlay.WithSecretsProtected(config, () => sawDuringBody = config.Health.LoopbackPort);
+            Assert.Equal(9090, sawDuringBody);
+            Assert.Equal(8081, config.Health.LoopbackPort);
+        });
+    }
+
+    [Fact]
+    public void A_health_port_from_the_environment_that_is_not_a_number_is_refused_at_the_start()
+    {
+        WithHealthPortEnvVar("eighty-eighty-one", () =>
+        {
+            var config = new SystemConfig();
+            new EnvVarConfigOverlay().Apply(config, TextWriter.Null);
+
+            Assert.Equal(-1, config.Health.LoopbackPort);
+            Assert.Contains("is not a port", ConfigInputRules.HealthLoopbackPortError(config));
+        });
+    }
+
+    [Fact]
+    public void Without_the_variable_the_health_port_is_the_files()
+    {
+        WithHealthPortEnvVar(null, () =>
+        {
+            var config = new SystemConfig { Health = { LoopbackPort = 9090 } };
+            var overlay = new EnvVarConfigOverlay();
+            overlay.Apply(config, TextWriter.Null);
+
+            Assert.Equal(9090, config.Health.LoopbackPort);
+            Assert.DoesNotContain("Health.LoopbackPort", overlay.EnvSourcedPaths);
+            var sawDuringBody = -2;
+            overlay.WithSecretsProtected(config, () => sawDuringBody = config.Health.LoopbackPort);
+            Assert.Equal(9090, sawDuringBody);
+        });
+    }
 }

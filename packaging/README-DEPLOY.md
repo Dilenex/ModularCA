@@ -1284,6 +1284,20 @@ Things to know:
   version starts. Take a backup first; going back means restoring it. To see whether the new
   version would refuse the upgrade before committing to it, run its check, which changes
   nothing: `docker compose run --rm modularca --upgrade-check`.
+- **`docker compose ps` says whether the node is up.** The `modularca` service has a healthcheck,
+  the node's own exec check (the image has no `curl`): `--role node --check-ready --live`, every
+  30 seconds with a 10 second timeout, three failures to "unhealthy", and a 16 minute start
+  period that covers `Schema.WaitSeconds`. It asks the loopback-only health port that
+  `compose.yaml` sets with `MODULARCA__HEALTH__LOOPBACKPORT` (8081, inside the container and
+  published by nothing; "The health port" under the pod below describes it), so it keeps working
+  if the main listeners take the PROXY protocol. "healthy" means the process is up and
+  answering, not that every check passes. For that, run the readiness check, which exits 0 only
+  when the database answers and the keys are unlocked:
+  `docker compose exec modularca /opt/modularca/ModularCA.API --role node --check-ready`.
+  Until setup is finished (the wizard, or a headless bootstrap) there is no node to ask, so the
+  service shows "starting" and, once the start period is over, "unhealthy"; that is expected, and
+  nothing restarts the container for it. Keep 8081 clear of the ports you give the wizard, or
+  change the variable.
 
 For the signer in its own container, holding the keys where the node cannot read them, use the
 pod below.
@@ -1430,6 +1444,76 @@ node back until the signer is healthy (no `Requires=` or `After=` on the signer'
 and the two would wait for each other. Start them together; the node copes with a signer that is
 not there yet, as described next.
 
+**Is the node up, and is it ready?** The image has no `curl`, and Podman runs an `httpGet` probe
+as `curl` inside the container, so the node has an exec check of its own, the same command with
+the node's role: `--role node --check-ready` (the roles the node runs; any role set but the
+signer alone, or none on a single-process install). It reads `config/config.yaml`, finds the
+node's listener there and asks it over loopback, writing nothing, not even a log line:
+
+- `--check-ready --live` asks `/health`, which runs no health check, and exits 0 on 200: the
+  process accepts connections and answers. This is the liveness check. A node waiting for its
+  signer or for its database still passes, since a restart would fix neither.
+- `--check-ready` asks `/health/live` and exits 0 only on 200: every health check passes. It is
+  1, with the status on one line, while the signer's secrets are unread (the 503 below), the
+  signer is locked or unreachable, or the database is down. This is the readiness check: run it
+  as `podman exec modularca-node /opt/modularca/ModularCA.API --role node --check-ready` to
+  know when the instance can take traffic. (`/health/ready` reports the same checks in full but
+  needs a SystemAuditor token, which a probe should not hold.)
+
+Either exits 1 when nothing answers within 5 seconds, saying why.
+
+**The health port.** The check asks the node's loopback-only health listener when the host has
+one: `Health.LoopbackPort` in `config.yaml`, or the environment variable
+`MODULARCA__HEALTH__LOOPBACKPORT`, which overrides it and is never written to the file. The pod
+file sets the variable to 8081 on the node container, so every start of the pod has it, a first
+install and an upgraded one alike, and the check (a probe runs with the container's
+environment) finds it there. The listener is:
+
+- plain HTTP on `127.0.0.1` only, never `::1` (the check uses IPv4, and binding `::1` would stop
+  the start where IPv6 is off) and never another address;
+- never the PROXY protocol, whatever `Https.ProxyProtocol` and `Http.ProxyProtocol` say;
+- `/health`, `/health/live` and `/health/ready` only, by GET or HEAD. Every other path, and every
+  other method, is answered 404 before any other step of the node runs: no console, no API, no
+  enrollment protocol, no ingress route. The health paths then go through the node as a loopback
+  health request on the HTTPS listener does (the IP allow-list, which lets loopback in by
+  default; the request audit, which leaves `/health` out), and `/health/ready` still needs its
+  SystemAuditor token.
+
+Inside a pod, loopback is shared only by the pod's own containers, this node and its signer, and
+nothing publishes the port, so nothing outside the pod reaches it. The setting is per host and
+applies at restart; 0, the default, opens nothing. The start is refused when it is not a port or
+is `Https.Port`, `Http.Port` or the signer's port (`Signer.Listen`, or `Signer.Endpoint` when that
+is loopback, as in the pod, where the signer has 8446).
+
+Without a health port the check asks a main listener: `Https.Port`, or `Http.Port` where the
+process opens the plain-HTTP listener (the validation or ingress role); a wildcard
+`Https.ListenAddress` is reached at `127.0.0.1`, and a list with neither a wildcard nor a
+loopback address is refused rather than probed across the network. The web TLS certificate is
+not checked: the connection is to loopback, where only this host (this pod) can answer, the
+probe sends nothing secret, and the certificate is often the temporary one or names the public
+hostname, not `127.0.0.1`; the health checks report its expiry. The IP allow-list lets loopback
+reach the health endpoints by default (the System rule); a node whose System rule leaves
+loopback out fails the check. For a main listener that takes the PROXY protocol, see "Behind a
+passthrough proxy" below.
+
+The pod file uses `--check-ready --live` as the node's startup and liveness probes. There is no
+readiness probe in it: Podman does not run one, and on Kubernetes it would take the whole node,
+console included, out of its Service whenever the signer is locked or away. Under Quadlet, on
+the node's `.container` unit:
+
+    [Container]
+    Environment=MODULARCA__HEALTH__LOOPBACKPORT=8081
+    HealthCmd=/opt/modularca/ModularCA.API --role node --check-ready --live
+    HealthInterval=30s
+    HealthTimeout=10s
+    HealthStartPeriod=16m
+    HealthOnFailure=restart
+
+Every run starts a .NET process, so keep the interval at 30 seconds or more. The start period
+covers `Schema.WaitSeconds` (900 seconds by default), the longest the node waits for its database
+or another process's migration before it exits 75; lengthen it with that setting, or ahead of an
+upgrade whose migrations take longer.
+
 **A node that starts before its signer listens.** The signer needs a few seconds before it
 listens (it derives keys with scrypt and checks both keystore files first), so in the pod the node
 usually starts first. The secrets the node keeps wrapped by the signer (`JWT.Secret`, the
@@ -1442,7 +1526,9 @@ reads the secrets onto the running configuration and, on the control role, moves
 Until then:
 
 - `/health/live` and `/health/ready` answer 503, with a `signerSecrets` entry saying what waits,
-  so a load balancer or a probe treats the node as not ready rather than whole.
+  so a load balancer or a probe treats the node as not ready rather than whole. `--check-ready`
+  exits 1; `--check-ready --live`, the pod's liveness probe, still passes, so the node is not
+  restarted while it waits.
 - Sign-in works with a temporary JWT secret. Sessions signed with it end when the stored secret
   is read; a refresh or a new sign-in gets a session under the stored one.
 - Directory sign-in, mail and webhooks that need one of those secrets fail, and enrollment answers
@@ -1579,6 +1665,18 @@ off and nothing changes. On a listener marked this way:
   before.
 - A health check that connects and closes, or sends a v2 `LOCAL` header, is fine: it keeps the
   proxy's own address.
+- The node's own check, `--role node --check-ready` (the pod's probes, Quadlet's `HealthCmd=`),
+  connects from loopback, which a listener taking the protocol from a proxy elsewhere closes.
+  **Give the node a health port** (`Health.LoopbackPort`, or `MODULARCA__HEALTH__LOOPBACKPORT`,
+  which the pod file already sets to 8081): the loopback-only health listener never takes the
+  protocol, serves the health paths and nothing else, and the check asks it first, so both
+  listeners can take the protocol and the probes keep working, with no new trust given to
+  anyone ("The pod", "The health port"). Inside a pod that loopback is shared only by the pod's
+  own containers. Without a health port the check asks a main listener without the protocol, or,
+  where loopback is already in `Http.ProxyProtocolTrustedCidrs`, sends a v2 `LOCAL` header, which
+  names no client and keeps `127.0.0.1` as the peer; with both listeners taking the protocol from
+  another proxy only and no health port, it fails and says to set one. Do not add loopback to
+  `Http.ProxyProtocolTrustedCidrs` for the check's sake: every trusted address may name any client.
 
 The start is refused when a listener takes the protocol and `Http.ProxyProtocolTrustedCidrs` is
 empty, when an entry is not `address/prefix` with no bits after the prefix, and when an entry

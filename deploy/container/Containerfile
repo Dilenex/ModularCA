@@ -51,11 +51,12 @@ RUN mkdir -p /opt/modularca /var/lib/modularca /usr/share/modularca \
  && chmod -R u=rwX,go=rX /opt/modularca /usr/share/modularca \
  && chmod 0755 /opt/modularca/ModularCA.API /opt/modularca/ModularCA.Keystore.Unlocker /opt/modularca/modularca-migrate \
       /usr/share/modularca/ssh-krl/modularca-krl-fetch.sh \
- && for dir in config keystores logs backups; do \
+ && for dir in config keystores logs; do \
       mkdir -p "/opt/modularca/$dir" \
       && chown -R modularca:modularca "/opt/modularca/$dir" \
       && chmod 0750 "/opt/modularca/$dir" || exit 1; \
     done \
+ && install -d -o modularca -g modularca -m 0700 /opt/modularca/backups \
  && install -d -o modularca -g modularca -m 0700 /opt/modularca/signer \
  && chown modularca:modularca /var/lib/modularca
 

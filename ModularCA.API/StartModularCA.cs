@@ -74,20 +74,31 @@ catch (ArgumentException ex)
     throw;
 }
 
-// --role signer --check-ready: the health command of a signer container (Quadlet HealthCmd=, an
-// exec probe). It runs before the startup logger exists because it is run every few seconds: it
-// reads the signer's settings file and server certificate and writes nothing. SignerReadinessCheck.
+// --check-ready: the health command of a container (Quadlet HealthCmd=, an exec probe). It runs
+// before the startup logger exists because it is run every few seconds, and writes nothing. With
+// --role signer it checks the local signer (SignerReadinessCheck: a TLS handshake with the
+// signer's own server certificate); with any other role set, or none, the local node's health
+// endpoint over loopback, /health/live, or /health with --live (NodeReadinessCheck).
 if (ModularCA.API.Startup.SignerReadinessCheck.IsNamedIn(args))
 {
     bool checksSigner;
     try { checksSigner = ModularCA.API.Startup.ProcessRoles.Parse(args) == ModularCA.API.Startup.ProcessRole.Signer; }
-    catch (ArgumentException) { checksSigner = false; }
-    if (!checksSigner)
+    catch (ArgumentException ex)
     {
-        Console.Error.WriteLine($"[FATAL] {ModularCA.API.Startup.SignerReadinessCheck.Flag} checks the local signer: add --role signer.");
+        Console.Error.WriteLine($"[FATAL] {ex.Message}");
         Environment.Exit(1);
+        throw;
     }
-    Environment.Exit(await ModularCA.API.Startup.SignerReadinessCheck.RunAsync(signerPaths, Console.Out, Console.Error));
+    if (checksSigner)
+    {
+        if (ModularCA.API.Startup.NodeReadinessCheck.IsLiveNamedIn(args))
+        {
+            Console.Error.WriteLine($"[FATAL] {ModularCA.API.Startup.NodeReadinessCheck.LiveFlag} is the node's: the signer's {ModularCA.API.Startup.SignerReadinessCheck.Flag} serves as its liveness check too.");
+            Environment.Exit(1);
+        }
+        Environment.Exit(await ModularCA.API.Startup.SignerReadinessCheck.RunAsync(signerPaths, Console.Out, Console.Error));
+    }
+    Environment.Exit(await ModularCA.API.Startup.NodeReadinessCheck.RunAsync(args, AppContext.BaseDirectory, Console.Out, Console.Error));
 }
 
 var bootstrapConfig = new LoggerConfiguration().MinimumLevel.Information();
@@ -2012,6 +2023,17 @@ if (config.Https.ProxyProtocol || config.Http.ProxyProtocol)
         + $"from {string.Join(", ", proxyProtocolNetworks)} only; X-Forwarded-* is ignored on those connections.");
 }
 
+// Health.LoopbackPort: the loopback-only health listener for this host's own health command
+// (HealthListener). A port that is not one, or that another listener of this host or its signer
+// uses, stops the start rather than failing at the bind or answering for the wrong process.
+if (ModularCA.Shared.Utils.ConfigInputRules.HealthLoopbackPortError(config) is { } healthPortError)
+{
+    Console.Error.WriteLine($"[FATAL] {healthPortError}");
+    Console.Error.WriteLine($"        This setting is per host: fix Health.LoopbackPort in this host's config/config.yaml, or {ModularCA.Shared.Utils.EnvVarConfigOverlay.HealthLoopbackPortVariable} where it is set, then start again.");
+    Environment.Exit(1);
+}
+var healthLoopbackPort = config.Health.LoopbackPort;
+
 // The policy follows Http.EnableCors and Http.CorsOrigins as they are saved.
 var corsPolicies = new ModularCA.API.Middleware.SettingsCorsPolicyProvider(config);
 builder.Services.AddSingleton<Microsoft.AspNetCore.Cors.Infrastructure.ICorsPolicyProvider>(corsPolicies);
@@ -2724,6 +2746,15 @@ else
                 }
                 Console.WriteLine($"[HTTP] Listening on port {httpPort} (plain HTTP for CRL/OCSP/AIA, 256 KB body cap)");
             }
+
+            // Health.LoopbackPort: 127.0.0.1 only, plain HTTP, never the PROXY protocol, and only
+            // the health paths (the gate at the head of the pipeline). For this host's own health
+            // command, which a main listener taking the PROXY protocol would close.
+            if (healthLoopbackPort > 0)
+            {
+                ModularCA.API.Startup.HealthListener.Listen(options, FindAvailablePort(healthLoopbackPort, failFast: true));
+                Console.WriteLine($"[HEALTH] Listening on 127.0.0.1:{healthLoopbackPort} for /health, /health/live and /health/ready only (loopback, plain HTTP, no PROXY protocol)");
+            }
         });
     }
 } // end else (non-setup HTTPS config)
@@ -3243,6 +3274,13 @@ if (!needsSetup)
 
 // Configure the HTTP request pipeline.
 
+// The health port's gate, first of all: on Health.LoopbackPort only a GET or HEAD of /health,
+// /health/live or /health/ready goes on; anything else is answered 404 before any other step,
+// so the port serves no console, API, protocol or ingress route. The health paths then take the
+// same pipeline as a loopback health request on a main listener.
+if (healthLoopbackPort > 0 && !isSetupMode)
+    ModularCA.API.Startup.HealthListener.UseHealthPortGate(app, healthLoopbackPort);
+
 // Global exception handler — writes a sanitized
 // application/problem+json response with the correlation ID populated by
 // CorrelationIdMiddleware. No stack traces or SQL ever leak to
@@ -3357,7 +3395,12 @@ if (ingressRoutes != null)
     Console.WriteLine(ingressRouteCount == 0
         ? "[INGRESS] No route has an upstream; every name is served by this process."
         : $"[INGRESS] {ingressRouteCount} route(s): " + string.Join(", ", ingressRoutes.Routes.Select(r => $"{r.Host} -> {r.Upstream}" + (r.PlainHttpUpstream != null ? $" (plain {r.PlainHttpUpstream})" : string.Empty))));
-    ModularCA.API.Ingress.IngressHosting.UseIngress(app, ingressRoutes, config.Http.Port);
+    // Never from the health port: its health paths are this process's own, whatever Host says.
+    if (healthLoopbackPort > 0 && !isSetupMode)
+        app.UseWhen(context => !ModularCA.API.Startup.HealthListener.ArrivedOnHealthPort(context, healthLoopbackPort),
+            branch => ModularCA.API.Ingress.IngressHosting.UseIngress(branch, ingressRoutes, config.Http.Port));
+    else
+        ModularCA.API.Ingress.IngressHosting.UseIngress(app, ingressRoutes, config.Http.Port);
 }
 
 // Standard error response format: { "error": "message" }
@@ -3568,6 +3611,9 @@ app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.Health
 // Legacy /health compatibility shim — redirects callers to the split endpoints.
 // Anonymous GET returns the minimal liveness payload so existing probes do not break.
 // It also names the roles this process runs, so a probe can tell which process it reached.
+// `--check-ready --live` (NodeReadinessCheck), the pod's liveness probe, asks this endpoint
+// because it runs no health check: keep it that way, or a node waiting for its signer or its
+// database would be restarted by its own liveness probe.
 app.MapGet("/health", async context =>
 {
     context.Response.ContentType = "application/json";

@@ -274,6 +274,46 @@ public static class ConfigInputRules
     }
 
     /// <summary>
+    /// <c>Health.LoopbackPort</c> against the other ports of this host: 0 (off) or a port from 1
+    /// to 65535, and then none of <c>Https.Port</c>, <c>Http.Port</c> (when the plain-HTTP
+    /// listener is on), <c>Signer.Listen</c>'s port, or <c>Signer.Endpoint</c>'s port when that
+    /// endpoint is on loopback, where in a pod or on one host the node and the signer share the
+    /// address. Returns null when the setting is usable; a refused start prints the message.
+    /// </summary>
+    /// <param name="config">This host's settings, with any environment override applied.</param>
+    public static string? HealthLoopbackPortError(Models.Config.SystemConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        var port = config.Health.LoopbackPort;
+        if (port == 0)
+            return null;
+        if (port is < 1 or > 65535)
+            return $"Health.LoopbackPort {port} is not a port: use 0 to leave the health listener off, or a port from 1 to 65535. "
+                 + "MODULARCA__HEALTH__LOOPBACKPORT, when set, overrides it and must be such a number.";
+        if (port == config.Https.Port)
+            return $"Health.LoopbackPort {port} is the HTTPS port (Https.Port). Give the health listener a port of its own.";
+        if (config.Http.Port > 0 && port == config.Http.Port)
+            return $"Health.LoopbackPort {port} is the plain-HTTP port (Http.Port). Give the health listener a port of its own.";
+        if (ListenPort(config.Signer.Listen) == port)
+            return $"Health.LoopbackPort {port} is the signer's port (Signer.Listen {config.Signer.Listen}). Give the health listener a port of its own.";
+        if (Uri.TryCreate(config.Signer.Endpoint, UriKind.Absolute, out var endpoint)
+            && endpoint.Port == port
+            && endpoint.IsLoopback)
+            return $"Health.LoopbackPort {port} is the port the signer listens on for this node (Signer.Endpoint {config.Signer.Endpoint}). Give the health listener a port of its own.";
+        return null;
+
+        static int? ListenPort(string? listen)
+        {
+            if (string.IsNullOrWhiteSpace(listen))
+                return null;
+            var colon = listen.LastIndexOf(':');
+            return colon >= 0 && int.TryParse(listen[(colon + 1)..], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var value)
+                ? value
+                : null;
+        }
+    }
+
+    /// <summary>
     /// Validates a dotted object identifier as X.660 writes it: at least two arcs of decimal
     /// digits separated by dots, no leading zeros, the first arc 0, 1 or 2, and the second at most
     /// 39 under 0 or 1. Returns null when it is one, otherwise a message naming

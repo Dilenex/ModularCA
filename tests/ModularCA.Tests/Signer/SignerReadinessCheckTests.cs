@@ -130,11 +130,18 @@ public sealed class SignerReadinessCheckTests : IDisposable
     }
 
     [Fact]
-    public void The_binary_refuses_the_check_outside_the_signer_role_and_an_unconfigured_signer()
+    public void The_binary_checks_the_node_outside_the_signer_role_and_refuses_an_unconfigured_signer()
     {
-        var (node, nodeOutput) = RunApi("--role", "node", "--check-ready");
+        // Outside the signer role --check-ready is the node's check (NodeReadinessCheckTests),
+        // which reads config.yaml and never the signer's directory.
+        var (node, nodeOutput) = RunApi("--role", "node", "--check-ready", "--config-dir", _dir);
         Assert.True(node == 1, nodeOutput);
-        Assert.Contains("add --role signer", nodeOutput);
+        Assert.Contains(Path.Combine(_dir, "config.yaml"), nodeOutput);
+        Assert.Contains("not configured", nodeOutput);
+
+        var (live, liveOutput) = RunApi("--role", "signer", SignerPaths.Flag, _dir, "--check-ready", "--live");
+        Assert.True(live == 1, liveOutput);
+        Assert.Contains("--live is the node's", liveOutput);
 
         var (unconfigured, output) = RunApi("--role", "signer", SignerPaths.Flag, _dir, "--check-ready");
         Assert.True(unconfigured == 1, output);

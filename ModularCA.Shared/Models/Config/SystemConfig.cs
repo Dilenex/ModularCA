@@ -91,6 +91,31 @@ namespace ModularCA.Shared.Models.Config
         /// run. Read before the host starts.
         /// </summary>
         public SchemaConfig Schema { get; set; } = new();
+
+        /// <summary>
+        /// The loopback-only health listener, for this host's own health command
+        /// (<c>--check-ready</c>); off by default.
+        /// </summary>
+        public HealthConfig Health { get; set; } = new();
+    }
+
+    /// <summary>
+    /// The loopback-only health listener: a plain-HTTP port on <c>127.0.0.1</c> that serves
+    /// <c>/health</c>, <c>/health/live</c> and <c>/health/ready</c> and nothing else, and never
+    /// takes the PROXY protocol, so the node's own health command can reach it when both main
+    /// listeners take the protocol from a proxy elsewhere.
+    /// </summary>
+    public class HealthConfig
+    {
+        /// <summary>
+        /// The port of the loopback-only health listener; 0, the default, opens none. When set it
+        /// must be a port (1 to 65535) other than <c>Https.Port</c>, <c>Http.Port</c> and the
+        /// signer's (<c>Signer.Listen</c>, and <c>Signer.Endpoint</c> when that is loopback), or
+        /// the start is refused. The environment variable <c>MODULARCA__HEALTH__LOOPBACKPORT</c>
+        /// overrides it without being written to <c>config.yaml</c>, which is how the pod sets it.
+        /// </summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
+        public int LoopbackPort { get; set; } = 0;
     }
 
     /// <summary>

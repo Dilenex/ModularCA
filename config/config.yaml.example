@@ -242,6 +242,17 @@ Https:
   # ProxyProtocol: false     # read a PROXY header before TLS; see Http.ProxyProtocolTrustedCidrs
   RenewalWindow: "P30D"      # ISO 8601 duration — renew 30 days before expiry
 
+# The loopback-only health listener, for this host's own health command
+# (ModularCA.API --role node --check-ready, a container's probes). Plain HTTP on 127.0.0.1
+# only, serving /health, /health/live and /health/ready and answering 404 for every other
+# path; it never takes the PROXY protocol, so the health command still works when both
+# listeners above take it from a proxy elsewhere. /health/ready still needs its token.
+# 0 (the default) opens none. Per host, applied at restart; it must not be Https.Port,
+# Http.Port or the signer's port. MODULARCA__HEALTH__LOOPBACKPORT overrides it (the pod sets it
+# that way) and is never written back here.
+# Health:
+#   LoopbackPort: 8081
+
 # Signer separation. By default the signer runs inside this process and nothing here is read.
 # To hold the keys in a separate process (the "modularca-signer" systemd unit, or a sidecar):
 #   1. on the signer host:  ModularCA.API --role signer --init-identity

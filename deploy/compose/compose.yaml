@@ -55,6 +55,30 @@ services:
     ports:
       - "8443:8443"   # HTTPS: the console, the API and the enrollment protocols
       - "8080:8080"   # plain HTTP: CRL and OCSP
+    # The loopback-only health listener (Health.LoopbackPort) the healthcheck below asks: plain
+    # HTTP on 127.0.0.1:8081 inside this container, /health, /health/live and /health/ready only,
+    # never the PROXY protocol. Set here rather than in config.yaml so every start has it; the
+    # value is never written to the file. It is not under "ports:", so nothing publishes it. Keep
+    # it clear of the wizard's ports (8443 and 8080), or the node will not start.
+    environment:
+      MODULARCA__HEALTH__LOOPBACKPORT: "8081"
+    # The image has no curl, so the check is the binary's own: --check-ready asks the node over
+    # loopback and writes nothing, and with --live it asks /health, which runs no health check,
+    # so "healthy" means the process is up and answering. It finds the health port from the
+    # variable above. Until setup is finished (the wizard, or a headless bootstrap) there is no
+    # node to ask, so the container is "starting" and, after the start period, "unhealthy";
+    # nothing here acts on the status, and "restart:" does not follow it. Every run starts a
+    # .NET process, so keep the interval at 30 seconds or more. The start period covers
+    # Schema.WaitSeconds (900 s by default), the longest the node waits for its database or a
+    # migration. Whether the instance is ready for traffic (database up, keys unlocked) is the
+    # same command without --live:
+    #   docker compose exec modularca /opt/modularca/ModularCA.API --role node --check-ready
+    healthcheck:
+      test: ["CMD", "/opt/modularca/ModularCA.API", "--role", "node", "--check-ready", "--live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 16m
     volumes:
       - config:/opt/modularca/config
       - keystores:/opt/modularca/keystores

@@ -71,7 +71,8 @@
 #   data           The node's alone: its backup archives, mounted at /opt/modularca/backups.
 #
 # The signer listens on the pod's loopback only. Nothing outside the pod can reach it, and the
-# node reaches it as 127.0.0.1 because they share a network namespace.
+# node reaches it as 127.0.0.1 because they share a network namespace. The node's health port
+# (8081, for its probes) is on that loopback too, and likewise unpublished.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -161,6 +162,17 @@ spec:
     - name: node
       image: ghcr.io/dilenex/modularca:0.4.4
       args: ["--role", "node"]
+      # The loopback-only health listener (Health.LoopbackPort), which the probes below ask:
+      # plain HTTP on 127.0.0.1:8081, /health, /health/live and /health/ready only (404 for any
+      # other path), never the PROXY protocol, whatever Https.ProxyProtocol and
+      # Http.ProxyProtocol say. Set here rather than in config.yaml so every start of this pod
+      # has it, a first install and an upgraded one alike; the value is never written to the
+      # file. Inside the pod, loopback is shared only by the pod's own containers (this node and
+      # the signer), so nothing outside reaches it. Deliberately not a containerPort: nothing
+      # publishes it. Keep it clear of 8443, 8080 and the signer's 8446, or the node will not
+      # start.
+      env:
+        - { name: MODULARCA__HEALTH__LOOPBACKPORT, value: "8081" }
       ports:
         - { containerPort: 8443, hostPort: 8443, protocol: TCP }
         - { containerPort: 8080, hostPort: 8080, protocol: TCP }
@@ -175,6 +187,39 @@ spec:
         capabilities: { drop: ["ALL"] }
       resources:
         limits: { memory: "1Gi" }
+      # The image has no curl, so no httpGet probe: Podman runs one as curl inside the container.
+      # --check-ready asks the node over loopback and writes nothing. It finds the health port
+      # from the same variable (a probe runs with the container's environment) and asks that,
+      # so the probes work whatever the main listeners take; without the variable it falls back
+      # to the main listeners in config.yaml. With --live it asks /health, which runs no health
+      # check: the process is up and answering. Both probes use --live, so a node waiting for its
+      # signer, or for its database, is not restarted: a restart would fix neither, and the node
+      # reads the signer's secrets by itself once the signer answers. The startup probe allows as long as
+      # Schema.WaitSeconds (900 s by default) plus the start, the longest the node waits for its
+      # database or another process's migration before it exits 75; raise failureThreshold with
+      # that setting, or ahead of an upgrade whose migrations take longer.
+      # Whether the node is ready for traffic is --check-ready without --live: it asks
+      # /health/live and exits 0 only on 200, so not while the signer's secrets are unread, the
+      # signer is locked or unreachable, or the database is down. It is not a readinessProbe
+      # here: Podman does not run one, and on Kubernetes it would take the whole node, console
+      # included, out of its Service at exactly the moments an operator needs to look at it. The
+      # hub, or an operator, runs it with podman exec (README-DEPLOY.md, "The pod").
+      # Turning the PROXY protocol on for both main listeners (the hub's HAProxy) needs nothing
+      # more: the probes go to the health port, which takes no PROXY header and trusts nobody
+      # new. Remove the variable above and the probes would have to use a main listener, which
+      # closes a loopback connection when it takes the protocol from a proxy elsewhere.
+      startupProbe:
+        exec:
+          command: ["/opt/modularca/ModularCA.API", "--role", "node", "--check-ready", "--live"]
+        periodSeconds: 5
+        timeoutSeconds: 10
+        failureThreshold: 190
+      livenessProbe:
+        exec:
+          command: ["/opt/modularca/ModularCA.API", "--role", "node", "--check-ready", "--live"]
+        periodSeconds: 30
+        timeoutSeconds: 10
+        failureThreshold: 3
 
   volumes:
     - name: config
