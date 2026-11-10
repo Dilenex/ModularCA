@@ -881,6 +881,9 @@ the journal; fix the named setting in that host's `config/config.yaml` and start
   internal proxy address would pass the internal-only IP whitelist rules. Name the proxy (for a
   proxy on the same host, `TrustedProxyCidrs: "127.0.0.1/32,::1/128"`), or set
   `BehindReverseProxy: false` if nothing is in front of the host.
+- `Https.ProxyProtocol` or `Http.ProxyProtocol` on with no `Http.ProxyProtocolTrustedCidrs`, or an
+  entry there that does not parse or trusts every address (`/0`). See "Behind a passthrough
+  proxy: the PROXY protocol".
 
 An enabled HSM that cannot be initialised stops the start with status **3** instead, which systemd
 does not retry: each restart would try the PIN again, and a token locks after a few wrong ones.
@@ -1531,6 +1534,100 @@ the process that hosts control and enrollment, so those names must stay on that 
 upstream for them, and the ingress running in the same process as control), or that
 process must be reached directly. `X-Forwarded-For`, `-Proto` and `-Host` are added on the
 way to a node; `Authorization: Negotiate` and `WWW-Authenticate` pass through untouched.
+
+## Behind a passthrough proxy: the PROXY protocol
+
+A proxy that passes TLS through without opening it (HAProxy in `mode tcp`, routing by SNI, as
+ModularCA Hub does in front of every instance; nginx `stream`; a cloud network load balancer)
+cannot add `X-Forwarded-For`: it never sees the HTTP request. The node then sees every client
+as the proxy. Under rootless Podman (pasta) it is worse: every connection through a published
+port appears to come from the host's own LAN address. The audit then records the server, the IP
+allow-list lets in everyone or no one, one client's failed sign-ins lock out every user, and
+JWT IP binding checks nothing.
+
+**Do not list a passthrough proxy in `Http.TrustedProxyCidrs`.** That list trusts the
+`X-Forwarded-For` header, and behind a passthrough proxy the header the node reads arrives inside
+the client's own TLS: the client writes it, so any client could pick its own address, past the
+allow-list and the rate limits. Keep `Http.TrustedProxyCidrs` for proxies that end TLS.
+
+Use the PROXY protocol instead. The proxy writes a short header before the client's first byte,
+before TLS, carrying the client's address and port as it saw them on the TCP connection; the
+client cannot choose it. The node accepts it on the listeners you mark, in `config.yaml`:
+
+    Https:
+      Port: 8443
+      ProxyProtocol: true                       # the HTTPS listener (and the setup wizard's)
+    Http:
+      Port: 8080
+      ProxyProtocol: true                       # the plain-HTTP listener (CRL, OCSP, ACME http-01)
+      ProxyProtocolTrustedCidrs: "10.100.105.22/32"   # the proxy, as this node sees it
+
+All three are per host and take effect at the next restart. A standalone install leaves them
+off and nothing changes. On a listener marked this way:
+
+- A connection from an address outside `Http.ProxyProtocolTrustedCidrs` is closed before a byte
+  is read.
+- From a trusted address the header is required. A connection that sends anything else, a
+  malformed header, or nothing within 5 seconds, is closed, and its bytes are never read as TLS
+  or HTTP. (If the header were optional, a client reaching the node directly could send one and
+  choose its address.) So mark a listener only when every client reaches it through the proxy.
+- The header's client address becomes the connection's address for everything: the audit, the
+  IP allow-list, the per-IP rate limits and JWT IP binding. TLS, the SNI-gated client
+  certificates (mTLS sign-in, EST) and ALPN work as before on the bytes after the header.
+- `X-Forwarded-For`, `-Proto` and `-Host` are ignored on those connections, whatever
+  `Http.TrustedProxyCidrs` and `Security.BehindReverseProxy` say. Other listeners treat them as
+  before.
+- A health check that connects and closes, or sends a v2 `LOCAL` header, is fine: it keeps the
+  proxy's own address.
+
+The start is refused when a listener takes the protocol and `Http.ProxyProtocolTrustedCidrs` is
+empty, when an entry is not `address/prefix` with no bits after the prefix, and when an entry
+trusts every address (`0.0.0.0/0`, `::/0`).
+
+Name the proxy as the node sees it, which is not always the proxy's own address. Under rootless
+Podman with pasta, a proxy on the host connecting to a port published on the host appears inside
+the pod as the host's LAN address (read it from `/proc/net/tcp6` in the node container while a
+connection is open, or from the `[PROXY]` warning the node logs when it closes a connection from
+an untrusted peer). Anything else on the host that connects to the published port appears from
+the same address and is trusted to send a header too, so publish the node's ports on loopback
+only and keep other services off them.
+
+HAProxy sends version 2 with `send-proxy-v2` on the server line:
+
+    frontend tls_in
+        mode tcp
+        bind :443
+        tcp-request inspect-delay 5s
+        tcp-request content accept if { req_ssl_hello_type 1 }
+        use_backend ca_a if { req_ssl_sni -i ca-a.example }
+
+    backend ca_a
+        mode tcp
+        server node 127.0.0.1:18443 send-proxy-v2 check
+
+    frontend http_in
+        mode tcp
+        bind :80
+        default_backend ca_a_http
+
+    backend ca_a_http
+        mode tcp
+        server node 127.0.0.1:18080 send-proxy-v2 check
+
+nginx's `stream` module sends version 1, which the node also accepts:
+
+    stream {
+        server {
+            listen 443;
+            proxy_pass 127.0.0.1:8443;
+            proxy_protocol on;
+        }
+    }
+
+The node accepts version 2 (TCP over IPv4 or IPv6, `LOCAL`, and UNSPEC, with TLVs up to 1024
+bytes in all, which it skips) and version 1 (`TCP4`, `TCP6`, `UNKNOWN`). A version 2 header for
+UDP or a UNIX socket is refused rather than treated as UNSPEC, since on a TCP listener it means
+the proxy is misconfigured and the client's address would be lost without a trace.
 
 ## SSH servers: fetching the revocation list
 

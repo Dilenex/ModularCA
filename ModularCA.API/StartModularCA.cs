@@ -1994,6 +1994,24 @@ if (ModularCA.Shared.Utils.ConfigInputRules.ReverseProxyError(config.Security.Be
     Environment.Exit(1);
 }
 
+// The PROXY protocol, for a proxy that passes connections through without reading them (the
+// hub's HAProxy). Such a proxy cannot write X-Forwarded-For, and listing it in
+// Http.TrustedProxyCidrs would let every client choose its own address, so it gets a list of its
+// own and a per-listener switch. A listener taking the protocol with no proxy named would close
+// every connection, so that stops the start, as does a list that trusts every address.
+if (ModularCA.Shared.Utils.ConfigInputRules.ProxyProtocolError(config.Https.ProxyProtocol, config.Http.ProxyProtocol, config.Http.ProxyProtocolTrustedCidrs) is { } proxyProtocolError)
+{
+    Console.Error.WriteLine($"[FATAL] {proxyProtocolError}");
+    Console.Error.WriteLine("        These settings are per host: fix Https.ProxyProtocol, Http.ProxyProtocol or Http.ProxyProtocolTrustedCidrs in this host's config/config.yaml, then start again.");
+    Environment.Exit(1);
+}
+var proxyProtocolNetworks = ModularCA.Shared.Utils.ConfigInputRules.TrustedProxyNetworks(config.Http.ProxyProtocolTrustedCidrs, "Http.ProxyProtocolTrustedCidrs");
+if (config.Https.ProxyProtocol || config.Http.ProxyProtocol)
+{
+    Console.WriteLine($"[PROXY] PROXY protocol required on {(config.Https.ProxyProtocol && config.Http.ProxyProtocol ? "the HTTPS and plain-HTTP listeners" : config.Https.ProxyProtocol ? "the HTTPS listener" : "the plain-HTTP listener")}, "
+        + $"from {string.Join(", ", proxyProtocolNetworks)} only; X-Forwarded-* is ignored on those connections.");
+}
+
 // The policy follows Http.EnableCors and Http.CorsOrigins as they are saved.
 var corsPolicies = new ModularCA.API.Middleware.SettingsCorsPolicyProvider(config);
 builder.Services.AddSingleton<Microsoft.AspNetCore.Cors.Infrastructure.ICorsPolicyProvider>(corsPolicies);
@@ -2124,6 +2142,9 @@ if (isSetupMode)
 
         options.Listen(setupBindAddress, port, listenOptions =>
         {
+            // Before UseHttps, so the PROXY header is read ahead of the TLS handshake.
+            if (config.Https.ProxyProtocol)
+                ModularCA.API.ProxyProtocol.ProxyProtocolHosting.UseProxyProtocol(listenOptions, proxyProtocolNetworks, $"setup HTTPS :{port}");
             listenOptions.UseHttps(httpsOptions =>
             {
                 httpsOptions.ServerCertificateSelector = (context, name) => apiCertProvider.GetCertificate();
@@ -2473,6 +2494,11 @@ else
 
             Action<Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions> configureHttps = listenOptions =>
             {
+                // Https.ProxyProtocol: the PROXY header is read from the raw connection BEFORE
+                // UseHttps, so the TLS handshake, the SNI-gated client certificates and ALPN below
+                // run unchanged on the bytes that follow it.
+                if (config.Https.ProxyProtocol)
+                    ModularCA.API.ProxyProtocol.ProxyProtocolHosting.UseProxyProtocol(listenOptions, proxyProtocolNetworks, $"HTTPS {listenOptions.EndPoint}");
                 listenOptions.UseHttps(new Microsoft.AspNetCore.Server.Kestrel.Https.TlsHandshakeCallbackOptions
                 {
                     OnConnection = ctx =>
@@ -2682,12 +2708,19 @@ else
                 // ConnectionDelegate plumbing, so the middleware compares
                 // Connection.LocalPort == config.Http.Port and resizes the
                 // IHttpMaxRequestBodySizeFeature at request-entry time.
+                // Http.ProxyProtocol: the same connection middleware as the HTTPS listener, ahead
+                // of the HTTP parser. Without it the listener is configured exactly as before.
+                Action<Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions> configureHttp = listenOptions =>
+                {
+                    if (config.Http.ProxyProtocol)
+                        ModularCA.API.ProxyProtocol.ProxyProtocolHosting.UseProxyProtocol(listenOptions, proxyProtocolNetworks, $"HTTP {listenOptions.EndPoint}");
+                };
                 foreach (var addr in addresses)
                 {
                     if (addr is "0.0.0.0" or "[::]" or "*")
-                        options.ListenAnyIP(httpPort);
+                        options.ListenAnyIP(httpPort, configureHttp);
                     else
-                        options.Listen(System.Net.IPAddress.Parse(addr), httpPort);
+                        options.Listen(System.Net.IPAddress.Parse(addr), httpPort, configureHttp);
                 }
                 Console.WriteLine($"[HTTP] Listening on port {httpPort} (plain HTTP for CRL/OCSP/AIA, 256 KB body cap)");
             }
@@ -3268,13 +3301,13 @@ if (app.Environment.IsDevelopment() || config.Http.SwaggerEnabled)
     app.UseSwaggerUI();
 }
 
-// HTTPS redirection is intentionally NOT applied. The app binds three listeners:
-//   • 8443 — HTTPS management UI
-//   • 8444 — HTTPS mTLS auth port
+// HTTPS redirection is intentionally NOT applied. The app binds two listeners:
+//   • 8443 — HTTPS: management UI, protocols, and the mTLS and EST names, which are
+//            SNI-gated on the same port rather than given one of their own
 //   • 8080 — plain HTTP for CRL / OCSP / AIA (RFC 5280 §4.2.1.13 recommends HTTP
 //            for CDP to avoid chicken-and-egg trust during certificate validation;
 //            most crypto clients also don't follow redirects on CRL fetches).
-// HttpsRedirectionMiddleware can't pick between 8443/8444 and would redirect the
+// HttpsRedirectionMiddleware would redirect the
 // plain-HTTP PKI endpoints to HTTPS, breaking revocation consumers. HSTS set by
 // SecurityHeadersMiddleware already handles the "prefer HTTPS" signal for browsers
 // hitting the management UI.
@@ -3303,7 +3336,13 @@ forwardedOptions.KnownIPNetworks.Add(new System.Net.IPNetwork(System.Net.IPAddre
 foreach (var trustedProxy in ModularCA.Shared.Utils.ConfigInputRules.TrustedProxyNetworks(config.Http.TrustedProxyCidrs))
     forwardedOptions.KnownIPNetworks.Add(trustedProxy);
 
-app.UseForwardedHeaders(forwardedOptions);
+// Not on a connection whose address came from a PROXY header (Https.ProxyProtocol,
+// Http.ProxyProtocol). There the trusted proxy wrote the address from the TCP connection, while
+// any X-Forwarded-For was written by the client inside its own TLS. Without this a client whose
+// real address is loopback or inside Http.TrustedProxyCidrs (loopback is always added above)
+// could replace its PROXY-given address with one of its choosing. Every other connection gets
+// the step exactly as before.
+ModularCA.API.ProxyProtocol.ProxyProtocolHosting.UseForwardedHeadersUnlessProxyProtocol(app, forwardedOptions);
 
 // The ingress branch. A request whose host the route table sends elsewhere is proxied here,
 // after the forwarded headers from any proxy in front of this one are honoured and before

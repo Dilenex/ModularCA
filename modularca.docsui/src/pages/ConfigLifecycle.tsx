@@ -130,6 +130,9 @@ Http:
   CorsOrigins: ""               # Comma-separated HTTPS origin allow-list
   SwaggerEnabled: false
   TrustedProxyCidrs: ""         # address/prefix list; empty = loopback only. A bad entry stops the start
+                                # Only proxies that end TLS: never a passthrough proxy
+  ProxyProtocol: false          # plain-HTTP listener requires a PROXY header (passthrough proxy, the hub)
+  ProxyProtocolTrustedCidrs: "" # who may send it; required when either listener takes it
   Hsts:
     MaxAgeSeconds: 31536000
     IncludeSubDomains: true
@@ -141,6 +144,7 @@ Https:
   PublicPort: 443
   Port: 8443
   ListenAddress: "0.0.0.0"
+  ProxyProtocol: false          # HTTPS listener requires a PROXY header, read before TLS
   RenewalWindow: "P30D"
 
 Security:

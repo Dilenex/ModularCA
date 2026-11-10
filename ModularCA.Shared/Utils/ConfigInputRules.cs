@@ -140,24 +140,25 @@ public static class ConfigInputRules
     }
 
     /// <summary>
-    /// Parses one <c>Http.TrustedProxyCidrs</c> entry: an IPv4 or IPv6 address, a slash and a
+    /// Parses one trusted-proxy entry (<c>Http.TrustedProxyCidrs</c> or <c>Http.ProxyProtocolTrustedCidrs</c>): an IPv4 or IPv6 address, a slash and a
     /// prefix length within the address family's range, with no bits set after the prefix.
     /// Returns null and the network when it parses, otherwise a message naming the entry.
     /// </summary>
     /// <param name="cidr">One trimmed entry.</param>
     /// <param name="network">The network, when the entry parses.</param>
-    public static string? TrustedProxyCidrError(string cidr, out System.Net.IPNetwork network)
+    /// <param name="setting">The setting the entry came from, named in the message.</param>
+    public static string? TrustedProxyCidrError(string cidr, out System.Net.IPNetwork network, string setting = "Http.TrustedProxyCidrs")
     {
         network = default;
         var slash = cidr.IndexOf('/');
         if (slash <= 0 || slash == cidr.Length - 1)
-            return $"Trusted proxy '{cidr}' in Http.TrustedProxyCidrs is not in CIDR form: write address/prefix, e.g. 10.0.1.5/32.";
+            return $"Trusted proxy '{cidr}' in {setting} is not in CIDR form: write address/prefix, e.g. 10.0.1.5/32.";
         if (!System.Net.IPAddress.TryParse(cidr[..slash], out var address) || address.ToString().Contains('%'))
-            return $"Trusted proxy '{cidr}' in Http.TrustedProxyCidrs does not start with an IP address.";
+            return $"Trusted proxy '{cidr}' in {setting} does not start with an IP address.";
         var max = address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork ? 32 : 128;
         if (!int.TryParse(cidr[(slash + 1)..], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var prefix)
             || prefix > max)
-            return $"Trusted proxy '{cidr}' in Http.TrustedProxyCidrs has a prefix length that is not from 0 to {max}.";
+            return $"Trusted proxy '{cidr}' in {setting} has a prefix length that is not from 0 to {max}.";
 
         var bytes = address.GetAddressBytes();
         var masked = (byte[])bytes.Clone();
@@ -167,42 +168,45 @@ public static class ConfigInputRules
             masked[i] &= (byte)(0xFF << (8 - keep));
         }
         if (!bytes.AsSpan().SequenceEqual(masked))
-            return $"Trusted proxy '{cidr}' in Http.TrustedProxyCidrs has bits set after the /{prefix} prefix: write {new System.Net.IPAddress(masked)}/{prefix}, or /{max} for one address.";
+            return $"Trusted proxy '{cidr}' in {setting} has bits set after the /{prefix} prefix: write {new System.Net.IPAddress(masked)}/{prefix}, or /{max} for one address.";
 
         network = new System.Net.IPNetwork(address, prefix);
         return null;
     }
 
     /// <summary>
-    /// Validates the comma-separated <c>Http.TrustedProxyCidrs</c> list, split as startup splits
-    /// it (comma, entries trimmed, blanks dropped). Returns the first entry that does not parse
-    /// (<see cref="TrustedProxyCidrError"/>), or null when all do or the list is blank.
+    /// Validates a comma-separated trusted-proxy list (by default <c>Http.TrustedProxyCidrs</c>),
+    /// split as startup splits it (comma, entries trimmed, blanks dropped). Returns the first
+    /// entry that does not parse (<see cref="TrustedProxyCidrError"/>), or null when all do or
+    /// the list is blank.
     /// </summary>
-    /// <param name="csv">The Http.TrustedProxyCidrs value.</param>
-    public static string? TrustedProxyCidrsError(string? csv)
+    /// <param name="csv">The list's value.</param>
+    /// <param name="setting">The setting the list came from, named in the message.</param>
+    public static string? TrustedProxyCidrsError(string? csv, string setting = "Http.TrustedProxyCidrs")
     {
         if (string.IsNullOrWhiteSpace(csv)) return null;
         foreach (var cidr in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            if (TrustedProxyCidrError(cidr, out _) is { } error)
+            if (TrustedProxyCidrError(cidr, out _, setting) is { } error)
                 return error;
         }
         return null;
     }
 
     /// <summary>
-    /// The networks <c>Http.TrustedProxyCidrs</c> names. Throws when an entry does not parse;
-    /// check <see cref="TrustedProxyCidrsError"/> first.
+    /// The networks a trusted-proxy list (by default <c>Http.TrustedProxyCidrs</c>) names. Throws
+    /// when an entry does not parse; check <see cref="TrustedProxyCidrsError"/> first.
     /// </summary>
-    /// <param name="csv">The Http.TrustedProxyCidrs value.</param>
+    /// <param name="csv">The list's value.</param>
+    /// <param name="setting">The setting the list came from, named in the message.</param>
     /// <exception cref="FormatException">An entry is not a usable CIDR.</exception>
-    public static IReadOnlyList<System.Net.IPNetwork> TrustedProxyNetworks(string? csv)
+    public static IReadOnlyList<System.Net.IPNetwork> TrustedProxyNetworks(string? csv, string setting = "Http.TrustedProxyCidrs")
     {
         if (string.IsNullOrWhiteSpace(csv)) return [];
         var networks = new List<System.Net.IPNetwork>();
         foreach (var cidr in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            if (TrustedProxyCidrError(cidr, out var network) is { } error)
+            if (TrustedProxyCidrError(cidr, out var network, setting) is { } error)
                 throw new FormatException(error);
             networks.Add(network);
         }
@@ -226,6 +230,46 @@ public static class ConfigInputRules
             return "Security.BehindReverseProxy is on but Http.TrustedProxyCidrs names no proxy. Every request would appear "
                  + "to come from the proxy, and an internal proxy address passes the internal-only IP whitelist rules. "
                  + "Name the proxy, e.g. 10.0.1.5/32, or 127.0.0.1/32,::1/128 for a proxy on this host, or turn BehindReverseProxy off.";
+        return null;
+    }
+
+    /// <summary>
+    /// The PROXY protocol settings together. Refuses an entry of
+    /// <c>Http.ProxyProtocolTrustedCidrs</c> that does not parse, whether or not a listener takes
+    /// the protocol; a listener taking it (<c>Https.ProxyProtocol</c> or <c>Http.ProxyProtocol</c>)
+    /// with that list empty, since every connection would then be closed; and an entry that
+    /// trusts every address (a <c>/0</c> prefix), since any client could then send a header and
+    /// choose its own address, which is the one thing the protocol must never allow. Returns null
+    /// when the settings are usable.
+    /// </summary>
+    /// <param name="httpsProxyProtocol">Https.ProxyProtocol.</param>
+    /// <param name="httpProxyProtocol">Http.ProxyProtocol.</param>
+    /// <param name="trustedCidrs">Http.ProxyProtocolTrustedCidrs.</param>
+    public static string? ProxyProtocolError(bool httpsProxyProtocol, bool httpProxyProtocol, string? trustedCidrs)
+    {
+        const string setting = "Http.ProxyProtocolTrustedCidrs";
+        if (TrustedProxyCidrsError(trustedCidrs, setting) is { } error)
+            return error;
+
+        foreach (var network in TrustedProxyNetworks(trustedCidrs, setting))
+        {
+            if (network.PrefixLength == 0)
+                return $"Trusted proxy '{network}' in {setting} trusts every address, so any client could send a PROXY header "
+                     + "and choose its own address. Name the proxy itself, e.g. 10.100.105.22/32.";
+        }
+
+        if ((httpsProxyProtocol || httpProxyProtocol) && string.IsNullOrWhiteSpace(trustedCidrs))
+        {
+            var listeners = (httpsProxyProtocol, httpProxyProtocol) switch
+            {
+                (true, true) => "Https.ProxyProtocol and Http.ProxyProtocol are",
+                (true, false) => "Https.ProxyProtocol is",
+                _ => "Http.ProxyProtocol is",
+            };
+            return $"{listeners} on but {setting} names no proxy, so every connection to that listener would be closed. "
+                 + "Name the proxy that sends the PROXY header as it appears to this host, e.g. 10.100.105.22/32, "
+                 + "or turn the listener's ProxyProtocol off. Do not use Http.TrustedProxyCidrs for a passthrough proxy.";
+        }
         return null;
     }
 
