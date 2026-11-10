@@ -892,6 +892,8 @@ export interface HttpConfig {
     enableCors: boolean;
     trustedProxyCidrs: string;
     forwardedHeaderHopLimit: number;
+    proxyProtocol: boolean;
+    proxyProtocolTrustedCidrs: string;
     hsts: HstsConfig;
 }
 
@@ -902,6 +904,7 @@ export interface HttpsConfig {
     certificatePath: string;
     certificatePassword: string;
     port: number;
+    proxyProtocol: boolean;
     renewalWindow: string;
     renewalCheckSchedule: string;
     pendingSubjectDn?: string | null;
@@ -1589,12 +1592,6 @@ export interface SubjectDnFieldRule {
     regex?: string | null;
     maxLength?: number | null;
     defaultValue?: string | null;
-}
-
-/** From `ModularCA.Shared/Models/Issuance/SubmitCertificateRequest.cs`. */
-export interface SubmitCertificateRequest {
-    csrPem: string;
-    signingProfileId: string;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */

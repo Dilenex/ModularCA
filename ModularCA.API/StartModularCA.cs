@@ -4,7 +4,6 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using ModularCA.API.Startup;
-using ModularCA.API.Validation.SigningProfiles;
 using ModularCA.Auth.Implementations;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Auth.Services;
@@ -1501,21 +1500,21 @@ else
     }
 }
 
-// Data Protection API — encrypts TOTP secrets at rest.
+// Data Protection API: the key ring that protects TOTP secrets, LDAP publisher passwords and the
+// other DP-protected columns at rest (BackupWrappedSecrets lists them).
 //
-// SINGLE-NODE LIMITATION. The Data Protection keyring is
-// persisted to the local filesystem at config/dp-keys with no shared backend.
-// In a multi-node deployment each instance generates its own keyring and the
-// nodes will be unable to decrypt each other's TOTP secrets — TOTP login on
-// node A will silently fail on node B. Until this is migrated to a shared
-// store (Redis with ProtectKeysWithCertificate, a database-backed XML
-// repository, or a cloud KMS like Azure Key Vault) operators MUST run a
-// single instance OR pin sticky sessions to a single backend per user.
+// Where the ring lives. With Redis.Enabled it is kept in Redis, below, and every node shares it.
+// Otherwise it is on this host at config/dp-keys, created here at start and rotated by the
+// runtime, and a second node would have a ring of its own and could not unprotect what the first
+// protected (a TOTP enrolled through node A fails on node B): a deployment of more than one node
+// uses Redis, or routes each user to one node.
 //
-// The on-disk dp-keys directory has its ACLs tightened to the service account
-// via FileSecurityUtil.SetOwnerOnly below — disk read still equals TOTP
-// plaintext recovery, so backups MUST exclude config/dp-keys (or encrypt the
-// backup with a key not co-located on the same host).
+// Backups carry config/dp-keys only wrapped by the signer (BackupWrappedSecrets.DataProtectionDirectory),
+// so an archive does not open the ring without the keystore, and a restore brings the ring back,
+// unwrapped at the next start. On the host the ring is in the clear, and with the database it
+// opens every protected column, so its files are made owner-only below. A copy of the config
+// directory taken outside the backup (a volume copied to a standby, say) carries the ring in
+// the clear and needs the same protection as the host.
 var dpKeysDir = Path.Combine(AppContext.BaseDirectory, "config", "dp-keys");
 Directory.CreateDirectory(dpKeysDir);
 // Tighten ACLs on every keyring file inside dp-keys so disk
@@ -1864,7 +1863,9 @@ var healthChecks = builder.Services.AddHealthChecks()
 if (activeRoles.Has(ModularCA.API.Startup.ProcessRole.Ingress))
     healthChecks.AddCheck<ModularCA.API.HealthChecks.IngressHealthCheck>("ingress");
 
-builder.Services.AddValidatorsFromAssemblyContaining<CreateSigningProfileValidator>();
+// The user and sign-in validators. Nothing runs them automatically: AuthController and
+// AdminUserManagerController inject IValidator<T> and call it themselves.
+builder.Services.AddValidatorsFromAssemblyContaining<ModularCA.API.Validation.Users.CreateUserRequestValidator>();
 
 builder.Services.AddScoped<ICsrParserService, CsrParserService>();
 

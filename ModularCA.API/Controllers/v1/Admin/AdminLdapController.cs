@@ -135,7 +135,7 @@ public class AdminLdapController(
         {
             var filter = request.GroupSearchFilter;
             if (!filter.Contains("{0}"))
-                return BadRequest(new { error = "GroupSearchFilter must contain a {0} placeholder for the username." });
+                return BadRequest(new { error = "GroupSearchFilter must contain a {0} placeholder, which is replaced with the user's DN." });
             if (filter.Count(c => c == '{') != filter.Count(c => c == '}'))
                 return BadRequest(new { error = "GroupSearchFilter has unbalanced braces." });
             if (filter.Count(c => c == '(') != filter.Count(c => c == ')'))

@@ -170,11 +170,9 @@ public class CaProtocolConfigEntity
     public bool AcmeAllowPrivateAddressValidation { get; set; } = false;
 
     // ─── OCSP-specific ─────────────────────────────────────────────
-
-    /// <summary>
-    /// When true, OCSP responses are signed. Should generally be true for production.
-    /// </summary>
-    public bool OcspSignResponses { get; set; } = true;
+    //
+    // None. OCSP responses are always signed, as RFC 6960 requires; the unread
+    // OcspSignResponses column was dropped in 0.4.4 (the DropUnreadSettingColumns migration).
 
     // ─── Request Profile ──────────────────────────────────────────
 

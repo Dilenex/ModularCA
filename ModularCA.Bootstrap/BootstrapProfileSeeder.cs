@@ -859,12 +859,12 @@ public static class BootstrapProfileSeeder
 
         var prefs = new[]
         {
-            new NotificationPreferenceEntity { EventType = "CertExpiring", Enabled = true, DaysBeforeExpiry = 30, Description = "Certificate approaching expiry" },
+            new NotificationPreferenceEntity { EventType = "CertExpiring", Enabled = true, Description = "Certificate approaching expiry" },
             new NotificationPreferenceEntity { EventType = "CertRevoked", Enabled = true, Description = "Certificate revoked" },
             new NotificationPreferenceEntity { EventType = "CertIssued", Enabled = false, Description = "New certificate issued" },
             new NotificationPreferenceEntity { EventType = "AccountLocked", Enabled = true, Description = "User account locked out" },
             new NotificationPreferenceEntity { EventType = "PasswordReset", Enabled = true, Description = "User password reset by admin" },
-            new NotificationPreferenceEntity { EventType = "PasswordExpiring", Enabled = true, DaysBeforeExpiry = 14, Description = "User password approaching expiry" },
+            new NotificationPreferenceEntity { EventType = "PasswordExpiring", Enabled = true, Description = "User password approaching expiry" },
             new NotificationPreferenceEntity { EventType = "CrlGenerationFailed", Enabled = true, Description = "CRL generation failure" },
             new NotificationPreferenceEntity { EventType = "TlsCertRenewed", Enabled = true, Description = "API TLS certificate auto-renewed" },
         };

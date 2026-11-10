@@ -578,9 +578,6 @@ namespace ModularCA.Database.Migrations
                     b.Property<bool>("MsaeAllowUsernameToken")
                         .HasColumnType("boolean");
 
-                    b.Property<bool>("OcspSignResponses")
-                        .HasColumnType("boolean");
-
                     b.Property<string>("Protocol")
                         .IsRequired()
                         .HasMaxLength(20)
@@ -2198,9 +2195,6 @@ namespace ModularCA.Database.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
-
-                    b.Property<int?>("DaysBeforeExpiry")
-                        .HasColumnType("integer");
 
                     b.Property<string>("Description")
                         .HasMaxLength(255)

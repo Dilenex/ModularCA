@@ -20,11 +20,17 @@ namespace ModularCA.API.Controllers.v1.Admin;
 [NodeRole(ProcessRole.Control)]
 public class AdminNotificationController(ModularCADbContext db, IEmailService emailService, IWebhookService webhookService, SystemConfig config) : ControllerBase
 {
-    /// <summary>Lists the per-event notification preferences (enabled flag, recipients, expiry lead time), ordered by event type. Requires the <c>SystemOperator</c> policy.</summary>
+    /// <summary>
+    /// Lists the per-event notification preferences (<see cref="NotificationPreferenceView"/>:
+    /// enabled flag, recipients, description), ordered by event type. Requires the
+    /// <c>SystemOperator</c> policy.
+    /// </summary>
     [HttpGet]
     public async Task<IActionResult> GetPreferences()
     {
-        var prefs = await db.NotificationPreferences.AsNoTracking().OrderBy(p => p.EventType).ToListAsync();
+        var prefs = await db.NotificationPreferences.AsNoTracking().OrderBy(p => p.EventType)
+            .Select(p => new NotificationPreferenceView(p.Id, p.EventType, p.Enabled, p.Recipients, p.Description))
+            .ToListAsync();
         return Ok(prefs);
     }
 
@@ -48,8 +54,9 @@ public class AdminNotificationController(ModularCADbContext db, IEmailService em
     });
 
     /// <summary>
-    /// Updates one notification preference. Recipients, when sent, is a comma-separated list whose
-    /// entries must each parse as a mail address (400); empty falls back to the admin recipients.
+    /// Updates one notification preference and returns it as <see cref="NotificationPreferenceView"/>.
+    /// Recipients, when sent, is a comma-separated list whose entries must each parse as a mail
+    /// address (400); empty falls back to the admin recipients.
     /// </summary>
     [HttpPut("{eventType}")]
     public async Task<IActionResult> UpdatePreference(string eventType, [FromBody] UpdateNotificationRequest request)
@@ -62,10 +69,9 @@ public class AdminNotificationController(ModularCADbContext db, IEmailService em
 
         if (request.Enabled.HasValue) pref.Enabled = request.Enabled.Value;
         if (request.Recipients != null) pref.Recipients = request.Recipients;
-        if (request.DaysBeforeExpiry.HasValue) pref.DaysBeforeExpiry = request.DaysBeforeExpiry;
 
         await db.SaveChangesAsync();
-        return Ok(pref);
+        return Ok(new NotificationPreferenceView(pref.Id, pref.EventType, pref.Enabled, pref.Recipients, pref.Description));
     }
 
     /// <summary>
@@ -153,6 +159,14 @@ public class UpdateNotificationRequest
     public bool? Enabled { get; set; }
     /// <summary>Comma-separated addresses for this event; empty sends to the admin recipients instead.</summary>
     public string? Recipients { get; set; }
-    /// <summary>Lead time in days for the expiry events (<c>CertExpiring</c>, <c>PasswordExpiring</c>). Stored only; no notification sender reads it yet.</summary>
-    public int? DaysBeforeExpiry { get; set; }
+    // DaysBeforeExpiry was stored here and never read, and is gone since 0.4.4; a body that still
+    // sends it is accepted and the field ignored.
 }
+
+/// <summary>One notification preference as the notification endpoints return it.</summary>
+/// <param name="Id">Row id.</param>
+/// <param name="EventType">The event, e.g. <c>CertExpiring</c>.</param>
+/// <param name="Enabled">Whether email is sent for the event.</param>
+/// <param name="Recipients">Comma-separated override recipients; null or empty sends to the admin recipients.</param>
+/// <param name="Description">What the event is, for the console.</param>
+public record NotificationPreferenceView(Guid Id, string EventType, bool Enabled, string? Recipients, string? Description);

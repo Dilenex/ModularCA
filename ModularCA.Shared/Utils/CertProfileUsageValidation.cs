@@ -2,9 +2,17 @@ namespace ModularCA.Shared.Utils;
 
 /// <summary>
 /// Decides whether the usages a certificate profile asks for are ones this deployment's OID
-/// catalog can resolve — the question the profile validator asks on create and update.
+/// catalog can resolve. Nothing calls it on profile create or update yet (see the remarks).
 /// </summary>
 /// <remarks>
+/// <para>
+/// It was the core of <c>CreateCertProfileValidator</c>, a FluentValidation class that never ran,
+/// because nothing wired validation into the MVC pipeline. That class was removed in 0.4.4: it
+/// split the usage fields on commas, while the console sends JSON arrays, and it also demanded a
+/// maximum validity, which an inheriting profile leaves empty, so wiring it would have refused
+/// profiles the console saves today. A profile-time catalog check needs to parse the JSON form
+/// first.
+/// </para>
 /// <para>
 /// The rule lived as two hardcoded string arrays inside the API's FluentValidation class: eight
 /// key usages and seven extended key usages. Anything else was refused however the catalog was

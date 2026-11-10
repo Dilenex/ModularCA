@@ -371,8 +371,6 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
         acmeRequireEab: false,
         acmeAllowedChallengeTypes: '',
         acmeAllowPrivateAddressValidation: false,
-        // OCSP
-        ocspSignResponses: true,
         // MSAE
         msaeAllowUsernameToken: true,
         msaeAllowKerberos: false,
@@ -393,7 +391,6 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                 acmeRequireEab: config.acmeRequireEab ?? false,
                 acmeAllowedChallengeTypes: config.acmeAllowedChallengeTypes || '',
                 acmeAllowPrivateAddressValidation: config.acmeAllowPrivateAddressValidation ?? false,
-                ocspSignResponses: config.ocspSignResponses ?? true,
                 msaeAllowUsernameToken: config.msaeAllowUsernameToken ?? true,
                 msaeAllowKerberos: config.msaeAllowKerberos ?? false,
             });
@@ -406,7 +403,6 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                 cmpRequireSignature: false, cmpSignerConfigured: true,
                 acmeRequireEab: false, acmeAllowedChallengeTypes: '',
                 acmeAllowPrivateAddressValidation: false,
-                ocspSignResponses: true,
                 msaeAllowUsernameToken: true, msaeAllowKerberos: false,
             });
         }
@@ -430,8 +426,6 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
             base.acmeRequireEab = form.acmeRequireEab;
             base.acmeAllowedChallengeTypes = form.acmeAllowedChallengeTypes || null;
             base.acmeAllowPrivateAddressValidation = form.acmeAllowPrivateAddressValidation;
-        } else if (protocol === 'OCSP') {
-            base.ocspSignResponses = form.ocspSignResponses;
         } else if (protocol === 'MSAE') {
             base.msaeAllowUsernameToken = form.msaeAllowUsernameToken;
             base.msaeAllowKerberos = form.msaeAllowKerberos;
@@ -610,9 +604,9 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                         )}
 
                         {protocol === 'OCSP' && (
-                            <div className="space-y-2">
-                                <ToggleField size="md" labelSide="left" label="Sign Responses" description="Sign OCSP responses with the CA's OCSP responder key" checked={form.ocspSignResponses} onChange={(v) => setForm({ ...form, ocspSignResponses: v })} />
-                            </div>
+                            <p className="text-xs text-ink-muted">
+                                OCSP responses are always signed, as RFC 6960 requires.
+                            </p>
                         )}
 
                         {protocol === 'MSAE' && caId && (

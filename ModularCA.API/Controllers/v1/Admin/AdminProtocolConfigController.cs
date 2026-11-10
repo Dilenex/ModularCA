@@ -121,8 +121,6 @@ public class AdminProtocolConfigController(
                 c.AcmeRequireEab,
                 c.AcmeAllowedChallengeTypes,
                 c.AcmeAllowPrivateAddressValidation,
-                // OCSP
-                c.OcspSignResponses,
                 c.MsaeAllowUsernameToken,
                 c.MsaeAllowKerberos,
             })
@@ -150,7 +148,6 @@ public class AdminProtocolConfigController(
                 x.Config.EstRequireClientCert, x.Config.EstHttpAuthEnabled,
                 x.Config.ScepChallengeRequired, x.Config.CmpRequireSignature, x.Config.CmpSignerConfigured,
                 x.Config.AcmeRequireEab, x.Config.AcmeAllowedChallengeTypes, x.Config.AcmeAllowPrivateAddressValidation,
-                x.Config.OcspSignResponses,
                 x.Config.MsaeAllowUsernameToken, x.Config.MsaeAllowKerberos,
                 x.Capabilities,
                 x.Advisories,
@@ -283,7 +280,6 @@ public class AdminProtocolConfigController(
         if (request.AcmeRequireEab.HasValue) config.AcmeRequireEab = request.AcmeRequireEab.Value;
         if (request.AcmeAllowedChallengeTypes != null) config.AcmeAllowedChallengeTypes = request.AcmeAllowedChallengeTypes;
         if (request.AcmeAllowPrivateAddressValidation.HasValue) config.AcmeAllowPrivateAddressValidation = request.AcmeAllowPrivateAddressValidation.Value;
-        if (request.OcspSignResponses.HasValue) config.OcspSignResponses = request.OcspSignResponses.Value;
         if (request.MsaeAllowUsernameToken.HasValue) config.MsaeAllowUsernameToken = request.MsaeAllowUsernameToken.Value;
         if (request.MsaeAllowKerberos.HasValue)
         {
@@ -377,9 +373,8 @@ public class ProtocolConfigUpdateRequest
     public string? AcmeAllowedChallengeTypes { get; set; }
     /// <summary>ACME: let the http-01 validator connect to private, loopback and link-local addresses, for private PKI.</summary>
     public bool? AcmeAllowPrivateAddressValidation { get; set; }
-    // OCSP
-    /// <summary>OCSP: whether responses are signed. Stored and shown only; the OCSP responder does not read it.</summary>
-    public bool? OcspSignResponses { get; set; }
+    // OCSP has no settings here: responses are always signed (RFC 6960). The old
+    // OcspSignResponses field is no longer read, and a body that still sends it is accepted.
 
     /// <summary>MSAE: accept UsernameToken and Basic credentials. Null leaves the setting unchanged.</summary>
     public bool? MsaeAllowUsernameToken { get; set; }
