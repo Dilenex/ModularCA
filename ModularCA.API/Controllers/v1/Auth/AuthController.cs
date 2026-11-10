@@ -21,13 +21,15 @@ using ModularCA.Database;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
+using ModularCA.Shared.Utils;
 using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Auth
 {
     /// <summary>
     /// Authentication endpoints for JWT login, token refresh, certificate-based authentication,
-    /// and pre-JWT password change for forced password reset on first login.
+    /// pre-JWT password change for forced password reset on first login, and claiming an account
+    /// with a one-time claim token.
     /// Exposed at both <c>/auth/*</c> (canonical public short URL) and <c>/api/v1/auth/*</c>
     /// (legacy path, kept active during the frontend migration).
     /// </summary>
@@ -773,7 +775,9 @@ namespace ModularCA.API.Controllers.v1.Auth
         /// the <see cref="Shared.Entities.UserEntity.PasswordChangeOnNextLogon"/> flag, and
         /// requires the user to re-login with the new password. A Directory account keeps no local
         /// password, so it is refused with the generic 401 without consulting the local hash or
-        /// counting a failed attempt.
+        /// counting a failed attempt. When the replaced password is the one the headless bootstrap
+        /// left in <c>config/initial-admin-password</c>, the file is deleted (best-effort; a
+        /// failure is logged as a warning).
         /// </summary>
         [AllowAnonymous]
         [HttpPost("change-password")]
@@ -959,7 +963,106 @@ namespace ModularCA.API.Controllers.v1.Auth
             await _audit.LogAsync(AuditActionType.UserPasswordChanged, user.Id, user.Username,
                 sourceIp: sourceIp, details: new { reason = "Forced password change on login" });
 
+            // The headless bootstrap left the first administrator's generated password in an
+            // owner-only file. Once that password is replaced the file is only a stale secret, so
+            // it goes; a file holding some other password is left alone.
+            DeleteInitialPasswordFile(user.Username,
+                held => System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                    System.Text.Encoding.UTF8.GetBytes(held), System.Text.Encoding.UTF8.GetBytes(request.OldPassword)));
+
             return Ok(new { message = "Password changed successfully. Please log in again." });
+        }
+
+        /// <summary>
+        /// The one answer <see cref="Claim"/> gives for every refused claim, so a caller cannot tell a
+        /// wrong token from an expired, used or unusable one, or learn whether any claim exists.
+        /// </summary>
+        internal const string ClaimRefusedMessage = "The claim token is not valid. It may be mistyped, expired or already used.";
+
+        /// <summary>
+        /// The config directory, where the headless bootstrap leaves <c>initial-admin-password</c>.
+        /// The application directory's <c>config</c>; tests point it elsewhere.
+        /// </summary>
+        internal string ConfigDirectory { get; set; } = Path.Combine(AppContext.BaseDirectory, "config");
+
+        /// <summary>
+        /// Claims an account with a one-time claim token: sets its password, once, without a session
+        /// or an old password. This is how the first administrator of a headless bootstrap given
+        /// <c>Administration.ClaimTokenSha256</c> gets in, and how an account given a token on the
+        /// host with <c>--issue-claim-token</c> does. The new password must meet the password policy
+        /// and is checked before the token, so a weak one is answered with the policy's objections
+        /// whatever the token. Every refusal of the token itself (no such claim, expired, already
+        /// used, or an account that is disabled, a service identity or a Directory account) gets the
+        /// same 400 answer, <see cref="ClaimRefusedMessage"/>, after the same login response delay,
+        /// and is audited as <see cref="AuditActionType.UserLoginFailed"/> with source <c>claim</c>.
+        /// A claim used up is audited as <see cref="AuditActionType.UserAccountClaimed"/>; the
+        /// account's sessions are ended, any lockout from failed sign-ins and the forced change at
+        /// next sign-in are cleared, and its password source is left as it is (Local for the
+        /// bootstrap administrator). Rate limited per IP like
+        /// the other anonymous credential endpoints. When the replaced password was the one the
+        /// bootstrap left in <c>initial-admin-password</c>, that file is deleted.
+        /// </summary>
+        /// <param name="request">The token, the new password and its confirmation.</param>
+        [AllowAnonymous]
+        [HttpPost("claim")]
+        public async Task<IActionResult> Claim([FromBody] ClaimAccountRequest request)
+        {
+            var sw = Stopwatch.StartNew();
+            var sourceIp = HttpContext.Connection.RemoteIpAddress?.ToString();
+
+            if (request == null || string.IsNullOrWhiteSpace(request.Token) || request.Token.Length > 256
+                || string.IsNullOrEmpty(request.NewPassword) || request.NewPassword.Length > 1024)
+            {
+                await DelayToBudgetAsync(sw);
+                return BadRequest(new { error = "A claim token and a new password are required." });
+            }
+            if (request.NewPassword != request.ConfirmNewPassword)
+                return BadRequest(new { error = "New password and confirmation do not match" });
+
+            var result = await AccountClaims.RedeemAsync(_db, request.Token, request.NewPassword, DateTime.UtcNow, HttpContext.RequestAborted);
+            switch (result.Outcome)
+            {
+                case ClaimOutcome.WeakPassword:
+                    return BadRequest(new { error = "Password does not meet policy requirements", details = result.PolicyErrors });
+
+                case ClaimOutcome.Refused:
+                    await _audit.LogAsync(AuditActionType.UserLoginFailed, result.User?.Id, result.User?.Username,
+                        targetEntityType: result.Claim == null ? null : "User",
+                        targetEntityId: result.Claim?.UserId.ToString(),
+                        sourceIp: sourceIp, success: false,
+                        details: new { reason = result.Reason, source = "claim" },
+                        errorMessage: "ClaimRefused");
+                    await DelayToBudgetAsync(sw);
+                    return BadRequest(new { error = ClaimRefusedMessage });
+            }
+
+            var user = result.User!;
+            await TokenRevocationMiddleware.InvalidateUserStampCacheAsync(_cache, user.Id);
+            await _audit.LogAsync(AuditActionType.UserAccountClaimed, user.Id, user.Username,
+                targetEntityType: "User", targetEntityId: user.Id.ToString(), sourceIp: sourceIp,
+                details: new { issuedBy = result.Claim?.IssuedBy, claimCreatedAt = result.Claim?.CreatedAt });
+
+            if (!string.IsNullOrEmpty(result.ReplacedPasswordHash))
+                DeleteInitialPasswordFile(user.Username, held => PasswordUtil.VerifyPassword(held, result.ReplacedPasswordHash));
+
+            return Ok(new { message = "Account claimed. Sign in with the new password.", username = user.Username });
+        }
+
+        /// <summary>
+        /// Deletes the bootstrap's <c>initial-admin-password</c> file from <see cref="ConfigDirectory"/>
+        /// when <paramref name="holdsReplacedPassword"/> says it holds the password just replaced.
+        /// Best-effort: a failure is logged as a warning and the password change stands.
+        /// </summary>
+        /// <param name="username">The account whose password changed, for the log.</param>
+        /// <param name="holdsReplacedPassword">Given the file's password, whether it is the one replaced.</param>
+        private void DeleteInitialPasswordFile(string username, Func<string, bool> holdsReplacedPassword)
+        {
+            if (InitialAdminPasswordFile.TryDeleteIfHolds(ConfigDirectory, holdsReplacedPassword, out var error))
+                Serilog.Log.Information("Deleted {File}: the password it held for {Username} has been replaced",
+                    InitialAdminPasswordFile.PathIn(ConfigDirectory), username);
+            else if (error != null)
+                Serilog.Log.Warning("Could not delete {File} after {Username} replaced the password it holds ({Error}). Delete it by hand",
+                    InitialAdminPasswordFile.PathIn(ConfigDirectory), username, error);
         }
 
         /// <summary>

@@ -1257,6 +1257,7 @@ sshd -t && systemctl reload ssh`}</pre>
                     </p>
                     <ul className="list-disc list-inside space-y-1 text-ink mt-2">
                         <li><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/login</code> — Username/password login form, shared with the self-service portal</li>
+                        <li><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/claim</code> — Claim an account with a one-time claim token and set its password (linked from the login form)</li>
                         <li><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/mfa-setup</code> — First-time MFA enrollment</li>
                         <li><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/mfa-verify</code> — MFA challenge verification</li>
                         <li><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/mfa-callback</code> — WebAuthn callback handler</li>

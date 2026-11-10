@@ -35,7 +35,7 @@ const sharedAuth = resolve(process.cwd(), '..', 'shared', 'authenticated', 'src'
 // The production server hands this bundle's index.html to /admin/*, /user/* and the site-root
 // sign-in pages; the bundle reads the prefix at load (src/portal.ts). Vite's dev server only
 // knows `base`, so mirror that here: those requests are served as if they were the /admin shell.
-const SHELL_PREFIXES = ['/user', '/login', '/banner', '/mfa-setup', '/mfa-verify', '/mfa-callback'];
+const SHELL_PREFIXES = ['/user', '/login', '/banner', '/claim', '/mfa-setup', '/mfa-verify', '/mfa-callback'];
 function portalShellDev(): Plugin {
   return {
     name: 'modularca-portal-shell',

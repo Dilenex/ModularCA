@@ -1323,13 +1323,114 @@ public static class BootstrapProfileSeeder
         Console.WriteLine("✓ Default SSH CA profiles seeded (3 cert, 2 request). Signing profiles are created with SSH CA keys.");
     }
 
+    /// <summary>The first administrator's username on a headless bootstrap.</summary>
+    public const string InitialUsername = "superadmin";
+
     /// <summary>
-    /// Creates the initial superadmin user with a generated password that meets the seeded policy.
-    /// Assigns the user to the system-admin group and all CA-level admin groups.
-    /// Prints the generated password to the console. The user's password source is Local, so
-    /// break-glass sign-in never depends on the directory.
+    /// Creates the initial superadmin user and hands it over without a secret reaching standard
+    /// output, which under systemd or Podman is the journal. Two ways:
+    /// <list type="bullet">
+    /// <item>With <c>Administration.ClaimTokenSha256</c> in bootstrap.yaml, the account has no
+    /// usable password and a one-time claim is recorded (expiring after
+    /// <c>ClaimTokenLifetimeHours</c>, seven days by default); whoever holds the token sets the
+    /// password at the console's claim page. Only that the account waits to be claimed, and until
+    /// when, is printed. A leftover <c>initial-admin-password</c> file is deleted, since it would
+    /// hold a password that no longer works.</item>
+    /// <item>Without it, a password meeting the seeded policy is generated and written to the
+    /// owner-only file <c>initial-admin-password</c> in <paramref name="configDir"/>
+    /// (<see cref="InitialAdminPasswordFile"/>), before the account is created; only the file's path
+    /// is printed. The account must change the password at first sign-in, and the application then
+    /// deletes the file.</item>
+    /// </list>
+    /// The user joins system-super, system-admin and every CA-level admin group. Its password
+    /// source is Local, so break-glass sign-in never depends on the directory.
     /// </summary>
-    public static void CreateInitialUser(ModularCADbContext db)
+    /// <param name="db">The application database, with the policies and system groups seeded.</param>
+    /// <param name="configDir">The config directory, where the password file goes.</param>
+    /// <param name="administration">bootstrap.yaml's Administration section; null or without a claim hash for a generated password.</param>
+    /// <param name="output">Where progress is written; standard output when null.</param>
+    /// <param name="now">The current time (UTC), for the claim's expiry; the clock when null.</param>
+    /// <returns>How the account is handed over, for the closing banner.</returns>
+    public static InitialAdminHandover CreateInitialUser(
+        ModularCADbContext db, string configDir, YamlBootstrapLoader.AdministrationConfig? administration = null,
+        TextWriter? output = null, DateTime? now = null)
+    {
+        output ??= Console.Out;
+        var at = now ?? DateTime.UtcNow;
+        var claimed = ModularCA.Auth.Services.AccountClaims.TryParseHashHex(administration?.ClaimTokenSha256, out var claimHash);
+        if (!claimed && !string.IsNullOrWhiteSpace(administration?.ClaimTokenSha256))
+        {
+            // EnsureClaimTokenUsable refuses this before anything changes; this is the backstop for
+            // a caller that skipped it, so a bad hash never silently falls back to a password.
+            throw new InvalidOperationException("Administration.ClaimTokenSha256 is not a SHA-256 in hex.");
+        }
+
+        string? passwordFile = null;
+        string passwordHash;
+        if (claimed)
+        {
+            passwordHash = string.Empty;
+            if (InitialAdminPasswordFile.TryDeleteIfHolds(configDir, _ => true, out var deleteError))
+                output.WriteLine($"✓ Removed a leftover {InitialAdminPasswordFile.FileName} from an earlier install.");
+            else if (deleteError != null)
+                output.WriteLine($"[WARNING] Could not remove the leftover {InitialAdminPasswordFile.PathIn(configDir)} ({deleteError}). Delete it by hand.");
+        }
+        else
+        {
+            var password = GeneratePassword(db);
+            // Written before the account exists, so a config directory that cannot take the file
+            // stops the bootstrap with no account whose password nobody has.
+            passwordFile = InitialAdminPasswordFile.Write(configDir, password);
+            passwordHash = ModularCA.Auth.Utils.PasswordUtil.HashPassword(password);
+        }
+
+        var initialUser = new UserEntity
+        {
+            Username = InitialUsername,
+            PasswordHash = passwordHash,
+            CreatedAt = at,
+            // A generated password has been on disk, so it is changed at first sign-in, which
+            // bounds how long the file's copy is worth anything. AuthController answers 403
+            // { requirePasswordChange } and the pre-JWT /auth/change-password endpoint clears the
+            // flag (and deletes the file). A claimed account's password is chosen by the holder of
+            // the token, so there is nothing to change; with no password it cannot sign in at all
+            // until claimed.
+            PasswordChangeOnNextLogon = !claimed,
+            // Break-glass: the first administrator's password is checked against the local hash
+            // only, so it signs in through an LDAP outage and in direct-bind mode.
+            PasswordSource = ModularCA.Shared.Enums.PasswordSource.Local,
+        };
+        db.Users.Add(initialUser);
+        db.SaveChanges();
+
+        var caAdminGroupCount = AssignInitialUserGroups(db, initialUser);
+        output.WriteLine($"✓ Initial user '{initialUser.Username}' created.");
+        output.WriteLine($"  Assigned to: system-admin + {caAdminGroupCount} CA admin group(s).");
+
+        if (claimed)
+        {
+            var lifetime = administration!.ClaimTokenLifetimeHours is int hours
+                ? TimeSpan.FromHours(hours)
+                : ModularCA.Auth.Services.AccountClaims.DefaultLifetime;
+            var expiresAt = at + lifetime;
+            ModularCA.Auth.Services.AccountClaims.IssueAsync(
+                db, initialUser, claimHash, expiresAt, ModularCA.Auth.Services.AccountClaims.IssuedByBootstrap, at)
+                .GetAwaiter().GetResult();
+            output.WriteLine($"✓ '{initialUser.Username}' has no password and is waiting to be claimed with the claim token");
+            output.WriteLine($"  whose hash bootstrap.yaml gives. The claim expires {expiresAt:yyyy-MM-dd HH:mm} UTC.");
+            return InitialAdminHandover.ByClaim(initialUser.Username, expiresAt) with { UserId = initialUser.Id };
+        }
+
+        output.WriteLine($"✓ The initial password of '{initialUser.Username}' is in {passwordFile}, readable by this account only.");
+        output.WriteLine("  Read it, sign in, and change the password when asked. The file is deleted when you do;");
+        output.WriteLine("  if it is still there afterwards, delete it.");
+        return InitialAdminHandover.ByPasswordFile(initialUser.Username, passwordFile!) with { UserId = initialUser.Id };
+    }
+
+    /// <summary>
+    /// Generates a password of at least 16 characters that meets the seeded password policy.
+    /// </summary>
+    private static string GeneratePassword(ModularCADbContext db)
     {
         var policy = db.PasswordPolicies.FirstOrDefault() ?? new PasswordPolicyEntity();
         var minLen = Math.Max(policy.MinLength, 16);
@@ -1343,26 +1444,15 @@ public static class BootstrapProfileSeeder
                 throw new InvalidOperationException("Failed to generate a password meeting policy after 100 attempts. Check dictionary settings.");
         }
         while (!MeetsPolicy(password, policy));
+        return password;
+    }
 
-        var initialUser = new UserEntity
-        {
-            Username = "superadmin",
-            PasswordHash = ModularCA.Auth.Utils.PasswordUtil.HashPassword(password),
-            CreatedAt = DateTime.UtcNow,
-            // The generated password is delivered by printing it to the operator's terminal —
-            // the only channel available during a headless bootstrap, but one that leaves the
-            // secret in scrollback, screen recordings and anything that captures stdout.
-            // Requiring a change on first login bounds how long that copy is worth anything.
-            // AuthController answers 403 { requirePasswordChange } and the pre-JWT
-            // /auth/change-password endpoint clears the flag.
-            PasswordChangeOnNextLogon = true,
-            // Break-glass: the first administrator's password is checked against the local hash
-            // only, so it signs in through an LDAP outage and in direct-bind mode.
-            PasswordSource = ModularCA.Shared.Enums.PasswordSource.Local,
-        };
-        db.Users.Add(initialUser);
-        db.SaveChanges();
-
+    /// <summary>
+    /// Adds the first administrator to system-super (which allows self-approval of CSRs),
+    /// system-admin and every CA-level admin group. Returns how many CA-level groups it joined.
+    /// </summary>
+    private static int AssignInitialUserGroups(ModularCADbContext db, UserEntity initialUser)
+    {
         // Assign to system-super group (allows self-approval of CSRs)
         var systemSuperGroup = db.CaGroups.First(g => g.Name == "system-super");
         db.CaGroupMembers.Add(new CaGroupMemberEntity
@@ -1396,43 +1486,7 @@ public static class BootstrapProfileSeeder
             });
         }
         db.SaveChanges();
-
-        Console.WriteLine($"✓ Initial user '{initialUser.Username}' created.");
-        Console.WriteLine($"  Assigned to: system-admin + {caAdminGroups.Count} CA admin group(s).");
-
-        // The generated admin password must be recorded by the operator
-        // exactly once. Print it with a loud banner on an interactive TTY, and on POSIX also
-        // write it to /dev/tty if available so it survives when the caller pipes stdout
-        // through tee/script(1)/CI capture. The /dev/tty branch is best-effort — we never
-        // fail the bootstrap if it is not writable.
-        Console.WriteLine();
-        Console.WriteLine("================================================================");
-        Console.WriteLine("!!! RECORD THIS PASSWORD NOW — IT CANNOT BE RECOVERED LATER !!!");
-        Console.WriteLine($"    Initial admin password: {password}");
-        Console.WriteLine("================================================================");
-        Console.WriteLine();
-
-        if (!OperatingSystem.IsWindows())
-        {
-            try
-            {
-                if (File.Exists("/dev/tty"))
-                {
-                    using var tty = new FileStream("/dev/tty", FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
-                    using var writer = new StreamWriter(tty);
-                    writer.WriteLine();
-                    writer.WriteLine("================================================================");
-                    writer.WriteLine("!!! RECORD THIS PASSWORD NOW — IT CANNOT BE RECOVERED LATER !!!");
-                    writer.WriteLine($"    Initial admin password: {password}");
-                    writer.WriteLine("================================================================");
-                    writer.WriteLine();
-                }
-            }
-            catch
-            {
-                // best-effort: /dev/tty not available (non-interactive, chroot, etc.)
-            }
-        }
+        return caAdminGroups.Count;
     }
 
     /// <summary>

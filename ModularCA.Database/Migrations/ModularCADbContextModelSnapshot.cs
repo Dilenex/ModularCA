@@ -3860,6 +3860,39 @@ namespace ModularCA.Database.Migrations
                     b.ToTable("UserCapabilityGrants");
                 });
 
+            modelBuilder.Entity("ModularCA.Shared.Entities.UserClaimTokenEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("IssuedBy")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<byte[]>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("bytea");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId")
+                        .IsUnique();
+
+                    b.ToTable("UserClaimTokens");
+                });
+
             modelBuilder.Entity("ModularCA.Shared.Entities.UserEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4873,6 +4906,17 @@ namespace ModularCA.Database.Migrations
                     b.Navigation("GrantedByUser");
 
                     b.Navigation("Space");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.UserClaimTokenEntity", b =>
+                {
+                    b.HasOne("ModularCA.Shared.Entities.UserEntity", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
 
                     b.Navigation("User");
                 });

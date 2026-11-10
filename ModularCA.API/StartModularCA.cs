@@ -537,6 +537,47 @@ if (args.Contains(ModularCA.API.Startup.SetPasswordSourceCommand.Flag, StringCom
     Log.Warning("Operator triggered --set-password-source for {Username} to {Source}", sourceArgs[0], sourceArgs[1]);
     Environment.Exit(await ModularCA.API.Startup.SetPasswordSourceCommand.RunAsync(sourceDb, sourceAuditDb, sourceArgs[0], sourceArgs[1], Console.Out));
 }
+// One-time account claims. --new-claim-token prints a token and the bootstrap.yaml line holding its
+// hash, and needs nothing installed. --issue-claim-token gives an existing account a claim with the
+// db.yaml credentials and prints its token once. Neither token is logged. See ClaimTokenCommand.
+if (args.Contains(ModularCA.API.Startup.ClaimTokenCommand.NewFlag, StringComparer.OrdinalIgnoreCase))
+{
+    Environment.Exit(ModularCA.API.Startup.ClaimTokenCommand.RunNew(Console.Out));
+}
+if (args.Contains(ModularCA.API.Startup.ClaimTokenCommand.IssueFlag, StringComparer.OrdinalIgnoreCase))
+{
+    var claimName = args.SkipWhile(a => !a.Equals(ModularCA.API.Startup.ClaimTokenCommand.IssueFlag, StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
+    var claimLifetime = args.Contains(ModularCA.API.Startup.ClaimTokenCommand.LifetimeFlag, StringComparer.OrdinalIgnoreCase)
+        ? args.SkipWhile(a => !a.Equals(ModularCA.API.Startup.ClaimTokenCommand.LifetimeFlag, StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault() ?? ""
+        : null;
+    var claimDbYaml = YamlDbConfigLoader.Load(Path.Combine(AppContext.BaseDirectory, "config", "db.yaml"));
+    if (string.IsNullOrWhiteSpace(claimName) || claimName.StartsWith("--", StringComparison.Ordinal) || claimDbYaml == null)
+    {
+        Console.Error.WriteLine(ModularCA.API.Startup.ClaimTokenCommand.Usage);
+        Environment.Exit(1);
+    }
+    var claimConfig = new SystemConfig();
+    claimConfig.DB.App.Host = claimDbYaml.App.Host;
+    claimConfig.DB.App.Port = claimDbYaml.App.Port;
+    claimConfig.DB.App.Database = claimDbYaml.App.Database;
+    claimConfig.DB.App.Username = claimDbYaml.App.Username;
+    claimConfig.DB.App.Password = claimDbYaml.App.Password;
+    claimConfig.DB.App.SslMode = claimDbYaml.App.SslMode;
+    claimConfig.DB.Audit.Host = claimDbYaml.Audit.Host;
+    claimConfig.DB.Audit.Port = claimDbYaml.Audit.Port;
+    claimConfig.DB.Audit.Database = claimDbYaml.Audit.Database;
+    claimConfig.DB.Audit.Username = claimDbYaml.Audit.Username;
+    claimConfig.DB.Audit.Password = claimDbYaml.Audit.Password;
+    claimConfig.DB.Audit.SslMode = claimDbYaml.Audit.SslMode;
+    new ModularCA.Shared.Utils.EnvVarConfigOverlay().Apply(claimConfig);
+    using var claimDb = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>()
+        .UseNpgsql(ModularCA.Shared.Utils.PostgresConnection.Build(claimConfig.DB.App)).Options);
+    using var claimAuditDb = string.IsNullOrWhiteSpace(claimConfig.DB.Audit.Database) ? null
+        : new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+            .UseNpgsql(ModularCA.Shared.Utils.PostgresConnection.Build(claimConfig.DB.Audit)).Options);
+    Log.Warning("Operator triggered --issue-claim-token for {Username}", claimName);
+    Environment.Exit(await ModularCA.API.Startup.ClaimTokenCommand.RunIssueAsync(claimDb, claimAuditDb, claimName, claimLifetime, Console.Out));
+}
 
 // Host-local access to the stored settings, with the db.yaml credentials: the way to read and
 // change an instance-wide setting without the console, above all one that has locked the
@@ -3543,7 +3584,7 @@ if (sinkFlagsQueryFailed && !isSetupMode)
 // The console's sign-in pages sit at the site root, shared by /admin and /user.
 static bool IsConsoleAuthPath(string path)
 {
-    foreach (var p in new[] { "/login", "/banner", "/mfa-setup", "/mfa-verify", "/mfa-callback" })
+    foreach (var p in new[] { "/login", "/banner", "/claim", "/mfa-setup", "/mfa-verify", "/mfa-callback" })
     {
         if (path.Equals(p, StringComparison.OrdinalIgnoreCase)
             || path.StartsWith(p + "/", StringComparison.OrdinalIgnoreCase))

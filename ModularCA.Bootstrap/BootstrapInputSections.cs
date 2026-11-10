@@ -47,6 +47,31 @@ public static class BootstrapInputSections
         Refuse("bootstrap.yaml", missing);
     }
 
+    /// <summary>
+    /// Throws <see cref="InvalidRequestException"/> when bootstrap.yaml's
+    /// <c>Administration.ClaimTokenSha256</c> is given but is not a SHA-256 in hex (64 hex digits),
+    /// or <c>Administration.ClaimTokenLifetimeHours</c> is given but is not between 1 and 8760.
+    /// A wrong hash would leave the first administrator with no password and a claim nobody can
+    /// redeem, so it is refused before anything is changed. A missing or empty hash is not a claim
+    /// and passes: the bootstrap then generates a password.
+    /// </summary>
+    /// <param name="administration">bootstrap.yaml's Administration section, or null when it is absent.</param>
+    public static void EnsureClaimTokenUsable(YamlBootstrapLoader.AdministrationConfig? administration)
+    {
+        if (string.IsNullOrWhiteSpace(administration?.ClaimTokenSha256)) return;
+        if (!ModularCA.Auth.Services.AccountClaims.TryParseHashHex(administration.ClaimTokenSha256, out _))
+            throw new InvalidRequestException(
+                "bootstrap.yaml's Administration.ClaimTokenSha256 is not a SHA-256: it must be 64 hex digits.",
+                ErrorCodes.RequestInvalid,
+                "Put the hash of the claim token there, never the token itself. ModularCA.API --new-claim-token prints a token and the line to use; nothing was changed.");
+        var maxHours = (int)ModularCA.Auth.Services.AccountClaims.MaxLifetime.TotalHours;
+        if (administration.ClaimTokenLifetimeHours is int hours && (hours < 1 || hours > maxHours))
+            throw new InvalidRequestException(
+                $"bootstrap.yaml's Administration.ClaimTokenLifetimeHours is {hours}: it must be between 1 and {maxHours}.",
+                ErrorCodes.RequestInvalid,
+                "Leave it out for seven days; nothing was changed.");
+    }
+
     private static void Refuse(string source, List<string> missing)
     {
         if (missing.Count == 0) return;

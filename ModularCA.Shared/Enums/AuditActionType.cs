@@ -72,6 +72,30 @@ public static class AuditActionType
     public const string UserPasswordSourceSetOnHost = "UserPasswordSourceSetOnHost";
 
     /// <summary>
+    /// An account was claimed: a one-time claim token set its password through
+    /// <c>POST /api/v1/auth/claim</c>, and the claim was used up. The actor is the account itself;
+    /// details carry what issued the claim (<c>bootstrap</c> or <c>host:break-glass</c>) and when.
+    /// A refused claim is recorded as <see cref="UserLoginFailed"/> with source <c>claim</c>.
+    /// </summary>
+    public const string UserAccountClaimed = "UserAccountClaimed";
+
+    /// <summary>
+    /// A claim token was issued for an account on the host with <c>--issue-claim-token</c>, outside
+    /// the API, replacing any claim the account had. The actor is <c>host:break-glass</c>; details
+    /// carry when the claim expires, whether it replaced one, the host and the operating-system user.
+    /// Never the token.
+    /// </summary>
+    public const string UserClaimTokenIssuedOnHost = "UserClaimTokenIssuedOnHost";
+
+    /// <summary>
+    /// The headless bootstrap created the first administrator with no password and a one-time
+    /// claim, because bootstrap.yaml gave <c>Administration.ClaimTokenSha256</c>. The actor is
+    /// <c>bootstrap</c>; details carry the username, when the claim expires and the host. Never
+    /// the token, which the bootstrap never sees, or its hash.
+    /// </summary>
+    public const string UserClaimTokenIssuedAtBootstrap = "UserClaimTokenIssuedAtBootstrap";
+
+    /// <summary>
     /// An administrator changed an account's password source, directly or by executing a
     /// controlled-user ceremony. Details carry the old and new source (<c>Old</c>, <c>New</c>) and,
     /// for a ceremony, its id. A change to anything but <c>Directory</c> can bring the account's

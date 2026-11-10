@@ -38,6 +38,7 @@ export const {
     apiBlobWithMfa,
     apiLogin,
     apiChangePassword,
+    apiClaimAccount,
     apiLogout,
     isStepUpRequired,
     apiWithMfa,

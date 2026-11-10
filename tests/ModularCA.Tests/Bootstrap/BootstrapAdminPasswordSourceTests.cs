@@ -1,8 +1,10 @@
 using System.Reflection;
+using ModularCA.Auth.Services;
 using ModularCA.Bootstrap;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
+using ModularCA.Shared.Utils;
 using ModularCA.Tests.TestUtils;
 using Xunit;
 
@@ -28,14 +30,28 @@ public class BootstrapAdminPasswordSourceTests
         return db;
     }
 
-    [Fact]
-    public void The_headless_bootstrap_administrator_is_local()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void The_headless_bootstrap_administrator_is_local(bool byClaim)
     {
         using var db = Seeded();
+        var configDir = Directory.CreateTempSubdirectory("mca-admin-source-").FullName;
+        try
+        {
+            var administration = new YamlBootstrapLoader.AdministrationConfig
+            {
+                ClaimTokenSha256 = byClaim ? AccountClaims.HashHex(AccountClaims.NewToken()) : null,
+            };
 
-        BootstrapProfileSeeder.CreateInitialUser(db);
+            BootstrapProfileSeeder.CreateInitialUser(db, configDir, administration, TextWriter.Null);
 
-        Assert.Equal(PasswordSource.Local, Assert.Single(db.Users).PasswordSource);
+            Assert.Equal(PasswordSource.Local, Assert.Single(db.Users).PasswordSource);
+        }
+        finally
+        {
+            Directory.Delete(configDir, recursive: true);
+        }
     }
 
     [Theory]

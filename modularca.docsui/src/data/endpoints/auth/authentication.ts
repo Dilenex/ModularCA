@@ -54,7 +54,21 @@ export const authentication: ApiEndpoint[] = [
             { name: 'confirmNewPassword', type: 'string', required: true, description: 'New password confirmation' },
         ],
         responseDescription: 'Success message; user must log in again with the new password.',
-        notes: 'A Directory account keeps no local password: it is answered with the generic 401, without consulting the local hash or counting a failed attempt.',
+        notes: 'A Directory account keeps no local password: it is answered with the generic 401, without consulting the local hash or counting a failed attempt. When the replaced password is the one the headless bootstrap left in config/initial-admin-password, that file is deleted.',
+    },
+    {
+        method: 'POST',
+        path: '/api/v1/auth/claim',
+        summary: 'Claim an account with a one-time claim token: set its password without a session or an old password.',
+        auth: 'Anonymous',
+        category: 'Authentication',
+        requestBody: [
+            { name: 'token', type: 'string', required: true, description: 'The claim token (43 characters of base64url from --new-claim-token or --issue-claim-token). Surrounding whitespace is ignored.' },
+            { name: 'newPassword', type: 'string', required: true, description: 'The password to set; must meet the password policy' },
+            { name: 'confirmNewPassword', type: 'string', required: true, description: 'New password confirmation' },
+        ],
+        responseDescription: '200 with { message, username } when the account is claimed; sign in with the new password. 400 with { error, details } when the password fails the policy, and 400 with one fixed error for every refused token.',
+        notes: 'The instance keeps only the token\'s SHA-256 (of its UTF-8 text), recorded by the headless bootstrap from bootstrap.yaml\'s Administration.ClaimTokenSha256 or on the host by --issue-claim-token, which replaces any earlier claim. The password policy is checked before the token, so a policy refusal says nothing about the claim. The token is compared with every claim in constant time. A token that matches nothing, a claim that has expired (Administration.ClaimTokenLifetimeHours, seven days by default) or was already used, and an account that is disabled, a service identity or a Directory account all get the same 400 error, after the login response delay, and are audited as UserLoginFailed with source "claim". A claim works once: it sets the password, records it in the password history, clears any lockout and the forced change at next sign-in, leaves the password source as it is, ends the account\'s sessions, and is audited as UserAccountClaimed. Rate limited per IP (10 requests per 15 minutes).',
     },
     {
         method: 'POST',

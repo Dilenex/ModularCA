@@ -72,6 +72,11 @@ public class LoginRateLimitMiddleware
         ["/api/v1/auth/mtls/exchange"] = (20, 5),
         ["/api/v1/auth/mtls/prepare-redirect"] = (20, 5),
         ["/api/v1/auth/change-password"] = (5, 5),
+        // A claim token sets a password with no other credential. It is 256 bits, so guessing is
+        // hopeless anyway; like a recovery code it is used once, by a human, so the window is the
+        // recovery code's, with room for a few passwords the policy turns down (they spend the
+        // budget too).
+        ["/api/v1/auth/claim"] = (10, 15),
         ["/api/v1/auth/mfa/verify-stepup/totp"] = (25, 5),
         ["/api/v1/auth/mfa/verify-stepup/webauthn"] = (50, 5),
         ["/api/v1/auth/mfa/verify-stepup/mtls"] = (25, 5),

@@ -893,9 +893,43 @@ and the PFX gone, the service starts on a temporary self-signed certificate, log
 its SHA-256 fingerprint and writes a `WebTlsTemporaryCertificateServed` audit entry. Put the file
 back at `Https.CertificatePath` or reissue the Web TLS certificate from the console.
 
-**The initial administrator password must be changed on first login.** When the password was
-generated rather than chosen, it is printed once to the service log and the account is flagged
-`PasswordChangeOnNextLogon`; the first login returns 403 and directs you through a change.
+**The headless bootstrap never prints the initial administrator's password.** Standard output is
+the journal under systemd and Podman, where anyone who can read the journal would keep a copy. The
+bootstrap hands over `superadmin` in one of two ways, chosen in `bootstrap.yaml`:
+
+- **By default** it generates a password and writes it to `config/initial-admin-password`,
+  readable by the service account only, and prints only the file's path. Read it
+  (`sudo -u modularca cat /opt/modularca/config/initial-admin-password`), sign in, and change the
+  password when asked: the account is flagged `PasswordChangeOnNextLogon`, so the first login
+  returns 403 and directs you through the change. The file is deleted when the change replaces
+  the password in it; if it is still there afterwards (the warning in the log says why), delete it.
+- **With a claim token**, nothing secret exists on the instance at all, which is what a party that
+  must never hold the password (a hub provisioning the instance for someone else) needs. Generate a
+  token and its hash, give the token to the person who will administer the instance, and put only
+  the hash in `bootstrap.yaml`:
+
+      ./ModularCA.API --new-claim-token
+
+  prints the token and the line `ClaimTokenSha256: "<hex>"` to put under `Administration:`. Any
+  32 random bytes in base64url work too; the hash is `printf %s "$token" | sha256sum`.
+  `superadmin` is created with no password, and the bootstrap prints only that it is waiting to be
+  claimed and when the claim expires (`Administration.ClaimTokenLifetimeHours`, seven days by
+  default). The person with the token opens the console's sign-in page, chooses
+  **Have a claim token?** (`/claim`), and sets the password. The token works once. The bootstrap
+  writes the claim to the audit trail as `UserClaimTokenIssuedAtBootstrap` by `bootstrap`, with
+  the account and the expiry and without the token or its hash.
+
+A claim that expired unused, or a handover of any local account, is issued on the host:
+
+    sudo -u modularca /opt/modularca/ModularCA.API --issue-claim-token <username> [--claim-lifetime-hours <hours>]
+
+It prints the new token once, replaces any claim the account had, and is written to the audit trail
+as `UserClaimTokenIssuedOnHost` by `host:break-glass`, without the token. The account's current
+password, if it has one, keeps working until the claim is used. A claim used is audited as
+`UserAccountClaimed`.
+
+The setup wizard is unchanged: you choose the administrator's password there, or it shows a
+generated one in the browser and the first login makes you change it.
 
 **The initial administrator signs in with its local password, never LDAP.** From 0.4.4 every
 account has a password source: `Inherit` (the instance `LdapAuth` setting, the default), `Local`
@@ -1237,7 +1271,9 @@ Things to know:
   whoever can request a certificate can make the server fetch from addresses inside your network.
 - **To install unattended**, put a `bootstrap.yaml` and a `setup-database.yaml` in the `config`
   volume before the first start (each has an `.example` under `config/`). The container then
-  bootstraps without the wizard and prints the first administrator's password once, in its log.
+  bootstraps without the wizard. The first administrator's password is not printed: read it with
+  `docker compose exec modularca cat config/initial-admin-password`, or give `bootstrap.yaml` a
+  claim token hash instead (see "Things worth knowing before the first production start").
   Set `HttpsApi.PublicDomain` in `bootstrap.yaml` to the name clients will use. Left out, it is
   the first DNS name under `HttpsApi.SANs` that is not `localhost`, and `localhost` when there
   is none, which only works from the host itself.
@@ -1269,12 +1305,20 @@ already there. If one person will administer the
 instance, set `Administration.MultipleAdministrators: false` in `bootstrap.yaml`: key ceremonies
 then start off for the instance and the first space, where a lone administrator could never get
 one approved, and a system super-administrator may approve their own certificate requests. Left
-out, ceremonies start on and self-approval off. Four init containers run every start and find their
+out, ceremonies start on and self-approval off. To hand the first administrator over by claim token
+rather than a generated password, set `Administration.ClaimTokenSha256`. Four init containers run every start and find their
 work done after the first:
 
 1. **bootstrap** completes the first install as a single process, because bootstrap writes the
-   keystore locally and there is nothing to split until it exists. The initial administrator
-   password is printed once, into this container's log: `podman logs modularca-bootstrap`.
+   keystore locally and there is nothing to split until it exists. It does not print the initial
+   administrator's password, since under Quadlet this container's log is the journal. By default
+   the password is in the config volume, readable by the image's account only:
+   `podman exec modularca-node cat /opt/modularca/config/initial-admin-password`. Sign in, change
+   it when asked, and the node deletes the file. To provision an instance without anyone on the
+   host ever seeing a password, put `Administration.ClaimTokenSha256` in `bootstrap.yaml` instead
+   and give the token to its administrator, who claims the account at `/claim` (see "Things worth
+   knowing before the first production start"). For a claim that expired unused:
+   `podman exec modularca-node /opt/modularca/ModularCA.API --issue-claim-token superadmin`.
 2. **signer-dir** fills the signer's own directory, the `modularca-signer-config` volume mounted
    at `/opt/modularca/signer`, from what bootstrap wrote: `signer.yaml` with only the sections
    the signer reads (its half of `Signer:`, `Hsm:`, `Schema:`, the logging levels), `db.yaml`

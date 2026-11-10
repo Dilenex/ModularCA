@@ -73,8 +73,9 @@ the order.
 
 The first start runs the headless bootstrap: it creates the schemas from `setup-database.yaml`,
 the tenant root from `bootstrap.yaml`, the node's own TLS certificate for `ca.lab.msae.test`,
-and prints the initial administrator password once. Copy it from the journal and change it at
-first sign-in. Later starts just run.
+and leaves the initial administrator password in `config/initial-admin-password` (it is not printed;
+`podman exec modularca-node cat /opt/modularca/config/initial-admin-password`). Change it at first
+sign-in, which deletes the file. Later starts just run.
 
 Rootless pods stop when the user session ends unless lingering is on: `loginctl enable-linger`.
 

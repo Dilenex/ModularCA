@@ -89,6 +89,13 @@ public class ModularCADbContext : DbContext
     /// </summary>
     public DbSet<PasswordHistoryEntity> PasswordHistory { get; set; }
 
+    /// <summary>
+    /// One-time account claims: the SHA-256 of a token that sets an account's password once, before
+    /// it expires. Written by the headless bootstrap (<c>Administration.ClaimTokenSha256</c>) and by
+    /// <c>--issue-claim-token</c>; redeemed by <c>POST /api/v1/auth/claim</c>.
+    /// </summary>
+    public DbSet<UserClaimTokenEntity> UserClaimTokens { get; set; }
+
     // Runtime-tunable policy tables (moved out of config.yaml so admins can
     // change them via the admin API without a restart).
     public DbSet<SecurityPolicyEntity> SecurityPolicies { get; set; }
@@ -694,6 +701,17 @@ public class ModularCADbContext : DbContext
                   .HasForeignKey(e => e.UserId)
                   .OnDelete(DeleteBehavior.Cascade);
             entity.Property(e => e.PasswordHash).HasMaxLength(500);
+        });
+
+        // One claim per account, deleted with it. TokenHash is not indexed: redemption compares
+        // the presented hash with every claim in constant time rather than looking it up.
+        modelBuilder.Entity<UserClaimTokenEntity>(entity =>
+        {
+            entity.HasIndex(e => e.UserId).IsUnique();
+            entity.HasOne(e => e.User)
+                  .WithMany()
+                  .HasForeignKey(e => e.UserId)
+                  .OnDelete(DeleteBehavior.Cascade);
         });
 
         // mTLS credentials

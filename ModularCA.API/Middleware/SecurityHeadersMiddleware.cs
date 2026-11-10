@@ -48,6 +48,7 @@ public class SecurityHeadersMiddleware
         "/user/",
         "/login",
         "/banner",
+        "/claim",
         "/mfa-",
         "/setup/",
         "/api/v1/admin/",

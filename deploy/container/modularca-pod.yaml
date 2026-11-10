@@ -23,7 +23,9 @@
 #
 #   1. bootstrap    A first install completes as a single process, because bootstrap writes the
 #                   keystore locally and there is nothing to split until it exists. On a second
-#                   start config.yaml is present and this is a no-op.
+#                   start config.yaml is present and this is a no-op. It prints no password: the
+#                   first administrator is claimed with a token (Administration.ClaimTokenSha256
+#                   in bootstrap.yaml) or its password is left in config/initial-admin-password.
 #   2. signer-dir   Fills the signer's own directory (the signer-config volume) from what
 #                   bootstrap wrote: signer.yaml with only the sections the signer reads, db.yaml
 #                   with only the application database, and keystore.yaml. Once the directory
@@ -54,7 +56,8 @@
 #                  while it runs: config.yaml when settings are saved or moved
 #                  into the database (with a config.yaml.pre-settings-*.bak copy each time), the
 #                  web TLS certificate (api-tls.pfx) when it is provisioned or renewed, and the
-#                  Data Protection key ring (dp-keys/), created at start and rotated. Copy it as
+#                  Data Protection key ring (dp-keys/), created at start and rotated; and it
+#                  deletes initial-admin-password once the password in it is changed. Copy it as
 #                  often as anything else that changes.
 #   signer-config  The signer's own directory, mounted at /opt/modularca/signer. The node never
 #                  mounts it: signer.yaml (Hsm.ModulePath, Signer.Listen, Signer.PinnedClientSpki),

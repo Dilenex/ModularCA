@@ -657,6 +657,42 @@ export function createAuthClient(config: AuthClientConfig) {
     }
 
     /**
+     * Claims an account with a one-time claim token (POST /auth/claim): sets its password without
+     * a session or an old password. Resolves with the claimed account's username, so the caller can
+     * sign in with the new password. Every refused token gets the same error from the server; a
+     * password the policy turns down comes back with the policy's objections.
+     */
+    async function apiClaimAccount(
+      token: string,
+      newPassword: string,
+      confirmNewPassword: string,
+    ): Promise<{ message: string; username: string }> {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const csrf = readCsrfCookie();
+      if (csrf) {
+        headers['X-CSRF-Token'] = csrf;
+      }
+
+      const resp = await fetch(`${API_BASE}/auth/claim`, {
+        method: 'POST',
+        headers,
+        credentials: 'same-origin',
+        body: JSON.stringify({ token, newPassword, confirmNewPassword }),
+      });
+
+      const body = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
+
+      if (!resp.ok) {
+        const message = body.details
+          ? `${body.error}: ${body.details.join(', ')}`
+          : body.error || body.message || `Claim failed (${resp.status})`;
+        throw new Error(message);
+      }
+
+      return body;
+    }
+
+    /**
      * Server-side logout. Best-effort: if the POST fails (network
      * down, token already revoked), we still clear client state and route to login.
      * Intentionally fire-and-forget on failure — the user has clicked Logout and
@@ -769,6 +805,7 @@ export function createAuthClient(config: AuthClientConfig) {
         apiBlobWithMfa,
         apiLogin,
         apiChangePassword,
+        apiClaimAccount,
         apiLogout,
         isStepUpRequired,
         apiWithMfa,

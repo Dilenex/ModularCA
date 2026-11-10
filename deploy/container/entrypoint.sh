@@ -2,9 +2,12 @@
 # The image's entrypoint, for every container the pod runs from it.
 #
 # First start: no config.yaml yet. With a bootstrap.yaml in the config volume, run the headless
-# bootstrap from it and setup-database.yaml. The bootstrap prints the initial administrator
-# password once; the container's log is where it lands, so read it there and change it at first
-# sign-in. With no bootstrap.yaml, start the setup wizard instead: it prints a one-time token to
+# bootstrap from it and setup-database.yaml. The bootstrap never prints the initial administrator's
+# password, because this container's log is the journal under Quadlet: with
+# Administration.ClaimTokenSha256 in bootstrap.yaml the account is claimed with the matching token
+# at /claim; without it the generated password is left in config/initial-admin-password, readable
+# by the image's account only. Read it, sign in, change it when asked, and the file is deleted.
+# With no bootstrap.yaml, start the setup wizard instead: it prints a one-time token to
 # the log, and stops the process twice on the way through (after the database step and at the
 # end), so the container needs a restart policy. Every later start just runs.
 #
