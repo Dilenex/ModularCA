@@ -104,7 +104,9 @@ public static class BackupRestore
     /// with no archive, and the encryption key is loaded before any plaintext archive exists; one
     /// left unencrypted by a later failure is deleted. Everything is staged in a fresh owner-only
     /// directory (<see cref="CreateBackupStagingDirectory"/>), removed when the backup ends; one
-    /// that cannot be created owner-only ends the backup before anything is staged.
+    /// that cannot be created owner-only ends the backup before anything is staged. The directory the
+    /// archive goes in must be reachable by this account alone (<see cref="EnsureArchiveDirectory"/>):
+    /// one others can reach is tightened when it is the backups' own, and otherwise ends the backup.
     /// </summary>
     /// <param name="outputPath">
     /// Optional explicit path for the output archive. When null, the archive goes to the configured
@@ -135,7 +137,9 @@ public static class BackupRestore
         var backupName = $"modularca-backup-{timestamp}";
 
         var archivePath = ResolveArchivePath(outputPath, AppContext.BaseDirectory, config.Backup?.OutputPath, backupName);
-        EnsureOwnerOnlyDirectory(Path.GetDirectoryName(archivePath)!);
+        if (!TryEnsureArchiveDirectory(Path.GetDirectoryName(archivePath)!, AppContext.BaseDirectory,
+                ResolveBackupDirectory(AppContext.BaseDirectory, config.Backup?.OutputPath), "Backup"))
+            return 1;
 
         // Plaintext keystores and config are copied in here before the archive is encrypted, so
         // a staging directory nobody else can read is a precondition, not a nicety: see
@@ -328,8 +332,10 @@ public static class BackupRestore
                     $"Backup archive already exists at '{archivePath}'. Refusing to overwrite — choose a different output path or delete the existing file.");
             }
             plaintextArchive = archivePath;
-            ZipFile.CreateFromDirectory(backupDir, archivePath);
-            FileSecurityUtil.SetOwnerOnly(archivePath);
+            // The plaintext archive holds the database dumps and config/. It is a new owner-only
+            // file from the moment it exists, not one zipped at default permissions and
+            // restricted afterwards.
+            FileSecurityUtil.CreateOwnerOnly(archivePath, stream => ZipFile.CreateFromDirectory(backupDir, stream));
             Console.WriteLine(" ✓");
 
             // 11. Update manifest with final archive size and rewrite into the archive
@@ -383,7 +389,7 @@ public static class BackupRestore
                 // Write new-format encrypted archive:
                 // [4 magic][1 version][1 mode][16 salt][8 N][4 r][4 p][12 nonce][16 tag][ciphertext]
                 var encPath = archivePath.Replace(".zip", ".enc");
-                using (var fs = File.Create(encPath))
+                FileSecurityUtil.CreateOwnerOnly(encPath, fs =>
                 {
                     fs.Write(BackupKeyManager.MagicBytes);
                     fs.WriteByte(BackupKeyManager.FormatVersion);
@@ -410,11 +416,10 @@ public static class BackupRestore
                     fs.Write(nonce);
                     fs.Write(tag);
                     fs.Write(ciphertext);
-                }
+                }, replaceExisting: true);
 
                 File.Delete(archivePath); // Remove plaintext ZIP
                 plaintextArchive = null;
-                FileSecurityUtil.SetOwnerOnly(encPath);
                 archiveSize = new FileInfo(encPath).Length;
                 Console.WriteLine($"✓ Encrypted backup archive: {encPath} (mode: {mode})");
                 archivePath = encPath;
@@ -502,7 +507,8 @@ public static class BackupRestore
     /// Restores databases, keystores, and configuration from a backup archive.
     /// Validates the schema version in the manifest against the current database before restoring,
     /// captures a pre-restore snapshot of the live state for rollback in the backup directory
-    /// (<see cref="PreRestoreSnapshotPath"/>), and refuses
+    /// (<see cref="PreRestoreSnapshotPath"/>; a backup directory others can reach and that cannot be
+    /// restricted ends the restore, see <see cref="EnsureArchiveDirectory"/>), and refuses
     /// archives that contain secret-bearing files on the deny-list.
     /// The databases are restored into the ones this host's own <c>config/db.yaml</c> names, with
     /// its credentials (<see cref="LoadRestoreTargetDatabases"/>); a host without one is refused
@@ -553,7 +559,9 @@ public static class BackupRestore
 
         var configDir = Path.Combine(AppContext.BaseDirectory, "config");
         var archiveName = Path.GetFileName(archivePath);
-        var restoreDir = Path.Combine(Path.GetTempPath(), $"modularca-restore-{Guid.NewGuid():N}");
+        // Created owner-only just before extraction (CreateRestoreStagingDirectory), never at a
+        // predictable path; null until then, so the cleanup below has nothing to remove.
+        string? restoreDir = null;
         string? tempDecryptedZip = null;
 
         try
@@ -703,14 +711,23 @@ public static class BackupRestore
                 }
             }
 
+            // The archive is expanded in place, so from extraction onward this directory holds
+            // every CA private key in plaintext. A directory only this user can reach is a
+            // precondition, not a nicety: without one the restore stops before extracting anything.
+            try
+            {
+                restoreDir = CreateRestoreStagingDirectory();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+            {
+                Console.WriteLine($"❌ Could not create a staging directory only this user can read: {ex.Message}");
+                Console.WriteLine("   Restore stopped before anything was extracted or changed.");
+                return 1;
+            }
+
             // Extract with per-entry path validation to prevent zip slip.
             // Every entry must resolve to a path inside restoreDir; absolute paths, ADS
             // markers, null bytes, and parent-traversal sequences are rejected.
-            Directory.CreateDirectory(restoreDir);
-            // Harden BEFORE extracting: the archive is expanded in place, so from the next line
-            // onward this directory holds every CA private key in plaintext. Under a
-            // world-readable /tmp that is readable by any local user until the restore finishes.
-            FileSecurityUtil.SetDirectoryOwnerOnly(restoreDir);
             SafeExtractZip(archivePath, restoreDir);
 
             // Validate manifest
@@ -840,7 +857,11 @@ public static class BackupRestore
             try
             {
                 snapshotPath = PreRestoreSnapshotPath(AppContext.BaseDirectory, configDir, DateTime.UtcNow);
-                EnsureOwnerOnlyDirectory(Path.GetDirectoryName(snapshotPath)!);
+                // The snapshot always goes in the backup directory, so that is the directory checked
+                // (and tightened, when it is the backups' own); one others can reach ends the restore here.
+                var snapshotDir = Path.GetDirectoryName(snapshotPath)!;
+                if (EnsureArchiveDirectory(snapshotDir, AppContext.BaseDirectory, snapshotDir))
+                    Console.WriteLine($"🔒 {snapshotDir} could be reached by other local users; it is now restricted to this account.");
                 liveKeystores = await ExportKeystoresAsync(signer, RestoreCaller);
                 CreatePreRestoreSnapshot(snapshotPath, configDir, liveKeystores);
                 Console.WriteLine($"  ✓ Pre-restore snapshot saved to: {snapshotPath}");
@@ -1020,7 +1041,8 @@ public static class BackupRestore
         }
         finally
         {
-            try { Directory.Delete(restoreDir, true); } catch { }
+            if (restoreDir != null)
+                try { Directory.Delete(restoreDir, true); } catch { }
             if (tempDecryptedZip != null)
                 try { File.Delete(tempDecryptedZip); } catch { }
         }
@@ -1441,6 +1463,36 @@ public static class BackupRestore
         => FileSecurityUtil.CreateOwnerOnlyTempDirectory("modularca-backup-");
 
     /// <summary>
+    /// Creates the directory a restore extracts the archive into, plaintext keystores and
+    /// configuration included, and returns its path: a new directory under the temporary
+    /// directory with an unpredictable name, owner-only from the moment it exists
+    /// (<see cref="FileSecurityUtil.CreateOwnerOnlyTempDirectory"/>). Throws when it cannot be
+    /// created or restricted, which ends the restore before anything is extracted.
+    /// <para>
+    /// It used to be created at <c>modularca-restore-&lt;guid&gt;</c> and then chmodded, with a
+    /// failure to restrict it only a warning, so the archive could be expanded into a directory
+    /// other local users could read.
+    /// </para>
+    /// </summary>
+    /// <returns>The full path of the new, empty staging directory.</returns>
+    /// <exception cref="IOException">The directory could not be created or restricted to its owner.</exception>
+    /// <exception cref="UnauthorizedAccessException">The directory's permissions could not be read or set.</exception>
+    internal static string CreateRestoreStagingDirectory()
+        => FileSecurityUtil.CreateOwnerOnlyTempDirectory("modularca-restore-");
+
+    /// <summary>
+    /// Creates the directory the pre-restore snapshot stages the live configuration and the
+    /// live keystores in before they are zipped, and returns its path, under the same rules as
+    /// <see cref="CreateRestoreStagingDirectory"/>. Throws when it cannot be created or
+    /// restricted; the snapshot then fails, and a restore without its snapshot does not go ahead.
+    /// </summary>
+    /// <returns>The full path of the new, empty staging directory.</returns>
+    /// <exception cref="IOException">The directory could not be created or restricted to its owner.</exception>
+    /// <exception cref="UnauthorizedAccessException">The directory's permissions could not be read or set.</exception>
+    internal static string CreatePreRestoreStagingDirectory()
+        => FileSecurityUtil.CreateOwnerOnlyTempDirectory("modularca-pre-restore-");
+
+    /// <summary>
     /// The absolute path a backup archive is written to: <paramref name="outputPath"/> when one
     /// is given, otherwise <c>&lt;backupName&gt;.zip</c> in the backup directory
     /// (<see cref="ResolveBackupDirectory"/>), never beside the binary, whose directory is root's
@@ -1487,15 +1539,64 @@ public static class BackupRestore
     }
 
     /// <summary>
-    /// Creates <paramref name="directory"/> owner-only when it does not exist; an existing one is
-    /// left exactly as it is.
+    /// Makes sure the directory a backup archive or a pre-restore snapshot is written to exists
+    /// and is reachable by its owner alone, or throws
+    /// (<see cref="FileSecurityUtil.EnsureOwnerOnlyDirectory"/>). A missing one is created
+    /// owner-only.
+    /// <para>
+    /// An existing one that others can reach is restricted to its owner when it is the backup
+    /// directory (<paramref name="backupDirectory"/>) and that is the backups' own: neither the
+    /// application directory nor one holding <c>config/</c>, <c>keystores/</c>, <c>logs/</c> or
+    /// <c>signer/</c>, whose accounts and groups a restriction would lock out. That covers an
+    /// upgraded install whose <c>backups/</c> was created readable by others (the container image
+    /// made it 0750, and the console created it with the default mode). Any other directory others
+    /// can reach, such as one an explicit output path names, is refused with what to do.
+    /// </para>
+    /// <para>
+    /// It used to leave an existing directory exactly as it was, and a new one that could not be
+    /// restricted was only a warning.
+    /// </para>
     /// </summary>
-    private static void EnsureOwnerOnlyDirectory(string directory)
+    /// <param name="directory">The directory the archive or snapshot goes in.</param>
+    /// <param name="baseDirectory">The application directory.</param>
+    /// <param name="backupDirectory">The backup directory (<see cref="ResolveBackupDirectory"/>).</param>
+    /// <returns>True when an existing directory's permissions were tightened.</returns>
+    /// <exception cref="IOException">The directory could not be created or restricted to its owner, or others can reach it and it may not be tightened.</exception>
+    internal static bool EnsureArchiveDirectory(string directory, string baseDirectory, string backupDirectory)
     {
-        if (Directory.Exists(directory))
-            return;
-        Directory.CreateDirectory(directory);
-        FileSecurityUtil.SetDirectoryOwnerOnly(directory);
+        static string Normalized(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+
+        var full = Normalized(directory);
+        var tighten = string.Equals(full, Normalized(backupDirectory), StringComparison.Ordinal)
+            && !new[] { "", "config", "keystores", "logs", "signer" }
+                .Select(d => Path.Combine(baseDirectory, d))
+                .Any(shared => PathIsContainedIn(shared, full));
+        return FileSecurityUtil.EnsureOwnerOnlyDirectory(full, tighten);
+    }
+
+    /// <summary>
+    /// <see cref="EnsureArchiveDirectory"/> for the console: prints that an existing directory was
+    /// tightened, or why it could not be used, and returns false in that case.
+    /// </summary>
+    /// <param name="directory">The directory the archive or snapshot goes in.</param>
+    /// <param name="baseDirectory">The application directory.</param>
+    /// <param name="backupDirectory">The backup directory (<see cref="ResolveBackupDirectory"/>).</param>
+    /// <param name="refusal">What the operation that was refused is called, for the message.</param>
+    /// <returns>True when the directory is ready to write into.</returns>
+    private static bool TryEnsureArchiveDirectory(string directory, string baseDirectory, string backupDirectory, string refusal)
+    {
+        try
+        {
+            if (EnsureArchiveDirectory(directory, baseDirectory, backupDirectory))
+                Console.WriteLine($"🔒 {directory} could be reached by other local users; it is now restricted to this account.");
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            Console.WriteLine($"❌ {ex.Message}");
+            Console.WriteLine($"   {refusal} refused: backup archives are only written to a directory only this account can reach.");
+            return false;
+        }
     }
 
     /// <summary>
@@ -1870,17 +1971,18 @@ public static class BackupRestore
     /// rollback path if the restore corrupts state. The snapshot intentionally includes the
     /// secret-bearing config files (it is local-only, is owned by the operator, and is never
     /// uploaded). The snapshot is the operator's last line of defense and must not be sanitised.
+    /// The files are staged in a directory only this user can reach
+    /// (<see cref="CreatePreRestoreStagingDirectory"/>); when one cannot be made the snapshot
+    /// throws, and the restore stops.
     /// </summary>
     /// <param name="destinationZip">Absolute path where the snapshot ZIP is written.</param>
     /// <param name="configDir">Absolute path to the live <c>config/</c> directory.</param>
     /// <param name="keystores">The live keystore files by name, as the signer exported them.</param>
     private static void CreatePreRestoreSnapshot(string destinationZip, string configDir, IReadOnlyList<(string Name, byte[] Bytes)> keystores)
     {
-        var stagingDir = Path.Combine(Path.GetTempPath(), $"modularca-pre-restore-{Guid.NewGuid():N}");
+        var stagingDir = CreatePreRestoreStagingDirectory();
         try
         {
-            Directory.CreateDirectory(stagingDir);
-            FileSecurityUtil.SetDirectoryOwnerOnly(stagingDir);
             if (Directory.Exists(configDir))
                 CopyDirectory(configDir, Path.Combine(stagingDir, "config"));
             if (keystores.Count > 0)
@@ -1893,8 +1995,9 @@ public static class BackupRestore
 
             if (File.Exists(destinationZip))
                 throw new InvalidOperationException($"Snapshot path '{destinationZip}' already exists.");
-            ZipFile.CreateFromDirectory(stagingDir, destinationZip);
-            FileSecurityUtil.SetOwnerOnly(destinationZip);
+            // The snapshot holds config/ in the clear: owner-only from creation, not zipped at
+            // default permissions and restricted afterwards.
+            FileSecurityUtil.CreateOwnerOnly(destinationZip, stream => ZipFile.CreateFromDirectory(stagingDir, stream));
         }
         finally
         {

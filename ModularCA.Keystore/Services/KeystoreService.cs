@@ -77,7 +77,13 @@ public class KeystoreService : IDisposable
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> _keystoreFileLocks =
         new(StringComparer.OrdinalIgnoreCase);
 
-    private static SemaphoreSlim GetFileLock(string keystorePath)
+    /// <summary>
+    /// The process-wide lock for one keystore file, keyed by its absolute path, case-insensitively.
+    /// Every write to the file takes it: <see cref="AppendEntries"/>,
+    /// <see cref="AppendOrCreateEntries"/>, and a restore or move-aside through
+    /// <see cref="ModularCA.Keystore.Signing.FileKeystorePersistence"/>.
+    /// </summary>
+    internal static SemaphoreSlim GetFileLock(string keystorePath)
     {
         var absolute = Path.GetFullPath(keystorePath);
         return _keystoreFileLocks.GetOrAdd(absolute, _ => new SemaphoreSlim(1, 1));
@@ -106,11 +112,17 @@ public class KeystoreService : IDisposable
     private int _targetScryptP = DefaultScryptP;
 
     /// <summary>
-    /// Overrides the default scrypt cost parameters used by <see cref="Save"/>. Values
-    /// are clamped: N to [2^14, 2^20], r to [1, 32], p to [1, 16].
+    /// Overrides the default scrypt cost parameters used by <see cref="Save"/>. An N that is not
+    /// a power of two is refused with <see cref="ArgumentOutOfRangeException"/>, since scrypt
+    /// cannot use it and every save would fail. The values are otherwise clamped: N to
+    /// [2^14, 2^20], r to [1, 32], p to [1, 16]. These are the bounds a stored setting from
+    /// before the 1 GiB ceiling may have, so they are wider than what may be set now
+    /// (<see cref="ModularCA.Shared.Utils.KeystoreScryptPolicy.CheckNewSetting"/>).
     /// </summary>
     public void SetTargetScryptParams(int n, int r, int p)
     {
+        if (!ModularCA.Shared.Utils.KeystoreScryptPolicy.IsPowerOfTwo(n))
+            throw new ArgumentOutOfRangeException(nameof(n), n, "The keystore scrypt N must be a power of two greater than 1.");
         _targetScryptN = Math.Clamp(n, 1 << 14, 1 << 20);
         _targetScryptR = Math.Clamp(r, 1, 32);
         _targetScryptP = Math.Clamp(p, 1, 16);
@@ -1297,7 +1309,8 @@ public class KeystoreService : IDisposable
     /// derived from the secondary passphrase, as the bootstrap wraps the other keystores'. The
     /// written file is verified against <paramref name="signerSpkiSha256Hex"/> before the row
     /// pins it, and the file is removed again if the row cannot be written, so a failure leaves
-    /// neither.
+    /// neither. The file takes the security policy's scrypt cost through
+    /// <see cref="ApplySecurityPolicyScrypt"/>.
     /// </summary>
     /// <remarks>
     /// The file is written beside its place, as <c>name.creating</c>, and takes its name only
@@ -1326,13 +1339,7 @@ public class KeystoreService : IDisposable
             if (File.Exists(keystorePath))
                 File.Delete(keystorePath);
             using var service = new KeystoreService(keystorePath, (byte[])mainBytes.Clone(), secondary, signer);
-            try
-            {
-                var policy = db.SecurityPolicies.AsNoTracking().FirstOrDefault();
-                if (policy != null)
-                    service.SetTargetScryptParams(policy.KeystoreScryptN, policy.KeystoreScryptR, policy.KeystoreScryptP);
-            }
-            catch { /* leave defaults */ }
+            ApplySecurityPolicyScrypt(service, db);
 
             foreach (var payload in payloads)
                 service.AddEntry(payload, secondary);
@@ -1436,6 +1443,15 @@ public class KeystoreService : IDisposable
         return text;
     }
 
+    /// <summary>
+    /// The body of <see cref="AppendEntries"/> and of an append through
+    /// <see cref="AppendOrCreateEntries"/>, run under the file's lock: authenticates the pin,
+    /// verifies and decrypts the existing file, and rewrites it with the new entries at the
+    /// security policy's scrypt cost (<see cref="ApplySecurityPolicyScrypt"/>, which refuses a
+    /// stored N that is not a power of two before anything is written). With
+    /// <paramref name="requiredSignerSpkiSha256Hex"/> the pin and its MAC must exist and the pin
+    /// must be that signer.
+    /// </summary>
     private static KeystoreSaveResult AppendEntriesInner(
         string keystorePath,
         string yamlPath,
@@ -1491,17 +1507,7 @@ public class KeystoreService : IDisposable
                 // takes ownership of a copy of the main bytes and zeros them on Dispose so the
                 // passphrase doesn't outlive the critical section.
                 using var service = new KeystoreService(keystorePath, (byte[])mainBytes.Clone(), secondary, signer);
-
-                // Honor the operator's configured scrypt cost if a SecurityPolicy
-                // row is available. Falls back to the pinned defaults if the table isn't
-                // populated yet (legacy installs pre-migration).
-                try
-                {
-                    var policy = db.SecurityPolicies.AsNoTracking().FirstOrDefault();
-                    if (policy != null)
-                        service.SetTargetScryptParams(policy.KeystoreScryptN, policy.KeystoreScryptR, policy.KeystoreScryptP);
-                }
-                catch { /* leave defaults */ }
+                ApplySecurityPolicyScrypt(service, db);
 
                 foreach (var payload in existingPayloads)
                     service.AddEntry(payload, secondary);
@@ -1545,6 +1551,43 @@ public class KeystoreService : IDisposable
                 CryptographicOperations.ZeroMemory(mainBytes);
             }
         }
+    }
+
+    /// <summary>
+    /// Sets the scrypt cost of a keystore write to the operator's security policy. With no
+    /// policy row, or no table to read it from (an install from before the migration), the
+    /// defaults stay. A stored N that is not a power of two is refused with an
+    /// <see cref="InvalidOperationException"/> naming the setting, before anything is written:
+    /// it used to be accepted on save, and the write then failed inside scrypt with a message
+    /// that named neither the setting nor the fix. Only reading the policy is allowed to fail
+    /// quietly; a bad value is never swapped for the default silently. A stored cost above the
+    /// 1 GiB ceiling (<see cref="ModularCA.Shared.Utils.KeystoreScryptPolicy.MaxMemoryBytes"/>),
+    /// saved before the ceiling existed, is still used, with a warning: the ceiling refuses
+    /// setting such a cost, and lowering an install's chosen cost behind its back is not this
+    /// method's call.
+    /// </summary>
+    private static void ApplySecurityPolicyScrypt(KeystoreService service, ModularCADbContext db)
+    {
+        ModularCA.Shared.Entities.SecurityPolicyEntity? policy;
+        try
+        {
+            policy = db.SecurityPolicies.AsNoTracking().FirstOrDefault();
+        }
+        catch
+        {
+            return; // no policy table yet: leave the defaults
+        }
+        if (policy == null)
+            return;
+
+        ModularCA.Shared.Utils.KeystoreScryptPolicy.RequireUsableStoredN(policy.KeystoreScryptN);
+        if (ModularCA.Shared.Utils.KeystoreScryptPolicy.ExceedsMemoryCeiling(policy.KeystoreScryptN, policy.KeystoreScryptR))
+            Console.Error.WriteLine(
+                $"[WARNING] The security policy's keystore scrypt cost (N={policy.KeystoreScryptN}, r={policy.KeystoreScryptR}) needs "
+                + $"{ModularCA.Shared.Utils.KeystoreScryptPolicy.MemoryBytes(policy.KeystoreScryptN, policy.KeystoreScryptR) >> 20} MiB per "
+                + $"derivation, more than the {ModularCA.Shared.Utils.KeystoreScryptPolicy.MaxMemoryBytes >> 20} MiB a new setting may ask for. "
+                + "It was saved before that limit and is still used; lower KeystoreScryptN or KeystoreScryptR to bring it within the limit.");
+        service.SetTargetScryptParams(policy.KeystoreScryptN, policy.KeystoreScryptR, policy.KeystoreScryptP);
     }
 
     /// <summary>

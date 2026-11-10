@@ -90,6 +90,7 @@ public sealed partial class InProcessSigningService : ISigningService
     private readonly bool _failClosedOnAuditFailure;
     private readonly ConcurrentDictionary<Guid, CachedOwner> _owners = new();
     private readonly ConcurrentDictionary<Guid, PendingKey> _pending = new();
+    private readonly IReadOnlyDictionary<string, HsmKeyRefusal> _hsmRefusals;
 
     /// <summary>
     /// Creates the in-process signer.
@@ -108,6 +109,12 @@ public sealed partial class InProcessSigningService : ISigningService
     /// The signer role runs fail-closed: its audit is the only record of what was signed. In
     /// process the node's own audit still sees the operation, and the stage-1 behaviour stays.
     /// </param>
+    /// <param name="hsmKeyRefusals">
+    /// The CAs whose PKCS#11 key was found under their label but refused at load because it was
+    /// ambiguous, not contained, or not the certificate's key. The registry holds no key for
+    /// them; a request for one is refused as <see cref="SigningRefusalReason.CertificateMismatch"/>
+    /// with the reason, and audited, rather than as an unknown key.
+    /// </param>
     public InProcessSigningService(
         ISignerKeyRegistry keystore,
         IServiceScopeFactory scopes,
@@ -117,8 +124,12 @@ public sealed partial class InProcessSigningService : ISigningService
         bool unlocked = true,
         string backend = SignerHealth.SoftwareBackend,
         IKeyWrappingPassphraseProvider? keyWrapping = null,
-        bool failClosedOnAuditFailure = false)
+        bool failClosedOnAuditFailure = false,
+        IReadOnlyCollection<HsmKeyRefusal>? hsmKeyRefusals = null)
     {
+        _hsmRefusals = (hsmKeyRefusals ?? Array.Empty<HsmKeyRefusal>())
+            .GroupBy(r => CertificateKey(r.Certificate))
+            .ToDictionary(g => g.Key, g => g.First());
         _keystore = keystore ?? throw new ArgumentNullException(nameof(keystore));
         _scopes = scopes ?? throw new ArgumentNullException(nameof(scopes));
         _audit = audit ?? throw new ArgumentNullException(nameof(audit));
@@ -730,11 +741,27 @@ public sealed partial class InProcessSigningService : ISigningService
 
         var handle = _keystore.GetPrivateKeyFor(owner.Certificate);
         if (handle == null)
-            return new Resolution(null, null, null, new SigningRefusedException(SigningRefusalReason.UnknownKey, $"The signer holds no private key for {key}."));
+            return new Resolution(null, null, null, RefusedHsmKey(owner.Certificate, key)
+                ?? new SigningRefusedException(SigningRefusalReason.UnknownKey, $"The signer holds no private key for {key}."));
 
         var refusal = judge(owner, context, key);
         return refusal != null ? new Resolution(null, null, null, refusal) : new Resolution(handle, owner, null, null);
     }
+
+    /// <summary>
+    /// The refusal for a certificate whose PKCS#11 key was refused at load, or null when it was
+    /// not: the key under its label was ambiguous, not contained, or not the certificate's key,
+    /// so the signer holds none and says why.
+    /// </summary>
+    private SigningRefusedException? RefusedHsmKey(X509Certificate certificate, KeyRef key)
+        => _hsmRefusals.TryGetValue(CertificateKey(certificate), out var refused)
+            ? new SigningRefusedException(SigningRefusalReason.CertificateMismatch,
+                $"The signer refused the PKCS#11 key labelled '{refused.Label}' for {key} when it loaded: {refused.Reason}")
+            : null;
+
+    /// <summary>A certificate's identity for the refusal lookup: the SHA-256 of its encoding, in hex.</summary>
+    private static string CertificateKey(X509Certificate certificate)
+        => Convert.ToHexString(SHA256.HashData(certificate.GetEncoded()));
 
     /// <summary>
     /// The signing policy table. A key of a given kind signs for the purposes listed for it, and

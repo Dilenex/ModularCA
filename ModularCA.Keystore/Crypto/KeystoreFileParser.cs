@@ -34,6 +34,10 @@ namespace ModularCA.Keystore.Crypto
         // [2^14, 2^20] is either too weak to defend the keystore or large enough to DoS
         // bootstrap. r and p are clamped to small constants — the writer always pins r=8, p=1
         // so any value outside [1,32] on a parsed file is suspect.
+        // These read bounds are deliberately wider than what an administrator may now set
+        // (KeystoreScryptPolicy: at most 1 GiB, 128·N·r, per derivation). A file written under
+        // an earlier setting of up to N=2^20, r=32 must keep opening, so the ceiling is enforced
+        // where a cost is set, not here.
         private const int MinScryptN = 1 << 14;
         private const int MaxScryptN = 1 << 20;
         private const int MaxScryptR = 32;

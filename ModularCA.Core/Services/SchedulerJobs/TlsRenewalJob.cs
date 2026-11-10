@@ -290,7 +290,7 @@ public class TlsRenewalJob : SingletonCronJob
         try
         {
             // Build the new PFX in memory + write to .new (NOT .pfx — original stays intact
-            // until we commit). FileMode.Create overwrites any leftover .new from a prior crash.
+            // until we commit). A leftover .new from a prior crash is deleted and a new file made.
             var caBcCert = caCertEntity != null ? CertificateUtil.ParseFromPem(caCertEntity.Pem) : null;
             var pfxStore = new Pkcs12StoreBuilder().Build();
             var chainEntries = caBcCert != null
@@ -300,11 +300,10 @@ public class TlsRenewalJob : SingletonCronJob
 
             try
             {
-                using (var fs = new FileStream(pfxTempPath, FileMode.Create, FileAccess.Write, FileShare.None))
-                {
-                    pfxStore.Save(fs, _config.Https.CertificatePassword.ToCharArray(), new SecureRandom());
-                }
-                FileSecurityUtil.SetOwnerOnly(pfxTempPath);
+                // Owner-only from creation, not created at default permissions and restricted
+                // after: the rename below carries the temp file's mode to api-tls.pfx.
+                FileSecurityUtil.CreateOwnerOnly(pfxTempPath,
+                    fs => pfxStore.Save(fs, _config.Https.CertificatePassword.ToCharArray(), new SecureRandom()), replaceExisting: true);
 
                 // Load-test BEFORE committing. If the password or PKCS#12 structure is wrong
                 // we discover it now while the original PFX is still intact and authoritative.

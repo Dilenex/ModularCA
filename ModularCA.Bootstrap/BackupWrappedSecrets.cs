@@ -296,7 +296,17 @@ public static class BackupWrappedSecrets
     /// Writes a bundle's files into its target under <paramref name="configDir"/>, owner-only,
     /// overwriting what is there. The target and every file must stay inside <c>config/</c>,
     /// and no file may bear a name the backup deny-list forbids. Returns the target.
+    /// <para>
+    /// The target directory must be reachable by this account alone
+    /// (<see cref="FileSecurityUtil.EnsureOwnerOnlyDirectory"/>): a missing one is created
+    /// owner-only, an existing one others can reach (an upgraded install's <c>dp-keys</c>, created
+    /// with the default mode) is restricted to its owner, and one that cannot be restricted throws
+    /// <see cref="IOException"/> before any file is written. A failure to restrict it used to be
+    /// only a warning, and the files were written anyway.
+    /// </para>
     /// </summary>
+    /// <exception cref="InvalidDataException">The bundle is malformed or names a target or file it may not restore.</exception>
+    /// <exception cref="IOException">The target directory could not be created or restricted to its owner.</exception>
     internal static string Unpack(byte[] payload, string configDir)
     {
         var bundle = JsonSerializer.Deserialize<Bundle>(payload)
@@ -317,8 +327,17 @@ public static class BackupWrappedSecrets
                 throw new InvalidDataException($"The wrapped configuration bundle carries a file it may not restore: '{relative}'.");
         }
 
-        Directory.CreateDirectory(targetDir);
-        FileSecurityUtil.SetDirectoryOwnerOnly(targetDir);
+        // The key ring or SSH CA keys go in here in the clear, so a target others can reach is
+        // tightened, and one that cannot be is refused: nothing is written, and the blob stays
+        // pending with the reason.
+        try
+        {
+            FileSecurityUtil.EnsureOwnerOnlyDirectory(targetDir, tightenExisting: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            throw new IOException($"Not restoring config/{bundle.Target}: {ex.Message}", ex);
+        }
         foreach (var (relative, content) in bundle.Files)
         {
             var destination = Path.GetFullPath(Path.Combine(targetDir, relative));
@@ -326,8 +345,7 @@ public static class BackupWrappedSecrets
             var bytes = Convert.FromBase64String(content);
             try
             {
-                File.WriteAllBytes(destination, bytes);
-                FileSecurityUtil.SetOwnerOnly(destination);
+                FileSecurityUtil.WriteOwnerOnly(destination, bytes);
             }
             finally
             {

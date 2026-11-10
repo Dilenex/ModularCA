@@ -134,17 +134,21 @@ public class SecurityPolicyEntity
     /// written. Writes upgrade the cost in-place; reads honor whatever cost is stamped
     /// in the file header. Default 65536 = 2^16, matching the prior pinned constant.
     /// Operators can raise this as hardware improves; existing files re-stamp on the
-    /// next append/rewrite. Range clamped 2^14 .. 2^20.
+    /// next append/rewrite. A new value must be a power of two from 2^14 to 2^20, and one
+    /// derivation may need at most 1 GiB (128 · N · r bytes)
+    /// (<see cref="ModularCA.Shared.Utils.KeystoreScryptPolicy"/>); a stored value that is not a
+    /// power of two fails every keystore write with a message naming this setting.
     /// </summary>
     public int KeystoreScryptN { get; set; } = 65536;
 
     /// <summary>
-    /// Target scrypt r parameter (block size). Default 8. Range clamped 1 .. 32.
+    /// Target scrypt r parameter (block size). Default 8. A new value must be 1 .. 32, and
+    /// 128 · N · r at most 1 GiB.
     /// </summary>
     public int KeystoreScryptR { get; set; } = 8;
 
     /// <summary>
-    /// Target scrypt p parameter (parallelism). Default 1. Range clamped 1 .. 16.
+    /// Target scrypt p parameter (parallelism). Default 1. A new value must be 1 .. 16.
     /// </summary>
     public int KeystoreScryptP { get; set; } = 1;
 

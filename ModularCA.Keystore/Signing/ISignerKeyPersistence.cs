@@ -49,14 +49,16 @@ public interface ISignerKeyPersistence
     /// in place has changed. The SSH keystore is never without a pinned signer: a file offered
     /// for it where the database has no pin for it is a
     /// <see cref="System.Security.SecurityException"/> too, so its <c>Keystores</c> row has to be
-    /// in the database before the file.
+    /// in the database before the file. It is a write to the file like an append: it waits for
+    /// one in progress, and the file in place is replaced in one step, never left missing or torn.
     /// </summary>
     void ImportKeystoreFile(string name, byte[] bytes);
 
     /// <summary>
     /// Moves the keystore file <paramref name="name"/> aside, to <c>name.bak.&lt;timestamp&gt;</c>
     /// beside it, so that nothing loads it and nothing is lost. Returns the name it was moved
-    /// to, or null when there was no such file.
+    /// to, or null when there was no such file. Like <see cref="ImportKeystoreFile"/>, it waits
+    /// for a write to the file in progress.
     /// </summary>
     string? MoveKeystoreFileAside(string name);
 }

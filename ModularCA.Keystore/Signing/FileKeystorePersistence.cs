@@ -127,16 +127,20 @@ public sealed class FileKeystorePersistence : ISignerKeyPersistence
 
     /// <inheritdoc />
     /// <remarks>
-    /// The bytes are written beside the live file first, as <c>name.restoring</c>, and verified
-    /// there: the pin for <paramref name="name"/> is authenticated with the secondary passphrase
-    /// when one can be resolved, and the file's signature is checked against it. Only then is
-    /// the live file moved to <c>name.bak.&lt;timestamp&gt;</c> and the verified file moved into
-    /// place. A verification failure deletes the staged file and leaves the live one untouched.
-    /// When the secondary passphrase cannot be resolved the pin is read without its MAC and the
-    /// gap is said aloud, as the restore did before the signer owned this step. The SSH keystore
-    /// has no allowance for a missing pin: offered where the database has no pinned signer for
-    /// it, which is a database without its <c>Keystores</c> row, it is refused with a
-    /// <see cref="System.Security.SecurityException"/> and nothing is replaced.
+    /// The whole restore runs under the file's lock (<see cref="KeystoreService.GetFileLock"/>),
+    /// the one every keystore append takes, so it waits for a write in progress and no write
+    /// starts until it is done. The bytes are written beside the live file first, as
+    /// <c>name.restoring</c>, flushed to disk, and verified there: the pin for
+    /// <paramref name="name"/> is authenticated with the secondary passphrase when one can be
+    /// resolved, and the file's signature is checked against it. Only then does the verified file
+    /// take the live file's name, in one step (<see cref="File.Replace(string, string, string?, bool)"/>),
+    /// with the previous file kept beside it as <c>name.bak.&lt;timestamp&gt;</c>; there is no
+    /// moment without a file under the name. A verification failure deletes the staged file and
+    /// leaves the live one untouched. When the secondary passphrase cannot be resolved the pin is
+    /// read without its MAC and the gap is said aloud, as the restore did before the signer owned
+    /// this step. The SSH keystore has no allowance for a missing pin: offered where the database
+    /// has no pinned signer for it, which is a database without its <c>Keystores</c> row, it is
+    /// refused with a <see cref="System.Security.SecurityException"/> and nothing is replaced.
     /// </remarks>
     public void ImportKeystoreFile(string name, byte[] bytes)
     {
@@ -144,10 +148,11 @@ public sealed class FileKeystorePersistence : ISignerKeyPersistence
         var livePath = PathFor(name);
         Directory.CreateDirectory(_keystoresDirectory);
         var stagedPath = livePath + ".restoring";
+        var fileLock = KeystoreService.GetFileLock(livePath);
+        fileLock.Wait();
         try
         {
-            File.WriteAllBytes(stagedPath, bytes);
-            ModularCA.Shared.Utils.FileSecurityUtil.SetOwnerOnly(stagedPath);
+            WriteDurably(stagedPath, bytes);
 
             using (var scope = _scopes.CreateScope())
             {
@@ -161,24 +166,53 @@ public sealed class FileKeystorePersistence : ISignerKeyPersistence
             }
 
             if (File.Exists(livePath))
-                File.Move(livePath, BackupPathFor(livePath));
-            File.Move(stagedPath, livePath);
+                File.Replace(stagedPath, livePath, BackupPathFor(livePath), ignoreMetadataErrors: true);
+            else
+                File.Move(stagedPath, livePath);
+            ModularCA.Shared.Utils.FileSecurityUtil.SetOwnerOnly(livePath);
         }
         finally
         {
             try { if (File.Exists(stagedPath)) File.Delete(stagedPath); } catch { /* the staged file is not the live one */ }
+            fileLock.Release();
         }
     }
 
+    /// <summary>
+    /// Writes <paramref name="bytes"/> to a new file at <paramref name="path"/> that only its
+    /// owner can read from the moment it is created, deleting any file there first, and flushes
+    /// them to disk before returning, so a file that takes a keystore's name afterwards is whole
+    /// even if the host stops right after, and carries an owner-only mode with it.
+    /// </summary>
+    private static void WriteDurably(string path, byte[] bytes)
+        => ModularCA.Shared.Utils.FileSecurityUtil.CreateOwnerOnly(path, stream =>
+        {
+            stream.Write(bytes);
+            stream.Flush(flushToDisk: true);
+        }, replaceExisting: true);
+
     /// <inheritdoc />
+    /// <remarks>
+    /// Runs under the file's lock (<see cref="KeystoreService.GetFileLock"/>), so a keystore
+    /// append in progress finishes first and cannot write the file back after it has been moved.
+    /// </remarks>
     public string? MoveKeystoreFileAside(string name)
     {
         var livePath = PathFor(name);
-        if (!File.Exists(livePath))
-            return null;
-        var aside = BackupPathFor(livePath);
-        File.Move(livePath, aside);
-        return Path.GetFileName(aside);
+        var fileLock = KeystoreService.GetFileLock(livePath);
+        fileLock.Wait();
+        try
+        {
+            if (!File.Exists(livePath))
+                return null;
+            var aside = BackupPathFor(livePath);
+            File.Move(livePath, aside);
+            return Path.GetFileName(aside);
+        }
+        finally
+        {
+            fileLock.Release();
+        }
     }
 
     /// <summary>The name a keystore file is kept under once another has taken its place, or none has.</summary>

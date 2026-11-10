@@ -139,14 +139,45 @@ public static class FileSecurityUtil
     public static void CreateOwnerOnly(string filePath, byte[] contents, bool replaceExisting = false)
     {
         ArgumentNullException.ThrowIfNull(contents);
+        CreateOwnerOnly(filePath, stream => stream.Write(contents), replaceExisting);
+    }
+
+    /// <summary>
+    /// <see cref="CreateOwnerOnly(string, byte[], bool)"/> for contents that are written to a
+    /// stream rather than held as one array: a PKCS#12 store, a keystore file, a ZIP archive. The
+    /// new file is opened as there (a new file, mode 0600 from creation on POSIX, no other handle
+    /// allowed while it is written) and handed to <paramref name="write"/>; once that returns the
+    /// file is closed and given the owner-only DACL on Windows. This replaces opening the file at
+    /// default permissions, writing it and restricting it afterwards, which left it readable by
+    /// whoever the directory and umask allowed until the chmod, and for as long as they kept the
+    /// descriptor they opened then. When <paramref name="write"/> throws, the partly written file
+    /// is deleted (best effort) and the exception propagates.
+    /// </summary>
+    /// <param name="filePath">The file to create.</param>
+    /// <param name="write">Writes the contents. It may flush the stream to disk; it need not close it.</param>
+    /// <param name="replaceExisting">Delete a file already at <paramref name="filePath"/> first.</param>
+    /// <exception cref="IOException">The file exists (and is not to be replaced), or was recreated by someone else after the delete.</exception>
+    public static void CreateOwnerOnly(string filePath, Action<FileStream> write, bool replaceExisting = false)
+    {
+        ArgumentNullException.ThrowIfNull(write);
         if (replaceExisting && File.Exists(filePath))
             File.Delete(filePath);
 
-        var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
+        var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.ReadWrite, Share = FileShare.None };
         if (!OperatingSystem.IsWindows())
             options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
-        using (var stream = new FileStream(filePath, options))
-            stream.Write(contents);
+        var stream = new FileStream(filePath, options);
+        try
+        {
+            using (stream)
+                write(stream);
+        }
+        catch
+        {
+            // The file is this call's own (CreateNew succeeded), so removing it takes nobody else's.
+            try { File.Delete(filePath); } catch { /* the caller gets the write's exception, not the cleanup's */ }
+            throw;
+        }
         SetOwnerOnly(filePath);
     }
 
@@ -254,6 +285,88 @@ public static class FileSecurityUtil
             throw;
         }
     }
+
+    /// <summary>
+    /// Makes sure <paramref name="directoryPath"/> exists and is reachable by its owner alone, or
+    /// throws; unlike <see cref="SetDirectoryOwnerOnly"/>, nothing here is only a warning. For a
+    /// directory that is kept and written into over time, such as the backup directory; a
+    /// throwaway staging directory comes from <see cref="CreateOwnerOnlyTempDirectory"/>.
+    /// <para>
+    /// A missing directory (and any missing parent) is created owner-only: with mode 0700 from
+    /// the start on POSIX, with the owner-only DACL of <see cref="SetDirectoryOwnerOnly"/> right
+    /// after on Windows. An existing directory that others can reach is restricted to its owner
+    /// when <paramref name="tightenExisting"/> is set, which works when this process owns it (on
+    /// POSIX only the group and other bits are cleared, the owner keeps access); otherwise, or
+    /// when restricting it fails, the call throws with what to do. Either way the result is
+    /// checked with <see cref="EnsureDirectoryOwnerOnly"/>.
+    /// </para>
+    /// </summary>
+    /// <param name="directoryPath">The directory to create or check.</param>
+    /// <param name="tightenExisting">
+    /// Restrict an existing directory others can reach instead of refusing it. Pass it only for a
+    /// directory that is this application's alone: restricting a shared one (the application
+    /// directory, or one another account reads through its group) locks that account out.
+    /// </param>
+    /// <returns>True when an existing directory's permissions were tightened, so the caller can say so.</returns>
+    /// <exception cref="IOException">
+    /// The directory could not be created, others can reach it and it was not to be tightened,
+    /// or it could not be tightened.
+    /// </exception>
+    public static bool EnsureOwnerOnlyDirectory(string directoryPath, bool tightenExisting)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
+        if (!Directory.Exists(directoryPath))
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                Directory.CreateDirectory(directoryPath);
+                ApplyWindowsDirectoryOwnerOnlyAcl(directoryPath);
+            }
+            else
+            {
+                Directory.CreateDirectory(directoryPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+            EnsureDirectoryOwnerOnly(directoryPath);
+            return false;
+        }
+
+        try
+        {
+            EnsureDirectoryOwnerOnly(directoryPath);
+            return false;
+        }
+        catch (IOException loose)
+        {
+            if (!tightenExisting)
+                throw new IOException($"{loose.Message} Other local users can reach it. {OwnerOnlyInstructions(directoryPath)}", loose);
+        }
+
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                ApplyWindowsDirectoryOwnerOnlyAcl(directoryPath);
+            }
+            else
+            {
+                const UnixFileMode ownerBits = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+                File.SetUnixFileMode(directoryPath, ownerBits);
+            }
+            EnsureDirectoryOwnerOnly(directoryPath);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or PrivilegeNotHeldException)
+        {
+            throw new IOException(
+                $"'{directoryPath}' can be reached by other local users and could not be restricted to its owner: {ex.Message} "
+                + OwnerOnlyInstructions(directoryPath), ex);
+        }
+    }
+
+    /// <summary>What an operator does about a directory others can reach, for the messages of <see cref="EnsureOwnerOnlyDirectory"/>.</summary>
+    private static string OwnerOnlyInstructions(string directoryPath) => OperatingSystem.IsWindows()
+        ? $"Restrict '{directoryPath}' to the service account and Administrators, with inheritance from its parent turned off."
+        : $"Make the service account its owner and restrict it to that account, for example 'chown <service user> \"{directoryPath}\" && chmod 700 \"{directoryPath}\"' as root.";
 
     /// <summary>
     /// Throws unless <paramref name="directoryPath"/> is reachable by its owner alone. On POSIX

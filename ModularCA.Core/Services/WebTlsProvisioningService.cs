@@ -168,11 +168,10 @@ public class WebTlsProvisioningService(
             X509Certificate2 x509;
             try
             {
-                using (var fs = new FileStream(pfxTempPath, FileMode.Create, FileAccess.Write, FileShare.None))
-                {
-                    pfxStore.Save(fs, pfxPassword.ToCharArray(), new SecureRandom());
-                }
-                FileSecurityUtil.SetOwnerOnly(pfxTempPath);
+                // Owner-only from creation, not created at default permissions and restricted
+                // after: the rename below carries the temp file's mode to api-tls.pfx.
+                FileSecurityUtil.CreateOwnerOnly(pfxTempPath,
+                    fs => pfxStore.Save(fs, pfxPassword.ToCharArray(), new SecureRandom()), replaceExisting: true);
 
                 // Load-test BEFORE committing. If the password or PKCS#12 structure is
                 // wrong we discover it now while the original PFX (if any) is still intact.

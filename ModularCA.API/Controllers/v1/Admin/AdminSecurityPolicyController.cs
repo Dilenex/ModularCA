@@ -9,6 +9,7 @@ using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
+using ModularCA.Shared.Utils;
 using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
@@ -76,7 +77,11 @@ public class AdminSecurityPolicyController(
     /// Applies a partial update to the security policy. Needs a system administrator; a change to
     /// <c>UserQuorum</c> or <c>AllowSystemSuperSelfApproval</c> needs a system-super (403 otherwise,
     /// nothing saved). Null fields are left untouched.
-    /// TTL knobs are clamped to their documented ranges. The instance CA policy fields
+    /// TTL knobs are clamped to their documented ranges. The keystore scrypt cost
+    /// (<c>KeystoreScryptN</c>, <c>KeystoreScryptR</c>, <c>KeystoreScryptP</c>) is not clamped:
+    /// when any of the three changes, the resulting triple must pass
+    /// <see cref="KeystoreScryptPolicy.CheckNewSetting"/>, or the answer is 400 and nothing is
+    /// saved. Values sent back unchanged are not checked. The instance CA policy fields
     /// (<c>RequireKeyCeremony</c>, <c>CeremonyRequiredApprovals</c>, <c>MaxValidityDays</c>,
     /// <c>ValidityCeilingBehavior</c>) need a system admin; a change to the first two by anyone
     /// but a system-super opens an InstancePolicyChange ceremony and returns 202. Every refusal,
@@ -137,6 +142,16 @@ public class AdminSecurityPolicyController(
             instanceCeremonyGate = (proposedRequire.HasValue || proposedApprovals.HasValue)
                 && !await controlledUserSvc.IsSuperAsync(currentUser.User.Id);
         }
+
+        // The keystore scrypt cost is checked as a whole, and only when one of its values
+        // changes: the console sends the stored values back on every save, and a value stored
+        // before these checks must not block the fields that did change.
+        var scryptN = request.KeystoreScryptN ?? policy.KeystoreScryptN;
+        var scryptR = request.KeystoreScryptR ?? policy.KeystoreScryptR;
+        var scryptP = request.KeystoreScryptP ?? policy.KeystoreScryptP;
+        var scryptChanged = scryptN != policy.KeystoreScryptN || scryptR != policy.KeystoreScryptR || scryptP != policy.KeystoreScryptP;
+        if (scryptChanged && KeystoreScryptPolicy.CheckNewSetting(scryptN, scryptR, scryptP) is { } scryptError)
+            return BadRequest(new { error = scryptError });
 
         Guid? ceremonyId = null;
         if (instanceCeremonyGate)
@@ -225,13 +240,13 @@ public class AdminSecurityPolicyController(
             if (proposedApprovals.HasValue) policy.CeremonyRequiredApprovals = proposedApprovals.Value;
         }
 
-        // Keystore scrypt cost — clamp at write time so the DB never holds an unreasonable value.
-        if (request.KeystoreScryptN is int ksn)
-            policy.KeystoreScryptN = Math.Clamp(ksn, 1 << 14, 1 << 20);
-        if (request.KeystoreScryptR is int ksr)
-            policy.KeystoreScryptR = Math.Clamp(ksr, 1, 32);
-        if (request.KeystoreScryptP is int ksp)
-            policy.KeystoreScryptP = Math.Clamp(ksp, 1, 16);
+        // Keystore scrypt cost: checked with the other refusals above, before anything was saved.
+        if (scryptChanged)
+        {
+            policy.KeystoreScryptN = scryptN;
+            policy.KeystoreScryptR = scryptR;
+            policy.KeystoreScryptP = scryptP;
+        }
 
         policy.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
@@ -323,11 +338,11 @@ public class SecurityPolicyUpdateRequest
     /// <summary>User quorum for controlled-user ceremonies (promote/demote/delete). Min 1.</summary>
     public int? UserQuorum { get; set; }
     // Keystore KDF cost — raise as hardware improves; existing files re-stamp on append.
-    /// <summary>scrypt cost parameter N used when a keystore file is written, clamped to 2^14–2^20.</summary>
+    /// <summary>scrypt cost parameter N used when a keystore file is written: a power of two from 2^14 to 2^20, with 128 · N · r at most 1 GiB, or 400.</summary>
     public int? KeystoreScryptN { get; set; }
-    /// <summary>scrypt block size r used when a keystore file is written, clamped to 1–32.</summary>
+    /// <summary>scrypt block size r used when a keystore file is written: 1 to 32, with 128 · N · r at most 1 GiB, or 400.</summary>
     public int? KeystoreScryptR { get; set; }
-    /// <summary>scrypt parallelism p used when a keystore file is written, clamped to 1–16.</summary>
+    /// <summary>scrypt parallelism p used when a keystore file is written: 1 to 16, or 400.</summary>
     public int? KeystoreScryptP { get; set; }
     /// <summary>Whether instance CAs need a key ceremony. Ceremony-gated unless the caller is a system-super.</summary>
     public bool? RequireKeyCeremony { get; set; }
