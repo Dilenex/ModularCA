@@ -172,6 +172,8 @@ public static class AuditActionType
     public const string KeystoreSignatureFailed = "KeystoreSignatureFailed";
     /// <summary>Emitted when the SPKI-pin MAC check fails — DB-side pin has been swapped or the secondary passphrase rotated without re-saving.</summary>
     public const string KeystorePinMacFailed = "KeystorePinMacFailed";
+    /// <summary>Emitted when a keystore could not be decrypted at unlock: a wrong passphrase, or a damaged file, wrapped passphrase or passphrase file. Names the keystore and the kind of failure; never holds a passphrase or anything derived from one.</summary>
+    public const string KeystoreUnlockFailed = "KeystoreUnlockFailed";
 
     // Configuration changes
     public const string ConfigUpdated = "ConfigUpdated";

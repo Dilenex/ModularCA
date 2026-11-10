@@ -8,7 +8,9 @@ namespace ModularCA.Keystore.Services;
 /// <summary>
 /// The journal a signer that runs apart from the node keeps of its keystore events, and the
 /// reader the node is served from. <see cref="KeystoreService"/> appends one JSON line per event
-/// (keystore loaded, created, a key appended, a signature or pin that did not verify) to
+/// (keystore loaded, created, a key appended, a signature or pin that did not verify, an unlock
+/// that failed to decrypt), and the signer's command-line backup and restore one each
+/// (<see cref="Append"/>), to
 /// <c>keystore-audit-yyyyMMdd.jsonl</c> in the journal directory, which is in the signer's own
 /// directory and not in its <c>logs/</c>: the pod's signer keeps its logs in a volume that does
 /// not outlive the pod, and the journal has to wait there for as long as the node is away.
@@ -16,8 +18,8 @@ namespace ModularCA.Keystore.Services;
 /// <remarks>
 /// <para>
 /// The reader only reads. Nothing here removes, renames or rewrites a journal file, and no call
-/// the node can make reaches a method that does: the node keeps its own note of how far it has
-/// read. Files are append-only and are read in the order of their names, which is the order of
+/// the node can make reaches a method that does, or reaches <see cref="Append"/>, which is not
+/// on <see cref="ISignerEventJournal"/>: the node keeps its own note of how far it has read. Files are append-only and are read in the order of their names, which is the order of
 /// their dates, so events leave in the order they were written.
 /// </para>
 /// <para>
@@ -25,7 +27,8 @@ namespace ModularCA.Keystore.Services;
 /// event has (<c>timestamp</c>, <c>action</c>, <c>keystoreName</c>, <c>success</c>,
 /// <c>detail</c>, <c>instanceId</c>), each held to a length, so whatever else a line might hold
 /// never crosses the wire. None of those fields is given a secret by the code that writes them:
-/// the detail is a count of entries or the message of a verification failure.
+/// the detail is a count of entries, the message of a verification failure, the kind of an
+/// unlock failure, or the outcome of a command-line backup or restore.
 /// </para>
 /// </remarks>
 public sealed class KeystoreAuditJournal : ISignerEventJournal
@@ -100,6 +103,24 @@ public sealed class KeystoreAuditJournal : ISignerEventJournal
         KeystoreService.AuditLogDirectory = directory;
         KeystoreService.AuditLogFilePrefix = FilePrefix;
         return journal;
+    }
+
+    /// <summary>
+    /// Appends one event to this journal, as the keystore service appends its own: the day's
+    /// file, owner-only, one JSON line. For the signer's command-line tools (a backup, a
+    /// restore), which run as a process of their own beside the signer and have no other way to
+    /// leave a record the node will read. The caller passes names and outcomes, never a
+    /// passphrase, a password or key material. Never throws.
+    /// </summary>
+    /// <param name="action">The audit action.</param>
+    /// <param name="keystoreName">The keystore the event is about, or null when it is about none.</param>
+    /// <param name="success">Whether what the event records succeeded.</param>
+    /// <param name="detail">What happened, in a line.</param>
+    /// <returns>Whether the line was written.</returns>
+    public bool Append(string action, string? keystoreName, bool success, string? detail)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(action);
+        return KeystoreService.AppendAuditLine(_directory, FilePrefix, action, keystoreName, success, detail);
     }
 
     /// <inheritdoc />

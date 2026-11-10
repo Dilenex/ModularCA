@@ -234,7 +234,9 @@ public class KeystoreService : IDisposable
     /// Every decrypted PKCS#8 DER buffer is zeroed immediately after it is
     /// handed to <see cref="PrivateKeyFactory.CreateKey"/>, and the derived file key is
     /// zeroed in the outer finally so the raw key material does not linger on the managed
-    /// heap past this call.
+    /// heap past this call. A file or pin that does not verify is recorded as a keystore audit
+    /// event, and so is an unlock that fails to decrypt (<see cref="EmitKeystoreUnlockFailed"/>);
+    /// the exception is rethrown either way.
     /// </summary>
     internal static List<CertKey> LoadCertKeys(string keystorePath, string yamlPath, ModularCADbContext db)
     {
@@ -252,6 +254,11 @@ public class KeystoreService : IDisposable
             EmitKeystoreAudit(action, keystoreName, success: false, detail: ex.Message);
             throw;
         }
+        catch (Exception ex) when (IsUnlockDecryptFailure(ex))
+        {
+            EmitKeystoreUnlockFailed(keystoreName, ex);
+            throw;
+        }
     }
 
     /// <summary>
@@ -264,6 +271,8 @@ public class KeystoreService : IDisposable
     /// pins, so it gets no legacy allowance: a row with no pin, or a pin with no MAC, is a
     /// <see cref="SecurityException"/>. A creation that stopped between writing its row and
     /// putting its file in place is finished first (<see cref="CompleteInterruptedCreation"/>).
+    /// An unlock that fails to decrypt is recorded as a keystore audit event
+    /// (<see cref="EmitKeystoreUnlockFailed"/>) and rethrown.
     /// </summary>
     internal static List<CertKey> LoadSshKeys(string keystorePath, string yamlPath, ModularCADbContext db)
     {
@@ -297,6 +306,11 @@ public class KeystoreService : IDisposable
                 ? AuditActionType.KeystorePinMacFailed
                 : AuditActionType.KeystoreSignatureFailed;
             EmitKeystoreAudit(action, keystoreName, success: false, detail: ex.Message);
+            throw;
+        }
+        catch (Exception ex) when (IsUnlockDecryptFailure(ex))
+        {
+            EmitKeystoreUnlockFailed(keystoreName, ex);
             throw;
         }
     }
@@ -351,7 +365,9 @@ public class KeystoreService : IDisposable
     /// <summary>
     /// Loads and verifies trusted CA certificates from the trust keystore.
     /// Signatures are pinned to the System Signing CA identity recorded in
-    /// <see cref="KeystoreEntryEntity.SigningCaSpkiSha256"/>.
+    /// <see cref="KeystoreEntryEntity.SigningCaSpkiSha256"/>. A verification failure and an
+    /// unlock that fails to decrypt (<see cref="EmitKeystoreUnlockFailed"/>) are each recorded
+    /// as a keystore audit event and rethrown.
     /// </summary>
     public static List<X509Certificate> LoadTrustedCerts(string keystorePath, string yamlPath, ModularCADbContext db)
     {
@@ -366,6 +382,11 @@ public class KeystoreService : IDisposable
                 ? AuditActionType.KeystorePinMacFailed
                 : AuditActionType.KeystoreSignatureFailed;
             EmitKeystoreAudit(action, keystoreName, success: false, detail: ex.Message);
+            throw;
+        }
+        catch (Exception ex) when (IsUnlockDecryptFailure(ex))
+        {
+            EmitKeystoreUnlockFailed(keystoreName, ex);
             throw;
         }
     }
@@ -752,17 +773,36 @@ public class KeystoreService : IDisposable
 
     /// <summary>
     /// Appends one keystore event to the day's audit <c>.jsonl</c> in <see cref="AuditLogDirectory"/>,
-    /// named after <see cref="AuditLogFilePrefix"/>. The event holds names, counts and the message
-    /// of a verification failure, never a passphrase, a PIN or key material.
+    /// named after <see cref="AuditLogFilePrefix"/>. The event holds names, counts, the message
+    /// of a verification failure or the kind of an unlock failure, never a passphrase, a PIN or
+    /// key material.
     /// Never throws: an audit write failure must not fail the keystore operation.
     /// </summary>
     private static void EmitKeystoreAudit(string action, string keystoreName, bool success, string? detail = null)
+        => AppendAuditLine(
+            AuditLogDirectory ?? Path.Combine(AppContext.BaseDirectory, "logs"), AuditLogFilePrefix,
+            action, keystoreName, success, detail);
+
+    /// <summary>
+    /// Appends one event line to the day's <c>{filePrefix}-yyyyMMdd.jsonl</c> in
+    /// <paramref name="directory"/>, owner-only: the one writer of keystore audit lines, for the
+    /// keystore service's own events and for those a signer's command-line tool adds to its
+    /// journal (<see cref="KeystoreAuditJournal.Append"/>). The signer and a tool run beside it
+    /// are two processes appending to one file, so a write the other process holds the file
+    /// against is tried again a few times. Never throws; false when the line could not be written.
+    /// </summary>
+    /// <param name="directory">The directory the file is in; created if it is missing.</param>
+    /// <param name="filePrefix">What the file's name starts with.</param>
+    /// <param name="action">The audit action.</param>
+    /// <param name="keystoreName">The keystore the event is about, or null for one about none.</param>
+    /// <param name="success">Whether what the event records succeeded.</param>
+    /// <param name="detail">Names and counts; the caller passes no secret.</param>
+    internal static bool AppendAuditLine(string directory, string filePrefix, string action, string? keystoreName, bool success, string? detail)
     {
         try
         {
-            var logsDir = AuditLogDirectory ?? Path.Combine(AppContext.BaseDirectory, "logs");
-            Directory.CreateDirectory(logsDir);
-            var filePath = Path.Combine(logsDir, $"{AuditLogFilePrefix}-{DateTime.UtcNow:yyyyMMdd}.jsonl");
+            Directory.CreateDirectory(directory);
+            var filePath = Path.Combine(directory, $"{filePrefix}-{DateTime.UtcNow:yyyyMMdd}.jsonl");
             var line = System.Text.Json.JsonSerializer.Serialize(new
             {
                 timestamp = DateTime.UtcNow.ToString("o"),
@@ -774,16 +814,75 @@ public class KeystoreService : IDisposable
             });
             lock (_auditLogLock)
             {
-                File.AppendAllText(filePath, line + Environment.NewLine);
+                const int attempts = 5;
+                for (var attempt = 1; ; attempt++)
+                {
+                    try
+                    {
+                        File.AppendAllText(filePath, line + Environment.NewLine);
+                        break;
+                    }
+                    catch (IOException) when (attempt < attempts)
+                    {
+                        Thread.Sleep(20 * attempt);
+                    }
+                }
                 try { ModularCA.Shared.Utils.FileSecurityUtil.SetOwnerOnly(filePath); } catch { /* best-effort */ }
             }
         }
         catch
         {
             // Audit write failure must never fail the keystore operation itself.
+            return false;
         }
+
+        try
+        {
+            AuditEventWritten?.Invoke();
+        }
+        catch
+        {
+            // A listener that fails must not fail the keystore operation either; the line is in the file.
+        }
+        return true;
     }
 
+    /// <summary>
+    /// Raised in this process after a keystore audit line has been appended to its file. A node
+    /// that holds the signer in process listens, and records the new line in the audit trail
+    /// straight away instead of at its next start. A handler only signals: it runs on the thread
+    /// of the keystore operation, which may hold the keystore file's lock, so it must return at
+    /// once and do its work elsewhere. The event carries nothing; the line is in the file.
+    /// </summary>
+    public static event Action? AuditEventWritten;
+
+    /// <summary>
+    /// Whether an exception from a keystore unlock is a failure to decrypt: the secondary
+    /// passphrase did not unwrap the main one, the main one did not open an entry
+    /// (<see cref="CryptographicException"/>, which an AES-GCM tag mismatch is), or the file, its
+    /// row or the passphrase file is not in a form that can be read
+    /// (<see cref="InvalidDataException"/>). A file that is missing or a database that cannot be
+    /// reached is not one: nothing was tried against the keystore. A verification failure is a
+    /// <see cref="SecurityException"/> and has its own events.
+    /// </summary>
+    private static bool IsUnlockDecryptFailure(Exception ex)
+        => ex is CryptographicException or InvalidDataException;
+
+    /// <summary>
+    /// Records a keystore unlock that failed to decrypt as <see cref="AuditActionType.KeystoreUnlockFailed"/>.
+    /// The detail is fixed text and the type name of the exception. The exception's message is
+    /// deliberately left out, and no passphrase, nothing derived from one and no key material is
+    /// in scope here to record: the event says which keystore and what kind of failure, never
+    /// what was tried.
+    /// </summary>
+    private static void EmitKeystoreUnlockFailed(string keystoreName, Exception ex)
+        => EmitKeystoreAudit(AuditActionType.KeystoreUnlockFailed, keystoreName, success: false,
+            detail: $"The keystore could not be decrypted ({ex.GetType().Name}): a passphrase is wrong, or the file, its wrapped passphrase or the passphrase file is damaged.");
+
+    /// <summary>
+    /// The MAC that protects a keystore's pinned signer: HMAC-SHA256 over the lowercase hex pin,
+    /// keyed by a key derived from the secondary passphrase.
+    /// </summary>
     public static byte[] ComputeSpkiPinMac(string spkiHex, string secondary)
     {
         var secBytes = Encoding.UTF8.GetBytes(secondary ?? string.Empty);

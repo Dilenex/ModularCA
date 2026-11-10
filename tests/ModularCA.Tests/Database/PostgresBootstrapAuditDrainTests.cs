@@ -105,7 +105,7 @@ public sealed class PostgresBootstrapAuditDrainTests : IDisposable
         Assert.Equal((3, 0), (first.Written, first.Skipped));
         Assert.Equal(events[2], first.Last);
         var rows = await auditDb.AuditLogs.AsNoTracking()
-            .Where(r => r.ActorUsername == BootstrapAuditReplayService.Actor).OrderBy(r => r.Timestamp).ToListAsync();
+            .Where(r => r.ActorUsername == BootstrapAuditReplayService.SignerActor).OrderBy(r => r.Timestamp).ToListAsync();
         Assert.Equal(
             [AuditActionType.KeystoreLoaded, AuditActionType.KeystoreAppended, AuditActionType.KeystoreSignatureFailed],
             rows.Select(r => r.ActionType));
@@ -115,6 +115,7 @@ public sealed class PostgresBootstrapAuditDrainTests : IDisposable
 
         var again = await replay.RecordSignerEventsAsync(events);
         Assert.Equal((0, 3), (again.Written, again.Skipped));
-        Assert.Equal(3, await auditDb.AuditLogs.CountAsync(r => r.ActorUsername == BootstrapAuditReplayService.Actor));
+        Assert.Equal(3, await auditDb.AuditLogs.CountAsync(r => r.ActorUsername == BootstrapAuditReplayService.SignerActor));
+        Assert.Equal(0, await auditDb.AuditLogs.CountAsync(r => r.ActorUsername == BootstrapAuditReplayService.Actor));
     }
 }

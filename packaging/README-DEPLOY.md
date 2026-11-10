@@ -977,7 +977,12 @@ happens to its keystores (loaded at each start, a keystore created, a key append
 or SSH CA key, a signature or pin that did not verify) in `signer/audit-journal/`, one
 `keystore-audit-<date>.jsonl` per day, owner-only. The node's control role reads that journal
 over the signer channel, a few seconds after it starts and then every minute, and writes each
-event into the audit trail as a `Keystore…` row by `system-bootstrap` marked `DeliveredBySigner`.
+event into the audit trail as a `Keystore…` row by `system-signer` marked `DeliveredBySigner`
+(rows replayed from the node's own `logs/` are by `system-bootstrap`). A keystore the signer
+could not decrypt at unlock, because a passphrase is wrong or a file is damaged, is among them as
+`KeystoreUnlockFailed`; it names the keystore and never a passphrase. A command-line `--backup` or
+`--restore` run as the signer with `--signer-dir` writes to the same journal, and arrives as a
+`BackupCreated` or `BackupRestored` row by `system-signer` with its exit code and archive name.
 While the node, the signer or the audit database is away the events wait in the journal and are
 recorded afterwards, in order, each once. The call only reads: the node cannot remove or change
 a journal line, and keeps its own note of how far it has read in `config/signer-audit-cursor.json`
@@ -988,7 +993,10 @@ must. Events an earlier build wrote to `signer/logs/bootstrap-audit-*.jsonl`, wh
 are moved into the journal at the signer's first start on this version and delivered with the
 rest. A signer still on the shared layout (no `--signer-dir`) has no journal: its events go to
 `logs/` as before, where the node replays them at its next start if the signer's account can
-write there.
+write there. A single process (no separate signer) writes its keystore events to
+`logs/bootstrap-audit-*.jsonl` and, given an audit database, records each in the audit trail as
+it happens, by `system-bootstrap`; the file is renamed `.replayed` at the next start, when
+nothing in it is recorded a second time.
 
 Do this after the first install has completed its wizard as a single process, so the keystores
 and `config/keystore.yaml` exist.
@@ -1090,7 +1098,9 @@ and `config/keystore.yaml` exist.
 Backups taken by the node's scheduled job go through the signer and keep working. The
 command-line `--backup` and `--restore` read the keystore files directly, so on a split
 install run them on the signer host as the signer's user, with `--role signer --signer-dir
-/opt/modularca/signer` so they find its `keystore.yaml`. On one host that user can neither
+/opt/modularca/signer` so they find its `keystore.yaml`. Run that way they record themselves in
+`signer/audit-journal/`, and the node writes a `BackupCreated` or `BackupRestored` audit row by
+`system-signer` when it next reads the journal. On one host that user can neither
 read the node's backup key (`config/backup.key` or `config/backup-password.key`) nor write
 `backups/`, so there the scheduled or console backup is the one that works as installed. The
 node's client certificate lives one year; reissue it with `--issue-node-identity` and replace the

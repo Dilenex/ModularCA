@@ -101,7 +101,7 @@ public sealed class SignerKeystoreEventDeliveryTests : IDisposable
     /// Has the signer generate an SSH CA key and commit it, over the wire: the first commit
     /// creates <c>ssh-ca.keystore</c>, a later one appends to it.
     /// </summary>
-    private static async Task CommitSshKeyAsync(SignerTestWorld world, ISigningService signer)
+    internal static async Task CommitSshKeyAsync(SignerTestWorld world, ISigningService signer)
     {
         SigningContext Ceremony(Guid? caId) => new SigningContext(Caller, SigningPurpose.Ceremony, null, caId) { InstanceScope = true };
 
@@ -152,7 +152,8 @@ public sealed class SignerKeystoreEventDeliveryTests : IDisposable
         Assert.All(rows, row =>
         {
             Assert.Equal("Keystore", row.TargetEntityType);
-            Assert.Equal(BootstrapAuditReplayService.Actor, row.ActorUsername);
+            Assert.Equal("system-signer", row.ActorUsername);
+            Assert.Equal(BootstrapAuditReplayService.SignerActor, row.ActorUsername);
             Assert.True(row.Success);
             Assert.False(string.IsNullOrEmpty(row.RecordHash));
             Assert.Equal(AuditHashChainService.CurrentHashVersion, row.HashVersion);
@@ -175,6 +176,74 @@ public sealed class SignerKeystoreEventDeliveryTests : IDisposable
         var journalAfter = JournalFiles();
         Assert.Equal(journalBefore.Keys.Order(), journalAfter.Keys.Order());
         Assert.All(journalBefore, file => Assert.Equal(file.Value, journalAfter[file.Key]));
+    }
+
+    /// <summary>
+    /// The upgrade: the build before this one delivered the signer's events as rows by
+    /// <c>system-bootstrap</c>. A node on this build, reading on from its saved position or
+    /// reading the whole journal again without one, records none of them a second time under
+    /// <c>system-signer</c>; only what the trail lacks is written, by the new actor.
+    /// </summary>
+    [Fact]
+    public async Task An_upgraded_node_does_not_record_again_what_an_earlier_build_delivered_as_system_bootstrap()
+    {
+        var world = SignerTestWorld.CreateWithKeystoreFiles();
+        await using var host = await HostedSigner.StartAsync(world, journal: _journal);
+        using var node = host.Connect();
+
+        // What the earlier build left: the two events of the signer's start, as it wrote them, and its position.
+        var delivered = (await node.ReadAfterAsync(null, 0, 10)).Entries;
+        Assert.Equal(2, delivered.Count);
+        await using (var auditDb = AuditDb())
+        {
+            var audit = new AuditService(NullLogger<AuditService>.Instance, auditDb, hashChain: new AuditHashChainService());
+            foreach (var item in delivered)
+            {
+                using var json = JsonDocument.Parse(item.Json);
+                await audit.LogAsync(
+                    actionType: json.RootElement.GetProperty("action").GetString()!,
+                    actorUserId: null,
+                    actorUsername: "system-bootstrap",
+                    targetEntityType: "Keystore",
+                    targetEntityId: json.RootElement.GetProperty("keystoreName").GetString(),
+                    details: new
+                    {
+                        DeliveredBySigner = true,
+                        BootstrapTimestamp = json.RootElement.GetProperty("timestamp").GetString(),
+                        InstanceId = json.RootElement.GetProperty("instanceId").GetString(),
+                        BootstrapEntryId = BootstrapAuditReplayService.EntryId(item.File, item.Line, item.Json),
+                        JournalFile = item.File,
+                        JournalLine = item.Line,
+                        Detail = json.RootElement.GetProperty("detail").GetString(),
+                    },
+                    sourceIp: "local");
+            }
+        }
+        var last = delivered[^1];
+        new SignerJournalCursorFile(CursorPath).Save(
+            new SignerJournalCursor(last.File, last.Line, BootstrapAuditReplayService.EntryId(last.File, last.Line, last.Json)));
+        Assert.All(Rows(), row => Assert.Equal("system-bootstrap", row.ActorUsername));
+
+        // The upgraded node reads on from that position: only the new event is written.
+        await CommitSshKeyAsync(world, node);
+        var readOn = await DeliverAsync(node);
+        Assert.Null(readOn.Failure);
+        Assert.False(readOn.StartedOver);
+        Assert.Equal((1, 0), (readOn.Recorded, readOn.AlreadyRecorded));
+
+        // Without its position it reads the whole journal again, and recognises the old rows by their ids.
+        File.Delete(CursorPath);
+        var readAgain = await DeliverAsync(node);
+        Assert.Null(readAgain.Failure);
+        Assert.Equal((0, 3), (readAgain.Recorded, readAgain.AlreadyRecorded));
+
+        var rows = Rows();
+        Assert.Equal(["system-bootstrap", "system-bootstrap", "system-signer"], rows.Select(r => r.ActorUsername));
+        Assert.Equal(
+            [AuditActionType.KeystoreLoaded, AuditActionType.KeystoreLoaded, AuditActionType.KeystoreInitialized],
+            rows.Select(r => r.ActionType));
+        Assert.Equal(3, rows.Select(Position).Distinct().Count());
+        Assert.All(rows, row => Assert.Contains("\"DeliveredBySigner\":true", row.DetailsJson));
     }
 
     [Fact]

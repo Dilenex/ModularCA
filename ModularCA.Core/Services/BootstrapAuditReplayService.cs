@@ -33,6 +33,15 @@ public sealed record SignerEventBatchResult(
     int Written, int Skipped, ModularCA.Shared.Signing.SignerJournalEntry? Last, string? Failure);
 
 /// <summary>
+/// What one pass over the <c>bootstrap-audit-*.jsonl</c> files of a running node did, the files
+/// left where they are (<see cref="BootstrapAuditReplayService.RecordNewLinesAsync"/>).
+/// </summary>
+/// <param name="Recorded">Lines written to the audit trail by this pass.</param>
+/// <param name="AlreadyRecorded">Lines the trail already held.</param>
+/// <param name="Failure">Why the pass stopped early; null when every line is in the trail.</param>
+public sealed record NewLinesRecordResult(int Recorded, int AlreadyRecorded, string? Failure);
+
+/// <summary>
 /// Drains the <c>logs/bootstrap-audit-*.jsonl</c> files into the audit trail, each line as a real
 /// <see cref="IAuditService.LogAsync"/> call. The files are written where no audit service is at
 /// hand: by the bootstrap's setup steps (<c>BootstrapAuditLog</c>) and by the keystore service's
@@ -40,7 +49,9 @@ public sealed record SignerEventBatchResult(
 /// schema exists by then and its <c>logs/</c> may not outlive it (an init container); and the
 /// node at every start, from <c>StartModularCA.cs</c>, for what the bootstrap could not write
 /// (which the bootstrap moves into <c>config/audit-pending</c>, since <c>config/</c> is kept on
-/// every install type) and for the keystore events of the node's own previous run.
+/// every install type) and for the keystore events of the node's own previous run. A node that
+/// holds the signer in process also records its keystore events while it runs, as they are
+/// written (<see cref="RecordNewLinesAsync"/>), so they do not wait for the next start.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -68,8 +79,16 @@ public sealed class BootstrapAuditReplayService(
     ILogger<BootstrapAuditReplayService> logger,
     AuditDbContext? auditDb = null)
 {
-    /// <summary>The actor every replayed row carries.</summary>
+    /// <summary>The actor every row replayed from a <c>bootstrap-audit-*.jsonl</c> file carries.</summary>
     public const string Actor = "system-bootstrap";
+
+    /// <summary>
+    /// The actor of a row written from a remote signer's journal
+    /// (<see cref="RecordSignerEventsAsync"/>). Builds before this one wrote those rows as
+    /// <see cref="Actor"/>; the ids already in the trail are read under both names, so an event
+    /// an earlier build delivered is not recorded again under this one.
+    /// </summary>
+    public const string SignerActor = "system-signer";
 
     /// <summary>The details property that holds a replayed line's id.</summary>
     public const string EntryIdProperty = "BootstrapEntryId";
@@ -194,11 +213,132 @@ public sealed class BootstrapAuditReplayService(
     }
 
     /// <summary>
+    /// Records the lines of the <c>bootstrap-audit-*.jsonl</c> files in <paramref name="logsDir"/>
+    /// that the audit trail does not hold yet, and leaves the files where they are. This is how
+    /// a running node that holds the signer in process gets its keystore events (a key appended,
+    /// a keystore created, a verification or unlock failure) into the trail when they happen: the
+    /// keystore service appends the line, and this is run over the file.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Each row is the one the replay of the whole file writes, with the same
+    /// <c>BootstrapEntryId</c> (file name, line position, text). So the drain at the next start,
+    /// or the bootstrap's, finds every line of the file already recorded, writes nothing and
+    /// renames it; and a pass here over a file an interrupted drain wrote in part adds only the
+    /// rest. The file is not renamed here because the keystore service may be appending to it:
+    /// a line written between the read and the rename would never be read.
+    /// </para>
+    /// <para>
+    /// Only lines that end in a line end are read, so one still being written waits for the next
+    /// pass. Each line is looked for in the audit database after it is logged, and the first
+    /// that is missing ends the pass: the audit service may log a failed write and carry on, and
+    /// the caller tries again later. Nothing is thrown for a file that cannot be read or an
+    /// audit write that fails; the result says so.
+    /// </para>
+    /// </remarks>
+    /// <param name="logsDir">The directory the keystore service writes its events to.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <exception cref="InvalidOperationException">No audit database was given: without it a line cannot be told from one already recorded.</exception>
+    public async Task<NewLinesRecordResult> RecordNewLinesAsync(string logsDir, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(logsDir);
+        if (auditDb == null)
+            throw new InvalidOperationException("Recording keystore events as they happen needs the audit database, to tell a line from one already recorded.");
+
+        int written = 0, skipped = 0;
+        try
+        {
+            if (!Directory.Exists(logsDir))
+                return new NewLinesRecordResult(0, 0, null);
+
+            var files = Directory.GetFiles(logsDir, "bootstrap-audit-*.jsonl");
+            Array.Sort(files, StringComparer.Ordinal);
+            HashSet<string>? known = null;
+            foreach (var file in files)
+            {
+                var fileName = Path.GetFileName(file);
+                var lines = await CompleteLinesAsync(file, cancellationToken);
+                for (var lineNumber = 0; lineNumber < lines.Count; lineNumber++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var line = lines[lineNumber];
+                    if (string.IsNullOrWhiteSpace(line))
+                        continue;
+
+                    BootstrapAuditEntry? entry;
+                    try
+                    {
+                        entry = JsonSerializer.Deserialize<BootstrapAuditEntry>(line, LineOptions);
+                    }
+                    catch (JsonException)
+                    {
+                        // The drain at the next start names a malformed line; it is passed over here.
+                        continue;
+                    }
+                    if (entry is null || string.IsNullOrWhiteSpace(entry.Action))
+                        continue;
+
+                    var entryId = EntryId(fileName, lineNumber, line);
+                    known ??= await RecordedEntryIdsAsync(cancellationToken);
+                    if (known.Contains(entryId))
+                    {
+                        skipped++;
+                        continue;
+                    }
+
+                    await LogReplayedLineAsync(entry.Action, entry, entryId);
+                    var recorded = await auditDb.AuditLogs.AsNoTracking()
+                        .AnyAsync(a => a.ActorUsername == Actor && a.DetailsJson != null && a.DetailsJson.Contains(entryId), cancellationToken);
+                    if (!recorded)
+                        return new NewLinesRecordResult(written, skipped,
+                            $"The audit record at {fileName} line {lineNumber} did not reach the audit database.");
+                    known.Add(entryId);
+                    written++;
+                }
+            }
+            return new NewLinesRecordResult(written, skipped, null);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new NewLinesRecordResult(written, skipped, $"{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// The lines of a file that end in a line end, read while the keystore service may be
+    /// appending to it. A line has the position <see cref="File.ReadAllLinesAsync(string, CancellationToken)"/>
+    /// gives it, which is the position its id is derived from.
+    /// </summary>
+    private static async Task<List<string>> CompleteLinesAsync(string path, CancellationToken cancellationToken)
+    {
+        string text;
+        await using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        using (var reader = new StreamReader(stream, Encoding.UTF8))
+            text = await reader.ReadToEndAsync(cancellationToken);
+
+        var lines = new List<string>();
+        var start = 0;
+        while (start < text.Length)
+        {
+            var end = text.IndexOf('\n', start);
+            if (end < 0)
+                break;
+            lines.Add(text[start..end].TrimEnd('\r'));
+            start = end + 1;
+        }
+        return lines;
+    }
+
+    /// <summary>
     /// Writes keystore events read from a remote signer's journal into the audit trail, in the
-    /// order given, each as the row a replayed keystore line gets, marked
-    /// <c>DeliveredBySigner</c> and carrying where it stood in the journal. An event's id is
-    /// derived from its journal file, line and text, as for a replayed line, so an event the
-    /// trail already holds is passed over and a second delivery adds nothing.
+    /// order given, each as the row a replayed keystore line gets, by <see cref="SignerActor"/>,
+    /// marked <c>DeliveredBySigner</c> and carrying where it stood in the journal. The record of
+    /// a backup or a restore run on the signer from the command line is a <c>Backup</c> row; every
+    /// other event is a <c>Keystore</c> row. An event's id
+    /// is derived from its journal file, line and text, as for a replayed line, so an event the
+    /// trail already holds is passed over and a second delivery adds nothing. That holds for the
+    /// rows an earlier build wrote as <see cref="Actor"/> too: an upgraded node records none of
+    /// them again.
     /// </summary>
     /// <remarks>
     /// Each event is looked for in the audit database after it is logged, and the first one that
@@ -248,8 +388,8 @@ public sealed class BootstrapAuditReplayService(
             await auditService.LogAsync(
                 actionType: entry.Action,
                 actorUserId: null,
-                actorUsername: Actor,
-                targetEntityType: "Keystore",
+                actorUsername: SignerActor,
+                targetEntityType: SignerEventTargetType(entry.Action),
                 targetEntityId: entry.KeystoreName,
                 details: new
                 {
@@ -266,7 +406,7 @@ public sealed class BootstrapAuditReplayService(
                 errorMessage: entry.Success == false ? entry.Detail : null);
 
             var recorded = await auditDb.AuditLogs.AsNoTracking()
-                .AnyAsync(a => a.ActorUsername == Actor && a.DetailsJson != null && a.DetailsJson.Contains(entryId), cancellationToken);
+                .AnyAsync(a => a.ActorUsername == SignerActor && a.DetailsJson != null && a.DetailsJson.Contains(entryId), cancellationToken);
             if (!recorded)
             {
                 return new SignerEventBatchResult(written, skipped, last,
@@ -278,6 +418,16 @@ public sealed class BootstrapAuditReplayService(
         }
         return new SignerEventBatchResult(written, skipped, last, null);
     }
+
+    /// <summary>
+    /// What an event from the signer's journal is about. A backup or a restore run on the signer
+    /// from the command line is a <c>Backup</c> event, as one run from the console is; every
+    /// other event is about a keystore.
+    /// </summary>
+    private static string SignerEventTargetType(string action)
+        => action is ModularCA.Shared.Enums.AuditActionType.BackupCreated or ModularCA.Shared.Enums.AuditActionType.BackupRestored
+            ? "Backup"
+            : "Keystore";
 
     // The writers emit camelCase keys; read without regard to case, or every line binds to nothing
     // and is skipped.
@@ -293,7 +443,10 @@ public sealed class BootstrapAuditReplayService(
             SHA256.HashData(Encoding.UTF8.GetBytes(fileName + "\n" + lineNumber + "\n" + line)), 0, 16).ToLowerInvariant();
 
     /// <summary>
-    /// The ids of the replayed lines the audit trail holds; empty without an audit database.
+    /// The ids of the replayed lines and delivered signer events the audit trail holds; empty
+    /// without an audit database. Rows by <see cref="Actor"/> and by <see cref="SignerActor"/>
+    /// are both read: a signer event delivered before <see cref="SignerActor"/> existed is in the
+    /// trail under <see cref="Actor"/>, and must still count as recorded.
     /// </summary>
     private async Task<HashSet<string>> RecordedEntryIdsAsync(CancellationToken cancellationToken)
     {
@@ -304,7 +457,8 @@ public sealed class BootstrapAuditReplayService(
         }
 
         var rows = await auditDb.AuditLogs.AsNoTracking()
-            .Where(a => a.ActorUsername == Actor && a.DetailsJson != null && a.DetailsJson.Contains(EntryIdProperty))
+            .Where(a => (a.ActorUsername == Actor || a.ActorUsername == SignerActor)
+                && a.DetailsJson != null && a.DetailsJson.Contains(EntryIdProperty))
             .Select(a => a.DetailsJson!)
             .ToListAsync(cancellationToken);
         foreach (var json in rows)
@@ -374,48 +528,7 @@ public sealed class BootstrapAuditReplayService(
                 continue;
             }
 
-            // A setup decision names its own target and carries its own details.
-            if (!string.IsNullOrWhiteSpace(entry.TargetEntityType))
-            {
-                await auditService.LogAsync(
-                    actionType: entry.Action,
-                    actorUserId: null,
-                    actorUsername: Actor,
-                    targetEntityType: entry.TargetEntityType,
-                    targetEntityId: entry.TargetEntityId,
-                    details: new
-                    {
-                        ReplayedFromBootstrap = true,
-                        BootstrapTimestamp = entry.Timestamp,
-                        entry.InstanceId,
-                        BootstrapEntryId = entryId,
-                        Decision = entry.Details,
-                    },
-                    sourceIp: "local",
-                    success: true);
-                logged.Add(entryId);
-                continue;
-            }
-
-            await auditService.LogAsync(
-                actionType: entry.Action,
-                actorUserId: null,
-                actorUsername: Actor,
-                targetEntityType: "Keystore",
-                targetEntityId: entry.KeystoreName,
-                details: new
-                {
-                    ReplayedFromBootstrap = true,
-                    BootstrapTimestamp = entry.Timestamp,
-                    entry.InstanceId,
-                    BootstrapEntryId = entryId,
-                    entry.SubjectDn,
-                    entry.Thumbprint,
-                    entry.Detail,
-                },
-                sourceIp: "local",
-                success: entry.Success ?? true,
-                errorMessage: entry.Success == false ? entry.Detail : null);
+            await LogReplayedLineAsync(entry.Action, entry, entryId);
             logged.Add(entryId);
         }
 
@@ -432,6 +545,62 @@ public sealed class BootstrapAuditReplayService(
             }
         }
         return (logged.Count, skipped);
+    }
+
+    /// <summary>
+    /// Writes one line of a <c>bootstrap-audit-*.jsonl</c> file as its audit row, by
+    /// <see cref="Actor"/> and carrying <paramref name="entryId"/>: a setup decision against the
+    /// target it names, with its own details; a keystore line against its keystore, as a failure
+    /// with its detail when the writer recorded one. The replay of a whole file and the recording
+    /// of a running node's keystore events write the same row, which is what lets either
+    /// recognise what the other wrote.
+    /// </summary>
+    /// <param name="action">The action the line names; the callers pass over a line that names none.</param>
+    /// <param name="entry">The line.</param>
+    /// <param name="entryId">The line's id.</param>
+    private async Task LogReplayedLineAsync(string action, BootstrapAuditEntry entry, string entryId)
+    {
+        // A setup decision names its own target and carries its own details.
+        if (!string.IsNullOrWhiteSpace(entry.TargetEntityType))
+        {
+            await auditService.LogAsync(
+                actionType: action,
+                actorUserId: null,
+                actorUsername: Actor,
+                targetEntityType: entry.TargetEntityType,
+                targetEntityId: entry.TargetEntityId,
+                details: new
+                {
+                    ReplayedFromBootstrap = true,
+                    BootstrapTimestamp = entry.Timestamp,
+                    entry.InstanceId,
+                    BootstrapEntryId = entryId,
+                    Decision = entry.Details,
+                },
+                sourceIp: "local",
+                success: true);
+            return;
+        }
+
+        await auditService.LogAsync(
+            actionType: action,
+            actorUserId: null,
+            actorUsername: Actor,
+            targetEntityType: "Keystore",
+            targetEntityId: entry.KeystoreName,
+            details: new
+            {
+                ReplayedFromBootstrap = true,
+                BootstrapTimestamp = entry.Timestamp,
+                entry.InstanceId,
+                BootstrapEntryId = entryId,
+                entry.SubjectDn,
+                entry.Thumbprint,
+                entry.Detail,
+            },
+            sourceIp: "local",
+            success: entry.Success ?? true,
+            errorMessage: entry.Success == false ? entry.Detail : null);
     }
 
     private sealed class BootstrapAuditEntry

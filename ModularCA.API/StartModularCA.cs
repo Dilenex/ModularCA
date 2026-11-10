@@ -272,7 +272,11 @@ if (args.Contains("--backup", StringComparer.OrdinalIgnoreCase))
 {
     var outputPath = args.SkipWhile(a => !a.Equals("--backup", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
     Log.Information("Operator triggered backup (--backup) outputPath={OutputPath}", outputPath ?? "(default)");
-    var exitCode = await BackupRestore.Backup(outputPath, BackupSignerFor);
+    // Run as the signer from its own directory, the backup leaves its record, and the keystore
+    // events it raises, in the signer's audit journal, where the node reads them (SignerToolJournal).
+    var backupJournal = ModularCA.Keystore.Services.SignerToolJournal.Open(signerPaths, message => Log.Warning("{Message}", message));
+    var exitCode = await ModularCA.Keystore.Services.SignerToolJournal.BackupAsync(
+        backupJournal, outputPath, () => BackupRestore.Backup(outputPath, BackupSignerFor));
     Environment.Exit(exitCode);
 }
 if (args.Contains("--restore", StringComparer.OrdinalIgnoreCase))
@@ -365,7 +369,12 @@ if (args.Contains("--restore", StringComparer.OrdinalIgnoreCase))
     // The audit database is kept unless --restore-audit asks for the archive's audit trail.
     var restoreAudit = args.Contains("--restore-audit", StringComparer.OrdinalIgnoreCase);
     Log.Warning("Operator triggered restore (--restore) archive={ArchivePath} restoreAudit={RestoreAudit}", archivePath, restoreAudit);
-    var exitCode = await BackupRestore.Restore(archivePath, MaintenanceSignerFor, skipSchemaCheck: false, providedPassword: providedPassword, restoreAudit: restoreAudit);
+    // As for --backup: run as the signer from its own directory, the restore is recorded in the
+    // signer's audit journal. The password is never part of what is recorded.
+    var restoreJournal = ModularCA.Keystore.Services.SignerToolJournal.Open(signerPaths, message => Log.Warning("{Message}", message));
+    var exitCode = await ModularCA.Keystore.Services.SignerToolJournal.RestoreAsync(
+        restoreJournal, archivePath, restoreAudit,
+        () => BackupRestore.Restore(archivePath, MaintenanceSignerFor, skipSchemaCheck: false, providedPassword: providedPassword, restoreAudit: restoreAudit));
     Environment.Exit(exitCode);
 }
 if (args.Contains("--backfill-keystore-pins", StringComparer.OrdinalIgnoreCase))
@@ -1901,7 +1910,7 @@ builder.Services.AddScoped<ModularCA.Core.Services.BootstrapAuditReplayService>(
 // appended, a verification failure) in a journal on its own disk. The control role reads that
 // journal over the signer channel, at start and every minute, and writes the events into the
 // audit trail. How far it has read is this node's own note, in config/; the signer is never
-// written to. With the signer in process the events are in logs/ and replayed as before.
+// written to. With the signer in process the events are in logs/; see below.
 if (!isSetupMode && controlActive && signerIsRemote && !string.IsNullOrWhiteSpace(config.DB.Audit.Database))
 {
     builder.Services.AddSingleton<ModularCA.Shared.Signing.ISignerEventJournal>(sp =>
@@ -1910,6 +1919,18 @@ if (!isSetupMode && controlActive && signerIsRemote && !string.IsNullOrWhiteSpac
         Path.Combine(AppContext.BaseDirectory, "config", ModularCA.Core.Services.SignerJournalCursorFile.FileName)));
     builder.Services.AddScoped<ModularCA.Core.Services.SignerKeystoreEventDelivery>();
     builder.Services.AddHostedService<ModularCA.API.Services.SignerKeystoreEventDeliveryService>();
+}
+// With the signer in process the keystore service writes its events to logs/bootstrap-audit-*.jsonl
+// in this process. The control role records each in the audit trail when it is written, with the
+// id the replay at the next start gives the same line, so that replay adds no second row. Without
+// an audit database a line cannot be told from one already recorded, and the replay at the next
+// start is all there is, as before.
+if (!isSetupMode && controlActive && !signerIsRemote && !string.IsNullOrWhiteSpace(config.DB.Audit.Database))
+{
+    builder.Services.AddSingleton(sp => new ModularCA.Core.Services.LocalKeystoreEventRecorder(
+        sp.GetRequiredService<IServiceScopeFactory>(),
+        sp.GetRequiredService<ILogger<ModularCA.Core.Services.LocalKeystoreEventRecorder>>()));
+    builder.Services.AddHostedService<ModularCA.API.Services.LocalKeystoreEventRecorderService>();
 }
 builder.Services.AddSingleton<SiemLogFormatter>();
 builder.Services.AddScoped<IEnrollmentTokenService, EnrollmentTokenService>();

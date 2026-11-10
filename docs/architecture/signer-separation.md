@@ -590,8 +590,8 @@ service at hand (`KeystoreService.EmitKeystoreAudit`): `KeystoreLoaded` for `ca-
 `ssh-ca.keystore` is first created, `KeystoreAppended` when a key is committed or imported (a new
 CA and its responder keys, an SSH CA key, a restore), and `KeystoreSignatureFailed` or
 `KeystorePinMacFailed` when a file, an entry or a pin does not verify, on load and on append. It
-appends them to a JSON-lines file. A wrong passphrase is not among them: only verification
-failures are recorded today.
+appends them to a JSON-lines file. A wrong passphrase was not among them when this was written:
+only verification failures were recorded. The follow-ups below add `KeystoreUnlockFailed`.
 
 In one process that file is `logs/bootstrap-audit-*.jsonl`, which the node replays into the audit
 trail at its next start (`BootstrapAuditReplayService`). With the signer apart it was the signer's
@@ -623,7 +623,8 @@ reads them over the existing channel:
   to a length, so nothing else a line might hold crosses the wire.
 - The control role polls it (five seconds after start, then every minute;
   `SignerKeystoreEventDelivery`) and writes each event through `AuditService` and
-  `AuditHashChainService`, as a `Keystore` row by `system-bootstrap` marked `DeliveredBySigner`,
+  `AuditHashChainService`, as a `Keystore` row by `system-signer` (at first `system-bootstrap`;
+  see the follow-ups below) marked `DeliveredBySigner`,
   with the `BootstrapEntryId` the file replay uses (a hash of file, line and text). An event the
   trail holds is passed over. Each event is looked for in the audit database after it is logged,
   and the first that is missing ends the pass, so the order of the journal is the order of the
@@ -658,8 +659,70 @@ journal for as long as it takes.
   signer keeps. The journal is a few lines per start and per key; it is kept.
 
 The shared layout (a signer without `--signer-dir`) has no journal: its events go to `logs/` as
-before, where the node replays them if the signer's account can write there. A single process is
-unchanged, including that its runtime events are replayed at the next start, not sooner.
+before, where the node replays them if the signer's account can write there. A single process
+was left unchanged by this work, including that its runtime events were replayed at the next
+start, not sooner; the follow-ups below change that.
+
+## Follow-ups to the keystore event journal (2026-11-10)
+
+Four things the journal work left open, each built on it and none changing what it decided.
+
+**An actor of their own.** Rows written from the signer's journal were by `system-bootstrap`, the
+actor of the file replay, and could be told from the node's own only by `DeliveredBySigner` in the
+details. They are now by `system-signer` (`BootstrapAuditReplayService.SignerActor`) and keep the
+mark. The ids that keep an event from being recorded twice are read from the rows of both actors,
+so a node that delivered events on the earlier build and is then upgraded records none of them
+again, whether it reads on from `config/signer-audit-cursor.json` or, having lost it, reads the
+journal from the beginning. The old rows are not rewritten: the trail is append-only and they are
+on the hash chain.
+
+**A failed unlock is an event.** `KeystoreSignatureFailed` and `KeystorePinMacFailed` covered a
+file, entry or pin that did not verify. A keystore that verified and then could not be decrypted
+(the secondary passphrase does not unwrap the main one; the main one opens no entry; the file,
+the wrapped passphrase or `keystore.yaml` cannot be read as what it is) raised nothing. The three
+load paths now record `KeystoreUnlockFailed` for the keystore and rethrow. What counts is a
+`CryptographicException`, which an AES-GCM tag mismatch is, or an `InvalidDataException`; a
+missing passphrase file or a database that cannot be reached is not recorded as one, because
+nothing was tried against the keystore, and because the node of a split install runs the
+command-line backup without a passphrase file and falls back to a locked signer, which must not
+look like an attack. The event's detail is fixed text and the exception's type name. The message
+is left out on purpose, and where the event is written no passphrase is in scope: nothing of one,
+or derived from one, can reach the journal, the replayed file, the wire, the audit row or the
+console. A wrong secondary passphrase on a keystore whose pin has a MAC is still caught earlier,
+as `KeystorePinMacFailed`, which is what a changed secondary passphrase looks like from the pin.
+
+**The signer's command-line tools.** `--backup` and `--restore` with `--role signer --signer-dir`
+are a process beside the signer. They did not open the journal, so the keystore service in that
+process wrote its events to `logs/` under the application directory, which on a split install is
+the node's and not the signer's to write, and the run itself was recorded nowhere. Both now open
+the journal first (`SignerToolJournal.Open`, the same `KeystoreAuditJournal.Open` the signer role
+calls) and append one event when they end: `BackupCreated` or `BackupRestored`, a failure when
+the exit code is not 0 or an exception stopped the run, with the exit code and the archive's file
+name. The node writes these two as `Backup` rows, as the console's are; every other journal event
+stays a `Keystore` row. The wire is unchanged: the event uses the six fields, with no keystore
+name. The signer and the tool append to the same day's file from two processes, so the writer
+tries again a few times when the other holds the file. `Append` is on the journal class and not on
+`ISignerEventJournal`: the node still has no call that writes.
+
+**A single process records as it goes.** With the signer in process the events of a running node
+(a key appended, `ssh-ca.keystore` created, a verification failure during an append) sat in
+`logs/bootstrap-audit-*.jsonl` until the next start. The keystore service now raises
+`KeystoreService.AuditEventWritten` after it appends a line, and the control role runs
+`LocalKeystoreEventRecorder`, which on that signal, a moment later, has
+`BootstrapAuditReplayService.RecordNewLinesAsync` record every whole line the trail lacks. Two
+things keep this from duplicating what the drain replays. The row is the replay's row with the
+replay's `BootstrapEntryId` (file name, line position, text), so the drain at the next start, or
+a bootstrap's, finds each line recorded and writes none. And the recorder never renames or
+removes the file: the keystore service may be appending to it, and a line written between a read
+and a rename would be lost, so the rename stays with the drain, which runs before the node
+serves anything. Each line is looked for in the audit database after it is logged and the first
+that is missing ends the pass; a pass that could not finish is tried again every minute, and the
+lines are in the file for the next start if the node stops first. It runs only with an audit
+database, since without one a line cannot be told from one already recorded. A node whose signer
+is remote does not run it; it reads the journal instead.
+
+What this does not do: a signer on the shared layout that runs as its own process still has its
+events replayed only at the node's next start, and the journal is still never pruned.
 
 ## The signer's HSM settings in its health answer (2026-11-09)
 
