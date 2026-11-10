@@ -486,7 +486,9 @@ public class MtlsController : ControllerBase
     /// used to set the certificate row's revocation fields directly, which did none of that. The
     /// credential is already revoked and its holder's sessions ended, so the service finds no
     /// holder left to sign out. A certificate already revoked or on hold is left as it is, as
-    /// before; one revoked by another path between the check and the call is not an error.
+    /// before; one revoked by another path between the check and the call is not an error, and
+    /// neither is one deleted in between: there is nothing left to revoke, and the credential
+    /// itself is already revoked.
     /// </summary>
     /// <param name="certificateId">The credential's certificate.</param>
     /// <param name="credentialId">The credential that was revoked.</param>
@@ -500,7 +502,11 @@ public class MtlsController : ControllerBase
         {
             await _revocation.RevokeCertificateAsync(certificateId, null, RevocationReason.Superseded);
         }
-        catch (InvalidOperationException)
+        catch (ModularCA.Shared.Errors.ResourceNotFoundException)
+        {
+            return;
+        }
+        catch (ModularCA.Shared.Errors.CertificateRevocationStateException)
         {
             if (await _db.Certificates.AsNoTracking().AnyAsync(c => c.CertificateId == certificateId && c.Revoked))
                 return;

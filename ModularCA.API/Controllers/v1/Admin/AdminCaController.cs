@@ -971,7 +971,8 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// CA names (<c>chosenProfileId</c>, null for the seeded default), the profile in effect
         /// and, when that profile cannot do the job, why (<c>problem</c>). <c>candidates</c> are
         /// the end-entity profiles the CA may issue under, each with the roles it suits and what
-        /// it gives a certificate (key usages, extended key usages, validity range).
+        /// it gives a certificate (key usages, extended key usages, validity range), with inheritance
+        /// resolved the whole chain up as issuance resolves it.
         /// <c>subjectKey</c>, <c>lifetimeYears</c> and <c>caNotAfter</c> are what these
         /// certificates get whatever their profile: the key follows the CA's, and the lifetime
         /// is that many years unless the profile's longest validity or the CA's expiry is sooner.
@@ -986,8 +987,14 @@ namespace ModularCA.API.Controllers.v1.Admin
 
             var allProfiles = await _db.CertProfiles.AsNoTracking().OrderBy(p => p.Name).ToListAsync();
             var byId = allProfiles.ToDictionary(p => p.Id);
+            // Each profile's parent as issuance sees it, its own ancestors applied; resolved once per profile.
+            var parents = new Dictionary<Guid, ModularCA.Shared.Entities.CertProfileEntity?>();
             ModularCA.Shared.Entities.CertProfileEntity? ParentOf(ModularCA.Shared.Entities.CertProfileEntity p)
-                => p.InheritanceEnabled && p.InheritsFromId is Guid parentId && byId.TryGetValue(parentId, out var parent) ? parent : null;
+            {
+                if (!parents.TryGetValue(p.Id, out var parent))
+                    parents[p.Id] = parent = InfrastructureCertProfiles.ParentOf(p, byId, _db);
+                return parent;
+            }
             var profiles = allProfiles.Where(p => !p.IsCaProfile && CertProfileScope.Admits(p, ca)).ToList();
 
             var roles = new List<object>();

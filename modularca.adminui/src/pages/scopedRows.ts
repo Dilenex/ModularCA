@@ -1,7 +1,10 @@
 /**
- * Narrowing rows that the server returns unscoped to the console's scope, for lists whose rows
- * name their CA by certificate id or by CA id (CRL schedules, signing profiles). Pure, so the
- * pages that follow the scope switcher share one rule and it is covered by unit tests.
+ * Narrowing rows to the console's scope, for lists whose rows name their CA by certificate id or
+ * by CA id (CRL schedules, signing profiles). Pure, so the pages that follow the scope switcher
+ * share one rule and it is covered by unit tests. The profile lists also send the scope to the
+ * server (`caQuery()`), which narrows by the same rule over the CAs the database holds; this
+ * judges by the CAs the caller is shown, so it never keeps a row the server left out and what a
+ * page shows is what this alone would show.
  */
 
 /** An entry of the flat `/api/v1/admin/authorities` list: the CA id and its certificate id. */
@@ -38,6 +41,16 @@ export function rowsInScope<T>(
         if (!ref) return options.keepUnbound ? true : inScope(null);
         return inScope(caIdForRef(ref, authorities));
     });
+}
+
+/**
+ * The ids of the profiles that `rows` inherit from and that `rows` does not hold. A list the
+ * server narrowed to a scope leaves out a parent bound to another CA; the page then loads the
+ * names it needs rather than show an id where it showed a name.
+ */
+export function parentsOutside(rows: readonly { id?: string; inheritanceEnabled?: boolean; inheritsFromId?: string | null }[]): string[] {
+    const held = new Set(rows.map(r => r.id));
+    return [...new Set(rows.filter(r => r.inheritanceEnabled && !!r.inheritsFromId && !held.has(r.inheritsFromId)).map(r => r.inheritsFromId as string))];
 }
 
 /** An SSH CA key as `/api/v1/admin/ssh/ca-keys` lists it: its id and the SSH CA it belongs to. */

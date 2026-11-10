@@ -349,6 +349,79 @@ public class AcmeEndpointScopeTests
         Assert.Equal("open", (await w.Db.AcmeOrders.AsNoTracking().SingleAsync()).CaLabel);
     }
 
+    /// <summary>Places an order for one DNS identifier with an account bound to <c>open</c>.</summary>
+    private static async Task<IActionResult> NewOrderForAsync(World w, string dnsName)
+    {
+        var (jwk, thumb) = NewKey();
+        var account = new AcmeAccountEntity { JwkJson = jwk, JwkThumbprint = thumb, CertificateAuthorityId = w.Open.Id };
+        w.Db.AcmeAccounts.Add(account);
+        await w.Db.SaveChangesAsync();
+        return await InvokeAsync(w, "AcmeOrderController", "NewOrder", new AcmeJwsPayload
+        {
+            AccountId = account.Id,
+            Payload = JsonSerializer.Serialize(new { identifiers = new[] { new { type = "dns", value = "ok.example.com" }, new { type = "dns", value = dnsName } } }),
+        }, w.Open);
+    }
+
+    /// <summary>
+    /// A DNS identifier longer than 253 characters, or with a label longer than 63 or empty, is
+    /// refused with 400 rejectedIdentifier and no order is created; such orders were accepted.
+    /// </summary>
+    [Theory]
+    [InlineData(254, 50)]
+    [InlineData(300, 63)]
+    [InlineData(80, 64)]
+    [InlineData(0, 0)]
+    public async Task New_order_refuses_a_dns_identifier_no_dns_name_can_be(int length, int labelLength)
+    {
+        var w = Seed();
+        var name = length == 0 ? "a..example.com" : DnsName(length, labelLength);
+
+        var result = await NewOrderForAsync(w, name);
+
+        Assert.Equal(400, StatusOf(result));
+        var error = Assert.IsType<AcmeErrorResponse>(Assert.IsType<ObjectResult>(result).Value);
+        Assert.Equal("urn:ietf:params:acme:error:rejectedIdentifier", error.Type);
+        Assert.True(error.Detail!.Length < 200, "the detail quotes only the start of the name");
+        Assert.Empty(await w.Db.AcmeOrders.ToListAsync());
+    }
+
+    /// <summary>A name of exactly 253 characters with 63-character labels is accepted, with or without the root's trailing dot, and as a wildcard.</summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData(".")]
+    [InlineData("wildcard")]
+    public async Task New_order_accepts_a_dns_identifier_at_the_limits(string form)
+    {
+        var w = Seed();
+        var name = form == "wildcard" ? "*." + DnsName(251, 63) : DnsName(253, 63) + form;
+
+        var result = await NewOrderForAsync(w, name);
+
+        Assert.Equal(201, StatusOf(result));
+        Assert.Single(await w.Db.AcmeOrders.ToListAsync());
+    }
+
+    /// <summary>A dotted name of exactly <paramref name="length"/> characters whose labels are at most <paramref name="labelLength"/> long.</summary>
+    private static string DnsName(int length, int labelLength)
+    {
+        var labels = new List<string>();
+        var remaining = length;
+        while (remaining > 0)
+        {
+            var take = Math.Min(labelLength, remaining);
+            // The last label may not be followed by a dot; any other label needs room for one.
+            if (take < remaining && take == remaining - 1)
+                take--;
+            labels.Add(new string('a', take));
+            remaining -= take + (take < remaining ? 1 : 0);
+        }
+        var name = string.Join('.', labels);
+        Assert.Equal(length, name.Length);
+        Assert.True(labels.Max(l => l.Length) <= labelLength && labels.Max(l => l.Length) >= Math.Min(labelLength, length));
+        return name;
+    }
+
     /// <summary>
     /// The finding: <c>AcmeAccountDeactivated</c> carried the route label (null on the label-less
     /// routes) and no CA id or space. It carries the bound CA's now.

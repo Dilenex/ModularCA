@@ -190,6 +190,20 @@ public static class ErrorCodes
     /// </summary>
     public const string CertificateRetired = "MCA-RES-008";
 
+    /// <summary>
+    /// The certificate's revocation state does not allow the change: it is already revoked
+    /// permanently, already on hold, or not on hold when a release was asked for. See
+    /// <see cref="CertificateRevocationStateException"/>.
+    /// </summary>
+    public const string CertificateRevocationState = "MCA-RES-009";
+
+    /// <summary>
+    /// A certificate serial number matched more than one certificate. Serials are unique only
+    /// within an issuer, so a serial alone cannot say which certificate was meant; the request is
+    /// retried with the certificate ID. Answers 409, as the admin serial endpoints already did.
+    /// </summary>
+    public const string CertificateSerialAmbiguous = "MCA-RES-010";
+
     // ---- POL: deliberate certificate-policy limits ------------------------------------------
 
     /// <summary>One or more certificate-policy rules were violated.</summary>
@@ -281,6 +295,14 @@ public static class ErrorCodes
     /// duration. See <c>ExpiryWarningRule.Problem</c>.
     /// </summary>
     public const string ExpiryWarningSettingsInvalid = "MCA-PRF-001";
+
+    /// <summary>
+    /// A certificate profile names a key usage or an extended key usage the OID catalog does not
+    /// hold, by name or OID, or names <c>anyExtendedKeyUsage</c>. Issuance would leave it out of
+    /// the certificate, so the profile is refused when it is written. See
+    /// <c>CertProfileUsageValidation</c>.
+    /// </summary>
+    public const string CertProfileUsageNotInCatalog = "MCA-PRF-002";
 
     /// <summary>
     /// Codes nothing raises any more. They stay in <see cref="All"/> so their numbers are never

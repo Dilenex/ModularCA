@@ -103,49 +103,53 @@ namespace ModularCA.API.Controllers.v1.User
         }
 
         /// <summary>
+        /// Whether <paramref name="cert"/> is a certificate this controller serves: it is a CA
+        /// certificate, it is not the System Signing CA, and the caller's <see cref="SpaceFence"/> admits
+        /// its CA (<see cref="CallerCanSeeCaCertAsync"/>). Every miss gets the same 404, so the route is
+        /// no existence oracle for leaf certificates or for other spaces' CAs.
+        /// </summary>
+        /// <param name="cert">The certificate the serial resolved to.</param>
+        private async Task<bool> IsVisibleCaCertificateAsync(CertificateInfoModel cert)
+        {
+            if (!cert.IsCA)
+                return false;
+            if (cert.SubjectDN?.Contains("System Signing CA") ?? false)
+                return false;
+            return await CallerCanSeeCaCertAsync(cert.CertificateId);
+        }
+
+        /// <summary>
         /// Details of a CA certificate by serial. Requires the <c>CaUser</c> policy. 404 for an unknown
-        /// serial, for the System Signing CA, and, for a caller who is not instance-wide, for anything but
-        /// the certificate of a CA inside their <see cref="SpaceFence"/>. An instance-wide caller is not
-        /// held to CA certificates and gets any certificate's details.
+        /// serial, for a certificate that is not a CA certificate, for the System Signing CA, and, for a
+        /// caller who is not instance-wide, for anything but the certificate of a CA inside their
+        /// <see cref="SpaceFence"/> (<see cref="IsVisibleCaCertificateAsync"/>). An instance-wide caller
+        /// gets the details of any CA certificate, as <see cref="GetValidCaCertificates"/> lists them.
         /// </summary>
         /// <param name="serial">Serial number of the certificate.</param>
         [HttpGet("{serial}")]
         public async Task<ActionResult<CertificateInfoModel>> GetCertificateInfo(string serial)
         {
             var cert = await _certService.GetCertificateInfoAsync(serial);
-            if (cert == null)
-                return NotFound();
-
-            // Exclude and hide the System Signing CA from the response
-            if (cert.SubjectDN?.Contains("System Signing CA") ?? false)
-                return NotFound();
-
-            // Space fence. Collapse cross-space mismatches to 404 to
-            // avoid existence oracles.
-            if (!await CallerCanSeeCaCertAsync(cert.CertificateId))
+            if (cert == null || !await IsVisibleCaCertificateAsync(cert))
                 return NotFound();
 
             return Ok(cert);
         }
 
         /// <summary>
-        /// Meant to download a CA certificate, as PEM when <c>Accept</c> names PEM or as DER for
+        /// Downloads a CA certificate, as PEM when <c>Accept</c> names PEM or as DER for
         /// <c>application/pkix-cert</c>, <c>application/x-x509-ca-cert</c> or <c>application/octet-stream</c>
-        /// (404 for any other <c>Accept</c>). As written it refuses every CA certificate with 404, so a
-        /// caller who is not instance-wide always gets 404 and an instance-wide caller can download only
-        /// certificates that are not CA certificates. Requires the <c>CaUser</c> policy.
+        /// (404 for any other <c>Accept</c>). Serves the certificates <see cref="GetCertificateInfo"/>
+        /// does (<see cref="IsVisibleCaCertificateAsync"/>): 404 for a certificate that is not a CA
+        /// certificate, for the System Signing CA, and for a CA outside the caller's <see cref="SpaceFence"/>.
+        /// Requires the <c>CaUser</c> policy.
         /// </summary>
         /// <param name="serial">Serial number of the certificate.</param>
         [HttpGet("{serial}/file")]
         public async Task<IActionResult> GetCertificate(string serial)
         {
             var raw = await _certService.GetCertificateInfoAsync(serial);
-            // Hide CA certs and System cert
-            if (raw == null || raw.IsCA || raw.SubjectDN?.Contains("System Signing CA") == true)
-                return NotFound();
-
-            // Space fence.
-            if (!await CallerCanSeeCaCertAsync(raw.CertificateId))
+            if (raw == null || !await IsVisibleCaCertificateAsync(raw))
                 return NotFound();
 
             var accept = Request.Headers.Accept.ToString().ToLowerInvariant();

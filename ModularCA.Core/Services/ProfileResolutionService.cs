@@ -30,6 +30,18 @@ public class ProfileResolutionService : IProfileResolutionService
         _logger = logger;
     }
 
+    /// <summary>
+    /// How many ancestors resolution follows above a profile. Inheritance chains are a few levels
+    /// deep (system baseline, space, CA); the bound only stops a chain the database should never
+    /// hold from costing a query per row.
+    /// </summary>
+    internal const int MaxInheritanceDepth = 16;
+
+    /// <summary>
+    /// The effective profile: <paramref name="certProfileId"/>'s row merged with its parent's
+    /// effective values (<see cref="EffectiveParentOfAsync(CertProfileEntity, CancellationToken)"/>),
+    /// so every ancestor's restriction holds, not only the parent's stored row.
+    /// </summary>
     /// <inheritdoc />
     public async Task<EffectiveCertProfile> ResolveCertProfileAsync(Guid certProfileId)
     {
@@ -40,26 +52,14 @@ public class ProfileResolutionService : IProfileResolutionService
         if (child == null)
             throw new InvalidOperationException($"Cert profile '{certProfileId}' not found.");
 
-        // If inheritance is not active, return standalone
-        if (!child.InheritanceEnabled || child.InheritsFromId == null)
-            return MapCertProfileStandalone(child);
-
-        var parent = await _db.CertProfiles
-            .AsNoTracking()
-            .FirstOrDefaultAsync(p => p.Id == child.InheritsFromId);
-
-        // Defensive: if parent doesn't exist, treat as standalone
-        if (parent == null)
-        {
-            _logger.LogWarning(
-                "Cert profile '{ChildId}' references non-existent parent '{ParentId}'. Treating as standalone.",
-                certProfileId, child.InheritsFromId);
-            return MapCertProfileStandalone(child);
-        }
-
-        return MergeCertProfiles(child, parent);
+        return ResolveLoaded(child, await EffectiveParentOfAsync(child));
     }
 
+    /// <summary>
+    /// The effective profile: <paramref name="requestProfileId"/>'s row merged with its parent's
+    /// effective values (<see cref="EffectiveParentOfAsync(RequestProfileEntity, CancellationToken)"/>),
+    /// so every ancestor's restriction holds, not only the parent's stored row.
+    /// </summary>
     /// <inheritdoc />
     public async Task<EffectiveRequestProfile> ResolveRequestProfileAsync(Guid requestProfileId)
     {
@@ -70,59 +70,287 @@ public class ProfileResolutionService : IProfileResolutionService
         if (child == null)
             throw new InvalidOperationException($"Request profile '{requestProfileId}' not found.");
 
-        if (!child.InheritanceEnabled || child.InheritsFromId == null)
-            return MapRequestProfileStandalone(child);
-
-        var parent = await _db.RequestProfiles
-            .AsNoTracking()
-            .FirstOrDefaultAsync(p => p.Id == child.InheritsFromId);
-
-        if (parent == null)
-        {
-            _logger.LogWarning(
-                "Request profile '{ChildId}' references non-existent parent '{ParentId}'. Treating as standalone.",
-                requestProfileId, child.InheritsFromId);
-        }
-
-        return ResolveLoaded(child, parent);
+        return ResolveLoaded(child, await EffectiveParentOfAsync(child));
     }
 
     /// <summary>
-    /// The effective profile of <paramref name="child"/> from rows already loaded, as
-    /// <see cref="ResolveRequestProfileAsync"/> resolves it: merged with <paramref name="parent"/>
-    /// when the child inherits from it, standalone otherwise or when the parent is missing.
-    /// Reads nothing from the database.
+    /// The effective profile of <paramref name="child"/> merged with <paramref name="parent"/> when
+    /// the child inherits from it, standalone otherwise or when the parent is missing. The parent
+    /// must already carry its own effective values, as
+    /// <see cref="EffectiveParentOf(RequestProfileEntity, Func{Guid, RequestProfileEntity?})"/>
+    /// returns it; a stored row would clamp against one level only. Reads nothing from the database.
     /// </summary>
     /// <param name="child">The request profile to resolve.</param>
-    /// <param name="parent">The row <paramref name="child"/> inherits from, or null when there is none.</param>
+    /// <param name="parent">The parent <paramref name="child"/> inherits from, with its effective values, or null when there is none.</param>
     internal EffectiveRequestProfile ResolveLoaded(RequestProfileEntity child, RequestProfileEntity? parent)
         => !child.InheritanceEnabled || child.InheritsFromId == null || parent == null || parent.Id != child.InheritsFromId
             ? MapRequestProfileStandalone(child)
             : MergeRequestProfiles(child, parent);
 
     /// <summary>
-    /// The effective certificate profile of <paramref name="child"/> from rows already loaded, as
-    /// <see cref="ResolveCertProfileAsync"/> resolves it: merged with <paramref name="parent"/>
-    /// when the child inherits from it, standalone otherwise or when the parent is missing.
+    /// The effective profile of <paramref name="child"/>, its ancestors read through
+    /// <paramref name="rowOf"/> (<see cref="EffectiveParentOf(RequestProfileEntity, Func{Guid, RequestProfileEntity?})"/>).
     /// Reads nothing from the database.
     /// </summary>
+    /// <param name="child">The request profile to resolve.</param>
+    /// <param name="rowOf">The stored row of a profile id, or null when there is none.</param>
+    internal EffectiveRequestProfile ResolveChain(RequestProfileEntity child, Func<Guid, RequestProfileEntity?> rowOf)
+        => ResolveLoaded(child, EffectiveParentOf(child, rowOf));
+
+    /// <summary>
+    /// The effective certificate profile of <paramref name="child"/> merged with
+    /// <paramref name="parent"/> when the child inherits from it, standalone otherwise or when the
+    /// parent is missing. The parent must already carry its own effective values, as
+    /// <see cref="EffectiveParentOf(CertProfileEntity, Func{Guid, CertProfileEntity?})"/> returns
+    /// it; a stored row would clamp against one level only. Reads nothing from the database.
+    /// </summary>
     /// <param name="child">The certificate profile to resolve.</param>
-    /// <param name="parent">The row <paramref name="child"/> inherits from, or null when there is none.</param>
+    /// <param name="parent">The parent <paramref name="child"/> inherits from, with its effective values, or null when there is none.</param>
     internal EffectiveCertProfile ResolveLoaded(CertProfileEntity child, CertProfileEntity? parent)
         => !child.InheritanceEnabled || child.InheritsFromId == null || parent == null || parent.Id != child.InheritsFromId
             ? MapCertProfileStandalone(child)
             : MergeCertProfiles(child, parent);
 
     /// <summary>
-    /// A resolver for <see cref="ResolveLoaded(RequestProfileEntity, RequestProfileEntity?)"/> and
-    /// <see cref="ResolveLoaded(CertProfileEntity, CertProfileEntity?)"/> only, for code that reads the rows itself (the
-    /// upgrade check reads them by column name, before the model applies). It has no database:
-    /// its other methods must not be called, and certificate profile usages are compared by
-    /// spelling alone, without the usage catalog.
+    /// The effective certificate profile of <paramref name="child"/>, its ancestors read through
+    /// <paramref name="rowOf"/> (<see cref="EffectiveParentOf(CertProfileEntity, Func{Guid, CertProfileEntity?})"/>).
+    /// Reads nothing from the database.
+    /// </summary>
+    /// <param name="child">The certificate profile to resolve.</param>
+    /// <param name="rowOf">The stored row of a profile id, or null when there is none.</param>
+    internal EffectiveCertProfile ResolveChain(CertProfileEntity child, Func<Guid, CertProfileEntity?> rowOf)
+        => ResolveLoaded(child, EffectiveParentOf(child, rowOf));
+
+    /// <summary>
+    /// The profile <paramref name="child"/> inherits from, carrying its effective values: each
+    /// ancestor, from the top of the chain down, merged with the one above it, so the result holds
+    /// every ancestor's restriction. Its identity, scope and inheritance columns are the parent's
+    /// own. Null when <paramref name="child"/> inherits from nothing or its parent is missing. The
+    /// chain ends at a missing parent, at a profile already seen (a cycle, which is logged), or after
+    /// <see cref="MaxInheritanceDepth"/> ancestors; the profile it ends at stands alone.
+    /// </summary>
+    /// <param name="child">The certificate profile whose parent is wanted.</param>
+    /// <param name="rowOf">The stored row of a profile id, or null when there is none.</param>
+    internal CertProfileEntity? EffectiveParentOf(CertProfileEntity child, Func<Guid, CertProfileEntity?> rowOf)
+    {
+        var ancestors = Ancestors(child.Id, child, p => p.InheritanceEnabled ? p.InheritsFromId : null, p => p.Id, rowOf, "Cert");
+        if (ancestors.Count == 0)
+            return null;
+        var effective = ancestors[^1];
+        for (var i = ancestors.Count - 2; i >= 0; i--)
+            effective = AsRow(MergeCertProfiles(ancestors[i], effective), ancestors[i]);
+        return effective;
+    }
+
+    /// <summary>
+    /// The request profile <paramref name="child"/> inherits from, carrying its effective values, as
+    /// <see cref="EffectiveParentOf(CertProfileEntity, Func{Guid, CertProfileEntity?})"/> builds it
+    /// for certificate profiles.
+    /// </summary>
+    /// <param name="child">The request profile whose parent is wanted.</param>
+    /// <param name="rowOf">The stored row of a profile id, or null when there is none.</param>
+    internal RequestProfileEntity? EffectiveParentOf(RequestProfileEntity child, Func<Guid, RequestProfileEntity?> rowOf)
+    {
+        var ancestors = Ancestors(child.Id, child, p => p.InheritanceEnabled ? p.InheritsFromId : null, p => p.Id, rowOf, "Request");
+        if (ancestors.Count == 0)
+            return null;
+        var effective = ancestors[^1];
+        for (var i = ancestors.Count - 2; i >= 0; i--)
+            effective = AsRow(MergeRequestProfiles(ancestors[i], effective), ancestors[i]);
+        return effective;
+    }
+
+    /// <summary>
+    /// <see cref="EffectiveParentOf(CertProfileEntity, Func{Guid, CertProfileEntity?})"/> with the
+    /// ancestors read from the database (<see cref="LoadCertAncestorsAsync"/>).
+    /// <paramref name="child"/> itself is taken as given, so a change not yet saved is judged.
+    /// </summary>
+    /// <param name="child">The certificate profile whose parent is wanted.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public async Task<CertProfileEntity?> EffectiveParentOfAsync(CertProfileEntity child, CancellationToken ct = default)
+    {
+        var rows = await LoadCertAncestorsAsync(_db, child, ct);
+        return EffectiveParentOf(child, id => rows.GetValueOrDefault(id));
+    }
+
+    /// <summary>
+    /// <see cref="EffectiveParentOf(RequestProfileEntity, Func{Guid, RequestProfileEntity?})"/> with
+    /// the ancestors read from the database. <paramref name="child"/> itself is taken as given.
+    /// </summary>
+    /// <param name="child">The request profile whose parent is wanted.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public async Task<RequestProfileEntity?> EffectiveParentOfAsync(RequestProfileEntity child, CancellationToken ct = default)
+    {
+        var rows = await LoadRequestAncestorsAsync(_db, child, ct);
+        return EffectiveParentOf(child, id => rows.GetValueOrDefault(id));
+    }
+
+    /// <summary>
+    /// The stored rows of <paramref name="child"/>'s ancestors, by id, read one level at a time up
+    /// to <see cref="MaxInheritanceDepth"/>, stopping at a missing parent or a profile already read.
+    /// </summary>
+    /// <param name="db">The database.</param>
+    /// <param name="child">The certificate profile whose ancestors are wanted.</param>
+    /// <param name="ct">Cancellation token.</param>
+    internal static async Task<Dictionary<Guid, CertProfileEntity>> LoadCertAncestorsAsync(ModularCADbContext db, CertProfileEntity child, CancellationToken ct = default)
+    {
+        var rows = new Dictionary<Guid, CertProfileEntity>();
+        var next = child.InheritanceEnabled ? child.InheritsFromId : null;
+        while (next is Guid id && id != child.Id && !rows.ContainsKey(id) && rows.Count < MaxInheritanceDepth)
+        {
+            var row = await db.CertProfiles.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id, ct);
+            if (row == null)
+                break;
+            rows[id] = row;
+            next = row.InheritanceEnabled ? row.InheritsFromId : null;
+        }
+        return rows;
+    }
+
+    /// <summary>
+    /// The stored rows of <paramref name="child"/>'s ancestors, by id, read as
+    /// <see cref="LoadCertAncestorsAsync"/> reads certificate profiles.
+    /// </summary>
+    /// <param name="db">The database.</param>
+    /// <param name="child">The request profile whose ancestors are wanted.</param>
+    /// <param name="ct">Cancellation token.</param>
+    internal static async Task<Dictionary<Guid, RequestProfileEntity>> LoadRequestAncestorsAsync(ModularCADbContext db, RequestProfileEntity child, CancellationToken ct = default)
+    {
+        var rows = new Dictionary<Guid, RequestProfileEntity>();
+        var next = child.InheritanceEnabled ? child.InheritsFromId : null;
+        while (next is Guid id && id != child.Id && !rows.ContainsKey(id) && rows.Count < MaxInheritanceDepth)
+        {
+            var row = await db.RequestProfiles.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id, ct);
+            if (row == null)
+                break;
+            rows[id] = row;
+            next = row.InheritanceEnabled ? row.InheritsFromId : null;
+        }
+        return rows;
+    }
+
+    /// <summary>
+    /// The ancestors of <paramref name="child"/>, nearest first, read through <paramref name="rowOf"/>:
+    /// up to a profile that inherits from nothing, a missing parent (logged), a profile already in
+    /// the chain (a cycle, logged) or <see cref="MaxInheritanceDepth"/> ancestors.
+    /// </summary>
+    private List<T> Ancestors<T>(Guid childId, T child, Func<T, Guid?> parentIdOf, Func<T, Guid> idOf, Func<Guid, T?> rowOf, string kind)
+        where T : class
+    {
+        var chain = new List<T>();
+        var seen = new HashSet<Guid> { childId };
+        var current = child;
+        while (parentIdOf(current) is Guid parentId)
+        {
+            if (!seen.Add(parentId))
+            {
+                _logger.LogWarning("{Kind} profile '{ProfileId}' inherits in a cycle through '{ParentId}'. The chain stops there.",
+                    kind, idOf(current), parentId);
+                break;
+            }
+            if (chain.Count >= MaxInheritanceDepth)
+            {
+                _logger.LogWarning("{Kind} profile '{ChildId}' has more than {Max} ancestors. The chain stops at '{ProfileId}'.",
+                    kind, childId, MaxInheritanceDepth, idOf(current));
+                break;
+            }
+            var parent = rowOf(parentId);
+            if (parent == null)
+            {
+                _logger.LogWarning("{Kind} profile '{ProfileId}' references non-existent parent '{ParentId}'. Treating it as standalone.",
+                    kind, idOf(current), parentId);
+                break;
+            }
+            chain.Add(parent);
+            current = parent;
+        }
+        return chain;
+    }
+
+    /// <summary>
+    /// <paramref name="profile"/> as a parent row for the profiles that inherit from it: its own
+    /// identity, scope and inheritance columns, with the effective values it has under
+    /// <paramref name="parent"/> (<see cref="ResolveLoaded(CertProfileEntity, CertProfileEntity?)"/>).
+    /// </summary>
+    /// <param name="profile">The certificate profile.</param>
+    /// <param name="parent">Its parent with its effective values, or null when it inherits from none.</param>
+    internal CertProfileEntity EffectiveRow(CertProfileEntity profile, CertProfileEntity? parent)
+        => AsRow(ResolveLoaded(profile, parent), profile);
+
+    /// <summary>
+    /// <paramref name="stored"/> with its constraint values replaced by <paramref name="effective"/>'s:
+    /// the parent row a child merges against. Identity, scope and inheritance columns stay the stored ones.
+    /// </summary>
+    private static CertProfileEntity AsRow(EffectiveCertProfile effective, CertProfileEntity stored) => new()
+    {
+        Id = stored.Id,
+        Name = stored.Name,
+        Description = stored.Description,
+        CertificateAuthorityId = stored.CertificateAuthorityId,
+        SpaceId = stored.SpaceId,
+        InheritsFromId = stored.InheritsFromId,
+        InheritanceEnabled = stored.InheritanceEnabled,
+        CanBeDeleted = stored.CanBeDeleted,
+        Revision = stored.Revision,
+        ProfileHash = stored.ProfileHash,
+        CreatedAt = stored.CreatedAt,
+        UpdatedAt = stored.UpdatedAt,
+        IsCaProfile = effective.IsCaProfile,
+        KeyUsages = effective.KeyUsages,
+        ExtendedKeyUsages = effective.ExtendedKeyUsages,
+        ValidityPeriodMin = effective.ValidityPeriodMin,
+        ValidityPeriodMax = effective.ValidityPeriodMax,
+        AllowedKeyAlgorithms = effective.AllowedKeyAlgorithms,
+        AllowedKeySizes = effective.AllowedKeySizes,
+        AllowedSignatureAlgorithms = effective.AllowedSignatureAlgorithms,
+        CtEnabled = effective.CtEnabled,
+        CtLogIds = effective.CtLogIds,
+        AllowWildcard = effective.AllowWildcard,
+        ExpiryWarningPercent = effective.ExpiryWarningPercent,
+        ExpiryWarningMaxWindow = effective.ExpiryWarningMaxWindow,
+        ExpiryAlertPercent = effective.ExpiryAlertPercent,
+        ExpiryAlertMaxWindow = effective.ExpiryAlertMaxWindow,
+        ExpiryNeverWarn = effective.ExpiryNeverWarn,
+        ExpiryWarningOverridesParent = stored.ExpiryWarningOverridesParent,
+    };
+
+    /// <summary>
+    /// <paramref name="stored"/> with its constraint values replaced by <paramref name="effective"/>'s,
+    /// as <see cref="AsRow(EffectiveCertProfile, CertProfileEntity)"/> does for certificate profiles.
+    /// </summary>
+    private static RequestProfileEntity AsRow(EffectiveRequestProfile effective, RequestProfileEntity stored) => new()
+    {
+        Id = stored.Id,
+        Name = stored.Name,
+        Description = stored.Description,
+        CertificateAuthorityId = stored.CertificateAuthorityId,
+        InheritsFromId = stored.InheritsFromId,
+        InheritanceEnabled = stored.InheritanceEnabled,
+        CreatedAt = stored.CreatedAt,
+        UpdatedAt = stored.UpdatedAt,
+        SubjectDnRules = effective.SubjectDnRules,
+        SanRules = effective.SanRules,
+        AllowedCertProfileIds = effective.AllowedCertProfileIds,
+        DefaultCertProfileId = effective.DefaultCertProfileId,
+        RequireApproval = effective.RequireApproval,
+        RequiredApprovalCount = effective.RequiredApprovalCount,
+    };
+
+    /// <summary>
+    /// A resolver for <see cref="ResolveLoaded(RequestProfileEntity, RequestProfileEntity?)"/>,
+    /// <see cref="ResolveLoaded(CertProfileEntity, CertProfileEntity?)"/> and their counterparts over a
+    /// row lookup only, for code that reads the rows itself (the upgrade check reads them by column
+    /// name, before the model applies). It has no database: its other methods must not be called,
+    /// and certificate profile usages are compared by spelling alone, without the usage catalog.
     /// </summary>
     /// <param name="logger">Where the inheritance clamps log what they override.</param>
     internal static ProfileResolutionService ForLoadedRows(ILogger<ProfileResolutionService> logger) => new(null!, logger);
 
+    /// <summary>
+    /// What makes <paramref name="childProfileId"/> looser than the profile it inherits from, judged
+    /// against that parent's effective values (<see cref="EffectiveParentOfAsync(CertProfileEntity, CancellationToken)"/>),
+    /// so a limit the parent only inherits from further up binds the child too.
+    /// </summary>
     /// <inheritdoc />
     public async Task<List<string>> ValidateCertProfileInheritanceAsync(Guid childProfileId)
     {
@@ -141,9 +369,9 @@ public class ProfileResolutionService : IProfileResolutionService
         if (!child.InheritanceEnabled || child.InheritsFromId == null)
             return errors; // No inheritance, nothing to validate
 
-        var parent = await _db.CertProfiles
-            .AsNoTracking()
-            .FirstOrDefaultAsync(p => p.Id == child.InheritsFromId);
+        // The parent as issuance sees it, its own ancestors applied: its stored row would let a
+        // child pass a limit the parent only inherits.
+        var parent = await EffectiveParentOfAsync(child);
 
         if (parent == null)
         {
@@ -179,6 +407,11 @@ public class ProfileResolutionService : IProfileResolutionService
         return errors;
     }
 
+    /// <summary>
+    /// What makes <paramref name="childProfileId"/> looser than the request profile it inherits from,
+    /// judged against that parent's effective values (<see cref="EffectiveParentOfAsync(RequestProfileEntity, CancellationToken)"/>).
+    /// A required approval count of 0 inherits the parent's, as resolution reads it, and is not an error.
+    /// </summary>
     /// <inheritdoc />
     public async Task<List<string>> ValidateRequestProfileInheritanceAsync(Guid childProfileId)
     {
@@ -197,9 +430,8 @@ public class ProfileResolutionService : IProfileResolutionService
         if (!child.InheritanceEnabled || child.InheritsFromId == null)
             return errors;
 
-        var parent = await _db.RequestProfiles
-            .AsNoTracking()
-            .FirstOrDefaultAsync(p => p.Id == child.InheritsFromId);
+        // The parent as issuance sees it, its own ancestors applied.
+        var parent = await EffectiveParentOfAsync(child);
 
         if (parent == null)
         {
@@ -211,8 +443,8 @@ public class ProfileResolutionService : IProfileResolutionService
         ValidateJsonArraySubset(child.AllowedCertProfileIds, parent.AllowedCertProfileIds,
             "AllowedCertProfileIds", errors);
 
-        // RequiredApprovalCount: child must be >= parent (stricter)
-        if (child.RequiredApprovalCount < parent.RequiredApprovalCount)
+        // RequiredApprovalCount: child must be >= parent (stricter); 0 inherits the parent's.
+        if (child.RequiredApprovalCount > 0 && child.RequiredApprovalCount < parent.RequiredApprovalCount)
         {
             errors.Add(
                 $"RequiredApprovalCount: child value ({child.RequiredApprovalCount}) " +

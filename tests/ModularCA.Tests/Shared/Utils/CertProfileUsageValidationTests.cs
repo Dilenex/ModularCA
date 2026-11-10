@@ -156,6 +156,97 @@ public class CertProfileUsageValidationTests
         Assert.False(CertProfileUsageValidation.CheckExtendedKeyUsages("clientAuth", []).IsValid);
         Assert.False(CertProfileUsageValidation.CheckKeyUsages("digitalSignature", []).IsValid);
     }
+
+    // ── the forms the field really arrives in ────────────────────────────────
+
+    /// <summary>
+    /// A profile is stored, and returned, as a JSON array; the console sends a comma-separated
+    /// list. Both are read, to the same entries.
+    /// </summary>
+    [Theory]
+    [InlineData("[\"clientAuth\",\"smartcardLogon\"]")]
+    [InlineData("[ \"clientAuth\" , \" smartcardLogon \" ]")]
+    [InlineData("clientAuth, smartcardLogon")]
+    [InlineData("clientAuth,smartcardLogon,")]
+    [InlineData("[\"clientAuth\",null,\"\",\"smartcardLogon\"]")]
+    public void A_field_is_read_as_a_JSON_array_or_a_comma_separated_list(string field)
+    {
+        Assert.Equal(["clientAuth", "smartcardLogon"], CertProfileUsageValidation.ParseField(field));
+        Assert.True(CertProfileUsageValidation.CheckExtendedKeyUsages(field, ExtendedCatalog).IsValid);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("  ")]
+    [InlineData("[]")]
+    [InlineData("null")]
+    public void An_empty_field_in_any_form_has_no_entries(string? field)
+    {
+        Assert.Empty(CertProfileUsageValidation.ParseField(field));
+        Assert.True(CertProfileUsageValidation.CheckKeyUsages(field, StandardCatalog).IsValid);
+        Assert.True(CertProfileUsageValidation.CheckExtendedKeyUsages(field, ExtendedCatalog).IsValid);
+    }
+
+    /// <summary>
+    /// The comma split of the removed validators read a JSON array as entries like
+    /// <c>["clientAuth"</c>, which resolve to nothing; the unknown entry is named as it was sent.
+    /// </summary>
+    [Fact]
+    public void An_unknown_entry_of_a_JSON_array_is_named_without_brackets_or_quotes()
+    {
+        var check = CertProfileUsageValidation.CheckExtendedKeyUsages("[\"clientAuth\",\"teleportAuth\"]", ExtendedCatalog);
+
+        Assert.False(check.IsValid);
+        Assert.Equal(["teleportAuth"], check.Unknown);
+        Assert.Equal("ExtendedKeyUsages contains teleportAuth, which is not in the OID catalog. "
+            + "Add it under Admin → OID Options, or use an existing OID or friendly name.",
+            CertProfileUsageValidation.DescribeFailure("ExtendedKeyUsages", check));
+    }
+
+    [Fact]
+    public void A_key_usage_array_is_checked_against_the_standard_rows()
+    {
+        Assert.True(CertProfileUsageValidation.CheckKeyUsages("[\"digitalSignature\",\"Key Encipherment\",\"2.5.29.15.1\"]", StandardCatalog).IsValid);
+
+        var check = CertProfileUsageValidation.CheckKeyUsages("[\"digitalSignature\",\"clientAuth\",\"clientAuth\"]", StandardCatalog);
+        Assert.Equal(["clientAuth"], check.Unknown);
+    }
+
+    [Fact]
+    public void AnyExtendedKeyUsage_is_refused_by_a_name_that_resolves_to_it_too()
+    {
+        (string? Oid, string? FriendlyName)[] catalogWithAny =
+            [..ExtendedCatalog, ("2.5.29.37.0", "anyExtendedKeyUsage")];
+
+        var check = CertProfileUsageValidation.CheckExtendedKeyUsages("[\"clientAuth\",\"Any Extended Key Usage\"]", catalogWithAny);
+
+        Assert.True(check.ContainsForbidden);
+        Assert.False(check.IsValid);
+        Assert.Empty(check.Unknown);
+    }
+
+    // ── an update excuses what the profile already stores ────────────────────
+
+    [Fact]
+    public void Entries_the_profile_already_stores_are_not_checked_again()
+    {
+        const string stored = "[\"clientAuth\",\"1.2.3.4\",\"2.5.29.37.0\"]";
+
+        Assert.True(CertProfileUsageValidation.CheckExtendedKeyUsages(stored, ExtendedCatalog, stored).IsValid);
+        Assert.True(CertProfileUsageValidation.CheckExtendedKeyUsages("clientAuth, 1.2.3.4, serverAuth", ExtendedCatalog, stored).IsValid);
+
+        var added = CertProfileUsageValidation.CheckExtendedKeyUsages("clientAuth, 1.2.3.4, 1.2.3.5", ExtendedCatalog, stored);
+        Assert.Equal(["1.2.3.5"], added.Unknown);
+
+        // Without the stored field, a create, everything is checked.
+        var create = CertProfileUsageValidation.CheckExtendedKeyUsages(stored, ExtendedCatalog);
+        Assert.Equal(["1.2.3.4"], create.Unknown);
+        Assert.True(create.ContainsForbidden);
+
+        Assert.True(CertProfileUsageValidation.CheckKeyUsages("digitalSignature, legacySign", StandardCatalog, "[\"legacySign\"]").IsValid);
+        Assert.False(CertProfileUsageValidation.CheckKeyUsages("digitalSignature, legacySign", StandardCatalog).IsValid);
+    }
 }
 
 /// <summary>

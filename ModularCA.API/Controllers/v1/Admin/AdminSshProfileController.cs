@@ -91,16 +91,56 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// </summary>
     private SpaceFence Fence => SpaceFence.From(HttpContext, Capabilities.CertRevoke);
 
+    /// <summary>
+    /// Narrows <paramref name="rows"/>, already inside the caller's fence, to the console's scope,
+    /// by the rule the console's SSH profile lists apply. It only ever removes rows.
+    /// <list type="bullet">
+    /// <item>A <paramref name="caId"/> view keeps the rows that name that CA and the rows that
+    /// name no CA (unbound, or a catalog entry).</item>
+    /// <item>A <paramref name="spaceId"/> view keeps the rows that name a CA of that space, and
+    /// none that name no CA: SSH CAs and their profiles belong to the instance, not to a space,
+    /// so a space holds none (the console shows a sentence saying so in place of the list).</item>
+    /// <item>With both, a row must be in both views; with neither, every row is kept.</item>
+    /// </list>
+    /// </summary>
+    /// <typeparam name="T">The row type.</typeparam>
+    /// <param name="rows">The rows the fence admits.</param>
+    /// <param name="caOf">The CA a row names: null for none, <see cref="Guid.Empty"/> for one that cannot be resolved (outside every view).</param>
+    /// <param name="caId">The CA view, or null.</param>
+    /// <param name="spaceId">The space view, or null.</param>
+    private async Task<List<T>> InScopeViewAsync<T>(List<T> rows, Func<T, Guid?> caOf, Guid? caId, Guid? spaceId)
+    {
+        if (caId is Guid viewCa)
+            rows = rows.Where(r => caOf(r) is not Guid rowCa || rowCa == viewCa).ToList();
+        if (spaceId is Guid viewSpace)
+        {
+            // By the CA's current space; a deleted CA is not found, so its rows are in no space.
+            var spaceCas = (await _db.CertificateAuthorities.AsNoTracking()
+                .Where(c => c.SpaceId == viewSpace).Select(c => c.Id).ToListAsync()).ToHashSet();
+            rows = rows.Where(r => caOf(r) is Guid rowCa && spaceCas.Contains(rowCa)).ToList();
+        }
+        return rows;
+    }
+
     // ── SSH Signing Profiles ───────────────────────────────────────────
 
     /// <summary>
     /// Lists the SSH signing profiles whose bound SSH CA key resolves to a CA inside the
     /// caller's <see cref="SpaceFence"/>; an instance-wide caller sees all, unbound ones
     /// included, which are otherwise excluded so another space cannot later claim them.
+    /// <para>
+    /// The console's scope narrows what the fence admits, and never widens it
+    /// (<see cref="InScopeViewAsync"/>): a <paramref name="caId"/> view keeps the profiles whose
+    /// SSH CA key belongs to that CA and the profiles with no key; a <paramref name="spaceId"/>
+    /// view keeps only profiles whose key's CA is in that space, which for SSH is none.
+    /// </para>
     /// </summary>
+    /// <param name="caId">Optional CA view: the profiles of this CA's SSH keys, and the unbound ones.</param>
+    /// <param name="spaceId">Optional space view: the profiles of the SSH CAs of this space. The pre-0.4.0 <c>tenantId</c> is refused (400).</param>
     [HttpGet("signing")]
     [Authorize(Policy = "CaOperator")]
-    public async Task<IActionResult> GetSigningProfiles()
+    [RefuseQueryKey("tenantId", "spaceId")]
+    public async Task<IActionResult> GetSigningProfiles([FromQuery] Guid? caId = null, [FromQuery] Guid? spaceId = null)
     {
         await _currentUser.EnsureLoadedAsync();
 
@@ -116,7 +156,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
                     p.CreatedAt
                 })
                 .ToListAsync();
-            return Ok(all);
+            return Ok(await InSigningScopeViewAsync(all, p => p.SshCaKeyId, caId, spaceId));
         }
 
         if (Fence.IsEmpty)
@@ -137,7 +177,30 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
                 p.ForceCommand, p.SourceAddressRestrictions, p.DefaultExtensions,
                 p.CreatedAt
             }).ToListAsync();
-        return Ok(profiles);
+        return Ok(await InSigningScopeViewAsync(profiles, p => p.SshCaKeyId, caId, spaceId));
+    }
+
+    /// <summary>
+    /// <see cref="InScopeViewAsync"/> for SSH signing profiles, which name their CA through their
+    /// SSH CA key: a profile with no key names no CA, and one whose key is not found names one
+    /// that cannot be resolved, so it is outside every view rather than taken for unbound.
+    /// </summary>
+    /// <typeparam name="T">The row type.</typeparam>
+    /// <param name="rows">The profiles the fence admits.</param>
+    /// <param name="keyOf">A profile's SSH CA key id, or null.</param>
+    /// <param name="caId">The CA view, or null.</param>
+    /// <param name="spaceId">The space view, or null.</param>
+    private async Task<List<T>> InSigningScopeViewAsync<T>(List<T> rows, Func<T, Guid?> keyOf, Guid? caId, Guid? spaceId)
+    {
+        if (caId == null && spaceId == null)
+            return rows;
+        var keyIds = rows.Select(keyOf).OfType<Guid>().Distinct().ToList();
+        var keyCas = await _db.SshCaKeys.AsNoTracking()
+            .Where(k => keyIds.Contains(k.Id))
+            .Select(k => new { k.Id, k.CertificateAuthorityId })
+            .ToDictionaryAsync(k => k.Id, k => k.CertificateAuthorityId);
+        return await InScopeViewAsync(
+            rows, r => keyOf(r) is Guid keyId ? (keyCas.TryGetValue(keyId, out var keyCa) ? keyCa : Guid.Empty) : null, caId, spaceId);
     }
 
     /// <summary>
@@ -336,10 +399,18 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// create/update/delete handlers are restricted to system admins so a
     /// space operator cannot mutate this shared catalog out from under another space.
     /// Each profile carries its <c>certificateType</c>: <c>user</c>, <c>host</c>, or null for either.
+    /// <para>
+    /// The console's scope (<see cref="InScopeViewAsync"/>): an SSH cert profile names no CA, so a
+    /// <paramref name="caId"/> view keeps every one, and a <paramref name="spaceId"/> view none,
+    /// since the catalog belongs to the instance and a space holds no SSH.
+    /// </para>
     /// </summary>
+    /// <param name="caId">Optional CA view: every profile, as none names a CA.</param>
+    /// <param name="spaceId">Optional space view: none. The pre-0.4.0 <c>tenantId</c> is refused (400).</param>
     [HttpGet("cert")]
     [Authorize(Policy = "CaOperator")]
-    public async Task<IActionResult> GetCertProfiles()
+    [RefuseQueryKey("tenantId", "spaceId")]
+    public async Task<IActionResult> GetCertProfiles([FromQuery] Guid? caId = null, [FromQuery] Guid? spaceId = null)
     {
         await _currentUser.EnsureLoadedAsync();
         var profiles = await _db.SshCertProfiles.AsNoTracking()
@@ -352,7 +423,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
                 p.MaxValidityHours, p.CertificateType, p.CreatedAt
             })
             .ToListAsync();
-        return Ok(profiles);
+        return Ok(await InScopeViewAsync(profiles, _ => null, caId, spaceId));
     }
 
     /// <summary>
@@ -523,10 +594,19 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// inside the caller's <see cref="SpaceFence"/>; profiles with a null CA scope are
     /// surfaced only to an instance-wide caller, who sees all. Each profile carries its
     /// <c>certificateType</c>: <c>user</c>, <c>host</c>, or null for either.
+    /// <para>
+    /// The console's scope narrows what the fence admits, and never widens it
+    /// (<see cref="InScopeViewAsync"/>): a <paramref name="caId"/> view keeps the profiles bound
+    /// to that CA and the unbound ones; a <paramref name="spaceId"/> view keeps only profiles
+    /// bound to a CA of that space, which for SSH is none.
+    /// </para>
     /// </summary>
+    /// <param name="caId">Optional CA view: the profiles bound to this CA, and the unbound ones.</param>
+    /// <param name="spaceId">Optional space view: the profiles bound to an SSH CA of this space. The pre-0.4.0 <c>tenantId</c> is refused (400).</param>
     [HttpGet("request")]
     [Authorize(Policy = "CaOperator")]
-    public async Task<IActionResult> GetRequestProfiles()
+    [RefuseQueryKey("tenantId", "spaceId")]
+    public async Task<IActionResult> GetRequestProfiles([FromQuery] Guid? caId = null, [FromQuery] Guid? spaceId = null)
     {
         await _currentUser.EnsureLoadedAsync();
 
@@ -542,7 +622,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
                     p.CertificateAuthorityId, p.CertificateType, p.CreatedAt
                 })
                 .ToListAsync();
-            return Ok(all);
+            return Ok(await InScopeViewAsync(all, p => p.CertificateAuthorityId, caId, spaceId));
         }
 
         if (Fence.IsEmpty)
@@ -562,7 +642,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
                 p.RequireApproval, p.MaxValidityHours,
                 p.CertificateAuthorityId, p.CertificateType, p.CreatedAt
             }).ToListAsync();
-        return Ok(profiles);
+        return Ok(await InScopeViewAsync(profiles, p => p.CertificateAuthorityId, caId, spaceId));
     }
 
     /// <summary>

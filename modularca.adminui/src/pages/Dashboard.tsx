@@ -631,8 +631,9 @@ const Dashboard: React.FC = () => {
                         title="Signing Profiles"
                         fetchData={async () => {
                             // As on the Profiles page: those issued by a CA in scope, and any with no issuer yet.
+                            // The server narrows to the scope and the rows are still filtered here, as there.
                             const [profiles, cas] = await Promise.all([
-                                apiGet<any>('/api/v1/admin/signing-profiles'),
+                                apiGet<any>(`/api/v1/admin/signing-profiles${caQuery()}`),
                                 apiGet<any>('/api/v1/admin/authorities').catch(() => []),
                             ]);
                             const list: any[] = Array.isArray(profiles) ? profiles : (profiles?.items || []);

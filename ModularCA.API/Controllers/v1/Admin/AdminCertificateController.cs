@@ -787,15 +787,20 @@ public class AdminCertificateController(
     }
 
     /// <summary>
-    /// Exports a certificate in PEM-with-key format by serial number.
-    /// PFX export is not supported on the admin backend; use the User Portal for PFX.
-    /// Requires CaOperator authorization policy.
-    /// Requires step-up MFA verification.
+    /// Exports the public certificate by serial number as <c>pem</c>, <c>der</c> or <c>pkcs7</c>
+    /// (alias <c>p7b</c>, a certs-only <c>SignedData</c> from <see cref="Pkcs7Util"/>). With
+    /// <see cref="CertExportRequest.IncludeChain"/> the PEM and PKCS#7 files also carry the issuers,
+    /// resolved as the chain download resolves them (<see cref="IssuerChainResolver.ResolveIssuerCertificatesAsync"/>);
+    /// DER holds one certificate, so DER with the chain is refused. No private key ever leaves this
+    /// endpoint: <c>pem-key</c> and PKCS#12 (<c>pkcs12</c>, <c>pfx</c>, <c>p12</c>) are refused with
+    /// 400 and the reason, and the holder exports a stored key as PKCS#12 from the User Portal.
+    /// Requires the CaOperator policy, step-up MFA (<see cref="StepUpOps.ExportCert"/>) and manage
+    /// access to the certificate; CA certificates and the System Signing CA are 404.
     /// </summary>
     /// <param name="serial">The serial number of the certificate to export.</param>
-    /// <param name="request">Export options including format (only 'pem-key' is supported).</param>
+    /// <param name="request">The format, and whether to include the issuer chain.</param>
     /// <param name="mfaToken">Step-up MFA token from the X-MFA-Token header.</param>
-    /// <returns>The exported certificate file.</returns>
+    /// <returns>The exported certificate file, or 400 naming why the format is refused.</returns>
     [HttpPost("{serial}/export")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> ExportCertificate(string serial, [FromBody] CertExportRequest request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -833,10 +838,42 @@ public class AdminCertificateController(
         // form; the clear-text PEM export this endpoint offered is gone with it. The holder
         // exports PKCS#12 from the User Portal; keys generated since re-download ended were
         // delivered once at request time and are not held at all.
-        if (string.Equals(request.Format, "pem-key", StringComparison.OrdinalIgnoreCase))
+        var format = (request.Format ?? string.Empty).Trim().ToLowerInvariant();
+        if (format == "pem-key")
             return BadRequest(new { error = "Clear-text PEM export of a stored private key is no longer offered. The certificate holder exports it as PKCS#12 from the User Portal; a key generated since the CA stopped keeping keys was delivered once, with the request." });
 
-        return BadRequest(new { error = "Unsupported format. PFX export is available via the User Portal." });
+        // PKCS#12 exists to carry a private key, and this endpoint never hands one out: the CA
+        // does not hold the keys of certificates issued from a CSR, and a stored key leaves the
+        // signer only to its holder, through the User Portal.
+        if (format is "pkcs12" or "pfx" or "p12")
+            return BadRequest(new { error = "PKCS#12 is not offered here: it carries a private key, and the admin export returns only the public certificate. The CA holds no key for a certificate issued from a CSR; where it does hold one, the certificate holder exports it as PKCS#12 from the User Portal. Use pem, der or pkcs7 for the certificate and its chain." });
+
+        if (format is not ("pem" or "der" or "pkcs7" or "p7b"))
+            return BadRequest(new { error = $"Unsupported format '{request.Format}'. Supported: pem, der, pkcs7 (p7b)." });
+
+        var includeChain = request.IncludeChain == true;
+        if (format == "der" && includeChain)
+            return BadRequest(new { error = "DER holds one certificate, so it cannot carry the chain. Use pem or PKCS#7 (pkcs7) with includeChain." });
+
+        var certEntity = await _dbContext.Certificates.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.CertificateId == target.CertificateId);
+        if (certEntity == null)
+            return NotFound(new { error = "Certificate not found" });
+
+        // The chain is the one the chain download and PKCS#12 carry: the issuers, nearest first,
+        // with the root only when it is the direct issuer.
+        var pems = new List<string> { certEntity.Pem.Trim() };
+        if (includeChain)
+            pems.AddRange((await IssuerChainResolver.ResolveIssuerCertificatesAsync(_dbContext, certEntity)).Select(i => i.Pem.Trim()));
+
+        var certName = CertificateUtil.ParseCnFromPem(certEntity.Pem);
+        return format switch
+        {
+            "pem" => File(System.Text.Encoding.UTF8.GetBytes(string.Join("\n", pems) + "\n"), "application/x-pem-file",
+                includeChain ? $"{certName}-fullchain.pem" : $"{certName}.pem"),
+            "der" => File(CertificateUtil.ParseFromPem(certEntity.Pem).GetEncoded(), "application/pkix-cert", $"{certName}.cer"),
+            _ => File(Pkcs7Util.BuildCertsOnly(pems.Select(CertificateUtil.ParseFromPem)), "application/pkcs7-mime", $"{certName}.p7b"),
+        };
     }
 
     /// <summary>
@@ -1504,17 +1541,26 @@ public class RetireCertificateRequest
 }
 
 /// <summary>
-/// Request body for the admin certificate export. The admin export no longer hands out private
-/// keys in any format, so every format is refused with 400 once the caller is authorised; holders
-/// export PKCS#12 from the User Portal.
+/// Request body for the admin certificate export, which returns the public certificate only:
+/// holders export a stored private key as PKCS#12 from the User Portal.
 /// </summary>
 public class CertExportRequest
 {
-    /// <summary>Requested export format. <c>pem-key</c> is refused with an explanation; anything else is refused as unsupported.</summary>
-    public string Format { get; set; } = "pfx";
-    /// <summary>Password for a PKCS#12 export. Not read by the admin export, which refuses every format.</summary>
+    /// <summary>
+    /// Export format, case-insensitive: <c>pem</c> (the default), <c>der</c>, or <c>pkcs7</c> (alias
+    /// <c>p7b</c>). <c>pem-key</c> and PKCS#12 (<c>pkcs12</c>, <c>pfx</c>, <c>p12</c>) are refused with
+    /// the reason, and anything else as unsupported.
+    /// </summary>
+    public string Format { get; set; } = "pem";
+    /// <summary>
+    /// Not read: only PKCS#12 takes a password, and the admin export does not produce PKCS#12.
+    /// Kept so existing clients that send it are not refused.
+    /// </summary>
     public string? Password { get; set; }
-    /// <summary>Whether to bundle the issuer chain. Not read by the admin export, which refuses every format.</summary>
+    /// <summary>
+    /// Whether the PEM or PKCS#7 file also carries the issuer chain (nearest issuer first, the root
+    /// only when it is the direct issuer). DER holds one certificate, so DER with this set is refused.
+    /// </summary>
     public bool? IncludeChain { get; set; }
 }
 

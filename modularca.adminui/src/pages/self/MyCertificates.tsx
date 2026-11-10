@@ -41,6 +41,12 @@ function formatDate(d: string | null) {
     return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+// On hold: revoked with reason CertificateHold. An administrator can release it, and its owner can
+// still revoke it permanently (the server allows a hold to become a permanent revocation).
+function isOnHold(cert: any): boolean {
+    return !!cert.revoked && cert.revocationReason === 'CertificateHold';
+}
+
 function certStatus(cert: any): 'active' | 'revoked' | 'expired' {
     if (cert.revoked) return 'revoked';
     if (new Date(cert.notAfter) < new Date()) return 'expired';
@@ -341,10 +347,10 @@ const MyX509Certificates: React.FC = () => {
                             Renew
                         </button>
                     )}
-                    {status === 'active' && (
+                    {(status === 'active' || isOnHold(cert)) && (
                         <button onClick={() => handleRevoke(cert)}
                             className="px-3 py-1.5 text-xs bg-crit text-on-accent rounded hover:bg-crit-hover transition-colors ml-auto">
-                            Revoke
+                            {isOnHold(cert) ? 'Revoke permanently' : 'Revoke'}
                         </button>
                     )}
                 </div>

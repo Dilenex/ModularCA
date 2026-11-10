@@ -324,6 +324,42 @@ public class OcspResponderTests
         }
     }
 
+    /// <summary>
+    /// OCSP switched off for one CA in its protocol configuration answers <c>tryLater</c> on every
+    /// route: the check is in the responder, which the bare <c>/ocsp</c> route (no label) and the
+    /// per-CA routes (the CA's label) all call.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("test-ca")]
+    public async Task A_ca_with_ocsp_switched_off_in_its_protocol_config_does_not_answer(string? routeLabel)
+    {
+        var ca = TestCaMaterial.CreateCa();
+        var (db, service) = Build(ca, (d, caCertId) =>
+        {
+            d.Certificates.Add(Row(ca, caCertId, LeafSerial, "CN=leaf.example.test", isCa: false));
+            d.CaProtocolConfigs.Add(new CaProtocolConfigEntity
+            {
+                CaId = d.CertificateAuthorities.Local.Single().Id,
+                Protocol = "OCSP",
+                IsEnabled = false,
+            });
+        });
+
+        using (db)
+        {
+            var result = new OcspProcessingResult();
+            var responseDer = await service.ProcessOcspRequestAsync(ca.BuildOcspRequest(LeafSerial), routeLabel, result);
+            Assert.Equal(OcspRespStatus.TryLater, new OcspResp(responseDer).Status);
+
+            // Switched back on, the same request on the same route is answered.
+            db.CaProtocolConfigs.Single().IsEnabled = true;
+            db.SaveChanges();
+            responseDer = await service.ProcessOcspRequestAsync(ca.BuildOcspRequest(LeafSerial), routeLabel, new OcspProcessingResult());
+            Assert.Equal(OcspRespStatus.Successful, new OcspResp(responseDer).Status);
+        }
+    }
+
     /// <summary>A disabled CA refuses to answer at all rather than guessing.</summary>
     [Fact]
     public async Task Disabled_CA_does_not_answer()

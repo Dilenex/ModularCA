@@ -442,6 +442,15 @@ public class UserCertificateController(
     /// Requires step-up MFA. The revocation is permanent and triggers a best-effort CRL
     /// regeneration. CA certificates, the System signing cert, and CA-level revocation reasons
     /// are not permitted through this self-service path.
+    /// <para>
+    /// A certificate an administrator has put on hold can be revoked permanently here, under the
+    /// same rules as the admin revoke (RFC 5280 §5.3.1, <see cref="ICertificateRevocationService.RevokeCertificateAsync"/>):
+    /// the reason changes in place and the response carries <c>previousReason</c> =
+    /// <c>CertificateHold</c>. A certificate already revoked permanently answers 409 with
+    /// <see cref="ModularCA.Shared.Errors.ErrorCodes.CertificateRevocationState"/>.
+    /// </para>
+    /// A certificate that disappears between the ownership check and the revoke answers 404, as a
+    /// missing one does; the revocation service's not-found refusal used to come back as a 400.
     /// </summary>
     /// <param name="serial">The serial number of the certificate to revoke.</param>
     /// <param name="request">Revocation request containing the reason and optional invalidity date.</param>
@@ -473,18 +482,26 @@ public class UserCertificateController(
         if (!_certificateAccessEvaluator.CanManageCertificate(_currentUser.User.Id, cert.CertificateId))
             return NotFound();
 
-        if (cert.Revoked)
-            return BadRequest(new { error = "Certificate is already revoked." });
+        // A hold is not final: it can be made permanent with one of the permitted reasons, as on the
+        // admin path. Only a permanent revocation is refused.
+        if (RevocationStatus.IsPermanentlyRevoked(cert.Revoked, cert.RevocationReason))
+            return Conflict(new { error = "Certificate is already revoked.", code = ModularCA.Shared.Errors.ErrorCodes.CertificateRevocationState });
 
         RevocationResult result;
         try
         {
-            result = await _revocationService.RevokeCertificateAsync(null, serial, request.Reason, request.InvalidityDate);
+            // By id: the certificate whose ownership was checked above, not whichever row the serial resolves to.
+            result = await _revocationService.RevokeCertificateAsync(cert.CertificateId, null, request.Reason, request.InvalidityDate);
         }
-        catch (InvalidOperationException ex)
+        catch (ModularCA.Shared.Errors.CertificateRevocationStateException ex)
         {
-            // e.g. concurrent revoke hit the service-level idempotency guard.
-            return BadRequest(new { error = ex.Message });
+            // A concurrent revoke got there first.
+            return Conflict(new { error = ex.Message, code = ex.Code });
+        }
+        catch (ModularCA.Shared.Errors.ResourceNotFoundException)
+        {
+            // Gone between the ownership check and the revoke: answered as the other not-found cases above.
+            return NotFound();
         }
 
         await _audit.LogAsync(
@@ -492,7 +509,7 @@ public class UserCertificateController(
             _currentUser.User.Id,
             _currentUser.User.Username,
             "Certificate", serial,
-            new { Reason = request.Reason.ToString(), SelfService = true, request.InvalidityDate },
+            new { Reason = request.Reason.ToString(), PreviousReason = result.PreviousReason?.ToString(), SelfService = true, request.InvalidityDate },
             HttpContext.Connection.RemoteIpAddress?.ToString());
 
         return Ok(new
@@ -500,6 +517,7 @@ public class UserCertificateController(
             serialNumber = result.SerialNumber,
             status = result.NewStatus,
             reason = result.Reason?.ToString(),
+            previousReason = result.PreviousReason?.ToString(),
             revocationDate = result.EffectiveAt,
             crlNumber = result.CrlNumber
         });

@@ -156,10 +156,22 @@ public class AdminSigningProfileController(
     /// <see cref="InFenceAsync"/>), including their allowed cert profile IDs and inheritance
     /// configuration. A caller who is not a system admin also sees only profiles they have a
     /// profile.* capability grant for.
+    /// <para>
+    /// The console's scope narrows what the fence admits, and never widens it, by the rule the
+    /// console's Signing Profiles list applies (<see cref="InScopeViewAsync"/>): a
+    /// <paramref name="caId"/> view keeps the profiles issued by that CA and the ones with no
+    /// issuer yet, and a <paramref name="spaceId"/> view keeps the profiles issued by a CA of
+    /// that space and the ones with no issuer. A profile issued by an instance CA, by a CA of
+    /// another space or by a CA that is gone is outside every space view. With both, a profile
+    /// must be in both views. Without either, every profile the fence admits is listed.
+    /// </para>
     /// </summary>
+    /// <param name="caId">Optional CA view: the profiles issued by this CA, and the ones with no issuer.</param>
+    /// <param name="spaceId">Optional space view: the profiles issued by a CA of this space, and the ones with no issuer. The pre-0.4.0 <c>tenantId</c> is refused (400).</param>
     [HttpGet]
     [Authorize(Policy = "CaAuditor")]
-    public async Task<IActionResult> GetAll()
+    [RefuseQueryKey("tenantId", "spaceId")]
+    public async Task<IActionResult> GetAll([FromQuery] Guid? caId = null, [FromQuery] Guid? spaceId = null)
     {
         await currentUser.EnsureLoadedAsync();
         var profiles = await service.GetAllAsync();
@@ -176,7 +188,46 @@ public class AdminSigningProfileController(
         foreach (var p in profiles)
             if (await InFenceAsync(p.IssuerId, Capabilities.CertView))
                 visible.Add(p);
-        return Ok(visible);
+        return Ok(await InScopeViewAsync(visible, caId, spaceId));
+    }
+
+    /// <summary>
+    /// Narrows <paramref name="profiles"/>, already inside the caller's fence, to the console's
+    /// scope, by the rule the console's Signing Profiles list applies (<c>rowsInScope</c> with
+    /// <c>keepUnbound</c>). It only ever removes rows.
+    /// <list type="bullet">
+    /// <item>A profile with no issuer is in every view.</item>
+    /// <item>A profile's issuer names its CA by the CA's certificate id, which is what a profile
+    /// stores, or by the CA's own id, which the console also resolves. An issuer that names no CA
+    /// (one that is gone or deleted) is in no view.</item>
+    /// <item>A <paramref name="caId"/> view keeps the profiles whose CA is that CA; a
+    /// <paramref name="spaceId"/> view those whose CA is, now, in that space. With both, a profile
+    /// must be in both; with neither, every profile is kept.</item>
+    /// </list>
+    /// </summary>
+    /// <param name="profiles">The profiles the fence admits.</param>
+    /// <param name="caId">The CA view, or null.</param>
+    /// <param name="spaceId">The space view, or null.</param>
+    private async Task<List<SigningProfileDto>> InScopeViewAsync(List<SigningProfileDto> profiles, Guid? caId, Guid? spaceId)
+    {
+        if (caId == null && spaceId == null)
+            return profiles;
+
+        var issuerIds = profiles.Select(p => p.IssuerId).OfType<Guid>().Distinct().ToList();
+        var cas = await db.CertificateAuthorities.AsNoTracking()
+            .Where(c => (c.CertificateId != null && issuerIds.Contains(c.CertificateId.Value)) || issuerIds.Contains(c.Id))
+            .Select(c => new { c.Id, c.CertificateId, c.SpaceId })
+            .ToListAsync();
+
+        return profiles.Where(p =>
+        {
+            if (p.IssuerId is not Guid issuer)
+                return true;
+            var ca = cas.FirstOrDefault(c => c.Id == issuer || c.CertificateId == issuer);
+            return ca != null
+                && (caId is not Guid viewCa || ca.Id == viewCa)
+                && (spaceId is not Guid viewSpace || ca.SpaceId == viewSpace);
+        }).ToList();
     }
 
     /// <summary>

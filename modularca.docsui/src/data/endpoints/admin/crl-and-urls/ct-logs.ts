@@ -45,6 +45,7 @@ export const adminCtLogs: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Created CT log entry.',
+        notes: 'publicKeyBase64 is the DER SubjectPublicKeyInfo of the log in base64 (ECDSA P-256 or RSA of 2048 bits or more), as the log lists publish it; PEM is accepted. Any other value is refused with 400. From 0.4.4 every SCT the log returns is verified against this key and discarded if it does not verify; a log with no key has its SCTs discarded.',
     },
     {
         method: 'PUT',
@@ -56,6 +57,7 @@ export const adminCtLogs: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Updated CT log entry.',
+        notes: 'A publicKeyBase64 is checked as on create (400); an empty one removes the key, after which SCTs from the log are discarded.',
     },
     {
         method: 'DELETE',

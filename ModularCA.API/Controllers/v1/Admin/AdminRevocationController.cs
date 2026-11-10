@@ -10,6 +10,8 @@ using ModularCA.API.Controllers.v1.Auth;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Database;
 using ModularCA.Shared.Enums;
+using ModularCA.Shared.Errors;
+using ModularCA.Shared.Utils;
 using ModularCA.Core.Services;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Revocation;
@@ -47,6 +49,8 @@ public class AdminRevocationController(
 
     /// <summary>
     /// Revokes a certificate by its ID. Requires step-up MFA verification.
+    /// A certificate on hold is revoked permanently in place, without a release first (RFC 5280
+    /// §5.3.1); the audit row and the response carry <c>previousReason</c> = <c>CertificateHold</c>.
     /// KC-06: when the certificate is a CA cert and the space requires key ceremonies,
     /// a <c>RevokeCa</c> ceremony is created instead of performing immediate revocation.
     /// Audit findings #32: emits the success-path action type with <c>success=false</c> when
@@ -107,7 +111,7 @@ public class AdminRevocationController(
         }
         var caInfoById = await ResolveCaFromCertIdAsync(certId);
         await _audit.LogAsync(AuditActionType.CertificateRevoked, _currentUser.User?.Id, _currentUser.User?.Username,
-            "Certificate", certId.ToString(), new { request.Reason },
+            "Certificate", certId.ToString(), new { request.Reason, result.PreviousReason },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: caInfoById?.CaId, spaceId: caInfoById?.SpaceId);
         _ = _alertService.RaiseAlertAsync("CertificateRevoked", AlertSeverity.Critical, $"Certificate {certId} revoked by {_currentUser.User?.Username}", new { CertificateId = certId, request.Reason });
@@ -118,6 +122,7 @@ public class AdminRevocationController(
             serialNumber = result.SerialNumber,
             newStatus = result.NewStatus,
             reason = result.Reason?.ToString(),
+            previousReason = result.PreviousReason?.ToString(),
             crlNumber = result.CrlNumber,
             effectiveAt = result.EffectiveAt,
         });
@@ -125,6 +130,8 @@ public class AdminRevocationController(
 
     /// <summary>
     /// Revokes a certificate by its serial number. Requires step-up MFA verification.
+    /// A certificate on hold is revoked permanently in place, without a release first (RFC 5280
+    /// §5.3.1); the audit row and the response carry <c>previousReason</c> = <c>CertificateHold</c>.
     /// KC-06: when the certificate is a CA cert and the space requires key ceremonies,
     /// a <c>RevokeCa</c> ceremony is created instead of performing immediate revocation.
     /// Audit findings #32: emits <see cref="AuditActionType.CertificateRevoked"/> with
@@ -190,7 +197,7 @@ public class AdminRevocationController(
         }
         var caInfoBySn = await ResolveCaFromCertIdAsync(cert.CertificateId);
         await _audit.LogAsync(AuditActionType.CertificateRevoked, _currentUser.User?.Id, _currentUser.User?.Username,
-            "Certificate", request.SerialNumber, new { request.Reason },
+            "Certificate", request.SerialNumber, new { request.Reason, result.PreviousReason },
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             certificateAuthorityId: caInfoBySn?.CaId, spaceId: caInfoBySn?.SpaceId);
         _ = _alertService.RaiseAlertAsync("CertificateRevoked", AlertSeverity.Critical, $"Certificate {request.SerialNumber} revoked by {_currentUser.User?.Username}", new { request.SerialNumber, request.Reason });
@@ -201,6 +208,7 @@ public class AdminRevocationController(
             serialNumber = result.SerialNumber,
             newStatus = result.NewStatus,
             reason = result.Reason?.ToString(),
+            previousReason = result.PreviousReason?.ToString(),
             crlNumber = result.CrlNumber,
             effectiveAt = result.EffectiveAt,
         });
@@ -210,8 +218,12 @@ public class AdminRevocationController(
     /// Bulk-revokes several LEAF certificates by serial with a single shared reason, authorized by ONE
     /// step-up token (<see cref="StepUpOps.RevokeCert"/>, batch-scoped / no target). CA certificates are
     /// skipped (status <c>skipped_ca</c>) because they use the RevokeCa op and may be ceremony-gated —
-    /// they must be revoked individually. Already-revoked / not-found / cross-space entries are skipped
-    /// too. Never aborts the batch on one failure; returns a per-serial summary.
+    /// they must be revoked individually. A certificate on hold is revoked permanently in place, as on
+    /// the single revoke endpoints (RFC 5280 §5.3.1), and its entry carries <c>previousReason</c> =
+    /// <c>CertificateHold</c>; asking to hold it again through revoke skips it as <c>already_held</c>.
+    /// Permanently revoked (<c>already_revoked</c>), not-found and cross-space entries are skipped too;
+    /// a certificate deleted between the lookup and the revoke is skipped as <c>not_found</c>.
+    /// Never aborts the batch on one failure; returns a per-serial summary.
     /// </summary>
     [HttpPost("bulk-revoke")]
     [Authorize]
@@ -242,21 +254,40 @@ public class AdminRevocationController(
 
             var cert = resolution.Certificate!;
             if (cert.IsCA) { results.Add(new { serialNumber = serial, status = "skipped_ca" }); skipped++; continue; }
-            if (cert.Revoked) { results.Add(new { serialNumber = serial, status = "already_revoked" }); skipped++; continue; }
+            // A hold is not the end of the line: it can be made permanent with a real reason, as the
+            // single revoke endpoints allow. Only a permanent revocation, or a hold asked to be held
+            // again, is skipped.
+            if (RevocationStatus.IsPermanentlyRevoked(cert.Revoked, cert.RevocationReason)) { results.Add(new { serialNumber = serial, status = "already_revoked" }); skipped++; continue; }
+            if (RevocationStatus.IsOnHold(cert.Revoked, cert.RevocationReason) && request.Reason == RevocationReason.CertificateHold) { results.Add(new { serialNumber = serial, status = "already_held" }); skipped++; continue; }
 
             var fence = await EnforceSpaceFenceForCertAsync(cert.CertificateId, null);
             if (fence != null) { results.Add(new { serialNumber = serial, status = "denied" }); skipped++; continue; }
 
             try
             {
-                await _revocationService.RevokeCertificateAsync(cert.CertificateId, null, request.Reason, request.InvalidityDate);
+                var result = await _revocationService.RevokeCertificateAsync(cert.CertificateId, null, request.Reason, request.InvalidityDate);
                 var caInfo = await ResolveCaFromCertIdAsync(cert.CertificateId);
                 await _audit.LogAsync(AuditActionType.CertificateRevoked, _currentUser.User?.Id, _currentUser.User?.Username,
-                    "Certificate", serial, new { request.Reason, Bulk = true },
+                    "Certificate", serial, new { request.Reason, result.PreviousReason, Bulk = true },
                     HttpContext.Connection.RemoteIpAddress?.ToString(),
                     certificateAuthorityId: caInfo?.CaId, spaceId: caInfo?.SpaceId);
-                results.Add(new { serialNumber = serial, status = "revoked" });
+                results.Add(new { serialNumber = serial, status = "revoked", previousReason = result.PreviousReason?.ToString() });
                 revoked++;
+            }
+            catch (CertificateRevocationStateException ex)
+            {
+                // The certificate's state changed between the check above and the revoke (another
+                // request revoked or held it): report it as the state it is now in, not as a failure.
+                await TryAuditRevocationFailureAsync(cert, null, serial, request.Reason, ex);
+                results.Add(new { serialNumber = serial, status = ex.CurrentReason == nameof(RevocationReason.CertificateHold) ? "already_held" : "already_revoked" });
+                skipped++;
+            }
+            catch (ResourceNotFoundException ex)
+            {
+                // Deleted between the lookup above and the revoke: reported as the lookup would now report it.
+                await TryAuditRevocationFailureAsync(cert, null, serial, request.Reason, ex);
+                results.Add(new { serialNumber = serial, status = "not_found" });
+                skipped++;
             }
             catch (Exception ex)
             {
@@ -605,7 +636,9 @@ public class AdminRevocationController(
     /// </summary>
     /// <returns>
     /// The single matching certificate and a null error, or a null certificate and the
-    /// <see cref="IActionResult"/> to return (404 when nothing matches, 409 when several do).
+    /// <see cref="IActionResult"/> to return (404 when nothing matches, 409 with
+    /// <see cref="ErrorCodes.CertificateSerialAmbiguous"/> when several do, as the revocation
+    /// service answers the same ambiguity).
     /// </returns>
     private async Task<(Shared.Entities.CertificateEntity? Cert, IActionResult? Error)> ResolveUniqueCertBySerialAsync(string? serial)
     {
@@ -622,7 +655,8 @@ public class AdminRevocationController(
             {
                 error = $"Serial number '{serial}' matches more than one certificate. "
                       + "Serial numbers are unique only within an issuer — retry using the certificate ID.",
-                ambiguousSerial = serial
+                ambiguousSerial = serial,
+                code = ErrorCodes.CertificateSerialAmbiguous,
             }));
 
         return (resolution.Certificate, null);

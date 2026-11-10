@@ -57,11 +57,14 @@ namespace ModularCA.Core.Services
         /// <paramref name="spaceId"/> stamps the profile with its space (null for the instance).
         /// The inheritance parent is checked by <see cref="EnsureParentAllowedAsync"/>, and invalid
         /// expiry warning settings are refused (<see cref="ErrorCodes.ExpiryWarningSettingsInvalid"/>).
+        /// A key usage or extended key usage the OID catalog does not hold is refused
+        /// (<see cref="EnsureUsagesInCatalogAsync"/>, <see cref="ErrorCodes.CertProfileUsageNotInCatalog"/>).
         /// </summary>
         public async Task<CertProfileDto> CreateAsync(CreateCertProfileRequest request, Guid? spaceId = null, Func<Guid?, Guid?, bool>? parentAllowed = null)
         {
             await EnsureParentAllowedAsync(request.InheritsFromId, null, spaceId, request.CertificateAuthorityId, parentAllowed);
             EnsureExpiryWarningsValid(request);
+            await EnsureUsagesInCatalogAsync(request, null);
             var profile = new CertProfileEntity
             {
                 Name = request.Name,
@@ -98,7 +101,9 @@ namespace ModularCA.Core.Services
         /// or the inheritance change, the warning instants of the live certificates of this profile
         /// and of the profiles inheriting from it are re-computed in the same transaction as the save
         /// (<see cref="CertificateExpiry.SaveAndRecomputeAsync"/>): if the re-compute fails, the
-        /// profile is left as it was.
+        /// profile is left as it was. A key usage or extended key usage the update adds that the
+        /// OID catalog does not hold is refused (<see cref="EnsureUsagesInCatalogAsync"/>,
+        /// <see cref="ErrorCodes.CertProfileUsageNotInCatalog"/>).
         /// </summary>
         /// <returns>How many certificates had their expiry warning instants re-computed.</returns>
         public async Task<int> UpdateAsync(Guid id, UpdateCertProfileRequest request, Func<Guid?, Guid?, bool>? parentAllowed = null)
@@ -109,6 +114,7 @@ namespace ModularCA.Core.Services
                 await EnsureParentAllowedAsync(request.InheritsFromId, id, profile.SpaceId, request.CertificateAuthorityId, parentAllowed);
             await EnsureUsesSurviveAsync(profile, request);
             EnsureExpiryWarningsValid(request);
+            await EnsureUsagesInCatalogAsync(request, profile);
             var before = ExpiryInputs(profile);
 
             profile.Name = request.Name;
@@ -149,6 +155,32 @@ namespace ModularCA.Core.Services
                     request.ExpiryAlertPercent, Blank(request.ExpiryAlertMaxWindow)) is string problem)
                 throw new ConfigurationValidationException(problem, ErrorCodes.ExpiryWarningSettingsInvalid,
                     "Use percents from 1 to 100 with the alert no larger than the warning, and windows such as P30D or PT6H.");
+        }
+
+        /// <summary>
+        /// Refuses a request whose key usages or extended key usages the OID catalog cannot
+        /// resolve, by friendly name or OID in any spelling issuance resolves, or that name
+        /// <c>anyExtendedKeyUsage</c> (<see cref="CertProfileUsageValidation"/>). Issuance leaves
+        /// such a usage out of the certificate, so it is refused here with a message naming it
+        /// (<see cref="ConfigurationValidationException"/>,
+        /// <see cref="ErrorCodes.CertProfileUsageNotInCatalog"/>). The fields are read as a JSON
+        /// array or a comma-separated list, the two forms this service stores from. On an update,
+        /// the entries <paramref name="existing"/> already stores are not checked again, so a
+        /// profile written before this check can still be edited; only what the update adds is.
+        /// The check itself is <see cref="CertProfileUsageCatalog"/>, which the policy sync runs too.
+        /// </summary>
+        /// <param name="request">The create or update request.</param>
+        /// <param name="existing">The profile being updated, or null on a create.</param>
+        private async Task EnsureUsagesInCatalogAsync(CreateCertProfileRequest request, CertProfileEntity? existing)
+        {
+            // Nothing new to resolve: no catalog read for the common save that changes no usage.
+            if (CertProfileUsageCatalog.NothingToResolve(
+                    request.KeyUsages, request.ExtendedKeyUsages, existing?.KeyUsages, existing?.ExtendedKeyUsages))
+                return;
+
+            var catalog = await CertProfileUsageCatalog.LoadAsync(_db);
+            if (catalog.Problem(request.KeyUsages, request.ExtendedKeyUsages, existing?.KeyUsages, existing?.ExtendedKeyUsages) is string problem)
+                throw new ConfigurationValidationException(problem, ErrorCodes.CertProfileUsageNotInCatalog);
         }
 
         /// <summary>Copies the expiry warning settings of <paramref name="request"/> onto <paramref name="profile"/>, blank windows as null.</summary>

@@ -8,7 +8,7 @@ import { recordTableProps } from '../components/RecordDrawer';
 import type { RecordDescriptor } from '@shared/records';
 import { useScope } from '../context/ScopeContext';
 import { useLatestRequest } from '@shared/hooks/useLatestRequest';
-import { scopeLabel } from '../scope';
+import { scopeKey, scopeLabel } from '../scope';
 import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import ConfirmModal from '../components/ConfirmModal';
@@ -55,7 +55,8 @@ interface CreatedCmp {
 }
 
 const EnrollmentManagement: React.FC = () => {
-    const { caId: scopeCaId, inScope, scope, cas, spaces } = useScope();
+    const { caQuery, scope, cas, spaces } = useScope();
+    const currentScope = scopeKey(scope);
     const { capabilities } = useAuth();
     const [tokens, setTokens] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
@@ -78,18 +79,19 @@ const EnrollmentManagement: React.FC = () => {
     const [confirmBulk, setConfirmBulk] = useState<any[] | null>(null);
     const [confirmLoading, setConfirmLoading] = useState(false);
 
-    // Only the newest load writes: a slow answer filtered for a scope already left is dropped.
+    // The server narrows the list to the scope: a CA scope lists the credentials bound to that CA, a
+    // space scope those scoped to the space or bound to a CA inside it, "all CAs" everything the
+    // caller may manage. Only the newest load writes, so a slow answer for a scope already left is dropped.
     const tokenLoads = useLatestRequest();
     const loadTokens = async () => {
         const current = tokenLoads.begin();
         setLoading(true);
         setError(null);
         try {
-            const data = await apiGet<any[]>('/api/v1/admin/enrollment-tokens');
+            const data = await apiGet<any[]>(`/api/v1/admin/enrollment-tokens${caQuery()}`);
             if (!current()) return;
             const all: any[] = Array.isArray(data) ? data : ((data as any).items || []);
-            // Under a CA scope, only the credentials bound to that CA.
-            setTokens(scopeCaId ? all.filter((t) => inScope(t.certificateAuthorityId || t.caId)) : all);
+            setTokens(all);
         } catch (err: any) {
             if (!current()) return;
             setError(errorNotice(err, 'Failed to load tokens'));
@@ -105,7 +107,7 @@ const EnrollmentManagement: React.FC = () => {
         apiGet<any>('/api/v1/admin/authorities')
             .then(data => setAuthorities(Array.isArray(data) ? data : (data?.items || [])))
             .catch(() => setAuthorities([]));
-    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [currentScope]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const tokenScopeOption = scopeOptions.find(o => o.value === form.tokenScope);
     const tokenSigningProfiles = useMemo(
@@ -439,7 +441,7 @@ const EnrollmentManagement: React.FC = () => {
                 rows={tokens}
                 loading={loading}
                 error={error}
-                empty={scopeCaId ? `No active tokens in ${scopeLabel(scope)}. Change the scope in the top bar to see others.` : 'No active tokens'}
+                empty={scope.kind === 'ca' || scope.kind === 'space' ? `No active tokens in ${scopeLabel(scope)}. Change the scope in the top bar to see others.` : 'No active tokens'}
                 {...recordTableProps(record)}
                 selectable
                 bulkActions={bulkActions}

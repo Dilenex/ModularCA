@@ -1223,6 +1223,12 @@ public class CmpService : ICmpService, IEnrollmentProtocol
     /// scrubbed system-failure status. Rendering the middle's sentence instead would tell a remote
     /// which policy it failed.
     /// </para>
+    /// <para>
+    /// The pipeline audits what it issues, pends and refuses, but not a
+    /// <see cref="EnrollmentOutcome.Failed"/> configuration fault; that row is written here, an
+    /// <c>IRRejected</c> carrying the fault's sentence, so the failure reaches the CMP tab and not
+    /// only the log.
+    /// </para>
     /// </remarks>
     /// <param name="certReq">The certification request carried by the CertReqMsg.</param>
     /// <param name="context">The CA and profiles this exchange resolved before dispatching.</param>
@@ -1278,7 +1284,16 @@ public class CmpService : ICmpService, IEnrollmentProtocol
             case EnrollmentOutcome.Refused refused:
                 throw new InvalidOperationException(refused.Message);
 
+            // A configuration fault, not a decision about the request. The middle does not audit
+            // one, so the row is written here through the same writer, as the rejection the
+            // client receives, against the request as it arrived; then it is thrown like every
+            // other refusal on this path.
             case EnrollmentOutcome.Failed failed:
+                await WriteCmpAuditAsync(new EnrollmentAuditRecord(
+                    Protocol, EnrollmentAuditEvent.Refused, null, failed.Message,
+                    submission.Request.Subject, null, submission.Request.KeyAlgorithm, submission.Request.KeySize,
+                    context.Ca?.Label ?? reqCtx.CaLabel, context.Ca?.Id, context.Ca?.SpaceId,
+                    reqCtx.SourceIp, null, submission.Correlation), reqCtx);
                 throw new InvalidOperationException(failed.Message);
 
             default:

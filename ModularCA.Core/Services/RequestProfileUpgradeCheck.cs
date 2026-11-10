@@ -57,8 +57,7 @@ public static class RequestProfileUpgradeCheck
         {
             if (issuance.RequestProfileId is not Guid id || !rows.TryGetValue(id, out var row))
                 continue;
-            var parent = row.InheritsFromId is Guid parentId && rows.TryGetValue(parentId, out var found) ? found : null;
-            var profile = resolver.ResolveLoaded(row, parent);
+            var profile = resolver.ResolveChain(row, parentId => rows.GetValueOrDefault(parentId));
             checkedCount++;
             if (WhyRefused(profile, issuance) is string why)
                 refused.Add((issuance, profile.Name, why));

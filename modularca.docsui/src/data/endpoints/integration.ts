@@ -28,7 +28,7 @@ export const integration: ApiEndpoint[] = [
     {
         method: 'GET',
         path: '/api/v1/integration/infra/certificates/{serial}',
-        summary: 'Get certificate details by serial number.',
+        summary: 'Get certificate details by serial number. A certificate outside the space scope of the API key is answered 404, exactly as one that does not exist.',
         auth: 'API Key',
         category: 'Integration',
         responseDescription: 'Certificate details.',
@@ -36,7 +36,7 @@ export const integration: ApiEndpoint[] = [
     {
         method: 'DELETE',
         path: '/api/v1/integration/infra/certificates/{serial}',
-        summary: 'Revoke a certificate by serial number. The optional reason is an RFC 5280 reason name (keyCompromise, superseded, ...); a numeric code or undefined name is refused with 400.',
+        summary: 'Revoke a certificate by serial number. The optional reason is an RFC 5280 reason name (keyCompromise, superseded, ...); a numeric code or undefined name is refused with 400. A certificate on hold is revoked permanently with the reason given (previousReason CertificateHold in the response); a repeat on a permanently revoked certificate, or certificateHold on a held one, succeeds and changes nothing. A certificate outside the space scope of the API key is answered 404, exactly as one that does not exist.',
         auth: 'API Key',
         category: 'Integration',
         responseDescription: 'Revocation confirmation.',
@@ -44,7 +44,7 @@ export const integration: ApiEndpoint[] = [
     {
         method: 'POST',
         path: '/api/v1/integration/infra/certificates/{serial}/renew',
-        summary: 'Renew a certificate by serial number.',
+        summary: 'Renew a certificate by serial number. A certificate outside the space scope of the API key is answered 404, as one that does not exist, before its revoked (400) or retired (409) state is reported.',
         auth: 'API Key',
         category: 'Integration',
         responseDescription: 'Renewed certificate details.',

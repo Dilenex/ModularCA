@@ -156,6 +156,12 @@ public class EstService : IEstService, IEnrollmentProtocol
     /// it read the request, so an unauthorized caller is told they are unauthorized whatever their
     /// CSR contains — and that refusal is the one that reaches the EST audit tab.
     /// </para>
+    /// <para>
+    /// The pipeline audits what it issues, pends and refuses, but not a
+    /// <see cref="EnrollmentOutcome.Failed"/> configuration fault (no certificate profile, a
+    /// configured profile row missing). That row is written here, an <c>EstEnrollRejected</c>
+    /// carrying the fault's sentence, so the failure reaches the EST tab and not only the log.
+    /// </para>
     /// </remarks>
     /// <param name="presentedCertVerified">
     /// True when the caller has already proven that <paramref name="clientCert"/> chains to the
@@ -230,15 +236,33 @@ public class EstService : IEstService, IEnrollmentProtocol
         };
 
         var outcome = await _pipeline.SubmitAsync(submission);
-        return outcome switch
+        switch (outcome)
         {
-            EnrollmentOutcome.Issued issued => BuildCertResponsePkcs7(issued),
+            case EnrollmentOutcome.Issued issued:
+                return BuildCertResponsePkcs7(issued);
+
             // RFC 7030 4.2.3: the controller turns this into 202 Accepted.
-            EnrollmentOutcome.Pending => throw new EstPendingApprovalException("Certificate request requires approval"),
-            EnrollmentOutcome.Refused refused => throw new InvalidOperationException(refused.Message),
-            EnrollmentOutcome.Failed failed => throw new InvalidOperationException(failed.Message),
-            _ => throw new InvalidOperationException("Unrecognised enrollment outcome."),
-        };
+            case EnrollmentOutcome.Pending:
+                throw new EstPendingApprovalException("Certificate request requires approval");
+
+            // Already audited, by the writer above.
+            case EnrollmentOutcome.Refused refused:
+                throw new InvalidOperationException(refused.Message);
+
+            // A configuration fault, not a decision about the request. The middle does not audit
+            // one, so the row is written here, as SCEP writes it, against the request as it
+            // arrived.
+            case EnrollmentOutcome.Failed failed:
+                _logger.LogWarning("EST enrollment at CA {CaLabel} failed: {Reason}", caLabel, failed.Message);
+                await _protocolAudit.LogEstAsync("EstEnrollRejected", parsedCsr.SubjectName, null,
+                    parsedCsr.KeyAlgorithm, parsedCsr.KeySize, caLabel, sourceIp,
+                    success: false, errorMessage: failed.Message,
+                    callerPrincipal: AuditPrincipal(clientCert, callerUsername));
+                throw new InvalidOperationException(failed.Message);
+
+            default:
+                throw new InvalidOperationException("Unrecognised enrollment outcome.");
+        }
     }
 
     /// <summary>

@@ -175,9 +175,12 @@ const SigningProfilesTab: React.FC = () => {
     const [confirmDelete, setConfirmDelete] = useState<any | null>(null);
     const [deleting, setDeleting] = useState(false);
     // A signing profile belongs to the CA whose certificate it issues under; a CA or space scope
-    // keeps the ones issued by a CA it covers (and any with no issuer yet). The list is filtered
-    // here, so it follows a scope switch without a reload.
-    const { inScope } = useScope();
+    // keeps the ones issued by a CA it covers (and any with no issuer yet). The server narrows the
+    // list to the scope by that rule (caId or spaceId), and the list is still filtered here: the
+    // server places a profile by the CAs the database holds, this by the CAs the caller is shown
+    // (the authorities list and the scope's own CAs), and what is shown stays the narrower of the two.
+    const { inScope, caQuery, scope } = useScope();
+    const currentScope = scopeKey(scope);
     const visibleProfiles = rowsInScope(profiles, (p) => p.issuerId, authorities, inScope, { keepUnbound: true });
 
     // The profiles and the CAs that resolve their issuers arrive together, so a narrowed list
@@ -188,7 +191,7 @@ const SigningProfilesTab: React.FC = () => {
         setLoading(true);
         setError(null);
         Promise.all([
-            apiGet<any>('/api/v1/admin/signing-profiles'),
+            apiGet<any>(`/api/v1/admin/signing-profiles${caQuery()}`),
             apiGet<any>('/api/v1/admin/authorities').catch(() => null),
         ])
             .then(([data, cas]) => {
@@ -200,9 +203,11 @@ const SigningProfilesTab: React.FC = () => {
             .finally(() => { if (current()) setLoading(false); });
     };
 
+    // Reload on every scope switch, including between two spaces; the previous scope's rows go at once.
     useEffect(() => {
+        setProfiles([]);
         load();
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [currentScope]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const performDelete = async () => {
         if (!confirmDelete) return;
@@ -305,8 +310,12 @@ const SshSigningProfilesTab: React.FC = () => {
     const [confirmDelete, setConfirmDelete] = useState<any | null>(null);
     const [deleting, setDeleting] = useState(false);
     // An SSH signing profile belongs to the SSH CA its key belongs to; a CA scope keeps that CA's
-    // profiles and any with no key yet. Filtered here, so it follows a scope switch without a reload.
-    const { inScope, cas } = useScope();
+    // profiles and any with no key yet. The server narrows the list to the scope by that rule
+    // (caId), and the list is still filtered here: the server places a profile by the keys the
+    // database holds, this by the keys the caller can list, and what is shown stays the narrower
+    // of the two.
+    const { inScope, cas, caQuery, scope } = useScope();
+    const currentScope = scopeKey(scope);
     const visibleProfiles = rowsInScope(profiles, (p) => sshSigningProfileCaRef(p, caKeys), cas, inScope, { keepUnbound: true });
 
     // The profiles and the keys that place them arrive together, so a narrowed list never shows
@@ -317,7 +326,7 @@ const SshSigningProfilesTab: React.FC = () => {
         setLoading(true);
         setError(null);
         Promise.all([
-            apiGet<any>('/api/v1/admin/ssh/profiles/signing'),
+            apiGet<any>(`/api/v1/admin/ssh/profiles/signing${caQuery()}`),
             apiGet<any>('/api/v1/admin/ssh/ca-keys').catch(() => null),
         ])
             .then(([data, keys]) => {
@@ -329,9 +338,11 @@ const SshSigningProfilesTab: React.FC = () => {
             .finally(() => { if (current()) setLoading(false); });
     };
 
+    // Reload on every scope switch; the previous scope's rows go at once.
     useEffect(() => {
+        setProfiles([]);
         load();
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [currentScope]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const performDelete = async () => {
         if (!confirmDelete) return;
@@ -431,20 +442,26 @@ const SshCertProfilesTab: React.FC = () => {
     const [deleting, setDeleting] = useState(false);
 
     // An SSH cert profile names no CA, so a CA scope keeps every one, as it keeps unbound
-    // certificate profiles; a space scope shows the SSH sentence instead (see SshScoped). Only the
-    // newest load writes.
+    // certificate profiles; a space scope shows the SSH sentence instead (see SshScoped). The
+    // scope goes to the server, which applies that rule. Only the newest load writes.
+    const { caQuery, scope } = useScope();
+    const currentScope = scopeKey(scope);
     const loads = useLatestRequest();
     const load = () => {
         const current = loads.begin();
         setLoading(true);
         setError(null);
-        apiGet<any>('/api/v1/admin/ssh/profiles/cert')
+        apiGet<any>(`/api/v1/admin/ssh/profiles/cert${caQuery()}`)
             .then((data) => { if (current()) setProfiles(Array.isArray(data) ? data : []); })
             .catch((err) => { if (current()) setError(errorNotice(err, 'The request failed.')); })
             .finally(() => { if (current()) setLoading(false); });
     };
 
-    useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    // Reload on every scope switch; the previous scope's rows go at once.
+    useEffect(() => {
+        setProfiles([]);
+        load();
+    }, [currentScope]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const performDelete = async () => {
         if (!confirmDelete) return;
@@ -533,24 +550,33 @@ const SshRequestProfilesTab: React.FC = () => {
     const [confirmDelete, setConfirmDelete] = useState<any | null>(null);
     const [deleting, setDeleting] = useState(false);
     // An SSH request profile belongs to the SSH CA it is bound to; a CA scope keeps that CA's and
-    // the "Any CA" ones. Filtered here, so it follows a scope switch without a reload.
-    const { inScope, cas } = useScope();
-    const visibleProfiles = rowsInScope(profiles, (p) => p.certificateAuthorityId, cas, inScope, { keepUnbound: true });
+    // the "Any CA" ones. The server narrows the list to the scope by exactly that rule (caId): a
+    // profile names its CA by id and the scope's CA is one the caller holds, so there is nothing
+    // left to filter here.
+    const { caQuery, scope } = useScope();
+    const currentScope = scopeKey(scope);
 
-    // Only the newest load writes, so a reload after a delete cannot be overtaken by an older one.
+    // Only the newest load writes, so a reload after a delete, or for a scope already left,
+    // cannot be overtaken by an older one.
     const loads = useLatestRequest();
     const load = () => {
         const current = loads.begin();
         setLoading(true);
         setError(null);
-        apiGet<any>('/api/v1/admin/ssh/profiles/request')
+        apiGet<any>(`/api/v1/admin/ssh/profiles/request${caQuery()}`)
             .then((data) => { if (current()) setProfiles(Array.isArray(data) ? data : []); })
             .catch((err) => { if (current()) setError(errorNotice(err, 'The request failed.')); })
             .finally(() => { if (current()) setLoading(false); });
     };
 
+    // Reload on every scope switch; the previous scope's rows go at once.
     useEffect(() => {
+        setProfiles([]);
         load();
+    }, [currentScope]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // The names the columns resolve ids to: every profile and CA, whatever the scope.
+    useEffect(() => {
         apiGet<any>('/api/v1/admin/ssh/profiles/signing')
             .then((data) => setSigningProfiles(Array.isArray(data) ? data : []))
             .catch(() => {});
@@ -621,7 +647,7 @@ const SshRequestProfilesTab: React.FC = () => {
                 tableId="ssh-request-profiles"
                 title="SSH Request Profiles"
                 findable
-                rows={visibleProfiles}
+                rows={profiles}
                 rowKey={(p) => p.id}
                 loading={loading}
                 error={error}

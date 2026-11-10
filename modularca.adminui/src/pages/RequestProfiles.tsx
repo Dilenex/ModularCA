@@ -16,7 +16,8 @@ import { sanRequirementLabel } from '../components/requestProfileRules';
 import { CaScopeName } from '../components/CaScopeName';
 import { useScope } from '../context/ScopeContext';
 import { useLatestRequest } from '@shared/hooks/useLatestRequest';
-import { rowsInScope } from './scopedRows';
+import { parentsOutside, rowsInScope } from './scopedRows';
+import { scopeKey } from '../scope';
 
 /* read-only drawer for a request profile row */
 const RequestProfileDrawer: React.FC<{ profile: any; parentName: (id?: string | null) => string | undefined }> = ({ profile: p, parentName }) => (
@@ -49,30 +50,48 @@ const RequestProfiles: React.FC = () => {
     const [confirmDelete, setConfirmDelete] = useState<any | null>(null);
     const [deleting, setDeleting] = useState(false);
     // A request profile belongs to the CA it is bound to; a CA or space scope keeps the ones bound
-    // to a CA it covers and the unbound, system-wide ones, as Signing Profiles does. The list is
-    // filtered here, so it follows a scope switch without a reload.
-    const { inScope, cas } = useScope();
+    // to a CA it covers and the unbound, system-wide ones, as Signing Profiles does. The server
+    // narrows the list to the scope by that rule (caId or spaceId), and the list is still filtered
+    // here: the server judges a space by the CAs the database holds in it, this by the CAs of it
+    // the caller administers, and what is shown stays the narrower of the two.
+    const { inScope, cas, caQuery, scope } = useScope();
+    const currentScope = scopeKey(scope);
     const visibleProfiles = rowsInScope(profiles, (p) => p.certificateAuthorityId, cas, inScope, { keepUnbound: true });
+    // Profiles outside the scope, loaded only when a listed profile inherits from one, to name it.
+    const [parents, setParents] = useState<any[]>([]);
 
-    // Only the newest load writes, so a reload after a delete cannot be overtaken by an older one.
+    // Only the newest load writes, so a reload after a delete, or for a scope already left,
+    // cannot be overtaken by an older one.
     const loads = useLatestRequest();
     const load = () => {
         const current = loads.begin();
         setLoading(true);
         setError(null);
-        apiGet<any>('/api/v1/admin/request-profiles')
-            .then((data) => { if (current()) setProfiles(Array.isArray(data) ? data : (data.items || data.profiles || [])); })
+        const scoped = caQuery();
+        apiGet<any>(`/api/v1/admin/request-profiles${scoped}`)
+            .then((data) => {
+                if (!current()) return;
+                const rows: any[] = Array.isArray(data) ? data : (data.items || data.profiles || []);
+                setProfiles(rows);
+                // A profile may inherit from one bound to another CA, which a narrowed list leaves out.
+                if (scoped && parentsOutside(rows).length > 0)
+                    apiGet<any>('/api/v1/admin/request-profiles')
+                        .then((all) => { if (current()) setParents(Array.isArray(all) ? all : (all.items || all.profiles || [])); })
+                        .catch(() => {});
+            })
             .catch((err) => { if (current()) setError(errorNotice(err, 'The request failed.')); })
             .finally(() => { if (current()) setLoading(false); });
     };
 
+    // Reload on every scope switch, including between two spaces; the previous scope's rows go at once.
     useEffect(() => {
+        setProfiles([]);
         load();
-    }, []);
+    }, [currentScope]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const resolveParentName = (id: string | undefined | null) => {
         if (!id) return undefined;
-        const p = profiles.find((pr) => pr.id === id);
+        const p = profiles.find((pr) => pr.id === id) ?? parents.find((pr) => pr.id === id);
         return p ? p.name : id;
     };
 

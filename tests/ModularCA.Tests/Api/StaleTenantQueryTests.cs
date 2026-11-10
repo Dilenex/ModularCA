@@ -33,6 +33,13 @@ public sealed class StaleTenantQueryTests
         { Admin + "AdminCertificateTemplateController", "GetAll", "spaceId" },
         { Admin + "AdminCertProfileController", "GetAll", "spaceId" },
         { Admin + "AdminCertSignRequestController", "RetrievePendingRequests", "spaceId" },
+        // Took spaceId only in 0.4.4, never tenantId; refused all the same so every spaceId binder answers alike.
+        { Admin + "AdminEnrollmentTokenController", "GetActiveTokens", "spaceId" },
+        { Admin + "AdminRequestProfileController", "GetAll", "spaceId" },
+        { Admin + "AdminSigningProfileController", "GetAll", "spaceId" },
+        { Admin + "AdminSshProfileController", "GetSigningProfiles", "spaceId" },
+        { Admin + "AdminSshProfileController", "GetCertProfiles", "spaceId" },
+        { Admin + "AdminSshProfileController", "GetRequestProfiles", "spaceId" },
     };
 
     private static MethodInfo Action(string controller, string action)

@@ -59,6 +59,12 @@ public class AcmeOrderController(
     /// label the order records. A CA that does not serve ACME
     /// (<see cref="AcmeCaPolicy.RefusalAsync"/>) is refused. The order's URLs, the
     /// <c>Location</c> header included, are under that CA's path.
+    /// <para>
+    /// A DNS identifier no DNS name can be, longer than 253 characters or with a label empty or
+    /// longer than 63 (<see cref="DnsIdentifierLengthProblem"/>), is refused with 400
+    /// <c>rejectedIdentifier</c> (RFC 8555 §6.7) before any order is created; such orders used to
+    /// be accepted, with authorizations no client could ever validate.
+    /// </para>
     /// </summary>
     [AcmeJws]
     [HttpPost("new-order")]
@@ -83,6 +89,8 @@ public class AcmeOrderController(
             if (id.Type != "dns" || string.IsNullOrWhiteSpace(id.Value))
                 return AcmeError(400, "urn:ietf:params:acme:error:unsupportedIdentifier",
                     $"Unsupported identifier type: {id.Type}");
+            if (DnsIdentifierLengthProblem(id.Value) is { } tooLong)
+                return AcmeError(400, "urn:ietf:params:acme:error:rejectedIdentifier", tooLong);
         }
 
         // Per-account new-order budget (default 20/hour).
@@ -397,6 +405,35 @@ public class AcmeOrderController(
         => refusal.Violations.Any(v =>
             v.StartsWith($"[{KeyAlgorithmPolicy.RuleName}]", StringComparison.Ordinal)
             || v.StartsWith("[MinRsaKeySize]", StringComparison.Ordinal));
+
+    /// <summary>
+    /// Why <paramref name="value"/> cannot be a DNS name by length, or null when its length is
+    /// fine: RFC 1035 §2.3.4 allows 253 characters in all (255 octets on the wire) and 1 to 63 in
+    /// each label. One trailing dot, the root, is not counted, as the order service ignores it; a
+    /// wildcard's <c>*</c> is a label like any other. The message quotes at most the start of the
+    /// value, which can be arbitrarily long.
+    /// </summary>
+    /// <param name="value">The identifier's value, as the client sent it.</param>
+    /// <returns>The refusal's detail, or null.</returns>
+    internal static string? DnsIdentifierLengthProblem(string value)
+    {
+        const int maxName = 253, maxLabel = 63, quoted = 40;
+        var name = value.Trim();
+        if (name.EndsWith('.'))
+            name = name[..^1];
+        var shown = name.Length > quoted ? name[..quoted] + "..." : name;
+
+        if (name.Length > maxName)
+            return $"DNS identifier '{shown}' is {name.Length} characters long; a DNS name is at most {maxName}.";
+        foreach (var label in name.Split('.'))
+        {
+            if (label.Length == 0)
+                return $"DNS identifier '{shown}' has an empty label.";
+            if (label.Length > maxLabel)
+                return $"DNS identifier '{shown}' has a label of {label.Length} characters; a DNS label is at most {maxLabel}.";
+        }
+        return null;
+    }
 
     private ObjectResult AcmeError(int status, string type, string detail)
     {

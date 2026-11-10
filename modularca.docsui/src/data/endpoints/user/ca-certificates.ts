@@ -22,6 +22,7 @@ export const userCaCertificates: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Full CA certificate info.',
+        notes: 'Serves CA certificates only. 404 for a certificate that is not a CA certificate, for the System Signing CA, and for a CA outside the spaces of the caller; a caller with certificate-request rights instance-wide sees every CA certificate.',
     },
     {
         method: 'GET',
@@ -31,9 +32,10 @@ export const userCaCertificates: ApiEndpoint[] = [
         category: 'User CA Certificates',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
-            { name: 'Accept', type: 'string', required: false, description: 'Content type preference (e.g., application/x-pem-file or application/pkix-cert)' },
+            { name: 'Accept', type: 'string', required: true, description: 'application/x-pem-file (or any type naming pem) for PEM; application/pkix-cert, application/x-x509-ca-cert or application/octet-stream for DER. Any other value gets 404.' },
         ],
         responseDescription: 'CA certificate file download.',
+        notes: 'Serves the same certificates as GET /api/v1/user/authorities/{serial}: CA certificates only, and only those of CAs the caller can see. A leaf certificate, the System Signing CA and a CA of another space all get 404.',
     },
     {
         method: 'GET',

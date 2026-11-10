@@ -1,6 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ALL_SCOPE, MINE_SCOPE, scopeCaId, scopeKey, type Scope } from '@adminui/scope';
-import { caIdForRef, rowsInScope, sshSigningProfileCaRef } from '@adminui/pages/scopedRows';
+import { caIdForRef, parentsOutside, rowsInScope, sshSigningProfileCaRef } from '@adminui/pages/scopedRows';
 import { msaeScopeFollow, msaeSelectedCa, msaeSetupPath } from '@adminui/pages/msaeScope';
 
 /**
@@ -147,6 +149,166 @@ describe('profile tabs that had ignored the scope', () => {
 
         it('keeps every profile under "all CAs"', () => {
             expect(names(rowsInScope(profiles, refOf, sshCas, inAll, { keepUnbound: true }))).toEqual(['one', 'two', 'unlisted-key', 'no-key']);
+        });
+    });
+});
+
+/**
+ * The profile lists send the scope to the server (`caQuery()`: caId or spaceId), which narrows
+ * by the console's own rule over the CAs the database holds. Signing Profiles, Request Profiles
+ * and SSH Signing still filter what comes back, because they place a row by the CAs and keys the
+ * caller is shown; SSH Request has nothing left to filter. Either way a list shows exactly what
+ * the console's filter alone showed.
+ */
+describe('profile lists narrowed by the server', () => {
+    const names = (rows: { name: string }[]) => rows.map(r => r.name);
+
+    /** The database's CAs: the ones the caller is shown, and one of space t1 it is not. */
+    const dbCas = [...authorities, { id: 'hidden', certificateId: 'cert-hidden', spaceId: 't1' }];
+    type View = { caId?: string; spaceId?: string };
+    /** The server's view of a list (ProfileListScopeTests pins the real one): unbound rows, and rows whose CA is the view's or in its space. */
+    const serverView = <T,>(rows: T[], refOf: (row: T) => string | null | undefined, view: View): T[] => rows.filter(row => {
+        const ref = refOf(row);
+        // Without a view the server lists everything, a row whose CA is gone included.
+        if (!ref || (!view.caId && !view.spaceId)) return true;
+        const ca = dbCas.find(c => c.id === ref || c.certificateId === ref);
+        return !!ca && (!view.caId || ca.id === view.caId) && (!view.spaceId || ca.spaceId === view.spaceId);
+    });
+    /** Each scope as the console holds it: the query it sends and the `inScope` it filters by. */
+    const scopes: { name: string; view: View; inScope: (caId: string | null | undefined) => boolean }[] = [
+        { name: 'all CAs', view: {}, inScope: inAll },
+        { name: 'CA a', view: { caId: 'a' }, inScope: inCa('a') },
+        { name: 'CA c', view: { caId: 'c' }, inScope: inCa('c') },
+        { name: 'space one', view: { spaceId: 't1' }, inScope: inSpace('t1') },
+        { name: 'space two', view: { spaceId: 't2' }, inScope: inSpace('t2') },
+    ];
+
+    // A signing profile names its issuer by the CA's certificate id; the console also takes a CA id.
+    const signing = [
+        { name: 'a-issued', issuerId: 'cert-a' },
+        { name: 'b-issued-by-ca-id', issuerId: 'b' },
+        { name: 'c-issued', issuerId: 'cert-c' },
+        { name: 'hidden-issued', issuerId: 'cert-hidden' },
+        { name: 'issuer-gone', issuerId: 'cert-z' },
+        { name: 'no-issuer', issuerId: null },
+    ];
+    const request = [
+        { name: 'a-bound', certificateAuthorityId: 'a' },
+        { name: 'c-bound', certificateAuthorityId: 'c' },
+        { name: 'hidden-bound', certificateAuthorityId: 'hidden' },
+        { name: 'system-wide', certificateAuthorityId: null },
+    ];
+
+    it.each(scopes)('shows the same signing profiles under $name as the console\'s filter alone', ({ view, inScope }) => {
+        const before = rowsInScope(signing, p => p.issuerId, authorities, inScope, { keepUnbound: true });
+        const after = rowsInScope(serverView(signing, p => p.issuerId, view), p => p.issuerId, authorities, inScope, { keepUnbound: true });
+        expect(names(after)).toEqual(names(before));
+    });
+
+    it.each(scopes)('shows the same request profiles under $name as the console\'s filter alone', ({ view, inScope }) => {
+        const before = rowsInScope(request, p => p.certificateAuthorityId, authorities, inScope, { keepUnbound: true });
+        const after = rowsInScope(serverView(request, p => p.certificateAuthorityId, view), p => p.certificateAuthorityId, authorities, inScope, { keepUnbound: true });
+        expect(names(after)).toEqual(names(before));
+    });
+
+    it('still filters where the server keeps a row of a CA the caller is not shown', () => {
+        // The server's space view holds the profile of the space's hidden CA; the console never showed it.
+        expect(names(serverView(signing, p => p.issuerId, { spaceId: 't1' }))).toContain('hidden-issued');
+        expect(names(rowsInScope(serverView(signing, p => p.issuerId, { spaceId: 't1' }), p => p.issuerId, authorities, inSpace('t1'), { keepUnbound: true })))
+            .toEqual(['a-issued', 'b-issued-by-ca-id', 'no-issuer']);
+        expect(names(rowsInScope(serverView(request, p => p.certificateAuthorityId, { spaceId: 't1' }), p => p.certificateAuthorityId, authorities, inSpace('t1'), { keepUnbound: true })))
+            .toEqual(['a-bound', 'system-wide']);
+    });
+
+    describe('SSH, under a CA scope (a space scope shows the SSH sentence and loads nothing)', () => {
+        const sshCas = [{ id: 'ssh-1' }, { id: 'ssh-2' }];
+        const keys = [
+            { id: 'k1', certificateAuthorityId: 'ssh-1' },
+            { id: 'k2', certificateAuthorityId: 'ssh-2' },
+        ];
+        // The database also holds a key of ssh-1 that the caller's key list does not.
+        const dbKeys = [...keys, { id: 'k-hidden', certificateAuthorityId: 'ssh-1' }];
+        const sshSigning = [
+            { name: 'one', sshCaKeyId: 'k1' },
+            { name: 'two', sshCaKeyId: 'k2' },
+            { name: 'hidden-key', sshCaKeyId: 'k-hidden' },
+            { name: 'key-gone', sshCaKeyId: 'k9' },
+            { name: 'no-key', sshCaKeyId: null },
+        ];
+        const sshRequest = [
+            { name: 'one', certificateAuthorityId: 'ssh-1' },
+            { name: 'two', certificateAuthorityId: 'ssh-2' },
+            { name: 'any-ca', certificateAuthorityId: null },
+        ];
+        /** The server's CA view of SSH signing profiles: no key, or a key of that CA. */
+        const serverSigning = (caId?: string) => sshSigning.filter(p => {
+            if (!caId || !p.sshCaKeyId) return true;
+            return dbKeys.find(k => k.id === p.sshCaKeyId)?.certificateAuthorityId === caId;
+        });
+        const refOf = (p: { sshCaKeyId: string | null }) => sshSigningProfileCaRef(p, keys);
+
+        it.each([undefined, 'ssh-1', 'ssh-2'])('shows the same SSH signing profiles under CA %s as the console\'s filter alone', (caId) => {
+            const inScope = caId ? inCa(caId) : inAll;
+            const before = rowsInScope(sshSigning, refOf, sshCas, inScope, { keepUnbound: true });
+            const after = rowsInScope(serverSigning(caId), refOf, sshCas, inScope, { keepUnbound: true });
+            expect(names(after)).toEqual(names(before));
+        });
+
+        it('still filters SSH signing profiles whose key the caller cannot list', () => {
+            expect(names(serverSigning('ssh-1'))).toEqual(['one', 'hidden-key', 'no-key']);
+            expect(names(rowsInScope(serverSigning('ssh-1'), refOf, sshCas, inCa('ssh-1'), { keepUnbound: true }))).toEqual(['one', 'no-key']);
+        });
+
+        it.each([undefined, 'ssh-1', 'ssh-2'])('needs no filter for SSH request profiles under CA %s: the server\'s view is the console\'s', (caId) => {
+            const view = sshRequest.filter(p => !caId || !p.certificateAuthorityId || p.certificateAuthorityId === caId);
+            expect(names(view)).toEqual(names(rowsInScope(sshRequest, p => p.certificateAuthorityId, sshCas, caId ? inCa(caId) : inAll, { keepUnbound: true })));
+        });
+    });
+
+    describe('parentsOutside', () => {
+        it('names the parents a narrowed list left out, once each', () => {
+            const rows = [
+                { id: 'p1', inheritanceEnabled: true, inheritsFromId: 'base' },
+                { id: 'p2', inheritanceEnabled: true, inheritsFromId: 'other-ca' },
+                { id: 'p3', inheritanceEnabled: true, inheritsFromId: 'other-ca' },
+                { id: 'base', inheritanceEnabled: false, inheritsFromId: null },
+            ];
+            expect(parentsOutside(rows)).toEqual(['other-ca']);
+        });
+
+        it('is empty when every parent is listed, and for a parent of a profile that does not inherit', () => {
+            expect(parentsOutside([{ id: 'p1', inheritanceEnabled: true, inheritsFromId: 'base' }, { id: 'base' }])).toEqual([]);
+            expect(parentsOutside([{ id: 'p1', inheritanceEnabled: false, inheritsFromId: 'elsewhere' }])).toEqual([]);
+            expect(parentsOutside([])).toEqual([]);
+        });
+    });
+
+    describe('the pages', () => {
+        const page = (file: string) => readFileSync(resolve(__dirname, '../../../../modularca.adminui/src/pages', file), 'utf8');
+        const profiles = page('ProfileManagement.tsx');
+
+        it.each([
+            ['Signing Profiles', profiles, '/api/v1/admin/signing-profiles'],
+            ['SSH Signing', profiles, '/api/v1/admin/ssh/profiles/signing'],
+            ['SSH Cert', profiles, '/api/v1/admin/ssh/profiles/cert'],
+            ['SSH Request', profiles, '/api/v1/admin/ssh/profiles/request'],
+            ['Request Profiles', page('RequestProfiles.tsx'), '/api/v1/admin/request-profiles'],
+            ['the Dashboard\'s signing profiles', page('Dashboard.tsx'), '/api/v1/admin/signing-profiles'],
+        ])('%s sends the scope with its list', (_name, source, path) => {
+            expect(source).toMatch(new RegExp('apiGet<any>\\(`' + path.replace(/\//g, '\\/') + '\\$\\{(caQuery\\(\\)|scoped)\\}`\\)'));
+        });
+
+        it('reloads each list when the scope changes, as Certificate Profiles does', () => {
+            // Certificate Profiles and the four other tabs in the file, and Request Profiles in its own.
+            expect(profiles.match(/\}, \[currentScope\]\);/g)).toHaveLength(5);
+            expect(page('RequestProfiles.tsx').match(/\}, \[currentScope\]\);/g)).toHaveLength(1);
+        });
+
+        it('keeps the console\'s own filter on the lists that place a row by what the caller is shown', () => {
+            expect(profiles.match(/rows=\{visibleProfiles\}/g)).toHaveLength(2);
+            expect(profiles).toContain('rowsInScope(profiles, (p) => p.issuerId, authorities, inScope, { keepUnbound: true })');
+            expect(profiles).toContain('rowsInScope(profiles, (p) => sshSigningProfileCaRef(p, caKeys), cas, inScope, { keepUnbound: true })');
+            expect(page('RequestProfiles.tsx')).toContain('rowsInScope(profiles, (p) => p.certificateAuthorityId, cas, inScope, { keepUnbound: true })');
         });
     });
 });

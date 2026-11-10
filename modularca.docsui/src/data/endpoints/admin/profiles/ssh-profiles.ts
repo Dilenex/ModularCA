@@ -4,9 +4,14 @@ export const adminSshProfiles: ApiEndpoint[] = [
     {
         method: 'GET',
         path: '/api/v1/admin/ssh/profiles/signing',
-        summary: 'List all SSH signing profiles.',
+        summary: 'List the SSH signing profiles the caller may see. Optionally narrowed to a CA or a space, as the console\'s scope switcher does.',
         auth: 'Authorize (CaOperator)',
         category: 'Admin SSH Profiles',
+        queryParams: [
+            { name: 'caId', type: 'guid', required: false, description: 'Optional CA view: the profiles whose SSH CA key belongs to this CA, and the profiles with no key.' },
+            { name: 'spaceId', type: 'guid', required: false, description: 'Optional space view: the profiles of the SSH CAs of this space, which is none.' },
+        ],
+        notes: 'caId and spaceId only narrow the list: they are applied after the caller\'s own limits. SSH CAs and their profiles belong to the instance, not to a space, so a space view is empty. The query key that spaceId replaced in 0.4.0 is refused with 400.',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
@@ -60,9 +65,14 @@ export const adminSshProfiles: ApiEndpoint[] = [
     {
         method: 'GET',
         path: '/api/v1/admin/ssh/profiles/cert',
-        summary: 'List all SSH certificate profiles.',
+        summary: 'List all SSH certificate profiles. Optionally narrowed to a CA or a space, as the console\'s scope switcher does.',
         auth: 'Authorize (CaOperator)',
         category: 'Admin SSH Profiles',
+        queryParams: [
+            { name: 'caId', type: 'guid', required: false, description: 'Optional CA view. An SSH certificate profile names no CA, so every profile is listed.' },
+            { name: 'spaceId', type: 'guid', required: false, description: 'Optional space view: none.' },
+        ],
+        notes: 'caId and spaceId only narrow the list: they are applied after the caller\'s own limits. SSH CAs and their profiles belong to the instance, not to a space, so a space view is empty. The query key that spaceId replaced in 0.4.0 is refused with 400.',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
@@ -117,9 +127,14 @@ export const adminSshProfiles: ApiEndpoint[] = [
     {
         method: 'GET',
         path: '/api/v1/admin/ssh/profiles/request',
-        summary: 'List all SSH request profiles.',
+        summary: 'List the SSH request profiles the caller may see. Optionally narrowed to a CA or a space, as the console\'s scope switcher does.',
         auth: 'Authorize (CaOperator)',
         category: 'Admin SSH Profiles',
+        queryParams: [
+            { name: 'caId', type: 'guid', required: false, description: 'Optional CA view: the profiles bound to this CA, and the unbound ones.' },
+            { name: 'spaceId', type: 'guid', required: false, description: 'Optional space view: the profiles bound to an SSH CA of this space, which is none.' },
+        ],
+        notes: 'caId and spaceId only narrow the list: they are applied after the caller\'s own limits. SSH CAs and their profiles belong to the instance, not to a space, so a space view is empty. The query key that spaceId replaced in 0.4.0 is refused with 400.',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],

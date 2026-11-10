@@ -3622,6 +3622,9 @@ if (controlActive && config.PolicySync.Enabled && config.PolicySync.SyncOnStartu
         var syncResult = policySyncService.SyncFromDirectoryAsync(policyDir).GetAwaiter().GetResult();
         policySyncLogger.LogInformation("Policy sync on startup: Created={Created}, Updated={Updated}, Unchanged={Unchanged}, Errors={Errors}",
             syncResult.Created, syncResult.Updated, syncResult.Unchanged, syncResult.Errors.Count);
+        // The count alone hides what was skipped: a profile left out of the sync is named.
+        foreach (var syncError in syncResult.Errors)
+            policySyncLogger.LogWarning("Policy sync on startup: {Error}", syncError);
     }
     catch (Exception ex)
     {

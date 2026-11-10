@@ -4,13 +4,18 @@ export const adminSigningProfiles: ApiEndpoint[] = [
     {
         method: 'GET',
         path: '/api/v1/admin/signing-profiles',
-        summary: 'List all signing profiles including allowed cert profile IDs and inheritance configuration. Non-system-admin callers see only profiles they have capability grants for.',
+        summary: 'List the signing profiles the caller may see, including allowed cert profile IDs and inheritance configuration. Optionally narrowed to a CA or a space, as the console\'s scope switcher does. Non-system-admin callers see only profiles they have capability grants for.',
         auth: 'Authorize (CaAuditor)',
         category: 'Admin Signing Profiles',
+        queryParams: [
+            { name: 'caId', type: 'guid', required: false, description: 'Optional CA view: the profiles this CA issues under, and the ones with no issuer yet.' },
+            { name: 'spaceId', type: 'guid', required: false, description: 'Optional space view: the profiles issued under by a CA of this space, and the ones with no issuer yet. A profile of an instance CA, of a CA of another space or of a CA that no longer exists is left out.' },
+        ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Array of signing profiles with algorithm constraints, name constraints, policy OIDs, and inheritance config.',
+        notes: 'caId is the CA\'s id, not its certificate\'s; a profile is placed by the CA its issuerId names (a CA certificate id). caId and spaceId only narrow the list: they are applied after the caller\'s own limits, so naming a CA or a space the caller cannot see shows none of its profiles. With both, a profile must be in both views. The query key that spaceId replaced in 0.4.0 is refused with 400.',
     },
     {
         method: 'GET',

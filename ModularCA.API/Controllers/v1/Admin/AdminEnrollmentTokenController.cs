@@ -39,6 +39,19 @@ public class AdminEnrollmentTokenController(
             : fence.Allows(token.SpaceId);
 
     /// <summary>
+    /// Whether <paramref name="token"/> belongs in the console's view of <paramref name="spaceId"/>:
+    /// it is scoped to that space, or bound to a CA inside it (by the CA's current space, so a
+    /// token whose own space column was never filled still follows its CA). A system-wide token,
+    /// one of another space, and one of an instance CA are outside every space view.
+    /// </summary>
+    /// <param name="token">The token to place.</param>
+    /// <param name="spaceId">The space the console is scoped to.</param>
+    /// <param name="caSpaces">The space of each CA the listed tokens are bound to (null for an instance CA).</param>
+    private static bool InSpaceView(EnrollmentTokenEntity token, Guid spaceId, IReadOnlyDictionary<Guid, Guid?> caSpaces)
+        => token.SpaceId == spaceId
+            || (token.CertificateAuthorityId is Guid caId && caSpaces.TryGetValue(caId, out var caSpace) && caSpace == spaceId);
+
+    /// <summary>
     /// Resolves the CA + space for a signing profile (or cert/request
     /// profile as a secondary path). Returns null if no CA can be resolved — the caller
     /// should treat null as "system-wide target" and require SystemOperator policy.
@@ -98,15 +111,38 @@ public class AdminEnrollmentTokenController(
     /// The <c>token</c> field is always null: only the hash is stored, so a token is visible
     /// exactly once, in the response to the call that created it.
     /// </para>
+    /// <para>
+    /// The console's scope narrows what the fence admits, and never widens it: a
+    /// <paramref name="caId"/> view keeps the tokens bound to that CA, and a
+    /// <paramref name="spaceId"/> view keeps those bound to the space or to a CA inside it
+    /// (<see cref="InSpaceView"/>). Without either, every token the fence admits is listed.
+    /// </para>
     /// </summary>
+    /// <param name="caId">Optional CA view: only the tokens bound to this CA.</param>
+    /// <param name="spaceId">Optional space view: the tokens of this space and of its CAs. The pre-0.4.0 <c>tenantId</c> is refused (400).</param>
     [HttpGet]
     [Authorize(Policy = "CaOperator")]
-    public async Task<IActionResult> GetActiveTokens()
+    [RefuseQueryKey("tenantId", "spaceId")]
+    public async Task<IActionResult> GetActiveTokens([FromQuery] Guid? caId = null, [FromQuery] Guid? spaceId = null)
     {
         var tokens = await tokenService.GetActiveTokensAsync();
 
         var fence = SpaceFence.From(HttpContext, Capabilities.CertRevoke);
         tokens = tokens.Where(t => MayManageToken(fence, t)).ToList();
+
+        if (caId.HasValue)
+            tokens = tokens.Where(t => t.CertificateAuthorityId == caId.Value).ToList();
+        if (spaceId.HasValue)
+        {
+            var boundCaIds = tokens.Where(t => t.CertificateAuthorityId != null).Select(t => t.CertificateAuthorityId!.Value).Distinct().ToList();
+            var caSpaces = await db.CertificateAuthorities
+                .AsNoTracking()
+                .IgnoreQueryFilters()
+                .Where(c => boundCaIds.Contains(c.Id))
+                .Select(c => new { c.Id, c.SpaceId })
+                .ToDictionaryAsync(c => c.Id, c => c.SpaceId);
+            tokens = tokens.Where(t => InSpaceView(t, spaceId.Value, caSpaces)).ToList();
+        }
 
         // No token value leaves this endpoint, for any row. Bearer tokens used to be echoed
         // back here, which made the list a way to recover a credential long after it was

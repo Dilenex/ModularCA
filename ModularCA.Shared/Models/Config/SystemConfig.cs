@@ -851,34 +851,53 @@ namespace ModularCA.Shared.Models.Config
         public string PublicDomain { get; set; } = string.Empty;
 
         /// <summary>
-        /// Public HTTPS port. When null or 443 the port is omitted from built URLs.
+        /// Public HTTPS port: the port clients reach, which differs from <see cref="Port"/> behind
+        /// a port-mapping proxy or load balancer. When null, <see cref="Port"/> is used. The port
+        /// is omitted from built URLs when it is 443. See <see cref="GetPublicHttpsPort"/>.
         /// </summary>
         [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public int? PublicPort { get; set; }
 
         /// <summary>
-        /// Builds the canonical public HTTPS base URL (no trailing slash).
-        /// Returns <c>https://PublicDomain</c> when <see cref="PublicPort"/> is null or 443,
-        /// otherwise <c>https://PublicDomain:PublicPort</c>.
+        /// The HTTPS port clients reach: <see cref="PublicPort"/> when set, otherwise the listener
+        /// <see cref="Port"/>, and 443 when that is not a usable port. The one rule for every HTTPS
+        /// URL this instance hands out: AIA/CDP bases, the ACME directory, portal and redirect
+        /// links, and the HTTP to HTTPS redirect.
+        /// </summary>
+        public int GetPublicHttpsPort()
+        {
+            // PublicPort is the operator-facing port (may differ from Kestrel's bind port
+            // when behind a port-mapping LB). When unset, fall back to the Kestrel HTTPS
+            // port so non-443 deployments work without explicit PublicPort configuration.
+            var port = PublicPort ?? Port;
+            return port > 0 ? port : 443;
+        }
+
+        /// <summary>
+        /// The HTTPS authority for <paramref name="host"/>: the host alone when
+        /// <see cref="GetPublicHttpsPort"/> is 443, otherwise <c>host:port</c>.
+        /// </summary>
+        /// <param name="host">A bare host name or address, without scheme or port.</param>
+        public string GetHttpsAuthorityFor(string host)
+        {
+            var port = GetPublicHttpsPort();
+            return port == 443 ? host : $"{host}:{port}";
+        }
+
+        /// <summary>
+        /// Builds the canonical public HTTPS base URL (no trailing slash):
+        /// <c>https://PublicDomain</c>, with <c>:port</c> when <see cref="GetPublicHttpsPort"/> is
+        /// not 443.
         /// </summary>
         public string GetPublicHttpsBaseUrl() => GetHttpsBaseUrlFor(PublicDomain);
 
         /// <summary>
         /// Builds the HTTPS base URL (no trailing slash) for <paramref name="host"/>, a name this
         /// process serves on the same listener as <see cref="PublicDomain"/>. The port rule is
-        /// the public one, since every name shares the listener.
+        /// the public one (<see cref="GetPublicHttpsPort"/>), since every name shares the listener.
         /// </summary>
-        public string GetHttpsBaseUrlFor(string host)
-        {
-            // PublicPort is the operator-facing port (may differ from Kestrel's bind port
-            // when behind a port-mapping LB). When unset, fall back to the Kestrel HTTPS
-            // port so non-443 deployments work without explicit PublicPort configuration.
-            var port = PublicPort ?? Port;
-            if (port <= 0) port = 443;
-            return port == 443
-                ? $"https://{host}"
-                : $"https://{host}:{port}";
-        }
+        /// <param name="host">A bare host name or address, without scheme or port.</param>
+        public string GetHttpsBaseUrlFor(string host) => $"https://{GetHttpsAuthorityFor(host)}";
 
         /// <summary>
         /// Builds a public HTTP base URL using the <see cref="HttpConfig.Port"/> from a
