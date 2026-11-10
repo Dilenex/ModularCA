@@ -74,6 +74,22 @@ catch (ArgumentException ex)
     throw;
 }
 
+// --role signer --check-ready: the health command of a signer container (Quadlet HealthCmd=, an
+// exec probe). It runs before the startup logger exists because it is run every few seconds: it
+// reads the signer's settings file and server certificate and writes nothing. SignerReadinessCheck.
+if (ModularCA.API.Startup.SignerReadinessCheck.IsNamedIn(args))
+{
+    bool checksSigner;
+    try { checksSigner = ModularCA.API.Startup.ProcessRoles.Parse(args) == ModularCA.API.Startup.ProcessRole.Signer; }
+    catch (ArgumentException) { checksSigner = false; }
+    if (!checksSigner)
+    {
+        Console.Error.WriteLine($"[FATAL] {ModularCA.API.Startup.SignerReadinessCheck.Flag} checks the local signer: add --role signer.");
+        Environment.Exit(1);
+    }
+    Environment.Exit(await ModularCA.API.Startup.SignerReadinessCheck.RunAsync(signerPaths, Console.Out, Console.Error));
+}
+
 var bootstrapConfig = new LoggerConfiguration().MinimumLevel.Information();
 switch (bootstrapConsoleFormat)
 {
@@ -686,6 +702,9 @@ envOverlay.Apply(config);
 // Where a change to the configuration is saved: config.yaml alone until the instance-wide
 // settings have been moved to the database, the settings store and the file after that.
 var settingsPersistence = new ModularCA.Core.Services.Settings.SettingsPersistence(config, envOverlay, configPath);
+// Whether the secrets the signer wraps still wait to be read because the remote signer did not
+// answer at start; the node's health reports it until SignerSecretsRetryService reads them.
+var signerSecretsState = new ModularCA.Core.Services.Settings.SignerSecretsState();
 
 // CRYPTO-001: the central KeyAlgorithmPolicy takes the RSA signature padding mode from
 // CertPolicy config each time it signs. This must happen before any certificate or CRL
@@ -1023,9 +1042,14 @@ if (!isSetupMode)
             // The secrets come back through a signer: the remote one this node is configured
             // for, or this process's own keystore. An ingress holds no key and uses no secret.
             var settingsSignerIsRemote = !processRoles.HasFlag(ModularCA.API.Startup.ProcessRole.Signer) && config.Signer.IsRemote;
-            await ModularCA.API.Startup.SettingsStartup.RunAsync(config, envOverlay, settingsPersistence, controlActive,
+            var settingsOutcome = await ModularCA.API.Startup.SettingsStartup.RunAsync(config, envOverlay, settingsPersistence, controlActive,
                 ingressOnly ? null : new ModularCA.API.Startup.SettingsStartup.SignerAccess(
                     settingsSignerIsRemote, signerPaths.KeystoresDirectory, signerPaths.KeystoreYamlPath));
+            // A node started before its signer listens (a pod or two units started together)
+            // reads the wrapped secrets in the background once the signer answers, and its
+            // health says not ready until then: SignerSecretsRetryService.
+            if (settingsOutcome.SignerUnreachable && settingsOutcome.Report.Snapshot.ImportedAt != null)
+                signerSecretsState.MarkPending("The secrets the signer wraps have not been read: the signer has not answered since this process started.");
         }
         catch (Exception ex)
         {
@@ -1130,6 +1154,7 @@ else
 builder.Services.AddSingleton(config);
 builder.Services.AddSingleton(envOverlay);
 builder.Services.AddSingleton(settingsPersistence);
+builder.Services.AddSingleton(signerSecretsState);
 builder.Services.AddSingleton<ModularCA.Core.Services.AuditHashChainService>();
 
 // Entitlements are resolved once from a signed licence file and never change while the process
@@ -1350,14 +1375,24 @@ if (isSetupMode && string.IsNullOrWhiteSpace(loadedConfig.JWT.Secret))
 // The JWT secret is kept in the settings store, wrapped by the signer. A process that could
 // not read it back (its signer is locked or out of reach, or it is an ingress, which holds no
 // key) has none. It runs on one made up for this start rather than refuse every sign-in: the
-// console stays reachable to put things right. Sessions signed with it end when the process
-// does and are not accepted by another node.
+// console stays reachable to put things right. Sessions signed with it are not accepted by
+// another node, and end when the process does, or, for a signer that did not answer at start,
+// when the stored secret is read in the background (SignerSecretsRetryService).
 if (!isSetupMode && string.IsNullOrWhiteSpace(loadedConfig.JWT.Secret) && settingsPersistence.StoreInUse)
 {
     loadedConfig.JWT.Secret = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(64));
-    // Nobody set this one, so a later save of the settings does not store it.
+    // Nobody set this one, so a later save of the settings does not store it, nor write it to
+    // config.yaml.
     settingsPersistence.KeepSecretsAsHeld();
-    if (!ingressOnly)
+    settingsPersistence.LeaveOutOfFile(ModularCA.Core.Services.Settings.SettingsPersistence.JwtSecretKey);
+    signerSecretsState.MarkMadeUp(ModularCA.Core.Services.Settings.SettingsPersistence.JwtSecretKey);
+    if (!ingressOnly && signerSecretsState.Pending)
+    {
+        Log.Warning("The signer has not answered yet, so this process signs sessions with a temporary JWT secret until it does. "
+            + "The stored secret replaces it as soon as the signer answers, without a restart; sessions signed with the temporary one end then.");
+        Console.WriteLine("[WARNING] The signer has not answered yet; using a temporary JWT secret until it does.");
+    }
+    else if (!ingressOnly)
     {
         Log.Error("The JWT secret could not be read from the settings store, so this process signs sessions with a temporary one. "
             + "Everyone is signed out at its next restart, and another node will not accept its sessions. See the Settings warnings above for why. "
@@ -1374,10 +1409,11 @@ if (!isSetupMode && Encoding.UTF8.GetByteCount(loadedConfig.JWT.Secret) < 64)
     Environment.Exit(1);
 }
 
+// Read at each check, not fixed here: see JwtSigningKey.
+var jwtSigningKey = new ModularCA.API.Startup.JwtSigningKey(loadedConfig);
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
-        var key = Encoding.UTF8.GetBytes(loadedConfig.JWT.Secret);
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -1385,7 +1421,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateAudience = true,
             ValidAudience = loadedConfig.JWT.Audience,
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new SymmetricSecurityKey(key),
+            IssuerSigningKeyResolver = (_, _, _, _) => [jwtSigningKey.Current()],
             ValidateLifetime = true,
             ValidAlgorithms = new[] { SecurityAlgorithms.HmacSha256 },
             ClockSkew = TimeSpan.FromMinutes(1),
@@ -1858,7 +1894,18 @@ var healthChecks = builder.Services.AddHealthChecks()
     .AddCheck<ModularCA.API.HealthChecks.ModularCAHealthCheck>("modularca")
     // The active roles and, per role, whether what it needs is there (validation: the signer
     // reachable; enrollment: the signer unlocked; control: the database).
-    .AddCheck<ModularCA.API.HealthChecks.NodeRoleHealthCheck>("roles");
+    .AddCheck<ModularCA.API.HealthChecks.NodeRoleHealthCheck>("roles")
+    // Whether the secrets the signer wraps have been read: not while a node that started before
+    // its signer answered waits for it.
+    .AddCheck<ModularCA.API.HealthChecks.SignerSecretsHealthCheck>("signer-secrets");
+// A node whose remote signer did not answer at start reads the wrapped secrets in the background
+// once it does, without a restart, and reports itself not ready until then.
+if (signerSecretsState.Pending)
+    builder.Services.AddHostedService(sp => new ModularCA.API.Services.SignerSecretsRetryService(
+        sp.GetRequiredService<IServiceScopeFactory>(),
+        sp.GetRequiredService<ModularCA.Shared.Signing.ISigningService>(),
+        signerSecretsState, config, settingsPersistence, envOverlay, controlActive,
+        sp.GetRequiredService<ILogger<ModularCA.API.Services.SignerSecretsRetryService>>()));
 // The ingress: whether the route table is built, and what the probe of each upstream found.
 if (activeRoles.Has(ModularCA.API.Startup.ProcessRole.Ingress))
     healthChecks.AddCheck<ModularCA.API.HealthChecks.IngressHealthCheck>("ingress");

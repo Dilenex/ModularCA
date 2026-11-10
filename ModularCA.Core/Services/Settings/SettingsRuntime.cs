@@ -38,6 +38,15 @@ public sealed record SettingsStartReport(SettingsSnapshot Snapshot, SettingsImpo
     string? FileProblem = null, IReadOnlyList<string>? SupersededCleared = null,
     IReadOnlyList<string>? SecretsMoved = null, IReadOnlyList<string>? SecretProblems = null);
 
+/// <summary>What completing the secrets step after a start did (<see cref="SettingsRuntime.CompleteSecretsAsync"/>).</summary>
+/// <param name="Snapshot">The stored settings the process is now running on.</param>
+/// <param name="SecretsMoved">Secrets moved out of the configuration file, by key.</param>
+/// <param name="SecretProblems">What went wrong with a secret. No secret is in any of them.</param>
+/// <param name="FileBackup">Where the configuration file was copied before it was rewritten; null when it was not.</param>
+/// <param name="FileProblem">Why the configuration file could not be rewritten, when it should have been; null otherwise.</param>
+public sealed record SettingsSecretsReport(SettingsSnapshot Snapshot, IReadOnlyList<string> SecretsMoved, IReadOnlyList<string> SecretProblems,
+    string? FileBackup, string? FileProblem);
+
 /// <summary>
 /// The settings store as the running node uses it: which settings it covers, how the stored
 /// values reach the configuration at start, how a change made to the configuration reaches the
@@ -263,88 +272,165 @@ public static class SettingsRuntime
 
         // The secrets. Until one is stored, the file's value stands. The control role stores
         // those the file holds; every role then reads the stored ones back through the signer.
-        var secretsMoved = new List<string>();
-        var secretProblems = new List<string>();
-        var fileSetsStoredSecrets = false;
-        IReadOnlyDictionary<string, string>? secretBaseline = null;
+        var secrets = new SecretsOutcome(snapshot, [], [], false, null);
         if (withSecrets && snapshot.ImportedAt != null)
-        {
-            var defaults = new SystemConfig();
-            var fromFile = SecretBaseline(config, environmentPaths);
-            var secrets = CoveredSecrets(environmentPaths).ToList();
-
-            var toMove = mayMove
-                ? secrets.Where(d => !snapshot.Secrets.ContainsKey(d.Key) && fromFile[d.Key] != HeldSecret(defaults, d)).ToList()
-                : [];
-            if (toMove.Count > 0)
-            {
-                try
-                {
-                    await store.WriteAsync(new SettingsChange
-                    {
-                        Set = toMove.ToDictionary(d => d.Key, d => SettingsCatalog.Read(config, d)),
-                        Actor = new SettingsActor(null, ImportActor), Source = SettingsSource.Import,
-                        Reason = "Moved from config.yaml, wrapped by the signer.",
-                    }, cancellationToken);
-                    secretsMoved.AddRange(toMove.Select(d => d.Key));
-                    snapshot = await store.LoadAsync(cancellationToken);
-                }
-                catch (SettingsRefusedException ex) when (ex.Reason == SettingsRefusal.SignerRefused)
-                {
-                    secretProblems.Add($"The secrets stay in config.yaml for now, where they still work. {ex.Message}");
-                }
-            }
-
-            foreach (var definition in secrets)
-            {
-                if (!snapshot.Secrets.TryGetValue(definition.Key, out var stored)) continue;
-                if (fromFile[definition.Key] != HeldSecret(defaults, definition))
-                    fileSetsStoredSecrets = true;
-                // A secret that was stored and then cleared is empty, whatever the file says.
-                if (stored.Value == null)
-                    SettingsCatalog.Apply(config, definition, SettingsCatalog.Read(defaults, definition));
-            }
-
-            var supplied = SettingsCatalog.Definitions.Where(d => environmentPaths.Contains(d.Path)).Select(d => d.Key).ToHashSet(StringComparer.Ordinal);
-            secretProblems.AddRange(await store.ApplySecretsAsync(snapshot, config, cancellationToken, supplied));
-            secretBaseline = SecretBaseline(config, environmentPaths);
-        }
-        persistence.Use(snapshot, secretBaseline);
+            secrets = await MoveAndReadSecretsAsync(store, config, snapshot, environmentPaths, mayMove, NoKeys, cancellationToken);
+        snapshot = secrets.Snapshot;
+        persistence.Use(snapshot, secrets.Baseline);
 
         string? backup = null;
         string? fileProblem = null;
-        if (mayMove && snapshot.ImportedAt != null && (fileSetsStoredSettings || fileSetsStoredSecrets) && File.Exists(persistence.ConfigPath))
+        if (mayMove && snapshot.ImportedAt != null && (fileSetsStoredSettings || secrets.FileSetsStoredSecrets))
+            (backup, fileProblem) = TidyFile(persistence, snapshot, environmentPaths);
+        return new SettingsStartReport(snapshot, import, load, backup, fileProblem, supersededCleared, secrets.Moved, secrets.Problems);
+    }
+
+    /// <summary>
+    /// The secrets step of a start, run again once the signer can be reached: for a start that
+    /// ran while it could not (the node and its signer started together and the node won), which
+    /// left the secrets in <c>config.yaml</c> unmoved, or the stored ones unread. The control
+    /// role moves those the configuration still holds; every role reads the stored ones onto
+    /// <paramref name="config"/>, the configuration the process is running on; the control role
+    /// then rewrites its file without the moved ones, keeping a copy as a start does.
+    /// </summary>
+    /// <param name="store">The settings store, over a signer that can now be reached.</param>
+    /// <param name="config">The running configuration.</param>
+    /// <param name="persistence">Where the process saves its settings; takes the snapshot read here.</param>
+    /// <param name="environmentPaths">The dotted paths the environment supplies, which are left alone.</param>
+    /// <param name="mayMove">Whether this process moves the secrets and rewrites its file: the control role.</param>
+    /// <param name="madeUp">
+    /// Secrets, by key, whose value in <paramref name="config"/> this process made up for itself
+    /// (the temporary JWT secret of a start that could not read the stored one). Such a value is
+    /// nobody's choice: it is never stored, and a stored secret that was cleared does not empty
+    /// it. A stored value for it is read onto <paramref name="config"/> like any other.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <exception cref="InvalidOperationException">The settings have not been moved to the database, so there is nothing to complete.</exception>
+    public static async Task<SettingsSecretsReport> CompleteSecretsAsync(ISettingsStore store, SystemConfig config, SettingsPersistence persistence,
+        IReadOnlySet<string> environmentPaths, bool mayMove, IReadOnlySet<string> madeUp, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(persistence);
+        ArgumentNullException.ThrowIfNull(madeUp);
+        var snapshot = await store.LoadAsync(cancellationToken);
+        if (snapshot.ImportedAt == null)
+            throw new InvalidOperationException("The settings have not been moved to the database, so no secret is kept there yet.");
+
+        var secrets = await MoveAndReadSecretsAsync(store, config, snapshot, environmentPaths, mayMove, madeUp, cancellationToken);
+        persistence.Use(secrets.Snapshot, secrets.Baseline);
+
+        string? backup = null;
+        string? fileProblem = null;
+        if (mayMove && secrets.FileSetsStoredSecrets)
+            (backup, fileProblem) = TidyFile(persistence, secrets.Snapshot, environmentPaths);
+        return new SettingsSecretsReport(secrets.Snapshot, secrets.Moved, secrets.Problems, backup, fileProblem);
+    }
+
+    private static readonly IReadOnlySet<string> NoKeys = new HashSet<string>(StringComparer.Ordinal);
+
+    /// <summary>What the secrets step did.</summary>
+    /// <param name="Snapshot">The stored settings afterwards.</param>
+    /// <param name="Moved">The secrets moved out of the configuration, by key.</param>
+    /// <param name="Problems">What went wrong with a secret; no secret is in any of them.</param>
+    /// <param name="FileSetsStoredSecrets">Whether the configuration still holds a secret that is now stored, so the file should be tidied.</param>
+    /// <param name="Baseline">What the configuration holds for each secret now, to tell a later change by.</param>
+    private sealed record SecretsOutcome(SettingsSnapshot Snapshot, List<string> Moved, List<string> Problems,
+        bool FileSetsStoredSecrets, IReadOnlyDictionary<string, string>? Baseline);
+
+    /// <summary>
+    /// Moves the secrets <paramref name="config"/> holds that are not stored yet, when
+    /// <paramref name="mayMove"/>, then reads every stored one onto it through the store's
+    /// signer. A refusal by the signer leaves the secrets where they are and is reported. A key in
+    /// <paramref name="madeUp"/> holds a value the process made up: it is not moved, and a
+    /// cleared stored value does not empty it, but a stored value is read over it.
+    /// </summary>
+    private static async Task<SecretsOutcome> MoveAndReadSecretsAsync(ISettingsStore store, SystemConfig config, SettingsSnapshot snapshot,
+        IReadOnlySet<string> environmentPaths, bool mayMove, IReadOnlySet<string> madeUp, CancellationToken cancellationToken)
+    {
+        var moved = new List<string>();
+        var problems = new List<string>();
+        var fileSetsStoredSecrets = false;
+        var defaults = new SystemConfig();
+        var fromFile = SecretBaseline(config, environmentPaths);
+        var secrets = CoveredSecrets(environmentPaths).Where(d => !madeUp.Contains(d.Key)).ToList();
+
+        var toMove = mayMove
+            ? secrets.Where(d => !snapshot.Secrets.ContainsKey(d.Key) && fromFile[d.Key] != HeldSecret(defaults, d)).ToList()
+            : [];
+        if (toMove.Count > 0)
         {
-            // The file is tidied, not relied on: the stored values are in force whether or not
-            // it can be rewritten. A read-only configuration directory is how a container runs.
             try
             {
-                // The copy is of the file as it was, less the secrets that are now wrapped in the
-                // database: a copy holding them in the clear would undo the move.
-                var storedSecretPaths = CoveredSecrets(environmentPaths).Where(d => snapshot.Secrets.ContainsKey(d.Key)).Select(d => d.Path).ToList();
-                var stamp = $"{DateTime.UtcNow:yyyyMMdd'T'HHmmss'Z'}";
-                var copy = $"{persistence.ConfigPath}.pre-settings-{stamp}.bak";
-                for (var n = 2; File.Exists(copy); n++)
-                    copy = $"{persistence.ConfigPath}.pre-settings-{stamp}-{n}.bak";
-                if (storedSecretPaths.Count == 0)
+                await store.WriteAsync(new SettingsChange
                 {
-                    File.Copy(persistence.ConfigPath, copy, overwrite: false);
-                    Shared.Utils.FileSecurityUtil.SetOwnerOnly(copy);
-                }
-                else
-                {
-                    Shared.Utils.ConfigYamlWriter.WriteKeepingAccess(copy,
-                        Shared.Utils.ConfigYamlWriter.WithoutPaths(File.ReadAllText(persistence.ConfigPath), storedSecretPaths));
-                }
-                backup = copy;
-                persistence.WriteFile();
+                    Set = toMove.ToDictionary(d => d.Key, d => SettingsCatalog.Read(config, d)),
+                    Actor = new SettingsActor(null, ImportActor), Source = SettingsSource.Import,
+                    Reason = "Moved from config.yaml, wrapped by the signer.",
+                }, cancellationToken);
+                moved.AddRange(toMove.Select(d => d.Key));
+                snapshot = await store.LoadAsync(cancellationToken);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or YamlDotNet.Core.YamlException)
+            catch (SettingsRefusedException ex) when (ex.Reason == SettingsRefusal.SignerRefused)
             {
-                fileProblem = ex.Message;
+                problems.Add($"The secrets stay in config.yaml for now, where they still work. {ex.Message}");
             }
         }
-        return new SettingsStartReport(snapshot, import, load, backup, fileProblem, supersededCleared, secretsMoved, secretProblems);
+
+        foreach (var definition in secrets)
+        {
+            if (!snapshot.Secrets.TryGetValue(definition.Key, out var stored)) continue;
+            if (fromFile[definition.Key] != HeldSecret(defaults, definition))
+                fileSetsStoredSecrets = true;
+            // A secret that was stored and then cleared is empty, whatever the file says.
+            if (stored.Value == null)
+                SettingsCatalog.Apply(config, definition, SettingsCatalog.Read(defaults, definition));
+        }
+
+        var supplied = SettingsCatalog.Definitions.Where(d => environmentPaths.Contains(d.Path)).Select(d => d.Key).ToHashSet(StringComparer.Ordinal);
+        problems.AddRange(await store.ApplySecretsAsync(snapshot, config, cancellationToken, supplied));
+        return new SecretsOutcome(snapshot, moved, problems, fileSetsStoredSecrets, SecretBaseline(config, environmentPaths));
+    }
+
+    /// <summary>
+    /// Rewrites the configuration file without the settings and secrets the store now holds,
+    /// keeping a copy of the file as it was, less those secrets. Returns the copy's path, or why
+    /// the file could not be rewritten. The file is tidied, not relied on: the stored values are
+    /// in force whether or not it can be, and a read-only configuration directory is how a
+    /// container runs.
+    /// </summary>
+    private static (string? Backup, string? Problem) TidyFile(SettingsPersistence persistence, SettingsSnapshot snapshot, IReadOnlySet<string> environmentPaths)
+    {
+        if (!File.Exists(persistence.ConfigPath))
+            return (null, null);
+        string? backup = null;
+        try
+        {
+            // The copy is of the file as it was, less the secrets that are now wrapped in the
+            // database: a copy holding them in the clear would undo the move.
+            var storedSecretPaths = CoveredSecrets(environmentPaths).Where(d => snapshot.Secrets.ContainsKey(d.Key)).Select(d => d.Path).ToList();
+            var stamp = $"{DateTime.UtcNow:yyyyMMdd'T'HHmmss'Z'}";
+            var copy = $"{persistence.ConfigPath}.pre-settings-{stamp}.bak";
+            for (var n = 2; File.Exists(copy); n++)
+                copy = $"{persistence.ConfigPath}.pre-settings-{stamp}-{n}.bak";
+            if (storedSecretPaths.Count == 0)
+            {
+                File.Copy(persistence.ConfigPath, copy, overwrite: false);
+                Shared.Utils.FileSecurityUtil.SetOwnerOnly(copy);
+            }
+            else
+            {
+                Shared.Utils.ConfigYamlWriter.WriteKeepingAccess(copy,
+                    Shared.Utils.ConfigYamlWriter.WithoutPaths(File.ReadAllText(persistence.ConfigPath), storedSecretPaths));
+            }
+            backup = copy;
+            persistence.WriteFile();
+            return (backup, null);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or YamlDotNet.Core.YamlException)
+        {
+            return (backup, ex.Message);
+        }
     }
 
     /// <summary>

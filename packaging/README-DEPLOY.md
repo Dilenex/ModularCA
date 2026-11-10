@@ -699,7 +699,7 @@ Three things, and a restore needs all three. Losing any one of them loses the CA
 |---|---|---|
 | A backup archive, `modularca-backup-<timestamp>.enc` | `backups/` | Every backup |
 | The backup key, `backup.key` (or the backup password you set) | `config/` | Never, unless you reset the instance or change the password |
-| The keystore passphrases, `keystore.yaml` | `config/` | Never |
+| The keystore passphrases, `keystore.yaml` | `config/`; with the signer apart, the signer's directory (`signer/`, or the pod's `modularca-signer-config` volume) | Never |
 
 Copy the key and the passphrases off the host once, when you install, and keep them apart from
 the archives: an archive with its key and the passphrases is the CA. Copy each new archive off
@@ -979,7 +979,8 @@ and `config/keystore.yaml` exist.
    The first writes `signer/signer-identity-ca.pfx` and `signer/signer-server.pfx`, owner-only. The
    second writes `/tmp/node-identity/signer-client.pfx` and `signer-pin.txt` and prints two things:
    the `PinnedClientSpki` for the signer, and the `Signer:` section for the node. (`--apply`, which
-   writes both halves into one `config.yaml`, is the pod's and is refused with `--signer-dir`.)
+   writes the two halves into the two files itself, is the pod's: it needs one account that can
+   write both `config/` and `signer/`, and here they belong to two.)
 
 4. Configure both sides. The signer side, in `signer/signer.yaml` (`sudo -e` keeps its owner and
    mode):
@@ -1024,7 +1025,9 @@ and `config/keystore.yaml` exist.
    `journalctl -u modularca-signer` shows where the signer read its settings from, the listener
    and the pins it holds; `/health/ready` on the node shows the signer as a step. While the signer
    is down the node answers 503 on every enrollment endpoint with "The signer is unreachable" and
-   reconnects on its own.
+   reconnects on its own. Because the signer starts after the node, the node starts without the
+   secrets the signer wraps and reads them once the signer answers, reporting itself not ready
+   until then; "The pod", below, says what that means.
 
 Backups taken by the node's scheduled job go through the signer and keep working. The
 command-line `--backup` and `--restore` read the keystore files directly, so on a split
@@ -1080,7 +1083,10 @@ the signer says so in a warning at every start. The packaged unit already names
 
    Remove `Hsm:` and the signer's half of `Signer:` (`Listen`, `ServerCertificate`,
    `PinnedClientSpki`, `IdentityCa` and their passwords) from `config/config.yaml`; the node never
-   reads them. Restart the node.
+   reads them. Restart the node. (The pod does all of this itself, in `--issue-node-identity
+   --apply`, because there one account can write both directories. Here they belong to two
+   accounts and you do it by hand; `signer/keystore.yaml` is then the only copy of the keystore
+   passphrases, so keep `signer/` in your backups.)
 
 To go back, stop the signer, remove `--signer-dir` from its unit (or the drop-in) and restore the
 files and the group read of step 1 above as they were.
@@ -1263,31 +1269,149 @@ already there. If one person will administer the
 instance, set `Administration.MultipleAdministrators: false` in `bootstrap.yaml`: key ceremonies
 then start off for the instance and the first space, where a lone administrator could never get
 one approved, and a system super-administrator may approve their own certificate requests. Left
-out, ceremonies start on and self-approval off. Three init containers run every start and find their work
-done after the first:
+out, ceremonies start on and self-approval off. Four init containers run every start and find their
+work done after the first:
 
 1. **bootstrap** completes the first install as a single process, because bootstrap writes the
    keystore locally and there is nothing to split until it exists. The initial administrator
    password is printed once, into this container's log: `podman logs modularca-bootstrap`.
-2. **signer-init** creates the signer's identity CA and server certificate. It refuses to replace
-   an existing CA, so it does nothing on later starts.
-3. **node-identity** issues the node its client certificate and writes both halves of the channel
-   into the one `Signer:` section of the shared `config.yaml` — the node reads its keys from it,
-   the signer reads its own. It exits without touching a file that already names a remote signer
-   with both pins set.
+2. **signer-dir** fills the signer's own directory, the `modularca-signer-config` volume mounted
+   at `/opt/modularca/signer`, from what bootstrap wrote: `signer.yaml` with only the sections
+   the signer reads (its half of `Signer:`, `Hsm:`, `Schema:`, the logging levels), `db.yaml`
+   with only the application database, and `keystore.yaml`. It is `--role signer --signer-dir
+   /opt/modularca/signer --migrate-signer-dir`, the command "Two units" uses. Once the directory
+   holds those files it exits without reading them from `config/` again, so nothing the node
+   later writes there reaches the signer; a directory holding some of them but not all stops the
+   pod.
+3. **signer-init** creates the signer's identity CA and server certificate in its directory. On
+   later starts it finds them, checks that they belong together, and exits without changing
+   anything. It never replaces an existing CA (only `--force` does), and it stops the pod when
+   what it finds is partial or inconsistent: one file without the other, a file it cannot open,
+   or a server certificate the CA did not issue, that has expired, or that names another host.
+4. **node-identity** issues the node its client certificate into the config volume and writes
+   each half of the channel where its process reads it: the node's (`Mode`, `Endpoint`,
+   `ClientCertificate`, `PinnedServerSpki`) into `config/config.yaml`, the signer's
+   (`PinnedClientSpki`) into `signer.yaml`, each file copied beside itself first. It is the one
+   container that mounts both volumes. On later starts it checks that the node pins the signer's
+   server certificate and the signer pins the node's client certificate, and exits without
+   touching either file; after an identity CA was replaced with `--force` it issues and pins the
+   node again. Once the pins are in place it also cleans the config volume of what the node never
+   reads, each file only after checking the signer's copy: `config/keystore.yaml`, once the
+   signer's `keystore.yaml` is byte-identical or holds the same passphrases; and, after an upgrade
+   from 0.4.3, `config/signer-server.pfx`, `config/signer-identity-ca.pfx` and, in
+   `config/config.yaml`, the signer's half of `Signer:` (`Listen`, `ServerCertificate`,
+   `PinnedClientSpki`, `IdentityCa` and their passwords) and `Hsm:`, once the identity in the
+   signer's directory opens and is the one both pins match. `config.yaml` keeps the node's half
+   (`Mode`, `Endpoint`, `ClientCertificate` and its password, `PinnedServerSpki`) and every other
+   section as it was, and is copied beside itself first as `config.yaml.pre-signer-cleanup-*.bak`.
+   On the same evidence it scrubs the copies of `config.yaml` kept beside it
+   (`config.yaml.*.bak`: `.pre-signer-*`, `.pre-settings-*`, `.mariadb-*`): the same keys go, and
+   `Hsm:` too when the signer's `signer.yaml` has its own, or else only `Hsm.Pin`. Everything else
+   in each copy stays byte for byte, the copies are written back owner-only, and none is deleted:
+   they are your way back to an earlier configuration. The copies `--apply` and the clean-up write
+   are made the same way, so no copy in the config volume holds the signer's passwords or the HSM
+   PIN. A file that does not check out is left where it is, with a `[WARNING]` in the container's
+   log saying why (never what it holds); the pod starts regardless. Later starts find nothing to
+   remove and say nothing about it.
 
-Then the two containers start: `signer` with `--role signer`, `node` with `--role node`.
+Then the two containers start: `signer` with `--role signer --signer-dir /opt/modularca/signer`,
+`node` with `--role node`.
 
-The volumes are the security division, not housekeeping. `modularca-config` is shared, and the
-signer mounts it read-only. `modularca-keystores` is mounted by the signer alone — **the node
-never sees it**, which is the whole point of the split. `modularca-data` is the node's alone. The
-signer listens on the pod's loopback, publishes no port, and cannot be reached from outside the
-pod at all.
+The volumes are the security division, not housekeeping:
 
-To do the same by hand on a host with the two units, the command the third init container runs
-is the one to know: `--role signer --issue-node-identity --apply config/config.yaml` writes what
-the earlier steps in this file have you transcribe, and takes a `.pre-signer-*.bak` copy of the
-file first.
+| Volume | Mounted by | Holds |
+|---|---|---|
+| `modularca-config` | the node; the init containers | `config.yaml`, `db.yaml` and the node's client certificate. Bootstrap leaves `keystore.yaml` here too, and `node-identity` removes it at the first start once the signer holds its copy. The node writes here while it runs: `config.yaml` when settings are saved or moved into the database (each time with a `config.yaml.pre-settings-*.bak` copy), the web TLS certificate (`api-tls.pfx`) when it is provisioned or renewed, and the Data Protection key ring (`dp-keys/`), made at start and rotated. Copy it as often as anything else that changes. |
+| `modularca-signer-config` | the signer; the init containers | `signer.yaml`, the signer's `db.yaml` and `keystore.yaml`, the identity CA and the server certificate. **The node never mounts it**, so it cannot change what the signer loads (`Hsm.ModulePath`, `Signer.PinnedClientSpki`, `Signer.Listen`). Only the init containers write to it; the signer's logs go to an `emptyDir` mounted over its `logs/`. **It MUST be in your volume backups**: after the first start the keystore passphrases (`keystore.yaml`) live in this volume and nowhere else, and no backup archive carries them, so losing it loses every keystore. |
+| `modularca-keystores` | the signer; bootstrap | The keystores. **The node never sees them**, which is the whole point of the split. |
+| `modularca-data` | the node | Its backup archives. |
+
+The signer listens on the pod's loopback, publishes no port, and cannot be reached from outside
+the pod at all.
+
+Things to know about the signer's directory:
+
+- **Change the signer's settings in `signer.yaml`**, in the `modularca-signer-config` volume: an
+  HSM (`Hsm:`), the listen address, the logging levels. The node's `config.yaml` no longer
+  decides them; `signer-dir` copied them once, at the first start.
+- **When the database password changes** (`modularca-migrate`, a rotation), update the signer's
+  `db.yaml` as well as the node's.
+- **Back up `modularca-signer-config` with the other volumes.** The keystore passphrases are in its
+  `keystore.yaml` and, once `node-identity` has removed the node's copy, nowhere else: backup
+  archives never carry them. A restore onto a new pod needs that file as well as the backup key
+  from the `config` volume; without it the keystores cannot be opened.
+- **The node's volume holds nothing of the signer's** after the first start: `node-identity`
+  removes `config/keystore.yaml` once the signer has its copy. The node with a remote signer never
+  reads it.
+
+**Upgrading a pod from 0.4.3**, where the signer read the shared `config` volume: create the
+`modularca-signer-config` volume, empty, and start the pod from this file. `signer-dir` copies the
+signer's settings and its identity files across, and `signer-init` and `node-identity` find the
+identity and the pins as they were, so nothing is reissued. `node-identity` then removes from the
+node's volume what it no longer needs, as described above: `config/keystore.yaml`,
+`config/signer-server.pfx`, `config/signer-identity-ca.pfx`, and the `Hsm:` section and the
+signer's half of `Signer:` from `config/config.yaml` and from the copies of it that 0.4.3 left
+beside it (`config.yaml.pre-signer-*.bak`, `config.yaml.pre-settings-*.bak`), which are kept
+otherwise as they were. Its log lists what it removed, and a
+`[WARNING]` names anything it left and why. Read `signer.yaml` once afterwards: it was copied from
+a file the node could write, so check `Hsm.ModulePath`, `Signer.PinnedClientSpki` and
+`Signer.Listen`. **From then on the keystore passphrases are only in `modularca-signer-config`**:
+add that volume to your volume backups before you rely on the upgraded pod. Copies of the config
+volume taken before the upgrade (volume snapshots, `cp -a`) still hold the signer's settings and
+the HSM PIN; the clean-up cannot reach those.
+
+**Is the signer up?** `--role signer --check-ready` (with the signer's `--signer-dir`, when it has
+one) exits 0 when the local signer is listening and answering, and 1 otherwise, saying why on one
+line. It connects to `Signer.Listen` and completes a TLS 1.3 handshake, succeeding only when the
+server answers with the signer's own server certificate, the one `Signer.ServerCertificate`
+names. It makes no gRPC call, since the signer admits only the node's client certificate, which
+the signer's container does not hold; it reads the signer's settings file and server certificate
+and writes nothing, not even a log line. A signer whose keystore is locked still counts as ready:
+it is up, and the node's `/health/ready` reports the lock. The pod file uses it as the signer's
+startup and liveness probes. Under Quadlet, put it on the signer's `.container` unit:
+
+    [Container]
+    HealthCmd=/opt/modularca/ModularCA.API --role signer --signer-dir /opt/modularca/signer --check-ready
+    HealthInterval=30s
+    HealthStartPeriod=15m
+    HealthOnFailure=restart
+
+The long start period covers an upgrade: a new version's signer waits for the node to apply the
+migrations (up to `Schema.WaitSeconds`) before it listens. For the same reason, do not hold the
+node back until the signer is healthy (no `Requires=` or `After=` on the signer's health, no
+`Notify=healthy` that the node's unit waits for): after an upgrade the signer waits for the node,
+and the two would wait for each other. Start them together; the node copes with a signer that is
+not there yet, as described next.
+
+**A node that starts before its signer listens.** The signer needs a few seconds before it
+listens (it derives keys with scrypt and checks both keystore files first), so in the pod the node
+usually starts first. The secrets the node keeps wrapped by the signer (`JWT.Secret`, the
+directory bind password, the mail passwords and tokens, the webhook endpoints) then cannot be
+read, or, on the first start, moved out of `config.yaml`. The node says so in its log ("the signer
+at ... does not answer yet"), starts anyway, and asks the signer again in the background, after
+2 seconds and then twice as long each time up to once a minute. As soon as the signer answers it
+reads the secrets onto the running configuration and, on the control role, moves those still in
+`config.yaml` into the database and rewrites the file, as a start would; no restart is needed.
+Until then:
+
+- `/health/live` and `/health/ready` answer 503, with a `signerSecrets` entry saying what waits,
+  so a load balancer or a probe treats the node as not ready rather than whole.
+- Sign-in works with a temporary JWT secret. Sessions signed with it end when the stored secret
+  is read; a refresh or a new sign-in gets a session under the stored one.
+- Directory sign-in, mail and webhooks that need one of those secrets fail, and enrollment answers
+  503 because the signer is unreachable.
+
+The two units on one host behave the same way, since the signer's unit is ordered after the
+node's.
+
+The command the fourth init container runs, `--role signer --signer-dir <dir> --issue-node-identity
+--apply config/config.yaml`, writes what "Two units" has you transcribe, copies both files
+beside themselves first, and then does the clean-up "Two units" step 4 does by hand, with the
+checks described above. It needs one account that can write both the node's `config/` and the
+signer's directory, which is how the pod runs it; on a host where the two belong to two accounts,
+follow the steps in "Two units" instead. Without `--signer-dir`, `--apply` writes both halves into
+the one named `config.yaml`, for a layout where both processes read that file, and removes
+nothing.
 
 ## The ingress in front of nodes
 

@@ -24,19 +24,29 @@ public static class SettingsStartup
     /// <param name="KeystoreYamlPath">The keystore configuration, for a signer in this process.</param>
     public sealed record SignerAccess(bool Remote, string KeystoresDirectory, string KeystoreYamlPath);
 
+    /// <summary>What the settings step of a start did, and whether the remote signer answered it.</summary>
+    /// <param name="Report">What <see cref="SettingsRuntime.StartAsync"/> did.</param>
+    /// <param name="SignerUnreachable">
+    /// Whether the signer is remote and did not answer, so the secrets it wraps were neither
+    /// moved nor read. The node then reads them in the background once it answers
+    /// (<see cref="SignerSecretsRetry"/>) and reports itself not ready until then.
+    /// </param>
+    public sealed record Outcome(SettingsStartReport Report, bool SignerUnreachable);
+
     /// <summary>
     /// Runs <see cref="SettingsRuntime.StartAsync"/> and says what it did. Throws when the store
     /// cannot be read or written: the schema check has just passed, so that is a fault and not
     /// something to start past, and a start on the file's values would, after the move, be a
     /// start on the defaults. A signer that cannot be reached is not such a fault: the secrets
-    /// are then left where they are, and the log says which could not be read.
+    /// are then left where they are, the log says which could not be read, and
+    /// <see cref="Outcome.SignerUnreachable"/> tells the caller to read them once it answers.
     /// </summary>
     /// <param name="config">The configuration read from this host's file, which the stored values are taken onto.</param>
     /// <param name="environment">The environment overlay; the settings it set are left as the environment gave them.</param>
     /// <param name="persistence">Where this host's configuration file is rewritten when the settings move.</param>
     /// <param name="controlActive">Whether this process runs the control role, the only one that moves the settings.</param>
     /// <param name="signerAccess">How to reach a signer for the secrets; null for a process that uses none (an ingress).</param>
-    public static async Task<SettingsStartReport> RunAsync(SystemConfig config, EnvVarConfigOverlay environment,
+    public static async Task<Outcome> RunAsync(SystemConfig config, EnvVarConfigOverlay environment,
         SettingsPersistence persistence, bool controlActive, SignerAccess? signerAccess)
     {
         await using var db = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>()
@@ -48,11 +58,19 @@ public static class SettingsStartup
         var signer = signerAccess == null ? null : OpenSigner(config, signerAccess);
         try
         {
+            // Asked once, before anything is wrapped: a signer that does not answer now leaves
+            // every secret where it is, and the caller is told to read them once it does.
+            var unreachable = signerAccess is { Remote: true } && signer != null
+                && (await signer.HealthAsync()).Backend == ModularCA.Shared.Signing.SignerHealth.UnreachableBackend;
+            if (unreachable)
+                Log.Warning("Settings: the signer at {Endpoint} does not answer yet. The secrets it wraps are read once it does, "
+                    + "without a restart; until then this process reports itself not ready.", config.Signer.Endpoint);
+
             var store = new SettingsStore(db, new HostAuditService(auditDb), signer ?? new NoSecretsSigner(), NullLogger<SettingsStore>.Instance);
             var report = await SettingsRuntime.StartAsync(store, config, persistence, environment.EnvSourcedPaths,
                 mayMove: controlActive, withSecrets: signerAccess != null);
             Describe(report);
-            return report;
+            return new Outcome(report, unreachable);
         }
         finally
         {

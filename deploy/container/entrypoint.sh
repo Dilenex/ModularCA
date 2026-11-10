@@ -8,10 +8,12 @@
 # the log, and stops the process twice on the way through (after the database step and at the
 # end), so the container needs a restart policy. Every later start just runs.
 #
-# Only a process that will hold the control role may bootstrap. In the pod the signer starts
-# from the same image with the same volume, and two processes racing to create the keystore in
-# one directory is the thing this check exists to prevent: the signer waits for the node's
-# bootstrap to have happened instead. The identity init containers pass their own role.
+# Only a process that will hold the control role may bootstrap. Two processes racing to create
+# the keystore in one directory is the thing this check exists to prevent: a signer or an ingress
+# waits for its configuration to be there instead. A signer run with --signer-dir <dir> reads
+# <dir>/signer.yaml and <dir>/db.yaml and nothing under config/, which in the pod it does not
+# even mount, so those are the files it waits for; the pod's init containers fill them. The
+# identity init containers run the binary directly and pass their own role.
 set -e
 cd /opt/modularca
 
@@ -25,16 +27,33 @@ if [ "${1:-}" = "--bootstrap-only" ]; then
 fi
 
 wants_bootstrap=yes
+signer_dir=
 for arg in "$@"; do
+  if [ "${expect_role:-}" = yes ]; then
+    case "$arg" in *signer*|*ingress*) wants_bootstrap=no ;; esac
+    expect_role=
+    continue
+  fi
+  if [ "${expect_signer_dir:-}" = yes ]; then
+    signer_dir=$arg
+    expect_signer_dir=
+    continue
+  fi
   case "$arg" in
-    --role)      expect_role=yes ;;
-    --role=*)    case "${arg#--role=}" in *signer*|*ingress*) wants_bootstrap=no ;; esac ;;
-    *)           if [ "${expect_role:-}" = yes ]; then
-                   case "$arg" in *signer*|*ingress*) wants_bootstrap=no ;; esac
-                   expect_role=
-                 fi ;;
+    --role)        expect_role=yes ;;
+    --role=*)      case "${arg#--role=}" in *signer*|*ingress*) wants_bootstrap=no ;; esac ;;
+    --signer-dir)  expect_signer_dir=yes ;;
   esac
 done
+
+# A signer with its own directory: configured when that directory holds its settings.
+if [ -n "$signer_dir" ] && [ "$bootstrap_only" = no ]; then
+  if [ ! -f "$signer_dir/signer.yaml" ] || [ ! -f "$signer_dir/db.yaml" ]; then
+    echo "modularca: waiting for the signer's directory $signer_dir to hold signer.yaml and db.yaml"
+    until [ -f "$signer_dir/signer.yaml" ] && [ -f "$signer_dir/db.yaml" ]; do sleep 2; done
+  fi
+  exec ./ModularCA.API "$@"
+fi
 
 if [ ! -f config/config.yaml ] || [ ! -f config/db.yaml ]; then
   if [ "$wants_bootstrap" = yes ] && [ ! -f config/bootstrap.yaml ] && [ "$bootstrap_only" = no ]; then

@@ -8,7 +8,9 @@
 #
 # The image carries no configuration and no data. config, keystores, logs and backups under
 # /opt/modularca are volumes, and the only directories the service account can write: the program
-# files belong to root, as install.sh leaves them. With no configuration the entrypoint starts the
+# files belong to root, as install.sh leaves them. signer/ (owner-only) is where the pod mounts
+# the signer's own configuration volume, which --signer-dir names; a volume mounted there takes
+# the directory's owner and mode. With no configuration the entrypoint starts the
 # setup wizard; with a bootstrap.yaml and a setup-database.yaml in the config volume it bootstraps
 # headlessly instead. Afterwards it just starts.
 FROM docker.io/library/debian:12-slim
@@ -54,6 +56,7 @@ RUN mkdir -p /opt/modularca /var/lib/modularca /usr/share/modularca \
       && chown -R modularca:modularca "/opt/modularca/$dir" \
       && chmod 0750 "/opt/modularca/$dir" || exit 1; \
     done \
+ && install -d -o modularca -g modularca -m 0700 /opt/modularca/signer \
  && chown modularca:modularca /var/lib/modularca
 
 COPY deploy/container/entrypoint.sh /usr/local/bin/modularca-entrypoint

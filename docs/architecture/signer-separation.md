@@ -555,6 +555,33 @@ still stands — the pod is the "node container + signer sidecar" row of the dep
 the multi-tenant shape), and a live proof of the pod on ca4, which needs Podman on a host that
 has it. Stage 3 follows that proof.
 
+**Later (2026-11-09), after a run of the pod under rootless Podman and Quadlet.** Three things
+above no longer hold. `--init-identity` refused an existing CA with exit 1, so the pod failed at
+its second start; it now exits 0 for an identity that is whole and still fails for a partial or
+inconsistent one. The shared config volume let the node write what the signer loads
+(`Hsm.ModulePath` above all); the signer now has its own volume, mounted as its `--signer-dir`,
+filled once by `--migrate-signer-dir` as an init container, and `--issue-node-identity --apply`
+with `--signer-dir` writes the node's half into the node's `config.yaml` and the signer's into
+`signer.yaml`. And the config volume is not written only by the init containers: the node writes
+`config.yaml`, the web TLS certificate and the Data Protection key ring there while it runs. The
+node also no longer depends on starting after the signer: it reads the wrapped secrets in the
+background once the signer answers, and `--role signer --check-ready` gives a container manager
+something to probe. `packaging/README-DEPLOY.md`, "The pod", is the current description.
+
+**Later the same day: the node's volume is cleaned.** The config volume still held what the node
+never reads once the signer had its own directory: `keystore.yaml` as bootstrap left it, and after
+an upgrade from 0.4.3 the identity files and the signer's half of `Signer:` and `Hsm:` in
+`config.yaml`. `--issue-node-identity --apply` with `--signer-dir`, the `node-identity` init
+container and the only one that mounts both volumes read-write, now removes each once the signer's
+copy checks out (`NodeSideSignerCleanup`): the passphrases byte-identical or equal, the identity
+whole and the one both pins match. One line-based redaction, checked by deserialising the result,
+takes the signer's keys out of `config.yaml` (keeping the node's half and every other line), out
+of the `config.yaml.*.bak` copies beside it (which are kept), and out of every new copy `--apply`
+and the clean-up write. A file that does not check out is
+left with a warning and never fails the pod. The keystore passphrases then exist only in the
+signer's volume, which therefore has to be in the volume backups. The two-unit install keeps its
+manual step, since there the two directories belong to two accounts and `--apply` is not used.
+
 ## Secrets the node must keep, wrapped behind the signer (2026-09-18)
 
 The signer holds every private key, and a node in remote mode holds none. Three database columns
