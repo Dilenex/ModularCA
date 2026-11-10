@@ -73,12 +73,12 @@ dotnet test tests/ModularCA.Tests --no-build --filter "Tier!=Slow"   # the fast 
 
 - **Everything** is what CI runs and what a release needs. With a PostgreSQL
   test server it takes about 13 minutes on a 12-core Windows workstation
-  (6,447 tests). The PostgreSQL tests are opt-in: set `MODULARCA_TEST_PG` to a
+  (6,459 tests). The PostgreSQL tests are opt-in: set `MODULARCA_TEST_PG` to a
   connection string for a server where the user may create roles and databases
   (never one that holds data), otherwise they are reported as skipped.
 - **The fast tier** leaves out the tests tagged `[Trait("Tier", "Slow")]`: the
   PostgreSQL tests, the restore drill and the shell-script tests. It takes about
-  4 minutes (6,292 tests) and is the one to run after each merge.
+  4 minutes (6,304 tests) and is the one to run after each merge.
 
 How the run is ordered, for anyone adding a slow test:
 
