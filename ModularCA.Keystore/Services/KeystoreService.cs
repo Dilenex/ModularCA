@@ -744,7 +744,16 @@ public class KeystoreService : IDisposable
     public static string? AuditLogDirectory { get; set; }
 
     /// <summary>
-    /// Appends one keystore event to the day's audit <c>.jsonl</c> in <see cref="AuditLogDirectory"/>.
+    /// What the keystore audit file's name starts with: <c>bootstrap-audit</c>, the file the node
+    /// replays from its own <c>logs/</c>, unless a signer that runs apart from the node has
+    /// pointed the events at its journal (<see cref="KeystoreAuditJournal.Open"/>).
+    /// </summary>
+    public static string AuditLogFilePrefix { get; set; } = KeystoreAuditJournal.SharedFilePrefix;
+
+    /// <summary>
+    /// Appends one keystore event to the day's audit <c>.jsonl</c> in <see cref="AuditLogDirectory"/>,
+    /// named after <see cref="AuditLogFilePrefix"/>. The event holds names, counts and the message
+    /// of a verification failure, never a passphrase, a PIN or key material.
     /// Never throws: an audit write failure must not fail the keystore operation.
     /// </summary>
     private static void EmitKeystoreAudit(string action, string keystoreName, bool success, string? detail = null)
@@ -753,7 +762,7 @@ public class KeystoreService : IDisposable
         {
             var logsDir = AuditLogDirectory ?? Path.Combine(AppContext.BaseDirectory, "logs");
             Directory.CreateDirectory(logsDir);
-            var filePath = Path.Combine(logsDir, $"bootstrap-audit-{DateTime.UtcNow:yyyyMMdd}.jsonl");
+            var filePath = Path.Combine(logsDir, $"{AuditLogFilePrefix}-{DateTime.UtcNow:yyyyMMdd}.jsonl");
             var line = System.Text.Json.JsonSerializer.Serialize(new
             {
                 timestamp = DateTime.UtcNow.ToString("o"),

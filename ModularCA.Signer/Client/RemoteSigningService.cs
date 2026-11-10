@@ -49,9 +49,10 @@ public sealed record RemoteSignerOptions(Uri Endpoint, X509Certificate2 ClientCe
 /// refusal of its own, <see cref="SigningRefusalReason.SignerUnavailable"/>, which the
 /// enrollment filters and the readiness page already turn into service-unavailable.
 /// <see cref="HealthAsync"/> never throws for an unreachable signer: it reports
-/// <see cref="SignerHealth.Unreachable"/>. Nothing signable is cached here.
+/// <see cref="SignerHealth.Unreachable"/>. Nothing signable is cached here. The same channel
+/// reads the signer's journal of keystore events (<see cref="ISignerEventJournal"/>).
 /// </summary>
-public sealed class RemoteSigningService : ISigningService, IDisposable
+public sealed class RemoteSigningService : ISigningService, ISignerEventJournal, IDisposable
 {
     private readonly RemoteSignerOptions _options;
     private readonly ILogger<RemoteSigningService> _logger;
@@ -373,6 +374,38 @@ public sealed class RemoteSigningService : ISigningService, IDisposable
         {
             ReportUnreachable(ex);
             return SignerHealth.Unreachable();
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// One read-only call. A signer that cannot be reached is the same
+    /// <see cref="SigningRefusalReason.SignerUnavailable"/> refusal every other call gives, so
+    /// the caller tries again later and the events wait on the signer. A signer that predates
+    /// the call answers gRPC <see cref="StatusCode.Unimplemented"/>, which is read as a journal
+    /// with nothing in it: such a signer keeps none to hand over.
+    /// </remarks>
+    public async Task<SignerJournalPage> ReadAfterAsync(string? afterFile, int afterLine, int max, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await CallAsync(async options =>
+            {
+                var response = await _client.ReadKeystoreEventsAsync(new Wire.ReadKeystoreEventsRequest
+                {
+                    AfterFile = afterFile ?? string.Empty,
+                    AfterLine = afterLine,
+                    MaxEvents = max,
+                }, options);
+                return new SignerJournalPage(
+                    response.Events.Select(e => new SignerJournalEntry(e.File, e.Line, e.Json)).ToList(),
+                    response.More,
+                    string.IsNullOrEmpty(response.AnchorJson) ? null : response.AnchorJson);
+            }, _options.CallTimeout, cancellationToken);
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.Unimplemented)
+        {
+            return SignerJournalPage.Empty;
         }
     }
 

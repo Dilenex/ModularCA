@@ -1897,6 +1897,20 @@ builder.Services.AddScoped<IAuditService, AuditService>();
 builder.Services.AddScoped<IProtocolAuditService, ProtocolAuditService>();
 // Drains logs/bootstrap-audit-*.jsonl on first successful startup.
 builder.Services.AddScoped<ModularCA.Core.Services.BootstrapAuditReplayService>();
+// A remote signer cannot reach the audit database: it keeps its keystore events (loaded, a key
+// appended, a verification failure) in a journal on its own disk. The control role reads that
+// journal over the signer channel, at start and every minute, and writes the events into the
+// audit trail. How far it has read is this node's own note, in config/; the signer is never
+// written to. With the signer in process the events are in logs/ and replayed as before.
+if (!isSetupMode && controlActive && signerIsRemote && !string.IsNullOrWhiteSpace(config.DB.Audit.Database))
+{
+    builder.Services.AddSingleton<ModularCA.Shared.Signing.ISignerEventJournal>(sp =>
+        (ModularCA.Signer.Client.RemoteSigningService)sp.GetRequiredService<ModularCA.Shared.Signing.ISigningService>());
+    builder.Services.AddSingleton(new ModularCA.Core.Services.SignerJournalCursorFile(
+        Path.Combine(AppContext.BaseDirectory, "config", ModularCA.Core.Services.SignerJournalCursorFile.FileName)));
+    builder.Services.AddScoped<ModularCA.Core.Services.SignerKeystoreEventDelivery>();
+    builder.Services.AddHostedService<ModularCA.API.Services.SignerKeystoreEventDeliveryService>();
+}
 builder.Services.AddSingleton<SiemLogFormatter>();
 builder.Services.AddScoped<IEnrollmentTokenService, EnrollmentTokenService>();
 builder.Services.AddScoped<IEnrollmentAuthorizationService, EnrollmentAuthorizationService>();
@@ -3807,9 +3821,10 @@ if (controlActive && config.PolicySync.Enabled && config.PolicySync.SyncOnStartu
     }
 }
 
-// Drain any logs/bootstrap-audit-*.jsonl files left behind by
-// bootstrap (where audit writes must be deferred because the audit DB is not yet
-// reachable) and replay each entry into the real audit DB. Wrapped in try/catch
+// Replay the bootstrap-audit-*.jsonl files that wait for the audit database: those the bootstrap
+// could not write itself and kept in config/audit-pending (config/ is kept on every install
+// type; the pod's bootstrap container has no logs/ that outlives it), then those in logs/ (an
+// older bootstrap's, and the keystore events of this node's previous run). Wrapped in try/catch
 // so a replay failure never blocks startup. Bootstrap ran where the control plane runs.
 if (!isSetupMode && controlActive)
 {

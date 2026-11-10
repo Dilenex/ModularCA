@@ -369,7 +369,8 @@ public class BootstrapModularCA
     /// <see cref="BootstrapInputSections.EnsureClaimTokenUsable"/>). The first administrator's
     /// password is never printed: it is claimed with a token, or left in an owner-only file
     /// (<see cref="BootstrapProfileSeeder.CreateInitialUser"/>). A claim is recorded in the audit database once
-    /// the configuration is written (<see cref="InitialAdminClaimAudit.RecordAsync"/>).
+    /// the configuration is written (<see cref="InitialAdminClaimAudit.RecordAsync"/>), and the
+    /// records the earlier steps queued are written there after it (<see cref="BootstrapAuditDrain.RunAsync"/>).
     /// </summary>
     private static int RunCore(bool wipeAuditDatabase)
     {
@@ -837,6 +838,15 @@ public class BootstrapModularCA
             () => new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
                 .UseNpgsql(PostgresConnection.Build(databases.Audit)).Options),
             adminHandover, Console.Out).GetAwaiter().GetResult();
+
+        // === Write the queued setup records into the audit trail ===
+        // Keystore writes and setup decisions were queued in logs/bootstrap-audit-*.jsonl, which
+        // an init container does not keep. The bootstrap writes them itself; the file is the
+        // fallback the node replays.
+        BootstrapAuditDrain.RunAsync(
+            () => new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+                .UseNpgsql(PostgresConnection.Build(databases.Audit)).Options),
+            Console.Out, ModularCA.Core.Services.BootstrapAuditReplayService.PendingDirectory(AppContext.BaseDirectory)).GetAwaiter().GetResult();
 
         // === Copy baseline policy files from examples if none exist ===
         SeedPolicyFiles(configDir);

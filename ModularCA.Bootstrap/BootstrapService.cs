@@ -41,6 +41,8 @@ public class BootstrapService
     /// self-approval is allowed (<see cref="BootstrapModularCA.ApplyAdministratorChoice"/>).
     /// <c>Features.AcmeAllowPrivateAddressValidation</c> lets the first CA's http-01 validator
     /// reach private addresses when ACME is on.
+    /// The audit records the steps queued (keystore writes, those two choices) are written into
+    /// the audit database once db.yaml is written (<see cref="BootstrapAuditDrain.RunAsync"/>).
     /// When <paramref name="serviceProvider"/> is supplied, the method resolves
     /// <see cref="IWhitelistService"/> after seeding and calls <c>ReloadAsync</c> so the live
     /// singleton snapshot picks up the freshly-seeded rows before the wizard returns.
@@ -604,6 +606,15 @@ public class BootstrapService
                     SslMode = databases.Audit.SslMode
                 }
             });
+
+            // === Write the queued setup records into the audit trail ===
+            // Keystore writes and setup decisions were queued in logs/bootstrap-audit-*.jsonl,
+            // which a container replaced after setup does not keep. Setup writes them itself;
+            // the file is the fallback the node replays.
+            BootstrapAuditDrain.RunAsync(
+                () => new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+                    .UseNpgsql(PostgresConnection.Build(databases.Audit)).Options),
+                Console.Out, BootstrapAuditReplayService.PendingDirectory(AppContext.BaseDirectory)).GetAwaiter().GetResult();
 
             // === Copy baseline policy files ===
             SeedPolicyFiles(configDir);

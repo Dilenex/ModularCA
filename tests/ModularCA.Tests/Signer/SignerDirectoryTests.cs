@@ -70,7 +70,10 @@ public sealed class SignerDirectoryTests : IDisposable
         Assert.Contains("var keystoresDirectory = paths.KeystoresDirectory;", role);
         Assert.Contains("SignerBootstrap.Unlock(keystoreYamlPath, keystoresDirectory, appConnStr)", role);
         Assert.Contains("paths.ResolveFile(signerConfig.ServerCertificate)", role);
-        Assert.Contains("KeystoreService.AuditLogDirectory = paths.LogsDirectory", role);
+        // The keystore events go to the journal in the signer's directory, not to a log directory that may not be kept.
+        Assert.Contains("KeystoreAuditJournal.Open(", role);
+        Assert.Contains("paths.AuditJournalDirectory!, paths.LogsDirectory,", role);
+        Assert.DoesNotContain("AuditLogDirectory = paths.LogsDirectory", role);
     }
 
     [Fact]

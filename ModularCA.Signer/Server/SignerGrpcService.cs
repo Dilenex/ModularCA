@@ -22,12 +22,20 @@ public sealed class SignerGrpcService : Wire.Signer.SignerBase
 {
     private readonly ISigningService _signer;
     private readonly ILogger<SignerGrpcService> _logger;
+    private readonly ISignerEventJournal? _journal;
+    private readonly SignerHsmStatus? _hsm;
 
-    /// <summary>Creates the adapter over the signer the host registered.</summary>
-    public SignerGrpcService(ISigningService signer, ILogger<SignerGrpcService> logger)
+    /// <summary>
+    /// Creates the adapter over the signer the host registered, over its journal of keystore
+    /// events when the host registered one (a signer in its own directory does), and with the
+    /// HSM settings the host loaded when it registered them (the signer role does).
+    /// </summary>
+    public SignerGrpcService(ISigningService signer, ILogger<SignerGrpcService> logger, ISignerEventJournal? journal = null, SignerHsmStatus? hsm = null)
     {
         _signer = signer ?? throw new ArgumentNullException(nameof(signer));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _journal = journal;
+        _hsm = hsm;
     }
 
     /// <inheritdoc />
@@ -166,9 +174,41 @@ public sealed class SignerGrpcService : Wire.Signer.SignerBase
             return new UnwrapSecretResponse { Secret = ByteString.CopyFrom(secret) };
         }, "UnwrapSecret");
 
-    /// <inheritdoc />
+    /// <summary>
+    /// The signer's own account of its state, with the HSM settings the host loaded at start
+    /// (whether it is on, the module path, the slot, the key labels) so the node's console can
+    /// show them. The PIN and the key ids are not in what the host registered and cannot be
+    /// asked for.
+    /// </summary>
     public override Task<HealthResponse> Health(HealthRequest request, ServerCallContext context)
-        => GuardAsync(async () => WireMapping.ToWire(await _signer.HealthAsync(context.CancellationToken)), "Health");
+        => GuardAsync(async () =>
+        {
+            var health = await _signer.HealthAsync(context.CancellationToken);
+            return WireMapping.ToWire(_hsm == null ? health : health with { Hsm = _hsm });
+        }, "Health");
+
+    /// <summary>
+    /// Hands the node the keystore events after the position it names, read from the signer's
+    /// journal. Nothing is written, marked or removed: the call cannot change what the journal
+    /// holds, so a node cannot make an event it has not recorded go away. A host with no journal
+    /// (the signer in the shared layout, whose events the node replays from its own
+    /// <c>logs/</c>) answers with no events.
+    /// </summary>
+    public override Task<ReadKeystoreEventsResponse> ReadKeystoreEvents(ReadKeystoreEventsRequest request, ServerCallContext context)
+        => GuardAsync(async () =>
+        {
+            var response = new ReadKeystoreEventsResponse();
+            if (_journal == null)
+                return response;
+            if (request.AfterLine < 0)
+                throw new ArgumentException("after_line is negative.");
+            var page = await _journal.ReadAfterAsync(request.AfterFile, request.AfterLine, request.MaxEvents, context.CancellationToken);
+            foreach (var entry in page.Entries)
+                response.Events.Add(new KeystoreEvent { File = entry.File, Line = entry.Line, Json = entry.Json });
+            response.More = page.More;
+            response.AnchorJson = page.Anchor ?? string.Empty;
+            return response;
+        }, "ReadKeystoreEvents");
 
     /// <summary>
     /// Reads the context off the wire and stamps it with the peer's identity: the SPKI pin of

@@ -63,8 +63,22 @@ public sealed class SignerPaths
     /// <summary>The keystore files, <c>keystores/</c> under the application directory in either layout.</summary>
     public string KeystoresDirectory => Path.Combine(BaseDirectory, "keystores");
 
-    /// <summary>Where the file logs and the keystore audit go: <c>&lt;dir&gt;/logs</c>, or <c>logs/</c>.</summary>
+    /// <summary>
+    /// Where the file logs go: <c>&lt;dir&gt;/logs</c>, or <c>logs/</c>. In the shared layout the
+    /// keystore events go there too, as <c>bootstrap-audit-*.jsonl</c>, which the node replays.
+    /// </summary>
     public string LogsDirectory => Path.Combine(SignerDirectory ?? BaseDirectory, "logs");
+
+    /// <summary>The name of <see cref="AuditJournalDirectory"/> under the signer's directory.</summary>
+    public const string AuditJournalDirectoryName = "audit-journal";
+
+    /// <summary>
+    /// The journal of keystore events a signer in its own directory keeps for the node to read:
+    /// <c>&lt;dir&gt;/audit-journal</c>, beside its settings and not under <c>logs/</c>, because
+    /// the events wait there until the node has taken them and a log directory may not be kept
+    /// (the pod's is not). Null in the shared layout, which has no journal.
+    /// </summary>
+    public string? AuditJournalDirectory => SignerDirectory is { } dir ? Path.Combine(dir, AuditJournalDirectoryName) : null;
 
     /// <summary>
     /// Every file the signer role reads its settings and secrets from, for the startup checks and

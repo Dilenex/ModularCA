@@ -41,8 +41,10 @@ public class AdminConfigController(
     Serilog.Core.LoggingLevelSwitch loggingLevelSwitch,
     EnvVarConfigOverlay envOverlay,
     ISecurityPolicyService securityPolicyService,
-    ILdapPublisherPolicyService ldapPublisherPolicyService) : ControllerBase
+    ILdapPublisherPolicyService ldapPublisherPolicyService,
+    ModularCA.Shared.Signing.ISigningService signer) : ControllerBase
 {
+    private readonly ModularCA.Shared.Signing.ISigningService _signer = signer;
     private readonly SystemConfig _config = config;
     private readonly IHostApplicationLifetime _appLifetime = appLifetime;
     private readonly IAuditService _audit = audit;
@@ -60,14 +62,17 @@ public class AdminConfigController(
     /// <c>SecurityPolicy</c> (session/MFA/OCSP policy) + <c>LdapPublisherPolicy</c>
     /// so clients see the complete picture in one call. Needs a system administrator, like
     /// <c>GET /api/v1/admin/security-policy</c>, whose row it carries. <c>Hsm</c> is a read-only
-    /// <see cref="HsmSettingsSummary"/>: what is in force when the signer runs in process, or only
-    /// that a remote signer holds the HSM settings; never the PIN.
+    /// <see cref="HsmSettingsSummary"/>: what is in force when the signer runs in process; with a
+    /// remote signer, what the signer reports in its health answer (whether its HSM is on, the
+    /// module path, the slot, the key labels), or only that the signer holds the settings when it
+    /// did not answer or predates that report. Never the PIN or a key id.
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> GetConfig()
     {
         var securityPolicy = await _securityPolicyService.GetAsync();
         var ldapPublisherPolicy = await _ldapPublisherPolicyService.GetAsync();
+        var signerHsm = await RemoteSignerHsmAsync();
         return Ok(new
         {
             SecurityPolicy = securityPolicy,
@@ -151,9 +156,35 @@ public class AdminConfigController(
             CertManager = new { _config.CertManager.Enabled, ApiKey = !string.IsNullOrEmpty(_config.CertManager.ApiKey) ? RedactSecret("CertManager.ApiKey") : "", _config.CertManager.DefaultCertProfileId, _config.CertManager.DefaultSigningProfileId },
             IntegrationApi = new { _config.IntegrationApi.Enabled, ApiKey = !string.IsNullOrEmpty(_config.IntegrationApi.ApiKey) ? RedactSecret("IntegrationApi.ApiKey") : "" },
             // The Settings page's HSM card read config.hsm, which this response never carried, so
-            // it always said Disabled. Signer-local, so a remote signer's settings are not here.
-            Hsm = HsmSettingsSummary.From(_config),
+            // it always said Disabled. Signer-local: a remote signer's settings are not in this
+            // node's file, and what is shown for one is what the signer itself reported.
+            Hsm = HsmSettingsSummary.From(_config, signerHsm),
         });
+    }
+
+    /// <summary>How long the Settings page waits for the signer's health answer before it shows the card without it.</summary>
+    private static readonly TimeSpan SignerHsmTimeout = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// What a remote signer says of its HSM settings, from its health answer; null with the
+    /// signer in process, and when the signer does not answer within
+    /// <see cref="SignerHsmTimeout"/> or says nothing of its HSM. Never throws: the page is
+    /// served either way.
+    /// </summary>
+    private async Task<ModularCA.Shared.Signing.SignerHsmStatus?> RemoteSignerHsmAsync()
+    {
+        if (!_config.Signer.IsRemote)
+            return null;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(HttpContext?.RequestAborted ?? CancellationToken.None);
+        timeout.CancelAfter(SignerHsmTimeout);
+        try
+        {
+            return (await _signer.HealthAsync(timeout.Token)).Hsm;
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or Grpc.Core.RpcException or ModularCA.Shared.Signing.SigningRefusedException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

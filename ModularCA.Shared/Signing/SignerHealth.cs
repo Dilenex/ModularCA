@@ -21,6 +21,13 @@ public sealed record SignerHealth(bool Unlocked, int KeyCount, string Backend)
     /// </summary>
     public const string UnreachableBackend = "unreachable";
 
+    /// <summary>
+    /// The HSM settings a signer that runs as a role loaded at start, for the console to show:
+    /// never the PIN or a key id. Null from a signer in the node's process (the node reads its
+    /// own configuration), from a signer older than the field, and when the signer did not answer.
+    /// </summary>
+    public SignerHsmStatus? Hsm { get; init; }
+
     /// <summary>The report the node gives for a remote signer it cannot reach.</summary>
     public static SignerHealth Unreachable() => new(false, 0, UnreachableBackend);
 }

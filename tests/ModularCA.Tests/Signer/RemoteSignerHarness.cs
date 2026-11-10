@@ -72,9 +72,11 @@ internal sealed class HostedSigner : IAsyncDisposable
     /// <summary>
     /// Starts a signer over <paramref name="signer"/> on <paramref name="port"/> (0 for any
     /// free port), admitting the client whose pin is <paramref name="pinnedClientSpki"/>: the
-    /// test node's by default.
+    /// test node's by default. With <paramref name="journal"/> the host serves that journal of
+    /// keystore events, as a signer in its own directory does; with <paramref name="hsm"/> its
+    /// health answer carries those HSM settings, as the signer role's does.
     /// </summary>
-    public static async Task<HostedSigner> StartAsync(ISigningService signer, int port = 0, string? pinnedClientSpki = null)
+    public static async Task<HostedSigner> StartAsync(ISigningService signer, int port = 0, string? pinnedClientSpki = null, ISignerEventJournal? journal = null, SignerHsmStatus? hsm = null)
     {
         var identity = RemoteSignerIdentity.Instance;
         var options = new SignerServerOptions(IPAddress.Loopback, port, identity.Server, pinnedClientSpki ?? identity.ClientPin);
@@ -82,6 +84,10 @@ internal sealed class HostedSigner : IAsyncDisposable
         {
             builder.Logging.ClearProviders();
             builder.Services.AddSingleton(signer);
+            if (journal != null)
+                builder.Services.AddSingleton(journal);
+            if (hsm != null)
+                builder.Services.AddSingleton(hsm);
         });
         await app.StartAsync();
         var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
@@ -89,8 +95,8 @@ internal sealed class HostedSigner : IAsyncDisposable
     }
 
     /// <summary>Starts the signer role's in-process signer over a test world, failing closed on its audit as the role does.</summary>
-    public static Task<HostedSigner> StartAsync(SignerTestWorld world, ISignerAuditSink? audit = null, int port = 0, string? pinnedClientSpki = null)
-        => StartAsync(InProcessOver(world, audit), port, pinnedClientSpki);
+    public static Task<HostedSigner> StartAsync(SignerTestWorld world, ISignerAuditSink? audit = null, int port = 0, string? pinnedClientSpki = null, ISignerEventJournal? journal = null)
+        => StartAsync(InProcessOver(world, audit), port, pinnedClientSpki, journal);
 
     /// <summary>The signer the signer role would run over a test world: over its keystore files when it has them.</summary>
     public static ISigningService InProcessOver(SignerTestWorld world, ISignerAuditSink? audit = null)

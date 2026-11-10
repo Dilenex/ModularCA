@@ -369,7 +369,7 @@ public sealed class ControlledUserBypassEndpointTests
 
     private static object Config(ControlledUserWorld w, Guid actor, ModularCA.Shared.Models.Config.SystemConfig config)
         => New(Ns + "AdminConfigController", actor, config, null, new RecordingAuditService(), new CurrentUserStub(actor), NewCache(),
-            new RecordingAlertService(), null, null, null, null);
+            new RecordingAlertService(), null, null, null, null, null);
 
     [Fact]
     public async Task An_email_server_change_needs_the_stored_secret_re_entered()

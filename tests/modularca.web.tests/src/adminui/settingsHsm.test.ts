@@ -36,6 +36,37 @@ describe('Settings HSM card', () => {
         expect(row(view, 'Key Mappings')).toBe('None');
     });
 
+    // 0.4.4: a remote signer reports its HSM settings in its health answer, and the card shows them.
+    it('shows what a remote signer reported, and says it is the signer that holds them', () => {
+        const view = hsmCardView({
+            heldBy: 'signer', signerEndpoint: 'https://signer.internal:8446',
+            enabled: true, modulePath: '/opt/hsm/lib/libcs_pkcs11_R3.so', slotId: '18446744073709551000',
+            keyMappings: [{ caLabel: 'root-ca', keyLabel: 'root-key-2026' }, { caLabel: 'issuing-ca', keyLabel: 'issuing-key-2026' }],
+        });
+        expect(view.description).toBe('Enabled on the signer');
+        expect(view.rows[0]).toEqual({ label: 'Signer', value: 'https://signer.internal:8446', mono: true });
+        expect(row(view, 'Enabled')).toBe('Yes');
+        expect(row(view, 'Module Path')).toBe('/opt/hsm/lib/libcs_pkcs11_R3.so');
+        // Above 2^53: kept as the text the API sent.
+        expect(row(view, 'Slot ID')).toBe('18446744073709551000');
+        expect(row(view, 'Key Mappings')).toBe('root-ca → root-key-2026, issuing-ca → issuing-key-2026');
+        // Where to change them is the signer's file, not this host's.
+        expect(view.note).toContain('signer.yaml');
+        expect(view.note).not.toContain("this host's config.yaml");
+        expect(view.note).toContain('The PIN is never shown');
+    });
+
+    it('reports a remote signer whose HSM is off as off on the signer', () => {
+        const view = hsmCardView({
+            heldBy: 'signer', signerEndpoint: 'https://signer.internal:8446',
+            enabled: false, modulePath: '', slotId: '0', keyMappings: [],
+        });
+        expect(view.description).toBe('Disabled on the signer');
+        expect(row(view, 'Enabled')).toBe('No');
+        expect(row(view, 'Module Path')).toBe('Not set');
+        expect(row(view, 'Key Mappings')).toBe('None');
+    });
+
     it('says a remote signer holds the settings instead of showing blanks', () => {
         const view = hsmCardView({
             heldBy: 'signer', signerEndpoint: 'https://signer.internal:8446',

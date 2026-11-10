@@ -26,6 +26,12 @@
 #                   start config.yaml is present and this is a no-op. It prints no password: the
 #                   first administrator is claimed with a token (Administration.ClaimTokenSha256
 #                   in bootstrap.yaml) or its password is left in config/initial-admin-password.
+#                   Its audit records (the keystore writes, the setup choices, the claim) are
+#                   written into the audit database before it exits. It mounts no logs volume,
+#                   and needs none: its logs/ goes with the container. If the audit database
+#                   refuses the write, it says so and moves the queued records, which hold no
+#                   secret, into config/audit-pending/ (owner-only, in the config volume), and
+#                   the node writes them into the audit trail when it starts.
 #   2. signer-dir   Fills the signer's own directory (the signer-config volume) from what
 #                   bootstrap wrote: signer.yaml with only the sections the signer reads, db.yaml
 #                   with only the application database, and keystore.yaml. Once the directory
@@ -57,12 +63,19 @@
 #                  into the database (with a config.yaml.pre-settings-*.bak copy each time), the
 #                  web TLS certificate (api-tls.pfx) when it is provisioned or renewed, and the
 #                  Data Protection key ring (dp-keys/), created at start and rotated; and it
-#                  deletes initial-admin-password once the password in it is changed. Copy it as
-#                  often as anything else that changes.
+#                  deletes initial-admin-password once the password in it is changed. It also
+#                  keeps signer-audit-cursor.json here, its note of how far it has read the
+#                  signer's keystore events. Copy it as often as anything else that changes.
 #   signer-config  The signer's own directory, mounted at /opt/modularca/signer. The node never
 #                  mounts it: signer.yaml (Hsm.ModulePath, Signer.Listen, Signer.PinnedClientSpki),
 #                  the signer's db.yaml and keystore.yaml, and the identity CA and server
-#                  certificate. Only the init containers write it, apart from the signer's logs.
+#                  certificate. Only the init containers write its settings. The signer itself
+#                  writes one thing here: audit-journal/, its record of keystore events (loaded,
+#                  created, a key appended, a verification failure), which it cannot write to the
+#                  audit database. They wait there, across restarts of the pod, until the node
+#                  has read them over the signer channel and written them into the audit trail;
+#                  the node cannot remove or change them. The signer's file logs are not here:
+#                  they go to an emptyDir mounted over logs/.
 #                  After the first start the keystore passphrases are in this volume and nowhere
 #                  else (backup archives never carry them): back it up with the others, or a
 #                  lost volume means keystores nobody can open.
@@ -123,7 +136,9 @@ spec:
       volumeMounts:
         - { name: signer-config, mountPath: /opt/modularca/signer }
         - { name: keystores, mountPath: /opt/modularca/keystores }
-        # With --signer-dir the signer's file logs and keystore audit go to <dir>/logs.
+        # With --signer-dir the signer's file logs go to <dir>/logs, which need not be kept. Its
+        # keystore events do not go there: they wait in <dir>/audit-journal, in the signer-config
+        # volume, until the node has recorded them.
         - { name: signer-logs, mountPath: /opt/modularca/signer/logs }
         # A read-only root still needs somewhere for the runtime to put its temporary files.
         - { name: signer-tmp, mountPath: /tmp }

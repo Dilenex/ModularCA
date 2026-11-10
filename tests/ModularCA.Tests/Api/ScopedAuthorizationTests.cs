@@ -368,7 +368,7 @@ public sealed class ScopedAuthorizationTests
         var w = new ControlledUserWorld();
         var config = new SystemConfig();
         var controller = New(Ns + "AdminConfigController", w.SystemAdmin, config, null, new RecordingAuditService(),
-            new CurrentUserStub(w.SystemAdmin), NewCache(), new RecordingAlertService(), null, null, null, null);
+            new CurrentUserStub(w.SystemAdmin), NewCache(), new RecordingAlertService(), null, null, null, null, null);
 
         foreach (var days in new[] { 0, 31, 365, int.MaxValue })
         {

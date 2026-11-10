@@ -26,8 +26,8 @@ namespace ModularCA.Tests.Api;
 public sealed class HsmConfigSummaryTests
 {
     private const string Ns = "ModularCA.API.Controllers.v1.Admin.";
-    private const string Pin = "pin-that-must-never-leave-7731";
-    private const string KeyId = "c0ffee0ddba11";
+    internal const string Pin = "pin-that-must-never-leave-7731";
+    internal const string KeyId = "c0ffee0ddba11";
 
     private sealed class CurrentUserStub : ICurrentUserService
     {
@@ -50,7 +50,7 @@ public sealed class HsmConfigSummaryTests
     }
 
     /// <summary>A configuration with the HSM on, a PIN and a key mapping with a key id.</summary>
-    private static SystemConfig WithHsm(bool remoteSigner)
+    internal static SystemConfig WithHsm(bool remoteSigner)
     {
         var config = new SystemConfig();
         config.Hsm.Enabled = true;
@@ -67,12 +67,12 @@ public sealed class HsmConfigSummaryTests
     }
 
     /// <summary>Calls GetConfig and returns the response body as the browser would read it.</summary>
-    private static async Task<(string Json, JsonElement Hsm)> GetConfig(SystemConfig config)
+    internal static async Task<(string Json, JsonElement Hsm)> GetConfig(SystemConfig config, ModularCA.Shared.Signing.ISigningService? signer = null)
     {
         var controller = (ControllerBase)Activator.CreateInstance(ApiAssembly.TypeNamed(Ns + "AdminConfigController"),
             config, null, new RecordingAuditService(), new CurrentUserStub(),
             new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions())),
-            new RecordingAlertService(), null, new EnvVarConfigOverlay(), new SecurityPolicyStub(), new LdapPublisherPolicyStub())!;
+            new RecordingAlertService(), null, new EnvVarConfigOverlay(), new SecurityPolicyStub(), new LdapPublisherPolicyStub(), signer ?? new SettingsTestSigner())!;
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() };
 
         var result = await (Task<IActionResult>)controller.GetType().GetMethod("GetConfig")!.Invoke(controller, [])!;

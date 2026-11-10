@@ -125,6 +125,119 @@ public sealed class PodManifestTests
         Assert.False(node.Children.ContainsKey(new YamlScalarNode("readinessProbe")));
     }
 
+    /// <summary>
+    /// The signer's keystore events wait in its journal until the node has recorded them, so the
+    /// journal is in the signer's persistent volume and not under its <c>logs/</c>, which the pod
+    /// mounts an <c>emptyDir</c> over; the node, which mounts neither, can only read it over the
+    /// signer channel; and the node's note of how far it has read is in its own persistent volume.
+    /// </summary>
+    [Fact]
+    public void The_signers_keystore_event_journal_is_kept_in_its_volume_and_not_in_its_logs()
+    {
+        var pod = Pod();
+        var signerMounts = Mounts(Container(pod, "containers", "signer"));
+        var journal = ModularCA.Shared.Models.Config.SignerPaths.Dedicated("/opt/modularca", SignerDir);
+        var journalPath = $"{SignerDir}/{ModularCA.Shared.Models.Config.SignerPaths.AuditJournalDirectoryName}";
+        Assert.EndsWith(ModularCA.Shared.Models.Config.SignerPaths.AuditJournalDirectoryName, journal.AuditJournalDirectory);
+        Assert.False(journal.AuditJournalDirectory!.StartsWith(journal.LogsDirectory, StringComparison.Ordinal));
+
+        // The deepest mount the journal's path falls under is the signer's own volume.
+        var covering = signerMounts.Where(m => (journalPath + "/").StartsWith(m.Value + "/", StringComparison.Ordinal))
+            .OrderByDescending(m => m.Value.Length).First();
+        Assert.Equal("signer-config", covering.Key);
+        Assert.Equal($"{SignerDir}/logs", signerMounts["signer-logs"]);
+
+        var volumes = ((YamlSequenceNode)pod["volumes"]).Children.Cast<YamlMappingNode>().ToDictionary(v => v["name"].ToString());
+        Assert.True(volumes["signer-config"].Children.ContainsKey(new YamlScalarNode("persistentVolumeClaim")));
+        Assert.True(volumes["signer-logs"].Children.ContainsKey(new YamlScalarNode("emptyDir")));
+        // The node keeps its position in config/, which is kept too.
+        Assert.True(volumes["config"].Children.ContainsKey(new YamlScalarNode("persistentVolumeClaim")));
+        Assert.Equal("/opt/modularca/config", Mounts(Container(pod, "containers", "node"))["config"]);
+        Assert.DoesNotContain("signer-config", Mounts(Container(pod, "containers", "node")).Keys);
+
+        var manifest = Read("deploy/container/modularca-pod.yaml");
+        Assert.Contains("audit-journal/", manifest);
+        Assert.DoesNotContain("keystore audit go to <dir>/logs", manifest);
+    }
+
+    /// <summary>
+    /// The bootstrap init container shares no logs volume with the node, so nothing it leaves in
+    /// its <c>logs/</c> reaches the node: its audit records get to the trail only because both
+    /// bootstrap paths write them into the audit database before they finish.
+    /// </summary>
+    [Fact]
+    public void The_bootstrap_keeps_no_logs_so_both_bootstrap_paths_write_their_audit_records_themselves()
+    {
+        var pod = Pod();
+        var bootstrap = Container(pod, "initContainers", "bootstrap");
+        Assert.Equal(["config", "keystores"], Mounts(bootstrap).Keys.Order());
+        Assert.DoesNotContain(Mounts(bootstrap).Values, path => path.EndsWith("/logs", StringComparison.Ordinal));
+        // The node's logs are an emptyDir of its own: not somewhere a file could have been left for it.
+        Assert.Equal("/opt/modularca/logs", Mounts(Container(pod, "containers", "node"))["node-logs"]);
+
+        // Headless: after the claim record, the last step that writes to a database.
+        var headless = Read("ModularCA.Bootstrap/BootstrapModularCA.cs");
+        var claim = headless.IndexOf("InitialAdminClaimAudit.RecordAsync(", StringComparison.Ordinal);
+        var drain = headless.IndexOf("BootstrapAuditDrain.RunAsync(", StringComparison.Ordinal);
+        Assert.True(claim > 0 && drain > claim, "the headless bootstrap must drain its audit file after recording the claim");
+        // After every step that queues a record.
+        Assert.True(drain > headless.LastIndexOf("ApplyAdministratorChoice(dbContext", StringComparison.Ordinal));
+        Assert.True(drain > headless.LastIndexOf("BootstrapKeystoreWriter.WriteCertsToKeystore(", StringComparison.Ordinal));
+        Assert.True(drain > headless.LastIndexOf("SeedProtocolConfigs(", StringComparison.Ordinal));
+
+        // The wizard: the same, for a container that is replaced once setup is done.
+        var wizard = Read("ModularCA.Bootstrap/BootstrapService.cs");
+        var wizardDrain = wizard.IndexOf("BootstrapAuditDrain.RunAsync(", StringComparison.Ordinal);
+        Assert.True(wizardDrain > wizard.LastIndexOf("ApplyAdministratorChoice(dbContext", StringComparison.Ordinal));
+        Assert.True(wizardDrain > wizard.LastIndexOf("BootstrapKeystoreWriter.WriteCertsToKeystore(", StringComparison.Ordinal));
+        Assert.True(wizardDrain > wizard.LastIndexOf("SeedProtocolConfigs(", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// When the audit database refuses the bootstrap's write, the queued file must outlive the
+    /// init container and be where the node looks: <c>config/audit-pending</c>, in the one volume
+    /// the bootstrap and the node both mount, read-write, at the same path, and which is kept.
+    /// Both bootstrap paths name that directory, and the node's start replays it.
+    /// </summary>
+    [Fact]
+    public void A_file_the_audit_database_refuses_is_kept_in_the_config_volume_the_node_replays_from()
+    {
+        var pod = Pod();
+        const string app = "/opt/modularca";
+        var pending = ModularCA.Core.Services.BootstrapAuditReplayService.PendingDirectory(app).Replace('\\', '/');
+        Assert.Equal($"{app}/config/audit-pending", pending);
+
+        foreach (var (list, name) in new[] { ("initContainers", "bootstrap"), ("containers", "node") })
+        {
+            var container = Container(pod, list, name);
+            // The deepest mount the directory falls under is the config volume, read-write.
+            var covering = Mounts(container).Where(m => (pending + "/").StartsWith(m.Value + "/", StringComparison.Ordinal))
+                .OrderByDescending(m => m.Value.Length).First();
+            Assert.Equal("config", covering.Key);
+            Assert.Equal($"{app}/config", covering.Value);
+            var mount = ((YamlSequenceNode)container["volumeMounts"]).Children.Cast<YamlMappingNode>().Single(m => m["name"].ToString() == "config");
+            Assert.False(mount.Children.TryGetValue(new YamlScalarNode("readOnly"), out var readOnly) && readOnly.ToString() == "true");
+        }
+        var volumes = ((YamlSequenceNode)pod["volumes"]).Children.Cast<YamlMappingNode>().ToDictionary(v => v["name"].ToString());
+        Assert.True(volumes["config"].Children.ContainsKey(new YamlScalarNode("persistentVolumeClaim")));
+        // The signer has no business with it.
+        Assert.DoesNotContain("config", Mounts(Container(pod, "containers", "signer")).Keys);
+
+        foreach (var source in new[] { "ModularCA.Bootstrap/BootstrapModularCA.cs", "ModularCA.Bootstrap/BootstrapService.cs" })
+        {
+            var text = Read(source);
+            var drain = text.IndexOf("BootstrapAuditDrain.RunAsync(", StringComparison.Ordinal);
+            var kept = text.IndexOf("BootstrapAuditReplayService.PendingDirectory(AppContext.BaseDirectory)", drain, StringComparison.Ordinal);
+            Assert.True(drain > 0 && kept > drain && kept - drain < 600, $"{source} must give the drain config/audit-pending");
+        }
+        var startup = Read("ModularCA.API/StartModularCA.cs");
+        Assert.Contains("await replayService.ReplayPendingAsync();", startup);
+
+        var manifest = Read("deploy/container/modularca-pod.yaml");
+        Assert.Contains("config/audit-pending", manifest);
+        Assert.DoesNotContain("nothing waits there", manifest);
+    }
+
     [Fact]
     public void The_image_has_the_signers_directory_owner_only_and_the_entrypoint_knows_it()
     {

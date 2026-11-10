@@ -967,9 +967,28 @@ each side pins the other's public key, and there is no trust-store lookup.
 The signer reads its settings from its own directory, `/opt/modularca/signer/`, which belongs to
 `modularca-signer` and which the node can neither read nor write. The packaged unit says so:
 `--signer-dir /opt/modularca/signer`. From there it reads `signer.yaml` (its settings only),
-`db.yaml`, `keystore.yaml` and its identity files, and writes its logs and keystore audit to
-`signer/logs/`. It reads nothing under `config/`. The node keeps `config/` to itself, and nothing
-the node writes, its console's settings pages included, can change what the signer loads.
+`db.yaml`, `keystore.yaml` and its identity files, and writes its logs to `signer/logs/`. It reads
+nothing under `config/`. The node keeps `config/` to itself, and nothing the node writes, its
+console's settings pages included, can change what the signer loads.
+
+**The signer's keystore events reach the audit trail through the node.** The signer cannot write
+to the audit database (its `db.yaml` holds the application database only), so it records what
+happens to its keystores (loaded at each start, a keystore created, a key appended for a new CA
+or SSH CA key, a signature or pin that did not verify) in `signer/audit-journal/`, one
+`keystore-audit-<date>.jsonl` per day, owner-only. The node's control role reads that journal
+over the signer channel, a few seconds after it starts and then every minute, and writes each
+event into the audit trail as a `Keystore…` row by `system-bootstrap` marked `DeliveredBySigner`.
+While the node, the signer or the audit database is away the events wait in the journal and are
+recorded afterwards, in order, each once. The call only reads: the node cannot remove or change
+a journal line, and keeps its own note of how far it has read in `config/signer-audit-cursor.json`
+(delete it and the node reads the journal again from the beginning, recording nothing twice).
+The journal is never pruned by the product and holds no secret; it grows by a few lines per
+signer start and per key, so leave it, or archive files older than your audit retention if you
+must. Events an earlier build wrote to `signer/logs/bootstrap-audit-*.jsonl`, which nothing read,
+are moved into the journal at the signer's first start on this version and delivered with the
+rest. A signer still on the shared layout (no `--signer-dir`) has no journal: its events go to
+`logs/` as before, where the node replays them at its next start if the signer's account can
+write there.
 
 Do this after the first install has completed its wizard as a single process, so the keystores
 and `config/keystore.yaml` exist.
@@ -1004,7 +1023,9 @@ and `config/keystore.yaml` exist.
    An HSM is configured here, not in the node's `config.yaml`: move any `Hsm:` section (and a
    `Schema:` or `Logging:` you changed) from `config.yaml` into `signer.yaml`, and delete it from
    `config.yaml`. The node with a remote signer never reads `Hsm:`, and the PIN then lives only in
-   the signer's directory.
+   the signer's directory. The console's Settings page still shows the signer's HSM settings: the
+   signer reports whether its HSM is on, the module path, the slot and the key labels in its
+   health answer (the pod's signer does the same), and never the PIN or a key id.
 
 3. On the signer, create the identity CA and the signer's server certificate, then issue the
    node its client certificate:
@@ -1336,6 +1357,14 @@ work done after the first:
    and give the token to its administrator, who claims the account at `/claim` (see "Things worth
    knowing before the first production start"). For a claim that expired unused:
    `podman exec modularca-node /opt/modularca/ModularCA.API --issue-claim-token superadmin`.
+   Before it exits it writes its audit records (the keystore writes, the setup choices, the
+   claim) into the audit database itself, as every bootstrap does on any install type, so they
+   do not depend on its `logs/`, which this container does not keep. If the audit database
+   refuses the write, it prints a `[WARNING]` and moves the queued file into
+   `config/audit-pending/` in the config volume (owner-only; it holds names and choices, never a
+   secret), and the node writes those records into the audit trail when it starts, each once.
+   The same holds on every install type: a bootstrap whose audit write is refused leaves the
+   records in `config/audit-pending/`, not in `logs/`.
 2. **signer-dir** fills the signer's own directory, the `modularca-signer-config` volume mounted
    at `/opt/modularca/signer`, from what bootstrap wrote: `signer.yaml` with only the sections
    the signer reads (its half of `Signer:`, `Hsm:`, `Schema:`, the logging levels), `db.yaml`
@@ -1382,8 +1411,8 @@ The volumes are the security division, not housekeeping:
 
 | Volume | Mounted by | Holds |
 |---|---|---|
-| `modularca-config` | the node; the init containers | `config.yaml`, `db.yaml` and the node's client certificate. Bootstrap leaves `keystore.yaml` here too, and `node-identity` removes it at the first start once the signer holds its copy. The node writes here while it runs: `config.yaml` when settings are saved or moved into the database (each time with a `config.yaml.pre-settings-*.bak` copy), the web TLS certificate (`api-tls.pfx`) when it is provisioned or renewed, and the Data Protection key ring (`dp-keys/`), made at start and rotated. Copy it as often as anything else that changes. |
-| `modularca-signer-config` | the signer; the init containers | `signer.yaml`, the signer's `db.yaml` and `keystore.yaml`, the identity CA and the server certificate. **The node never mounts it**, so it cannot change what the signer loads (`Hsm.ModulePath`, `Signer.PinnedClientSpki`, `Signer.Listen`). Only the init containers write to it; the signer's logs go to an `emptyDir` mounted over its `logs/`. **It MUST be in your volume backups**: after the first start the keystore passphrases (`keystore.yaml`) live in this volume and nowhere else, and no backup archive carries them, so losing it loses every keystore. |
+| `modularca-config` | the node; the init containers | `config.yaml`, `db.yaml` and the node's client certificate. Bootstrap leaves `keystore.yaml` here too, and `node-identity` removes it at the first start once the signer holds its copy. The node writes here while it runs: `config.yaml` when settings are saved or moved into the database (each time with a `config.yaml.pre-settings-*.bak` copy), the web TLS certificate (`api-tls.pfx`) when it is provisioned or renewed, the Data Protection key ring (`dp-keys/`), made at start and rotated, and `signer-audit-cursor.json`, its note of how far it has read the signer's keystore events. Copy it as often as anything else that changes. |
+| `modularca-signer-config` | the signer; the init containers | `signer.yaml`, the signer's `db.yaml` and `keystore.yaml`, the identity CA and the server certificate. **The node never mounts it**, so it cannot change what the signer loads (`Hsm.ModulePath`, `Signer.PinnedClientSpki`, `Signer.Listen`). Only the init containers write its settings; the signer's logs go to an `emptyDir` mounted over its `logs/`. The signer writes one thing here, `audit-journal/`: its keystore events (loaded, created, a key appended, a verification failure) wait there, across restarts of the pod, until the node has read them over the signer channel and written them into the audit trail (see "Two units"). **It MUST be in your volume backups**: after the first start the keystore passphrases (`keystore.yaml`) live in this volume and nowhere else, and no backup archive carries them, so losing it loses every keystore. |
 | `modularca-keystores` | the signer; bootstrap | The keystores. **The node never sees them**, which is the whole point of the split. |
 | `modularca-data` | the node | Its backup archives. |
 
