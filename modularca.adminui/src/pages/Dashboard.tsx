@@ -4,6 +4,8 @@ import { errorNotice } from '@shared-auth/api/notices';
 import { Link, useNavigate } from 'react-router-dom';
 import { apiGet, apiPost, apiPostWithMfa } from '../api/client';
 import { useScope } from '../context/ScopeContext';
+import { scopeKey } from '../scope';
+import { rowsInScope } from './scopedRows';
 import { useStepUp } from '../components/StepUpMfaContext';
 import DataCard from '../components/cards/DataCard';
 import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
@@ -71,9 +73,12 @@ const Dashboard: React.FC = () => {
     const { requireStepUp } = useStepUp();
     const { showToast } = useToast();
 
-    // Reissue modal state
-    const { caId: scopeCaId, inScope, caQuery } = useScope();
+    // Every scoped load and card below is keyed on `currentScope`, which changes on every switch
+    // (two spaces, a space and "all"); the CA id alone is null for all of those.
+    const { scope, caId: scopeCaId, spaceId: scopeSpaceId, inScope, caQuery } = useScope();
+    const currentScope = scopeKey(scope);
 
+    // Reissue modal state
     const [reissueOpen, setReissueOpen] = useState(false);
     const [reissueTarget, setReissueTarget] = useState<{
         id: string;
@@ -226,6 +231,8 @@ const Dashboard: React.FC = () => {
 
     // Counts come from the lifecycle summary, which counts every certificate in scope on the
     // server; the certificate list is paged, so counting one page was wrong past a page's worth.
+    // A scope switch drops the previous scope's summary at once; a refresh keeps it until replaced.
+    useEffect(() => { setSummary(null); }, [currentScope]);
     useEffect(() => {
         let cancelled = false;
         setCertStatsLoading(true);
@@ -234,7 +241,7 @@ const Dashboard: React.FC = () => {
             .then((data) => { if (!cancelled) { setSummary(data); setCertStatsLoading(false); } })
             .catch((err) => { if (!cancelled) { setCertStatsError(err.message || 'Failed to load certificate stats'); setCertStatsLoading(false); } });
         return () => { cancelled = true; };
-    }, [caQuery, summaryKey]);
+    }, [currentScope, caQuery, summaryKey]);
 
     const now = new Date();
     const certsByCa: Record<string, number> = {};
@@ -244,11 +251,16 @@ const Dashboard: React.FC = () => {
         : [];
     const attention = summary ? sortAttention(summary.attention, now) : [];
 
-    // Fetch CA list
+    // Fetch CA list. Each scoped load clears what it showed, and drops its answer if the scope
+    // has moved on by the time it arrives.
     useEffect(() => {
+        let cancelled = false;
         setCaLoading(true);
+        setCaError(null);
+        setCaList([]);
         apiGet<any>('/api/v1/admin/authorities')
             .then((data) => {
+                if (cancelled) return;
                 const cas = Array.isArray(data) ? data : (data.items || data.authorities || []);
                 const flat: any[] = [];
                 const flatten = (list: any[]) => {
@@ -262,19 +274,30 @@ const Dashboard: React.FC = () => {
                 setCaLoading(false);
             })
             .catch((err) => {
+                if (cancelled) return;
                 setCaError(errorNotice(err, 'Failed to load CAs'));
                 setCaLoading(false);
             });
-    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
+        return () => { cancelled = true; };
+    }, [currentScope]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Fetch group stats
     useEffect(() => {
+        let cancelled = false;
         setGroupsLoading(true);
+        setGroupsError(null);
+        setGroupStats(null);
         apiGet<any>('/api/v1/admin/groups')
             .then((data) => {
+                if (cancelled) return;
                 const all: any[] = Array.isArray(data) ? data : (data.items || data.groups || []);
-                // Under a CA scope, count that CA's groups only.
-                const groups = scopeCaId ? all.filter((g) => inScope(g.certificateAuthorityId || g.caId)) : all;
+                // Under a CA scope, count that CA's groups only; under a space scope, the space's
+                // own groups and those of the CAs it covers (as Groups lists them).
+                const groups = scopeCaId
+                    ? all.filter((g) => inScope(g.certificateAuthorityId || g.caId))
+                    : scopeSpaceId
+                        ? all.filter((g) => g.spaceId === scopeSpaceId || inScope(g.certificateAuthorityId || g.caId))
+                        : all;
                 const system = groups.filter((g) => g.isSystemGroup).length;
                 const caScoped = groups.filter((g) => g.caId || g.certificateAuthorityId || g.type === 'CA').length;
                 setGroupStats({
@@ -285,16 +308,22 @@ const Dashboard: React.FC = () => {
                 setGroupsLoading(false);
             })
             .catch((err) => {
+                if (cancelled) return;
                 setGroupsError(errorNotice(err, 'Failed to load groups'));
                 setGroupsLoading(false);
             });
-    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
+        return () => { cancelled = true; };
+    }, [currentScope]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Fetch pending requests count
     useEffect(() => {
+        let cancelled = false;
         setPendingLoading(true);
+        setPendingError(null);
+        setPendingCount(0);
         apiGet<any>(`/api/v1/admin/requests${caQuery()}`)
             .then((data) => {
+                if (cancelled) return;
                 const items: any[] = Array.isArray(data) ? data : (data.items || []);
                 // "Pending" = awaiting approval; matches the Certificate Requests page's Pending bucket
                 // (pending / pendingapproval / partiallyapproved / null), excluding issued ones.
@@ -307,10 +336,12 @@ const Dashboard: React.FC = () => {
                 setPendingLoading(false);
             })
             .catch((err) => {
+                if (cancelled) return;
                 setPendingError(err.message || 'Failed to load requests');
                 setPendingLoading(false);
             });
-    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
+        return () => { cancelled = true; };
+    }, [currentScope]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const statCardClass = 'bg-raised border border-line rounded-lg p-4';
     const statLabelClass = 'text-xs font-semibold text-ink-muted uppercase tracking-wide';
@@ -528,7 +559,7 @@ const Dashboard: React.FC = () => {
 
                     {/* Recent Certificates */}
                     <DataCard
-                        key={`recent-${scopeCaId ?? "all"}-${recentCertsKey}`}
+                        key={`recent-${currentScope}-${recentCertsKey}`}
                         title="Recent Certificates"
                         fetchData={async () => { const r = await apiGet<any>(`/api/v1/admin/certificates?pageSize=10${caQuery(true)}`); return r.items || []; }}
                         keyExtractor={(c: any) => c.serialNumber || c.certificateId}
@@ -596,8 +627,18 @@ const Dashboard: React.FC = () => {
 
                     {/* Signing Profiles */}
                     <DataCard
+                        key={`signing-${currentScope}`}
                         title="Signing Profiles"
-                        fetchData={() => apiGet<any[]>('/api/v1/admin/signing-profiles')}
+                        fetchData={async () => {
+                            // As on the Profiles page: those issued by a CA in scope, and any with no issuer yet.
+                            const [profiles, cas] = await Promise.all([
+                                apiGet<any>('/api/v1/admin/signing-profiles'),
+                                apiGet<any>('/api/v1/admin/authorities').catch(() => []),
+                            ]);
+                            const list: any[] = Array.isArray(profiles) ? profiles : (profiles?.items || []);
+                            const authorities: any[] = Array.isArray(cas) ? cas : (cas?.items || cas?.authorities || []);
+                            return rowsInScope(list, (p) => p.issuerId, authorities, inScope, { keepUnbound: true });
+                        }}
                         keyExtractor={(p: any) => p.id}
                         emptyMessage="No signing profiles"
                         detailMode="modal"
@@ -625,7 +666,7 @@ const Dashboard: React.FC = () => {
                 <div className="space-y-6">
                     {/* Recent Audit Logs */}
                     <DataCard
-                        key={`recent-${scopeCaId ?? "all"}`}
+                        key={`activity-${currentScope}`}
                         title="Recent Activity"
                         fetchData={async () => {
                             const data = await apiGet<any>(`/api/v1/admin/audit?pageSize=10${caQuery(true)}`);
@@ -667,7 +708,7 @@ const Dashboard: React.FC = () => {
 
                     {/* Pending CSRs */}
                     <DataCard
-                        key={`pending-${scopeCaId ?? "all"}`}
+                        key={`pending-${currentScope}`}
                         title="Pending Certificate Requests"
                         fetchData={async () => {
                             // /admin/requests returns ALL requests; this card must show only the ones
@@ -708,8 +749,9 @@ const Dashboard: React.FC = () => {
 
                     {/* Certificate Profiles */}
                     <DataCard
+                        key={`certprofiles-${currentScope}`}
                         title="Certificate Profiles"
-                        fetchData={() => apiGet<any[]>('/api/v1/admin/cert-profiles')}
+                        fetchData={() => apiGet<any[]>(`/api/v1/admin/cert-profiles${caQuery()}`)}
                         keyExtractor={(p: any) => p.id}
                         emptyMessage="No certificate profiles"
                         detailMode="modal"

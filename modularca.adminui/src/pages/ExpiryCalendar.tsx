@@ -100,10 +100,13 @@ const ExpiryCalendar: React.FC = () => {
     const [dayBuckets, setDayBuckets] = useState<Bucket[] | null>(null);
     const [dayLoading, setDayLoading] = useState(false);
 
-    // CA list for the filter dropdown
+    // CA list for the filter dropdown. Each load below drops its answer once the scope or filter
+    // it was asked for has changed, so a slow one cannot replace the current view.
     useEffect(() => {
+        let cancelled = false;
         apiGet<any>('/api/v1/admin/authorities')
             .then((data) => {
+                if (cancelled) return;
                 const cas = Array.isArray(data) ? data : (data.items || data.authorities || []);
                 const flat: any[] = [];
                 const flatten = (list: any[]) => { for (const ca of list) { flat.push(ca); if (ca.children) flatten(ca.children); } };
@@ -111,24 +114,28 @@ const ExpiryCalendar: React.FC = () => {
                 setAuthorities(flat.filter((ca) => inScope(ca.id)));
             })
             .catch(() => { /* non-fatal: filter just stays empty */ });
+        return () => { cancelled = true; };
     }, [scopeCaId, scopeSpaceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // monthly histogram (re-fetch only when the CA filter changes)
     useEffect(() => {
+        let cancelled = false;
         setLoading(true);
         const params = new URLSearchParams();
         if (caId) params.set('caId', caId);
         else if (scopeSpaceId) params.set('spaceId', scopeSpaceId);
         const qs = params.toString();
         apiGet<HistogramResponse>(`/api/v1/admin/certificates/expiry-histogram${qs ? `?${qs}` : ''}`)
-            .then((data) => { setResp(data); setError(null); })
-            .catch((err) => setError(errorNotice(err, 'The request failed.')))
-            .finally(() => setLoading(false));
+            .then((data) => { if (!cancelled) { setResp(data); setError(null); } })
+            .catch((err) => { if (!cancelled) setError(errorNotice(err, 'The request failed.')); })
+            .finally(() => { if (!cancelled) setLoading(false); });
+        return () => { cancelled = true; };
     }, [caId, scopeSpaceId]);
 
     // day-level drill-down for the selected month
     useEffect(() => {
-        if (!selectedMonth) { setDayBuckets(null); return; }
+        if (!selectedMonth) { setDayBuckets(null); setDayLoading(false); return; }
+        let cancelled = false;
         setDayLoading(true);
         const from = new Date(selectedMonth.year, selectedMonth.month - 1, 1);
         const to = new Date(selectedMonth.year, selectedMonth.month, 1); // first of next month
@@ -139,9 +146,10 @@ const ExpiryCalendar: React.FC = () => {
         if (caId) params.set('caId', caId);
         else if (scopeSpaceId) params.set('spaceId', scopeSpaceId);
         apiGet<HistogramResponse>(`/api/v1/admin/certificates/expiry-histogram?${params.toString()}`)
-            .then((data) => setDayBuckets(data.buckets))
-            .catch(() => setDayBuckets([]))
-            .finally(() => setDayLoading(false));
+            .then((data) => { if (!cancelled) setDayBuckets(data.buckets); })
+            .catch(() => { if (!cancelled) setDayBuckets([]); })
+            .finally(() => { if (!cancelled) setDayLoading(false); });
+        return () => { cancelled = true; };
     }, [selectedMonth, caId, scopeSpaceId]);
 
     const bucketMap = useMemo(() => {

@@ -27,6 +27,7 @@ import { LdapMappingsEditor, SunsetRulesEditor } from './SettingsTables';
 import { ApiKeysPanel } from '../components/ApiKeysPanel';
 import { CARD_FIELDS, type SettingsIndex, describeField, fieldBadges, fieldLocked, fieldsApply, indexSettings, secretState } from './settingsMeta';
 import { actionButton } from '@shared/components/actionButtons';
+import { hsmCardView } from './settingsHsm';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -778,21 +779,23 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         )}
                     </div>
 
-                    {/* HSM (read-only) */}
-                    <div className={cardClass}>
-                        <SectionHeader title="HSM" expanded={expanded === 'hsm'} onToggle={() => toggle('hsm')}
-                            description={config.hsm?.enabled ? 'Enabled' : 'Disabled'} tag="read-only" />
-                        {expanded === 'hsm' && (
-                            <div className="p-4 border-t border-line space-y-2">
-                                <DetailField label="Enabled" value={config.hsm?.enabled ? 'Yes' : 'No'} />
-                                <DetailField label="Module Path" value={config.hsm?.modulePath || 'Not configured'} />
-                                <DetailField label="Slot ID" value={config.hsm?.slotId != null ? String(config.hsm.slotId) : 'Not configured'} />
-                                <div className="bg-warn-soft border border-warn/40 rounded p-3 text-xs text-warn mt-3">
-                                    HSM configuration must be set in config.yaml — cannot be changed at runtime.
-                                </div>
+                    {/* HSM (read-only). Signer-local: with a remote signer this node does not hold
+                        the settings, and the card says so rather than show blanks (settingsHsm.ts). */}
+                    {(() => {
+                        const hsm = hsmCardView(config.hsm);
+                        return (
+                            <div className={cardClass}>
+                                <SectionHeader title="HSM" expanded={expanded === 'hsm'} onToggle={() => toggle('hsm')}
+                                    description={hsm.description} tag="read-only" />
+                                {expanded === 'hsm' && (
+                                    <div className="p-4 border-t border-line space-y-2">
+                                        {hsm.rows.map((row) => <DetailField key={row.label} label={row.label} value={row.value} mono={row.mono} />)}
+                                        <div className="text-xs text-ink-muted mt-2">{hsm.note}</div>
+                                    </div>
+                                )}
                             </div>
-                        )}
-                    </div>
+                        );
+                    })()}
 
                     {/* Backup */}
                     <div className={cardClass}>

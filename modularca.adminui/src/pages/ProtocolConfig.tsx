@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useReducer } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
@@ -13,6 +13,10 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import { StepUpOps } from '@shared/generated';
 import { ToggleField, labelClass } from '@shared/components/forms';
 import { advisoriesOf, openEnrollmentNotice, type ProtocolAdvisory } from './protocolAdvisories';
+import {
+    failedProfileLists, initialProtocolConfigState, itemsOf, protocolConfigReducer, saveTarget, settleProtocolConfigPage,
+    shownConfigs, type PageList,
+} from './protocolConfigLoad';
 
 // MSAE is Windows autoenrollment (MS-WSTEP over HTTPS). Its own fields are the two authentication
 // modes: username (WS-Security UsernameToken / HTTP Basic) and Kerberos, which needs a realm bound
@@ -38,22 +42,34 @@ const ProtocolConfig: React.FC = () => {
     const { requireStepUp } = useStepUp();
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
+    // The authority list failing leaves nothing to select, so its error replaces the selector. A
+    // failed configuration load for one CA does not: that error shows inline below the selector,
+    // which stays usable so the operator can switch to another CA. Neither does a failed profile
+    // list: it shows inline and locks its picker (see settleProtocolConfigPage).
     const [error, setError] = useState<NoticeInput | null>(null);
+    const [configError, setConfigError] = useState<NoticeInput | null>(null);
     const { caId: scopeCaId } = useScope();
-    const [selectedCaId, setSelectedCaId] = useState(scopeCaId ?? '');
+    // The selected CA, its load, and the rows that arrived, held together so a response or a save
+    // for a CA that is no longer selected is dropped (see protocolConfigLoad.ts).
+    const [configState, dispatchConfig] = useReducer(protocolConfigReducer, scopeCaId ?? '', initialProtocolConfigState);
+    const selectedCaId = configState.selectedCaId;
+    const configLoading = configState.loading;
+    const protocolConfigs = shownConfigs(configState);
     // Follow the sidebar scope: picking a CA there selects it here too.
     useEffect(() => {
-        if (scopeCaId) { setSelectedCaId(scopeCaId); setExpandedProtocol(null); }
+        if (scopeCaId) { dispatchConfig({ type: 'select', caId: scopeCaId }); setExpandedProtocol(null); }
     }, [scopeCaId]);
     const [expandedProtocol, setExpandedProtocol] = useState<string | null>(null);
-    const [protocolConfigs, setProtocolConfigs] = useState<any[]>([]);
-    const [configLoading, setConfigLoading] = useState(false);
     // Protocols this deployment serves at all. Null until the system says so, and it stays null
     // when the lookup fails, which shows every protocol: a page that hid protocols because one
     // unrelated request failed would read as a system that no longer has them.
     const [systemProtocols, setSystemProtocols] = useState<string[] | null>(null);
-    const [signingProfiles, setSigningProfiles] = useState<any[]>([]);
-    const [certProfiles, setCertProfiles] = useState<any[]>([]);
+    // Each list keeps its failure rather than collapsing to an empty array, so a picker can tell
+    // "no profiles" from "the profiles could not be read".
+    const [signingProfileList, setSigningProfileList] = useState<PageList>({ ok: true, items: [] });
+    const [certProfileList, setCertProfileList] = useState<PageList>({ ok: true, items: [] });
+    const signingProfiles = itemsOf(signingProfileList);
+    const certProfiles = itemsOf(certProfileList);
     const [saving, setSaving] = useState<string | null>(null);
 
     const flattenCas = (cas: any[]): any[] => {
@@ -85,39 +101,54 @@ const ProtocolConfig: React.FC = () => {
 
     useEffect(() => {
         setLoading(true);
-        Promise.all([
+        // Settled one by one: only the authority list failing hides the selector.
+        Promise.allSettled([
             apiGet<any>('/api/v1/admin/authorities/hierarchy'),
             apiGet<any>('/api/v1/admin/signing-profiles'),
             apiGet<any>('/api/v1/admin/cert-profiles'),
         ])
-            .then(([caData, spData, cpData]) => {
-                const items = Array.isArray(caData) ? caData : (caData.items || caData.authorities || []);
+            .then((results) => {
+                const page = settleProtocolConfigPage(results);
+                setSigningProfileList(page.signingProfiles);
+                setCertProfileList(page.certProfiles);
+                if (!page.authorities.ok) {
+                    setError(errorNotice(page.authorities.error, 'Could not load the certificate authorities.'));
+                    setLoading(false);
+                    return;
+                }
+                const items = page.authorities.items;
                 setAuthorities(items);
-                setSigningProfiles(Array.isArray(spData) ? spData : (spData.items || spData.profiles || []));
-                setCertProfiles(Array.isArray(cpData) ? cpData : (cpData.items || cpData.profiles || []));
                 const flat = flattenCas(items);
                 if (flat.length > 0) {
                     const firstId = flat[0].id || flat[0].certificateId || flat[0].name || '';
                     // Keep a scoped CA; otherwise start on the first one.
-                    setSelectedCaId((current) => current || firstId);
+                    dispatchConfig({ type: 'selectDefault', caId: firstId });
                 }
-                setLoading(false);
-            })
-            .catch((err) => {
-                setError(errorNotice(err, 'Failed to load data'));
                 setLoading(false);
             });
     }, []);
 
+    // Each answer is tagged with the CA it was asked for. The reducer drops one for a CA that is no
+    // longer selected, and the cleanup drops one this effect has moved on from, so a slow answer
+    // for the previous CA can neither paint the form nor end the current load.
     useEffect(() => {
         if (!selectedCaId) return;
-        setConfigLoading(true);
-        apiGet<any>(`/api/v1/admin/protocol-configs/${selectedCaId}`)
-            .then((data) => { setProtocolConfigs(Array.isArray(data) ? data : []); setError(null); })
+        const caId = selectedCaId;
+        let cancelled = false;
+        apiGet<any>(`/api/v1/admin/protocol-configs/${caId}`)
+            .then((data) => {
+                if (cancelled) return;
+                dispatchConfig({ type: 'loaded', caId, configs: Array.isArray(data) ? data : [] });
+                setConfigError(null);
+            })
             // A failed load must not paint every protocol "Not Configured": that reads as a true
-            // state and sends the operator to re-enable things that are fine.
-            .catch((err) => { setProtocolConfigs([]); setError(errorNotice(err, 'Could not load the protocol configuration for this CA.')); })
-            .finally(() => setConfigLoading(false));
+            // state and sends the operator to re-enable things that are fine. No cards are shown.
+            .catch((err) => {
+                if (cancelled) return;
+                dispatchConfig({ type: 'failed', caId });
+                setConfigError(errorNotice(err, 'Could not load the protocol configuration for this CA.'));
+            });
+        return () => { cancelled = true; };
     }, [selectedCaId]);
 
     const allCasFlat = flattenCas(authorities);
@@ -146,17 +177,29 @@ const ProtocolConfig: React.FC = () => {
     };
 
     const getProtocolConfig = (protocol: string): any | null => {
-        return protocolConfigs.find(
+        return (protocolConfigs ?? []).find(
             (pc: any) => (pc.protocol || '').toUpperCase() === protocol.toUpperCase()
         ) || null;
     };
 
-    const handleSave = async (protocol: string, updates: any) => {
-        setSaving(protocol);
+    /**
+     * Saves one protocol's form to the CA it was filled from. Refused while a load is in flight or
+     * when that CA is no longer the one selected, so the settings written are always the settings
+     * shown, for the CA shown. The reload after the save is dropped if the CA changed meanwhile.
+     *
+     * @param formCaId The CA whose configuration filled the card being saved.
+     */
+    const handleSave = async (formCaId: string, protocol: string, updates: any) => {
+        const caId = saveTarget(configState, formCaId);
+        if (!caId) {
+            showToast('warning', `Nothing was saved: the ${protocol} settings shown are not loaded for the selected CA yet. Check them and save again.`);
+            return;
+        }
+        setSaving(`${caId}:${protocol}`);
         try {
-            await apiPutWithMfa(`/api/v1/admin/protocol-configs/${selectedCaId}/${protocol}`, updates, requireStepUp, StepUpOps.UpdateProtocolConfig, selectedCaId);
-            const data = await apiGet<any>(`/api/v1/admin/protocol-configs/${selectedCaId}`);
-            setProtocolConfigs(Array.isArray(data) ? data : []);
+            await apiPutWithMfa(`/api/v1/admin/protocol-configs/${caId}/${protocol}`, updates, requireStepUp, StepUpOps.UpdateProtocolConfig, caId);
+            const data = await apiGet<any>(`/api/v1/admin/protocol-configs/${caId}`);
+            dispatchConfig({ type: 'loaded', caId, configs: Array.isArray(data) ? data : [] });
         } catch (err: any) {
             showToast('error', err.message || `Failed to update ${protocol} config`);
         } finally {
@@ -164,7 +207,23 @@ const ProtocolConfig: React.FC = () => {
         }
     };
 
-    const selectClass = 'w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent';
+    const selectClass = 'w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent disabled:opacity-60 disabled:cursor-not-allowed';
+
+    /** The inline notice for a profile list that failed, titled by which list it was; null when it loaded. */
+    const profileListNotice = (name: string, picker: string, list: PageList): NoticeInput | null => {
+        if (list.ok) return null;
+        const notice = errorNotice(list.error, 'The request failed.');
+        if (!notice) return null;
+        return {
+            ...notice,
+            title: `Could not load the ${name}`,
+            remediation: notice.remediation
+                ?? `The ${picker} picker is locked and keeps each protocol's current choice; every other setting can still be changed and saved. Reload the page to try again.`,
+        };
+    };
+    const signingProfileNotice = profileListNotice('signing profiles', 'Signing Profile', signingProfileList);
+    const certProfileNotice = profileListNotice('certificate profiles', 'Certificate Profile', certProfileList);
+    const profileFailures = failedProfileLists({ signingProfiles: signingProfileList, certProfiles: certProfileList });
 
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
@@ -182,7 +241,7 @@ const ProtocolConfig: React.FC = () => {
                         <select
                             value={selectedCaId}
                             onChange={(e) => {
-                                setSelectedCaId(e.target.value);
+                                dispatchConfig({ type: 'select', caId: e.target.value });
                                 setExpandedProtocol(null);
                             }}
                             className="w-full max-w-md px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent"
@@ -201,7 +260,17 @@ const ProtocolConfig: React.FC = () => {
                 </div>
             </div>
 
+            {/* A profile list that failed: the page stays usable, and that list's picker is locked. */}
+            {!loading && !error && profileFailures.length > 0 && (
+                <>
+                    {signingProfileNotice && <InlineNotice notice={signingProfileNotice} />}
+                    {certProfileNotice && <InlineNotice notice={certProfileNotice} />}
+                </>
+            )}
+
             {configLoading && <div className="p-4 text-sm text-ink-muted">Loading protocol configs...</div>}
+            {/* Only while the selected CA's load stands failed: selecting another CA clears it. */}
+            {configState.failed && configError && <InlineNotice notice={configError} />}
 
             {/* Protocol Cards */}
             {selectedCaId && !configLoading && visibleProtocols.length === 0 && (
@@ -221,23 +290,28 @@ const ProtocolConfig: React.FC = () => {
                     Their configuration is kept and returns when the flag does.
                 </p>
             )}
-            {selectedCaId && !configLoading && visibleProtocols.map((protocol) => {
+            {/* Cards only for rows loaded for the selected CA, keyed by that CA so a card's form
+                never carries one CA's edits over to another. */}
+            {protocolConfigs && configState.loaded && visibleProtocols.map((protocol) => {
+                const formCaId = configState.loaded!.caId;
                 const config = getProtocolConfig(protocol);
                 const expanded = expandedProtocol === protocol;
 
                 return (
                     <ProtocolCard
-                        caId={selectedCaId}
-                        key={protocol}
+                        caId={formCaId}
+                        key={`${formCaId}:${protocol}`}
                         protocol={protocol}
                         config={config}
                         expanded={expanded}
                         onToggleExpand={() => setExpandedProtocol(expanded ? null : protocol)}
-                        onSave={(updates) => handleSave(protocol, updates)}
-                        saving={saving === protocol}
+                        onSave={(updates) => handleSave(formCaId, protocol, updates)}
+                        saving={saving === `${formCaId}:${protocol}`}
                         advisories={advisoriesFor(protocol, config)}
                         signingProfiles={caSigningProfiles}
                         certProfiles={certProfiles}
+                        signingProfilesFailed={!signingProfileList.ok}
+                        certProfilesFailed={!certProfileList.ok}
                         labelClass={labelClass}
                         selectClass={selectClass}
                     />
@@ -267,6 +341,10 @@ interface ProtocolCardProps {
     /** The signing profiles that issue from this CA's current certificate. */
     signingProfiles: any[];
     certProfiles: any[];
+    /** The signing-profile list could not be loaded: the picker is locked on the current choice. */
+    signingProfilesFailed: boolean;
+    /** The certificate-profile list could not be loaded: the picker is locked on the current choice. */
+    certProfilesFailed: boolean;
     labelClass: string;
     selectClass: string;
 }
@@ -274,7 +352,7 @@ interface ProtocolCardProps {
 const ProtocolCard: React.FC<ProtocolCardProps> = ({
     caId,
     protocol, config, expanded, onToggleExpand, onSave, saving, advisories,
-    signingProfiles, certProfiles, labelClass, selectClass,
+    signingProfiles, certProfiles, signingProfilesFailed, certProfilesFailed, labelClass, selectClass,
 }) => {
     const [form, setForm] = useState<Record<string, any>>({
         enabled: false,
@@ -415,9 +493,15 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                             <>
                                 <div>
                                     <label className={labelClass}>Signing Profile</label>
-                                    <select value={form.signingProfileId} onChange={(e) => setForm({ ...form, signingProfileId: e.target.value })} className={selectClass}>
+                                    {/* Locked while the list is unreadable: the saved choice is kept and sent back unchanged. */}
+                                    <select value={form.signingProfileId} onChange={(e) => setForm({ ...form, signingProfileId: e.target.value })} className={selectClass} disabled={signingProfilesFailed}>
                                         <option value="">Not assigned</option>
-                                        {form.signingProfileId && !signingProfiles.some((p: any) => p.id === form.signingProfileId) && (
+                                        {signingProfilesFailed && form.signingProfileId && (
+                                            <option value={form.signingProfileId}>
+                                                {config?.signingProfileName || form.signingProfileId} (profile list unavailable)
+                                            </option>
+                                        )}
+                                        {!signingProfilesFailed && form.signingProfileId && !signingProfiles.some((p: any) => p.id === form.signingProfileId) && (
                                             <option value={form.signingProfileId} disabled>
                                                 {config?.signingProfileName || form.signingProfileId} (not this CA's; choose another)
                                             </option>
@@ -427,8 +511,13 @@ const ProtocolCard: React.FC<ProtocolCardProps> = ({
                                 </div>
                                 <div>
                                     <label className={labelClass}>Certificate Profile</label>
-                                    <select value={form.certProfileId} onChange={(e) => setForm({ ...form, certProfileId: e.target.value })} className={selectClass}>
+                                    <select value={form.certProfileId} onChange={(e) => setForm({ ...form, certProfileId: e.target.value })} className={selectClass} disabled={certProfilesFailed}>
                                         <option value="">Not assigned</option>
+                                        {certProfilesFailed && form.certProfileId && (
+                                            <option value={form.certProfileId}>
+                                                {config?.certProfileName || form.certProfileId} (profile list unavailable)
+                                            </option>
+                                        )}
                                         {certProfiles.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
                                     </select>
                                 </div>

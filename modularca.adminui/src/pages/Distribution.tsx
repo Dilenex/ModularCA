@@ -5,7 +5,8 @@ import { errorNotice } from '@shared-auth/api/notices';
 import { useSearchParams } from 'react-router-dom';
 import { apiGet, apiPost, apiPostWithMfa, apiPutWithMfa, API_BASE } from '../api/client';
 import { useScope } from '../context/ScopeContext';
-import { scopeLabel } from '../scope';
+import { scopeKey, scopeLabel } from '../scope';
+import { rowsInScope } from './scopedRows';
 import { FieldHint } from '@shared/components/forms';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
@@ -56,6 +57,7 @@ const CrlSchedulesSection: React.FC = () => {
     // The CA list is what the scope filter and the CA selector are built from; when it cannot be
     // loaded the page must say so rather than showing an empty selector and an empty table.
     const [casError, setCasError] = useState<string | null>(null);
+    const [casLoaded, setCasLoaded] = useState(false);
     // Bulk delete confirm
     const [confirmBulk, setConfirmBulk] = useState<any[] | null>(null);
     const [confirmLoading, setConfirmLoading] = useState(false);
@@ -67,15 +69,13 @@ const CrlSchedulesSection: React.FC = () => {
         overlapPeriod: '',
     });
 
-    // CRL schedules key on the CA's certificate; under a CA scope keep the scoped CA's only.
-    const { caId: scopeCaId, scope } = useScope();
-    const scopedCa = scopeCaId ? cas.find((c) => (c.id || c.caId) === scopeCaId) : null;
-    const visibleSchedules = scopeCaId
-        ? schedules.filter((sch) => {
-            const key = sch.caCertificateId || sch.caId;
-            return !!scopedCa && (key === scopedCa.certificateId || key === scopedCa.id);
-        })
-        : schedules;
+    // CRL schedules key on the CA's certificate; under a CA or space scope keep the schedules of
+    // the CAs it covers. Filtered here, so the table follows a scope switch without a reload; a
+    // narrowed table waits for the CA list it is narrowed by rather than saying "none".
+    const { scope, inScope } = useScope();
+    const narrowed = scope.kind !== 'all';
+    const visibleSchedules = rowsInScope(schedules, (sch) => sch.caCertificateId || sch.caId, cas, inScope);
+    const tableLoading = loading || (narrowed && !casLoaded && !casError);
 
     const load = () => {
         setLoading(true);
@@ -89,7 +89,7 @@ const CrlSchedulesSection: React.FC = () => {
     useEffect(() => {
         load();
         apiGet<any>('/api/v1/admin/authorities')
-            .then((data) => { setCas(Array.isArray(data) ? data : (data.items || data.authorities || [])); setCasError(null); })
+            .then((data) => { setCas(Array.isArray(data) ? data : (data.items || data.authorities || [])); setCasError(null); setCasLoaded(true); })
             .catch((err) => setCasError(err.message || 'request failed'));
     }, []);
 
@@ -222,7 +222,7 @@ const CrlSchedulesSection: React.FC = () => {
                 </div>
             )}
 
-            {scopeCaId && casError && (
+            {narrowed && casError && (
                 <div className="text-xs text-crit" role="status">
                     Unavailable: could not load the CA list ({casError}), so the schedules for {scopeLabel(scope)} cannot be picked out. The table below is not a statement that there are none.
                 </div>
@@ -234,9 +234,9 @@ const CrlSchedulesSection: React.FC = () => {
                 title="CRL Schedules"
                 rows={visibleSchedules}
                 rowKey={crlId}
-                loading={loading}
+                loading={tableLoading}
                 error={error}
-                empty={scopeCaId ? `No CRL schedules in ${scopeLabel(scope)}. Change the scope in the top bar to see others.` : 'No CRL schedules configured'}
+                empty={narrowed ? `No CRL schedules in ${scopeLabel(scope)}. Change the scope in the top bar to see others.` : 'No CRL schedules configured'}
                 columns={columns}
                 selectable
                 bulkActions={bulkActions}
@@ -264,6 +264,9 @@ const CurrentCrlsSection: React.FC = () => {
     const [cas, setCas] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
+    // The CAs the scope covers; filtered here, so the cards follow a scope switch without a reload.
+    const { scope, inScope } = useScope();
+    const visibleCas = cas.filter((ca) => inScope(ca.id || ca.caId));
 
     // Null until loaded, and when the lookup fails: every download is then offered.
     const [schedules, setSchedules] = useState<CrlScheduleRow[] | null>(null);
@@ -287,12 +290,14 @@ const CurrentCrlsSection: React.FC = () => {
 
             {loading && <div className="p-4 text-sm text-ink-muted">Loading...</div>}
             {error && <InlineNotice notice={error} />}
-            {!loading && !error && cas.length === 0 && (
-                <div className="p-4 text-sm text-ink-muted">No certificate authorities found</div>
+            {!loading && !error && visibleCas.length === 0 && (
+                <div className="p-4 text-sm text-ink-muted">
+                    {scope.kind !== 'all' ? `No certificate authorities in ${scopeLabel(scope)}. Change the scope in the top bar to see others.` : 'No certificate authorities found'}
+                </div>
             )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {!loading && !error && cas.map((ca) => {
+                {!loading && !error && visibleCas.map((ca) => {
                     const caId = ca.id || ca.caId;
                     const serial = ca.certificateSerial || ca.serialNumber || ca.certificate?.serialNumber || caId;
                     const published = crlAvailability(ca, schedules);
@@ -328,21 +333,28 @@ const CurrentCrlsSection: React.FC = () => {
 };
 
 /* ─── LDAP Tab — CA selector + per-CA publisher manager (admin only) ─── */
+/** Remounted on every scope switch (see `Distribution`), so its CA list is the current scope's. */
 const LdapTab: React.FC<{ initialCaId?: string }> = ({ initialCaId }) => {
+    const { inScope } = useScope();
     const [cas, setCas] = useState<any[]>([]);
     const [casError, setCasError] = useState<string | null>(null);
     const [selectedCa, setSelectedCa] = useState<string>(initialCaId || '');
 
     useEffect(() => {
+        let cancelled = false;
         apiGet<any>('/api/v1/admin/authorities')
             .then((data) => {
-                const list = Array.isArray(data) ? data : (data.items || data.authorities || []);
+                if (cancelled) return;
+                // The CAs the scope covers (all of them under "all CAs").
+                const list = (Array.isArray(data) ? data : (data.items || data.authorities || []))
+                    .filter((ca: any) => inScope(ca.id || ca.caId));
                 setCas(list);
                 setCasError(null);
                 // Default to the deep-linked CA, else the first CA so the manager has a target.
                 setSelectedCa((cur) => cur || (list[0] ? (list[0].id || list[0].caId) : ''));
             })
-            .catch((err) => setCasError(err.message || 'request failed'));
+            .catch((err) => { if (!cancelled) setCasError(err.message || 'request failed'); });
+        return () => { cancelled = true; };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -374,7 +386,7 @@ interface ServiceUrlRow { caCertId: string; name: string; label: string; publicB
 const ServiceUrlsTab: React.FC = () => {
     const { showToast } = useToast();
     const { requireStepUp } = useStepUp();
-    const { inScope, caId: scopeCaId, scope } = useScope();
+    const { inScope, scope } = useScope();
     const [rows, setRows] = useState<ServiceUrlRow[]>([]);
     const [loading, setLoading] = useState(true);
     // Each source is tracked separately: without the hierarchy there are no rows to show, and
@@ -390,13 +402,20 @@ const ServiceUrlsTab: React.FC = () => {
         return out;
     };
 
+    // Reloads on every scope switch, including between two spaces. The previous scope's rows go
+    // at once, and an answer for a scope already left is dropped.
+    const currentScope = scopeKey(scope);
     useEffect(() => {
+        let cancelled = false;
+        setLoading(true);
+        setRows([]);
         setHierarchyError(null);
         setUrlsError(null);
         Promise.all([
-            apiGet<any>('/api/v1/admin/authorities/hierarchy').catch((err) => { setHierarchyError(err.message || 'request failed'); return []; }),
-            apiGet<any>('/api/v1/admin/ca-service-urls').catch((err) => { setUrlsError(err.message || 'request failed'); return []; }),
+            apiGet<any>('/api/v1/admin/authorities/hierarchy').catch((err) => { if (!cancelled) setHierarchyError(err.message || 'request failed'); return []; }),
+            apiGet<any>('/api/v1/admin/ca-service-urls').catch((err) => { if (!cancelled) setUrlsError(err.message || 'request failed'); return []; }),
         ]).then(([h, su]) => {
+            if (cancelled) return;
             const flat = flatten(Array.isArray(h) ? h : (h.items || h.authorities || []))
                 .filter((ca: any) => inScope(ca.id || ca.caId));
             const list = Array.isArray(su) ? su : (su.items || []);
@@ -415,8 +434,9 @@ const ServiceUrlsTab: React.FC = () => {
                 })
                 .filter((r): r is ServiceUrlRow => r !== null);
             setRows(next);
-        }).finally(() => setLoading(false));
-    }, [scopeCaId]); // eslint-disable-line react-hooks/exhaustive-deps
+        }).finally(() => { if (!cancelled) setLoading(false); });
+        return () => { cancelled = true; };
+    }, [currentScope]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const update = (caCertId: string, value: string) =>
         setRows((prev) => prev.map((r) => (r.caCertId === caCertId ? { ...r, publicBaseUrl: value } : r)));
@@ -452,7 +472,7 @@ const ServiceUrlsTab: React.FC = () => {
             )}
             {!loading && !hierarchyError && rows.length === 0 && (
                 <div className="text-sm text-ink-muted">
-                    {scopeCaId ? `No certificate authorities in ${scopeLabel(scope)}. Change the scope in the top bar to see others.` : 'No certificate authorities found.'}
+                    {scope.kind !== 'all' ? `No certificate authorities in ${scopeLabel(scope)}. Change the scope in the top bar to see others.` : 'No certificate authorities found.'}
                 </div>
             )}
             {rows.map((row) => (
@@ -523,7 +543,7 @@ const Distribution: React.FC = () => {
     const { can } = useAuth();
     const isAdmin = can(Capabilities.SystemManage);
     const [searchParams, setSearchParams] = useSearchParams();
-    const { caId: scopeCaId } = useScope();
+    const { caId: scopeCaId, scope } = useScope();
     const caIdParam = searchParams.get('caId') || scopeCaId || undefined;
     type Tab = 'crl' | 'ldap' | 'serviceurls';
     const requestedTab = searchParams.get('tab');
@@ -563,7 +583,7 @@ const Distribution: React.FC = () => {
                     <CurrentCrlsSection />
                 </div>
             )}
-            {tab === 'ldap' && isAdmin && <LdapTab key={caIdParam ?? 'all'} initialCaId={caIdParam} />}
+            {tab === 'ldap' && isAdmin && <LdapTab key={`${scopeKey(scope)}:${caIdParam ?? ''}`} initialCaId={caIdParam} />}
             {tab === 'serviceurls' && isAdmin && <ServiceUrlsTab />}
         </div>
     );

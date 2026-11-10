@@ -14,6 +14,9 @@ import { isUnboundRequestProfile, mayChangeProfile } from './profiles/instanceWi
 import { NewProfileButton } from './profiles/NewProfileButton';
 import { sanRequirementLabel } from '../components/requestProfileRules';
 import { CaScopeName } from '../components/CaScopeName';
+import { useScope } from '../context/ScopeContext';
+import { useLatestRequest } from '@shared/hooks/useLatestRequest';
+import { rowsInScope } from './scopedRows';
 
 /* read-only drawer for a request profile row */
 const RequestProfileDrawer: React.FC<{ profile: any; parentName: (id?: string | null) => string | undefined }> = ({ profile: p, parentName }) => (
@@ -31,8 +34,9 @@ const RequestProfileDrawer: React.FC<{ profile: any; parentName: (id?: string | 
 );
 
 /// <summary>
-/// Request Profiles tab: a DataTable of enrollment request profiles. Creating one and row detail
-/// and editing live on /profiles/request/new and /profiles/request/:id.
+/// Request Profiles tab: a DataTable of enrollment request profiles, narrowed to the console's scope
+/// (the scope's CAs' profiles and the system-wide ones). Creating one and row detail and editing
+/// live on /profiles/request/new and /profiles/request/:id.
 /// </summary>
 const RequestProfiles: React.FC = () => {
     const { requireStepUp } = useStepUp();
@@ -44,14 +48,22 @@ const RequestProfiles: React.FC = () => {
     const [error, setError] = useState<NoticeInput | null>(null);
     const [confirmDelete, setConfirmDelete] = useState<any | null>(null);
     const [deleting, setDeleting] = useState(false);
+    // A request profile belongs to the CA it is bound to; a CA or space scope keeps the ones bound
+    // to a CA it covers and the unbound, system-wide ones, as Signing Profiles does. The list is
+    // filtered here, so it follows a scope switch without a reload.
+    const { inScope, cas } = useScope();
+    const visibleProfiles = rowsInScope(profiles, (p) => p.certificateAuthorityId, cas, inScope, { keepUnbound: true });
 
+    // Only the newest load writes, so a reload after a delete cannot be overtaken by an older one.
+    const loads = useLatestRequest();
     const load = () => {
+        const current = loads.begin();
         setLoading(true);
         setError(null);
         apiGet<any>('/api/v1/admin/request-profiles')
-            .then((data) => setProfiles(Array.isArray(data) ? data : (data.items || data.profiles || [])))
-            .catch((err) => setError(errorNotice(err, 'The request failed.')))
-            .finally(() => setLoading(false));
+            .then((data) => { if (current()) setProfiles(Array.isArray(data) ? data : (data.items || data.profiles || [])); })
+            .catch((err) => { if (current()) setError(errorNotice(err, 'The request failed.')); })
+            .finally(() => { if (current()) setLoading(false); });
     };
 
     useEffect(() => {
@@ -112,7 +124,7 @@ const RequestProfiles: React.FC = () => {
                 tableId="request-profiles"
                 title="Request Profiles"
                 findable
-                rows={profiles}
+                rows={visibleProfiles}
                 rowKey={(p) => p.id}
                 loading={loading}
                 error={error}

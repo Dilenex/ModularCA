@@ -7,6 +7,7 @@ import type { RecordDescriptor } from '@shared/records';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { NewButton } from '@shared/components/NewButton';
 import { useScope } from '../context/ScopeContext';
+import { useLatestRequest } from '@shared/hooks/useLatestRequest';
 import { scopeLabel } from '../scope';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { useToast } from '@shared/context/ToastContext';
@@ -115,13 +116,16 @@ const X509TemplatesTab: React.FC = () => {
 
     const { caId: scopeCaId, spaceId: scopeSpaceId, caQuery, scope } = useScope();
 
+    // Only the newest load writes: a slow answer for a scope already left is dropped.
+    const templateLoads = useLatestRequest();
     const load = () => {
+        const current = templateLoads.begin();
         setLoading(true);
         setError(null);
         apiGet<any>(`/api/v1/admin/templates${caQuery()}`)
-            .then((data) => setTemplates(extractList(data)))
-            .catch((err) => setError(errorNotice(err, 'The request failed.')))
-            .finally(() => setLoading(false));
+            .then((data) => { if (current()) setTemplates(extractList(data)); })
+            .catch((err) => { if (current()) setError(errorNotice(err, 'The request failed.')); })
+            .finally(() => { if (current()) setLoading(false); });
     };
 
     // The scope narrows the list; a new template defaults to the scoped CA.

@@ -153,6 +153,20 @@ export function scopeLabel(scope: Scope): string {
     }
 }
 
+/**
+ * A string that changes exactly when the scope names something else: `all`, `mine`,
+ * `space:<id>` or `ca:<id>`. A page keys its loads, or a child's `key`, on it to reload on every
+ * switch. The scoped CA id alone is null for every space and for "all CAs", so keying on it
+ * missed a switch between two spaces or between a space and "all".
+ */
+export function scopeKey(scope: Scope): string {
+    switch (scope.kind) {
+        case 'space': return `space:${scope.spaceId}`;
+        case 'ca': return `ca:${scope.caId}`;
+        default: return scope.kind;
+    }
+}
+
 /** Two scopes are the same when they name the same thing. */
 export function sameScope(a: Scope, b: Scope): boolean {
     if (a.kind !== b.kind) return false;

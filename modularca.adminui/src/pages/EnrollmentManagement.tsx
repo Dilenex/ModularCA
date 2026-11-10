@@ -7,6 +7,7 @@ import { apiGet, apiDelete, apiPostWithMfa } from '../api/client';
 import { recordTableProps } from '../components/RecordDrawer';
 import type { RecordDescriptor } from '@shared/records';
 import { useScope } from '../context/ScopeContext';
+import { useLatestRequest } from '@shared/hooks/useLatestRequest';
 import { scopeLabel } from '../scope';
 import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
@@ -77,15 +78,20 @@ const EnrollmentManagement: React.FC = () => {
     const [confirmBulk, setConfirmBulk] = useState<any[] | null>(null);
     const [confirmLoading, setConfirmLoading] = useState(false);
 
+    // Only the newest load writes: a slow answer filtered for a scope already left is dropped.
+    const tokenLoads = useLatestRequest();
     const loadTokens = async () => {
+        const current = tokenLoads.begin();
         setLoading(true);
         setError(null);
         try {
             const data = await apiGet<any[]>('/api/v1/admin/enrollment-tokens');
+            if (!current()) return;
             const all: any[] = Array.isArray(data) ? data : ((data as any).items || []);
             // Under a CA scope, only the credentials bound to that CA.
             setTokens(scopeCaId ? all.filter((t) => inScope(t.certificateAuthorityId || t.caId)) : all);
         } catch (err: any) {
+            if (!current()) return;
             setError(errorNotice(err, 'Failed to load tokens'));
         }
         setLoading(false);

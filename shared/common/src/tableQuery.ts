@@ -66,6 +66,45 @@ export function writeTableQuery(search: string | URLSearchParams, values: TableQ
     return params;
 }
 
+/** The setter and reset behind `useTableQuery`. */
+export interface TableQueryWriter {
+    /** Merges `patch` into the table's values; a change to anything but the page resets the page. */
+    set: (patch: Partial<TableQueryValues>) => void;
+    /** Puts every table key back to its default. */
+    reset: () => void;
+}
+
+/**
+ * Binds a table's values to a query string that `read` returns as it is at the moment of the
+ * call. `useTableQuery` passes a reader of the router's latest query string, so a setter held
+ * by a timer (the typed-filter debounce) merges into the URL as it is when the timer fires,
+ * not as it was when typing started: a sort, page or scope change made meanwhile survives.
+ *
+ * `set` compares the patch with the current values, so re-sending a value the URL already
+ * holds does not reset the page. Both write the whole query string through `write`; every key
+ * that is not the table's (the scope, other tables) is kept.
+ */
+export function tableQueryWriter(
+    read: () => URLSearchParams,
+    write: (next: URLSearchParams) => void,
+    defaults: TableQueryValues,
+    prefix = '',
+): TableQueryWriter {
+    return {
+        set(patch) {
+            const search = read();
+            const current = readTableQuery(search, defaults, prefix);
+            const next: TableQueryValues = { ...current, ...(patch as TableQueryValues) };
+            const filterChanged = Object.keys(patch).some(k => k !== 'page' && patch[k] !== current[k]);
+            if (filterChanged && 'page' in defaults && !('page' in patch)) next.page = defaults.page;
+            write(writeTableQuery(search, next, defaults, prefix));
+        },
+        reset() {
+            write(writeTableQuery(read(), defaults, defaults, prefix));
+        },
+    };
+}
+
 /**
  * The part of a query string a saved view keeps: the table's own keys, minus the page (a view
  * is a filter, not a position). Scope keys are left out too; a view applies to whatever scope

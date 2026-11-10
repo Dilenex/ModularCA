@@ -13,8 +13,10 @@ import { HeldKeyDownload } from '../components/HeldKeyDownload';
 import { FieldHint } from '@shared/components/forms';
 import {
     type ApprovalRecord, csrId, csrStatus, csrStatusLabel, decisionBadgeStatus,
-    parseJsonSafe, canApprove, canIssue, canCancel, isoPeriodToMaxDate,
+    parseJsonSafe, canApprove, canIssue, canCancel,
 } from './CertificateRequests';
+import type { ValidityCeilingPreflight } from '@shared/generated';
+import { describeValidUntilLimit, toDateInputValue, validityCeilingUrl, validUntilLimit, validUntilNotAfter } from './validUntil';
 import { readDiagnostics } from '@shared-auth/api/problem';
 import { diagnosticNotices } from '@shared-auth/api/notices';
 import { mergeNotices, worstSeverity } from '@shared/notifications/notice';
@@ -116,13 +118,15 @@ const CertificateRequestDetail: React.FC = () => {
     const [cancelReason, setCancelReason] = useState('');
     const [cancelCustom, setCancelCustom] = useState('');
 
-    // Issue confirmation, with the same optional "valid until" the bulk path offers. The cert
-    // profile supplies the picker's ceiling; the server clamps to the CA and enforces the minimum.
+    // Issue confirmation, with the same optional "valid until" the bulk path offers. The server's
+    // validity pre-flight supplies the picker's ceiling, in the operator's local days (see
+    // validUntil.ts); the server still refuses anything past it and enforces the minimum.
     const [issueOpen, setIssueOpen] = useState(false);
     const [issueValidUntil, setIssueValidUntil] = useState('');
     const [certProfile, setCertProfile] = useState<any | null>(null);
-    const today = new Date().toISOString().slice(0, 10);
-    const issueMaxDate = isoPeriodToMaxDate(certProfile?.validityPeriodMax);
+    const [ceiling, setCeiling] = useState<ValidityCeilingPreflight | null>(null);
+    const today = toDateInputValue(new Date());
+    const issueLimit = validUntilLimit(ceiling);
 
     const loadApprovals = useCallback((cid: string) => {
         setApprovalsLoading(true);
@@ -173,6 +177,19 @@ const CertificateRequestDetail: React.FC = () => {
         return () => { cancelled = true; };
     }, [csr?.certificateProfileId, csr?.certProfileId]);
 
+    // The validity ceiling issuing this request would meet, for the "valid until" picker. Unknown on
+    // failure, which leaves the picker unbounded; the server decides either way.
+    const ceilingUrl = validityCeilingUrl(csr);
+    useEffect(() => {
+        setCeiling(null);
+        if (!ceilingUrl) return;
+        let cancelled = false;
+        apiGet<ValidityCeilingPreflight>(ceilingUrl, { toast: false })
+            .then((p) => { if (!cancelled) setCeiling(p); })
+            .catch(() => { if (!cancelled) setCeiling(null); });
+        return () => { cancelled = true; };
+    }, [ceilingUrl]);
+
     // Names for the request and signing profiles the request was made under.
     const [profileNames, setProfileNames] = useState<Record<string, string>>({});
     useEffect(() => {
@@ -210,10 +227,12 @@ const CertificateRequestDetail: React.FC = () => {
         try {
             // Omit NotBefore/NotAfter so validity coalesces from the effective cert profile
             // (ValidityPeriodMax/Min, clamped to the issuing CA) rather than a fixed window; an
-            // explicit "valid until" from the confirm shortens it the same way the bulk path does.
+            // explicit "valid until" from the confirm shortens it the same way the bulk path does:
+            // the end of the chosen local day, or the ceiling when that falls earlier on it.
+            const notAfter = validUntilNotAfter(issueValidUntil, ceiling);
             const result = await apiPost<any>('/api/v1/admin/certificates/issue', {
                 csrId: id,
-                ...(issueValidUntil ? { notAfter: new Date(`${issueValidUntil}T23:59:59Z`).toISOString() } : {}),
+                ...(notAfter ? { notAfter } : {}),
             });
             const advisories = diagnosticNotices(readDiagnostics(result));
             // Severity from the diagnostics themselves rather than from whether there are any: an
@@ -423,10 +442,10 @@ const CertificateRequestDetail: React.FC = () => {
                             </div>
                             <div>
                                 <label htmlFor="issue-valid-until" className="block text-xs font-semibold text-ink-muted mb-1">Valid until (optional)</label>
-                                <input id="issue-valid-until" type="date" value={issueValidUntil} min={today} max={issueMaxDate}
+                                <input id="issue-valid-until" type="date" value={issueValidUntil} min={today} max={issueLimit?.maxDate}
                                     onChange={(e) => setIssueValidUntil(e.target.value)} disabled={busy === 'issue'}
                                     className="w-full px-2 py-1 text-xs bg-raised border border-line-strong rounded text-ink focus:outline-none focus:border-accent disabled:opacity-50" />
-                                <FieldHint>Blank uses the profile default{issueMaxDate ? `, at most ${issueMaxDate}` : ''}. The server also clamps to the issuing CA and rejects anything below the profile minimum.</FieldHint>
+                                <FieldHint>Blank uses the profile default. {issueLimit ? `${describeValidUntilLimit(issueLimit)} ` : ''}The server checks the dates again at issuance and rejects anything below the profile minimum.</FieldHint>
                             </div>
                         </div>
                     )}
