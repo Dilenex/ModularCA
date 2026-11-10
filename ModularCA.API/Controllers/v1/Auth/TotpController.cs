@@ -39,10 +39,13 @@ public class TotpController : ControllerBase
     private readonly ISecurityPolicyService _securityPolicy;
     private readonly IDataProtector _protector;
     private readonly INotificationService _notifications;
+    private readonly ModularCA.Auth.Services.IReplayGuard _replayGuard;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="TotpController"/> class.
     /// <paramref name="notifications"/> tells administrators when wrong recovery codes lock an account.
+    /// <paramref name="replayGuard"/> makes a TOTP time step and a pending-MFA token single-use
+    /// under concurrency (<see cref="MfaSingleUse"/>, <see cref="PendingMfaToken.ConsumeAsync"/>).
     /// </summary>
     public TotpController(
         ModularCADbContext db,
@@ -53,7 +56,8 @@ public class TotpController : ControllerBase
         SystemConfig config,
         ISecurityPolicyService securityPolicy,
         IDataProtectionProvider dataProtection,
-        INotificationService notifications)
+        INotificationService notifications,
+        ModularCA.Auth.Services.IReplayGuard replayGuard)
     {
         _db = db;
         _cache = cache;
@@ -64,6 +68,7 @@ public class TotpController : ControllerBase
         _securityPolicy = securityPolicy;
         _protector = dataProtection.CreateProtector("TotpSecret");
         _notifications = notifications;
+        _replayGuard = replayGuard;
     }
 
     // ── Setup ────────────────────────────────────────────────────────
@@ -98,7 +103,7 @@ public class TotpController : ControllerBase
         var hasActiveMtls = await _db.MtlsCredentials.Where(await ModularCA.Core.Helpers.MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
         if (hasWebAuthn || hasActiveMtls)
         {
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.TotpSetup))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.TotpSetup))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
         }
 
@@ -141,6 +146,8 @@ public class TotpController : ControllerBase
     /// Verifies the first TOTP code after setup to confirm the user has successfully
     /// enrolled their authenticator app. Marks the secret as verified on success and returns ten
     /// one-time recovery codes, stored only as per-user salted PBKDF2 hashes (<see cref="RecoveryCodeHash"/>).
+    /// The code's time step is claimed through <see cref="MfaSingleUse.TryClaimTotpStepAsync"/>, so
+    /// one code cannot complete two concurrent enrolments.
     /// </summary>
     [Authorize]
     [HttpPost("verify-setup")]
@@ -160,7 +167,7 @@ public class TotpController : ControllerBase
         var hasMtlsPrecheck = await _db.MtlsCredentials.Where(await ModularCA.Core.Helpers.MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
         if (hasWebAuthnPrecheck || hasMtlsPrecheck)
         {
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.TotpVerifySetup))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.TotpVerifySetup))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
         }
 
@@ -175,7 +182,7 @@ public class TotpController : ControllerBase
         // 400, not 401: the session is fine, the code the user typed is wrong. The console's API
         // client treats every 401 as the end of the session, so a typo here used to sign the user
         // out in the middle of enrolment (and, on the security page, throw away the step-up).
-        if (!valid)
+        if (!valid || !await MfaSingleUse.TryClaimTotpStepAsync(_replayGuard, userId.Value, timeStep))
             return BadRequest(new { error = "Invalid TOTP code. Check your authenticator app and try again." });
 
         totpSecret.IsVerified = true;
@@ -233,7 +240,7 @@ public class TotpController : ControllerBase
     /// provides their username + a recovery code; on success, the user's TOTP secret is
     /// removed and they must re-enroll via <c>/setup</c>. The recovery code is consumed
     /// (marked <c>UsedAt</c>) to prevent replay, the security stamp rotates (old JWTs stop at once)
-    /// and every refresh token is revoked. Codes match in either stored form
+    /// and every refresh token is revoked, in the transaction that consumes the code. Codes match in either stored form
     /// (<see cref="RecoveryCodeHash"/>). A wrong code counts as a failed sign-in (counted
     /// atomically), locks the account at the security policy's threshold and then notifies
     /// administrators, as a wrong password does. An unknown, disabled or locked account costs the
@@ -330,21 +337,15 @@ public class TotpController : ControllerBase
         var secrets = await _db.TotpSecrets.Where(t => t.UserId == user.Id).ToListAsync();
         if (secrets.Count > 0) _db.TotpSecrets.RemoveRange(secrets);
 
-        // Rotate the security stamp so outstanding tokens are invalidated.
-        user.SecurityStamp = Guid.NewGuid().ToString();
         user.MfaEnrolledAt = null;
         _db.Users.Update(user);
-        await _db.SaveChangesAsync();
-        await ModularCA.API.Middleware.TokenRevocationMiddleware.InvalidateUserStampCacheAsync(_cache, user.Id);
 
         // The stamp invalidates JWTs; it does not touch refresh tokens, and refresh does not
         // check the stamp. A recovery code is used on a bad day, possibly because a device is
-        // gone; the sessions on that device must go with it.
-        await _db.Set<ModularCA.Shared.Entities.RefreshTokenEntity>()
-            .Where(t => t.UserId == user.Id && !t.IsRevoked)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(t => t.IsRevoked, true)
-                .SetProperty(t => t.RevokedAt, DateTime.UtcNow));
+        // gone; the sessions on that device must go with it. This saves the consumed code and the
+        // removed secret with the rotated stamp, and revokes the refresh tokens, in one transaction.
+        await ModularCA.Core.Helpers.UserSessionTermination.EndAllSessionsSetBasedAsync(_db, user, DateTime.UtcNow);
+        await ModularCA.API.Middleware.TokenRevocationMiddleware.InvalidateUserStampCacheAsync(_cache, user.Id);
 
         await _audit.LogAsync(
             Shared.Enums.AuditActionType.UserUpdated,
@@ -387,6 +388,14 @@ public class TotpController : ControllerBase
     /// issued by the login endpoint (no JWT required), whether the first factor was a password or
     /// a client certificate. On success, issues a full JWT token, wearing the user's default
     /// access badge when they have one.
+    /// <para>
+    /// Single-use under concurrency: the code's time step is claimed through
+    /// <see cref="MfaSingleUse.TryClaimTotpStepAsync"/> (a code already used, here or for step-up,
+    /// is refused as invalid), and the pending-MFA token is consumed with
+    /// <see cref="PendingMfaToken.ConsumeAsync"/>. Of concurrent verifications of one token, or of
+    /// one code, exactly one issues a session. The token is read without consuming it first, so a
+    /// mistyped code can be retried.
+    /// </para>
     /// </summary>
     /// <param name="request">The pending-MFA token and the TOTP code.</param>
     [AllowAnonymous]
@@ -446,7 +455,10 @@ public class TotpController : ControllerBase
 
         var secret = GetDecryptedSecret(totpSecret);
         var (valid, timeStep) = VerifyTotpCode(secret, request.Code, totpSecret.LastUsedTimeStep);
-        if (!valid)
+        // A code that matched is accepted once: the claim, not the LastUsedTimeStep read above,
+        // decides between concurrent requests carrying it. A replay counts as a failure.
+        var replayed = valid && !await MfaSingleUse.TryClaimTotpStepAsync(_replayGuard, userId, timeStep);
+        if (!valid || replayed)
         {
             failCount++;
             await _cache.SetStringAsync(failKey, failCount.ToString(),
@@ -457,7 +469,7 @@ public class TotpController : ControllerBase
 
             // Increment the Prometheus failure counter so
             // operators can alert on brute-force in progress without SIEM.
-            MetricsService.AuthMfaVerificationFailuresTotal.WithLabels("totp", "invalid_code").Inc();
+            MetricsService.AuthMfaVerificationFailuresTotal.WithLabels("totp", replayed ? "replayed_code" : "invalid_code").Inc();
 
             await _audit.LogAsync(
                 Shared.Enums.AuditActionType.MfaTotpFailed,
@@ -467,8 +479,24 @@ public class TotpController : ControllerBase
                 targetEntityId: userId.ToString(),
                 sourceIp: sourceIp,
                 success: false,
-                errorMessage: "Invalid TOTP code");
+                errorMessage: replayed ? "TOTP code already used" : "Invalid TOTP code");
             return Unauthorized(new { error = "Invalid TOTP code" });
+        }
+
+        // Consume the MFA token. Every concurrent request for it has read it above; the atomic
+        // claim inside ConsumeAsync lets exactly one of them go on to issue a session.
+        if (await ModularCA.Auth.Utils.PendingMfaToken.ConsumeAsync(_cache, _replayGuard, request.MfaToken) == null)
+        {
+            await _audit.LogAsync(
+                Shared.Enums.AuditActionType.MfaTokenInvalid,
+                actorUserId: userId,
+                actorUsername: user.Username,
+                targetEntityType: "User",
+                targetEntityId: userId.ToString(),
+                sourceIp: sourceIp,
+                success: false,
+                errorMessage: "MFA token already consumed or expired");
+            return Unauthorized(new { error = "MFA token is invalid or expired" });
         }
 
         // TOTP verified — update last used timestamp and time step for replay prevention
@@ -476,8 +504,7 @@ public class TotpController : ControllerBase
         totpSecret.LastUsedAt = DateTime.UtcNow;
         MetricsService.AuthMfaVerificationsTotal.WithLabels("totp").Inc();
 
-        // Clean up: consume the MFA token and clear the failure counter
-        await _cache.RemoveAsync($"mfa:{request.MfaToken}");
+        // Clear the failure counter.
         await _cache.RemoveAsync(failKey);
 
         // MFA is complete; issue the JWT.
@@ -561,7 +588,10 @@ public class TotpController : ControllerBase
     /// <summary>
     /// Removes the TOTP secret from the authenticated user's account, disabling
     /// authenticator-app-based MFA. Requires a valid step-up MFA token via X-MFA-Token header.
-    /// Blocks removal if TOTP is the user's only remaining MFA method.
+    /// Blocks removal if TOTP is the user's only remaining MFA method. Removes the secret and ends
+    /// every session of the account (the current one included) in one save, as removing a WebAuthn
+    /// or mTLS credential does, since a session does not record which factor opened it; the ending
+    /// is audited as <see cref="AuditActionType.UserSessionsEnded"/>.
     /// </summary>
     [Authorize]
     [HttpDelete]
@@ -583,7 +613,12 @@ public class TotpController : ControllerBase
             return StatusCode(409, new { error = "Cannot remove your only MFA method. Register a security key or enroll an mTLS certificate before removing TOTP." });
 
         _db.TotpSecrets.RemoveRange(secrets);
+
+        // Refresh tokens do not record the factor that opened them, so every session ends, as it
+        // does when a WebAuthn or mTLS credential is removed.
+        var ended = await ModularCA.Core.Helpers.UserSessionTermination.EndAllSessionsAsync(_db, [userId.Value], DateTime.UtcNow);
         await _db.SaveChangesAsync();
+        await ModularCA.Core.Helpers.UserSessionTermination.InvalidateStampCacheAsync(_cache, [userId.Value]);
 
         // Emit the dedicated MfaTotpRemoved action type (not the
         // generic UserUpdated) and capture the source IP so detection rules like
@@ -596,8 +631,19 @@ public class TotpController : ControllerBase
             targetEntityId: userId.Value.ToString(),
             details: new { Action = "TotpRemoved" },
             sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());
+        foreach (var e in ended)
+        {
+            await _audit.LogAsync(
+                Shared.Enums.AuditActionType.UserSessionsEnded,
+                userId.Value,
+                _currentUser.User?.Username,
+                targetEntityType: "User",
+                targetEntityId: e.UserId.ToString(),
+                details: new { reason = "totp_removed", refreshTokensRevoked = e.RefreshTokensRevoked },
+                sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());
+        }
 
-        return Ok(new { message = "TOTP has been removed from your account" });
+        return Ok(new { message = "TOTP has been removed from your account. Every session of this account has been signed out; sign in again." });
     }
 
     // ── Decryption / lazy migration ──────────────────────────────────

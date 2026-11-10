@@ -109,7 +109,7 @@ public class AdminSecurityPolicyController(
         var disablesCeremonyDirectly = request.RequireKeyCeremony == false && policy.RequireKeyCeremony
             && currentUser.User != null && await controlledUserSvc.IsSuperAsync(currentUser.User.Id);
         var stepUpOp = disablesCeremonyDirectly ? StepUpOps.DisableCeremonyRequirement : StepUpOps.UpdateConfig;
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, User, mfaToken, stepUpOp))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, HttpContext, mfaToken, stepUpOp))
             return StatusCode(403, new
             {
                 error = disablesCeremonyDirectly

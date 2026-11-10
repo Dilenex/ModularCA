@@ -136,6 +136,13 @@ describe('submitClaim', () => {
         expect(await submit(form())).toEqual({ ok: false, error: { severity: 'error', detail: 'HTTP 502' } });
     });
 
+    it('says how long to wait when the rate limiter refuses (10 attempts per 15 minutes per address)', async () => {
+        fetchMock.mockResolvedValue(json(429, { error: 'Too many requests. Try again later.', retryAfterSeconds: 900 }, { 'Retry-After': '900' }));
+        expect(await submit(form())).toEqual({
+            ok: false, error: { severity: 'error', detail: 'Too many attempts. Wait up to 15 minutes, then try again.' },
+        });
+    });
+
     it('shows the failure when the request never arrives', async () => {
         fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
         expect(await submit(form())).toEqual({ ok: false, error: { severity: 'error', detail: 'Failed to fetch' } });

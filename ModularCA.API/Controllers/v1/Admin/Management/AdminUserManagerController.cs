@@ -194,7 +194,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         {
             await _currentUser.EnsureLoadedAsync();
             if (_currentUser.User == null) return Unauthorized();
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.CreateUser))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.CreateUser))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
             // Shape-validate username/email/name before touching the service.
@@ -260,7 +260,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         {
             await _currentUser.EnsureLoadedAsync();
             if (_currentUser.User == null) return Unauthorized();
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.UpdateUser, id.ToString()))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.UpdateUser, id.ToString()))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
             // Shape-validate any username/email that the caller is changing.
@@ -355,7 +355,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         {
             await _currentUser.EnsureLoadedAsync();
             if (_currentUser.User == null) return Unauthorized();
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.DeleteUser, id.ToString()))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.DeleteUser, id.ToString()))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
             if (_currentUser.User?.Id == id)
@@ -421,7 +421,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             // Require step-up MFA verification for resetting another user's password
             if (_currentUser.User == null)
                 return Unauthorized();
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ResetPassword, id.ToString()))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.ResetPassword, id.ToString()))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
             var resetTarget = await _dbContext.Users.AsNoTracking().Where(u => u.Id == id)
@@ -477,7 +477,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
             if (_currentUser.User == null)
                 return Unauthorized();
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ResetMfa, id.ToString()))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.ResetMfa, id.ToString()))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
             var targetUsername = await _dbContext.Users.AsNoTracking().Where(u => u.Id == id).Select(u => u.Username).FirstOrDefaultAsync();
@@ -630,7 +630,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         {
             await _currentUser.EnsureLoadedAsync();
             if (_currentUser.User == null) return Unauthorized();
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.AddGroupMember, id.ToString()))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.AddGroupMember, id.ToString()))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
             var tierCheck = await AuthorizeUserGroupChangeAsync(groupId, id);
@@ -692,7 +692,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         {
             await _currentUser.EnsureLoadedAsync();
             if (_currentUser.User == null) return Unauthorized();
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.RemoveGroupMember, id.ToString()))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.RemoveGroupMember, id.ToString()))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
             var tierCheck = await AuthorizeUserGroupChangeAsync(groupId, id);
@@ -757,7 +757,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             if (_currentUser.User == null) return Unauthorized();
 
             // ONE token authorizes the whole add+remove batch.
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.UpdateUserGroups, id.ToString()))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.UpdateUserGroups, id.ToString()))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
             var user = await _dbContext.Users.FindAsync(id);

@@ -56,7 +56,7 @@ public class AccountBadgesController(
             return null;
 
         var mfaToken = Request.Headers.TryGetValue("X-MFA-Token", out var h) ? h.ToString() : null;
-        if (await MfaStepUpController.ValidateStepUpTokenAsync(cache, User, mfaToken, StepUpOps.SwitchBadge))
+        if (await MfaStepUpController.ValidateStepUpTokenAsync(cache, HttpContext, mfaToken, StepUpOps.SwitchBadge))
             return null;
         return StatusCode(403, new
         {

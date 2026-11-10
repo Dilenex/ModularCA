@@ -19,9 +19,9 @@ public static class AuditActionType
     public const string UserLogout = "UserLogout";
     /// <summary>
     /// Every session of an account was ended (security stamp rotated, refresh tokens revoked)
-    /// because an mTLS sign-in credential of it was revoked, or its certificate was revoked or put
-    /// on hold. Details name the reason, the credential or certificate, and how many refresh tokens
-    /// were revoked.
+    /// because an mTLS sign-in credential of it was revoked, its certificate was revoked or put
+    /// on hold, or a WebAuthn credential or the TOTP authenticator of it was removed. Details name
+    /// the reason, the credential or certificate, and how many refresh tokens were revoked.
     /// </summary>
     public const string UserSessionsEnded = "UserSessionsEnded";
 

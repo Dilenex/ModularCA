@@ -240,11 +240,11 @@ export default function UserUiGuide() {
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li>Change password (requires MFA step-up)</li>
                     <li>Enroll or manage TOTP authenticator app</li>
-                    <li>Remove TOTP authenticator (requires MFA step-up)</li>
+                    <li>Remove TOTP authenticator (requires MFA step-up; signs the account out everywhere)</li>
                     <li>Register WebAuthn/FIDO2 security keys</li>
-                    <li>Remove WebAuthn security keys (requires MFA step-up)</li>
-                    <li>Revoke mTLS credentials (requires MFA step-up)</li>
-                    <li>View active sessions and revoke them</li>
+                    <li>Remove WebAuthn security keys (requires MFA step-up; signs the account out everywhere)</li>
+                    <li>Revoke mTLS credentials (requires MFA step-up; signs the account out everywhere)</li>
+                    <li>Sign out, which ends every session of the account on every device</li>
                 </ul>
                 <div className="border-l-4 border-warn bg-warn-soft p-4 rounded-r mb-3">
                     <h3 className="text-lg font-semibold text-warn mb-2">MFA Step-Up on Security Operations</h3>

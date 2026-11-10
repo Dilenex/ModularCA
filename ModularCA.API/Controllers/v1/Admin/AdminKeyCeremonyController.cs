@@ -97,7 +97,7 @@ public class AdminKeyCeremonyController : ControllerBase
         if (_currentUser.User == null) return Unauthorized();
 
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(
-                _cache, User, mfaToken, StepUpOps.InitiateCeremony))
+                _cache, HttpContext, mfaToken, StepUpOps.InitiateCeremony))
             return StatusCode(403, new
             {
                 error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.",
@@ -456,7 +456,7 @@ public class AdminKeyCeremonyController : ControllerBase
             return StatusCode(403, new { error = policyRefusal });
 
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(
-                _cache, User, mfaToken, StepUpOps.ApproveCeremony, id.ToString()))
+                _cache, HttpContext, mfaToken, StepUpOps.ApproveCeremony, id.ToString()))
             return StatusCode(403, new
             {
                 error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.",
@@ -524,7 +524,7 @@ public class AdminKeyCeremonyController : ControllerBase
         }
 
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(
-                _cache, User, mfaToken, StepUpOps.RejectCeremony, id.ToString()))
+                _cache, HttpContext, mfaToken, StepUpOps.RejectCeremony, id.ToString()))
             return StatusCode(403, new
             {
                 error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.",
@@ -568,7 +568,7 @@ public class AdminKeyCeremonyController : ControllerBase
             return StatusCode(403, new { error = "You do not have access to this ceremony." });
 
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(
-                _cache, User, mfaToken, StepUpOps.CancelCeremony, id.ToString()))
+                _cache, HttpContext, mfaToken, StepUpOps.CancelCeremony, id.ToString()))
             return StatusCode(403, new
             {
                 error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.",
@@ -622,7 +622,7 @@ public class AdminKeyCeremonyController : ControllerBase
             return StatusCode(403, new { error = "You no longer hold a role that covers the affected privilege tier." });
 
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(
-                _cache, User, mfaToken, StepUpOps.ExecuteCeremony, id.ToString()))
+                _cache, HttpContext, mfaToken, StepUpOps.ExecuteCeremony, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required.", requiresStepUp = true });
 
         if (ceremony.Status != "Approved")

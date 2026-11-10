@@ -938,9 +938,6 @@ namespace ModularCA.API.Controllers.v1.Auth
             // reject reuse. No-op when HistoryCount <= 0.
             await _passwordPolicy.RecordPasswordHistoryAsync(user.Id, newHash);
             user.PasswordChangeOnNextLogon = false;
-            // Rotate the security stamp so outstanding JWTs (if any)
-            // invalidate immediately and all refresh tokens get revoked below.
-            user.SecurityStamp = Guid.NewGuid().ToString();
 
             // Reset password expiration based on policy
             var policy = await _passwordPolicy.GetPolicyAsync();
@@ -948,17 +945,17 @@ namespace ModularCA.API.Controllers.v1.Auth
                 user.PasswordExpirationDate = DateTime.UtcNow.AddDays(policy.MaxAgeDays);
 
             _db.Users.Update(user);
-            await _db.SaveChangesAsync();
+
+            // The account's sessions end with the change: the stamp rotates, so outstanding JWTs
+            // (if any) stop at once, and every refresh token is revoked, because refresh checks
+            // account state, not credentials, and a token stolen before the change would otherwise
+            // re-mint a session carrying the new stamp. One transaction with the new password.
+            await ModularCA.Core.Helpers.UserSessionTermination.EndAllSessionsSetBasedAsync(_db, user, DateTime.UtcNow);
 
             // Blow the per-user stamp cache so admin or user-forced
             // changes take effect on the next request, not 30 s later.
             // _cache is guaranteed non-null — registered unconditionally in StartModularCA.cs.
             await TokenRevocationMiddleware.InvalidateUserStampCacheAsync(_cache, user.Id);
-
-            // The comment on the stamp rotation above has promised this since it was written;
-            // nothing performed it. A refresh token stolen before the change re-minted a session
-            // carrying the new stamp, because refresh checks account state, not credentials.
-            await RevokeAllRefreshTokensAsync(user.Id);
 
             await _audit.LogAsync(AuditActionType.UserPasswordChanged, user.Id, user.Username,
                 sourceIp: sourceIp, details: new { reason = "Forced password change on login" });
@@ -1066,23 +1063,13 @@ namespace ModularCA.API.Controllers.v1.Auth
         }
 
         /// <summary>
-        /// Revokes every live refresh token an account holds. Called wherever a credential
-        /// changes, so a session that predates the change cannot outlive it.
-        /// </summary>
-        private async Task RevokeAllRefreshTokensAsync(Guid userId)
-        {
-            await _db.RefreshTokens
-                .Where(t => t.UserId == userId && !t.IsRevoked)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(t => t.IsRevoked, true)
-                    .SetProperty(t => t.RevokedAt, DateTime.UtcNow));
-        }
-
-        /// <summary>
-        /// Logs out the current user by revoking their JWT and all active refresh tokens.
-        /// The JWT's <c>jti</c> claim is stored in the distributed cache so the
-        /// <see cref="Middleware.TokenRevocationMiddleware"/> rejects subsequent requests
-        /// using the same token.
+        /// Logs the current user out of every session of the account, on this device and every
+        /// other: there is no per-device sign-out. Every refresh token is revoked and the security
+        /// stamp rotates (<see cref="ModularCA.Core.Helpers.UserSessionTermination"/>), so access
+        /// tokens held elsewhere are refused on their next request. The presented JWT's <c>jti</c>
+        /// is also stored in the distributed cache so the
+        /// <see cref="Middleware.TokenRevocationMiddleware"/> rejects it by itself. Audited as
+        /// <see cref="AuditActionType.UserLogout"/> with the number of refresh tokens revoked.
         /// </summary>
         [Authorize]
         [HttpPost("logout")]
@@ -1125,21 +1112,16 @@ namespace ModularCA.API.Controllers.v1.Auth
                 });
             }
 
-            // Revoke all active refresh tokens for this user
-            var activeTokens = await _db.RefreshTokens
-                .Where(t => t.UserId == userId && !t.IsRevoked)
-                .ToListAsync();
-
-            foreach (var token in activeTokens)
-            {
-                token.IsRevoked = true;
-                token.RevokedAt = DateTime.UtcNow;
-            }
-
+            // There is no per-device sign-out, so logging out ends every session of the account:
+            // every refresh token is revoked and the stamp rotates, which stops the access tokens
+            // other devices still hold instead of leaving them to run out.
+            var ended = await ModularCA.Core.Helpers.UserSessionTermination.EndAllSessionsAsync(_db, [userId], DateTime.UtcNow);
             await _db.SaveChangesAsync();
+            await ModularCA.Core.Helpers.UserSessionTermination.InvalidateStampCacheAsync(_cache, [userId]);
 
             var username = User.FindFirst("username")?.Value ?? userIdClaim;
-            await _audit.LogAsync(AuditActionType.UserLogout, userId, username, sourceIp: sourceIp);
+            await _audit.LogAsync(AuditActionType.UserLogout, userId, username, sourceIp: sourceIp,
+                details: new { allSessions = true, refreshTokensRevoked = ended.Sum(e => e.RefreshTokensRevoked) });
             MetricsService.AuthTokenRevocationsTotal.Inc();
 
             return Ok(new { message = "Logged out successfully" });

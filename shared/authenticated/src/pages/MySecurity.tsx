@@ -161,6 +161,7 @@ export const MySecurity: React.FC<{ embedded?: boolean }> = ({ embedded = false 
     };
 
     const handleRemoveTotp = () => {
+        if (!confirm('Remove the authenticator app? Every session of your account will be signed out, this one included.')) return;
         openTotpModal('Confirm TOTP Removal', async (code: string) => {
             const stepUp = await apiPost<{ mfaToken: string }>('/auth/mfa/verify-stepup/totp', { code, operation: 'totp-remove', targetId: null });
             await api('/auth/totp', { method: 'DELETE', headers: { 'X-MFA-Token': stepUp.mfaToken } });
@@ -216,7 +217,7 @@ export const MySecurity: React.FC<{ embedded?: boolean }> = ({ embedded = false 
     };
 
     const handleRemoveWebauthn = (credId: string) => {
-        if (!confirm('Remove this security key?')) return;
+        if (!confirm('Remove this security key? Every session of your account will be signed out, this one included.')) return;
         openTotpModal('Confirm Security Key Removal', async (code: string) => {
             const stepUp = await apiPost<{ mfaToken: string }>('/auth/mfa/verify-stepup/totp', { code, operation: 'webauthn-delete', targetId: credId });
             await api(`/auth/webauthn/credentials/${credId}`, { method: 'DELETE', headers: { 'X-MFA-Token': stepUp.mfaToken } });

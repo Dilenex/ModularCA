@@ -52,7 +52,7 @@ export const totpMfa: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup. Required for this operation.' },
         ],
         responseDescription: 'Confirmation that TOTP has been removed.',
-        notes: 'Blocked if TOTP is the user\'s only remaining MFA method.',
+        notes: 'Signs the account out of every session, this one included, since a session does not record which factor opened it. Blocked if TOTP is the user\'s only remaining MFA method.',
     },
     {
         method: 'POST',

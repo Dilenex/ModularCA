@@ -149,7 +149,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         await currentUser.EnsureLoadedAsync();
         if (currentUser.User == null) return Unauthorized();
 
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, User, mfaToken, StepUpOps.CreateSshCa))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, HttpContext, mfaToken, StepUpOps.CreateSshCa))
             return StatusCode(403, new { error = "MFA re-verification required.", requiresStepUp = true });
 
         if (request.SpaceId != null)
@@ -604,7 +604,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         await currentUser.EnsureLoadedAsync();
         if (currentUser.User == null) return Unauthorized();
 
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, User, mfaToken, StepUpOps.DisableSshCa, id.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, HttpContext, mfaToken, StepUpOps.DisableSshCa, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required.", requiresStepUp = true });
 
         var key = await db.SshCaKeys.Include(k => k.CertificateAuthority).FirstOrDefaultAsync(k => k.Id == id);

@@ -1396,7 +1396,7 @@ builder.Services.AddScoped<ModularCA.Shared.Enrollment.IEnrollmentProtocol>(
     sp => (ModularCA.Shared.Enrollment.IEnrollmentProtocol)sp.GetRequiredService<ModularCA.Core.Services.Msae.IMsaeEnrollmentService>());
 builder.Services.AddScoped<ModularCA.Shared.Enrollment.IEnrollmentProtocol>(
     sp => (ModularCA.Shared.Enrollment.IEnrollmentProtocol)sp.GetRequiredService<IAcmeOrderService>());
-// Kerberos for MSAE: realm bindings and keys, a replay cache over the distributed cache, and the
+// Kerberos for MSAE: realm bindings and keys, a replay cache claimed through IReplayGuard, and the
 // managed acceptor (Kerberos.NET) that validates tickets without the OS Kerberos stack.
 builder.Services.AddScoped<ModularCA.Core.Services.Msae.Kerberos.KerberosRealmService>();
 builder.Services.AddScoped<ModularCA.Core.Services.Msae.Kerberos.IKerberosRealmKeyProvider>(sp =>
@@ -1473,7 +1473,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateAudience = true,
             ValidAudience = loadedConfig.JWT.Audience,
             ValidateIssuerSigningKey = true,
-            IssuerSigningKeyResolver = (_, _, _, _) => [jwtSigningKey.Current()],
+            IssuerSigningKeyResolver = (_, _, _, _) => jwtSigningKey.Keys(),
             ValidateLifetime = true,
             ValidAlgorithms = new[] { SecurityAlgorithms.HmacSha256 },
             ClockSkew = TimeSpan.FromMinutes(1),
@@ -1635,7 +1635,9 @@ if (config.Redis.Enabled && !string.IsNullOrWhiteSpace(config.Redis.ConnectionSt
     var redis = StackExchange.Redis.ConnectionMultiplexer.Connect(config.Redis.ConnectionString);
     dpBuilder.PersistKeysToStackExchangeRedis(redis, "ModularCA:DataProtection-Keys");
     Console.WriteLine("[DataProtection] Keyring persisted to Redis");
-    // Single-use claims (DPoP jti) need an atomic add-if-absent, which IDistributedCache lacks.
+    // Single-use claims (DPoP jti, MSAE Kerberos authenticators, pending-MFA tokens, TOTP time
+    // steps, WebAuthn challenges) need an
+    // atomic add-if-absent, which IDistributedCache lacks.
     // SET NX on the same connection keeps the guarantee across nodes.
     builder.Services.AddSingleton<ModularCA.Auth.Services.IReplayGuard>(
         new ModularCA.API.Services.RedisReplayGuard(redis, (config.Redis.InstanceName ?? "ModularCA:") + "replay:"));

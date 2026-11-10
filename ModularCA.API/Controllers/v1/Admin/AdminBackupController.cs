@@ -33,8 +33,11 @@ public class AdminBackupController(
     IDistributedCache cache,
     ISecurityAlertService alertService,
     ModularCA.Shared.Signing.ISigningService signer,
-    ModularCA.Shared.Utils.EnvVarConfigOverlay envOverlay) : ControllerBase
+    ModularCA.Shared.Utils.EnvVarConfigOverlay envOverlay,
+    ModularCA.Auth.Services.IReplayGuard replayGuard) : ControllerBase
 {
+    /// <summary>Spends restore-confirmation tokens atomically, so one token starts one restore.</summary>
+    private readonly ModularCA.Auth.Services.IReplayGuard _replayGuard = replayGuard;
     /// <summary>Keeps environment-sourced secrets out of <c>config.yaml</c> when the configuration is persisted.</summary>
     private readonly ModularCA.Shared.Utils.EnvVarConfigOverlay _envOverlay = envOverlay;
     private readonly SystemConfig _config = config;
@@ -200,6 +203,41 @@ public class AdminBackupController(
     }
 
     /// <summary>
+    /// How long a spent restore-confirmation token is remembered: longer than the five minutes
+    /// <see cref="PreviewRestore"/> lets the token live.
+    /// </summary>
+    internal static readonly TimeSpan RestoreTokenClaimLifetime = TimeSpan.FromMinutes(6);
+
+    /// <summary>
+    /// Spends a restore-confirmation token and returns the payload it was issued with, or null
+    /// when the token is unknown, expired or already spent.
+    /// <para>
+    /// The token is claimed through <paramref name="replayGuard"/> (Redis <c>SET NX</c> when Redis
+    /// is configured) before the payload is returned, so of two simultaneous restores carrying one
+    /// token exactly one goes ahead. Reading the cache entry and then removing it, as this used to,
+    /// let both pass and run two restores over each other.
+    /// </para>
+    /// </summary>
+    /// <param name="cache">The distributed cache holding issued tokens.</param>
+    /// <param name="replayGuard">The atomic single-use guard.</param>
+    /// <param name="userId">The user the token was issued to.</param>
+    /// <param name="token">The token as presented.</param>
+    internal static async Task<string?> ConsumeRestoreTokenAsync(
+        IDistributedCache cache, ModularCA.Auth.Services.IReplayGuard replayGuard, Guid userId, string token)
+    {
+        var tokenKey = $"restore-token:{userId}:{token}";
+        var payload = await cache.GetStringAsync(tokenKey);
+        if (payload == null)
+            return null;
+        var claimKey = "restore-token-used:" + Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(tokenKey)));
+        if (!await replayGuard.TryClaimAsync(claimKey, RestoreTokenClaimLifetime))
+            return null;
+        await cache.RemoveAsync(tokenKey);
+        return payload;
+    }
+
+    /// <summary>
     /// Restores the application from a previously created backup archive.
     /// The backup file must exist in the configured backup directory.
     /// A restart is required after a successful restore.
@@ -223,12 +261,9 @@ public class AdminBackupController(
         if (string.IsNullOrWhiteSpace(request.ConfirmationToken))
             return BadRequest(new { error = "confirmationToken is required. Call /api/v1/admin/backup/preview-restore first." });
 
-        var tokenKey = $"restore-token:{_currentUser.User.Id}:{request.ConfirmationToken}";
-        var cachedPayload = await _cache.GetStringAsync(tokenKey);
+        var cachedPayload = await ConsumeRestoreTokenAsync(_cache, _replayGuard, _currentUser.User.Id, request.ConfirmationToken);
         if (cachedPayload == null)
             return BadRequest(new { error = "Invalid or expired confirmation token. Re-call /api/v1/admin/backup/preview-restore." });
-        // Consume the token immediately so it cannot be replayed.
-        await _cache.RemoveAsync(tokenKey);
 
         // Sanitize: only allow filenames, no path traversal
         var sanitized = Path.GetFileName(request.FileName);

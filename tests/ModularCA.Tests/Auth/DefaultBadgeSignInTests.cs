@@ -87,7 +87,7 @@ public sealed class DefaultBadgeSignInTests
             using var db = Db();
             var type = ApiAssembly.TypeNamed(TotpControllerName);
             var ctor = type.GetConstructors().OrderByDescending(c => c.GetParameters().Length).First();
-            var available = new object[] { db, Cache, new JwtTokenService(Config), Audit, Config, new FixedPolicy(), DataProtection };
+            var available = new object[] { db, Cache, new JwtTokenService(Config), Audit, Config, new FixedPolicy(), DataProtection, new InProcessReplayGuard() };
             var controller = ctor.Invoke(ctor.GetParameters()
                 .Select(p => available.FirstOrDefault(a => p.ParameterType.IsInstanceOfType(a)))
                 .ToArray());

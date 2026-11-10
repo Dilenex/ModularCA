@@ -170,7 +170,7 @@ public class AdminWebTlsController(
         var userId = _currentUser.User.Id;
         var username = _currentUser.User.Username;
 
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ReissueCert, "webtls"))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.ReissueCert, "webtls"))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var current = _certProvider.GetCertificate();

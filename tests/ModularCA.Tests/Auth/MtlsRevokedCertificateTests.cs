@@ -331,7 +331,7 @@ public sealed class MtlsRevokedCertificateTests
             var available = new object[]
             {
                 db, new JwtTokenService(Config), Audit, Config, new FixedPolicy(), Cache, NewRevocationService(db),
-                new CurrentUserStub(UserId), new EphemeralDataProtectionProvider(),
+                new CurrentUserStub(UserId), new EphemeralDataProtectionProvider(), new ModularCA.Auth.Services.InProcessReplayGuard(),
             };
             var controller = ctor.Invoke(ctor.GetParameters()
                 .Select(p => available.FirstOrDefault(a => p.ParameterType.IsInstanceOfType(a)))

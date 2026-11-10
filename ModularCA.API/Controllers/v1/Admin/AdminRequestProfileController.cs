@@ -174,7 +174,7 @@ public class AdminRequestProfileController(
         await currentUser.EnsureLoadedAsync();
         if (currentUser.User == null)
             return Unauthorized();
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.UpdateRequestProfile, id.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.UpdateRequestProfile, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var current = await requestProfileService.GetByIdAsync(id);
@@ -216,7 +216,7 @@ public class AdminRequestProfileController(
         await currentUser.EnsureLoadedAsync();
         if (currentUser.User == null)
             return Unauthorized();
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.DeleteRequestProfile, id.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.DeleteRequestProfile, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var current = await requestProfileService.GetByIdAsync(id);

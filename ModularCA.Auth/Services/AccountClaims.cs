@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using ModularCA.Auth.Utils;
+using ModularCA.Core.Helpers;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
@@ -149,7 +150,8 @@ public static class AccountClaims
     /// <item>The password is set and recorded in the password history; the forced change at next
     /// sign-in is cleared (the holder of the token chose it), the password source is left as it is,
     /// the security stamp is rotated, any lockout (temporary or hard) and the failed-login count are cleared,
-    /// the expiry date is reset by the policy, and every refresh token is revoked.</item>
+    /// the expiry date is reset by the policy, and every refresh token is revoked
+    /// (<see cref="UserSessionTermination.EndAllSessionsSetBasedAsync"/>, in the same transaction).</item>
     /// </list>
     /// Needs a relational provider (it uses a transaction and set-based updates).
     /// </summary>
@@ -198,7 +200,6 @@ public static class AccountClaims
         user.PasswordHash = newHash;
         await new PasswordPolicyService(db).RecordPasswordHistoryAsync(user.Id, newHash);
         user.PasswordChangeOnNextLogon = false;
-        user.SecurityStamp = Guid.NewGuid().ToString();
         // A lockout here comes from failed sign-ins, and an account waiting to be claimed has no
         // password to get right, so guessing at it locks it for nothing. The claim was issued by
         // the bootstrap or on the host, both of which may unlock an account anyway.
@@ -207,12 +208,8 @@ public static class AccountClaims
         user.LockoutEndUtc = null;
         if (!user.PasswordNeverExpires && policy.MaxAgeDays > 0)
             user.PasswordExpirationDate = now.AddDays(policy.MaxAgeDays);
-        await db.SaveChangesAsync(ct);
-        await db.RefreshTokens
-            .Where(t => t.UserId == user.Id && !t.IsRevoked)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(t => t.IsRevoked, true)
-                .SetProperty(t => t.RevokedAt, now), ct);
+        // Saves the changes above with the rotated stamp and revokes the refresh tokens, inside tx.
+        await UserSessionTermination.EndAllSessionsSetBasedAsync(db, user, now, ct);
         await tx.CommitAsync(ct);
         return new ClaimRedemption(ClaimOutcome.Claimed, user, null, [], replacedHash, match);
 

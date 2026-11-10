@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using ModularCA.Core.Helpers;
 using ModularCA.Core.Services;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
@@ -11,8 +12,10 @@ namespace ModularCA.API.Startup;
 /// the only system-super hard-locked under <c>LockoutMinutes = 0</c>. Runs on the host as the
 /// service user with the application credentials in db.yaml, never over HTTP, so it grants nothing
 /// that reading db.yaml does not. Clears the lock, any temporary lockout and the failed-login
-/// count, and rotates the security stamp. It does not re-enable a disabled account or touch
-/// passwords or MFA. Each unlock is written to the hash-chained audit trail as
+/// count, rotates the security stamp and revokes every refresh token the account holds, as the
+/// console's unlock does, so no session from before the lock carries on once the account is
+/// usable again. It does not re-enable a disabled account or touch passwords or MFA. Each unlock
+/// is written to the hash-chained audit trail as
 /// <see cref="AuditActionType.UserUnlockedOnHost"/> by <see cref="Actor"/>.
 /// </summary>
 public static class UnlockUserCommand
@@ -24,7 +27,9 @@ public static class UnlockUserCommand
     public const string Actor = "host:break-glass";
 
     /// <summary>
-    /// Unlocks <paramref name="username"/> and records it in <paramref name="auditDb"/>. When the
+    /// Unlocks <paramref name="username"/>, ends its sessions (the security stamp rotates and its
+    /// live refresh tokens are revoked in the same save, by <see cref="UserSessionTermination"/>) and records it in
+    /// <paramref name="auditDb"/>. When the
     /// audit database is null or cannot be written, the account is still unlocked and a loud warning
     /// says no audit record was written. Returns the process exit code: 0 on success, 1 when the
     /// account does not exist.
@@ -40,9 +45,11 @@ public static class UnlockUserCommand
         user.IsLocked = false;
         user.LockoutEndUtc = null;
         user.FailedLoginAttempts = 0;
-        user.SecurityStamp = Guid.NewGuid().ToString();
+        // Refresh does not read the stamp: without the revocation, a refresh token issued before
+        // the lock would mint a session on the unlocked account. The console's unlock ends them too.
+        var sessionsEnded = (await UserSessionTermination.EndAllSessionsAsync(db, user, DateTime.UtcNow)).RefreshTokensRevoked;
         await db.SaveChangesAsync();
-        output.WriteLine($"Unlocked '{user.Username}'.{(user.IsActive ? "" : " The account is still disabled.")}");
+        output.WriteLine($"Unlocked '{user.Username}'; its sessions are ended.{(user.IsActive ? "" : " The account is still disabled.")}");
 
         try
         {
@@ -57,6 +64,7 @@ public static class UnlockUserCommand
                 {
                     user.Username,
                     StillDisabled = !user.IsActive,
+                    RefreshTokensRevoked = sessionsEnded,
                     Host = Environment.MachineName,
                     OsUser = Environment.UserName,
                 }),

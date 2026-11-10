@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using ModularCA.Core.Helpers;
 using ModularCA.Core.Services;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
@@ -48,7 +49,8 @@ public static class SetPasswordSourceCommand
 
     /// <summary>
     /// Sets <paramref name="username"/>'s password source to <paramref name="sourceText"/> and
-    /// records it in <paramref name="auditDb"/>. A source the account already has changes nothing
+    /// records it in <paramref name="auditDb"/>. A change ends the account's sessions in the same
+    /// save (<see cref="UserSessionTermination"/>). A source the account already has changes nothing
     /// and writes no record. When the audit database is null or cannot be written, the change still
     /// stands and a loud warning says no audit record was written. Returns the process exit code:
     /// 0 on success or no change, 1 when the account does not exist or the source is not one of
@@ -80,13 +82,7 @@ public static class SetPasswordSourceCommand
 
         var previous = user.PasswordSource;
         user.PasswordSource = source;
-        user.SecurityStamp = Guid.NewGuid().ToString();
-        var now = DateTime.UtcNow;
-        foreach (var token in await db.RefreshTokens.Where(t => t.UserId == user.Id && !t.IsRevoked).ToListAsync())
-        {
-            token.IsRevoked = true;
-            token.RevokedAt = now;
-        }
+        await UserSessionTermination.EndAllSessionsAsync(db, user, DateTime.UtcNow);
         await db.SaveChangesAsync();
         output.WriteLine($"Set the password source of '{user.Username}' from {previous} to {source}; its sessions are ended.");
         if (source == PasswordSource.Local && string.IsNullOrEmpty(user.PasswordHash))

@@ -807,7 +807,7 @@ public class AdminCertificateController(
     {
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null) return Unauthorized();
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ExportCert, serial))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.ExportCert, serial))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         // Resolve the target BEFORE exporting anything. This endpoint had neither of the two

@@ -262,7 +262,7 @@ public partial class AdminSpaceController(
         if (request.IsEnabled.HasValue && request.IsEnabled.Value != space.IsEnabled)
         {
             var op = request.IsEnabled.Value ? StepUpOps.EnableSpace : StepUpOps.DisableSpace;
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, op))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, op))
                 return StatusCode(403, new
                 {
                     error = "MFA re-verification required to change a space's enabled state. Call /api/v1/auth/mfa/verify-stepup first.",
@@ -305,7 +305,7 @@ public partial class AdminSpaceController(
             && !request.RequireKeyCeremony.Value)
         {
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(
-                    _cache, User, mfaToken, StepUpOps.DisableCeremonyRequirement))
+                    _cache, HttpContext, mfaToken, StepUpOps.DisableCeremonyRequirement))
                 return StatusCode(403, new
                 {
                     error = "MFA re-verification required to disable key ceremony requirement. Call /api/v1/auth/mfa/verify-stepup first.",
@@ -674,7 +674,7 @@ public partial class AdminSpaceController(
 
         // Disabling a space is a high-impact action — require step-up MFA re-verification.
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(
-                _cache, User, mfaToken, StepUpOps.DisableSpace))
+                _cache, HttpContext, mfaToken, StepUpOps.DisableSpace))
             return StatusCode(403, new
             {
                 error = "MFA re-verification required to disable a space. Call /api/v1/auth/mfa/verify-stepup first.",

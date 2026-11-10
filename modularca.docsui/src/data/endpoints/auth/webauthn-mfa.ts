@@ -73,6 +73,6 @@ export const webauthnMfa: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup. Required for this operation.' },
         ],
         responseDescription: 'Confirmation that the credential was removed.',
-        notes: 'Blocked if this is the user\'s only remaining MFA method.',
+        notes: 'Signs the account out of every session, this one included, since a session does not record which credential opened it. Blocked if this is the user\'s only remaining MFA method.',
     },
 ];

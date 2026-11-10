@@ -310,7 +310,7 @@ public sealed class SignerSecretsRetryTests : IDisposable
         Assert.Contains("settingsOutcome.SignerUnreachable", startup);
         Assert.Contains("signerSecretsState.MarkMadeUp(ModularCA.Core.Services.Settings.SettingsPersistence.JwtSecretKey)", startup);
         Assert.Contains("new ModularCA.API.Services.SignerSecretsRetryService(", startup);
-        Assert.Contains("IssuerSigningKeyResolver = (_, _, _, _) => [jwtSigningKey.Current()]", startup);
+        Assert.Contains("IssuerSigningKeyResolver = (_, _, _, _) => jwtSigningKey.Keys()", startup);
         Assert.DoesNotContain("IssuerSigningKey = new SymmetricSecurityKey", startup);
     }
 

@@ -257,7 +257,7 @@ public class UserCertificateController(
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
             return Unauthorized();
 
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ExportCert, serial))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.ExportCert, serial))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var cert = await _certStore.GetCertificateInfoAsync(serial);
@@ -464,7 +464,7 @@ public class UserCertificateController(
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
             return Unauthorized();
 
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.RevokeSelfCert, serial))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.RevokeSelfCert, serial))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         if (!SelfRevokeAllowedReasons.Contains(request.Reason))

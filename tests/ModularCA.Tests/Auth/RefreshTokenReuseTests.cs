@@ -22,7 +22,8 @@ namespace ModularCA.Tests.Auth;
 
 /// <summary>
 /// Drives the real <c>AuthController.Refresh</c>: any replay of a rotated refresh token, however soon,
-/// revokes the whole family including the unused successor, and returns 401.
+/// revokes the whole family including the unused successor, and returns 401. Also what refresh
+/// answers for an account that is disabled, locked or deleted.
 /// </summary>
 public sealed class RefreshTokenReuseTests
 {
@@ -214,5 +215,77 @@ public sealed class RefreshTokenReuseTests
         await w.LogoutAsync();
 
         AssertFamilyRevoked(w, await w.RefreshAsync(rt1));
+    }
+
+    /// <summary>
+    /// Refresh reads the account's state itself, whatever revoked or did not revoke its tokens: a
+    /// disabled, hard-locked or temporarily locked account, and a service identity, get 403 and
+    /// no new tokens, and the presented token is revoked.
+    /// </summary>
+    [Theory]
+    [InlineData("disabled")]
+    [InlineData("locked")]
+    [InlineData("temporarily-locked")]
+    [InlineData("service-identity")]
+    public async Task Refresh_refuses_an_account_that_may_not_sign_in(string state)
+    {
+        using var w = new World();
+        var rt1 = w.Login();
+        using (var db = w.Db())
+        {
+            var user = db.Users.Single(u => u.Id == w.UserId);
+            switch (state)
+            {
+                case "disabled": user.IsActive = false; break;
+                case "locked": user.IsLocked = true; break;
+                case "temporarily-locked": user.LockoutEndUtc = DateTime.UtcNow.AddMinutes(10); break;
+                case "service-identity": user.IsServiceIdentity = true; break;
+            }
+            db.SaveChanges();
+        }
+
+        var refused = Assert.IsType<ObjectResult>(await w.RefreshAsync(rt1));
+        Assert.Equal(403, refused.StatusCode);
+        Assert.True(w.Row(rt1).IsRevoked);
+        Assert.Single(w.Family());
+    }
+
+    /// <summary>A lockout that has run out no longer stops refresh.</summary>
+    [Fact]
+    public async Task Refresh_works_again_once_a_temporary_lockout_has_elapsed()
+    {
+        using var w = new World();
+        var rt1 = w.Login();
+        using (var db = w.Db())
+        {
+            db.Users.Single(u => u.Id == w.UserId).LockoutEndUtc = DateTime.UtcNow.AddMinutes(-1);
+            db.SaveChanges();
+        }
+
+        NewRefreshToken(await w.RefreshAsync(rt1));
+    }
+
+    /// <summary>A deleted account's refresh token mints nothing, whether the row is gone or soft-deleted.</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Refresh_refuses_a_deleted_account(bool softDelete)
+    {
+        using var w = new World();
+        var rt1 = w.Login();
+        using (var db = w.Db())
+        {
+            var user = db.Users.Single(u => u.Id == w.UserId);
+            if (softDelete)
+                user.IsDeleted = true;
+            else
+                db.Users.Remove(user);
+            db.SaveChanges();
+        }
+
+        Assert.IsType<UnauthorizedObjectResult>(await w.RefreshAsync(rt1));
+        using var after = w.Db();
+        // No successor was minted: at most the presented token's own row is left.
+        Assert.True(after.RefreshTokens.IgnoreQueryFilters().Count() <= 1);
     }
 }

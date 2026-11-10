@@ -558,7 +558,7 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (profileCheckReissue != null)
                 return profileCheckReissue;
 
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ReissueCert, request.CertificateId.ToString()))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.ReissueCert, request.CertificateId.ToString()))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /auth/mfa/verify-stepup first.", requiresStepUp = true });
 
             // Interactive admin reissue: same reasoning as the issue path above — an operator who
@@ -660,7 +660,7 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (profileCheckReissueSn != null)
                 return profileCheckReissueSn;
 
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ReissueCert, request.SerialNumber))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.ReissueCert, request.SerialNumber))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /auth/mfa/verify-stepup first.", requiresStepUp = true });
 
             // Interactive admin reissue; see ReissueCertId.
@@ -762,7 +762,7 @@ namespace ModularCA.API.Controllers.v1.Admin
             if (profileCheckReissueCsr != null)
                 return profileCheckReissueCsr;
 
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ReissueCert, request.CsrId.ToString()))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.ReissueCert, request.CsrId.ToString()))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /auth/mfa/verify-stepup first.", requiresStepUp = true });
 
             // Interactive admin reissue; see ReissueCertId.

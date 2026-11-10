@@ -1237,8 +1237,7 @@ sshd -t && systemctl reload ssh`}</pre>
                     <li>Change password (a Directory account is told to change it in the directory instead)</li>
                     <li>Enroll or manage TOTP authenticator</li>
                     <li>Register WebAuthn/FIDO2 security keys</li>
-                    <li>View active sessions</li>
-                    <li>Revoke sessions</li>
+                    <li>Sign out, which ends every session of the account on every device</li>
                 </ul>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/me<br />

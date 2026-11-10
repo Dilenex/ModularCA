@@ -57,6 +57,7 @@ public class MtlsController : ControllerBase
     private readonly SystemConfig _config;
     private readonly ISecurityPolicyService _securityPolicy;
     private readonly ICertificateRevocationService _revocation;
+    private readonly ModularCA.Auth.Services.IReplayGuard _replayGuard;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="MtlsController"/> class.
@@ -73,6 +74,10 @@ public class MtlsController : ControllerBase
     /// Revokes the certificate behind a credential its holder revokes, as every other revocation
     /// path does, so the CRL is regenerated and the revocation notified.
     /// </param>
+    /// <param name="replayGuard">
+    /// The atomic single-use claim that makes a pending-MFA token consumable once, across nodes
+    /// (<see cref="PendingMfaToken.ConsumeAsync"/>).
+    /// </param>
     public MtlsController(
         ModularCADbContext db,
         IDistributedCache cache,
@@ -82,7 +87,8 @@ public class MtlsController : ControllerBase
         ISigningService signer,
         SystemConfig config,
         ISecurityPolicyService securityPolicy,
-        ICertificateRevocationService revocation)
+        ICertificateRevocationService revocation,
+        ModularCA.Auth.Services.IReplayGuard replayGuard)
     {
         _db = db;
         _cache = cache;
@@ -93,6 +99,7 @@ public class MtlsController : ControllerBase
         _config = config;
         _securityPolicy = securityPolicy;
         _revocation = revocation;
+        _replayGuard = replayGuard;
     }
 
     /// <summary>
@@ -176,7 +183,7 @@ public class MtlsController : ControllerBase
         var hasActiveMtlsPrecheck = await _db.MtlsCredentials.Where(await ModularCA.Core.Helpers.MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
         if (hasTotpPrecheck || hasWebAuthnPrecheck || hasActiveMtlsPrecheck)
         {
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.MtlsEnroll))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.MtlsEnroll))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
         }
 
@@ -422,7 +429,7 @@ public class MtlsController : ControllerBase
             return Unauthorized(new { error = "Authentication required" });
 
         // Require step-up MFA verification
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.MtlsDelete, id.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.MtlsDelete, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var credential = await _db.MtlsCredentials.FirstOrDefaultAsync(c => c.Id == id && c.UserId == userId.Value);
@@ -526,7 +533,8 @@ public class MtlsController : ControllerBase
     /// <summary>
     /// Verifies mTLS during the login MFA flow. Reads the client certificate from the TLS connection,
     /// validates it against the user's stored mTLS credentials, and issues a full JWT on success.
-    /// Accepts the temporary MFA token from the login endpoint (no JWT required), consumed once;
+    /// Accepts the temporary MFA token from the login endpoint (no JWT required), consumed once,
+    /// also against concurrent requests on other nodes (<see cref="PendingMfaToken.ConsumeAsync"/>);
     /// a token minted by a certificate login is refused, since one certificate is not two factors.
     /// A credential whose certificate is revoked or on hold is refused and audited, and a valid
     /// DPoP proof binds the new session's refresh token to the proving key. The session wears the
@@ -547,7 +555,7 @@ public class MtlsController : ControllerBase
         if (string.IsNullOrWhiteSpace(request.MfaToken))
             return BadRequest(new { error = "MFA token is required" });
 
-        var pending = await PendingMfaToken.ConsumeAsync(_cache, request.MfaToken);
+        var pending = await PendingMfaToken.ConsumeAsync(_cache, _replayGuard, request.MfaToken);
         if (pending is not { } pendingEntry)
             return Unauthorized(new { error = "MFA token is invalid or expired" });
         var userId = pendingEntry.UserId;
@@ -806,7 +814,8 @@ public class MtlsController : ControllerBase
     /// <see cref="PrepareRedirect"/>; there is no query-string form. The cookie keeps the token
     /// out of referer headers, server logs, and browser history.
     /// </para>
-    /// The token is consumed once, and one minted by a certificate login is refused. The session
+    /// The token is consumed once, also against concurrent requests on other nodes
+    /// (<see cref="PendingMfaToken.ConsumeAsync"/>), and one minted by a certificate login is refused. The session
     /// wears the user's default access badge when they have one.
     /// </summary>
     /// <remarks>
@@ -850,7 +859,7 @@ public class MtlsController : ControllerBase
         if (string.IsNullOrWhiteSpace(mfaToken))
             return Redirect($"{mainOrigin}/login?error=mfa_token_missing");
 
-        var pending = await PendingMfaToken.ConsumeAsync(_cache, mfaToken);
+        var pending = await PendingMfaToken.ConsumeAsync(_cache, _replayGuard, mfaToken);
         if (pending is not { } pendingEntry)
             return Redirect($"{mainOrigin}/login?error=mfa_expired");
         var userId = pendingEntry.UserId;

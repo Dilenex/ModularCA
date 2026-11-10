@@ -81,7 +81,7 @@ public class AdminRevocationController(
         if (cert == null) return NotFound(new { error = "Certificate not found." });
 
         var stepUpOp = cert.IsCA ? StepUpOps.RevokeCa : StepUpOps.RevokeCert;
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, stepUpOp, certId.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, stepUpOp, certId.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var fence = await EnforceSpaceFenceForCertAsync(certId, null);
@@ -169,7 +169,7 @@ public class AdminRevocationController(
 
         // KC-06: CA cert revocation uses RevokeCa step-up op; leaf certs use RevokeCert.
         var stepUpOp = cert!.IsCA ? StepUpOps.RevokeCa : StepUpOps.RevokeCert;
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, stepUpOp, request.SerialNumber))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, stepUpOp, request.SerialNumber))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var fence = await EnforceSpaceFenceForCertAsync(cert.CertificateId, null);
@@ -237,7 +237,7 @@ public class AdminRevocationController(
             return BadRequest(new { error = "At least one serial number is required." });
 
         // ONE RevokeCert token (no target) authorizes the whole leaf-cert batch.
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.RevokeCert))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.RevokeCert))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var results = new List<object>();
@@ -327,7 +327,7 @@ public class AdminRevocationController(
 
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null) return Unauthorized();
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.HoldCert, certId.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.HoldCert, certId.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var fence = await EnforceSpaceFenceForCertAsync(certId, null);
@@ -376,7 +376,7 @@ public class AdminRevocationController(
             && !string.Equals(serial, request.SerialNumber, StringComparison.OrdinalIgnoreCase))
             return BadRequest(new { error = "Serial number in the URL does not match the request body." });
 
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.HoldCert, request.SerialNumber))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.HoldCert, request.SerialNumber))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         // Resolve once, then key off the primary key — see RevokeByCertSerial for why a serial
@@ -437,7 +437,7 @@ public class AdminRevocationController(
 
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null) return Unauthorized();
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.UnholdCert, certId.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.UnholdCert, certId.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var fence = await EnforceSpaceFenceForCertAsync(certId, null);
@@ -485,7 +485,7 @@ public class AdminRevocationController(
             && !string.Equals(serial, request.SerialNumber, StringComparison.OrdinalIgnoreCase))
             return BadRequest(new { error = "Serial number in the URL does not match the request body." });
 
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.UnholdCert, request.SerialNumber))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.UnholdCert, request.SerialNumber))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         // Resolve once, then key off the primary key — see RevokeByCertSerial for the rationale.

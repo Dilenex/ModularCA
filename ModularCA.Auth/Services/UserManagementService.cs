@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Auth.Utils;
+using ModularCA.Core.Helpers;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
@@ -202,27 +203,20 @@ namespace ModularCA.Auth.Services
                 user.LockoutEndUtc = null;
             }
 
+            // A new username or email only makes access tokens stale: the stamp rotates so the
+            // client refreshes and picks up the new claims, and its sessions carry on.
             if (identityChanged)
                 user.SecurityStamp = Guid.NewGuid().ToString();
 
-            // Rotate the security stamp whenever an admin toggles
+            // End the account's sessions whenever an admin toggles
             // IsActive or IsLocked so outstanding JWTs invalidate on the next request
             // rather than waiting out their TTL. A password source change switches which password
             // signs the account in, a credential change like a reset, so it ends sessions too.
             if (wasActive != user.IsActive || wasLocked != user.IsLocked || previousSource != user.PasswordSource)
             {
-                user.SecurityStamp = Guid.NewGuid().ToString();
-
-                // Also revoke all outstanding refresh tokens so the next /auth/refresh
-                // attempt can't re-mint a valid JWT.
-                var refreshTokens = await _dbContext.Set<RefreshTokenEntity>()
-                    .Where(t => t.UserId == userId && !t.IsRevoked)
-                    .ToListAsync();
-                foreach (var t in refreshTokens)
-                {
-                    t.IsRevoked = true;
-                    t.RevokedAt = DateTime.UtcNow;
-                }
+                // The stamp rotates and every refresh token is revoked, so the next /auth/refresh
+                // attempt can't re-mint a valid JWT. Saved below with the change itself.
+                await UserSessionTermination.EndAllSessionsAsync(_dbContext, user, DateTime.UtcNow);
             }
 
             var renamed = !string.Equals(previousUsername, user.Username, StringComparison.Ordinal);
@@ -427,7 +421,9 @@ namespace ModularCA.Auth.Services
         /// <summary>
         /// Updates a user's password after verifying the current password matches. Refused (false,
         /// no failed attempt counted) for a service identity and for a Directory account, whose
-        /// password lives in the directory and which would never use a local one.
+        /// password lives in the directory and which would never use a local one. A change ends
+        /// the account's sessions (<see cref="UserSessionTermination"/>) in the save that writes
+        /// the new password.
         /// </summary>
         public async Task<bool> UpdateUserPassword(Guid userId, UpdatePasswordRequest request)
         {
@@ -516,23 +512,12 @@ namespace ModularCA.Auth.Services
             // Append to rotating history + prune.
             // No-op when HistoryCount <= 0.
             await _passwordPolicy.RecordPasswordHistoryAsync(userId, newHash);
-            // Rotate security stamp so outstanding JWTs get invalidated.
-            user.SecurityStamp = Guid.NewGuid().ToString();
             if (!user.PasswordNeverExpires)
                 user.PasswordExpirationDate = DateTime.UtcNow.AddDays(90);
             _dbContext.Users.Update(user);
-            await _dbContext.SaveChangesAsync();
-
-            // Revoke all refresh tokens for this user to invalidate existing sessions
-            // This ensures compromised sessions don't persist after password change
-            var refreshTokens = await _dbContext.Set<RefreshTokenEntity>()
-                .Where(t => t.UserId == userId && !t.IsRevoked)
-                .ToListAsync();
-            foreach (var token in refreshTokens)
-            {
-                token.IsRevoked = true;
-                token.RevokedAt = DateTime.UtcNow;
-            }
+            // The stamp rotates and every refresh token is revoked in the save that writes the new
+            // password, so a compromised session cannot persist after the change.
+            await UserSessionTermination.EndAllSessionsAsync(_dbContext, user, DateTime.UtcNow);
             await _dbContext.SaveChangesAsync();
 
             _logger.LogInformation("Password changed and all sessions invalidated for user {UserId}", userId);
@@ -541,7 +526,8 @@ namespace ModularCA.Auth.Services
 
         /// <summary>
         /// Resets a user's password to a randomly generated value and returns it.
-        /// The user will be forced to change password on next logon. Throws
+        /// The user will be forced to change password on next logon, and the account's sessions
+        /// end (<see cref="UserSessionTermination"/>) in the save that writes the password. Throws
         /// <see cref="InvalidOperationException"/> for a service identity, which has no password,
         /// and for a Directory account, which would never use a local one.
         /// </summary>
@@ -564,21 +550,12 @@ namespace ModularCA.Auth.Services
             // the user's rotating history so the next user-driven change can't
             // bounce back to the admin-generated temporary password.
             await _passwordPolicy.RecordPasswordHistoryAsync(userId, newHash);
-            user.SecurityStamp = Guid.NewGuid().ToString();
             user.PasswordChangeOnNextLogon = true;
             user.PasswordExpirationDate = DateTime.UtcNow.AddDays(90);
             _dbContext.Users.Update(user);
-            await _dbContext.SaveChangesAsync();
-
-            // Revoke all refresh tokens for this user to invalidate existing sessions
-            var refreshTokens = await _dbContext.Set<RefreshTokenEntity>()
-                .Where(t => t.UserId == userId && !t.IsRevoked)
-                .ToListAsync();
-            foreach (var token in refreshTokens)
-            {
-                token.IsRevoked = true;
-                token.RevokedAt = DateTime.UtcNow;
-            }
+            // The stamp rotates and every refresh token is revoked in the save that writes the
+            // temporary password.
+            await UserSessionTermination.EndAllSessionsAsync(_dbContext, user, DateTime.UtcNow);
             await _dbContext.SaveChangesAsync();
 
             _logger.LogInformation("Password reset and all sessions invalidated for user {UserId}", userId);
@@ -587,8 +564,8 @@ namespace ModularCA.Auth.Services
 
         /// <summary>
         /// Removes every MFA method of a user (TOTP secrets and WebAuthn credentials) and clears
-        /// <see cref="UserEntity.MfaEnrolledAt"/>, so they must enrol again at next login. Rotates the
-        /// security stamp and revokes every refresh token, so no session outlives the reset. Returns
+        /// <see cref="UserEntity.MfaEnrolledAt"/>, so they must enrol again at next login. Ends the
+        /// account's sessions (<see cref="UserSessionTermination"/>), so none outlives the reset. Returns
         /// the counts removed, or null when the user does not exist.
         /// </summary>
         public async Task<(int TotpSecretsRemoved, int WebAuthnCredentialsRemoved)?> ResetUserMfa(Guid userId)
@@ -602,12 +579,7 @@ namespace ModularCA.Auth.Services
             var webAuthnCreds = await _dbContext.Fido2Credentials.Where(c => c.UserId == userId).ToListAsync();
             _dbContext.Fido2Credentials.RemoveRange(webAuthnCreds);
             user.MfaEnrolledAt = null;
-            user.SecurityStamp = Guid.NewGuid().ToString();
-            foreach (var token in await _dbContext.Set<RefreshTokenEntity>().Where(t => t.UserId == userId && !t.IsRevoked).ToListAsync())
-            {
-                token.IsRevoked = true;
-                token.RevokedAt = DateTime.UtcNow;
-            }
+            await UserSessionTermination.EndAllSessionsAsync(_dbContext, user, DateTime.UtcNow);
             await _dbContext.SaveChangesAsync();
 
             _logger.LogInformation("MFA reset for user {UserId}", userId);

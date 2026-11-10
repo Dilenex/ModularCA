@@ -15,7 +15,7 @@ namespace ModularCA.API.Filters;
 ///   <item><description>Read <c>X-MFA-Token</c> from the request headers.</description></item>
 ///   <item><description>Resolve the distributed cache and the caller's <see cref="System.Security.Claims.ClaimsPrincipal"/>.</description></item>
 ///   <item><description>Optionally pick up a target id from a named route parameter.</description></item>
-///   <item><description>Call <see cref="MfaStepUpController.ValidateStepUpTokenAsync(IDistributedCache, System.Security.Claims.ClaimsPrincipal, string?, string, string?)"/>.</description></item>
+///   <item><description>Call <see cref="MfaStepUpController.ValidateStepUpTokenAsync(IDistributedCache, Microsoft.AspNetCore.Http.HttpContext, string?, string, string?)"/>.</description></item>
 ///   <item><description>Return <c>403 { requiresStepUp = true, operation }</c> on failure,
 ///     or invoke the next filter on success.</description></item>
 /// </list>
@@ -73,7 +73,7 @@ public sealed class RequireStepUpAttribute : ActionFilterAttribute
 
         var ok = await MfaStepUpController.ValidateStepUpTokenAsync(
             cache,
-            http.User,
+            http,
             mfaToken,
             _operation,
             target);

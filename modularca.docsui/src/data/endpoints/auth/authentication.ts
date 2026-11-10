@@ -73,13 +73,14 @@ export const authentication: ApiEndpoint[] = [
     {
         method: 'POST',
         path: '/api/v1/auth/logout',
-        summary: 'Revoke JWT and all refresh tokens for the current user.',
+        summary: 'Sign the current user out of every session of the account.',
         auth: 'Authorize',
         category: 'Authentication',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Confirmation that all sessions have been revoked.',
+        notes: 'There is no per-device sign-out: logging out ends every session of the account, on this device and every other. Every refresh token is revoked and the security stamp rotates, so access tokens held elsewhere are refused on their next request with 401 instead of running until they expire. Audited as UserLogout with the number of refresh tokens revoked.',
     },
     {
         method: 'POST',

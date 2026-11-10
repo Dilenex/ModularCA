@@ -91,7 +91,7 @@ namespace ModularCA.API.Controllers.v1.Account
             var newEmail = request.Email?.Trim();
             if (!string.IsNullOrEmpty(newEmail) && !string.Equals(newEmail, user.Email, StringComparison.OrdinalIgnoreCase))
             {
-                if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ChangeEmail, user.Id.ToString()))
+                if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.ChangeEmail, user.Id.ToString()))
                     return StatusCode(403, new { error = "MFA re-verification required to change your email address. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
                 if (!MailAddress.TryCreate(newEmail, out _))
@@ -189,7 +189,7 @@ namespace ModularCA.API.Controllers.v1.Account
             }
 
             // Require step-up MFA verification
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ChangePassword))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.ChangePassword))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
             bool result;

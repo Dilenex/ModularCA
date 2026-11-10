@@ -180,7 +180,7 @@ public class AdminProtocolConfigController(
         // validation must look it up under the same scope. Omitting caId here built a
         // target-less cache key that never matched the issued token — every save 403'd
         // even after a successful TOTP/WebAuthn step-up.
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.UpdateProtocolConfig, caId.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.UpdateProtocolConfig, caId.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var normalizedProtocol = protocol.ToUpperInvariant();

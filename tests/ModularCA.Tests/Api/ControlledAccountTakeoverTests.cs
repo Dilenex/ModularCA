@@ -565,6 +565,9 @@ public sealed class ControlledAccountTakeoverTests
         super.IsLocked = true;
         super.FailedLoginAttempts = 9;
         var stamp = super.SecurityStamp;
+        // A session from before the lock, and another account's, which the unlock must leave alone.
+        h.W.Db.RefreshTokens.Add(new RefreshTokenEntity { Id = Guid.NewGuid(), UserId = super.Id, Token = "before-the-lock", ExpiresAt = DateTime.UtcNow.AddDays(1) });
+        h.W.Db.RefreshTokens.Add(new RefreshTokenEntity { Id = Guid.NewGuid(), UserId = h.W.Plain, Token = "someone-else", ExpiresAt = DateTime.UtcNow.AddDays(1) });
         h.W.Db.SaveChanges();
 
         var unlock = ApiAssembly.TypeNamed("ModularCA.API.Startup.UnlockUserCommand").GetMethod("RunAsync")!;
@@ -573,6 +576,11 @@ public sealed class ControlledAccountTakeoverTests
         Assert.False(h.User(h.W.Super).IsLocked);
         Assert.Equal(0, h.User(h.W.Super).FailedLoginAttempts);
         Assert.NotEqual(stamp, h.User(h.W.Super).SecurityStamp);
+        // Refresh does not read the stamp, so the unlock revokes the account's refresh tokens itself.
+        var ended = Assert.Single(h.W.Db.RefreshTokens.Where(t => t.UserId == super.Id));
+        Assert.True(ended.IsRevoked);
+        Assert.NotNull(ended.RevokedAt);
+        Assert.False(Assert.Single(h.W.Db.RefreshTokens.Where(t => t.UserId == h.W.Plain)).IsRevoked);
         Assert.Equal(1, await (Task<int>)unlock.Invoke(null, [h.W.Db, h.AuditDb, "no-such-user", output])!);
 
         // The unlock is in the hash-chained audit trail, by the host rather than any account.
