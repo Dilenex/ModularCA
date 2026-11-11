@@ -68,6 +68,10 @@ const MyX509Certificates: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
     const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'revoked' | 'expired'>('all');
+    // "Mine" is what the page is named for: certificates issued from the caller's requests or
+    // shared with the caller by name. The wider list is every certificate the caller's roles let
+    // it view, which for an operator is every certificate of its CAs.
+    const [ownership, setOwnership] = useState<'mine' | 'viewable'>('mine');
 
     // PFX export modal state
     const [pfxTarget, setPfxTarget] = useState<any | null>(null);
@@ -86,11 +90,12 @@ const MyX509Certificates: React.FC = () => {
     useEffect(() => {
         // Every page, not just the first: the endpoint pages at 25 by default and the table
         // below does its own client-side paging, so a plain apiGet capped the whole view at 25.
-        apiGetAllPages<any>('/api/v1/user/certificates')
+        setLoading(true);
+        apiGetAllPages<any>(ownership === 'mine' ? '/api/v1/user/certificates?mine=true' : '/api/v1/user/certificates')
             .then(({ items }) => setCertificates(items))
             .catch((err) => setError(errorNotice(err, 'The request failed.')))
             .finally(() => setLoading(false));
-    }, []);
+    }, [ownership]);
 
     const downloadBlob = (data: BlobPart, filename: string, mimeType: string) => {
         const blob = new Blob([data], { type: mimeType });
@@ -361,9 +366,15 @@ const MyX509Certificates: React.FC = () => {
     return (
         <div className="space-y-4 sm:space-y-6">
             {/* Filter */}
-            <div>
-                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as any)} className={inputClass}>
-                    <option value="all">All Certificates</option>
+            <div className="flex flex-wrap items-center gap-2">
+                <select value={ownership} onChange={(e) => setOwnership(e.target.value as 'mine' | 'viewable')} className={inputClass}
+                    aria-label="Which certificates to list">
+                    <option value="mine">My certificates</option>
+                    <option value="viewable">Every certificate I can view</option>
+                </select>
+                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as any)} className={inputClass}
+                    aria-label="Status">
+                    <option value="all">Any status</option>
                     <option value="active">Active</option>
                     <option value="expired">Expired</option>
                     <option value="revoked">Revoked</option>

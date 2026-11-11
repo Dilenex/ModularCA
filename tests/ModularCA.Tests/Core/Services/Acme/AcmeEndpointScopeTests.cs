@@ -441,6 +441,136 @@ public class AcmeEndpointScopeTests
         Assert.IsType<OkObjectResult>(result);
         var row = Assert.Single(w.Audit.Rows, r => r.Operation == "AcmeAccountDeactivated");
         Assert.Equal(("strict", w.Strict.Id, w.Strict.SpaceId), (row.CaLabel, row.CaId, row.SpaceId));
+
+        // The ACME tab gets its own row, under the same CA, so the tab that shows the account
+        // being registered also shows it ending.
+        var tab = Assert.Single(w.Audit.Rows, r => r.Operation == "AccountDeactivated");
+        Assert.Equal(("strict", w.Strict.Id, w.Strict.SpaceId), (tab.CaLabel, tab.CaId, tab.SpaceId));
+    }
+
+    /// <summary>
+    /// Replacing an account's key replaces its only credential, and left no record anywhere. A
+    /// rollover is in the main audit log and on the ACME tab, under the account's CA; a refused
+    /// one is a <c>KeyChangeRefused</c> row and changes nothing.
+    /// </summary>
+    [Fact]
+    public async Task A_key_change_is_audited_and_a_refused_one_too()
+    {
+        var w = Seed();
+        var (oldJwk, oldThumb) = NewKey();
+        var account = new AcmeAccountEntity { JwkJson = oldJwk, JwkThumbprint = oldThumb, CertificateAuthorityId = w.Strict.Id };
+        w.Db.AcmeAccounts.Add(account);
+        await w.Db.SaveChangesAsync();
+
+        var refused = await InvokeAsync(w, "AcmeAccountController", "KeyChange",
+            new AcmeJwsPayload { AccountId = account.Id, Payload = "{ not json" }, w.Strict);
+        Assert.Equal(400, StatusOf(refused));
+        var refusal = Assert.Single(w.Audit.Rows);
+        Assert.Equal(("KeyChangeRefused", "strict", (Guid?)w.Strict.Id), (refusal.Operation, refusal.CaLabel, refusal.CaId));
+
+        // A real rollover: the inner JWS is signed by the new key and names the old one.
+        using var newKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var p = newKey.ExportParameters(false);
+        var newJwk = $$"""{"crv":"P-256","kty":"EC","x":"{{B64(p.Q.X!)}}","y":"{{B64(p.Q.Y!)}}"}""";
+        var config = new SystemConfig();
+        config.Https.PublicDomain = Domain;
+        var basePublic = config.Https.GetPublicHttpsBaseUrl();
+        var protectedB64 = B64(Encoding.UTF8.GetBytes($$"""{"alg":"ES256","jwk":{{newJwk}},"url":"{{basePublic}}"}"""));
+        // The shape RFC 8555 §7.3.5 defines: "account" and "oldKey", with the new key in the inner
+        // header only. A "newKey" member was required, so no standard client could roll its key.
+        string Inner(string payloadJson)
+        {
+            var body = B64(Encoding.UTF8.GetBytes(payloadJson));
+            var sig = B64(newKey.SignData(Encoding.ASCII.GetBytes($"{protectedB64}.{body}"), HashAlgorithmName.SHA256));
+            return $$"""{"protected":"{{protectedB64}}","payload":"{{body}}","signature":"{{sig}}"}""";
+        }
+        var accountUrl = $"{basePublic}/api/v1/acme/account/{account.Id}";
+
+        // A newKey member that is not the header's key is still refused.
+        var (otherJwk, _) = NewKey();
+        var mismatched = await InvokeAsync(w, "AcmeAccountController", "KeyChange",
+            new AcmeJwsPayload { AccountId = account.Id, Payload = Inner($$"""{"account":"{{accountUrl}}","oldKey":{{oldJwk}},"newKey":{{otherJwk}}}""") }, w.Strict);
+        Assert.Equal(400, StatusOf(mismatched));
+
+        var inner = Inner($$"""{"account":"{{accountUrl}}","oldKey":{{oldJwk}}}""");
+
+        var changed = await InvokeAsync(w, "AcmeAccountController", "KeyChange",
+            new AcmeJwsPayload { AccountId = account.Id, Payload = inner }, w.Strict);
+
+        Assert.Equal(200, StatusOf(changed));
+        w.Db.ChangeTracker.Clear();
+        Assert.NotEqual(oldThumb, (await w.Db.AcmeAccounts.SingleAsync(a => a.Id == account.Id)).JwkThumbprint);
+        var log = Assert.Single(w.Audit.Rows, r => r.Operation == "AcmeAccountKeyChanged");
+        Assert.Equal(("strict", w.Strict.Id, w.Strict.SpaceId), (log.CaLabel, log.CaId, log.SpaceId));
+        var tab = Assert.Single(w.Audit.Rows, r => r.Operation == "AccountKeyChanged");
+        Assert.Equal(("strict", w.Strict.Id, w.Strict.SpaceId), (tab.CaLabel, tab.CaId, tab.SpaceId));
+        Assert.Equal(2, w.Audit.Rows.Count(r => r.Operation == "KeyChangeRefused"));
+    }
+
+    /// <summary>A change of contact left no trace. It is an <c>AccountUpdated</c> row on the ACME tab.</summary>
+    [Fact]
+    public async Task A_contact_update_is_on_the_acme_tab()
+    {
+        var w = Seed();
+        var (jwk, thumb) = NewKey();
+        var account = new AcmeAccountEntity { JwkJson = jwk, JwkThumbprint = thumb, CertificateAuthorityId = w.Strict.Id };
+        w.Db.AcmeAccounts.Add(account);
+        await w.Db.SaveChangesAsync();
+
+        var result = await InvokeAsync(w, "AcmeAccountController", "UpdateAccount",
+            new AcmeJwsPayload { AccountId = account.Id, Payload = """{"contact":["mailto:new@example.test"]}""" }, w.Strict, null, account.Id);
+
+        Assert.IsType<OkObjectResult>(result);
+        var row = Assert.Single(w.Audit.Rows);
+        Assert.Equal(("AccountUpdated", "strict", (Guid?)w.Strict.Id, w.Strict.SpaceId), (row.Operation, row.CaLabel, row.CaId, row.SpaceId));
+
+        // Reading the account (POST-as-GET) is not an update.
+        await InvokeAsync(w, "AcmeAccountController", "UpdateAccount",
+            new AcmeJwsPayload { AccountId = account.Id, Payload = "" }, w.Strict, null, account.Id);
+        Assert.Single(w.Audit.Rows);
+    }
+
+    /// <summary>A challenge service that owns every challenge and refuses every response.</summary>
+    public class RefusingChallenges : DispatchProxy
+    {
+        /// <summary>The account every challenge belongs to.</summary>
+        public Guid AccountId { get; set; }
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) => targetMethod!.Name switch
+        {
+            nameof(IAcmeChallengeService.GetAccountIdForChallengeAsync) => Task.FromResult<Guid?>(AccountId),
+            nameof(IAcmeChallengeService.RespondAsync) => throw new InvalidOperationException("Challenge is not pending."),
+            _ => throw new NotSupportedException(targetMethod.Name),
+        };
+    }
+
+    /// <summary>
+    /// A challenge response the service refuses is answered with a fixed sentence, and the real
+    /// reason reached only the log file. It is an unsuccessful <c>ChallengeRefused</c> row.
+    /// </summary>
+    [Fact]
+    public async Task A_refused_challenge_response_is_on_the_acme_tab()
+    {
+        var w = Seed();
+        var accountId = Guid.NewGuid();
+        var controller = ApiAssembly.TypeNamed("ModularCA.API.Controllers.v1.Acme.AcmeChallengeController");
+
+        var result = await InvokeAsync(w, "AcmeChallengeController", "RespondToChallenge",
+            new AcmeJwsPayload { AccountId = accountId, JwkThumbprint = "thumb" }, w.Strict,
+            services =>
+            {
+                var challenges = DispatchProxy.Create<IAcmeChallengeService, RefusingChallenges>();
+                ((RefusingChallenges)(object)challenges).AccountId = accountId;
+                services.Add(typeof(IAcmeChallengeService), challenges);
+                services.Add(typeof(IAcmeAuthorizationService), InstanceCeremonyEndpointTests.Fake<IAcmeAuthorizationService>.Create());
+                services.Add(typeof(Microsoft.Extensions.Logging.ILogger<>).MakeGenericType(controller),
+                    Activator.CreateInstance(typeof(Microsoft.Extensions.Logging.Abstractions.NullLogger<>).MakeGenericType(controller))!);
+            },
+            Guid.NewGuid());
+
+        Assert.Equal(400, StatusOf(result));
+        var row = Assert.Single(w.Audit.Rows);
+        Assert.Equal(("ChallengeRefused", "strict", (Guid?)w.Strict.Id, w.Strict.SpaceId), (row.Operation, row.CaLabel, row.CaId, row.SpaceId));
     }
 
     /// <summary>

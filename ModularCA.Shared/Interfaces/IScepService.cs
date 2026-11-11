@@ -11,9 +11,12 @@ public interface IScepService
     Task<(byte[] data, bool isPkcs7)> GetCaCertAsync(string? caLabel = null, string? sourceIp = null);
 
     /// <summary>
-    /// Returns the SCEP server capabilities (GetCACaps).
+    /// Returns the SCEP server capabilities (GetCACaps) of the addressed CA. Refused as
+    /// <see cref="GetCaCertAsync"/> is: a CA that is unknown, or has SCEP switched off, has no
+    /// capabilities to list, and one SCEP cannot run on throws
+    /// <see cref="ModularCA.Shared.Enrollment.ProtocolIncompatibleException"/>.
     /// </summary>
-    string GetCaCaps();
+    Task<string> GetCaCapsAsync(string? caLabel = null, string? sourceIp = null);
 
     /// <summary>
     /// Processes a SCEP PKIOperation request (PKCSReq / GetCertInitial / etc.).

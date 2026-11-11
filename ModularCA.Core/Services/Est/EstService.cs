@@ -232,7 +232,7 @@ public class EstService : IEstService, IEnrollmentProtocol
                         parsedCsr, basicBoundUsername, policy.RequestProfileId, caLabel, sourceIp);
                 }
             },
-            Audit = record => WriteEstAuditAsync(record, caLabel, sourceIp, clientCert, callerUsername),
+            Audit = record => WriteEstAuditAsync(record, caLabel, sourceIp, clientCert, callerUsername, reenroll: presentedCertVerified),
         };
 
         var outcome = await _pipeline.SubmitAsync(submission);
@@ -254,7 +254,7 @@ public class EstService : IEstService, IEnrollmentProtocol
             // arrived.
             case EnrollmentOutcome.Failed failed:
                 _logger.LogWarning("EST enrollment at CA {CaLabel} failed: {Reason}", caLabel, failed.Message);
-                await _protocolAudit.LogEstAsync("EstEnrollRejected", parsedCsr.SubjectName, null,
+                await _protocolAudit.LogEstAsync(presentedCertVerified ? "EstReenrollRejected" : "EstEnrollRejected", parsedCsr.SubjectName, null,
                     parsedCsr.KeyAlgorithm, parsedCsr.KeySize, caLabel, sourceIp,
                     success: false, errorMessage: failed.Message,
                     callerPrincipal: AuditPrincipal(clientCert, callerUsername));
@@ -405,23 +405,31 @@ public class EstService : IEstService, IEnrollmentProtocol
     /// parses and has never claimed to know what such a request asked for. A refusal after that
     /// carries the request's own details and no principal, which is the row a rejected enrollment
     /// has always produced.
+    /// <para>
+    /// A re-enrolment is named as one: <c>SimpleReenroll</c>, <c>SimpleReenroll-PendingApproval</c>
+    /// and <c>EstReenrollRejected</c>. Both operations share this path, and every row it wrote was
+    /// named after enrolment, so a renewal could not be told from a first enrolment on the EST tab.
+    /// </para>
     /// </remarks>
+    /// <param name="reenroll">True when the request came in as <c>/simplereenroll</c>.</param>
     private Task WriteEstAuditAsync(EnrollmentAuditRecord record, string? caLabel, string? sourceIp,
-        System.Security.Cryptography.X509Certificates.X509Certificate2? clientCert, string? callerUsername)
+        System.Security.Cryptography.X509Certificates.X509Certificate2? clientCert, string? callerUsername,
+        bool reenroll)
         => record.Event switch
         {
-            EnrollmentAuditEvent.Issued => _protocolAudit.LogEstAsync("SimpleEnroll", record.Subject,
+            EnrollmentAuditEvent.Issued => _protocolAudit.LogEstAsync(reenroll ? "SimpleReenroll" : "SimpleEnroll", record.Subject,
                 record.SerialNumber, record.KeyAlgorithm, record.KeySize, caLabel, sourceIp),
 
-            EnrollmentAuditEvent.Pending => _protocolAudit.LogEstAsync("SimpleEnroll-PendingApproval",
+            EnrollmentAuditEvent.Pending => _protocolAudit.LogEstAsync(
+                reenroll ? "SimpleReenroll-PendingApproval" : "SimpleEnroll-PendingApproval",
                 record.Subject, null, record.KeyAlgorithm, record.KeySize, caLabel, sourceIp),
 
             _ when RefusedBeforeTheRequestWasRead(record.Reason) => _protocolAudit.LogEstAsync(
-                "EstEnrollRejected", null, null, null, null, caLabel, sourceIp,
+                reenroll ? "EstReenrollRejected" : "EstEnrollRejected", null, null, null, null, caLabel, sourceIp,
                 success: false, errorMessage: record.Message ?? "Enrollment not authorized",
                 callerPrincipal: AuditPrincipal(clientCert, callerUsername)),
 
-            _ => _protocolAudit.LogEstAsync("EstEnrollRejected", record.Subject, null,
+            _ => _protocolAudit.LogEstAsync(reenroll ? "EstReenrollRejected" : "EstEnrollRejected", record.Subject, null,
                 record.KeyAlgorithm, record.KeySize, caLabel, sourceIp,
                 success: false, errorMessage: record.Message ?? "Enrollment refused"),
         };

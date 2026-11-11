@@ -287,7 +287,7 @@ public class CmpProtectionHardeningTests
 
     /// <summary>
     /// A revocation the caller may not make is refused with notAuthorized (bit 23). It went out as
-    /// bit 6, which RFC 4210 names wrongAuthority.
+    /// bit 6, which RFC 4210 names wrongAuthority. The refusal is audited as <c>RRRejected</c>.
     /// </summary>
     [Fact]
     public async Task An_unauthorised_revocation_carries_not_authorized_on_the_wire()
@@ -320,6 +320,13 @@ public class CmpProtectionHardeningTests
         Assert.Equal(2, status.Status.IntValueExact); // rejection
         Assert.Equal(new byte[] { 0x03, 0x04, 0x00, 0x00, 0x00, 0x01 }, status.FailInfo.GetDerEncoded());
         Assert.Equal("Not authorized to revoke this certificate.", status.StatusString[0].GetString());
+
+        // The attempt is on the CMP tab, under the CA it was made at. It reached only the log file.
+        var row = Assert.Single(h.Audit.Entries, e => e.MessageType == "RRRejected");
+        Assert.False(row.Success);
+        Assert.StartsWith("Not authorized to revoke this certificate", row.Error);
+        Assert.Equal(h.LaxCaId, row.CaId);
+        Assert.DoesNotContain(h.Audit.Entries, e => e.MessageType == "RR");
     }
 
     /// <summary>

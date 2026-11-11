@@ -43,11 +43,13 @@ const DeletedAccountsPanel: React.FC = () => {
             .finally(() => setLoading(false));
     }, []);
 
+    // Widths are set because the table's default (120px) cut every value off with an ellipsis
+    // while most of the row stayed empty: usernames, the date and the last header.
     const columns: DataTableColumn<RetainedAccount>[] = [
-        { key: 'username', header: 'Username', sortValue: (a) => a.username, render: (a) => <span className="font-medium text-ink">{a.username}</span> },
-        { key: 'displayName', header: 'Name', sortValue: (a) => a.displayName || '', render: (a) => a.displayName || '-' },
-        { key: 'deletedAt', header: 'Deleted', sortValue: (a) => a.deletedAt || '', render: (a) => formatDate(a.deletedAt) },
-        { key: 'history', header: 'Still named by', sortValue: (a) => a.requests + a.approvals, render: (a) => retainedHistory(a) },
+        { key: 'username', header: 'Username', defaultWidth: 260, minWidth: 140, exportValue: (a) => a.username, sortValue: (a) => a.username, render: (a) => <span className="font-medium text-ink">{a.username}</span> },
+        { key: 'displayName', header: 'Name', defaultWidth: 240, exportValue: (a) => a.displayName || '', sortValue: (a) => a.displayName || '', render: (a) => a.displayName || '-' },
+        { key: 'deletedAt', header: 'Deleted', defaultWidth: 200, exportValue: (a) => a.deletedAt || '', sortValue: (a) => a.deletedAt || '', render: (a) => formatDate(a.deletedAt) },
+        { key: 'history', header: 'Still named by', defaultWidth: 220, exportValue: (a) => retainedHistory(a), sortValue: (a) => a.requests + a.approvals, render: (a) => retainedHistory(a) },
     ];
 
     return (

@@ -65,14 +65,20 @@ public class UserCertificateController(
 
     /// <summary>
     /// Lists certificates the authenticated user has access to, filtered by space scope and access control, with pagination.
+    /// With <paramref name="mine"/>, only the caller's own: those issued from a request the caller
+    /// made, and those an access entry names the caller on. Without it the list is everything the
+    /// caller may view, which for an operator or administrator is every certificate of their CAs;
+    /// the self-service pages showed that under "My Certificates".
     /// </summary>
     /// <param name="page">Page number (1-based). Defaults to 1.</param>
     /// <param name="pageSize">Number of items per page. Defaults to 25, clamped to 1-100.</param>
+    /// <param name="mine">True to list only the caller's own certificates. Defaults to false.</param>
     /// <returns>A paginated result containing accessible certificates and total count metadata.</returns>
     [HttpGet]
     public async Task<IActionResult> ListCertificates(
         [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 25)
+        [FromQuery] int pageSize = 25,
+        [FromQuery] bool mine = false)
     {
 
         await _currentUser.EnsureLoadedAsync();
@@ -111,6 +117,13 @@ public class UserCertificateController(
                 .ToListAsync();
             var accessibleSet = new HashSet<Guid>(accessibleIssuedCertIds);
             nonCaCerts = nonCaCerts.Where(c => accessibleSet.Contains(c.CertificateId)).ToList();
+        }
+
+        if (mine)
+        {
+            // Narrowing only: every certificate kept here still passes the view check below.
+            var own = await ModularCA.Auth.Authorization.CertificateOwnership.OwnedByAsync(_dbContext, _currentUser.User.Id);
+            nonCaCerts = nonCaCerts.Where(c => own.Contains(c.CertificateId)).ToList();
         }
 
         var allowedCerts = new List<CertificateInfoModel>();

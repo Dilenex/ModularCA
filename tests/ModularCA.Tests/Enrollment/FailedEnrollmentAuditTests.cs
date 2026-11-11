@@ -89,6 +89,34 @@ public class FailedEnrollmentAuditTests
         return Convert.ToBase64String(request.CreateSigningRequest());
     }
 
+    /// <summary>
+    /// Enrolment and re-enrolment share one path, and every row it wrote was named after
+    /// enrolment. A re-enrolment's rows carry its own names.
+    /// </summary>
+    [Theory]
+    [InlineData(EnrollmentAuditEvent.Issued, false, "SimpleEnroll")]
+    [InlineData(EnrollmentAuditEvent.Issued, true, "SimpleReenroll")]
+    [InlineData(EnrollmentAuditEvent.Pending, false, "SimpleEnroll-PendingApproval")]
+    [InlineData(EnrollmentAuditEvent.Pending, true, "SimpleReenroll-PendingApproval")]
+    [InlineData(EnrollmentAuditEvent.Refused, false, "EstEnrollRejected")]
+    [InlineData(EnrollmentAuditEvent.Refused, true, "EstReenrollRejected")]
+    public async Task An_EST_row_is_named_after_the_operation_that_was_asked_for(EnrollmentAuditEvent outcome, bool reenroll, string operation)
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var audit = new RecordingAudit();
+        var service = new EstService(db, null!, null!, audit, null!, null!, new FailingPipeline(), NullLogger<EstService>.Instance);
+        var record = new EnrollmentAuditRecord("EST", outcome, null, outcome == EnrollmentAuditEvent.Refused ? "refused" : null,
+            "CN=device-01.example.test", outcome == EnrollmentAuditEvent.Issued ? "0A" : null, "RSA", "2048",
+            "lab", null, null, "10.0.0.5", null, null);
+
+        var write = typeof(EstService).GetMethod("WriteEstAuditAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        await (Task)write.Invoke(service, [record, "lab", "10.0.0.5", null, null, reenroll])!;
+
+        var row = Assert.Single(audit.Rows);
+        Assert.Equal(operation, row.Operation);
+        Assert.Equal(outcome != EnrollmentAuditEvent.Refused, row.Success);
+    }
+
     [Fact]
     public async Task An_EST_enrollment_the_pipeline_fails_is_audited_once_with_the_reason()
     {
@@ -110,8 +138,12 @@ public class FailedEnrollmentAuditTests
         Assert.Equal("lab", row.CaLabel);
     }
 
-    [Fact]
-    public async Task A_CMP_certification_request_the_pipeline_fails_is_audited_once_with_the_reason()
+    [Theory]
+    [InlineData(null, "IRRejected")]
+    [InlineData("ir", "IRRejected")]
+    [InlineData("cr", "CRRejected")]
+    [InlineData("kur", "KURRejected")]
+    public async Task A_CMP_certification_request_the_pipeline_fails_is_audited_once_with_the_reason(string? requestType, string operation)
     {
         using var db = InMemoryDbContextFactory.Create();
         var audit = new RecordingAudit();
@@ -138,6 +170,7 @@ public class FailedEnrollmentAuditTests
             TransactionIdHex = "AABBCCDD",
             ProtectionMode = CmpService.CmpProtectionMode.Signature,
             SignerSubjectDn = "CN=printer1,O=Acme",
+            RequestType = requestType,
         };
 
         var process = typeof(CmpService).GetMethod("ProcessSingleCertRequestAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -147,7 +180,8 @@ public class FailedEnrollmentAuditTests
         Assert.Equal(1, pipeline.Calls);
         var row = Assert.Single(audit.Rows);
         Assert.Equal("CMP", row.Protocol);
-        Assert.Equal("IRRejected", row.Operation);
+        // The row is named after the request that was made, not always after ir.
+        Assert.Equal(operation, row.Operation);
         Assert.False(row.Success);
         Assert.Equal(FailureText, row.Error);
         Assert.Equal("CN=printer1,O=Acme", row.Subject);

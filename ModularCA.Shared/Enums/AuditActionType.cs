@@ -118,6 +118,7 @@ public static class AuditActionType
     // ACME protocol
     public const string AcmeAccountCreated = "AcmeAccountCreated";
     public const string AcmeAccountDeactivated = "AcmeAccountDeactivated";
+    public const string AcmeAccountKeyChanged = "AcmeAccountKeyChanged";
     public const string AcmeOrderFinalized = "AcmeOrderFinalized";
 
     // SSH CA

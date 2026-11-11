@@ -655,6 +655,71 @@ public class ScepPkiOperationTests
         Assert.Equal(refusal.Message, entry.Error);
     }
 
+    /// <summary>
+    /// GetCACaps used to be answered without looking at the CA, so a CA whose key is not RSA still
+    /// advertised POSTPKIOperation. It is refused as GetCACert is, and audited.
+    /// </summary>
+    [Fact]
+    public async Task Get_ca_caps_at_a_non_rsa_ca_is_refused_with_the_reason_and_audited()
+    {
+        var h = Build(requireApproval: false);
+        MakeCaElliptic(h);
+
+        var refusal = await Assert.ThrowsAsync<ProtocolIncompatibleException>(() => h.Service.GetCaCapsAsync("lab", "10.0.0.5"));
+
+        Assert.Equal(ProtocolCompatibility.ScepRequiresRsaKey, refusal.Advisory.Reason);
+        var entry = Assert.Single(h.Audit.Entries);
+        Assert.Equal("GetCACaps", entry.Operation);
+        Assert.False(entry.Success);
+    }
+
+    /// <summary>
+    /// The usual state of a CA whose key is not RSA: SCEP is switched off on it, because enabling
+    /// it is refused. The configuration does not resolve, and the client used to get the generic
+    /// failure on GetCACert and a full capability list on GetCACaps. All three operations now give
+    /// the reason. Nothing is audited: the protocol is off.
+    /// </summary>
+    [Fact]
+    public async Task A_non_rsa_ca_with_scep_switched_off_still_gives_the_reason()
+    {
+        var h = Build(requireApproval: false);
+        MakeCaElliptic(h);
+        h.Db.CaProtocolConfigs.Single(c => c.Protocol == "SCEP").IsEnabled = false;
+        h.Db.SaveChanges();
+
+        foreach (var call in new Func<Task>[]
+                 {
+                     () => h.Service.GetCaCapsAsync("lab", "10.0.0.5"),
+                     () => h.Service.GetCaCertAsync("lab", "10.0.0.5"),
+                     () => h.Service.PkiOperationAsync([0x30, 0x00], "lab", "10.0.0.5"),
+                 })
+        {
+            var refusal = await Assert.ThrowsAsync<ProtocolIncompatibleException>(call);
+            Assert.Equal(ProtocolCompatibility.ScepRequiresRsaKey, refusal.Advisory.Reason);
+        }
+        Assert.Empty(h.Audit.Entries);
+    }
+
+    /// <summary>
+    /// An RSA CA lists its capabilities. With SCEP switched off on it, or under a label that names
+    /// no CA, there is nothing to list: the answer is the same refusal GetCACert gives.
+    /// </summary>
+    [Fact]
+    public async Task Get_ca_caps_is_answered_only_for_a_ca_scep_is_on_for()
+    {
+        var h = Build(requireApproval: false);
+
+        var caps = await h.Service.GetCaCapsAsync("lab", "10.0.0.5");
+        Assert.Contains("POSTPKIOperation", caps);
+        Assert.Contains("SHA-256", caps);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.GetCaCapsAsync("no-such-ca", "10.0.0.5"));
+        h.Db.CaProtocolConfigs.Single(c => c.Protocol == "SCEP").IsEnabled = false;
+        h.Db.SaveChanges();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.Service.GetCaCapsAsync("lab", "10.0.0.5"));
+        Assert.Empty(h.Audit.Entries);
+    }
+
     /// <summary>An RSA CA is answered as before, and nothing is audited for GetCACert.</summary>
     [Fact]
     public async Task Get_ca_cert_at_an_rsa_ca_is_answered()

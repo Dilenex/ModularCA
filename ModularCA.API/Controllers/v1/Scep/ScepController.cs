@@ -39,7 +39,9 @@ public class ScepController(IScepService scepService) : ControllerBase
     /// <summary>
     /// SCEP GET handler — dispatches GetCACert, GetCACaps, and PKIOperation (via GET).
     /// Validates the operation parameter and returns protocol-appropriate errors; 409 with the
-    /// reason when SCEP cannot run on the addressed CA (its key is not RSA).
+    /// reason when SCEP cannot run on the addressed CA (its key is not RSA). GetCACaps is answered
+    /// for the addressed CA like the other two: 409 for such a CA, 400 for an unknown CA or one
+    /// with SCEP switched off.
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> Get([FromQuery] string operation, [FromQuery] string? message, string? caLabel = null)
@@ -58,7 +60,7 @@ public class ScepController(IScepService scepService) : ControllerBase
             result = operation.ToLowerInvariant() switch
             {
                 "getcacert" => await HandleGetCaCert(caLabel),
-                "getcacaps" => HandleGetCaCaps(),
+                "getcacaps" => await HandleGetCaCaps(caLabel),
                 "pkioperation" => await HandlePkiOperationGet(message, caLabel),
                 _ => BadRequest($"Unknown SCEP operation: {operation}")
             };
@@ -202,11 +204,11 @@ public class ScepController(IScepService scepService) : ControllerBase
     }
 
     /// <summary>
-    /// Handles GetCACaps — returns the server capabilities string.
+    /// Handles GetCACaps — returns the capabilities of the addressed CA.
     /// </summary>
-    private IActionResult HandleGetCaCaps()
+    private async Task<IActionResult> HandleGetCaCaps(string? caLabel)
     {
-        var caps = scepService.GetCaCaps();
+        var caps = await scepService.GetCaCapsAsync(caLabel, HttpContext.Connection.RemoteIpAddress?.ToString());
         return Content(caps, "text/plain");
     }
 

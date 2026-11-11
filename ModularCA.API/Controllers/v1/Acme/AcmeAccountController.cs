@@ -230,7 +230,9 @@ public class AcmeAccountController(
 
     /// <summary>
     /// Get or update an existing account (RFC 8555 §7.3.2). A deactivation is audited under the
-    /// CA the account is bound to.
+    /// CA the account is bound to, in the main audit log and as an <c>AccountDeactivated</c> row on
+    /// the ACME tab, beside the account's <c>AccountRegistered</c>. Any other update (a change of
+    /// contact) is an <c>AccountUpdated</c> row on the ACME tab.
     /// </summary>
     [HttpPost("account/{id:guid}")]
     [AcmeJws]
@@ -282,21 +284,99 @@ public class AcmeAccountController(
                 certificateAuthorityId: ca?.Id,
                 spaceId: ca?.SpaceId);
 
+            // The ACME tab showed an account being registered and never its end, so a reader of
+            // that tab alone saw an account that simply stopped ordering.
+            await _protocolAudit.LogAcmeAsync("AccountDeactivated", id, null,
+                subjectDN: null, certSerial: null, identifiers: null, revocationReason: null,
+                sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
+                caLabel: ca?.Label, certificateAuthorityId: ca?.Id, spaceId: ca?.SpaceId);
+
             return Ok(deactivated);
         }
 
         var updated = await _accountService.UpdateAsync(id, request);
+
+        // A change of contact is where expiry and problem notices go from now on. It left no
+        // trace; the addresses themselves are not copied into the audit row.
+        var addressed = HttpContext.Items[AcmeJwsActionFilter.AddressedCaItem] as CertificateAuthorityEntity;
+        await _protocolAudit.LogAcmeAsync("AccountUpdated", id, null,
+            subjectDN: null, certSerial: null, identifiers: null, revocationReason: null,
+            sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
+            caLabel: addressed?.Label, certificateAuthorityId: addressed?.Id, spaceId: addressed?.SpaceId);
         return Ok(updated);
     }
 
     /// <summary>
-    /// Account key rollover (RFC 8555 §7.3.5).
+    /// Account key rollover (RFC 8555 §7.3.5). Replacing the key replaces the account's only
+    /// credential, and it used to leave no record at all. A rollover is now audited in the main
+    /// audit log (<c>AcmeAccountKeyChanged</c>, with the old and new key thumbprints) and as an
+    /// <c>AccountKeyChanged</c> row on the ACME tab; a refused one is an unsuccessful
+    /// <c>KeyChangeRefused</c> row on the ACME tab carrying the reason the client was given.
+    /// The new key is the one in the inner JWS header; the inner payload carries <c>account</c>
+    /// and <c>oldKey</c>, and a <c>newKey</c> member is optional and must match the header.
     /// </summary>
     [HttpPost("key-change")]
     [AcmeJws]
     public async Task<IActionResult> KeyChange()
     {
         var jws = GetJws();
+        var trace = new KeyChangeTrace();
+        var result = await KeyChangeCoreAsync(jws, trace);
+        if (jws.AccountId is not Guid accountId)
+            return result;
+
+        var ca = HttpContext.Items[AcmeJwsActionFilter.AddressedCaItem] as CertificateAuthorityEntity;
+        var sourceIp = HttpContext.Connection.RemoteIpAddress?.ToString();
+        if (result is ObjectResult { Value: AcmeErrorResponse refusal })
+        {
+            await _protocolAudit.LogAcmeAsync("KeyChangeRefused", accountId, null,
+                subjectDN: null, certSerial: null, identifiers: null, revocationReason: null,
+                sourceIp: sourceIp, success: false, errorMessage: refusal.Detail,
+                caLabel: ca?.Label, certificateAuthorityId: ca?.Id, spaceId: ca?.SpaceId);
+            return result;
+        }
+
+        await _audit.LogAsync(
+            AuditActionType.AcmeAccountKeyChanged,
+            actorUserId: null,
+            actorUsername: "acme-client",
+            targetEntityType: "AcmeAccount",
+            targetEntityId: accountId.ToString(),
+            sourceIp: sourceIp,
+            details: new
+            {
+                AccountId = accountId,
+                OldJwkThumbprint = trace.OldThumbprint,
+                NewJwkThumbprint = trace.NewThumbprint,
+                CaLabel = ca?.Label,
+            },
+            certificateAuthorityId: ca?.Id,
+            spaceId: ca?.SpaceId);
+        await _protocolAudit.LogAcmeAsync("AccountKeyChanged", accountId, null,
+            subjectDN: null, certSerial: null, identifiers: null, revocationReason: null,
+            sourceIp: sourceIp,
+            caLabel: ca?.Label, certificateAuthorityId: ca?.Id, spaceId: ca?.SpaceId);
+        return result;
+    }
+
+    /// <summary>The key thumbprints of a rollover that was carried out, for its audit entry.</summary>
+    private sealed class KeyChangeTrace
+    {
+        /// <summary>Thumbprint of the key the account had.</summary>
+        public string? OldThumbprint { get; set; }
+
+        /// <summary>Thumbprint of the key the account has now.</summary>
+        public string? NewThumbprint { get; set; }
+    }
+
+    /// <summary>
+    /// Checks a key rollover request and carries it out. Every refusal is returned as an
+    /// <see cref="AcmeErrorResponse"/>, which <see cref="KeyChange"/> audits.
+    /// </summary>
+    /// <param name="jws">The outer JWS, already verified against the account's current key.</param>
+    /// <param name="trace">Filled with the thumbprints when the rollover is carried out.</param>
+    private async Task<IActionResult> KeyChangeCoreAsync(AcmeJwsPayload jws, KeyChangeTrace trace)
+    {
         if (jws.AccountId == null)
             return AcmeError(400, "urn:ietf:params:acme:error:malformed", "Account not identified.");
 
@@ -400,19 +480,19 @@ public class AcmeAccountController(
             oldKeyProp.ValueKind != JsonValueKind.Object)
             return AcmeError(400, "urn:ietf:params:acme:error:malformed", "Inner JWS payload must contain oldKey.");
 
-        // Inner payload is required to contain newKey for the actual key rollover.
-        if (!innerPayload.TryGetProperty("newKey", out var newKeyProp) ||
-            newKeyProp.ValueKind != JsonValueKind.Object)
-            return AcmeError(400, "urn:ietf:params:acme:error:malformed", "Inner JWS payload must contain newKey.");
-
-        var newJwkJson = newKeyProp.GetRawText();
-
-        // The inner header jwk must be the same as the payload newKey.
-        var headerJwkThumbprint = _jwsService.ComputeThumbprint(innerHeaderJwkProp.GetRawText());
+        // The new key is the inner header's jwk (RFC 8555 §7.3.5): the keyChange object has only
+        // "account" and "oldKey". A "newKey" member was required here, which no standard client
+        // sends, so every real key rollover was refused. One that is sent is still held to the
+        // header's key, so a client written against the old behaviour keeps working.
+        var newJwkJson = innerHeaderJwkProp.GetRawText();
         var payloadNewKeyThumbprint = _jwsService.ComputeThumbprint(newJwkJson);
-        if (!string.Equals(headerJwkThumbprint, payloadNewKeyThumbprint, StringComparison.Ordinal))
-            return AcmeError(400, "urn:ietf:params:acme:error:malformed",
-                "Inner JWS protected header jwk does not match payload newKey.");
+        if (innerPayload.TryGetProperty("newKey", out var newKeyProp))
+        {
+            if (newKeyProp.ValueKind != JsonValueKind.Object ||
+                !string.Equals(_jwsService.ComputeThumbprint(newKeyProp.GetRawText()), payloadNewKeyThumbprint, StringComparison.Ordinal))
+                return AcmeError(400, "urn:ietf:params:acme:error:malformed",
+                    "Inner JWS protected header jwk does not match payload newKey.");
+        }
 
         // Fetch current account JWK to compare thumbprints.
         var currentJwkJson = await _accountService.GetJwkByIdAsync(jws.AccountId.Value)
@@ -439,6 +519,8 @@ public class AcmeAccountController(
         }
 
         await _accountService.KeyChangeAsync(jws.AccountId.Value, newJwkJson, payloadNewKeyThumbprint);
+        trace.OldThumbprint = currentThumbprint;
+        trace.NewThumbprint = payloadNewKeyThumbprint;
         return Ok();
     }
 

@@ -69,16 +69,28 @@ public class CmpService : ICmpService, IEnrollmentProtocol
     EnrollmentCapabilities IEnrollmentProtocol.Capabilities =>
         EnrollmentCapabilities.Enroll | EnrollmentCapabilities.Renew | EnrollmentCapabilities.Revoke;
 
-    /// <summary>Audit message type recorded for an issued certificate.</summary>
-    private const string IssueOperation = "IR";
+    /// <summary>
+    /// Audit message type recorded for an issued certificate: the request that was made, <c>IR</c>,
+    /// <c>CR</c> or <c>KUR</c>. Every issuance was recorded as <c>IR</c>, so a key update could not
+    /// be told from a first enrolment on the CMP tab.
+    /// </summary>
+    /// <param name="reqCtx">Per-request CMP state; a request type not read yet counts as <c>ir</c>.</param>
+    internal static string IssueOperation(CmpRequestContext reqCtx) => reqCtx.RequestType switch
+    {
+        "cr" => "CR",
+        "kur" => "KUR",
+        _ => "IR",
+    };
 
     /// <summary>
     /// Audit message type recorded for a request the middle refused. CMP wrote no audit row at
     /// all for a refused enrollment before the migration: every policy refusal was thrown, scrubbed
     /// into a system-failure response and recorded nowhere, so the CMP tab showed issuance and
-    /// revocation and never a rejection.
+    /// revocation and never a rejection. Named after the request, as <see cref="IssueOperation"/>
+    /// is: <c>IRRejected</c>, <c>CRRejected</c> or <c>KURRejected</c>.
     /// </summary>
-    private const string RejectOperation = "IRRejected";
+    /// <param name="reqCtx">Per-request CMP state.</param>
+    internal static string RejectOperation(CmpRequestContext reqCtx) => IssueOperation(reqCtx) + "Rejected";
 
     // PKIBody type tags per RFC 4210 §5.1.2
     private const int TypeIr = 0;   // Initialization Request
@@ -1226,7 +1238,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
     /// <para>
     /// The pipeline audits what it issues, pends and refuses, but not a
     /// <see cref="EnrollmentOutcome.Failed"/> configuration fault; that row is written here, an
-    /// <c>IRRejected</c> carrying the fault's sentence, so the failure reaches the CMP tab and not
+    /// <c>IRRejected</c> (or the <c>cr</c> or <c>kur</c> form) carrying the fault's sentence, so the failure reaches the CMP tab and not
     /// only the log.
     /// </para>
     /// </remarks>
@@ -1562,7 +1574,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
         => record.Event switch
         {
             EnrollmentAuditEvent.Issued => _protocolAudit.LogCmpAsync(
-                IssueOperation, record.Subject, record.SerialNumber,
+                IssueOperation(reqCtx), record.Subject, record.SerialNumber,
                 record.KeyAlgorithm, record.KeySize, record.CaLabel, record.Correlation, null, reqCtx.SourceIp,
                 certificateAuthorityId: record.CaId, spaceId: record.SpaceId,
                 callerPrincipal: reqCtx.CallerPrincipal),
@@ -1570,14 +1582,14 @@ public class CmpService : ICmpService, IEnrollmentProtocol
             // A request an approver owns is one this client can never collect, so it is recorded as
             // the refusal it becomes rather than as something still in flight.
             EnrollmentAuditEvent.Pending => _protocolAudit.LogCmpAsync(
-                RejectOperation, record.Subject, null,
+                RejectOperation(reqCtx), record.Subject, null,
                 record.KeyAlgorithm, record.KeySize, record.CaLabel, record.Correlation, null, reqCtx.SourceIp,
                 success: false, errorMessage: ApprovalUnsupported,
                 certificateAuthorityId: record.CaId, spaceId: record.SpaceId,
                 callerPrincipal: reqCtx.CallerPrincipal),
 
             _ => _protocolAudit.LogCmpAsync(
-                RejectOperation, record.Subject, null,
+                RejectOperation(reqCtx), record.Subject, null,
                 record.KeyAlgorithm, record.KeySize, record.CaLabel, record.Correlation, null, reqCtx.SourceIp,
                 success: false, errorMessage: record.Message ?? "Enrollment refused.",
                 certificateAuthorityId: record.CaId, spaceId: record.SpaceId,
@@ -1631,6 +1643,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                         StatusRejection,
                         new PkiFreeText(new DerUtf8String("Missing serial number in revocation request.")),
                         FailureInfo(FailBadRequest)));
+                    await LogRevocationRefusedAsync(null, null, "Missing serial number in revocation request.", reqCtx);
                     continue;
                 }
 
@@ -1645,6 +1658,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                         StatusRejection,
                         new PkiFreeText(new DerUtf8String($"Certificate with serial {serialHex} not found.")),
                         FailureInfo(FailBadRequest)));
+                    await LogRevocationRefusedAsync(null, serialHex, "No certificate has this serial.", reqCtx);
                     continue;
                 }
 
@@ -1663,6 +1677,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                             new PkiFreeText(new DerUtf8String(
                                 $"Certificate issuer does not match this CA. Cannot revoke certificates issued by another CA.")),
                             FailureInfo(FailBadRequest)));
+                        await LogRevocationRefusedAsync(certEntity.SubjectDN, serialHex, "The issuer named in the request is not this CA.", reqCtx);
                         continue;
                     }
                 }
@@ -1680,6 +1695,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                         new PkiFreeText(new DerUtf8String(
                             $"Certificate with serial {serialHex} was not issued by this CA.")),
                         FailureInfo(FailBadRequest)));
+                    await LogRevocationRefusedAsync(certEntity.SubjectDN, serialHex, "The certificate was not issued by this CA.", reqCtx);
                     continue;
                 }
 
@@ -1703,6 +1719,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                         new PkiFreeText(new DerUtf8String(
                             "Not authorized to revoke this certificate.")),
                         FailureInfo(FailNotAuthorized)));
+                    await LogRevocationRefusedAsync(certEntity.SubjectDN, serialHex, $"Not authorized to revoke this certificate: {revDenial}", reqCtx);
                     continue;
                 }
 
@@ -1714,6 +1731,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                         new PkiFreeText(new DerUtf8String(
                             $"Certificate with serial {serialHex} is already revoked.")),
                         FailureInfo(FailBadRequest)));
+                    await LogRevocationRefusedAsync(certEntity.SubjectDN, serialHex, "The certificate is already revoked.", reqCtx);
                     continue;
                 }
 
@@ -1745,6 +1763,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
                 // Keep exception text out of wire responses.
                 var correlationId = Guid.NewGuid().ToString("N")[..12];
                 _logger.LogError(ex, "CMP revocation failure [{CorrelationId}]", correlationId);
+                await LogRevocationRefusedAsync(null, null, $"Revocation failed (ref {correlationId}).", reqCtx);
                 statusList.Add(new PkiStatusInfo(
                     StatusRejection,
                     new PkiFreeText(new DerUtf8String($"Revocation failed; contact administrator (ref {correlationId})")),
@@ -1758,6 +1777,25 @@ public class CmpService : ICmpService, IEnrollmentProtocol
         var responseBody = new PkiBody(TypeRp, revRepContent);
         return BuildPkiMessage(requestHeader, responseBody, caCert, caKey, reqCtx);
     }
+
+    /// <summary>Audit message type recorded for a revocation request that was refused.</summary>
+    private const string RevocationRejectOperation = "RRRejected";
+
+    /// <summary>
+    /// Writes an unsuccessful <c>RRRejected</c> row for one refused entry of a revocation request.
+    /// A granted revocation wrote an <c>RR</c> row; a refused one, including an attempt to revoke a
+    /// certificate the caller has no right to, reached only the log file.
+    /// </summary>
+    /// <param name="subject">Subject of the certificate named, when it was found.</param>
+    /// <param name="serialHex">Serial named in the request, when it could be read.</param>
+    /// <param name="reason">Why it was refused, for the audit row; fuller than the wire text.</param>
+    /// <param name="reqCtx">Per-request CMP state, for the caller and the address.</param>
+    private Task LogRevocationRefusedAsync(string? subject, string? serialHex, string reason, CmpRequestContext reqCtx)
+        => _protocolAudit.LogCmpAsync(RevocationRejectOperation, subject, serialHex, null, null,
+            reqCtx.Ca?.Label ?? reqCtx.CaLabel, reqCtx.TransactionIdHex, null, reqCtx.SourceIp,
+            success: false, errorMessage: reason,
+            certificateAuthorityId: reqCtx.Ca?.Id, spaceId: reqCtx.Ca?.SpaceId,
+            callerPrincipal: reqCtx.CallerPrincipal);
 
     /// <summary>
     /// Handles CMP CertConf (certificate confirmation, type 24) per RFC 4210 §5.3.18.
