@@ -6,7 +6,148 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### 0.4.4-rc.1.0 — 2026-11-11
+
+The first release candidate of 0.4.4, for test hosts. It is 0.4.4-dev.1.4 plus what running the
+enrolment protocols against the test install turned up. Since 0.4.4-dev.1.4:
+
+- **SCEP's GetCACaps is answered for the CA it is asked of.** A CA whose key is not RSA, a CA
+  with SCEP switched off, and a label that names no CA all used to list capabilities. A probe
+  that used GetCACaps as a liveness check will now see 400 or 409 where SCEP is not served.
+- **The protocol audit tabs say more, and two names changed.** CMP rows are named after the
+  request (`IR`, `CR`, `KUR` and their `Rejected` forms; every issuance was `IR`). An EST
+  re-enrolment writes `SimpleReenroll` where it wrote `SimpleEnroll`. New rows: an ACME key
+  change, contact change, deactivation and refused challenge response, and a refused CMP
+  revocation. Anything that counts issuance by filtering on `IR` or `SimpleEnroll` should
+  include the new names.
+
+No migration is added: the schema is the one 0.4.4-dev.1.1 left.
+
+**Known in this candidate:** it is built on the .NET 10.0.14 runtime, which is affected by
+GHSA-vmv3-wvjp-wqpj, a denial-of-service flaw in `System.Formats.Cbor` published on
+2026-11-10 and fixed in 10.0.15. The release will be built on 10.0.15.
+
+### 0.4.4-dev.1.4 — 2026-11-11
+
+The fourth test build of 0.4.4, after 0.4.4-dev.1.3 was installed and its operator tier,
+requesting and user deletion were checked live. Since 0.4.4-dev.1.3:
+
+- **The request form asks for the issuing CA first.** A CA picker at the top of the request
+  form narrows the signing profiles, request profiles and certificate profiles to that CA. It
+  starts empty unless the caller can use only one CA. The administrator's issue page has the
+  same picker. The profile lists of the API carry the CA of each signing profile for this.
+- **Deleted accounts can be seen.** The Users page has a Deleted tab listing the accounts kept
+  as a record, with the requests and approvals that still name each. The delete dialog says
+  beforehand when an account will be kept.
+- **A signing profile of a deleted CA is refused at submit**, with a message that says so.
+- **`--upgrade-check --read-only`** says whether migrations are pending without rehearsing
+  them, so it can run beside a serving node. It ends with exit status 5 when migrations are
+  pending and were not rehearsed.
+
+No migration is added: the schema is the one 0.4.4-dev.1.1 left.
+
+### 0.4.4-dev.1.3 — 2026-11-11
+
+The third test build of 0.4.4, after 0.4.4-dev.1.2 was installed and its roles, issuance and
+user administration were probed live. Since 0.4.4-dev.1.2:
+
+- **A CA's operator group is a protected tier.** On the test install one administrator of a CA
+  created an operator account, signed in as it and approved its own request. Adding a CA
+  operator now needs a second person; LDAP mappings no longer add members to such a group. Read
+  the upgrade notes before installing over an instance that provisions CA operators.
+- **Log files on Linux.** A systemd install wrote no `logs/modularca-*.log` at all; the test
+  install had had none since 19 October. Fixed. After installing, check that `logs/` holds a
+  file for today.
+- **Deleting users.** An account with requests or approvals could not be deleted (500). It is
+  now retained: hidden, stripped of everything it could sign in with or reach, its username
+  kept for good.
+- **A requester can request a certificate in the console.** The self-service profile lists now
+  list what the caller could submit against; some callers see fewer rows than before.
+- **Smaller:** the OID catalog is readable by anyone who can view certificates;
+  `--upgrade-check` refuses a build that cannot build its web host.
+
+No migration is added: the schema is the one 0.4.4-dev.1.1 left.
+
+### 0.4.4-dev.1.2 — 2026-11-10
+
+0.4.4-dev.1.1 did not start: its archive carried a command-line tool's copy of
+`Microsoft.Extensions.ObjectPool` (7.0.0) in place of the web framework's (10.0), and the server
+stopped with "Could not load file or assembly" before it read its configuration or touched a
+database. The build published its three programs into one directory and left it to file
+timestamps whose copy of a shared file stayed; turning on ReadyToRun changed the outcome. The
+build now merges them in a fixed order, the server last, and refuses an archive in which any
+file the server published is not the server's own copy. Nothing else differs from 0.4.4-dev.1.1.
+
+### 0.4.4-dev.1.1 — 2026-11-10
+
+The second test build of 0.4.4, after the first was installed and probed as accounts of every
+tier. Since 0.4.4-dev.1.0:
+
+- **Who may do what changed.** Administrators and operators of a CA or a space issue and approve
+  with the profiles of their own scope, and the Operator role gains `profile.use` (one
+  migration, `OperatorRoleUsesProfiles`). Administrators of a CA or a space administer the users
+  of their own scope through the API; MFA reset, and accounts in no group, stay with system
+  administrators. A requester no longer reads the users and groups of its space. Read the upgrade
+  notes before installing over an instance with delegated roles.
+- **Sessions and audit.** A replayed refresh token ends every session of the account. Step-up
+  audit rows carry the username. A lookup of an account that does not exist answers 404.
+- **Starting and upgrading.** A start that stops for good after applying a migration exits 4, and
+  3 from the schema check promises nothing was applied. The scheduler holds the jobs that need
+  the signer until its first answer. The PROXY protocol settings can come from the environment.
+- **The image and the build.** The image declares no volumes and sets a writable `HOME`, so its
+  log files are written. The Linux build is published ReadyToRun, on trial.
+
+### 0.4.4-dev.1.0 — 2026-11-10
+
+The first test build of 0.4.4. It carries everything below.
+
 **Upgrade notes**
+
+- **Making someone an operator of a CA now needs a second person.** A CA's operator group is a
+  protected tier, as its administrator group and a space's operator group already are. An account
+  cannot be created straight into it; adding a member opens a ceremony that someone who outranks
+  the tier approves (another administrator of that CA, an administrator of its space, or a system
+  administrator); a change to an operator's password or state by anyone but a system-super opens
+  one too; and whoever reset an account's password or MFA in the last 30 days cannot open its
+  promotion. Three things to check before upgrading:
+  - **LDAP group mappings to a CA's operator group stop adding members.** The directory cannot
+    place anyone in a protected tier. Members already there stay. Map the directory group to the
+    CA's requesters or auditors and promote by ceremony, or have a system-super add them.
+  - **A system administrator who is not a system-super** no longer adds a CA operator directly:
+    it opens the ceremony like anyone else.
+  - **A CA with one administrator and nobody above it who will approve** cannot gain an operator
+    until a system-super adds one.
+- **Operators can now approve and issue too.** The built-in Operator role gains `profile.use`
+  (the `OperatorRoleUsesProfiles` migration adds it to the role and to every group made from the
+  Operator template). With the entry below, an operator of a CA or a space approves requests and
+  issues with that scope's profiles, where before the role's `cert.approve` could approve
+  nothing. Review who holds the Operator role before upgrading. To keep an operator from
+  issuing, give it a custom role without `profile.use`.
+- **CA and space administrators can now issue with the profiles of their own scope.** Until now
+  only a system administrator could issue or approve a certificate through the admin routes, or
+  see any certificate, signing or request profile in the console, unless someone had granted
+  each profile to an account or role by name. The built-in roles' own profile capabilities were
+  not counted. They are now, at the scope they are held: see "Profile capabilities from a role
+  count" under Security. Review who holds the Administrator role on a CA or a space before
+  upgrading; from this release that role issues.
+- **Administrators of a CA or a space gain user administration within their scope; operators lose
+  what they had of it.** From this release the Administrator role on a CA or a space can create
+  accounts, change the memberships of its own groups, and reset the password of, update, disable
+  and delete accounts that hold nothing outside its scope: see "Administrators of a CA or a space
+  can administer the users of their own scope" under Security. Review who holds that role. The
+  Operator role, at any scope, can no longer create an account, and a system operator can no
+  longer reset an account's MFA: both now need `user.manage`, which the Operator role does not
+  carry. Resetting MFA stays with system administrators. A script that called these routes as an
+  operator must use an administrator's account. The console's Users page is still shown only to
+  holders of `user.manage` at system scope; a scoped administrator reaches these routes through
+  the API for now.
+- **The container image declares no volumes.** A container started from the bare image with no
+  mounts (`docker run` or `podman run` and nothing else) used to get an anonymous volume for
+  `config`, `keystores`, `logs` and `backups`; now those directories are in the container's own
+  layer and go when the container is removed. Name every mount, as `compose.yaml` and
+  `modularca-pod.yaml` do; nothing changes for either. In the pod this means the signer no longer
+  gets a writable `config` directory, nor the node a `keystores` directory. An orchestrator that
+  passed `--image-volume=ignore` to avoid them can drop it.
 
 - **The headless bootstrap no longer prints the first administrator's password.** It is written to
   `config/initial-admin-password`, readable by the service account only, and the bootstrap prints
@@ -144,6 +285,99 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 **Security**
 
+- **Built on the .NET 10.0.15 runtime.** The tarball and image carry the .NET runtime inside
+  them. 10.0.14 and earlier are affected by GHSA-vmv3-wvjp-wqpj (CVE-2026-118747), published on
+  2026-11-10: colliding map keys in CBOR input make `System.Formats.Cbor` spend a great deal of
+  time checking them for uniqueness, a denial of service. The product reads CBOR in its FIDO2
+  (passkey and security key) code. Every earlier build, `0.4.3` and `0.4.4-rc.1.0` included,
+  carries 10.0.14 or older; the fix is to install this build, since the runtime is not the
+  host's. The Microsoft .NET packages move from 10.0.14 to 10.0.15 with it, and
+  `System.Formats.Cbor` is pinned to 10.0.15 where a dependency asked for 9.0.0.
+- **An administrator of a CA can no longer make its own second approver.** With this release an
+  operator of a CA approves and issues that CA's requests, and an administrator of a CA creates
+  accounts and changes memberships in its own scope. The CA's operator group was the one such
+  group that was not a protected tier, so one administrator could create an operator account
+  with a password of its choosing, sign in as it and approve its own certificate request: the
+  rule that nobody approves their own request, defeated by one person. Found on the test install
+  of 0.4.4-dev.1.2, where all three steps went through. A CA's operator group is now the
+  `CaOperator` tier: see the upgrade notes for what that changes. No stored data changes; the
+  tier is worked out from the group and its capabilities, including `ca.manage` held on one CA
+  through a direct grant or a role.
+- **Administrators of a CA or a space can administer the users of their own scope, and of no
+  other.** The user-administration routes (`PUT` and `DELETE /api/v1/admin/users/{id}`,
+  `reset-password`, and the three group-membership routes) asked for `ca.manage` on a CA that a
+  route carrying only a user id can never name, so the server refused them to everyone but a
+  system administrator: an administrator of a CA or a space could not reset a password, disable
+  an account or change the members of its own groups. That refusal was a containment, since
+  without it an administrator of one small CA could have reset the password of a system
+  administrator. The routes now ask for `user.manage` (account changes) or `group.manage`
+  (memberships) at some scope, and decide against the account itself:
+  - An account the caller cannot see, by the rule the user list applies, answers 404 exactly as
+    an id that names nothing.
+  - Updating, disabling, deleting or resetting the password of an account needs `user.manage` on
+    every CA and space the account holds anything in: a group membership, a capability grant, a
+    role, access to a single certificate, an SSH login name. One holding outside the caller's
+    scope, anything held at instance scope (a system group included), or no holding at all, and
+    only a system administrator may change the account. The caller's own account follows the same
+    rule.
+  - A membership needs `group.manage` on the group's own CA or space, never on another one, and
+    nobody changes their own.
+  - An account in no group belongs to no scope, so only a system administrator can see, place or
+    change one. An administrator below system scope therefore cannot make one: it must name at
+    least one group it manages when it creates an account (400 otherwise), and it may not remove
+    the last thing an account holds (409). Taking someone out for good is a delete or a disable;
+    moving them is an add to the new group first, then the removal. That includes demoting an
+    administrator whose only group is the administrators: add them to another group first.
+  - The controlled-tier rules apply as they did for system administrators: a change to an account
+    that holds an administrator tier opens a ceremony instead of applying, adding someone to such
+    a group opens one too, and whoever reset an account's password or MFA in the last 30 days
+    cannot open its promotion. A ceremony opened below system scope expires at execute when the
+    account has since been given something outside the scopes it was in.
+
+  Two routes became stricter. Resetting an account's MFA needs `user.manage` at system scope
+  (it asked for `ca.manage` there): together with a password reset it is a complete takeover, so
+  an administrator of a CA or a space does not get both, and a system operator can no longer
+  reset MFA. Creating an account needs `user.manage` (it asked for `ca.manage` on any CA), so an
+  operator can no longer create one. Deleting an account now makes the same checks against the
+  account as the other changes do. The rule that a CA-scoped permission is
+  refused on a write whose route names no CA is unchanged; these routes have a gate of their own.
+- **Profile capabilities from a role count, at the scope the role is held.** Using a profile to
+  issue or approve asks for `profile.use` on the signing profile and the certificate profile;
+  the profile lists show a profile to a holder of any `profile.*` capability on it. Both counted
+  only grants that named a profile or the profile type, and ignored the unrestricted
+  capabilities the built-in roles carry, so the Administrator role's `profile.use` gave nothing
+  and every scoped administrator, operator and auditor (and the system auditor) saw empty
+  profile lists. An unrestricted capability now covers:
+  - a signing or request profile of a CA, when it is held on that CA, across the CA's space or
+    at system scope;
+  - a certificate profile bound to a CA or a space, when it is held on that CA or in that space;
+  - a profile bound to neither, when it is held anywhere. Its use is still confined by the
+    signing profile of the same request, which names its CA.
+
+  It never reaches another CA or another space, and a signing profile whose issuer is no CA is
+  covered only at system scope. What changes in practice: **the Administrator and Operator roles
+  issue and approve within their CA or space**, where before only a system administrator could
+  (the Operator role gains `profile.use` in this release; see the upgrade notes); the Auditor
+  role sees the profiles of its scope but cannot use them, because it carries no `profile.use`;
+  a requester sees and uses nothing more. Grants that name
+  one profile work as before. Found on the first test install of 0.4.4-dev.1.0.
+- **A requester can no longer read the users and groups of its space.** The user list, the three
+  user lookups and the group list and lookups under `/api/v1/admin` asked for `cert.view`, which
+  the Requester role holds so that it can see certificates. Any requester could therefore read
+  every account of its space with its e-mail address, last sign-in, lock state and memberships,
+  and every group. They now ask for `group.view` (policy `CaDirectoryViewer`), which the Auditor,
+  Operator and Administrator roles hold and Requester does not; what each caller sees is still
+  limited to its spaces. A custom role that should read the directory needs `group.view`. Found
+  on the first test install of 0.4.4-dev.1.0.
+- **A replayed refresh token ends every session of the account.** A refresh token that was already
+  exchanged for a new one and is presented again is the sign that it was copied. The server
+  already revoked that session's refresh tokens; an access token issued to the other holder kept
+  working until it expired, up to the access-token lifetime. Now the account's security stamp
+  rotates and every refresh token is revoked, so every access token is refused on its next
+  request and the account signs in again on each device. A stale token from before a logout or a
+  credential change was never exchanged, and presenting it ends nothing more. The console
+  serialises refreshes across tabs, so it does not trip this itself; an API client that sends
+  one refresh token twice (a retry after a lost answer) now signs the account out everywhere.
 - **A separate signer's keystore events reach the audit trail.** With the signer apart from the
   node (the pod's signer container, or the two units), every keystore event the signer raised
   (keystores loaded at each start, `ssh-ca.keystore` created, a key appended for a new CA or SSH CA
@@ -448,6 +682,122 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 **Fixed**
 
+- **SCEP's GetCACaps is answered for the CA it is asked of.** It was answered without looking at
+  the CA, so a client was told `POSTPKIOperation`, `SHA-256` and the rest by a CA whose key is
+  not RSA, by a CA with SCEP switched off, and under a label that names no CA. It is now refused
+  as GetCACert is: 409 with `reason: "ScepRequiresRsaKey"` for a CA SCEP cannot run on, 400
+  otherwise. A CA whose key is not RSA gives that 409 on all three operations even while SCEP is
+  switched off on it, which is its usual state; it gave the generic 400.
+- **The CMP audit tab names the request that was made.** Every certificate CMP issued was
+  recorded as `IR` and every refusal as `IRRejected`, so a key update could not be told from a
+  first enrolment. The rows now read `IR`, `CR` or `KUR`, and `IRRejected`, `CRRejected` or
+  `KURRejected`. Anything that filters the CMP tab on `IR` to count issuance should include the
+  other two.
+- **An ACME client can change its account key.** The key-change request was refused unless its
+  inner payload carried a `newKey` member, which RFC 8555 does not define and no standard
+  client sends: the new key is the one in the inner header. A standard request is now accepted.
+  A `newKey` member that is sent must still match the header's key.
+- **"My Certificates" lists the caller's certificates.** The self-service page and its dashboard
+  counts showed every certificate the caller could view, which for an operator or administrator
+  is every certificate of their CAs. They now show the caller's own: those issued from a request
+  the caller made, and those shared with the caller by name. The page has a choice to list
+  every certificate the caller can view, as before. `GET /api/v1/user/certificates` gains
+  `?mine=true` for this; without it the answer is unchanged.
+- **The self-service sidebar marks one page as current.** On My Requests, "Request Certificate"
+  was marked as well.
+- **The Deleted tab of the Users page shows its values whole.** Usernames, dates and a header
+  were cut off with an ellipsis while most of the table was empty.
+- **An ACME account key change is audited.** Replacing an account's key replaces its only
+  credential, and it left no record anywhere. A rollover is now in the main audit log as
+  `AcmeAccountKeyChanged`, with the old and new key thumbprints, and on the ACME tab as
+  `AccountKeyChanged`. A refused one is an unsuccessful `KeyChangeRefused` row with the reason.
+- **A refused CMP revocation is on the CMP audit tab.** A granted revocation wrote an `RR` row; a
+  refused one reached only the log file, including an attempt to revoke a certificate the caller
+  has no right to. Each refused entry is now an unsuccessful `RRRejected` row with the serial,
+  the caller and the reason.
+- **The EST audit tab names a re-enrolment as one.** Enrolment and re-enrolment share a path, and
+  its rows were all named after enrolment. A re-enrolment now writes `SimpleReenroll`,
+  `SimpleReenroll-PendingApproval` or `EstReenrollRejected`. Anything that counts EST issuance
+  by filtering on `SimpleEnroll` should include `SimpleReenroll`.
+- **Two more ACME events are on the ACME audit tab:** a change of an account's contact
+  (`AccountUpdated`; the addresses are not copied into the row), and a challenge response the
+  server refused (`ChallengeRefused`, unsuccessful, with the reason that only reached the log
+  file).
+- **Deactivating an ACME account is on the ACME audit tab.** It was written to the main audit
+  log only, so the tab showed an account being registered and never its end. An
+  `AccountDeactivated` row is added; the main audit entry is unchanged.
+- **A request against a deleted CA's signing profile is refused when it is made.** It was
+  stored, and could be approved, although issuance refuses a deleted CA: the request then sat
+  there for good. The console and its API now answer 400 with `MCA-CFG-015`, the code issuance
+  uses, and say to choose another signing profile.
+- **The node writes its log file again on Linux.** The log file was opened in Serilog's shared
+  mode, which off Windows creates a named system mutex before it opens the file. .NET cannot
+  create one when the service account's home directory is not writable, which is the case under
+  the hardened systemd unit (the home is the read-only install directory) as it was in the
+  container image before it set `HOME=/tmp`. The step failed for every file name the sink tried;
+  the sink then dropped every event, and the test install had written no `logs/modularca-*.log` since 19 October. The journal kept
+  everything, and the only sign was `[Serilog SelfLog] ... was locked` and `could not be opened or
+  created` lines at start. The node and the signer role now open their log file unshared; each
+  file has one writer. **Check an install:** if `logs/` holds no file for today, it was affected.
+- **A requester can request a certificate in the console.** The request form fills its signing
+  profile picker from `GET /api/v1/user/signing-profiles`, which listed a profile only to a
+  caller holding a `profile.*` capability. The Requester role holds `cert.request` and
+  `cert.view`, so its picker was empty, although the server accepted the same account's
+  submission. Both self-service lists now follow the check a submission goes through:
+  - `GET /api/v1/user/signing-profiles` lists a signing profile when the caller holds
+    `cert.request` on its CA, the CA is live, and it is inside the caller's space fence.
+  - `GET /api/v1/user/request-profiles` lists a request profile when one of those signing
+    profiles goes with it, and names on each row only the certificate profiles that CA admits.
+
+  Some callers see fewer rows than before, each of them a row a submission would have refused:
+  a `profile.*` capability alone no longer lists a signing profile; membership of a CA's group
+  without `cert.request` there (an auditor) no longer lists that CA's request profiles; a
+  signing profile with no issuer is listed only to a holder of `cert.request` at system scope;
+  profiles of a deleted CA, and request profiles bound to a CA with no signing profile, are
+  listed to nobody, system administrators included; and a caller with nothing to submit against
+  gets an empty request-profile list. The administration lists under `/api/v1/admin` are
+  unchanged.
+- **Deleting an account with a history works, and keeps the history.** An account that made a
+  certificate request or approved one could not be deleted: `DELETE /api/v1/admin/users/{id}`
+  answered 500. It now answers 200 with `retained: true`. The account is gone from every list
+  and can never sign in again, but its row is kept so that its requests and approvals still name
+  it; a request list shows the requester as `name (deleted)`. What goes: group memberships,
+  roles, direct grants, badges, sessions, MFA and mTLS credentials, the password and its history,
+  enrolment tokens the account created, access to single certificates, and the email address.
+  What stays: the id and the username. **The username cannot be used again**, by a new account,
+  a rename, a service identity or a directory sign-in; the email address can. Nothing restores a
+  retained account. An account with no such history is removed outright as before
+  (`retained: false`). The enrolment account of a Kerberos realm is refused with 409 until the
+  realm is given another account. Found on the test install of 0.4.4-dev.1.2.
+- **Auditors and scoped administrators can read the OID catalog.** `GET /api/v1/admin/oid-options`
+  is the list the certificate profile editor builds its key usage pickers from, and was meant to
+  be readable by anyone who can view certificates. A system-operator rule on the whole controller
+  applied to it as well, so everyone below a system operator was refused. The rule is now on the
+  two writes only. Found on the test install of 0.4.4-dev.1.2.
+- **A start no longer logs failed CRL and renewal runs while a separate signer is coming up.**
+  With the signer apart from the node (the pod, or the two units), the node is up a few seconds
+  before the signer listens, and a scheduled CRL generation, auto-renewal or web TLS renewal run
+  in that window failed with "the signer is unreachable" on every ordinary start. The scheduler
+  now holds those three jobs until the signer has answered once, says so in one information
+  line, and runs them as soon as it answers. The hold ends for good at that first answer, and
+  after five minutes without one: a signer that goes away later, or never comes up, is reported
+  as an error exactly as before. Nothing changes with the signer in process.
+- **The container writes its log files.** In the image every write to `logs/modularca-*.log`
+  failed ("the target file could not be opened or created"), for the node and the signer, and
+  only the console had the log. The file is opened shared, which on Linux takes a named mutex,
+  and .NET could not create one because the image account's home is not writable. The image now
+  sets `HOME=/tmp`. An orchestrator that worked around this with `HOME=/tmp` of its own can
+  drop it. Found by the hub's run; not reproduced here, where there is no container runtime.
+- **A lookup of an account that does not exist answers 404.** `GET /api/v1/admin/users/{id}`,
+  `by-username` and `by-email` answered 500 for an account that does not exist and 404 for one
+  outside the caller's spaces, so the two could be told apart and a username in another space
+  confirmed. Deleting an id that names no account, and
+  `GET /api/v1/admin/ssh/ca-keys/{id}/public-key` for an unknown key, answered 500 too; all are
+  404 now. Found on the first test install of 0.4.4-dev.1.0.
+- **Step-up audit rows name who stepped up.** `MfaStepUpVerified` and `MfaStepUpFailed` rows
+  carried the actor's id and an empty username, so a search of the audit trail by username missed
+  them. They now carry the username from the access token. Rows already written are not changed.
+  Found on the first test install of 0.4.4-dev.1.0.
 - **A pod install keeps the bootstrap's audit records.** The bootstrap queued the records of its
   keystore writes and setup choices (whether several people administer the CA, ACME validation of
   private addresses) in `logs/bootstrap-audit-*.jsonl` for the node to replay at its first start.
@@ -641,6 +991,72 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   below, what the signer itself reports). The PIN and the mappings' key ids are never returned.
 
 **Changed**
+
+- **`--upgrade-check --read-only`: a check that can run beside a node that is still serving.**
+  The upgrade check rehearses pending migrations, and the rehearsal holds their locks, so
+  beside a serving node it made clients wait. With `--read-only` it does everything that needs
+  no rehearsal (can this build start, the catalog and history reads, ownership, every refusal
+  that can be decided by reading), takes no migration lock, and writes nothing: its connections
+  are read-only at the server and give up on a lock after half a second. It ends one of four
+  ways: exit 0, nothing to apply; exit 3, refused, worded as before; exit 75, try again; and a
+  new **exit 5**, `UPGRADE PENDING, NOT REHEARSED (...)`, naming the pending migrations of each
+  database. Exit 5 is not a pass: whether the migrations apply to this data is only known once
+  the check has run without the flag, with the node stopped. Without the flag nothing changes.
+- **The certificate request form asks for the issuing CA first.** Step 1 now leads with a
+  Certificate Authority picker, on the user's request page and on the administrator's. Until a
+  CA is chosen the three profile pickers are disabled. With a CA chosen they offer only what
+  goes with it: that CA's signing profiles (its default preselected), the request profiles
+  bound to it or to none, and the certificate profiles it admits. Changing the CA clears the
+  choices made under the old one. The picker is filled in for you when there is nothing to
+  choose: you can use one CA only, or the console is scoped to one CA, or to a space that has
+  one. A console scoped to a space offers that space's CAs. A signing profile with no issuer is
+  not offered by the form. Before, the three pickers were independent, and a pairing from two
+  CAs was refused only on submit.
+  - To carry this, the signing-profile lists name the CA: rows of
+    `GET /api/v1/user/signing-profiles`, `GET /api/v1/admin/signing-profiles` (and `/{id}`) and
+    `GET /api/v1/integration/infra/signing-profiles` gain `caId`, `caName` and `caSpaceId`, null
+    for a profile with no issuer. Each `certProfiles` entry of
+    `GET /api/v1/user/request-profiles` gains `spaceId` and `certificateAuthorityId`. Fields are
+    added only; no list returns different rows.
+  - On the administrator's page the certificate profile is no longer preselected when the page
+    opens; it is chosen after the CA and the request profile.
+- **Deleted accounts that are kept as a record can be seen.** The Users page has a Deleted tab
+  listing each account that was deleted but retained because requests or approvals still name
+  it, with when it was deleted and how many of each. It is read-only, for holders of
+  `user.manage` at system scope, and backed by `GET /api/v1/admin/users/deleted`. The console's
+  delete dialog now says when an account will be kept this way, and the confirmation says when
+  it was.
+- **`--upgrade-check` refuses a build that cannot start.** Before it looks at the configuration
+  or a database it builds the web host once and throws it away. A payload with a wrong or
+  missing framework assembly is refused there with `THIS BUILD CANNOT START` and exit status 3,
+  while the version it would replace is still running. The check used to pass on such a build,
+  as it did on 0.4.4-dev.1.1, so the old version was stopped before anyone learned the new one
+  would not start. The Linux build script runs the same check on the finished payload when the
+  build host can run it, and refuses to make the archive otherwise.
+- **The Linux build is published ReadyToRun.** The assemblies carry precompiled code, so the node,
+  the signer and every one-shot command compile less at each start. The unpacked install is about
+  a third larger (145 MB to 194 MB). Nothing changes in how it is installed or run.
+  `MODULARCA_READYTORUN=0 scripts/build-linux-dist.sh` builds without it. Measured on a pod: a
+  start is about 2.5 s shorter (11.4 s to 8.9 s) and each `--check-ready` uses a quarter to a
+  third less CPU; the container image is 75 MB larger.
+- **A start that fails after applying a migration exits with status 4, not 3.** Exit status 3
+  from the start-up schema check now promises that it applied nothing, so the previous release
+  can run on the same databases. Status 4 means the start stopped for good after a migration had
+  committed (one failed during the apply, the history could not be read to tell, or the check
+  afterwards did not match): fix the cause and start this release again, or restore both
+  databases before running the previous one. The journal says which. Status 75 is unchanged and
+  promises nothing either way: start the same release again. `modularca.service` carries
+  `RestartPreventExitStatus=3 4`; a hand-written unit or an orchestrator that treats 3 as "do
+  not retry" should treat 4 the same. A start can still change `config.yaml` or import SSH key
+  files after the schema check and then fail with another status, so only 3 from the schema
+  check is a promise.
+- **The PROXY protocol settings can come from the environment.**
+  `MODULARCA__HTTPS__PROXYPROTOCOL`, `MODULARCA__HTTP__PROXYPROTOCOL` and
+  `MODULARCA__HTTP__PROXYPROTOCOLTRUSTEDCIDRS` override `Https.ProxyProtocol`,
+  `Http.ProxyProtocol` and `Http.ProxyProtocolTrustedCidrs` for this host and are never written
+  to `config.yaml`, like `MODULARCA__HEALTH__LOOPBACKPORT`. An orchestrator sets them in each
+  instance's unit instead of editing the file between the init containers and the node. A switch
+  that is neither `true` nor `false` stops the start, naming the variable.
 
 - **With a remote signer, the Settings page's HSM card shows the signer's HSM settings.** It could
   only say "held by the signer". The signer's health answer on the signer channel now also says
