@@ -593,6 +593,7 @@ export interface ControlledUserChangeParameters {
     credentialSnapshots?: ControlledCredentialSnapshot[] | null;
     recentCredentialResets?: ControlledCredentialReset[] | null;
     recentResetsUnchecked: boolean;
+    targetScopes?: string[] | null;
     mintedTierLevel: number;
     mintedTierCaId?: string | null;
     mintedTierSpaceId?: string | null;
@@ -845,6 +846,11 @@ export interface GroupMembershipDto {
     isSystemGroup: boolean;
 }
 
+/** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
+export interface HealthConfig {
+    loopbackPort: number;
+}
+
 /** From `ModularCA.Shared/Models/Csr/HeldKeyPkcs12Request.cs`. */
 export interface HeldKeyPkcs12Request {
     password: string;
@@ -874,6 +880,22 @@ export interface HsmKeyMapping {
     caLabel: string;
     keyLabel: string;
     keyId?: string | null;
+}
+
+/** From `ModularCA.Shared/Models/Config/HsmSettingsSummary.cs`. */
+export interface HsmKeyMappingSummary {
+    caLabel: string;
+    keyLabel: string;
+}
+
+/** From `ModularCA.Shared/Models/Config/HsmSettingsSummary.cs`. */
+export interface HsmSettingsSummary {
+    heldBy: string;
+    signerEndpoint?: string | null;
+    enabled?: boolean | null;
+    modulePath?: string | null;
+    slotId?: string | null;
+    keyMappings?: HsmKeyMappingSummary[] | null;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
@@ -1656,6 +1678,7 @@ export interface SystemConfig {
     redis: RedisConfig;
     audit: AuditConfig;
     schema: SchemaConfig;
+    health: HealthConfig;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
