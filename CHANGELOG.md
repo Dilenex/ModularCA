@@ -6,6 +6,24 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### 0.4.4-rc.1.1 — 2026-11-11
+
+The second release candidate of 0.4.4, after 0.4.4-rc.1.0 was installed on a test host and its
+protocols and console were gone through. Since 0.4.4-rc.1.0:
+
+- **Built on the .NET 10.0.15 runtime.** 0.4.4-rc.1.0 and every earlier build carry 10.0.14 or
+  older, which is affected by GHSA-vmv3-wvjp-wqpj, a denial-of-service flaw in
+  `System.Formats.Cbor`. After installing, `ModularCA.API.runtimeconfig.json` in the install
+  directory names 10.0.15.
+- **An ACME client can change its account key.** A key-change request in the shape RFC 8555
+  defines was refused.
+- **"My Certificates" lists the caller's certificates**, where it listed every certificate the
+  caller could view. The page can still show the wider list.
+- **Smaller, in the console:** the self-service sidebar marks one page as current, and the
+  Deleted tab of the Users page shows its values whole.
+
+No migration is added: the schema is the one 0.4.4-dev.1.1 left.
+
 ### 0.4.4-rc.1.0 — 2026-11-11
 
 The first release candidate of 0.4.4, for test hosts. It is 0.4.4-dev.1.4 plus what running the
@@ -25,7 +43,7 @@ No migration is added: the schema is the one 0.4.4-dev.1.1 left.
 
 **Known in this candidate:** it is built on the .NET 10.0.14 runtime, which is affected by
 GHSA-vmv3-wvjp-wqpj, a denial-of-service flaw in `System.Formats.Cbor` published on
-2026-11-10 and fixed in 10.0.15. The release will be built on 10.0.15.
+2026-11-10 and fixed in 10.0.15. 0.4.4-rc.1.1 is built on 10.0.15.
 
 ### 0.4.4-dev.1.4 — 2026-11-11
 
