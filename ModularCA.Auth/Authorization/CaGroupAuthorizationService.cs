@@ -790,6 +790,13 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Three kinds of grant count: one naming this resource, one naming the resource type with
+    /// no id (every resource of the type), and an unrestricted one (no resource named, as the
+    /// built-in roles give) held at a scope that covers the resource's own
+    /// (<see cref="Covers"/>). Until 0.4.4 the third kind was ignored, so only a system
+    /// administrator, or an account given grants profile by profile, could use a profile.
+    /// </remarks>
     public async Task<bool> HasResourceCapabilityAsync(Guid userId, string capability, string resourceType, Guid resourceId)
     {
         var (worn, bGroups, bRas, bGrants) = await BadgeAsync(userId);
@@ -829,7 +836,12 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
                     && (rc.ResourceId == resourceId || rc.ResourceId == null))))
             return true;
 
-        return false;
+        // An unrestricted grant of the capability (no resource named), held at a scope that covers
+        // this resource: the built-in roles grant profile.* this way.
+        var scope = (await ProfileScopesAsync(resourceType, resourceId)).FirstOrDefault();
+        if (scope == default)
+            return false;
+        return Covers(await UnrestrictedReachAsync(userId, [capability]), scope.CaId, scope.SpaceId);
     }
 
     /// <inheritdoc />
@@ -879,6 +891,104 @@ public class CaGroupAuthorizationService : ICaGroupAuthorizationService
             .ToListAsync();
         foreach (var id in s4) { if (id == null) hasWildcard = true; else resourceIds.Add(id.Value); }
 
+        // Unrestricted grants (no resource named), as the built-in roles give profile.*: every
+        // resource of the type whose own scope the grant covers. Held at system scope it is all of them.
+        if (!hasWildcard)
+        {
+            var reach = await UnrestrictedReachAsync(userId, Capabilities.All.Where(c => c.StartsWith(capabilityPrefix, StringComparison.Ordinal)));
+            if (reach.System)
+                hasWildcard = true;
+            else if (reach.CaSpaces.Count > 0)
+                foreach (var scope in await ProfileScopesAsync(resourceType, null))
+                    if (Covers(reach, scope.CaId, scope.SpaceId))
+                        resourceIds.Add(scope.Id);
+        }
+
         return (resourceIds.ToList(), hasWildcard);
+    }
+
+    /// <summary>
+    /// Where the user holds any of <paramref name="capabilities"/> as an unrestricted grant (one
+    /// that names no resource): at system scope, or the certificate authorities it reaches
+    /// through CA-level and space-level grants, each with its space. Badge-aware, through
+    /// <see cref="HasSystemCapabilityAsync"/> and <see cref="GetAccessibleCaIdsAsync(Guid, string)"/>.
+    /// </summary>
+    private async Task<(bool System, Dictionary<Guid, Guid?> CaSpaces)> UnrestrictedReachAsync(Guid userId, IEnumerable<string> capabilities)
+    {
+        var caIds = new HashSet<Guid>();
+        foreach (var capability in capabilities)
+        {
+            if (await HasSystemCapabilityAsync(userId, capability))
+                return (true, []);
+            foreach (var id in await GetAccessibleCaIdsAsync(userId, capability))
+                caIds.Add(id);
+        }
+        if (caIds.Count == 0)
+            return (false, []);
+        var spaces = await _db.CertificateAuthorities.AsNoTracking()
+            .Where(ca => caIds.Contains(ca.Id))
+            .Select(ca => new { ca.Id, ca.SpaceId })
+            .ToDictionaryAsync(ca => ca.Id, ca => ca.SpaceId);
+        return (false, spaces);
+    }
+
+    /// <summary>
+    /// Whether an unrestricted grant with <paramref name="reach"/> covers a resource bound to
+    /// <paramref name="caId"/>, or to <paramref name="spaceId"/> alone, or to neither. A resource
+    /// of one CA needs the grant on that CA (directly, across its space, or at system scope). One
+    /// bound to a space alone needs it somewhere in that space. One bound to nothing is usable
+    /// across the instance, so the grant anywhere covers it: what confines its use is the other
+    /// resource of the same request, which is bound (a signing profile names its CA).
+    /// </summary>
+    private static bool Covers((bool System, Dictionary<Guid, Guid?> CaSpaces) reach, Guid? caId, Guid? spaceId)
+    {
+        if (reach.System)
+            return true;
+        if (caId is Guid ca)
+            return reach.CaSpaces.ContainsKey(ca);
+        if (spaceId is Guid space)
+            return reach.CaSpaces.Values.Any(s => s == space);
+        return reach.CaSpaces.Count > 0;
+    }
+
+    /// <summary>
+    /// The scope of each resource of <paramref name="resourceType"/> (<c>CertProfile</c>,
+    /// <c>SigningProfile</c> or <c>RequestProfile</c>), or of the one named by
+    /// <paramref name="resourceId"/>: the CA it is bound to and, for a certificate profile, its
+    /// space. A signing profile is bound through its issuer, a CA's certificate; one whose issuer
+    /// is no CA's certificate is bound to a CA nobody holds, so no unrestricted grant below
+    /// system scope covers it. Another resource type has no scope here and yields nothing.
+    /// </summary>
+    private async Task<List<(Guid Id, Guid? CaId, Guid? SpaceId)>> ProfileScopesAsync(string resourceType, Guid? resourceId)
+    {
+        switch (resourceType)
+        {
+            case "CertProfile":
+                return (await _db.CertProfiles.AsNoTracking()
+                        .Where(p => resourceId == null || p.Id == resourceId)
+                        .Select(p => new { p.Id, p.CertificateAuthorityId, p.SpaceId }).ToListAsync())
+                    .Select(p => (p.Id, p.CertificateAuthorityId, p.SpaceId)).ToList();
+            case "RequestProfile":
+                return (await _db.RequestProfiles.AsNoTracking()
+                        .Where(p => resourceId == null || p.Id == resourceId)
+                        .Select(p => new { p.Id, p.CertificateAuthorityId }).ToListAsync())
+                    .Select(p => (p.Id, p.CertificateAuthorityId, (Guid?)null)).ToList();
+            case "SigningProfile":
+                var profiles = await _db.SigningProfiles.AsNoTracking()
+                    .Where(p => resourceId == null || p.Id == resourceId)
+                    .Select(p => new { p.Id, p.IssuerId }).ToListAsync();
+                var issuers = profiles.Where(p => p.IssuerId != null).Select(p => p.IssuerId!.Value).Distinct().ToList();
+                var caByCertificate = issuers.Count == 0
+                    ? []
+                    : await _db.CertificateAuthorities.AsNoTracking()
+                        .Where(ca => ca.CertificateId != null && issuers.Contains(ca.CertificateId.Value))
+                        .Select(ca => new { ca.Id, CertificateId = ca.CertificateId!.Value })
+                        .ToDictionaryAsync(ca => ca.CertificateId, ca => ca.Id);
+                return profiles.Select(p => (p.Id,
+                    p.IssuerId is Guid issuer ? (caByCertificate.TryGetValue(issuer, out var ca) ? ca : Guid.Empty) : (Guid?)null,
+                    (Guid?)null)).ToList();
+            default:
+                return [];
+        }
     }
 }

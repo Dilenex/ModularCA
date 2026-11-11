@@ -133,6 +133,7 @@ public sealed class CeremonyEndpointPipelineTests
                 options.FallbackPolicy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build();
             });
             services.AddSingleton<IAuthorizationHandler>(new CaGroupAuthorizationHandler(groupAuth, accessor, Db, NullLogger<CaGroupAuthorizationHandler>.Instance));
+            services.AddSingleton<IAuthorizationHandler>(new AnyScopeCapabilityAuthorizationHandler(groupAuth));
             var sp = services.BuildServiceProvider();
 
             var provider = sp.GetRequiredService<IAuthorizationPolicyProvider>();

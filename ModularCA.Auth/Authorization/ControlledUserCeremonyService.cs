@@ -600,7 +600,9 @@ public class ControlledUserCeremonyService(
     /// password, MFA or identity changed since initiation, an identity change's account no longer
     /// matches the state it was opened against, a promotion or identity change carries no such
     /// state because it was opened before it was recorded (<see cref="PredatesCredentialCheck"/>),
-    /// that tier is higher than the approved one, or the
+    /// that tier is higher than the approved one, an account change opened below system scope
+    /// finds its account holding something outside the scopes recorded at initiation
+    /// (<see cref="ControlledUserChangeParameters.TargetScopes"/>), or the
     /// recorded approvals no longer hold enough active approvers dominating it (for a promotion, who
     /// did not reset the credentials of an account it promotes), the ceremony is marked Expired and a
     /// <see cref="ControlledUserChangeRefusedException"/> is thrown. A demotion, deletion, disable or
@@ -636,6 +638,8 @@ public class ControlledUserCeremonyService(
             && await ControlledCredentials.AccountStateAsync(db, p.TargetUserId) is { } state
             && !ControlledCredentials.Unchanged(before, state, identity))
             stale = "the account changed after it was opened";
+        if (stale == null && p.TargetScopes is { } pinnedScopes && await UserAdministrationAccess.HoldsOutsideAsync(db, p.TargetUserId, pinnedScopes))
+            stale = "the account now holds a membership, grant or role in a scope it held none in when this was opened";
         if (stale == null && current is { } now && !approved.Dominates(now))
             stale = "it now confers a higher privilege tier than the one approved";
         if (stale == null && !await ApprovalsStillCoverAsync(ceremony, p, approved, current))

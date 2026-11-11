@@ -1526,6 +1526,9 @@ builder.Services.AddScoped<ModularCA.Shared.Interfaces.IWornBadgeProvider>(sp =>
 builder.Services.AddScoped<ModularCA.Auth.Authorization.AccessBadgeService>();
 builder.Services.AddScoped<ModularCA.Auth.Authorization.ServiceIdentityService>();
 builder.Services.AddScoped<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, ModularCA.Auth.Authorization.CaGroupAuthorizationHandler>();
+// The gate of the user-administration routes: holds the capability at some scope. Its own handler,
+// so the CA-scoped handler above keeps refusing every write whose route names no CA.
+builder.Services.AddScoped<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, ModularCA.Auth.Authorization.AnyScopeCapabilityAuthorizationHandler>();
 
 builder.Services.AddAuthorization(options =>
 {

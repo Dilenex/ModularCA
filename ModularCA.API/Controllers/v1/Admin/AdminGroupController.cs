@@ -52,7 +52,7 @@ public class AdminGroupController(
     /// and LDAP mapping validation judge it.
     /// </summary>
     [HttpGet]
-    [Authorize(Policy = "CaAuditor")]
+    [Authorize(Policy = "CaDirectoryViewer")]
     [ProducesResponseType(200)]
     [ProducesResponseType(401)]
     public async Task<IActionResult> GetAll()
@@ -66,7 +66,7 @@ public class AdminGroupController(
             .AsNoTracking()
             .AsQueryable();
 
-        var fence = SpaceFence.From(HttpContext, Capabilities.CertView);
+        var fence = SpaceFence.From(HttpContext, Capabilities.GroupView);
         query = query.Where(fence.Predicate<Shared.Entities.CaGroupEntity>(g => g.SpaceId));
 
         var groups = await query.OrderBy(g => g.Name).ToListAsync();
@@ -97,7 +97,7 @@ public class AdminGroupController(
     /// Verifies the requesting user has access to the group's space before returning data.
     /// </summary>
     [HttpGet("{id:guid}")]
-    [Authorize(Policy = "CaAuditor")]
+    [Authorize(Policy = "CaDirectoryViewer")]
     public async Task<IActionResult> GetById(Guid id)
     {
         var group = await _db.CaGroups
@@ -109,7 +109,7 @@ public class AdminGroupController(
         if (group == null)
             return NotFound(new { error = $"Group with ID {id} not found" });
 
-        if (!SpaceFence.From(HttpContext, Capabilities.CertView).Allows(group.SpaceId))
+        if (!SpaceFence.From(HttpContext, Capabilities.GroupView).Allows(group.SpaceId))
             return NotFound(new { error = $"Group with ID {id} not found" });
 
         return Ok(new
@@ -139,7 +139,7 @@ public class AdminGroupController(
     /// Returns all groups scoped to a specific certificate authority.
     /// </summary>
     [HttpGet("by-ca/{caId:guid}")]
-    [Authorize(Policy = "CaAuditor")]
+    [Authorize(Policy = "CaDirectoryViewer")]
     public async Task<IActionResult> GetByCa(Guid caId)
     {
         // Verify space access to the target CA before enumerating
@@ -178,7 +178,7 @@ public class AdminGroupController(
             .Where(c => c.Id == caId)
             .Select(c => new { c.SpaceId })
             .FirstOrDefaultAsync();
-        return ca != null && SpaceFence.From(HttpContext, Capabilities.CertView).Allows(ca.SpaceId) ? null : NotFound();
+        return ca != null && SpaceFence.From(HttpContext, Capabilities.GroupView).Allows(ca.SpaceId) ? null : NotFound();
     }
 
     /// <summary>
@@ -186,7 +186,7 @@ public class AdminGroupController(
     /// the caller's <see cref="SpaceFence"/>; an instance group (no space) needs instance scope.
     /// </summary>
     private IActionResult? EnsureGroupInAccessibleSpace(Shared.Entities.CaGroupEntity group)
-        => SpaceFence.From(HttpContext, Capabilities.CertView).Allows(group.SpaceId) ? null : NotFound();
+        => SpaceFence.From(HttpContext, Capabilities.GroupView).Allows(group.SpaceId) ? null : NotFound();
 
     /// <summary>
     /// Creates a custom (non-auto-generated) group. Auto-generated groups are created during CA creation.

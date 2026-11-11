@@ -882,6 +882,21 @@ sshd -t && systemctl reload ssh`}</pre>
                     <li>Auto-generated groups per CA label</li>
                     <li>See and grant the SSH login names an instance group gives its members, per SSH CA</li>
                 </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    <strong>What a CA group narrows, and what it does not.</strong> The space is the boundary
+                    of what a member can see; a CA group decides what the member can do, and on which CA.
+                    A member of one CA's group acts only on that CA, and sees only that CA's certificates
+                    and audit records. It still sees that the other CAs of the same space exist: the list
+                    of certificate authorities, the hierarchy and the CRL schedules show every CA of the
+                    space, with the name, subject, serial and expiry each CA publishes anyway in its
+                    certificate and CRLs. Nothing of another space is shown. To keep two sets of CAs from
+                    knowing of each other, put them in separate spaces.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    The lists of users and groups need the <span className="data-mono">group.view</span> capability,
+                    which the Auditor, Operator and Administrator roles carry. A member with the Requester
+                    role alone does not see them.
+                </p>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/admin/groups<br />
                     POST /api/v1/admin/groups<br />

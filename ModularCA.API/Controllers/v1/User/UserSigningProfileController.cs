@@ -28,8 +28,9 @@ public class UserSigningProfileController(
     /// <summary>
     /// Returns signing profiles the caller has profile.* grants for, whose issuing CA is inside
     /// the caller's <see cref="ModularCA.Auth.Authorization.SpaceFence"/> (a profile with no
-    /// issuer is unbound). System admins see all profiles; other users see only those with an
-    /// explicit capability grant.
+    /// issuer is unbound). System admins see all profiles; other users see those a grant naming
+    /// the profile gives them, and those of the CAs and spaces where their role carries a
+    /// profile.* capability (a requester's does not).
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> GetSigningProfiles()

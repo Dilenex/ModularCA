@@ -1773,6 +1773,76 @@ public class PostgresUpgradeHarnessTests
         }
 
         /// <summary>
+        /// <c>OperatorRoleUsesProfiles</c> gives <c>profile.use</c> to the built-in Operator role
+        /// and to every group made from the Operator template, once each, and to nothing else: not
+        /// a custom role, not another built-in role, not another template's group, not a group
+        /// that already holds it. A grant naming one profile does not count as holding it.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task The_operator_role_and_the_groups_made_from_it_gain_profile_use_once()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                await using var app = CreateApp(WithDatabase(server, appName));
+                await MigrateThroughAsync(app, "DropUnreadSettingColumns");
+
+                RoleEntity Role(string name, bool builtIn, params string[] caps)
+                {
+                    var role = new RoleEntity { Name = name, Description = name, IsBuiltIn = builtIn };
+                    app.Roles.Add(role);
+                    foreach (var cap in caps)
+                        app.RoleCapabilities.Add(new RoleCapabilityEntity { RoleId = role.Id, Capability = cap });
+                    return role;
+                }
+                CaGroupEntity Group(string name, string? template, params (string Capability, string? ResourceType)[] grants)
+                {
+                    var group = new CaGroupEntity { Name = name, DisplayName = name, TemplateName = template };
+                    app.CaGroups.Add(group);
+                    foreach (var (capability, resourceType) in grants)
+                        app.CapabilityGrants.Add(new CapabilityGrantEntity { GroupId = group.Id, Capability = capability, ResourceType = resourceType });
+                    return group;
+                }
+                var builtInOperator = Role("Operator", true, "cert.revoke", "profile.view");
+                var builtInAuditor = Role("Auditor", true, "cert.view");
+                var customOperator = Role("Operations", false, "cert.revoke");
+                var plainGroup = Group("ca-operator", "Operator", ("cert.revoke", null));
+                var alreadyGroup = Group("space-operator", "Operator", ("profile.use", null));
+                var namedGroup = Group("named-operator", "Operator", ("profile.use", "SigningProfile"));
+                var auditorGroup = Group("ca-auditor", "Auditor", ("cert.view", null));
+                var customGroup = Group("custom", null, ("cert.revoke", null));
+                await app.SaveChangesAsync();
+
+                await MigrateThroughAsync(app, "OperatorRoleUsesProfiles");
+
+                Task<long> RoleHas(RoleEntity role) => ScalarAsync(app,
+                    $"SELECT count(*) FROM \"RoleCapabilities\" WHERE \"RoleId\" = '{role.Id}' AND \"Capability\" = 'profile.use' AND \"ResourceType\" IS NULL");
+                Task<long> GroupHas(CaGroupEntity group) => ScalarAsync(app,
+                    $"SELECT count(*) FROM \"CapabilityGrants\" WHERE \"GroupId\" = '{group.Id}' AND \"Capability\" = 'profile.use' AND \"ResourceType\" IS NULL");
+                Assert.Equal(1, await RoleHas(builtInOperator));
+                Assert.Equal(0, await RoleHas(builtInAuditor));
+                Assert.Equal(0, await RoleHas(customOperator));
+                Assert.Equal(1, await GroupHas(plainGroup));
+                Assert.Equal(1, await GroupHas(alreadyGroup));
+                Assert.Equal(1, await GroupHas(namedGroup));
+                Assert.Equal(0, await GroupHas(auditorGroup));
+                Assert.Equal(0, await GroupHas(customGroup));
+                // The grant naming a profile type is still there beside the new one.
+                Assert.Equal(2, await ScalarAsync(app,
+                    $"SELECT count(*) FROM \"CapabilityGrants\" WHERE \"GroupId\" = '{namedGroup.Id}' AND \"Capability\" = 'profile.use'"));
+
+                await MigrateToLatestAsync(app, "application");
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+        }
+
+        /// <summary>
         /// The SSH part of <c>--upgrade-check</c> against a database from before the SSH keystore:
         /// every key file there and holding its key is clean, with the count; a file that is gone
         /// refuses the upgrade, naming the SSH CA, its row and the path, until the file is back or

@@ -5,7 +5,7 @@ export const adminUsers: ApiEndpoint[] = [
         method: 'GET',
         path: '/api/v1/admin/users',
         summary: 'List all user accounts. Read-only; accessible to auditors.',
-        auth: 'Authorize (CaAuditor)',
+        auth: 'Authorize (CaDirectoryViewer: group.view)',
         category: 'Admin Users',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
@@ -16,7 +16,7 @@ export const adminUsers: ApiEndpoint[] = [
         method: 'GET',
         path: '/api/v1/admin/users/{id}',
         summary: 'Get a single user account by ID. Read-only; accessible to auditors.',
-        auth: 'Authorize (CaAuditor)',
+        auth: 'Authorize (CaDirectoryViewer: group.view)',
         category: 'Admin Users',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
@@ -27,7 +27,7 @@ export const adminUsers: ApiEndpoint[] = [
         method: 'GET',
         path: '/api/v1/admin/users/by-username/{username}',
         summary: 'Look up a user by username. Read-only; accessible to auditors.',
-        auth: 'Authorize (CaAuditor)',
+        auth: 'Authorize (CaDirectoryViewer: group.view)',
         category: 'Admin Users',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
@@ -38,7 +38,7 @@ export const adminUsers: ApiEndpoint[] = [
         method: 'GET',
         path: '/api/v1/admin/users/by-email',
         summary: 'Look up a user by email address.',
-        auth: 'Authorize (CaAuditor)',
+        auth: 'Authorize (CaDirectoryViewer: group.view)',
         category: 'Admin Users',
         queryParams: [
             { name: 'email', type: 'string', required: true, description: 'Email address to search for' },

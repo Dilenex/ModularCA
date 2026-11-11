@@ -146,7 +146,7 @@ const CertificateDetail: React.FC = () => {
 
     useEffect(() => {
         loadAcl();
-        apiGet<any>('/api/v1/admin/users').then((d) => setAllUsers(Array.isArray(d) ? d : (d.items || d.users || []))).catch(() => {});
+        apiGet<any>('/api/v1/admin/users', { toast: false }).then((d) => setAllUsers(Array.isArray(d) ? d : (d.items || d.users || []))).catch(() => {});
     }, [loadAcl]);
 
     // ACL changes are step-up gated (granting Manage confers revoke/reissue rights).

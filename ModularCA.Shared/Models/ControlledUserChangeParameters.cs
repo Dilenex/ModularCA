@@ -76,6 +76,18 @@ public class ControlledUserChangeParameters
     /// <summary>For a promotion: true when the audit trail could not be read at initiation, so recent resets are unknown.</summary>
     public bool RecentResetsUnchecked { get; set; }
 
+    /// <summary>
+    /// For an account change (ResetPassword, ResetMfa, UpdateIdentity, DeleteUser) opened by an
+    /// administrator below system scope: the scopes the target held anything in at initiation
+    /// (<c>instance</c>, <c>space:{id}</c>, <c>ca:{id}</c>), every one of which the initiator
+    /// administers. Execute expires the ceremony when the account has since come to hold something
+    /// outside them, since the change would then reach into a scope nobody checked. Null when the
+    /// initiator held the right at system scope, which covers every scope; a null is not written,
+    /// so every other ceremony's stored parameters keep the shape they had.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? TargetScopes { get; set; }
+
     // ── Affected tier (for approver dominance) ──
     /// <summary><see cref="Authorization.ControlledTierLevel"/> of the privilege being changed.</summary>
     public int MintedTierLevel { get; set; }

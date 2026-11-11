@@ -23,6 +23,24 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
     /// <summary>
     /// Admin endpoints for managing user accounts including creation, role assignment, and deletion.
     /// </summary>
+    /// <remarks>
+    /// A user account belongs to no CA, so none of these routes can name the CA a CA-scoped policy
+    /// would check, and such a policy refuses every write here below system scope. The write
+    /// routes therefore carry a gate that only asks "does the caller hold the administering
+    /// capability at some scope" (<c>UserAdministrator</c>: <c>user.manage</c>;
+    /// <c>GroupMembershipAdministrator</c>: <c>group.manage</c>), and each action decides against
+    /// its target:
+    /// <list type="bullet">
+    /// <item>The account must be one the caller can see, by the rule the reads use
+    /// (<see cref="ScopeToCallerAsync(UserEntityDto)"/>); otherwise 404, as for a missing id.</item>
+    /// <item>An account change needs <c>user.manage</c> on every scope the account holds anything
+    /// in (<see cref="UserAdministrationAccess"/>), then the controlled-tier rules
+    /// (<see cref="AuthorizeAccountAdministrationAsync"/>, <see cref="OpenAccountCeremonyAsync"/>).</item>
+    /// <item>A membership change needs <c>group.manage</c> on the group's own scope
+    /// (<see cref="AuthorizeGroupAssignmentAsync"/>), then the controlled-tier rules.</item>
+    /// </list>
+    /// The gate is safe only because of those checks; an action added here must make them too.
+    /// </remarks>
     [ApiController]
     [Route("api/v1/admin/users")]
     [Authorize]
@@ -54,10 +72,13 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// Retrieves all user accounts. Read-only; accessible to auditors.
         /// </summary>
         [HttpGet]
-        [Authorize(Policy = "CaAuditor")]
+        [Authorize(Policy = "CaDirectoryViewer")]
         public async Task<IActionResult> GetUsers()
         {
-            // Scoped to the caller's spaces. The policy is CaAuditor with no CA in the route, which
+            // Needs group.view (CaDirectoryViewer), which auditors, operators and administrators
+            // hold and a requester does not: cert.view alone used to be enough, so any requester
+            // could read this list.
+            // Scoped to the caller's spaces. The policy carries no CA in the route, which
             // the handler satisfies for a GET when the capability is held on ANY CA; and the service
             // has no space predicate. A single-CA auditor in one space could list every account
             // in every space, with group memberships (system groups included) and password expiry
@@ -70,7 +91,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// Retrieves a single user account by ID. Read-only; accessible to auditors.
         /// </summary>
         [HttpGet("{id:guid}")]
-        [Authorize(Policy = "CaAuditor")]
+        [Authorize(Policy = "CaDirectoryViewer")]
         public async Task<IActionResult> GetUserById(Guid id)
         {
             var user = await ScopeToCallerAsync(await _userService.GetUserById(id));
@@ -83,7 +104,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// Retrieves a single user account by username. Read-only; accessible to auditors.
         /// </summary>
         [HttpGet("by-username/{username}")]
-        [Authorize(Policy = "CaAuditor")]
+        [Authorize(Policy = "CaDirectoryViewer")]
         public async Task<IActionResult> GetUserByUsername(string username)
         {
             var user = await ScopeToCallerAsync(await _userService.GetUserByUsername(username));
@@ -96,7 +117,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// Retrieves a single user account by email address. Read-only; accessible to auditors.
         /// </summary>
         [HttpGet("by-email")]
-        [Authorize(Policy = "CaAuditor")]
+        [Authorize(Policy = "CaDirectoryViewer")]
         public async Task<IActionResult> GetUserByEmail([FromQuery] string email)
         {
             var user = await ScopeToCallerAsync(await _userService.GetUserByEmail(email));
@@ -119,7 +140,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// </remarks>
         private async Task<List<UserEntityDto>> ScopeToCallerAsync(List<UserEntityDto> users)
         {
-            var fence = SpaceFence.From(HttpContext, Capabilities.CertView);
+            var fence = SpaceFence.From(HttpContext, Capabilities.GroupView);
             if (fence.InstanceWide)
                 return users;
             if (fence.IsEmpty)
@@ -181,19 +202,48 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         }
 
         /// <summary>
-        /// Creates a new user account. Requires ca.manage on some CA and step-up MFA verification via X-MFA-Token header.
+        /// The one 404 every write answers for an account the caller may not act on, whether the
+        /// id names nothing or names an account outside the caller's view, so the two cannot be
+        /// told apart.
+        /// </summary>
+        private NotFoundObjectResult UserNotFound(Guid id) => NotFound(new { message = $"User with ID {id} not found" });
+
+        /// <summary>
+        /// Whether the account exists and the caller may see it: their own account always, any
+        /// other by the rule the reads apply (<see cref="ScopeToCallerAsync(UserEntityDto)"/>, the
+        /// <c>group.view</c> fence). A write on an account that fails this answers
+        /// <see cref="UserNotFound"/>.
+        /// </summary>
+        private async Task<bool> IsVisibleToCallerAsync(Guid userId)
+        {
+            var user = await _userService.GetUserById(userId);
+            if (user == null) return false;
+            if (_currentUser.User?.Id == userId) return true;
+            return await ScopeToCallerAsync(user) != null;
+        }
+
+        /// <summary>
+        /// Creates a new user account. Requires user.manage at some scope (the <c>UserAdministrator</c>
+        /// gate, which an operator does not hold) and step-up MFA verification via X-MFA-Token header.
         /// Each requested group needs the right on that group's own scope
         /// (<see cref="AuthorizeGroupAssignmentAsync"/>, 403 otherwise), and a group that confers a
-        /// controlled tier is refused (403) unless the caller is system-super. No groups requested means no groups.
+        /// controlled tier is refused (403) unless the caller is system-super. An administrator below
+        /// system scope must name at least one group (400): an account in no group belongs to no
+        /// scope, and nobody below system scope could administer it afterwards, its creator included.
+        /// A system administrator may create one with no groups.
         /// </summary>
         [HttpPost]
-        [Authorize]
-        [RequireCaCapability(Capabilities.CaManage, CaTarget.AnyCa)]
+        [Authorize(Policy = "UserAdministrator")]
         public async Task<IActionResult> CreateUser([FromBody] CreateUserRequest request,
             [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
         {
             await _currentUser.EnsureLoadedAsync();
             if (_currentUser.User == null) return Unauthorized();
+            // The gate again, for a caller that reached the action by another path: creating an
+            // account is user administration, which ca.manage (an operator) does not confer.
+            if (!await _controlledUserSvc.IsSuperAsync(_currentUser.User.Id)
+                && !await UserAdministrationAccess.HoldsAtSomeScopeAsync(_groupAuth, _currentUser.User.Id, Capabilities.UserManage))
+                return StatusCode(403, new { error = "You need user.manage to create a user." });
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.CreateUser))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
@@ -225,6 +275,14 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                     });
             }
 
+            if ((request.GroupIds?.Count ?? 0) == 0
+                && !await UserAdministrationAccess.MayHandleUnscopedAccountsAsync(_groupAuth, _controlledUserSvc, _currentUser.User.Id))
+                return BadRequest(new
+                {
+                    error = "Name at least one group you manage. An account in no group belongs to no scope, "
+                            + "and only a system administrator can create or administer one."
+                });
+
             var (success, error) = await _userService.CreateUser(request);
             if (success)
             {
@@ -239,7 +297,11 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         }
 
         /// <summary>
-        /// Updates a user account (e.g. activate/deactivate). Requires CaAdmin policy and step-up MFA verification.
+        /// Updates a user account (e.g. activate/deactivate). Requires user.manage at some scope
+        /// (the <c>UserAdministrator</c> gate) and step-up MFA verification. The account must be
+        /// visible to the caller (404 otherwise, as for a missing id) and the caller must hold
+        /// user.manage on every scope the account holds anything in (403 otherwise); that holds for
+        /// a name change too, and for the caller's own account.
         /// Only identity fields whose value differs from the account's are applied. Changing one
         /// (username, email, enabled, locked, password expiry, forced change, password source) on another account
         /// needs a caller who dominates every tier it holds (403 otherwise); when that account holds
@@ -254,7 +316,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// <see cref="AuditActionType.UserPasswordSourceChanged"/> with the old and new value.
         /// </summary>
         [HttpPut("{id:guid}")]
-        [Authorize(Policy = "CaAdmin")]
+        [Authorize(Policy = "UserAdministrator")]
         public async Task<IActionResult> UpdateUser(Guid id, [FromBody] UpdateUserRequest request,
             [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
         {
@@ -278,9 +340,11 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             if (_currentUser.User?.Id == id && request.IsActive == false)
                 return BadRequest(new { error = "You cannot deactivate your own account" });
 
+            if (await AuthorizeAccountScopeAsync(id) is { } outOfScope)
+                return outOfScope;
             var target = await _dbContext.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == id);
             if (target == null)
-                return NotFound(new { message = $"User with ID {id} not found" });
+                return UserNotFound(id);
 
             // A Directory account switching itself to Local would bring back a local password the
             // directory no longer vouches for; the same request from another administrator goes
@@ -307,7 +371,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
             if (altersIdentity)
             {
-                if (await AuthorizeAccountAdministrationAsync(id) is { } denied)
+                if (await AuthorizeAccountTierAsync(id) is { } denied)
                     return denied;
                 if (change.RemovesAccess
                     && await _controlledUserSvc.GetDeletionTierAsync(id) is { } tier
@@ -329,7 +393,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                 PasswordSource = change.PasswordSource,
             };
             if (!(await _userService.UpdateUser(id, effective)))
-                return NotFound(new { message = $"User with ID {id} not found" });
+                return UserNotFound(id);
             // Drop any cached stamp so the disable/lock change propagates
             // to the next authenticated request instead of waiting 30 s for the cache TTL.
             await TokenRevocationMiddleware.InvalidateUserStampCacheAsync(_cache, id);
@@ -344,12 +408,16 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         }
 
         /// <summary>
-        /// Deletes a user account. Self-deletion is blocked. Requires CaAdmin policy and step-up MFA verification.
+        /// Deletes a user account. Self-deletion is blocked. Requires user.manage at some scope (the
+        /// <c>UserAdministrator</c> gate) and step-up MFA verification. The account must be visible
+        /// to the caller (404 otherwise, as for a missing id), the caller must hold user.manage on
+        /// every scope the account holds anything in, and must dominate every tier it holds (403).
         /// Deleting a controlled user is refused for every caller when no one other than the caller would
-        /// still dominate its tier; otherwise non-super opens a ceremony.
+        /// still dominate its tier; otherwise non-super opens a ceremony, which for a caller below
+        /// system scope records the scopes the account is in and expires if it leaves them.
         /// </summary>
         [HttpDelete("{id:guid}")]
-        [Authorize(Policy = "CaAdmin")]
+        [Authorize(Policy = "UserAdministrator")]
         public async Task<IActionResult> DeleteUser(Guid id,
             [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
         {
@@ -360,6 +428,11 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
             if (_currentUser.User?.Id == id)
                 return BadRequest(new { error = "You cannot delete your own account" });
+
+            // Scope and tier before anything else: an account with no controlled tier (a requester,
+            // an auditor, a system auditor) is deleted directly below, so this is its only check.
+            if (await AuthorizeAccountAdministrationAsync(id) is { } denied)
+                return denied;
 
             // Controlled-user gate: deleting a user who holds a controlled tier (admin/CA-admin)
             // requires a ceremony for non-super, with the last-controlled-user guard.
@@ -379,6 +452,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                         ChangeType = "DeleteUser",
                         TargetUserId = id,
                         TargetUsername = targetUsername,
+                        TargetScopes = await UserAdministrationAccess.ScopesToPinAsync(_dbContext, _groupAuth, _controlledUserSvc, _currentUser.User.Id, id),
                     },
                     delTier.Value,
                     _currentUser.User!.Id,
@@ -399,11 +473,14 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                     "User", id.ToString(), sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());
                 return Ok(new { message = $"User {id} deleted" });
             }
-            return NotFound(new { message = $"User with ID {id} not found" });
+            return UserNotFound(id);
         }
 
         /// <summary>
-        /// Resets another user's password. Requires CaAdmin policy and step-up MFA verification via X-MFA-Token header.
+        /// Resets another user's password. Requires user.manage at some scope (the <c>UserAdministrator</c>
+        /// gate) and step-up MFA verification via X-MFA-Token header. The account must be visible to
+        /// the caller (404 otherwise, as for a missing id), and the caller must hold user.manage on
+        /// every scope the account holds anything in (403 otherwise).
         /// Refused (403) when the target holds a controlled tier the caller does not dominate. When it
         /// holds any controlled tier and the caller is not system-super, opens a controlled-user
         /// ceremony instead (202 with the ceremony id, no password); the temporary password is then
@@ -412,7 +489,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// Directory account, which would never use a local password.
         /// </summary>
         [HttpPost("{id:guid}/reset-password")]
-        [Authorize(Policy = "CaAdmin")]
+        [Authorize(Policy = "UserAdministrator")]
         public async Task<IActionResult> ResetUserPassword(Guid id,
             [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
         {
@@ -424,13 +501,13 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.ResetPassword, id.ToString()))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
+            if (await AuthorizeAccountAdministrationAsync(id) is { } denied)
+                return denied;
             var resetTarget = await _dbContext.Users.AsNoTracking().Where(u => u.Id == id)
                 .Select(u => new { u.Username, u.PasswordSource }).FirstOrDefaultAsync();
             if (resetTarget == null)
-                return NotFound(new { message = $"User with ID {id} not found" });
+                return UserNotFound(id);
             var targetUsername = resetTarget.Username;
-            if (await AuthorizeAccountAdministrationAsync(id) is { } denied)
-                return denied;
             // A temporary local password for a Directory account would never be used.
             if (resetTarget.PasswordSource == PasswordSource.Directory)
                 return Conflict(new
@@ -456,20 +533,23 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                 _ = _alertService.RaiseAlertAsync("AdminPasswordReset", AlertSeverity.Warning, $"Password reset for user {id} by {_currentUser.User?.Username}", new { TargetUserId = id });
                 return Ok(new { message = $"User {id} password reset", newPassword });
             }
-            return NotFound(new { message = $"User with ID {id} not found" });
+            return UserNotFound(id);
         }
 
         /// <summary>
         /// Removes all MFA methods (TOTP secrets and WebAuthn credentials) for a user,
         /// forcing them to re-enroll on next login. Requires step-up MFA verification
-        /// via X-MFA-Token header. Requires SystemOperator authorization policy. Refused (403) when
-        /// the target holds a controlled tier the caller does not dominate. When it holds any
+        /// via X-MFA-Token header. Requires user.manage at system scope (the
+        /// <c>SystemUserAdministrator</c> policy, checked again in the action): with a password reset
+        /// this is a complete takeover of the account, so an administrator of a CA or a space does
+        /// not get it, and neither does an operator. An account the caller cannot see answers 404.
+        /// Refused (403) when the target holds a controlled tier the caller does not dominate. When it holds any
         /// controlled tier and the caller is not system-super, opens a controlled-user ceremony
         /// instead (202 with the ceremony id). Refused (409) for another account with a pending
         /// promotion unless the caller is system-super. A reset ends the account's sessions.
         /// </summary>
         [HttpPost("{id:guid}/reset-mfa")]
-        [Authorize(Policy = "SystemOperator")]
+        [Authorize(Policy = "SystemUserAdministrator")]
         public async Task<IActionResult> ResetUserMfa(Guid id,
             [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
         {
@@ -480,12 +560,11 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.ResetMfa, id.ToString()))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
+            if (await AuthorizeAccountAdministrationAsync(id, systemScopeOnly: true) is { } denied)
+                return denied;
             var targetUsername = await _dbContext.Users.AsNoTracking().Where(u => u.Id == id).Select(u => u.Username).FirstOrDefaultAsync();
             if (targetUsername == null)
-                return NotFound(new { message = $"User with ID {id} not found" });
-
-            if (await AuthorizeAccountAdministrationAsync(id) is { } denied)
-                return denied;
+                return UserNotFound(id);
             if (await OpenAccountCeremonyAsync(id, targetUsername,
                     new ModularCA.Shared.Models.ControlledUserChangeParameters { ChangeType = "ResetMfa" },
                     "Resetting this controlled user's MFA") is { } accepted)
@@ -494,7 +573,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                 return pending;
 
             if (await _userService.ResetUserMfa(id) is not { } removed)
-                return NotFound(new { message = $"User with ID {id} not found" });
+                return UserNotFound(id);
             await TokenRevocationMiddleware.InvalidateUserStampCacheAsync(_cache, id);
 
             await _audit.LogAsync(AuditActionType.UserUpdated, _currentUser.User.Id, _currentUser.User.Username,
@@ -512,13 +591,46 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         }
 
         /// <summary>
-        /// Tier gate for identity-altering administration of another account (password reset,
-        /// MFA reset, activation/lock/username/email changes). Self-targeting is left to the
-        /// endpoint's existing rules. Returns a 403 when the target holds a controlled tier the
-        /// caller does not dominate, or is system-super and the caller is not. Passing it does not
-        /// mean the change applies directly; see <see cref="OpenAccountCeremonyAsync"/>.
+        /// The scope gate for any change to an account, the caller's own included. 404
+        /// (<see cref="UserNotFound"/>) when the account does not exist or the caller cannot see it;
+        /// 403 when the caller does not hold <c>user.manage</c> on every scope the account holds
+        /// anything in (<see cref="UserAdministrationAccess.RefusalAsync"/>): an account with a
+        /// membership, grant or role in another CA or space, at instance scope, or with none at
+        /// all, is not a scoped administrator's to change. With <paramref name="systemScopeOnly"/>
+        /// only a system-super or a holder of <c>user.manage</c> at system scope passes.
         /// </summary>
-        private async Task<IActionResult?> AuthorizeAccountAdministrationAsync(Guid targetUserId)
+        /// <remarks>
+        /// The route gates admit anyone holding <c>user.manage</c> somewhere, so this is the check
+        /// that ties the caller's scope to the target. It runs before any other answer about the
+        /// account, so nothing about an account outside the caller's view is disclosed.
+        /// </remarks>
+        private async Task<IActionResult?> AuthorizeAccountScopeAsync(Guid targetUserId, bool systemScopeOnly = false)
+        {
+            if (_currentUser.User == null) return Unauthorized();
+            if (!await IsVisibleToCallerAsync(targetUserId))
+                return UserNotFound(targetUserId);
+            var refusal = await UserAdministrationAccess.RefusalAsync(
+                _dbContext, _groupAuth, _controlledUserSvc, _currentUser.User.Id, targetUserId, systemScopeOnly);
+            return refusal == null ? null : StatusCode(403, new { error = refusal });
+        }
+
+        /// <summary>
+        /// Gate for identity-altering administration of an account (password reset, MFA reset,
+        /// deletion, activation/lock/username/email changes): the scope gate
+        /// (<see cref="AuthorizeAccountScopeAsync"/>), then the tier gate
+        /// (<see cref="AuthorizeAccountTierAsync"/>). Passing it does not mean the change applies
+        /// directly; see <see cref="OpenAccountCeremonyAsync"/>.
+        /// </summary>
+        private async Task<IActionResult?> AuthorizeAccountAdministrationAsync(Guid targetUserId, bool systemScopeOnly = false)
+            => await AuthorizeAccountScopeAsync(targetUserId, systemScopeOnly) ?? await AuthorizeAccountTierAsync(targetUserId);
+
+        /// <summary>
+        /// Tier gate for identity-altering administration of another account. Self-targeting is
+        /// left to the endpoint's existing rules. Returns a 403 when the target holds a controlled
+        /// tier the caller does not dominate, or is system-super and the caller is not. Call it
+        /// after <see cref="AuthorizeAccountScopeAsync"/>.
+        /// </summary>
+        private async Task<IActionResult?> AuthorizeAccountTierAsync(Guid targetUserId)
         {
             if (_currentUser.User == null) return Unauthorized();
             if (targetUserId == _currentUser.User.Id) return null;
@@ -537,7 +649,9 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// controlled tier: a peer could otherwise take over an approver and satisfy a quorum alone.
         /// The ceremony is minted at the covering tier of the account's holdings; 403 when the caller
         /// does not dominate it. Null when the change applies directly: the caller's own account, a
-        /// system-super caller, or an account holding no controlled tier. Call it after
+        /// system-super caller, or an account holding no controlled tier. A ceremony opened by a
+        /// caller below system scope records the scopes the account holds anything in, and expires
+        /// at execute when the account has come to hold something outside them. Call it after
         /// <see cref="AuthorizeAccountAdministrationAsync"/>.
         /// </summary>
         private async Task<IActionResult?> OpenAccountCeremonyAsync(Guid targetUserId, string? targetUsername,
@@ -552,6 +666,9 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
             parameters.TargetUserId = targetUserId;
             parameters.TargetUsername = targetUsername;
+            // An initiator below system scope was checked against the scopes the account is in
+            // now; the ceremony records them so that execute refuses if the account has moved.
+            parameters.TargetScopes = await UserAdministrationAccess.ScopesToPinAsync(_dbContext, _groupAuth, _controlledUserSvc, actor.Id, targetUserId);
             var ceremonyId = await _controlledUserSvc.InitiateChangeAsync(parameters, tier.Value, actor.Id, actor.Username ?? string.Empty);
             return Accepted(new
             {
@@ -581,15 +698,40 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         }
 
         /// <summary>
+        /// Why the caller may not remove <paramref name="userId"/> from <paramref name="groupId"/>,
+        /// or null. An administrator below system scope may not remove the last thing an account
+        /// holds: the account would belong to no scope, and nobody below system scope, the caller
+        /// included, could see or administer it again. Taking someone out for good is a delete or
+        /// a disable, which the caller can do while the account is still in its scope; moving them
+        /// is an add to the new group first. A system administrator may leave an account with nothing.
+        /// </summary>
+        private async Task<string?> RefuseToStrandAsync(Guid userId, Guid groupId)
+        {
+            if (_currentUser.User == null) return null;
+            if (await UserAdministrationAccess.MayHandleUnscopedAccountsAsync(_groupAuth, _controlledUserSvc, _currentUser.User.Id))
+                return null;
+            if (!await _dbContext.CaGroupMembers.AsNoTracking().AnyAsync(m => m.UserId == userId && m.GroupId == groupId))
+                return null;
+            return (await UserAdministrationAccess.FootprintAsync(_dbContext, userId, exceptGroupId: groupId)).IsEmpty
+                ? "This is the last group the account is in. Removing it would leave the account in no scope, where only a "
+                  + "system administrator could reach it. Delete or disable the account instead, or add it to another group first."
+                : null;
+        }
+
+        /// <summary>
         /// Authorization for membership writes: self-assignment is always refused (it would let a
-        /// user grant themselves into a higher tier), then <see cref="AuthorizeGroupAssignmentAsync"/>
-        /// requires the right on the target group's own scope.
+        /// user grant themselves into a higher tier), the account must be one the caller can see
+        /// (<see cref="IsVisibleToCallerAsync"/>; 404 otherwise, as for a missing id), then
+        /// <see cref="AuthorizeGroupAssignmentAsync"/> requires the right on the target group's own
+        /// scope. The right on one group never reaches another: it is read on the group named.
         /// </summary>
         private async Task<IActionResult?> AuthorizeUserGroupChangeAsync(Guid groupId, Guid targetUserId)
         {
             if (_currentUser.User == null) return Unauthorized();
             if (targetUserId == _currentUser.User.Id)
                 return BadRequest(new { error = "You cannot modify your own group membership. Ask a system-super admin to do it." });
+            if (!await IsVisibleToCallerAsync(targetUserId))
+                return UserNotFound(targetUserId);
 
             return await AuthorizeGroupAssignmentAsync(groupId);
         }
@@ -619,12 +761,14 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         }
 
         /// <summary>
-        /// Adds a user to a CA group by group ID. Requires CaAdmin policy and step-up MFA verification.
+        /// Adds a user to a CA group by group ID. Requires group.manage at some scope (the
+        /// <c>GroupMembershipAdministrator</c> gate) and step-up MFA verification; the action then
+        /// requires it on the group's own scope (403), and an account the caller can see (404).
         /// A controlled membership added by a non-super opens a ceremony (202); 409 when the caller
         /// reset the user's password or MFA in the last 30 days.
         /// </summary>
         [HttpPost("{id:guid}/groups/{groupId:guid}")]
-        [Authorize(Policy = "CaAdmin")]
+        [Authorize(Policy = "GroupMembershipAdministrator")]
         public async Task<IActionResult> AddUserToGroup(Guid id, Guid groupId,
             [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
         {
@@ -683,10 +827,15 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         }
 
         /// <summary>
-        /// Removes a user from a CA group by group ID. Requires CaAdmin policy and step-up MFA verification.
+        /// Removes a user from a CA group by group ID. Requires group.manage at some scope (the
+        /// <c>GroupMembershipAdministrator</c> gate) and step-up MFA verification; the action then
+        /// requires it on the group's own scope (403), and an account the caller can see (404).
+        /// A controlled membership removed by a non-super opens a ceremony (202). An administrator
+        /// below system scope may not remove an account's last holding (409,
+        /// <see cref="RefuseToStrandAsync"/>).
         /// </summary>
         [HttpDelete("{id:guid}/groups/{groupId:guid}")]
-        [Authorize(Policy = "CaAdmin")]
+        [Authorize(Policy = "GroupMembershipAdministrator")]
         public async Task<IActionResult> RemoveUserFromGroup(Guid id, Guid groupId,
             [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
         {
@@ -697,6 +846,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
             var tierCheck = await AuthorizeUserGroupChangeAsync(groupId, id);
             if (tierCheck != null) return tierCheck;
+            if (await RefuseToStrandAsync(id, groupId) is { } stranded)
+                return Conflict(new { error = stranded });
 
             // Controlled-user gate: removing from a privilege-controlled group demotes a controlled
             // user — non-super routes it through a ceremony, with the last-controlled-user guard.
@@ -746,10 +897,12 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// ceremony, so a batch can start several ceremonies (one per privileged group) while applying
         /// uncontrolled changes directly. Never aborts on one group's failure; returns a per-group summary,
         /// where a change the caller may not open, or whose ceremony nobody else could approve, is
-        /// <c>refused</c>.
+        /// <c>refused</c>. Requires group.manage at some scope (the
+        /// <c>GroupMembershipAdministrator</c> gate); an account the caller cannot see answers 404,
+        /// as a missing one does, and each group still needs the right on its own scope.
         /// </summary>
         [HttpPost("{id:guid}/groups/bulk")]
-        [Authorize(Policy = "CaAdmin")]
+        [Authorize(Policy = "GroupMembershipAdministrator")]
         public async Task<IActionResult> BulkUpdateUserGroups(Guid id, [FromBody] BulkUserGroupsRequest request,
             [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
         {
@@ -761,7 +914,8 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
             var user = await _dbContext.Users.FindAsync(id);
-            if (user == null) return NotFound(new { error = "User not found." });
+            if (user == null || (id != _currentUser.User.Id && !await IsVisibleToCallerAsync(id)))
+                return NotFound(new { error = "User not found." });
 
             var isSuper = await _controlledUserSvc.IsSuperAsync(_currentUser.User.Id);
             var results = new List<object>();
@@ -814,6 +968,9 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                 if (await AuthorizeUserGroupChangeAsync(groupId, id) != null) { results.Add(new { groupId, action = "remove", status = "denied" }); skipped++; continue; }
                 var grp = await _dbContext.CaGroups.FindAsync(groupId);
                 if (grp == null) { results.Add(new { groupId, action = "remove", status = "not_found" }); skipped++; continue; }
+
+                if (await RefuseToStrandAsync(id, groupId) is { } stranded)
+                { results.Add(new { groupId, action = "remove", status = "refused", error = stranded }); skipped++; continue; }
 
                 var tier = await _controlledUserSvc.ClassifyGroupAsync(grp);
                 if (tier != null && await _controlledUserSvc.CountDominatingControlledUsersAsync(tier.Value, id, actorUserId: _currentUser.User!.Id) == 0)

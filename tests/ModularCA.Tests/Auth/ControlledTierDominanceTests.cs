@@ -31,6 +31,9 @@ public class ControlledTierDominanceTests
         ["CA(X2|T1)"] = new(ControlledTierLevel.CaAdmin, X2) { SpaceId = T1 },
         ["CA(Y|T2)"] = new(ControlledTierLevel.CaAdmin, Y) { SpaceId = T2 },
         ["CA(I|null)"] = new(ControlledTierLevel.CaAdmin, I),
+        ["CO(X1|T1)"] = new(ControlledTierLevel.CaOperator, X1) { SpaceId = T1 },
+        ["CO(X2|T1)"] = new(ControlledTierLevel.CaOperator, X2) { SpaceId = T1 },
+        ["CO(Y|T2)"] = new(ControlledTierLevel.CaOperator, Y) { SpaceId = T2 },
         ["raw0"] = new((ControlledTierLevel)0, X1) { SpaceId = T1 },
         ["raw1"] = new((ControlledTierLevel)1, X1) { SpaceId = T1 },
         ["raw99"] = new((ControlledTierLevel)99, X1) { SpaceId = T1 },
@@ -44,14 +47,19 @@ public class ControlledTierDominanceTests
         ["Super"] = All,
         ["Admin"] = All.Where(t => t != "Super").ToArray(),
         ["SysOp"] = ["SysOp"],
-        ["OA(T1)"] = ["OA(T1)", "OO(T1)", "CA(X1|T1)", "CA(X2|T1)"],
-        ["OA(T2)"] = ["OA(T2)", "OO(T2)", "CA(Y|T2)"],
+        ["OA(T1)"] = ["OA(T1)", "OO(T1)", "CA(X1|T1)", "CA(X2|T1)", "CO(X1|T1)", "CO(X2|T1)"],
+        ["OA(T2)"] = ["OA(T2)", "OO(T2)", "CA(Y|T2)", "CO(Y|T2)"],
         ["OO(T1)"] = ["OO(T1)"],
         ["OO(T2)"] = ["OO(T2)"],
-        ["CA(X1|T1)"] = ["CA(X1|T1)"],
-        ["CA(X2|T1)"] = ["CA(X2|T1)"],
-        ["CA(Y|T2)"] = ["CA(Y|T2)"],
+        // A CA admin dominates its own CA's operators; a CA operator only its own tier. A space
+        // operator dominates neither: it approves key ceremonies, not who operates a CA.
+        ["CA(X1|T1)"] = ["CA(X1|T1)", "CO(X1|T1)"],
+        ["CA(X2|T1)"] = ["CA(X2|T1)", "CO(X2|T1)"],
+        ["CA(Y|T2)"] = ["CA(Y|T2)", "CO(Y|T2)"],
         ["CA(I|null)"] = ["CA(I|null)"],
+        ["CO(X1|T1)"] = ["CO(X1|T1)"],
+        ["CO(X2|T1)"] = ["CO(X2|T1)"],
+        ["CO(Y|T2)"] = ["CO(Y|T2)"],
         ["raw0"] = [],
         ["raw1"] = [],
         ["raw99"] = [],
@@ -91,8 +99,11 @@ public class ControlledTierDominanceTests
         Assert.Equal(5, (int)ControlledTierLevel.SpaceOperator);
         Assert.Equal(6, (int)ControlledTierLevel.SpaceAdmin);
         Assert.Equal(7, (int)ControlledTierLevel.SystemOperator);
+        // The CA operator tier of 0.4.4 is a new value: 1 stays reserved, so a stored ceremony
+        // that carries it keeps failing closed.
+        Assert.Equal(8, (int)ControlledTierLevel.CaOperator);
         Assert.False(Enum.IsDefined(typeof(ControlledTierLevel), 1));
-        Assert.Equal(new[] { 2, 3, 4, 5, 6, 7 }, Enum.GetValues<ControlledTierLevel>().Select(l => (int)l).OrderBy(v => v));
+        Assert.Equal(new[] { 2, 3, 4, 5, 6, 7, 8 }, Enum.GetValues<ControlledTierLevel>().Select(l => (int)l).OrderBy(v => v));
     }
 
     private static ControlledTier? Cover(params string[] names) => ControlledTier.Covering(names.Select(n => (ControlledTier?)Tiers[n]));

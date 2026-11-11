@@ -54,6 +54,8 @@ public sealed record ControlledSourceFilter(
 /// <item>ca-admin(X): <c>system.manage</c> on CA X.</item>
 /// <item>space-operator(T): <c>ca.manage</c> space-wide in T, which makes the holder a key-ceremony
 /// approver for the space.</item>
+/// <item>ca-operator(X): <c>ca.manage</c> on CA X, which makes the holder an approver and issuer of
+/// that CA's certificate requests. It approves no key ceremony.</item>
 /// <item>system-operator: <c>ca.manage</c> at instance scope, which makes the holder a key-ceremony
 /// approver for every space and the instance.</item>
 /// </list>
@@ -73,7 +75,7 @@ public static class ControlledTierResolver
     /// <paramref name="spaceId"/> and <paramref name="caId"/> are null, a CA when
     /// <paramref name="caId"/> is set (which wins over the space), otherwise space-wide.
     /// <paramref name="caSpaceId"/> is stamped on CA tiers so a space admin can dominate them.
-    /// <c>ca.manage</c> on one CA confers none.
+    /// <c>ca.manage</c> on one CA confers ca-operator.
     /// </summary>
     public static ControlledTier? TierFor(string capability, Guid? spaceId, Guid? caId, Guid? caSpaceId)
     {
@@ -83,10 +85,13 @@ public static class ControlledTierResolver
             if (spaceId != null) return new ControlledTier(ControlledTierLevel.SpaceAdmin, null) { SpaceId = spaceId };
             return new ControlledTier(ControlledTierLevel.SystemAdmin, null);
         }
-        if (string.Equals(capability, Capabilities.CaManage, StringComparison.OrdinalIgnoreCase) && caId == null)
+        if (string.Equals(capability, Capabilities.CaManage, StringComparison.OrdinalIgnoreCase))
+        {
+            if (caId != null) return new ControlledTier(ControlledTierLevel.CaOperator, caId) { SpaceId = caSpaceId };
             return spaceId != null
                 ? new ControlledTier(ControlledTierLevel.SpaceOperator, null) { SpaceId = spaceId }
                 : new ControlledTier(ControlledTierLevel.SystemOperator, null);
+        }
         return null;
     }
 

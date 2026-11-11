@@ -147,6 +147,7 @@ public sealed class SpaceFenceGuardTests
         ["AdminUserManagerController.GetUserByUsername"] = "ScopeToCallerAsync: SpaceFence.Predicate over the user's groups",
         ["AdminUserManagerController.GetUsers"] = "ScopeToCallerAsync: SpaceFence.Predicate over the user's groups",
         ["AdminWhitelistController.GetAll"] = "SpaceFence.Allows on the CA; global rules need instance scope",
+        ["AdminOidController.GetAll"] = "not scoped: the catalog of key usage OIDs is one list for the instance, public identifiers that belong to no CA or space",
         ["AdminWhitelistController.GetById"] = "SpaceFence.Allows on the CA; global rules need instance scope",
         ["UserCaController.GetCaChain"] = "CallerCanSeeCaCertAsync and SpaceFence.Allows per parent",
         ["UserCaController.GetCaCrl"] = "public: redirects to the anonymous CDP",

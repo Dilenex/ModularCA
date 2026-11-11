@@ -51,11 +51,16 @@ public static class Capabilities
     /// <summary>Capabilities granted to the Administrator template.</summary>
     public static readonly string[] AdministratorTemplate = All;
 
-    /// <summary>Capabilities granted to the Operator template.</summary>
+    /// <summary>
+    /// Capabilities granted to the Operator template. It carries <see cref="ProfileUse"/> since
+    /// 0.4.4: approving and issuing ask for it on the signing and certificate profile, and
+    /// without it the template's own <see cref="CertApprove"/> could approve nothing. The
+    /// migration <c>OperatorRoleUsesProfiles</c> adds it to installs from before.
+    /// </summary>
     public static readonly string[] OperatorTemplate = new[]
     {
         CertRequest, CertView, CertRevoke, CertReissue, CertApprove,
-        ProfileView, ProfileAssign,
+        ProfileView, ProfileUse, ProfileAssign,
         TokenCreate, TokenManage,
         CaView, CaManage,
         GroupView

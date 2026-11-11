@@ -5,7 +5,7 @@ export const adminGroups: ApiEndpoint[] = [
         method: 'GET',
         path: '/api/v1/admin/groups',
         summary: 'List all authorization groups the current user has access to view, with member counts.',
-        auth: 'Authorize (CaAuditor)',
+        auth: 'Authorize (CaDirectoryViewer: group.view)',
         category: 'Admin Groups',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
@@ -17,7 +17,7 @@ export const adminGroups: ApiEndpoint[] = [
         method: 'GET',
         path: '/api/v1/admin/groups/{id}',
         summary: 'Get detailed group information including its member list.',
-        auth: 'Authorize (CaAuditor)',
+        auth: 'Authorize (CaDirectoryViewer: group.view)',
         category: 'Admin Groups',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
@@ -29,7 +29,7 @@ export const adminGroups: ApiEndpoint[] = [
         method: 'GET',
         path: '/api/v1/admin/groups/by-ca/{caId}',
         summary: 'List all groups scoped to a specific certificate authority.',
-        auth: 'Authorize (CaAuditor)',
+        auth: 'Authorize (CaDirectoryViewer: group.view)',
         category: 'Admin Groups',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },

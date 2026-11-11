@@ -103,12 +103,27 @@ public class SingleAdministratorApprovalTests
         Assert.True(outlook.CanComplete);
     }
 
+    /// <summary>
+    /// Holding <c>cert.revoke</c> is not enough to approve: the approver also needs
+    /// <c>profile.use</c> on the signing profile. A custom group with the first and not the
+    /// second cannot approve. (The built-in Operator template carries both since 0.4.4.)
+    /// </summary>
     [Fact]
-    public async Task An_operator_without_profile_use_on_the_signing_profile_cannot_approve()
+    public async Task An_account_without_profile_use_on_the_signing_profile_cannot_approve()
     {
         var w = new World(selfApproval: false);
-        w.W.User("no-profile", w.W.Group("bare", w.W.Space, null, Capabilities.OperatorTemplate));
+        w.W.User("no-profile", w.W.Group("bare", w.W.Space, null, [Capabilities.CertView, Capabilities.CertRevoke, Capabilities.CertApprove]));
         var outlook = await w.OutlookAsync(w.W.Admin);
         Assert.Equal(0, outlook.OthersWhoCanApprove);
+    }
+
+    /// <summary>An operator of the space approves with the template alone, with no grant naming the profile.</summary>
+    [Fact]
+    public async Task An_operator_approves_with_the_operator_template_alone()
+    {
+        var w = new World(selfApproval: false);
+        w.W.User("plain-operator", w.W.Group("plain", w.W.Space, null, Capabilities.OperatorTemplate));
+        var outlook = await w.OutlookAsync(w.W.Admin);
+        Assert.Equal(1, outlook.OthersWhoCanApprove);
     }
 }

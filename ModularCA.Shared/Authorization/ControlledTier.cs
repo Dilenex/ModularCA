@@ -10,7 +10,8 @@ namespace ModularCA.Shared.Authorization;
 /// </summary>
 public enum ControlledTierLevel
 {
-    // 1 is reserved: a former CA operator tier that nothing ever minted.
+    // 1 is reserved: a former CA operator tier that nothing ever minted. A stored ceremony that
+    // carries it keeps failing closed; the CA operator tier of 0.4.4 is a new value below.
 
     /// <summary>Administrator of a specific CA.</summary>
     CaAdmin = 2,
@@ -29,6 +30,13 @@ public enum ControlledTierLevel
 
     /// <summary>Operator over the whole instance (<c>ca.manage</c> at instance scope): a key-ceremony approver everywhere.</summary>
     SystemOperator = 7,
+
+    /// <summary>
+    /// Operator of a specific CA (<c>ca.manage</c> on that CA). It approves and issues that CA's
+    /// certificate requests, so an account in it is a second person an administrator of the CA
+    /// must not be able to make alone.
+    /// </summary>
+    CaOperator = 8,
 }
 
 /// <summary>
@@ -53,9 +61,10 @@ public readonly record struct ControlledTier(ControlledTierLevel Level, Guid? Ca
     /// <item>system-super dominates everything.</item>
     /// <item>system-admin dominates everything except system-super.</item>
     /// <item>system-operator dominates only system-operator.</item>
-    /// <item>space-admin(T) dominates space-admin/space-operator/ca-admin within space T.</item>
+    /// <item>space-admin(T) dominates space-admin/space-operator/ca-admin/ca-operator within space T.</item>
     /// <item>space-operator(T) dominates only space-operator(T).</item>
-    /// <item>ca-admin(X) dominates only ca-admin(X), matched on the CA.</item>
+    /// <item>ca-admin(X) dominates ca-admin(X) and ca-operator(X), matched on the CA.</item>
+    /// <item>ca-operator(X) dominates only ca-operator(X).</item>
     /// </list>
     /// An undefined level dominates nothing, and is dominated only by system-super and system-admin.
     /// </summary>
@@ -67,11 +76,14 @@ public readonly record struct ControlledTier(ControlledTierLevel Level, Guid? Ca
             ControlledTierLevel.SystemAdmin => target.Level != ControlledTierLevel.SystemSuper,
             ControlledTierLevel.SystemOperator => target.Level == ControlledTierLevel.SystemOperator,
             ControlledTierLevel.SpaceAdmin => SpaceId != null && target.SpaceId == SpaceId
-                && target.Level is ControlledTierLevel.SpaceAdmin or ControlledTierLevel.SpaceOperator or ControlledTierLevel.CaAdmin,
+                && target.Level is ControlledTierLevel.SpaceAdmin or ControlledTierLevel.SpaceOperator
+                    or ControlledTierLevel.CaAdmin or ControlledTierLevel.CaOperator,
             ControlledTierLevel.SpaceOperator => SpaceId != null && target.SpaceId == SpaceId
                 && target.Level == ControlledTierLevel.SpaceOperator,
             ControlledTierLevel.CaAdmin => CaId != null && target.CaId == CaId
-                && target.Level == ControlledTierLevel.CaAdmin,
+                && target.Level is ControlledTierLevel.CaAdmin or ControlledTierLevel.CaOperator,
+            ControlledTierLevel.CaOperator => CaId != null && target.CaId == CaId
+                && target.Level == ControlledTierLevel.CaOperator,
             _ => false,
         };
     }
