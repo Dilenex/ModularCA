@@ -62,29 +62,69 @@ mkdir -p "$STAGE" "$OUT"
 
 # Release and Staging both trigger the BuildWebUIs target, so all five SPAs are typechecked and
 # bundled as part of this publish rather than needing a separate step.
+# ReadyToRun: the assemblies carry precompiled native code beside their IL, so a start compiles
+# less at run time. Every start pays that cost, and in the pod so does each of the three init
+# containers. The price is size: about a third more unpacked (145 MB to 194 MB when this was
+# added). All three programs get the flag, so the ModularCA.*.dll they share are the same
+# everywhere. Measured on a pod it takes about 2.5 s off a start (11.4 s to 8.9 s) and a quarter
+# to a third off the CPU of each --check-ready, so it stays. Set MODULARCA_READYTORUN=0 to build
+# without it.
+R2R="-p:PublishReadyToRun=true"
+if [ "${MODULARCA_READYTORUN:-1}" = "0" ]; then R2R="-p:PublishReadyToRun=false"; fi
+
+# Each program is published into a directory of its own and the three are then merged, the API
+# last. They used to be published straight into one directory, which left it to file timestamps
+# which program's copy of a shared assembly stayed. The two command-line tools reference older
+# packages than the web framework carries (Microsoft.Extensions.ObjectPool 7.0.0 against the
+# framework's 10.0), and 0.4.4-dev.1.1 shipped the tool's copy: the server died at start with
+# "Could not load file or assembly Microsoft.Extensions.ObjectPool, Version=10.0.0.0". Merged in
+# a fixed order, the API's copy of every file it publishes is the one in the archive, whatever
+# the timestamps; the tools run with those newer copies, as they always have.
+PUBLISH="$(mktemp -d)"
+
 note "publishing ModularCA.API ($CONFIG, $RID, self-contained)"
 dotnet publish ModularCA.API/ModularCA.API.csproj \
     -c "$CONFIG" -r "$RID" --self-contained true \
-    -o "$STAGE" -v minimal --nologo
+    -o "$PUBLISH/api" -v minimal --nologo $R2R
 
-# The break-glass unlocker is a separate executable and a separate publish. Into the SAME
-# directory deliberately: the runtime assemblies are byte-identical (same solution, same RID,
-# same run), so this costs only the four files unique to the CLI rather than a duplicate ~70 MB
-# runtime. Its own deps.json / runtimeconfig.json are named after its assembly, so nothing
-# collides with the API's.
+# The break-glass unlocker is a separate executable and a separate publish. It ships in the SAME
+# directory as the API deliberately: the runtime is shared, so it costs only the files unique to
+# the CLI rather than a duplicate ~70 MB runtime. Its own deps.json / runtimeconfig.json are
+# named after its assembly, so nothing collides with the API's.
 note "publishing ModularCA.KeystoreCli"
 dotnet publish ModularCA.KeystoreCli/ModularCA.KeystoreCli.csproj \
     -c "$CONFIG" -r "$RID" --self-contained true \
-    -o "$STAGE" -v minimal --nologo
+    -o "$PUBLISH/cli" -v minimal --nologo $R2R
 
-# The MariaDB-to-PostgreSQL migration helper, into the same directory for the same reason as
+# The MariaDB-to-PostgreSQL migration helper, in the same directory for the same reason as
 # the CLI above. It ships with the release it migrates TO, which is the point: an operator on
 # 0.3.0 unpacks 0.3.1, finds the tool beside the binary that refuses to start against MariaDB,
 # and needs nothing they did not already download.
 note "publishing ModularCA.Migrate"
 dotnet publish ModularCA.Migrate/ModularCA.Migrate.csproj \
     -c "$CONFIG" -r "$RID" --self-contained true \
-    -o "$STAGE" -v minimal --nologo
+    -o "$PUBLISH/migrate" -v minimal --nologo $R2R
+
+note "merging the three programs, the API last"
+cp -R "$PUBLISH/migrate/." "$STAGE/"
+cp -R "$PUBLISH/cli/." "$STAGE/"
+cp -R "$PUBLISH/api/." "$STAGE/"
+# Every file the API publishes must be the API's own copy, byte for byte. This is the check that
+# would have refused 0.4.4-dev.1.1.
+while IFS= read -r -d '' published; do
+    relative="${published#"$PUBLISH/api/"}"
+    cmp -s "$published" "$STAGE/$relative" \
+        || { echo "REFUSING: $relative in the archive is not the copy ModularCA.API published" >&2; exit 1; }
+done < <(find "$PUBLISH/api" -type f -print0)
+# And each tool must have found every file of its own in the merge.
+for tool in cli migrate; do
+    while IFS= read -r -d '' published; do
+        relative="${published#"$PUBLISH/$tool/"}"
+        [[ -f "$STAGE/$relative" ]] \
+            || { echo "REFUSING: $relative, published by the $tool program, is missing from the archive" >&2; exit 1; }
+    done < <(find "$PUBLISH/$tool" -type f -print0)
+done
+rm -rf "$PUBLISH"
 
 note "staging config, deploy files and installer"
 mkdir -p "$STAGE/config" "$STAGE/keystores" "$STAGE/logs" "$STAGE/deploy" "$STAGE/share/sql"

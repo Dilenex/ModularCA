@@ -1688,7 +1688,21 @@ client cannot choose it. The node accepts it on the listeners you mark, in `conf
       ProxyProtocolTrustedCidrs: "10.100.105.22/32"   # the proxy, as this node sees it
 
 All three are per host and take effect at the next restart. A standalone install leaves them
-off and nothing changes. On a listener marked this way:
+off and nothing changes.
+
+In a container, set them from the environment instead of editing the file, so that every
+instance behind one ingress gets the same values from its unit or manifest:
+
+    MODULARCA__HTTPS__PROXYPROTOCOL=true
+    MODULARCA__HTTP__PROXYPROTOCOL=true
+    MODULARCA__HTTP__PROXYPROTOCOLTRUSTEDCIDRS=127.0.0.1/32
+
+A variable that is set overrides the file's value and is never written to the file. The two
+switches take `true` or `false`; anything else stops the start, naming the variable. The list
+is checked like the file's. `--role node --check-ready` reads the same variables, so run it in
+the node's container (as the pod's probes and Quadlet's `HealthCmd=` do).
+
+On a listener marked this way:
 
 - A connection from an address outside `Http.ProxyProtocolTrustedCidrs` is closed before a byte
   is read.

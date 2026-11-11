@@ -192,6 +192,84 @@ public class EnvVarConfigOverlayTests
     public void Release_refuses_a_path_that_is_not_a_secret()
         => Assert.Throws<ArgumentException>(() => new EnvVarConfigOverlay().Release(new SystemConfig(), "Http.Port", () => null));
 
+    /// <summary>Sets the named environment variables for the length of <paramref name="body"/>, then puts back what they held.</summary>
+    private static void WithEnvVars((string Name, string? Value)[] variables, Action body)
+    {
+        var originals = variables.Select(v => (v.Name, Value: Environment.GetEnvironmentVariable(v.Name))).ToArray();
+        foreach (var (name, value) in variables) Environment.SetEnvironmentVariable(name, value);
+        try { body(); }
+        finally { foreach (var (name, value) in originals) Environment.SetEnvironmentVariable(name, value); }
+    }
+
+    /// <summary>
+    /// The three PROXY protocol settings come from the environment, so an orchestrator sets them
+    /// in the unit instead of editing config.yaml; and a write of the file keeps the file's own
+    /// values, not the environment's.
+    /// </summary>
+    [Fact]
+    public void The_proxy_protocol_settings_from_the_environment_apply_and_are_never_written_to_the_file()
+    {
+        WithEnvVars(
+        [
+            (EnvVarConfigOverlay.HttpsProxyProtocolVariable, "true"),
+            (EnvVarConfigOverlay.HttpProxyProtocolVariable, "True"),
+            (EnvVarConfigOverlay.ProxyProtocolTrustedCidrsVariable, " 127.0.0.1/32 "),
+        ], () =>
+        {
+            var config = new SystemConfig { Http = { ProxyProtocolTrustedCidrs = "10.0.0.5/32" } };
+            var overlay = new EnvVarConfigOverlay();
+            using var log = new StringWriter();
+            overlay.Apply(config, log);
+
+            Assert.True(config.Https.ProxyProtocol);
+            Assert.True(config.Http.ProxyProtocol);
+            Assert.Equal("127.0.0.1/32", config.Http.ProxyProtocolTrustedCidrs);
+            Assert.Contains("Https.ProxyProtocol", overlay.EnvSourcedPaths);
+            Assert.Contains("Http.ProxyProtocol", overlay.EnvSourcedPaths);
+            Assert.Contains("Http.ProxyProtocolTrustedCidrs", overlay.EnvSourcedPaths);
+            Assert.Contains(EnvVarConfigOverlay.HttpsProxyProtocolVariable, log.ToString());
+            Assert.DoesNotContain("127.0.0.1", log.ToString());
+
+            (bool Https, bool Http, string Cidrs) duringWrite = default;
+            overlay.WithSecretsProtected(config, () => duringWrite = (config.Https.ProxyProtocol, config.Http.ProxyProtocol, config.Http.ProxyProtocolTrustedCidrs));
+
+            Assert.Equal((false, false, "10.0.0.5/32"), duringWrite);
+            Assert.True(config.Https.ProxyProtocol);
+            Assert.Equal("127.0.0.1/32", config.Http.ProxyProtocolTrustedCidrs);
+        });
+    }
+
+    /// <summary>The environment can also turn a switch off that the file turns on.</summary>
+    [Fact]
+    public void A_proxy_protocol_switch_from_the_environment_can_turn_the_files_setting_off()
+    {
+        WithEnvVars([(EnvVarConfigOverlay.HttpsProxyProtocolVariable, "false")], () =>
+        {
+            var config = new SystemConfig { Https = { ProxyProtocol = true } };
+            new EnvVarConfigOverlay().Apply(config, TextWriter.Null);
+            Assert.False(config.Https.ProxyProtocol);
+        });
+    }
+
+    /// <summary>
+    /// A switch that is neither true nor false stops the start, naming the variable and not its
+    /// value, and changes nothing.
+    /// </summary>
+    [Theory]
+    [InlineData("yes")]
+    [InlineData("1")]
+    [InlineData("on")]
+    public void A_proxy_protocol_switch_that_is_not_true_or_false_is_refused(string value)
+    {
+        WithEnvVars([(EnvVarConfigOverlay.HttpProxyProtocolVariable, value)], () =>
+        {
+            var config = new SystemConfig();
+            var error = Assert.Throws<InvalidOperationException>(() => new EnvVarConfigOverlay().Apply(config, TextWriter.Null));
+            Assert.Contains(EnvVarConfigOverlay.HttpProxyProtocolVariable, error.Message);
+            Assert.False(config.Http.ProxyProtocol);
+        });
+    }
+
     /// <summary>Sets <see cref="EnvVarConfigOverlay.HealthLoopbackPortVariable"/> for the length of <paramref name="body"/>.</summary>
     private static void WithHealthPortEnvVar(string? value, Action body)
     {

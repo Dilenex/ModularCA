@@ -7,8 +7,12 @@
 #   podman build -f deploy/container/Containerfile --build-arg DIST=dist/modularca-0.4.0-linux-x64.tar.gz -t modularca:0.4.0 .
 #
 # The image carries no configuration and no data. config, keystores, logs and backups under
-# /opt/modularca are volumes, and the only directories the service account can write: the program
-# files belong to root, as install.sh leaves them. signer/ (owner-only) is where the pod mounts
+# /opt/modularca are where volumes are mounted, and the only directories the service account can
+# write: the program files belong to root, as install.sh leaves them. The image declares no
+# VOLUME: whoever runs it names each mount (the pod and compose files do). A declared volume made
+# the runtime give every container an anonymous one wherever it mounted nothing, so the pod's
+# signer got a writable config directory and its node a keystores directory that neither is
+# meant to have. signer/ (owner-only) is where the pod mounts
 # the signer's own configuration volume, which --signer-dir names; a volume mounted there takes
 # the directory's owner and mode. With no configuration the entrypoint starts the
 # setup wizard; with a bootstrap.yaml and a setup-database.yaml in the config volume it bootstraps
@@ -65,7 +69,12 @@ RUN chmod +x /usr/local/bin/modularca-entrypoint
 
 USER modularca
 WORKDIR /opt/modularca
-ENV DOTNET_ENVIRONMENT=Production DOTNET_CONSOLE_ANSI_COLOR=false
-VOLUME ["/opt/modularca/config", "/opt/modularca/keystores", "/opt/modularca/logs", "/opt/modularca/backups"]
+# HOME must be writable. The file logs are opened shared (the node and a command run beside it,
+# such as --check-ready, write one file), and on Linux a shared file takes a named mutex, which
+# .NET cannot create when the account's home is not writable: every log write then failed with
+# "the target file could not be opened or created" and no modularca-*.log was written. The
+# account's home, /opt/modularca, is root-owned on purpose; /tmp is writable in every container
+# of the pod (the signer mounts an emptyDir over it under its read-only root).
+ENV DOTNET_ENVIRONMENT=Production DOTNET_CONSOLE_ANSI_COLOR=false HOME=/tmp
 EXPOSE 8443 8080
 ENTRYPOINT ["/usr/local/bin/modularca-entrypoint"]

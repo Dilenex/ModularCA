@@ -229,7 +229,9 @@ public static class SignerRole
     /// Replaces the startup logger with the signer's own: the console as the node renders it,
     /// and the file sink at <c>Logging.FilePath</c> resolved against the signer's directory
     /// (<c>logs/modularca-.log</c> there by default), capped at Information like the node's.
-    /// The startup logger is closed first so the two never hold the same file.
+    /// The startup logger is closed first so the two never hold the same file. The file is not
+    /// opened in shared mode: only the signer writes it, and shared mode depends on a named system
+    /// mutex whose creation failed on a Linux install and left the node without a log file.
     /// </summary>
     private static async Task UseOwnLogsAsync(LoggingConfig logging, SignerPaths paths)
     {
@@ -271,7 +273,6 @@ public static class SignerRole
             retainedFileCountLimit: logging.RetentionDays,
             fileSizeLimitBytes: (long)logging.MaxFileSizeMb * 1024 * 1024,
             rollOnFileSizeLimit: true,
-            shared: true,
             flushToDiskInterval: TimeSpan.FromSeconds(2));
 
         await Log.CloseAndFlushAsync();

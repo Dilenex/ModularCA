@@ -931,13 +931,17 @@ builder.Host.UseSerilog((context, services, configuration) =>
         ? configuredLogPath
         : Path.Combine(AppContext.BaseDirectory, configuredLogPath);
 
+    // Not shared: one process writes this file (the signer role logs under its own directory).
+    // Shared mode makes the sink create a named system mutex before it opens the file, which
+    // .NET cannot do when the account's home is not writable. That is so under the hardened
+    // systemd unit: the step failed for every file name the sink tried, the sink dropped every
+    // event, and the node ran with no log file at all (LogFileSinkGuardTests).
     configuration.WriteTo.File(new CompactJsonFormatter(), resolvedLogPath,
         restrictedToMinimumLevel: persistentSinkMinLevel,
         rollingInterval: RollingInterval.Day,
         retainedFileCountLimit: config.Logging.RetentionDays,
         fileSizeLimitBytes: (long)config.Logging.MaxFileSizeMb * 1024 * 1024,
         rollOnFileSizeLimit: true,
-        shared: true,
         flushToDiskInterval: TimeSpan.FromSeconds(2));
 
     // Syslog sink (RFC 5424 — SecurityOnion, Splunk, rsyslog) — gated solely by the
