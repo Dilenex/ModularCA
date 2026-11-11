@@ -54,8 +54,8 @@ confirmed at source before the next release is distributed.
 | [Kerberos.NET](https://github.com/dotnet/Kerberos.NET) | 4.6.168 | MIT | Copyright (c) .NET Foundation and Contributors |
 | [libsodium](https://libsodium.org/) | 1.0.20.1 | ISC | © 2024 Frank Denis |
 | [MailKit](http://www.mimekit.net/) | 4.16.0 | MIT | .NET Foundation and Contributors |
-| [Microsoft.AspNetCore.Authentication.JwtBearer](https://asp.net/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
-| [Microsoft.AspNetCore.DataProtection.StackExchangeRedis](https://asp.net/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.AspNetCore.Authentication.JwtBearer](https://asp.net/) | 10.0.15 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.AspNetCore.DataProtection.StackExchangeRedis](https://asp.net/) | 10.0.15 | MIT | © Microsoft Corporation. All rights reserved. |
 | [Microsoft.Bcl.Cryptography](https://dot.net/) | 10.0.2 | MIT | © Microsoft Corporation. All rights reserved. |
 | [Microsoft.Bcl.Memory](https://dot.net/) | 9.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
 | [Microsoft.Build.Framework](http://go.microsoft.com/fwlink/?LinkId=624683) | 18.0.2 | MIT | © Microsoft Corporation. All rights reserved. |
@@ -65,15 +65,15 @@ confirmed at source before the next release is distributed.
 | [Microsoft.CodeAnalysis.CSharp](https://github.com/dotnet/roslyn) | 5.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
 | [Microsoft.CodeAnalysis.Workspaces.Common](https://github.com/dotnet/roslyn) | 5.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
 | [Microsoft.CodeAnalysis.Workspaces.MSBuild](https://github.com/dotnet/roslyn) | 5.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
-| [Microsoft.EntityFrameworkCore.Abstractions](https://docs.microsoft.com/ef/core/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
-| [Microsoft.EntityFrameworkCore.Analyzers](https://docs.microsoft.com/ef/core/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
-| [Microsoft.EntityFrameworkCore.Design](https://docs.microsoft.com/ef/core/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
-| [Microsoft.EntityFrameworkCore.Relational](https://docs.microsoft.com/ef/core/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
-| [Microsoft.EntityFrameworkCore](https://docs.microsoft.com/ef/core/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.EntityFrameworkCore.Abstractions](https://docs.microsoft.com/ef/core/) | 10.0.15 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.EntityFrameworkCore.Analyzers](https://docs.microsoft.com/ef/core/) | 10.0.15 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.EntityFrameworkCore.Design](https://docs.microsoft.com/ef/core/) | 10.0.15 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.EntityFrameworkCore.Relational](https://docs.microsoft.com/ef/core/) | 10.0.15 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.EntityFrameworkCore](https://docs.microsoft.com/ef/core/) | 10.0.15 | MIT | © Microsoft Corporation. All rights reserved. |
 | [Microsoft.Extensions.ApiDescription.Server](https://asp.net/) | 10.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
-| [Microsoft.Extensions.Caching.StackExchangeRedis](https://asp.net/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
-| [Microsoft.Extensions.DependencyModel](https://dot.net/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
-| [Microsoft.Extensions.Hosting.Systemd](https://dot.net/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.Extensions.Caching.StackExchangeRedis](https://asp.net/) | 10.0.15 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.Extensions.DependencyModel](https://dot.net/) | 10.0.15 | MIT | © Microsoft Corporation. All rights reserved. |
+| [Microsoft.Extensions.Hosting.Systemd](https://dot.net/) | 10.0.15 | MIT | © Microsoft Corporation. All rights reserved. |
 | [Microsoft.IdentityModel.Abstractions](https://github.com/AzureAD/azure-activedirectory-identitymodel-extensions-for-dotnet) | 8.22.0 | MIT | © Microsoft Corporation. All rights reserved. |
 | [Microsoft.IdentityModel.JsonWebTokens](https://github.com/AzureAD/azure-activedirectory-identitymodel-extensions-for-dotnet) | 8.22.0 | MIT | © Microsoft Corporation. All rights reserved. |
 | [Microsoft.IdentityModel.Logging](https://github.com/AzureAD/azure-activedirectory-identitymodel-extensions-for-dotnet) | 8.22.0 | MIT | © Microsoft Corporation. All rights reserved. |
@@ -118,10 +118,10 @@ confirmed at source before the next release is distributed.
 | [System.Composition.Runtime](https://dot.net/) | 9.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
 | [System.Composition.TypedParts](https://dot.net/) | 9.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
 | [System.Composition](https://dot.net/) | 9.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
-| [System.DirectoryServices.Protocols](https://dot.net/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
+| [System.DirectoryServices.Protocols](https://dot.net/) | 10.0.15 | MIT | © Microsoft Corporation. All rights reserved. |
 | [System.IdentityModel.Tokens.Jwt](https://github.com/AzureAD/azure-activedirectory-identitymodel-extensions-for-dotnet) | 8.22.0 | MIT | © Microsoft Corporation. All rights reserved. |
 | [System.IO.Hashing](https://dot.net/) | 8.0.0 | MIT | © Microsoft Corporation. All rights reserved. |
-| [System.Security.Cryptography.Pkcs](https://dot.net/) | 10.0.14 | MIT | © Microsoft Corporation. All rights reserved. |
+| [System.Security.Cryptography.Pkcs](https://dot.net/) | 10.0.15 | MIT | © Microsoft Corporation. All rights reserved. |
 | [YamlDotNet](https://github.com/aaubry/YamlDotNet/wiki) | 16.3.0 | MIT | Copyright (c) Antoine Aubry and contributors |
 | [Yarp.ReverseProxy](https://github.com/dotnet/yarp) | 2.3.0 | MIT | © Microsoft Corporation. All rights reserved. |
 
