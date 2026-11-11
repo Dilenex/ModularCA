@@ -1010,6 +1010,14 @@ The first test build of 0.4.4. It carries everything below.
 
 **Changed**
 
+- **A step-up TOTP code is accepted when the clocks differ by up to 15 seconds.** Step-up
+  accepted only the code of the server's current 30-second step, so a correct code was refused
+  whenever the server and the authenticator sat on opposite sides of a step boundary: a server
+  five seconds fast refused one code in six, and each refusal counted towards the step-up
+  lockout. Step-up now also accepts the previous code during the first 15 seconds of a step and
+  the next code during the last 15, never more than two codes at once. Sign-in is unchanged (one
+  whole step either way), and a code is still accepted once.
+
 - **`--upgrade-check --read-only`: a check that can run beside a node that is still serving.**
   The upgrade check rehearses pending migrations, and the rehearsal holds their locks, so
   beside a serving node it made clients wait. With `--read-only` it does everything that needs

@@ -161,8 +161,8 @@ export default function AuthFlowDiagram() {
                 <p className="text-ink leading-relaxed mb-3">
                     Software-based MFA using authenticator apps (Google Authenticator, Authy, etc.).
                     A shared secret is generated during enrollment and stored encrypted via ASP.NET Data
-                    Protection. Login-flow TOTP verification uses a one-step drift tolerance; step-up
-                    verification uses windowSize=0 (current code only) for tighter brute-force resistance.
+                    Protection. Login-flow TOTP verification tolerates one 30-second step of clock drift either way; step-up
+                    verification tolerates 15 seconds either way, so it accepts at most two codes at a time.
                 </p>
                 <div className="bg-sunken rounded p-4 data-mono mb-4">
                     POST /auth/totp/setup&nbsp;&nbsp;(returns QR code + secret)<br />
@@ -537,7 +537,7 @@ MFA enroll:   totp-setup, totp-verify-setup, totp-remove,
                         <tr className="border-b border-line">
                             <td className="py-2 pr-4">TOTP</td>
                             <td className="py-2 pr-4"><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">POST /auth/mfa/verify-stepup/totp</code></td>
-                            <td className="py-2">6-digit code; windowSize=0 (no drift tolerance)</td>
+                            <td className="py-2">6-digit code; 15 seconds of clock drift tolerated either way</td>
                         </tr>
                         <tr className="border-b border-line">
                             <td className="py-2 pr-4">WebAuthn (options)</td>

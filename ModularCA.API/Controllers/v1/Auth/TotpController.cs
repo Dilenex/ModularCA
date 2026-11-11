@@ -705,6 +705,42 @@ public class TotpController : ControllerBase
         return (false, 0);
     }
 
+    /// <summary>
+    /// Verifies a TOTP code against the given base32-encoded secret, accepting the code of every
+    /// 30-second step that overlaps the span from <paramref name="tolerance"/> before
+    /// <paramref name="now"/> to <paramref name="tolerance"/> after it. With a tolerance under one
+    /// step that is the current code, plus the previous one early in a step or the next one late
+    /// in it: never more than two codes at once, where <see cref="VerifyTotpCode"/> with a window
+    /// of one accepts three. Rejects any time step at or before
+    /// <paramref name="lastUsedTimeStep"/> to prevent replay attacks.
+    /// </summary>
+    /// <param name="secret">Base32-encoded shared secret.</param>
+    /// <param name="code">The 6-digit TOTP code to verify.</param>
+    /// <param name="lastUsedTimeStep">The last successfully verified time step. Codes at or before this step are rejected.</param>
+    /// <param name="tolerance">How far the caller's clock may differ from this host's, in either direction.</param>
+    /// <param name="now">The time to verify at.</param>
+    /// <returns>A tuple indicating whether the code is valid and, if so, the matched time step.</returns>
+    internal static (bool valid, long timeStep) VerifyTotpCodeWithin(string secret, string code, long lastUsedTimeStep, TimeSpan tolerance, DateTimeOffset now)
+    {
+        var key = Base32Decode(secret);
+        var seconds = now.ToUnixTimeSeconds();
+        var slack = (long)tolerance.TotalSeconds;
+        var current = seconds / 30;
+        var first = (seconds - slack) / 30;
+        var last = (seconds + slack) / 30;
+
+        // The current step first, so a code that is right by this host's clock is matched to it.
+        if (current > lastUsedTimeStep && GenerateTotp(key, current) == code)
+            return (true, current);
+        for (var step = first; step <= last; step++)
+        {
+            if (step == current || step <= lastUsedTimeStep) continue; // Reject replayed time steps
+            if (GenerateTotp(key, step) == code)
+                return (true, step);
+        }
+        return (false, 0);
+    }
+
     // ── Base32 helpers ──────────────────────────────────────────────
 
     private static readonly char[] Base32Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567".ToCharArray();

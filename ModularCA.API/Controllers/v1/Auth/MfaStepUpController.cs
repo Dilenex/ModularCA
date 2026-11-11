@@ -47,6 +47,13 @@ public class MfaStepUpController : ControllerBase
     private readonly IAuditService _audit;
     private readonly IFido2? _fido2;
 
+    /// <summary>
+    /// How far the clock of the device showing a TOTP code may differ from this host's, in either
+    /// direction, for a step-up verification. Half a step: at any instant at most two codes are
+    /// accepted, the current one and the neighbour nearer in time.
+    /// </summary>
+    internal static readonly TimeSpan StepUpTotpTolerance = TimeSpan.FromSeconds(15);
+
     // FIDO2 assertion responses must be deserialized with plain web JSON defaults, not the app's
     // MVC options: the global JsonStringEnumConverter (StartModularCA) outranks the FIDO2 types'
     // own [JsonConverter] attributes and fails to read "type":"public-key". See WebAuthnController.
@@ -151,10 +158,11 @@ public class MfaStepUpController : ControllerBase
             return BadRequest(new { error = "No TOTP secret configured" });
 
         var secret = GetDecryptedSecret(totpSecret);
-        // Step-up uses windowSize=0 (single current code) rather than
-        // the ±1 login-flow tolerance. The user is actively at the keyboard, so clock drift
-        // should be minimal and brute-force surface is halved.
-        var (valid, timeStep) = TotpController.VerifyTotpCode(secret, request.Code, totpSecret.LastUsedTimeStep, windowSize: 0);
+        // Step-up allows the clocks to differ by StepUpTotpTolerance in either direction, where
+        // sign-in allows a whole step each way. Accepting the current step alone refused a
+        // correct code whenever the two clocks sat on opposite sides of a step boundary: a host
+        // five seconds fast refused one code in six.
+        var (valid, timeStep) = TotpController.VerifyTotpCodeWithin(secret, request.Code, totpSecret.LastUsedTimeStep, StepUpTotpTolerance, DateTimeOffset.UtcNow);
         var replayed = valid && !await ModularCA.Auth.Utils.MfaSingleUse.TryClaimTotpStepAsync(_replayGuard, userId.Value, timeStep);
         if (!valid || replayed)
         {
