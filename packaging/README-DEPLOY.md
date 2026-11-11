@@ -131,6 +131,34 @@ inserts included, in one transaction that is then rolled back. The last line is 
 It applies nothing. While its dry run runs, it holds the locks the migrations take, as the upgrade
 itself would, so run it with the units stopped, as `install.sh` does, on a large database.
 
+#### Checking beside a running service: `--read-only`
+
+    sudo -u modularca <new build>/ModularCA.API --upgrade-check --read-only --config-dir /opt/modularca/config
+
+With `--read-only` the check reads and never rehearses, so it is safe while the service is
+serving. It opens no migration connection and takes no migration lock; the server refuses any
+write on its connections; and a read gives up after half a second if its table is locked, instead
+of queueing. It does everything else the check does: it proves the build can start, reads the
+schema and the ownership of both databases, and refuses what needs no rehearsal (a schema newer
+than the build, tables with no history, ownership that is not sound, PostgreSQL older than 14, a
+database that cannot be read, a configuration the build cannot use, a defective build, an
+integration key scoped to no space, a missing SSH CA key file).
+
+| Exit | Last line | Meaning |
+|---|---|---|
+| 0 | `UPGRADE CHECK: PASS (nothing to apply). Nothing was changed.` | nothing is pending: the upgrade applies no migration |
+| 5 | `UPGRADE PENDING, NOT REHEARSED (application: <ids>; audit: <ids>). ...` | migrations are pending, listed for each database that has any, and **were not rehearsed** |
+| 3 | `UPGRADE CHECK: REFUSED (...)` | refused, in the same words as without `--read-only` |
+| 75 | `UPGRADE CHECK: UNREACHABLE (...)` | a database could not be reached, or was locked; try again |
+
+Status 5 is not a pass. Whether the pending migrations apply cleanly on this data is only known
+from the dry run: stop the units and run the check again without `--read-only`. What only the dry
+run finds is a migration's own precondition refusing the data, and a statement that fails or runs
+out of time. `install.sh` does not use `--read-only`: it has already stopped the units. The flag
+is for an orchestrator that wants to know, before it stops anything, whether an upgrade is refused
+outright or has nothing to apply. No unit needs to know status 5: only this command returns it,
+never a starting service.
+
 The dry run does not stop at the first refusal. It runs each statement under its own savepoint,
 so one run lists every precondition that refuses, in every pending migration, and you can fix them
 all before checking again. The report numbers them ("1 of 3") and quotes each message as the
@@ -174,6 +202,7 @@ operator sees:
 | The dry run or a migration failed on a lock timeout, a deadlock or a lost connection | — then **75** | retried in the service with backoff for up to `Schema.WaitSeconds`, then exits and systemd retries |
 | A pending migration refuses in the dry run | **3** | nothing applied to either database; the journal lists every refusal of both databases, each with its migration and message |
 | Schema newer than this build, tables without history, wrong password, `pg_hba.conf` refusal, TLS failure, tables the runtime role does not own, a migration that failed for good, PostgreSQL older than 14 | **3** | not retried (`RestartPreventExitStatus=3`); the journal says why and prints the fix |
+| The start stopped for good after it had applied a migration: one failed during the apply, or the check afterwards did not match | **4** | not retried (`RestartPreventExitStatus=3 4`). The databases are no longer as the previous release left them: fix the cause and start this release again, or restore both databases before running the previous one. Status 3 from the schema check promises that it applied nothing |
 | `Hsm.Enabled: true` and the HSM cannot be initialised (module, slot, PIN or token) | **3** | not retried, so a wrong PIN is not tried again until the token locks |
 | Another setting that cannot work (see "Some settings stop the start") | **1** | retried every 5 s until the unit's start limit (5 starts in 300 s) |
 

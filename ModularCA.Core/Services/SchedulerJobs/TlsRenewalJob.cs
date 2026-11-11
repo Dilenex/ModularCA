@@ -44,7 +44,7 @@ namespace ModularCA.Core.Services.SchedulerJobs;
 /// <see cref="SingletonCronJob.TickAsync"/> evaluates so the work fires immediately
 /// regardless of schedule.
 /// </summary>
-public class TlsRenewalJob : SingletonCronJob
+public class TlsRenewalJob : SingletonCronJob, ISignerDependentJob
 {
     // Number of historical backups to retain (.bak, .bak.1, .bak.2 by default). The
     // current PFX rotates into .bak, the previous .bak shifts to .bak.1, etc. Lets an

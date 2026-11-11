@@ -23,11 +23,15 @@ public static partial class SchemaStartup
     /// path under <paramref name="installDirectory"/>. Read-only: one read-only transaction as
     /// the runtime role, rolled back. A database without the SSH tables has nothing to check;
     /// one that cannot be read here is reported unreachable, and its schema finding says why.
+    /// With <paramref name="readOnlyCheck"/> it reads on the read-only check connection
+    /// (<see cref="ReadOnlyCheckConnectionString"/>).
     /// </summary>
     /// <param name="target">The application database.</param>
     /// <param name="installDirectory">The installed application directory, the parent of the config directory.</param>
+    /// <param name="readOnlyCheck">True for <c>--upgrade-check --read-only</c>.</param>
     /// <param name="ct">Cancellation token.</param>
-    private static async Task<SshUpgradeResult> SshUpgradeAsync(SchemaTarget target, string installDirectory, CancellationToken ct)
+    private static async Task<SshUpgradeResult> SshUpgradeAsync(
+        SchemaTarget target, string installDirectory, bool readOnlyCheck, CancellationToken ct)
     {
         const string name = SshUpgradeCheck.KeysFindingName;
         var keys = new List<SshUpgradeKeyRow>();
@@ -38,7 +42,7 @@ public static partial class SchemaStartup
         bool beforeUpgrade, beforeLoginNames;
         try
         {
-            await using var connection = new NpgsqlConnection(GateReadConnectionString(target.Instance));
+            await using var connection = new NpgsqlConnection(CheckReadConnectionString(target.Instance, readOnlyCheck));
             await connection.OpenAsync(ct);
             await using var transaction = await connection.BeginTransactionAsync(ct);
             await using (var readOnly = new NpgsqlCommand("SET TRANSACTION READ ONLY", connection, transaction))

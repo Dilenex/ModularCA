@@ -2781,6 +2781,20 @@ public class PostgresUpgradeHarnessTests
     }
 
     /// <summary>
+    /// An enabled SSH CA in the seeded organisation, written against the baseline schema, with one
+    /// enabled key whose row names the key file <c>config/ssh-ca-keys/&lt;key id&gt;</c>. Run
+    /// after <see cref="Seed030Sql"/>.
+    /// </summary>
+    /// <param name="ca">The id the SSH CA gets.</param>
+    /// <param name="key">The id its key gets.</param>
+    /// <param name="publicKey">The key's public half, in OpenSSH form.</param>
+    internal static string SeedSshCaWithKeyFileSql(Guid ca, Guid key, string publicKey) =>
+        "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"TenantId\",\"IsDeleted\") "
+        + $"VALUES ('{ca}','Ops SSH','ops-ssh',false,'SSH',true,'Software',true,'{OrgTenant}',false); "
+        + "INSERT INTO \"SshCaKeys\" (\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"PrivateKeyPath\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"IsEnabled\",\"CreatedAt\") "
+        + $"VALUES ('{key}','Ops SSH','ed25519','{publicKey}','config/ssh-ca-keys/{key}','{ca}',true,false,24,true,now());";
+
+    /// <summary>
     /// A 0.3.x instance as bootstrap leaves it, written against the baseline schema: the system
     /// tenant and one organisation tenant, a root CA in the organisation, a system group, a
     /// tenant-wide and a CA-scoped group, and one operator in two of them.

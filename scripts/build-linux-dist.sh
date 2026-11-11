@@ -126,6 +126,32 @@ for tool in cli migrate; do
 done
 rm -rf "$PUBLISH"
 
+# Start the program once, where this machine can run it. --upgrade-check first builds the web
+# host and says "THIS BUILD CANNOT START" when it cannot; pointed at an empty directory it then
+# stops with status 1 for want of a db.yaml, having touched nothing. A payload with a wrong
+# framework assembly, which no file check here would notice, fails the build instead of the
+# first install. Skipped when the build host cannot run the target (a Windows host, another CPU).
+if [[ "$(uname -s)" == "Linux" && "$RID" == "linux-$(uname -m | sed -e 's/x86_64/x64/' -e 's/aarch64/arm64/')" ]]; then
+    note "starting the program once"
+    SMOKE="$(mktemp -d)"
+    chmod +x "$STAGE/ModularCA.API"
+    set +e
+    SMOKE_OUT="$("$STAGE/ModularCA.API" --upgrade-check --config-dir "$SMOKE" 2>&1)"
+    SMOKE_RC=$?
+    set -e
+    chmod -x "$STAGE/ModularCA.API"
+    rm -rf "$SMOKE"
+    # The run may have left a start-up log beside the program; none belongs in the archive.
+    find "$STAGE/logs" -type f -delete 2>/dev/null || true
+    if [[ "$SMOKE_RC" -ne 1 ]] || grep -q "THIS BUILD CANNOT START" <<<"$SMOKE_OUT"; then
+        echo "REFUSING: the published program does not start (status $SMOKE_RC, expected 1 for an empty config directory):" >&2
+        echo "$SMOKE_OUT" | tail -n 15 >&2
+        exit 1
+    fi
+else
+    note "not starting the program: this host cannot run $RID"
+fi
+
 note "staging config, deploy files and installer"
 mkdir -p "$STAGE/config" "$STAGE/keystores" "$STAGE/logs" "$STAGE/deploy" "$STAGE/share/sql"
 cp config/*.example "$STAGE/config/" 2>/dev/null || true

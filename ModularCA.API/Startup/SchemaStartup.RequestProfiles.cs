@@ -18,18 +18,21 @@ public static partial class SchemaStartup
     /// audit database, replayed against the request profile that protocol uses on its CA now.
     /// Null when there is nothing to say. Read-only: one read-only transaction on each database
     /// as its runtime role, rolled back. A database that cannot be read here is mentioned, not
-    /// refused.
+    /// refused. With <paramref name="readOnlyCheck"/> it reads both on the read-only check
+    /// connection (<see cref="ReadOnlyCheckConnectionString"/>).
     /// </summary>
     /// <param name="application">The application database.</param>
     /// <param name="audit">The audit database.</param>
+    /// <param name="readOnlyCheck">True for <c>--upgrade-check --read-only</c>.</param>
     /// <param name="ct">Cancellation token.</param>
-    private static async Task<string?> RequestProfileUpgradeNoteAsync(SchemaTarget application, SchemaTarget audit, CancellationToken ct)
+    private static async Task<string?> RequestProfileUpgradeNoteAsync(
+        SchemaTarget application, SchemaTarget audit, bool readOnlyCheck, CancellationToken ct)
     {
         var since = DateTime.UtcNow.AddDays(-RequestProfileUpgradeCheck.Days);
         var issuedBySerial = new Dictionary<string, (string Protocol, string CaLabel, DateTime At)>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            await using var connection = new NpgsqlConnection(GateReadConnectionString(audit.Instance));
+            await using var connection = new NpgsqlConnection(CheckReadConnectionString(audit.Instance, readOnlyCheck));
             await connection.OpenAsync(ct);
             await using var transaction = await connection.BeginTransactionAsync(ct);
             await using (var readOnly = new NpgsqlCommand("SET TRANSACTION READ ONLY", connection, transaction))
@@ -73,7 +76,7 @@ public static partial class SchemaStartup
         var issued = new List<ProtocolIssuance>();
         try
         {
-            await using var connection = new NpgsqlConnection(GateReadConnectionString(application.Instance));
+            await using var connection = new NpgsqlConnection(CheckReadConnectionString(application.Instance, readOnlyCheck));
             await connection.OpenAsync(ct);
             await using var transaction = await connection.BeginTransactionAsync(ct);
             await using (var readOnly = new NpgsqlCommand("SET TRANSACTION READ ONLY", connection, transaction))

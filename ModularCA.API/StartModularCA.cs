@@ -479,17 +479,21 @@ if (args.Contains("--db-ownership", StringComparer.OrdinalIgnoreCase))
 // Read-only apart from a dry run it rolls back: would this build's control role upgrade the
 // databases cleanly? Runs as the service user with the db.yaml roles; --config-dir names the
 // installed config, so a new build can be checked from where it was unpacked. 0 clean, 3 refused,
-// 75 unreachable, 1 usage.
+// 75 unreachable, 1 usage. With --read-only there is no dry run and no migration lock, for a check
+// beside a node that is still serving: 5 then says migrations are pending and were not rehearsed.
 if (args.Contains("--upgrade-check", StringComparer.OrdinalIgnoreCase))
 {
     var checkConfigDir = args.SkipWhile(a => !a.Equals("--config-dir", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
     if (args.Contains("--config-dir", StringComparer.OrdinalIgnoreCase) && (string.IsNullOrWhiteSpace(checkConfigDir) || checkConfigDir.StartsWith("--", StringComparison.Ordinal)))
     {
-        Console.Error.WriteLine("Usage: --upgrade-check [--config-dir <installed config directory>]   (run as the service user, never as root)");
+        Console.Error.WriteLine("Usage: --upgrade-check [--read-only] [--config-dir <installed config directory>]   (run as the service user, never as root)");
+        Console.Error.WriteLine("  --read-only   Read only, beside a node that is still serving: no dry run and no migration lock.");
+        Console.Error.WriteLine("                Exits 5 when migrations are pending; the check must then be run without it, with the node stopped.");
         Environment.Exit(1);
     }
     checkConfigDir = Path.GetFullPath(checkConfigDir ?? Path.Combine(AppContext.BaseDirectory, "config"));
-    Environment.Exit(await ModularCA.API.Startup.UpgradeCheckCommand.RunAsync(checkConfigDir));
+    Environment.Exit(await ModularCA.API.Startup.UpgradeCheckCommand.RunAsync(
+        checkConfigDir, readOnly: args.Contains("--read-only", StringComparer.OrdinalIgnoreCase)));
 }
 // Host-local recovery: unlocks an account with the db.yaml application credentials and audits it
 // with the db.yaml audit credentials. See UnlockUserCommand.

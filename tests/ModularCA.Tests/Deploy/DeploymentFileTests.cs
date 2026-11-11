@@ -17,7 +17,18 @@ public class DeploymentFileTests
     [InlineData("deploy/modularca-signer.service")]
     public void Both_units_do_not_retry_exit_status_3(string unit)
     {
-        Assert.Contains("RestartPreventExitStatus=3", Directives(unit));
+        Assert.Contains(Directives(unit), d => d.StartsWith("RestartPreventExitStatus=", StringComparison.Ordinal)
+            && d["RestartPreventExitStatus=".Length..].Split(' ').Contains("3"));
+    }
+
+    /// <summary>
+    /// The node applies migrations, so it alone can stop with status 4 (it stopped for good after
+    /// applying one): a restart cannot fix that either, and must not be tried.
+    /// </summary>
+    [Fact]
+    public void The_node_unit_does_not_retry_exit_status_4()
+    {
+        Assert.Contains("RestartPreventExitStatus=3 4", Directives("deploy/modularca.service"));
     }
 
     [Theory]

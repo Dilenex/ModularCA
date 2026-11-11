@@ -184,6 +184,37 @@ public sealed class SchemaStartupExitCodeTests
         Assert.Equal(3, exit);
     }
 
+    /// <summary>
+    /// Status 3 from the schema step promises that it applied nothing. Once a migration has
+    /// committed in this start, a stop the operator must act on is status 4 instead; a stop that
+    /// asks for a retry stays 75 either way, because the same build is to be started again.
+    /// </summary>
+    [Fact]
+    public void A_stop_for_good_after_a_migration_was_applied_is_4_and_every_other_stop_keeps_its_code()
+    {
+        Assert.Equal(4, SchemaStartupApi.AppliedThenFailedExitCode);
+        Assert.Equal(3, SchemaStartupApi.ExitAfter(SchemaStartupApi.ExitCode, changedADatabase: false));
+        Assert.Equal(4, SchemaStartupApi.ExitAfter(SchemaStartupApi.ExitCode, changedADatabase: true));
+        Assert.Equal(75, SchemaStartupApi.ExitAfter(SchemaStartupApi.TempFailExitCode, changedADatabase: false));
+        Assert.Equal(75, SchemaStartupApi.ExitAfter(SchemaStartupApi.TempFailExitCode, changedADatabase: true));
+    }
+
+    /// <summary>
+    /// A failed apply counts as having changed the database when it committed a migration, when
+    /// the failed migration runs statements a failure does not roll back, or when the history
+    /// could not be read back to tell. Only a failure with none of these promises nothing changed.
+    /// </summary>
+    [Fact]
+    public void A_failed_apply_may_have_changed_the_database_unless_it_provably_did_not()
+    {
+        var error = new InvalidOperationException("boom");
+
+        Assert.False(new MigrationFailure("m2", error, [], false).MayHaveChangedDatabase);
+        Assert.True(new MigrationFailure("m2", error, ["m1"], false).MayHaveChangedDatabase);
+        Assert.True(new MigrationFailure("m2", error, [], true).MayHaveChangedDatabase);
+        Assert.True(new MigrationFailure("m1 or m2", error, [], false) { HistoryReadBack = false }.MayHaveChangedDatabase);
+    }
+
     /// <summary>Every captured event, for an assertion message.</summary>
     private static string Dump(CapturedSerilog log) =>
         string.Join(Environment.NewLine, log.Events.Select(e => $"{e.Level}: {e.Text}"));

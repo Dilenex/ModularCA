@@ -25,8 +25,21 @@ internal static class SchemaStartupApi
     /// <summary><c>SchemaStartup.ExitCode</c>: the operator must act.</summary>
     public static int ExitCode => (int)Startup.GetField("ExitCode")!.GetRawConstantValue()!;
 
+    /// <summary><c>SchemaStartup.AppliedThenFailedExitCode</c>: the operator must act, and a migration had been applied.</summary>
+    public static int AppliedThenFailedExitCode => (int)Startup.GetField("AppliedThenFailedExitCode")!.GetRawConstantValue()!;
+
+    /// <summary>Calls <c>SchemaStartup.ExitAfter</c>: the code the schema step stops with, given whether it changed a database.</summary>
+    public static int ExitAfter(int exit, bool changedADatabase) =>
+        (int)Startup.GetMethod("ExitAfter", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [exit, changedADatabase])!;
+
     /// <summary><c>SchemaStartup.TempFailExitCode</c>: the service manager retries.</summary>
     public static int TempFailExitCode => (int)Startup.GetField("TempFailExitCode")!.GetRawConstantValue()!;
+
+    /// <summary><c>SchemaStartup.PendingNotRehearsedExitCode</c>: the read-only upgrade check found migrations pending.</summary>
+    public static int PendingNotRehearsedExitCode => (int)Startup.GetField("PendingNotRehearsedExitCode")!.GetRawConstantValue()!;
+
+    /// <summary><c>SchemaStartup.PendingNotRehearsedMarker</c>: what the read-only upgrade check's "pending" line starts with.</summary>
+    public static string PendingNotRehearsedMarker => (string)Startup.GetField("PendingNotRehearsedMarker")!.GetRawConstantValue()!;
 
     /// <summary>
     /// Calls <c>SchemaStartup.EnforceAllAsync</c> with no systemd notifier and returns its exit
@@ -77,17 +90,19 @@ internal static class SchemaStartupApi
     /// Calls <c>SchemaStartup.UpgradeCheckAsync</c>, the <c>--upgrade-check</c> verb, writing its report to
     /// <paramref name="output"/>, with the integration keys' configured <paramref name="scopes"/> when given,
     /// and the SSH CA key files looked for under <paramref name="installDirectory"/> when one is given.
+    /// With <paramref name="readOnly"/> it is <c>--upgrade-check --read-only</c>: no dry run.
     /// </summary>
     public static async Task<int> UpgradeCheckAsync(
         IReadOnlyList<(string Name, DatabaseKind Kind, DbInstance Instance)> targets, SchemaConfig config, TextWriter output,
-        IReadOnlyList<(string Key, string Value)>? scopes = null, string? installDirectory = null, CancellationToken ct = default)
+        IReadOnlyList<(string Key, string Value)>? scopes = null, string? installDirectory = null, bool readOnly = false,
+        CancellationToken ct = default)
     {
         var targetType = ApiAssembly.TypeNamed(Namespace + "SchemaTarget");
         var array = Array.CreateInstance(targetType, targets.Count);
         for (var i = 0; i < targets.Count; i++)
             array.SetValue(Activator.CreateInstance(targetType, targets[i].Name, targets[i].Kind, targets[i].Instance), i);
         var method = Startup.GetMethod("UpgradeCheckAsync", BindingFlags.Public | BindingFlags.Static)!;
-        return await (Task<int>)method.Invoke(null, [array, config, output, scopes, installDirectory, ct])!;
+        return await (Task<int>)method.Invoke(null, [array, config, output, scopes, installDirectory, readOnly, ct])!;
     }
 
     /// <summary>Calls <c>SchemaStartup.UpgradeCheckExitCode</c> with <c>UpgradeReadiness</c> values named by <paramref name="readiness"/>.</summary>
@@ -125,6 +140,10 @@ internal static class SchemaStartupApi
     /// <summary>The gate-read connection string the startup check reads with.</summary>
     public static string GateReadConnectionString(DbInstance instance) =>
         (string)Startup.GetMethod("GateReadConnectionString", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [instance])!;
+
+    /// <summary>The connection string <c>--upgrade-check --read-only</c> reads with.</summary>
+    public static string ReadOnlyCheckConnectionString(DbInstance instance) =>
+        (string)Startup.GetMethod("ReadOnlyCheckConnectionString", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [instance])!;
 
     /// <summary>The migration connection string the control role migrates with.</summary>
     public static string MigrationConnectionString(DbInstance instance, SchemaConfig config) =>
