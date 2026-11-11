@@ -270,6 +270,9 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetCaPublicKey(Guid id)
     {
+        // The service throws for an id that names no key; that is a 404 here, not a server error.
+        if (!await db.SshCaKeys.AsNoTracking().AnyAsync(k => k.Id == id))
+            return NotFound(new { error = "SSH CA key not found." });
         var pubKey = await sshCaService.GetPublicKeyAsync(id);
         return Content(pubKey, "text/plain");
     }

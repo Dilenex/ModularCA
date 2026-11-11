@@ -275,45 +275,39 @@ namespace ModularCA.Auth.Services
         }
 
         /// <summary>
-        /// Returns a single user by ID with group memberships, or throws if not found.
+        /// Returns a single user by ID with group memberships, or null when there is none.
         /// </summary>
-        public async Task<UserEntityDto> GetUserById(Guid userId)
+        public async Task<UserEntityDto?> GetUserById(Guid userId)
         {
             var user = await _dbContext.Users
                 .Include(u => u.GroupMemberships)
                     .ThenInclude(gm => gm.Group)
                 .FirstOrDefaultAsync(u => u.Id == userId);
-            if (user == null)
-                throw new Exception("User not found");
-            return MapToDto(user);
+            return user == null ? null : MapToDto(user);
         }
 
         /// <summary>
-        /// Returns a single user by username with group memberships, or throws if not found.
+        /// Returns a single user by username with group memberships, or null when there is none.
         /// </summary>
-        public async Task<UserEntityDto> GetUserByUsername(string username)
+        public async Task<UserEntityDto?> GetUserByUsername(string username)
         {
             var user = await _dbContext.Users
                 .Include(u => u.GroupMemberships)
                     .ThenInclude(gm => gm.Group)
                 .FirstOrDefaultAsync(u => u.Username == username);
-            if (user == null)
-                throw new Exception("User not found");
-            return MapToDto(user);
+            return user == null ? null : MapToDto(user);
         }
 
         /// <summary>
-        /// Returns a single user by email with group memberships, or throws if not found.
+        /// Returns a single user by email with group memberships, or null when there is none.
         /// </summary>
-        public async Task<UserEntityDto> GetUserByEmail(string email)
+        public async Task<UserEntityDto?> GetUserByEmail(string email)
         {
             var user = await _dbContext.Users
                 .Include(u => u.GroupMemberships)
                     .ThenInclude(gm => gm.Group)
                 .FirstOrDefaultAsync(u => u.Email == email);
-            if (user == null)
-                throw new Exception("User not found");
-            return MapToDto(user);
+            return user == null ? null : MapToDto(user);
         }
 
         /// <summary>

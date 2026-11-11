@@ -28,19 +28,19 @@ namespace ModularCA.Auth.Interfaces
         Task<List<UserEntityDto>> GetAllUsers();
 
         /// <summary>
-        /// Returns a single user by ID with group memberships.
+        /// Returns a single user by ID with group memberships, or null when there is none.
         /// </summary>
-        Task<UserEntityDto> GetUserById(Guid userId);
+        Task<UserEntityDto?> GetUserById(Guid userId);
 
         /// <summary>
-        /// Returns a single user by username with group memberships.
+        /// Returns a single user by username with group memberships, or null when there is none.
         /// </summary>
-        Task<UserEntityDto> GetUserByUsername(string username);
+        Task<UserEntityDto?> GetUserByUsername(string username);
 
         /// <summary>
-        /// Returns a single user by email with group memberships.
+        /// Returns a single user by email with group memberships, or null when there is none.
         /// </summary>
-        Task<UserEntityDto> GetUserByEmail(string email);
+        Task<UserEntityDto?> GetUserByEmail(string email);
 
         /// <summary>
         /// Adds a user to a CA group. Returns false if the user is already a member or either entity is missing.

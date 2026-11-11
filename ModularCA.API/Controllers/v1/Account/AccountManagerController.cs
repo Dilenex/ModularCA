@@ -50,14 +50,8 @@ namespace ModularCA.API.Controllers.v1.Account
             if (!_currentUser.IsAuthenticated || _currentUser.User == null)
                 return Unauthorized();
 
-            try
-            {
-                return Ok(await _userManager.GetUserById(_currentUser.User.Id));
-            }
-            catch (Exception)
-            {
-                return NotFound();
-            }
+            var self = await _userManager.GetUserById(_currentUser.User.Id);
+            return self == null ? NotFound() : Ok(self);
         }
 
         /// <summary>

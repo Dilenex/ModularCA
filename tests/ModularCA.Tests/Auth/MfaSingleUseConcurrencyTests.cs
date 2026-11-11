@@ -99,6 +99,9 @@ public sealed class MfaSingleUseConcurrencyTests
         public IDataProtectionProvider DataProtection { get; } = new EphemeralDataProtectionProvider();
         public IFido2? Fido2 { get; init; }
 
+        /// <summary>False for a request that has not loaded its user, as the step-up actions do not: the current-user service then holds only the id.</summary>
+        public bool UserLoaded { get; init; } = true;
+
         public World()
         {
             using var db = Db();
@@ -127,7 +130,7 @@ public sealed class MfaSingleUseConcurrencyTests
             var db = Db();
             var type = ApiAssembly.TypeNamed(controllerName);
             var ctor = type.GetConstructors().OrderByDescending(c => c.GetParameters().Length).First();
-            var available = new object?[] { db, Cache, new JwtTokenService(Config), Audit, Config, new FixedPolicy(), DataProtection, Guard, Fido2, new CurrentUserStub(UserId) };
+            var available = new object?[] { db, Cache, new JwtTokenService(Config), Audit, Config, new FixedPolicy(), DataProtection, Guard, Fido2, new CurrentUserStub(UserId, UserLoaded) };
             var controller = ctor.Invoke(ctor.GetParameters()
                 .Select(p => available.FirstOrDefault(a => a != null && p.ParameterType.IsInstanceOfType(a)))
                 .ToArray());
@@ -137,7 +140,8 @@ public sealed class MfaSingleUseConcurrencyTests
                 .BuildServiceProvider();
             var http = new DefaultHttpContext { RequestServices = services };
             http.User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(
-                [new System.Security.Claims.Claim("sub", UserId.ToString()), new System.Security.Claims.Claim("jti", "session-1")], "test"));
+                [new System.Security.Claims.Claim("sub", UserId.ToString()), new System.Security.Claims.Claim("jti", "session-1"),
+                 new System.Security.Claims.Claim("username", "mira")], "test"));
             if (body != null) http.Request.Body = body;
             type.GetProperty("ControllerContext", BindingFlags.Instance | BindingFlags.Public)!
                 .SetValue(controller, new ControllerContext { HttpContext = http });
@@ -203,11 +207,15 @@ public sealed class MfaSingleUseConcurrencyTests
     {
         public System.Collections.Concurrent.ConcurrentQueue<(string Action, string? ErrorMessage)> Entries { get; } = new();
 
+        /// <summary>The actor username each row was written with, by action.</summary>
+        public System.Collections.Concurrent.ConcurrentQueue<(string Action, string? Username)> Actors { get; } = new();
+
         public Task LogAsync(string actionType, Guid? actorUserId, string? actorUsername, string? targetEntityType = null,
             string? targetEntityId = null, object? details = null, string? sourceIp = null, bool success = true,
             string? errorMessage = null, Guid? certificateAuthorityId = null, Guid? spaceId = null)
         {
             Entries.Enqueue((actionType, errorMessage));
+            Actors.Enqueue((actionType, actorUsername));
             return Task.CompletedTask;
         }
     }
@@ -223,10 +231,10 @@ public sealed class MfaSingleUseConcurrencyTests
             => key.StartsWith("webauthn:challenge:", StringComparison.Ordinal) ? Task.FromResult(true) : _inner.TryClaimAsync(key, lifetime, ct);
     }
 
-    private sealed class CurrentUserStub(Guid id) : ICurrentUserService
+    private sealed class CurrentUserStub(Guid id, bool loaded = true) : ICurrentUserService
     {
         public Guid? UserId => id;
-        public UserEntity? User { get; } = new UserEntity { Id = id, Username = "mira" };
+        public UserEntity? User { get; } = loaded ? new UserEntity { Id = id, Username = "mira" } : null;
         public bool IsAuthenticated => true;
         public Task EnsureLoadedAsync() => Task.CompletedTask;
     }
@@ -334,6 +342,25 @@ public sealed class MfaSingleUseConcurrencyTests
         Assert.IsType<UnauthorizedObjectResult>(await w.TotpVerifyAsync(await w.PendingAsync(), code));
         Assert.IsType<UnauthorizedObjectResult>(await w.StepUpTotpAsync(code));
         Assert.Equal(0, w.RefreshTokenCount());
+    }
+
+    /// <summary>
+    /// The step-up actions never load the user, so the current-user service holds only the id:
+    /// the audit rows of a step-up that succeeds and of one that fails still name the actor, from
+    /// the access token's username claim.
+    /// </summary>
+    [Fact]
+    public async Task Step_up_audit_rows_name_the_actor_when_the_user_was_not_loaded()
+    {
+        var w = new World { UserLoaded = false };
+
+        Assert.IsType<OkObjectResult>(await w.StepUpTotpAsync(Code()));
+        Assert.IsType<UnauthorizedObjectResult>(await w.StepUpTotpAsync("000000"));
+
+        var rows = w.Audit.Actors.Where(a => a.Action is ModularCA.Shared.Enums.AuditActionType.MfaStepUpVerified or ModularCA.Shared.Enums.AuditActionType.MfaStepUpFailed).ToList();
+        Assert.Contains(rows, a => a.Action == ModularCA.Shared.Enums.AuditActionType.MfaStepUpVerified);
+        Assert.Contains(rows, a => a.Action == ModularCA.Shared.Enums.AuditActionType.MfaStepUpFailed);
+        Assert.All(rows, a => Assert.Equal("mira", a.Username));
     }
 
     /// <summary>Parallel step-up requests with one TOTP code: exactly one step-up token is issued.</summary>

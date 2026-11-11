@@ -177,7 +177,7 @@ public class MfaStepUpController : ControllerBase
         await _audit.LogAsync(
             AuditActionType.MfaStepUpVerified,
             userId.Value,
-            _currentUser.User?.Username,
+            ActorUsername,
             details: new { Method = "TOTP", request.Operation, request.TargetId, request.TargetIds });
 
         return Ok(new { mfaToken = stepUpToken, expiresInSeconds = ttl, operation = request.Operation, targetId = request.TargetId, targetCount = request.TargetIds?.Count });
@@ -357,7 +357,7 @@ public class MfaStepUpController : ControllerBase
         await _audit.LogAsync(
             AuditActionType.MfaStepUpVerified,
             userId.Value,
-            _currentUser.User?.Username,
+            ActorUsername,
             details: new { Method = "WebAuthn", request.Operation, request.TargetId, request.TargetIds });
 
         return Ok(new { mfaToken = stepUpToken, expiresInSeconds = ttl, operation = request.Operation, targetId = request.TargetId, targetCount = request.TargetIds?.Count });
@@ -403,7 +403,7 @@ public class MfaStepUpController : ControllerBase
         {
             await _audit.LogAsync(
                 AuditActionType.MfaStepUpFailed,
-                userId.Value, _currentUser.User?.Username,
+                userId.Value, ActorUsername,
                 sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(), success: false,
                 details: new { reason = match.AuditReason, request.Operation, credentialId = credential.Id, certificateId = credential.CertificateId },
                 errorMessage: "StepUpFailed");
@@ -420,7 +420,7 @@ public class MfaStepUpController : ControllerBase
         {
             await _audit.LogAsync(
                 AuditActionType.MfaStepUpFailed,
-                userId.Value, _currentUser.User?.Username,
+                userId.Value, ActorUsername,
                 sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(), success: false,
                 details: new { reason = "mtls_chain_or_revocation_check_failed", request.Operation },
                 errorMessage: "StepUpFailed");
@@ -434,7 +434,7 @@ public class MfaStepUpController : ControllerBase
         await _audit.LogAsync(
             AuditActionType.MfaStepUpVerified,
             userId.Value,
-            _currentUser.User?.Username,
+            ActorUsername,
             details: new { Method = "mTLS-restricted", request.Operation, request.TargetId });
 
         return Ok(new { mfaToken = stepUpToken, expiresInSeconds = ttl, operation = request.Operation, targetId = request.TargetId });
@@ -507,6 +507,13 @@ public class MfaStepUpController : ControllerBase
     }
 
     /// <summary>
+    /// The signed-in user's name for an audit row: from the loaded user when a request has loaded it,
+    /// otherwise from the access token's <c>username</c> claim. The step-up actions never load the
+    /// user, so without the claim their audit rows carried the actor's id and no name.
+    /// </summary>
+    private string? ActorUsername => _currentUser.User?.Username ?? User.FindFirst("username")?.Value;
+
+    /// <summary>
     /// Effective step-up token TTL in seconds, clamped to a
     /// sane operator-tunable range.
     /// </summary>
@@ -573,7 +580,7 @@ public class MfaStepUpController : ControllerBase
             await _audit.LogAsync(
                 AuditActionType.MfaStepUpFailed,
                 userId,
-                _currentUser.User?.Username,
+                ActorUsername,
                 targetEntityType: "User",
                 targetEntityId: userId.ToString(),
                 sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),

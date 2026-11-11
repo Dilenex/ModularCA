@@ -22,7 +22,8 @@ namespace ModularCA.Tests.Auth;
 
 /// <summary>
 /// Drives the real <c>AuthController.Refresh</c>: any replay of a rotated refresh token, however soon,
-/// revokes the whole family including the unused successor, and returns 401. Also what refresh
+/// revokes the whole family including the unused successor, ends every other session of the account,
+/// and returns 401; a stale token from before a logout ends nothing more. Also what refresh
 /// answers for an account that is disabled, locked or deleted.
 /// </summary>
 public sealed class RefreshTokenReuseTests
@@ -133,6 +134,13 @@ public sealed class RefreshTokenReuseTests
             return db.RefreshTokens.AsNoTracking().Single(t => t.Token == hash);
         }
 
+        /// <summary>Returns the test user's current security stamp.</summary>
+        public string? Stamp()
+        {
+            using var db = Db();
+            return db.Users.AsNoTracking().Single(u => u.Id == UserId).SecurityStamp;
+        }
+
         /// <summary>Returns every refresh token row of the test user.</summary>
         public List<RefreshTokenEntity> Family()
         {
@@ -215,6 +223,51 @@ public sealed class RefreshTokenReuseTests
         await w.LogoutAsync();
 
         AssertFamilyRevoked(w, await w.RefreshAsync(rt1));
+    }
+
+    /// <summary>
+    /// A rotated token presented again is the sign of a copied token, so it ends every session of
+    /// the account, not only its own family: a session opened by another sign-in is revoked, the
+    /// security stamp rotates so access tokens already issued are refused, and the cached stamp
+    /// is dropped so that takes effect on the next request.
+    /// </summary>
+    [Fact]
+    public async Task Replay_of_a_rotated_token_ends_every_session_of_the_account()
+    {
+        using var w = new World();
+        var rt1 = w.Login();
+        var otherDevice = w.Login();
+        NewRefreshToken(await w.RefreshAsync(rt1));
+        var stampBefore = w.Stamp();
+        await w.Cache.SetStringAsync(ModularCA.Core.Helpers.UserSessionTermination.StampCacheKey(w.UserId), "cached");
+
+        AssertFamilyRevoked(w, await w.RefreshAsync(rt1));
+
+        Assert.True(w.Row(otherDevice).IsRevoked);
+        Assert.NotEqual(stampBefore, w.Stamp());
+        Assert.Null(await w.Cache.GetStringAsync(ModularCA.Core.Helpers.UserSessionTermination.StampCacheKey(w.UserId)));
+        Assert.Contains(w.Audit.Entries, e => e.Action == AuditActionType.UserLoginFailed);
+    }
+
+    /// <summary>
+    /// A token revoked because its sessions were already ended was never rotated. A stale device
+    /// presenting it is refused, and the session the user has opened since is left alone: the
+    /// stamp does not rotate again and the new refresh token stays live.
+    /// </summary>
+    [Fact]
+    public async Task A_stale_token_from_before_a_logout_does_not_end_the_sessions_opened_since()
+    {
+        using var w = new World();
+        var stale = w.Login();
+        await w.LogoutAsync();
+        var current = w.Login();
+        var stampBefore = w.Stamp();
+
+        Assert.IsType<UnauthorizedObjectResult>(await w.RefreshAsync(stale));
+
+        Assert.False(w.Row(current).IsRevoked);
+        Assert.Equal(stampBefore, w.Stamp());
+        NewRefreshToken(await w.RefreshAsync(current));
     }
 
     /// <summary>

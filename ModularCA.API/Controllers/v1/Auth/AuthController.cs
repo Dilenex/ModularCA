@@ -556,10 +556,30 @@ namespace ModularCA.API.Controllers.v1.Auth
         }
 
         /// <summary>
+        /// Ends every session of <paramref name="userId"/> after a rotated refresh token was
+        /// presented again: the stamp rotates and every live refresh token is revoked, saved here,
+        /// and the cached stamp is dropped so access tokens already issued are refused at once.
+        /// </summary>
+        private async Task EndSessionsAfterReuseAsync(Guid userId)
+        {
+            await ModularCA.Core.Helpers.UserSessionTermination.EndAllSessionsAsync(_db, [userId], DateTime.UtcNow);
+            await _db.SaveChangesAsync();
+            await ModularCA.Core.Helpers.UserSessionTermination.InvalidateStampCacheAsync(_cache, [userId]);
+        }
+
+        /// <summary>
         /// Rotates a refresh token. The DPoP proof is validated once, up front. Presenting a token
-        /// that is already revoked (a replay of a rotated token) revokes the whole family and returns 401.
+        /// that is already revoked revokes the whole family and returns 401.
         /// The presented token is revoked by a conditional update in the same transaction that
         /// inserts its successor, so a concurrent request that loses the race is treated as reuse.
+        /// <para>
+        /// A token that was rotated and is presented again (a replay, or the lost race) is the one
+        /// sign that a refresh token was copied, so it ends every session of the account
+        /// (<see cref="EndSessionsAfterReuseAsync"/>): the access token the other holder already
+        /// has stops on its next request instead of running until it expires. A token revoked
+        /// because its sessions were already ended (a logout, a credential change) was not
+        /// rotated; presenting it is a stale device, and ends nothing more.
+        /// </para>
         /// </summary>
         [AllowAnonymous]
         [HttpPost("refresh")]
@@ -598,9 +618,16 @@ namespace ModularCA.API.Controllers.v1.Auth
                         t.RevokedAt = DateTime.UtcNow;
                     }
                     await _db.SaveChangesAsync();
+                    // ReplacedByToken is set only by rotation: this token was exchanged for a
+                    // successor and is being presented again.
+                    var rotatedReplay = stored.ReplacedByToken != null;
+                    if (rotatedReplay)
+                        await EndSessionsAfterReuseAsync(stored.UserId);
                     await _audit.LogAsync(AuditActionType.UserLoginFailed, stored.UserId, stored.User?.Username,
                         sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(), success: false,
-                        errorMessage: $"Refresh token reuse detected in family {stored.FamilyId} — all tokens revoked");
+                        errorMessage: rotatedReplay
+                            ? $"Refresh token reuse detected in family {stored.FamilyId} — every session of the account ended"
+                            : $"Refresh token reuse detected in family {stored.FamilyId} — all tokens revoked");
                     return Unauthorized(new { error = "Token family compromised. Please log in again." });
                 }
                 return Unauthorized(new { error = "Invalid or expired refresh token" });
@@ -752,9 +779,10 @@ namespace ModularCA.API.Controllers.v1.Auth
             if (!await ModularCA.Auth.Services.RefreshTokenRotation.RotateAsync(
                     _db, stored.Id, stored.FamilyId, newRefreshToken, DateTime.UtcNow, HttpContext.RequestAborted))
             {
+                await EndSessionsAfterReuseAsync(stored.UserId);
                 await _audit.LogAsync(AuditActionType.UserLoginFailed, stored.UserId, user.Username,
                     sourceIp: currentIpStr, success: false,
-                    errorMessage: $"Refresh token reuse detected in family {stored.FamilyId} (concurrent rotation) — all tokens revoked");
+                    errorMessage: $"Refresh token reuse detected in family {stored.FamilyId} (concurrent rotation) — every session of the account ended");
                 return Unauthorized(new { error = "Token family compromised. Please log in again." });
             }
 

@@ -923,7 +923,24 @@ public sealed class ControlledAccountTakeoverTests
         Assert.Single(h.Audit.Entries, e => e.Action == AuditActionType.UserPasswordSourceChanged);
 
         // The administrator reads it back.
-        Assert.Equal(PasswordSource.Local, (await h.Users.GetUserById(u)).PasswordSource);
+        Assert.Equal(PasswordSource.Local, (await h.Users.GetUserById(u))!.PasswordSource);
+    }
+
+    /// <summary>
+    /// A lookup that names no account answers 404, the same as one that names an account outside
+    /// the caller's scope. It used to throw (500), which told the two apart: a caller could learn
+    /// that a username exists in another space from getting 404 for it and 500 for a made-up one.
+    /// </summary>
+    [Fact]
+    public async Task A_lookup_of_an_account_that_does_not_exist_answers_404()
+    {
+        var h = new Harness();
+        var a = h.W.SystemAdmin;
+
+        Assert.Equal(404, Status(await Call(h.UserManager(a), "GetUserById", Guid.NewGuid())));
+        Assert.Equal(404, Status(await Call(h.UserManager(a), "GetUserByUsername", "no-such-account")));
+        Assert.Equal(404, Status(await Call(h.UserManager(a), "GetUserByEmail", "no-such-account@example.test")));
+        Assert.Null(await h.Users.GetUserById(Guid.NewGuid()));
     }
 
     [Fact]
