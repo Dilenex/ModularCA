@@ -927,6 +927,103 @@ public sealed class ControlledAccountTakeoverTests
     }
 
     /// <summary>
+    /// An account that made a certificate request, or approved one, is named by rows that must
+    /// keep naming it, and the database refuses to remove it: deleting it used to surface as a
+    /// 500. It is now retained: the row stays, hidden, with its id and username, and everything
+    /// it could sign in with or reach is gone. An account with no such record is removed outright.
+    /// </summary>
+    [Fact]
+    public async Task Deleting_an_account_with_history_retains_the_row_and_strips_everything_else()
+    {
+        var h = new Harness();
+        var super = h.W.Super;
+        var requester = h.W.User("made-a-request", h.W.A1Requester);
+        var approver = h.W.User("gave-an-approval", h.W.A1Requester);
+        var untouched = h.W.User("no-history", h.W.A1Requester);
+        var request = new CertRequestEntity { Subject = "CN=x", RequestorUserId = requester };
+        h.W.Db.CertificateRequests.Add(request);
+        h.W.Db.CsrApprovals.Add(new CsrApprovalEntity { CertRequestId = request.Id, ApproverId = approver, ApproverUsername = "gave-an-approval", Decision = "Approved" });
+        h.W.Db.RefreshTokens.Add(new RefreshTokenEntity { UserId = requester, Token = "live-session", ExpiresAt = DateTime.UtcNow.AddDays(1) });
+        var held = h.W.Db.Users.Single(u => u.Id == requester);
+        held.PasswordHash = "a-hash";
+        var stampBefore = held.SecurityStamp;
+        h.W.Db.SaveChanges();
+
+        Task<IActionResult> Delete(Guid target) => Call(h.UserManager(super), "DeleteUser", target, h.StepUp(super, StepUpOps.DeleteUser, target));
+
+        var first = await Delete(requester);
+        Assert.Equal(200, Status(first));
+        var said = JsonSerializer.Serialize(((ObjectResult)first).Value);
+        Assert.Contains("1 certificate request(s) it made", said);
+        Assert.Contains("\"retained\":true", said);
+        Assert.Equal(200, Status(await Delete(approver)));
+
+        h.W.Db.ChangeTracker.Clear();
+        Assert.False(h.W.Db.Users.Any(u => u.Id == requester || u.Id == approver));
+        var row = h.W.Db.Users.IgnoreQueryFilters().Single(u => u.Id == requester);
+        Assert.True(row.IsDeleted);
+        Assert.NotNull(row.DeletedAt);
+        Assert.False(row.IsActive);
+        Assert.Equal("made-a-request", row.Username);
+        Assert.Equal(string.Empty, row.PasswordHash);
+        Assert.Equal(UserManagementService.TombstoneEmail(requester), row.Email);
+        Assert.NotEqual(stampBefore, row.SecurityStamp);
+        Assert.False(h.W.Db.CaGroupMembers.Any(m => m.UserId == requester || m.UserId == approver));
+        Assert.False(h.W.Db.RefreshTokens.Any(r => r.UserId == requester));
+        Assert.Equal(requester, h.W.Db.CertificateRequests.Single(r => r.Id == request.Id).RequestorUserId);
+        Assert.Equal(approver, h.W.Db.CsrApprovals.Single(a => a.CertRequestId == request.Id).ApproverId);
+        Assert.Equal(2, h.Audit.Entries.Count(e => e.Action == AuditActionType.UserDeleted));
+
+        // Deleting it again finds nothing.
+        Assert.Equal(404, Status(await Delete(requester)));
+
+        // The retained accounts are listed apart, with what still names them.
+        var retained = await h.Users.GetRetainedAccounts();
+        Assert.Equal(2, retained.Count);
+        var listed = retained.Single(a => a.Id == requester);
+        Assert.Equal("made-a-request", listed.Username);
+        Assert.Equal((1, 0), (listed.Requests, listed.Approvals));
+        Assert.Equal((0, 1), (retained.Single(a => a.Id == approver).Requests, retained.Single(a => a.Id == approver).Approvals));
+        Assert.Equal(200, Status(await Call(h.UserManager(super), "GetDeletedUsers")));
+
+        // The name stays taken, and says why; the address is free again.
+        var again = await h.Users.CreateUser(new CreateUserRequest { Username = "made-a-request", Email = "someone-else@x", Password = "Chosen-Passw0rd!" });
+        Assert.False(again.Success);
+        Assert.Contains("deleted account", again.Error);
+        var reuse = await h.Users.CreateUser(new CreateUserRequest { Username = "newcomer", Email = "made-a-request@x", Password = "Chosen-Passw0rd!" });
+        Assert.True(reuse.Success, reuse.Error);
+
+        var before = await h.Users.RetainedHistoryAsync(untouched);
+        Assert.Null(before);
+        var plain = await Delete(untouched);
+        Assert.Equal(200, Status(plain));
+        Assert.Contains("\"retained\":false", JsonSerializer.Serialize(((ObjectResult)plain).Value));
+        Assert.False(h.W.Db.Users.IgnoreQueryFilters().Any(u => u.Id == untouched));
+        Assert.Null(await h.Users.RetainedHistoryAsync(Guid.NewGuid()));
+    }
+
+    /// <summary>
+    /// The enrolment account of a Kerberos realm is not deleted, retained or otherwise: the realm
+    /// enrols through it. The delete is refused (409) before a ceremony could be opened for it.
+    /// </summary>
+    [Fact]
+    public async Task The_enrolment_account_of_a_kerberos_realm_is_refused_deletion()
+    {
+        var h = new Harness();
+        var super = h.W.Super;
+        var enrols = h.W.User("realm-enrolment", h.W.A1Requester);
+        h.W.Db.KerberosRealms.Add(new KerberosRealmEntity { Realm = "EXAMPLE.TEST", DnsDomain = "example.test", ServicePrincipal = "HTTP/ca.example.test", EnrollmentUserId = enrols });
+        h.W.Db.SaveChanges();
+
+        var refused = await Call(h.UserManager(super), "DeleteUser", enrols, h.StepUp(super, StepUpOps.DeleteUser, enrols));
+        Assert.Equal(409, Status(refused));
+        Assert.Contains("1 Kerberos realm(s) enrol through it", JsonSerializer.Serialize(((ObjectResult)refused).Value));
+        Assert.True(h.W.Db.Users.Any(u => u.Id == enrols));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.Users.DeleteUser(enrols));
+        Assert.DoesNotContain(h.Audit.Entries, e => e.Action == AuditActionType.UserDeleted);
+    }
+
+    /// <summary>
     /// A lookup that names no account answers 404, the same as one that names an account outside
     /// the caller's scope. It used to throw (500), which told the two apart: a caller could learn
     /// that a username exists in another space from getting 404 for it and 500 for a made-up one.

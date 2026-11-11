@@ -1247,6 +1247,16 @@ export interface ResolvedCaServiceUrls {
     caIssuerUrls: string[];
 }
 
+/** From `ModularCA.Shared/Models/Management/RetainedAccountDto.cs`. */
+export interface RetainedAccountDto {
+    id: string;
+    username: string;
+    displayName?: string | null;
+    deletedAt?: string | null;
+    requests: number;
+    approvals: number;
+}
+
 /** From `ModularCA.Shared/Models/RevokeCaCeremonyParameters.cs`. */
 export interface RevokeCaCeremonyParameters {
     certificateId: string;

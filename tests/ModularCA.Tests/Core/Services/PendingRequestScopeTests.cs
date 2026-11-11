@@ -55,4 +55,30 @@ public class PendingRequestScopeTests
 
         Assert.Empty(none);
     }
+
+    /// <summary>
+    /// A requester whose account was deleted and retained is hidden from ordinary queries. Its
+    /// request stays in the list and still says who made it.
+    /// </summary>
+    [Fact]
+    public async Task A_request_whose_requester_was_deleted_still_names_them()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var (service, _, _) = Seed(db);
+        var gone = new UserEntity { Id = Guid.NewGuid(), Username = "left-the-company", Email = "gone@x", IsDeleted = true, IsActive = false };
+        var here = new UserEntity { Id = Guid.NewGuid(), Username = "still-here", Email = "here@x" };
+        db.Users.AddRange(gone, here);
+        db.CertificateRequests.AddRange(
+            new CertRequestEntity { Id = Guid.NewGuid(), Subject = "CN=by-gone", CSR = "-", RequestorUserId = gone.Id },
+            new CertRequestEntity { Id = Guid.NewGuid(), Subject = "CN=by-here", CSR = "-", RequestorUserId = here.Id });
+        db.SaveChanges();
+        db.ChangeTracker.Clear();
+
+        var all = await service.GetPendingRequests(null);
+
+        Assert.Equal("left-the-company (deleted)", all.Single(r => r.SubjectName == "CN=by-gone").RequestorUsername);
+        Assert.Equal("still-here", all.Single(r => r.SubjectName == "CN=by-here").RequestorUsername);
+        Assert.Null(all.Single(r => r.SubjectName == "CN=one").RequestorUsername);
+    }
+
 }

@@ -590,6 +590,16 @@ public class CsrService : ICsrService
             .OrderByDescending(r => r.SubmittedAt)
             .ToListAsync();
 
+        // A requester whose account was deleted and retained is hidden from the join above; its
+        // request still says who made it.
+        var hiddenIds = pendingRequests.Where(r => r.RequestorUser == null && r.RequestorUserId != null)
+            .Select(r => r.RequestorUserId!.Value).Distinct().ToList();
+        var deletedRequestors = hiddenIds.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await _dbContext.Users.IgnoreQueryFilters().AsNoTracking()
+                .Where(u => hiddenIds.Contains(u.Id))
+                .ToDictionaryAsync(u => u.Id, u => u.Username + " (deleted)");
+
         var profiles = new ProfileResolutionService(_dbContext, NullLogger<ProfileResolutionService>.Instance);
         var results = new List<CertRequestDto>();
         foreach (var pendingRequest in pendingRequests)
@@ -623,7 +633,8 @@ public class CsrService : ICsrService
                 SigningProfileId = pendingRequest.SigningProfileId ?? Guid.Empty,
                 CertificateProfileId = pendingRequest.CertProfileId ?? Guid.Empty,
                 RequestorUserId = pendingRequest.RequestorUserId ?? Guid.Empty,
-                RequestorUsername = pendingRequest.RequestorUser?.Username,
+                RequestorUsername = pendingRequest.RequestorUser?.Username
+                    ?? (pendingRequest.RequestorUserId is { } hidden ? deletedRequestors.GetValueOrDefault(hidden) : null),
                 RejectionReason = pendingRequest.RejectionReason,
                 IssuedCertificateId = pendingRequest.IssuedCertificateId,
                 KeyHeld = pendingRequest.HeldPrivateKey != null,

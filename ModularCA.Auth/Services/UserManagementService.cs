@@ -50,10 +50,14 @@ namespace ModularCA.Auth.Services
         /// </summary>
         public async Task<(bool Success, string? Error)> CreateUser(CreateUserRequest request)
         {
-            if (await _dbContext.Users.AnyAsync(u => u.Username == request.Username))
+            // A deleted account that was retained for its history keeps its username for good.
+            if (await _dbContext.Users.IgnoreQueryFilters().Where(u => u.Username == request.Username)
+                    .Select(u => (bool?)u.IsDeleted).FirstOrDefaultAsync() is { } taken)
             {
                 _logger.LogWarning("Attempted to create user with existing username {Username}", request.Username);
-                return (false, $"Username '{request.Username}' already exists");
+                return (false, taken
+                    ? $"Username '{request.Username}' belonged to a deleted account whose history is kept, and cannot be used again"
+                    : $"Username '{request.Username}' already exists");
             }
             if (await _dbContext.Users.AnyAsync(u => u.Email == request.Email))
             {
@@ -153,7 +157,7 @@ namespace ModularCA.Auth.Services
         public async Task<bool> UpdateUser(Guid userId, UpdateUserRequest request)
         {
             if (!string.IsNullOrEmpty(request.Username)
-                && await _dbContext.Users.AnyAsync(u => u.Id != userId && u.Username == request.Username))
+                && await _dbContext.Users.IgnoreQueryFilters().AnyAsync(u => u.Id != userId && u.Username == request.Username))
             {
                 _logger.LogWarning("Attempted to update user {UserId} with existing username {Username}", userId, request.Username);
                 return false;
@@ -232,11 +236,77 @@ namespace ModularCA.Auth.Services
             return saved;
         }
 
-        /// <summary>
-        /// Deletes a user by ID and all associated group memberships (via cascade). Every live SSH
-        /// certificate issued for the user is revoked first, and the SSH login names granted to
-        /// the user are removed.
-        /// </summary>
+        /// <inheritdoc />
+        /// <remarks>
+        /// A realm's foreign key to its enrolment account neither cascades nor clears, and the
+        /// realm cannot enrol without the account, so the realm is moved to another account first.
+        /// </remarks>
+        public async Task<string?> DeletionBlockerAsync(Guid userId)
+        {
+            var realms = await _dbContext.KerberosRealms.CountAsync(k => k.EnrollmentUserId == userId);
+            return realms == 0
+                ? null
+                : $"This account cannot be deleted: {realms} Kerberos realm(s) enrol through it. "
+                  + "Give each realm another enrolment account first.";
+        }
+
+        /// <inheritdoc />
+        public async Task<string?> RetainedHistoryAsync(Guid userId)
+        {
+            var requests = await _dbContext.CertificateRequests.CountAsync(r => r.RequestorUserId == userId);
+            var approvals = await _dbContext.CsrApprovals.CountAsync(a => a.ApproverId == userId);
+            var held = new List<string>();
+            if (requests > 0) held.Add($"{requests} certificate request(s) it made");
+            if (approvals > 0) held.Add($"{approvals} approval(s) it gave");
+            return held.Count == 0 ? null : string.Join(" and ", held);
+        }
+
+        /// <inheritdoc />
+        public async Task<List<RetainedAccountDto>> GetRetainedAccounts()
+        {
+            var accounts = await _dbContext.Users.IgnoreQueryFilters().AsNoTracking()
+                .Where(u => u.IsDeleted)
+                .OrderByDescending(u => u.DeletedAt)
+                .Select(u => new RetainedAccountDto { Id = u.Id, Username = u.Username, DisplayName = u.DisplayName, DeletedAt = u.DeletedAt })
+                .ToListAsync();
+            if (accounts.Count == 0)
+                return accounts;
+            var ids = accounts.Select(a => a.Id).ToList();
+            var requests = await _dbContext.CertificateRequests.AsNoTracking()
+                .Where(r => r.RequestorUserId != null && ids.Contains(r.RequestorUserId.Value))
+                .GroupBy(r => r.RequestorUserId!.Value)
+                .Select(g => new { g.Key, Count = g.Count() })
+                .ToDictionaryAsync(g => g.Key, g => g.Count);
+            var approvals = await _dbContext.CsrApprovals.AsNoTracking()
+                .Where(a => ids.Contains(a.ApproverId))
+                .GroupBy(a => a.ApproverId)
+                .Select(g => new { g.Key, Count = g.Count() })
+                .ToDictionaryAsync(g => g.Key, g => g.Count);
+            foreach (var account in accounts)
+            {
+                account.Requests = requests.GetValueOrDefault(account.Id);
+                account.Approvals = approvals.GetValueOrDefault(account.Id);
+            }
+            return accounts;
+        }
+
+        /// <summary>The address a retained account's row carries once its own is given up.</summary>
+        internal static string TombstoneEmail(Guid userId) => $"deleted-{userId:N}@deleted.invalid";
+
+        /// <inheritdoc />
+        /// <remarks>
+        /// Every live SSH certificate issued for the user is revoked first and the SSH login names
+        /// granted to the user are removed. Access to single certificates goes in both cases: that
+        /// foreign key restricts, and access is not history.
+        /// <para>
+        /// A retained account keeps its id and username, so requests and approvals stay attributed
+        /// and the name cannot be taken by someone else. It loses its group memberships, roles,
+        /// direct grants, badges, sessions, MFA credentials, mTLS credentials, password, password
+        /// history, claim tokens, the enrolment tokens it created and its email address, which is
+        /// replaced so the address can be used again. The security stamp changes so access tokens
+        /// already issued stop working. Nothing restores a retained account.
+        /// </para>
+        /// </remarks>
         public async Task<bool> DeleteUser(Guid userId)
         {
             var user = await _dbContext.Users.FindAsync(userId);
@@ -245,9 +315,39 @@ namespace ModularCA.Auth.Services
                 _logger.LogWarning("User {UserId} not found for deletion", userId);
                 return false;
             }
+            if (await DeletionBlockerAsync(userId) is { } blocker)
+                throw new InvalidOperationException(blocker);
+            var history = await RetainedHistoryAsync(userId);
             if (_sshLoginNames != null)
                 await _sshLoginNames.UserDeletingAsync(userId);
-            _dbContext.Users.Remove(user);
+            _dbContext.CertificateAccessLists.RemoveRange(await _dbContext.CertificateAccessLists.Where(a => a.UserId == userId).ToListAsync());
+            if (history == null)
+            {
+                _dbContext.Users.Remove(user);
+                return await _dbContext.SaveChangesAsync() > 0;
+            }
+
+            // Access tokens already issued stop working; the sessions' rows then go with the rest.
+            await UserSessionTermination.EndAllSessionsAsync(_dbContext, user, DateTime.UtcNow);
+            _dbContext.CaGroupMembers.RemoveRange(await _dbContext.CaGroupMembers.Where(m => m.UserId == userId).ToListAsync());
+            _dbContext.RoleAssignments.RemoveRange(await _dbContext.RoleAssignments.Where(a => a.UserId == userId).ToListAsync());
+            _dbContext.UserCapabilityGrants.RemoveRange(await _dbContext.UserCapabilityGrants.Where(g => g.UserId == userId).ToListAsync());
+            _dbContext.AccessBadges.RemoveRange(await _dbContext.AccessBadges.Where(b => b.UserId == userId).ToListAsync());
+            _dbContext.RefreshTokens.RemoveRange(await _dbContext.RefreshTokens.Where(r => r.UserId == userId).ToListAsync());
+            _dbContext.Fido2Credentials.RemoveRange(await _dbContext.Fido2Credentials.Where(c => c.UserId == userId).ToListAsync());
+            _dbContext.TotpSecrets.RemoveRange(await _dbContext.TotpSecrets.Where(s => s.UserId == userId).ToListAsync());
+            _dbContext.TotpRecoveryCodes.RemoveRange(await _dbContext.TotpRecoveryCodes.Where(c => c.UserId == userId).ToListAsync());
+            _dbContext.MtlsCredentials.RemoveRange(await _dbContext.MtlsCredentials.Where(c => c.UserId == userId).ToListAsync());
+            _dbContext.PasswordHistory.RemoveRange(await _dbContext.PasswordHistory.Where(p => p.UserId == userId).ToListAsync());
+            _dbContext.UserClaimTokens.RemoveRange(await _dbContext.UserClaimTokens.Where(c => c.UserId == userId).ToListAsync());
+            _dbContext.EnrollmentTokens.RemoveRange(await _dbContext.EnrollmentTokens.Where(e => e.CreatedByUserId == userId).ToListAsync());
+
+            user.IsDeleted = true;
+            user.DeletedAt = DateTime.UtcNow;
+            user.IsActive = false;
+            user.PasswordHash = string.Empty;
+            user.Email = TombstoneEmail(userId);
+            _logger.LogInformation("User {UserId} retained as a deleted account: the record keeps {History}", userId, history);
             return await _dbContext.SaveChangesAsync() > 0;
         }
 

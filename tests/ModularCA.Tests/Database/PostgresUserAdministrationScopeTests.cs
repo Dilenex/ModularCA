@@ -105,6 +105,69 @@ public class PostgresUserAdministrationScopeTests
             Assert.True(await UserAdministrationAccess.HoldsOutsideAsync(db, inBoth, [$"space:{spaceA.Id}"]));
         });
 
+    /// <summary>
+    /// Deleting an account on the provider that enforces the foreign keys. An account named by a
+    /// request and an approval, which the database will not let go of, is retained and stripped;
+    /// one holding only access to a certificate, whose key restricts too, is removed outright; and
+    /// the retained account's username stays taken at the database, not only in the service.
+    /// </summary>
+    [RequiresEnvironmentFact(ServerVariable)]
+    public Task Deleting_an_account_with_history_runs_on_postgres() =>
+        OnPostgresAsync(async db =>
+        {
+            var tag = Guid.NewGuid().ToString("N")[..8];
+            var group = new CaGroupEntity { Id = Guid.NewGuid(), Name = $"requesters-{tag}", DisplayName = "requesters" };
+            db.CaGroups.Add(group);
+            UserEntity Account(string name)
+            {
+                var user = new UserEntity { Id = Guid.NewGuid(), Username = $"{name}-{tag}", Email = $"{name}-{tag}@example.test", PasswordHash = "a-hash" };
+                db.Users.Add(user);
+                db.CaGroupMembers.Add(new CaGroupMemberEntity { GroupId = group.Id, UserId = user.Id });
+                return user;
+            }
+            var busy = Account("busy");
+            var reader = Account("reader");
+            var certificate = new CertificateEntity { CertificateId = Guid.NewGuid(), SerialNumber = tag, SubjectDN = "CN=leaf", Issuer = "CN=ca", Pem = "x" };
+            db.Certificates.Add(certificate);
+            var request = new CertRequestEntity { Id = Guid.NewGuid(), Subject = "CN=leaf", CSR = "-", RequestorUserId = busy.Id };
+            db.CertificateRequests.Add(request);
+            db.CsrApprovals.Add(new CsrApprovalEntity { CertRequestId = request.Id, ApproverId = busy.Id, ApproverUsername = busy.Username, Decision = "Approved" });
+            db.RefreshTokens.Add(new RefreshTokenEntity { UserId = busy.Id, Token = $"session-{tag}", ExpiresAt = DateTime.UtcNow.AddDays(1) });
+            db.CertificateAccessLists.AddRange(
+                new CertificateAccessListEntity { Id = Guid.NewGuid(), CertificateId = certificate.CertificateId, UserId = busy.Id },
+                new CertificateAccessListEntity { Id = Guid.NewGuid(), CertificateId = certificate.CertificateId, UserId = reader.Id });
+            await db.SaveChangesAsync();
+
+            var users = new ModularCA.Auth.Services.UserManagementService(db, NullLogger<ModularCA.Auth.Services.UserManagementService>.Instance,
+                new ModularCA.Shared.Models.Config.SystemConfig(), null!, new ModularCA.Tests.Auth.ControlledUserBypassGuardTests.AllowAllPasswords());
+
+            Assert.NotNull(await users.RetainedHistoryAsync(busy.Id));
+            Assert.True(await users.DeleteUser(busy.Id));
+            Assert.Null(await users.RetainedHistoryAsync(reader.Id));
+            Assert.True(await users.DeleteUser(reader.Id));
+            db.ChangeTracker.Clear();
+
+            Assert.False(await db.Users.AnyAsync(u => u.Id == busy.Id || u.Id == reader.Id));
+            Assert.False(await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Id == reader.Id));
+            var kept = await db.Users.IgnoreQueryFilters().SingleAsync(u => u.Id == busy.Id);
+            Assert.True(kept.IsDeleted);
+            Assert.False(kept.IsActive);
+            Assert.Equal(string.Empty, kept.PasswordHash);
+            Assert.Equal(ModularCA.Auth.Services.UserManagementService.TombstoneEmail(busy.Id), kept.Email);
+            Assert.False(await db.CaGroupMembers.AnyAsync(m => m.UserId == busy.Id));
+            Assert.False(await db.RefreshTokens.AnyAsync(r => r.UserId == busy.Id));
+            Assert.False(await db.CertificateAccessLists.AnyAsync());
+            Assert.Equal(busy.Id, (await db.CertificateRequests.SingleAsync(r => r.Id == request.Id)).RequestorUserId);
+            Assert.Equal(busy.Id, (await db.CsrApprovals.SingleAsync(x => x.CertRequestId == request.Id)).ApproverId);
+
+            var again = await users.CreateUser(new ModularCA.Shared.Models.Management.CreateUserRequest
+                { Username = busy.Username, Email = $"other-{tag}@example.test", Password = "Chosen-Passw0rd!" });
+            Assert.False(again.Success);
+            Assert.Contains("deleted account", again.Error);
+            db.Users.Add(new UserEntity { Id = Guid.NewGuid(), Username = busy.Username, Email = $"direct-{tag}@example.test" });
+            await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+        });
+
     private static async Task OnPostgresAsync(Func<ModularCADbContext, Task> scenario)
     {
         var server = Environment.GetEnvironmentVariable(ServerVariable)!;

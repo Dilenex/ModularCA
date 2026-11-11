@@ -230,7 +230,9 @@ public class LdapGroupSyncService : ILdapGroupSyncService
     /// <summary>
     /// Auto-provisions a new user from LDAP if enabled in configuration.
     /// Creates the user with a random password hash and the password source Directory, since its
-    /// password lives in the directory, and syncs group memberships.
+    /// password lives in the directory, and syncs group memberships. A username that belonged to
+    /// a deleted account retained for its history is not provisioned again: the directory still
+    /// knowing the name does not undo the deletion.
     /// </summary>
     public async Task<UserEntity?> AutoProvisionUserAsync(string username, List<string>? ldapGroups)
     {
@@ -238,6 +240,11 @@ public class LdapGroupSyncService : ILdapGroupSyncService
 
         var existing = await _db.Users.FirstOrDefaultAsync(u => u.Username == username);
         if (existing != null) return existing;
+        if (await _db.Users.IgnoreQueryFilters().AnyAsync(u => u.Username == username))
+        {
+            _logger.LogWarning("LDAP sync: {Username} belonged to a deleted account and is not provisioned again", username);
+            return null;
+        }
 
         var user = new UserEntity
         {

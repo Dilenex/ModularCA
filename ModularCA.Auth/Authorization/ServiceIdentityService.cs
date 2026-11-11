@@ -113,7 +113,8 @@ public sealed class ServiceIdentityService(ModularCADbContext db, ICaGroupAuthor
         var scope = await NormalizeScopeAsync(spec.Scope);
         if (!await MayManageAsync(callerId, scope))
             throw new UnauthorizedAccessException("You need ca.manage at the identity's scope.");
-        if (await db.Users.AnyAsync(u => u.Username == username))
+        // Deleted accounts retained for their history keep their username too.
+        if (await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Username == username))
             throw new InvalidOperationException($"Username '{username}' is taken.");
 
         var groups = await AssignableGroupsAsync(callerId, scope, spec.GroupIds);

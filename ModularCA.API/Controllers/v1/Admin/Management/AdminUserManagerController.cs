@@ -88,6 +88,15 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         }
 
         /// <summary>
+        /// Lists the deleted accounts whose rows were retained because requests or approvals still
+        /// name them, with those counts. A deleted account holds nothing in any scope, so there is
+        /// no scope to show it to: the list is for holders of user.manage at system scope.
+        /// </summary>
+        [HttpGet("deleted")]
+        [Authorize(Policy = "SystemUserAdministrator")]
+        public async Task<IActionResult> GetDeletedUsers() => Ok(await _userService.GetRetainedAccounts());
+
+        /// <summary>
         /// Retrieves a single user account by ID. Read-only; accessible to auditors.
         /// </summary>
         [HttpGet("{id:guid}")]
@@ -415,6 +424,10 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// Deleting a controlled user is refused for every caller when no one other than the caller would
         /// still dominate its tier; otherwise non-super opens a ceremony, which for a caller below
         /// system scope records the scopes the account is in and expires if it leaves them.
+        /// An account that made a certificate request or gave an approval is retained, not removed:
+        /// the answer is still 200, with <c>retained: true</c>, the row stays hidden with its id and
+        /// username so that history keeps naming it, and its memberships, grants, sessions and
+        /// credentials are removed. The enrolment account of a Kerberos realm is refused (409).
         /// </summary>
         [HttpDelete("{id:guid}")]
         [Authorize(Policy = "UserAdministrator")]
@@ -433,6 +446,11 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             // an auditor, a system auditor) is deleted directly below, so this is its only check.
             if (await AuthorizeAccountAdministrationAsync(id) is { } denied)
                 return denied;
+
+            // A realm's enrolment account cannot be deleted at all. Said here, before a ceremony
+            // is opened for a deletion that could never be carried out.
+            if (await _userService.DeletionBlockerAsync(id) is { } blocker)
+                return Conflict(new { error = blocker });
 
             // Controlled-user gate: deleting a user who holds a controlled tier (admin/CA-admin)
             // requires a ceremony for non-super, with the last-controlled-user guard.
@@ -467,11 +485,21 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
                 });
             }
 
+            var history = await _userService.RetainedHistoryAsync(id);
             if (await _userService.DeleteUser(id))
             {
+                // Access tokens already issued stop at the next request, not after the cache TTL.
+                await TokenRevocationMiddleware.InvalidateUserStampCacheAsync(_cache, id);
                 await _audit.LogAsync(AuditActionType.UserDeleted, _currentUser.User?.Id, _currentUser.User?.Username,
-                    "User", id.ToString(), sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());
-                return Ok(new { message = $"User {id} deleted" });
+                    "User", id.ToString(), new { Retained = history != null, History = history },
+                    HttpContext.Connection.RemoteIpAddress?.ToString());
+                return Ok(new
+                {
+                    message = history == null
+                        ? $"User {id} deleted"
+                        : $"User {id} deleted. The record keeps {history}, so the account's name stays attached to them and cannot be used again.",
+                    retained = history != null,
+                });
             }
             return UserNotFound(id);
         }

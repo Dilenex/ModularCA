@@ -25,6 +25,17 @@ export const adminUsers: ApiEndpoint[] = [
     },
     {
         method: 'GET',
+        path: '/api/v1/admin/users/deleted',
+        summary: 'List the deleted accounts that are kept as a record because certificate requests or approvals still name them.',
+        auth: 'Authorize (SystemUserAdministrator: user.manage at system scope)',
+        category: 'Admin Users',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: 'An array, newest deletion first. Each entry has id, username, displayName, deletedAt, requests and approvals. These accounts hold nothing, cannot sign in, and their usernames cannot be reused.',
+    },
+    {
+        method: 'GET',
         path: '/api/v1/admin/users/by-username/{username}',
         summary: 'Look up a user by username. Read-only; accessible to auditors.',
         auth: 'Authorize (CaDirectoryViewer: group.view)',

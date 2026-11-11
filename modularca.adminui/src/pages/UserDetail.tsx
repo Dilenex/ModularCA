@@ -191,10 +191,15 @@ const UserDetail: React.FC = () => {
     const deleteUser = () => {
         if (isSelf) { showToast('warning', 'You cannot delete your own account.'); return; }
         setConfirm({
-            title: 'Delete User', message: `Permanently delete user "${user.username}"? Every live SSH certificate issued for them is revoked, and the SSH login names granted to them are removed. If they hold an admin / operator / CA-admin tier, this requires a controlled-user ceremony approved by the required quorum.`, confirmLabel: 'Delete User',
+            title: 'Delete User', message: `Permanently delete user "${user.username}"? Every live SSH certificate issued for them is revoked, and the SSH login names granted to them are removed. If they made certificate requests or gave approvals, the account is kept as a record under the Deleted tab: it can never sign in again, and its username cannot be reused. If they hold an admin / operator / CA-admin tier, this requires a controlled-user ceremony approved by the required quorum.`, confirmLabel: 'Delete User',
             action: async () => {
                 const res: any = await apiDeleteWithMfa(`/api/v1/admin/users/${id}`, requireStepUp, StepUpOps.DeleteUser, id!);
-                if (!ceremonyStarted(res)) { showToast('success', `User "${user.username}" deleted`); navigate('/users'); }
+                if (!ceremonyStarted(res)) {
+                    showToast('success', res?.retained
+                        ? `User "${user.username}" deleted. Its requests and approvals still name it, so it is kept as a record under Deleted.`
+                        : `User "${user.username}" deleted`);
+                    navigate('/users');
+                }
             },
         });
     };
