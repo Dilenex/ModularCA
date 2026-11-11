@@ -63,7 +63,7 @@ export const integration: ApiEndpoint[] = [
         summary: 'List the signing profiles whose issuing CA is inside the scope of the API key.',
         auth: 'API Key',
         category: 'Integration',
-        responseDescription: 'Array of signing profiles.',
+        responseDescription: 'Array of signing profiles, each with the CA it issues from: caId, caName and caSpaceId (null for an instance CA).',
     },
     {
         method: 'GET',

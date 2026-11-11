@@ -244,7 +244,7 @@ export default function AdminUiGuide() {
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li>Upload a PEM-encoded CSR or paste CSR text</li>
                     <li>Server-side key generation with algorithm and key size selection</li>
-                    <li>Select issuing CA and certificate profile</li>
+                    <li>Choose the issuing CA first, then the request, signing and certificate profile that go with it. The CA is already chosen when you can use only one or the console is scoped to one; under a space scope the space&apos;s CAs are offered. Changing the CA clears the profiles</li>
                     <li>Edit subject DN fields (CN, O, OU, L, ST, C)</li>
                     <li>Add Subject Alternative Names (DNS, IP, email, URI)</li>
                     <li>Set custom validity period within profile limits</li>

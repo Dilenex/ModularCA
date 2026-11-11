@@ -48,6 +48,46 @@ public class SigningProfileEkuRoundTripTests
         Assert.Equal($"[\"{ServerAuthOid}\"]", parsed!.AllowedEKUs);
     }
 
+    /// <summary>
+    /// The list and the single read name the CA a profile issues from, by the CA whose
+    /// certificate the issuer is: its id, name and space. A profile with no issuer, one whose
+    /// issuer is no CA's certificate and one whose CA is deleted name none.
+    /// </summary>
+    [Fact]
+    public async Task A_profile_names_the_live_ca_its_issuer_belongs_to()
+    {
+        var dbName = $"sp-ca-{Guid.NewGuid():N}";
+        var (space, liveCa, liveCert, goneCert) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        var (ofLive, ofGone, ofNothing, unbound) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+
+        using (var seed = InMemoryDbContextFactory.Create(dbName))
+        {
+            seed.CertificateAuthorities.AddRange(
+                new CertificateAuthorityEntity { Id = liveCa, Name = "Issuing One", Label = "issuing-one", SpaceId = space, CertificateId = liveCert, Type = "Root", IsEnabled = true },
+                new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Gone", Label = "gone", CertificateId = goneCert, Type = "Root", IsDeleted = true });
+            seed.SigningProfiles.AddRange(
+                new SigningProfileEntity { Id = ofLive, Name = "of-live", IssuerId = liveCert },
+                new SigningProfileEntity { Id = ofGone, Name = "of-gone", IssuerId = goneCert },
+                new SigningProfileEntity { Id = ofNothing, Name = "of-nothing", IssuerId = Guid.NewGuid() },
+                new SigningProfileEntity { Id = unbound, Name = "unbound" });
+            await seed.SaveChangesAsync();
+        }
+
+        using var read = InMemoryDbContextFactory.Create(dbName);
+        var all = (await new SigningProfileService(read).GetAllAsync()).ToDictionary(p => p.Id);
+        Assert.Equal(((Guid?)liveCa, "Issuing One", (Guid?)space), (all[ofLive].CaId, all[ofLive].CaName, all[ofLive].CaSpaceId));
+        foreach (var id in new[] { ofGone, ofNothing, unbound })
+        {
+            Assert.Null(all[id].CaId);
+            Assert.Null(all[id].CaName);
+            Assert.Null(all[id].CaSpaceId);
+        }
+
+        var one = await new SigningProfileService(read).GetByIdAsync(ofLive);
+        Assert.Equal(((Guid?)liveCa, "Issuing One", (Guid?)space), (one!.CaId, one.CaName, one.CaSpaceId));
+        Assert.Null((await new SigningProfileService(read).GetByIdAsync(ofGone))!.CaId);
+    }
+
     [Fact]
     public async Task UpdateAsync_persists_AllowedEKUs()
     {

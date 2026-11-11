@@ -434,4 +434,27 @@ public class IssuingCaRefusalTests
         Assert.Equal(ErrorCodes.CertProfileOutOfScope, ex.Code);
         Assert.Equal(before, db.CertificateRequests.Count());
     }
+
+    /// <summary>
+    /// A request against the signing profile of a deleted CA could be stored, although issuance
+    /// refuses that CA: the request then sat approved or pending for good. It is refused before
+    /// it is stored, with the code issuance uses.
+    /// </summary>
+    [Fact]
+    public async Task A_csr_against_a_deleted_cas_signing_profile_is_refused_before_it_is_stored()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        Seed(db, CaState.Deleted);
+        var signingProfile = db.SigningProfiles.Single().Id;
+        var certProfile = db.CertProfiles.First(p => !p.IsCaProfile).Id;
+        var csrs = new CsrService(db, new HeldKeyService(db, new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider(), new RecordingAuditService()));
+        var before = db.CertificateRequests.Count();
+
+        var ex = await Assert.ThrowsAsync<ConfigurationValidationException>(() => csrs.UploadCsrAsync(CsrPem("gone.test"), certProfile, signingProfile, Guid.NewGuid()));
+
+        Assert.Equal(ErrorCodes.IssuingCaDisabled, ex.Code);
+        Assert.Contains("has been deleted", ex.Message);
+        Assert.Equal(before, db.CertificateRequests.Count());
+    }
+
 }

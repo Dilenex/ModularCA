@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
@@ -12,6 +12,8 @@ import type { ServerKeyOptions, ValidityCeilingPreflight } from '@shared/generat
 import { describeCeiling, exceedsCeiling, toDatetimeLocalValue } from '../pages/validityCeiling';
 import { chooseAlgorithm, findOption, groupRefusals, offeredAlgorithms, offeredSizes, requestKeySize, settleKeyChoice, type KeyChoice } from '../pages/keyOptions';
 import { designatedCertProfileIds, offeredCertProfiles, settleCertProfile } from '../pages/requestCertProfiles';
+import { casInScope, certProfilesOf, requestCas, requestProfilesOf, selectionsForCa, settleCa, signingProfilesOf } from '../pages/requestCaPicker';
+import { useScope } from '../context/ScopeContext';
 import { certificateGroup, issuerGroup, keysGroup, namesGroup, type ConstraintGroup } from '../pages/profileConstraints';
 import { ConstraintPanel } from './ConstraintPanel';
 import { sizeLabel } from '../pages/profiles/keyPolicy';
@@ -30,7 +32,16 @@ import { SAN_TYPES as SAN_TYPE_DEFS } from '@shared/generalNames';
  * names which of the two APIs sits behind them, is the only arrangement under which an
  * improvement made for one page reaches the other.
  *
- * The profiles come first, because they decide the rest: the request profile sets the field
+ * The issuing CA comes first, because it decides which profiles go together: a request profile
+ * bound to one CA is refused with another CA's signing profile, and a certificate profile only
+ * fits a CA of its own scope. The picker opens empty, with the profile pickers disabled, unless
+ * one CA is offered: the caller can use only one (a badge can leave one), or the console's
+ * scope names one. Under a space scope it offers that space's CAs. The CAs are read off the
+ * signing profile rows, so a signing profile with no issuer never reaches the form. Choosing a
+ * CA empties the three profile pickers and puts the CA's default signing profile in; the
+ * filtering is in `pages/requestCaPicker.ts`.
+ *
+ * The profiles come next, because they decide the rest: the request profile sets the field
  * rules, and the signing profile and certificate profile together decide which keys are
  * accepted. For a key the CA generates the form asks the server which those are (`keyOptions`)
  * and offers only them.
@@ -115,6 +126,13 @@ export interface CertificateRequestFormProps {
     requestsPath: string;
     /** The form is a tab of a page that draws the heading and the padding itself. */
     embedded?: boolean;
+    /**
+     * Whether the caller can submit a request against a CA. Passed where the signing profile
+     * list holds what the caller may see, which can be more than they may submit against (the
+     * admin list). Left out where the list already holds exactly that (the user list). Keep one
+     * identity across renders.
+     */
+    canUseCa?: (caId: string) => boolean;
 }
 
 interface SanEntry {
@@ -191,6 +209,8 @@ interface RequestProfile {
     sanRules: SanRulesObj;
     allowedCertProfileIds: string[];
     defaultCertProfileId?: string | null;
+    /** The CA the profile is bound to; null when it is unbound and goes with every CA. */
+    certificateAuthorityId?: string | null;
     /** Only the user list returns this: the designated certificate profiles, default first. */
     certProfiles?: CertProfileChoice[];
     requireApproval: boolean;
@@ -201,6 +221,9 @@ interface RequestProfile {
 interface CertProfileChoice {
     id: string;
     name: string;
+    /** The profile's own scope, which decides the CAs that may issue under it. */
+    spaceId?: string | null;
+    certificateAuthorityId?: string | null;
 }
 
 interface SuccessState {
@@ -349,7 +372,9 @@ function statusText(status: string) {
 
 // --- Component ---
 
-export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ mode, endpoints, requestsPath, embedded }) => {
+export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ mode, endpoints, requestsPath, embedded, canUseCa }) => {
+    // The console's scope; in the self-service portal it is always "mine", which narrows nothing.
+    const { scope } = useScope();
     // What the user API leaves out; see the header comment for the reason behind each.
     const listsCertProfiles = mode === 'admin' && !!endpoints.certProfiles;
     const showValidityWindow = mode === 'admin';
@@ -377,7 +402,10 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
     const [validating, setValidating] = useState(false);
 
     // Issuance options
+    const [selectedCa, setSelectedCa] = useState('');
     const [signingProfiles, setSigningProfiles] = useState<any[]>([]);
+    // False until the signing profile list has answered, so "no CA" is not said while loading.
+    const [signingProfilesLoaded, setSigningProfilesLoaded] = useState(false);
     const [certProfiles, setCertProfiles] = useState<any[]>([]);
     const [selectedSigningProfile, setSelectedSigningProfile] = useState('');
     const [selectedCertProfile, setSelectedCertProfile] = useState('');
@@ -403,20 +431,17 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
         apiGet<any>(endpoints.signingProfiles)
             .then((data) => {
                 const items = Array.isArray(data) ? data : (data.items || []);
+                // No signing profile is chosen here: it follows the CA (see chooseCa below).
                 setSigningProfiles(items);
-                // The profile flagged as default is the one most requests want; failing that,
-                // the first, so the button is not disabled for want of a choice nobody made.
-                const preferred = items.find((p: any) => p.isDefault) || items[0];
-                if (preferred) setSelectedSigningProfile(preferred.id || preferred.name || '');
             })
-            .catch(() => {});
+            .catch(() => {})
+            .finally(() => setSigningProfilesLoaded(true));
 
         if (endpoints.certProfiles) {
             apiGet<any>(endpoints.certProfiles)
                 .then((data) => {
                     const items = Array.isArray(data) ? data : (data.items || []);
                     setCertProfiles(items);
-                    if (items.length > 0) setSelectedCertProfile(items[0].id || items[0].name || '');
                 })
                 .catch(() => {});
         }
@@ -441,6 +466,15 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
         setNotBefore(toDatetimeLocalValue(now));
         setNotAfter(toDatetimeLocalValue(oneYear));
     }, [endpoints.signingProfiles, endpoints.certProfiles, endpoints.requestProfiles]);
+
+    // --- The issuing CA ---
+    // The CAs the caller can request from are the CAs of the listed signing profiles; the
+    // console's scope narrows them. One offered CA is shown as text and is the choice.
+    const usableCas = useMemo(() => requestCas(signingProfiles, canUseCa), [signingProfiles, canUseCa]);
+    const offeredCas = useMemo(() => casInScope(usableCas, scope), [usableCas, scope]);
+    const chosenCa = offeredCas.find(c => c.id === selectedCa) ?? null;
+    const caSigningProfiles = signingProfilesOf(signingProfiles, chosenCa?.id ?? '');
+    const caRequestProfiles = requestProfilesOf(requestProfiles, chosenCa?.id ?? '');
 
     // The selected profile as the form reasons about it: its effective view when the API offers
     // one and it has arrived, the listed row until then (and where the list is already effective).
@@ -471,16 +505,21 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
     // designates none).
     const designatedCertProfiles = designatedCertProfileIds(selectedProfileObj?.defaultCertProfileId, selectedProfileObj?.allowedCertProfileIds);
     const offersEveryCertProfile = listsCertProfiles && designatedCertProfiles.length === 0;
+    // Either way only the ones the chosen CA may issue under, which is the scope check submission makes.
     const certProfileChoices: CertProfileChoice[] = listsCertProfiles
-        ? offeredCertProfiles(certProfiles.map((p: any) => ({ id: p.id, name: p.name || p.id })), designatedCertProfiles)
-        : (selectedProfileObj?.certProfiles ?? []);
+        ? offeredCertProfiles(
+            certProfilesOf(certProfiles.map((p: any): CertProfileChoice => ({
+                id: p.id, name: p.name || p.id, spaceId: p.spaceId, certificateAuthorityId: p.certificateAuthorityId,
+            })), chosenCa),
+            designatedCertProfiles)
+        : certProfilesOf(selectedProfileObj?.certProfiles ?? [], chosenCa);
     const effectiveCertProfileId = selectedCertProfile;
 
     // A request profile that designates a certificate profile pre-selects it, and the picker
     // never keeps a choice the list no longer offers.
     useEffect(() => {
         setSelectedCertProfile((current) => settleCertProfile(current, certProfileChoices, designatedCertProfiles, offersEveryCertProfile));
-    }, [selectedRequestProfile, certProfiles, selectedProfileObj]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [selectedCa, selectedRequestProfile, certProfiles, selectedProfileObj]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const [approvalOutlook, setApprovalOutlook] = useState<SubmissionApprovalOutlook | null>(null);
     useEffect(() => {
@@ -552,6 +591,33 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
     }, [keyOptionsWanted, endpoints.keyOptions, selectedSigningProfile, effectiveCertProfileId]);
 
     const keyOptionsLoading = keyOptionsWanted && !keyOptions && !keyOptionsError;
+
+    // --- Choosing the CA ---
+    // Whatever the profile pickers held belonged to the CA chosen before, so they are emptied,
+    // the new CA's default signing profile goes in, and everything worked out from the old
+    // selections goes with them rather than waiting a render for its own effect to drop it.
+    const chooseCa = (caId: string) => {
+        const next = selectionsForCa(caId, signingProfiles);
+        setSelectedCa(next.caId);
+        setSelectedRequestProfile(next.requestProfileId);
+        setSelectedSigningProfile(next.signingProfileId);
+        setSelectedCertProfile(next.certProfileId);
+        setResolvedProfile(null);
+        setValidationResult(null);
+        setApprovalOutlook(null);
+        setCeiling(null);
+        setKeyOptions(null);
+        setKeyOptionsError(null);
+        setKeyChoice(null);
+    };
+
+    // The picker follows the lists and the scope switcher: the only offered CA is chosen, and
+    // a choice the scope no longer offers is dropped.
+    const offeredCaKey = offeredCas.map(c => c.id).join(',');
+    useEffect(() => {
+        const settled = settleCa(selectedCa, offeredCas);
+        if (settled !== selectedCa) chooseCa(settled);
+    }, [offeredCaKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // What the chosen profiles impose, a group to a profile, for the panel beside the pickers.
     const constraintGroups: ConstraintGroup[] = [];
@@ -802,7 +868,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
         if (tab !== 'generate' && !csrPem.trim()) { setError('Please provide a CSR.'); return; }
         if (!selectedSigningProfile) { setError('Please select a signing profile.'); return; }
         if (requestProfileLacksCertProfile) {
-            setError('This request profile has no certificate profile assigned, so it cannot be used. Ask an administrator to set one.');
+            setError('This request profile names no certificate profile this CA can issue under, so it cannot be used. Ask an administrator to set one.');
             return;
         }
         if (!effectiveCertProfileId) { setError('Please select a certificate profile.'); return; }
@@ -910,21 +976,65 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 items-start">
             <div className={CARD}>
                 <div className={CARD_HEAD}>
-                    <h3 className={CARD_TITLE}>Step 1: Profiles</h3>
-                    <p className="text-xs text-ink-muted mt-1">The request profile sets the rules for the names. The signing profile and the certificate profile decide which keys are accepted.</p>
+                    <h3 className={CARD_TITLE}>Step 1: CA and Profiles</h3>
+                    <p className="text-xs text-ink-muted mt-1">The CA issues the certificate and decides which profiles can be used. The request profile sets the rules for the names. The signing profile and the certificate profile decide which keys are accepted.</p>
                 </div>
                 <div className="p-4 space-y-3">
                     <div className="space-y-4">
+                        <div>
+                            {offeredCas.length === 1 ? (
+                                <>
+                                    <span className={labelClass}>Certificate Authority</span>
+                                    <p id="request-ca" className="py-2 text-sm text-ink">{offeredCas[0].name}</p>
+                                    <FieldHint className="mt-1">
+                                        {scope.kind === 'ca' ? 'The console is scoped to this CA.'
+                                            : scope.kind === 'space' ? 'The only CA of this space you can request from.'
+                                            : 'The only CA you can request from.'}
+                                    </FieldHint>
+                                </>
+                            ) : (
+                                <>
+                                    <label htmlFor="request-ca" className={labelClass}>Certificate Authority</label>
+                                    <select
+                                        id="request-ca"
+                                        value={selectedCa}
+                                        onChange={(e) => chooseCa(e.target.value)}
+                                        disabled={offeredCas.length === 0}
+                                        className={inputClass}
+                                    >
+                                        <option value="">-- Select a Certificate Authority --</option>
+                                        {offeredCas.map((ca) => (
+                                            <option key={ca.id} value={ca.id}>{ca.name}</option>
+                                        ))}
+                                    </select>
+                                    {offeredCas.length > 1 && (
+                                        <FieldHint className="mt-1">
+                                            {chosenCa
+                                                ? 'Changing the CA clears the profiles chosen below.'
+                                                : 'Choose the CA that will issue the certificate. The profiles below are the ones that go with it.'}
+                                        </FieldHint>
+                                    )}
+                                    {signingProfilesLoaded && offeredCas.length === 0 && (
+                                        <FieldHint tone="warn" className="mt-1">
+                                            {scope.kind === 'ca' || scope.kind === 'space'
+                                                ? 'No CA in the console\'s scope has a signing profile you can request against. Change the scope to request from another CA.'
+                                                : 'No CA has a signing profile you can request against.'}
+                                        </FieldHint>
+                                    )}
+                                </>
+                            )}
+                        </div>
                         <div>
                             <label htmlFor="request-profile" className={labelClass}>Request Profile</label>
                             <select
                                 id="request-profile"
                                 value={selectedRequestProfile}
                                 onChange={(e) => setSelectedRequestProfile(e.target.value)}
+                                disabled={!chosenCa}
                                 className={inputClass}
                             >
                                 <option value="">-- Select a Request Profile --</option>
-                                {requestProfiles.map((p) => (
+                                {caRequestProfiles.map((p) => (
                                     <option key={p.id} value={p.id}>
                                         {p.name}{p.description ? ` — ${p.description}` : ''}
                                     </option>
@@ -937,16 +1047,17 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                                 id="signing-profile"
                                 value={selectedSigningProfile}
                                 onChange={(e) => setSelectedSigningProfile(e.target.value)}
+                                disabled={!chosenCa}
                                 className={inputClass}
                             >
                                 <option value="">-- Select Signing Profile --</option>
-                                {signingProfiles.map((p) => (
+                                {caSigningProfiles.map((p) => (
                                     <option key={p.id || p.name} value={p.id}>
                                         {p.name || p.id}{p.isDefault ? ' (default)' : ''}
                                     </option>
                                 ))}
                             </select>
-                            <FieldHint className="mt-1">Names the issuing CA.</FieldHint>
+                            <FieldHint className="mt-1">The signing profiles of the chosen CA.</FieldHint>
                         </div>
                         <div>
                             <label htmlFor="cert-profile" className={labelClass}>Certificate Profile</label>
@@ -954,7 +1065,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                                 id="cert-profile"
                                 value={selectedCertProfile}
                                 onChange={(e) => setSelectedCertProfile(e.target.value)}
-                                disabled={!listsCertProfiles && !selectedRequestProfile}
+                                disabled={!chosenCa || (!listsCertProfiles && !selectedRequestProfile)}
                                 className={inputClass}
                             >
                                 <option value="">-- Select Certificate Profile --</option>
@@ -963,7 +1074,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                                 ))}
                             </select>
                             {!offersEveryCertProfile && (
-                                <FieldHint className="mt-1">The ones the request profile allows.</FieldHint>
+                                <FieldHint className="mt-1">The ones the request profile allows and the CA can issue under.</FieldHint>
                             )}
                         </div>
                     </div>
@@ -988,7 +1099,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                         </FieldHint>
                     )}
                     {requestProfileLacksCertProfile && (
-                        <FieldHint tone="warn">This request profile has no certificate profile assigned, so it cannot be used from here. Ask an administrator to set one.</FieldHint>
+                        <FieldHint tone="warn">This request profile names no certificate profile this CA can issue under, so it cannot be used from here. Ask an administrator to set one.</FieldHint>
                     )}
                 </div>
             </div>
@@ -1000,7 +1111,7 @@ export const CertificateRequestForm: React.FC<CertificateRequestFormProps> = ({ 
                 <div className="p-4">
                     <ConstraintPanel
                         groups={constraintGroups}
-                        empty="Choose a request profile to see its rules for the names, and a signing and a certificate profile to see the issuing CA, the certificate's usages and validity, and the keys they accept."
+                        empty="Choose a CA, then a request profile to see its rules for the names, and a signing and a certificate profile to see the issuing CA, the certificate's usages and validity, and the keys they accept."
                         pending={keyOptionsLoading ? 'Checking what the signing and certificate profile allow…' : null}
                     />
                     {keyOptionsError && tab !== 'generate' && (

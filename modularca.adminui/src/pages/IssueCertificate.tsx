@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useCallback } from 'react';
+import { Capabilities } from '@shared/generated';
 import { CertificateRequestForm, type CertificateRequestEndpoints } from '../components/CertificateRequestForm';
 import { KindTabStrip, useKindTabs } from '../components/KindTabs';
 import { useScope } from '../context/ScopeContext';
 import { useAuth } from '../context/AuthContext';
-import { canUseSshTab } from '../authz';
+import { can, canUseSshTab } from '../authz';
 import { CERT_REQUEST } from '../gates';
 import { SshSignTab } from './SshCertificates';
 
@@ -47,11 +48,15 @@ const IssueCertificate: React.FC = () => {
     const { scope, allows } = useScope();
     const { capabilities } = useAuth();
     const { tabs, active, setActive } = useKindTabs({ x509: allows(CERT_REQUEST), ssh: canUseSshTab(capabilities, 'sign') });
+    // The admin signing profile list holds what the caller may see. The admin submit endpoints
+    // (requests/upload, certificates/issue-with-key) ask for cert.revoke on the signing
+    // profile's CA, so the form's CA picker offers the CAs that pass that.
+    const canUseCa = useCallback((caId: string) => can(capabilities, Capabilities.CertRevoke, caId), [capabilities]);
     return (
         <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
             <h1 className="text-xl font-semibold text-ink">Request Certificate</h1>
             <KindTabStrip tabs={tabs} active={active} onChange={setActive} />
-            {active === 'X.509' && <CertificateRequestForm mode="admin" endpoints={ADMIN_ENDPOINTS} requestsPath="/certificates/requests" embedded />}
+            {active === 'X.509' && <CertificateRequestForm mode="admin" endpoints={ADMIN_ENDPOINTS} requestsPath="/certificates/requests" embedded canUseCa={canUseCa} />}
             {active === 'SSH' && <SshSignTab scope={scope} />}
         </div>
     );

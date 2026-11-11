@@ -43,6 +43,19 @@ public sealed class RequestProfileEnforcement(ModularCADbContext db, IProfileRes
     };
 
     /// <summary>
+    /// Whether a request profile bound to <paramref name="requestProfileCaId"/> may be used with a
+    /// signing profile that issues from <paramref name="issuingCaId"/>: an unbound request profile
+    /// goes with any signing profile, a bound one only with a signing profile of its own CA.
+    /// <paramref name="issuingCaId"/> is null for a signing profile with no issuer, or whose
+    /// issuer is no live CA's certificate. <see cref="SettleSubmissionAsync"/> refuses a
+    /// submission on this rule, and the self-service lists offer only what it admits.
+    /// </summary>
+    /// <param name="requestProfileCaId">The CA the request profile is bound to, or null.</param>
+    /// <param name="issuingCaId">The CA the signing profile issues from, or null.</param>
+    public static bool BindingAdmits(Guid? requestProfileCaId, Guid? issuingCaId)
+        => requestProfileCaId == null || requestProfileCaId == issuingCaId;
+
+    /// <summary>
     /// Checks a request submitted through the console or its API before it is stored, and
     /// returns the subject fields the profile supplies: each field it fixes, and each field it
     /// gives a default for that the request left out. The caller adds them to the request. The
@@ -81,7 +94,7 @@ public sealed class RequestProfileEnforcement(ModularCADbContext db, IProfileRes
                 .Where(ca => ca.CertificateId == issuerId)
                 .Select(ca => (Guid?)ca.Id)
                 .FirstOrDefaultAsync();
-            if (caId != boundCaId)
+            if (!BindingAdmits(boundCaId, caId))
                 throw Refused(profile, "it belongs to another CA than the signing profile issues from");
         }
 

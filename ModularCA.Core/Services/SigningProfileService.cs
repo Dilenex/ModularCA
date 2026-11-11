@@ -16,7 +16,8 @@ namespace ModularCA.Core.Services
         private readonly ModularCADbContext _db = db;
 
         /// <summary>
-        /// Returns all signing profiles with their allowed cert profile IDs populated.
+        /// Returns all signing profiles with their allowed cert profile IDs populated, each
+        /// naming the CA it issues from (<see cref="FillIssuingCaAsync"/>).
         /// </summary>
         public async Task<List<SigningProfileDto>> GetAllAsync()
         {
@@ -28,15 +29,45 @@ namespace ModularCA.Core.Services
                 .AsNoTracking()
                 .ToListAsync();
 
-            return profiles.Select(x => MapToDto(x, allLinks
+            var dtos = profiles.Select(x => MapToDto(x, allLinks
                 .Where(l => l.SigningProfileId == x.Id)
                 .Select(l => l.CertProfileId)
                 .ToList()))
                 .ToList();
+            await FillIssuingCaAsync(dtos);
+            return dtos;
         }
 
         /// <summary>
-        /// Creates a new signing profile entity and its allowed cert profile links.
+        /// Sets <see cref="SigningProfileDto.CaId"/>, <see cref="SigningProfileDto.CaName"/> and
+        /// <see cref="SigningProfileDto.CaSpaceId"/> on each profile from the live CA whose
+        /// certificate its issuer names, the reading a request submission makes
+        /// (<see cref="RequestProfileEnforcement.SettleSubmissionAsync"/>). A profile with no
+        /// issuer, or whose issuer is no live CA's certificate (a deleted CA is not live), keeps
+        /// all three null.
+        /// </summary>
+        /// <param name="profiles">The profiles to fill in.</param>
+        private async Task FillIssuingCaAsync(IReadOnlyCollection<SigningProfileDto> profiles)
+        {
+            var issuers = profiles.Select(p => p.IssuerId).OfType<Guid>().Distinct().ToList();
+            if (issuers.Count == 0)
+                return;
+            var cas = (await _db.CertificateAuthorities.AsNoTracking()
+                    .Where(ca => ca.CertificateId != null && issuers.Contains(ca.CertificateId.Value))
+                    .Select(ca => new { ca.Id, ca.Name, ca.SpaceId, CertificateId = ca.CertificateId!.Value })
+                    .ToListAsync())
+                .GroupBy(ca => ca.CertificateId)
+                .ToDictionary(g => g.Key, g => g.First());
+            foreach (var profile in profiles)
+            {
+                if (profile.IssuerId is Guid issuer && cas.TryGetValue(issuer, out var ca))
+                    (profile.CaId, profile.CaName, profile.CaSpaceId) = (ca.Id, ca.Name, ca.SpaceId);
+            }
+        }
+
+        /// <summary>
+        /// Creates a new signing profile entity and its allowed cert profile links. The returned
+        /// profile names the CA it issues from (<see cref="FillIssuingCaAsync"/>).
         /// </summary>
         public async Task<SigningProfileDto> CreateAsync(CreateSigningProfileRequest r)
         {
@@ -67,7 +98,9 @@ namespace ModularCA.Core.Services
                 await SetAllowedCertProfilesAsync(entity.Id, r.AllowedCertProfileIds);
             }
 
-            return MapToDto(entity, r.AllowedCertProfileIds);
+            var dto = MapToDto(entity, r.AllowedCertProfileIds);
+            await FillIssuingCaAsync([dto]);
+            return dto;
         }
 
         /// <summary>
@@ -119,7 +152,8 @@ namespace ModularCA.Core.Services
         }
 
         /// <summary>
-        /// Retrieves a single signing profile by GUID, including its allowed cert profile IDs.
+        /// Retrieves a single signing profile by GUID, including its allowed cert profile IDs
+        /// and the CA it issues from (<see cref="FillIssuingCaAsync"/>).
         /// Returns null if not found.
         /// </summary>
         public async Task<SigningProfileDto?> GetByIdAsync(Guid id)
@@ -129,7 +163,9 @@ namespace ModularCA.Core.Services
                 return null;
 
             var certProfileIds = await GetAllowedCertProfileIdsAsync(id);
-            return MapToDto(entity, certProfileIds);
+            var dto = MapToDto(entity, certProfileIds);
+            await FillIssuingCaAsync([dto]);
+            return dto;
         }
 
         /// <summary>

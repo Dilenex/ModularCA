@@ -440,18 +440,30 @@ public class CsrService : ICsrService
 
     /// <summary>
     /// Refuses, before a CSR is stored, a leaf certificate profile outside the scope of the CA the
-    /// signing profile issues from (<see cref="Authorization.CertProfileScope"/>). A signing profile
-    /// whose CA is not registered yet (the CA creation seam) is left to issuance, which checks again.
+    /// signing profile issues from (<see cref="Authorization.CertProfileScope"/>), and any request
+    /// against a signing profile whose CA has been deleted: issuance would refuse it
+    /// (<see cref="Helpers.IssuingCaGuard"/>), so storing it only leaves a request that can never
+    /// be issued. A signing profile whose CA is not registered yet (the CA creation seam) is left
+    /// to issuance, which checks again.
     /// </summary>
     private async Task EnsureProfileInScopeAsync(CertProfileEntity certProfile, SigningProfileEntity signingProfile)
     {
-        if (certProfile.IsCaProfile || signingProfile.IssuerId is not Guid issuerId)
+        if (signingProfile.IssuerId is not Guid issuerId)
             return;
         var ca = await _dbContext.CertificateAuthorities.AsNoTracking()
             .Where(c => c.CertificateId == issuerId)
             .Select(c => new { c.Id, c.SpaceId })
             .FirstOrDefaultAsync();
-        if (ca != null)
+        if (ca == null)
+        {
+            if (await _dbContext.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
+                    .AnyAsync(c => c.CertificateId == issuerId && c.IsDeleted))
+                throw new ConfigurationValidationException(
+                    $"The CA that signing profile '{signingProfile.Name}' issues from has been deleted. Choose another signing profile.",
+                    ErrorCodes.IssuingCaDisabled);
+            return;
+        }
+        if (!certProfile.IsCaProfile)
             Authorization.CertProfileScope.Ensure(certProfile.SpaceId, certProfile.CertificateAuthorityId, ca.Id, ca.SpaceId);
     }
 

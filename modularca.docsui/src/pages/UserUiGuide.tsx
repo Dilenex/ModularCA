@@ -45,7 +45,7 @@ export default function UserUiGuide() {
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li>Upload a PEM-encoded CSR file or paste CSR text</li>
-                    <li>Select from available certificate templates or profiles</li>
+                    <li>Choose the issuing CA first, then the request, signing and certificate profile that go with it. The CA is already chosen when you can request from only one. Changing the CA clears the profiles</li>
                     <li>Fill in subject fields within allowed constraints</li>
                     <li>Add Subject Alternative Names</li>
                     <li>Choose key algorithm from the key generation dropdown, including post-quantum options</li>

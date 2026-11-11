@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using ModularCA.Auth.Authorization;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Core.Services;
 using ModularCA.Database;
@@ -11,6 +12,7 @@ namespace ModularCA.API.Controllers.v1.User;
 
 /// <summary>
 /// User endpoints for listing request profiles the authenticated user is allowed to use when submitting CSRs.
+/// The list holds the profiles the caller could submit a request under (<see cref="SubmittableProfiles"/>).
 /// </summary>
 [ApiController]
 [Route("api/v1/user/request-profiles")]
@@ -19,15 +21,32 @@ namespace ModularCA.API.Controllers.v1.User;
 public class UserRequestProfileController(
     ModularCADbContext db,
     ICurrentUserService currentUser,
-    IProfileResolutionService profileResolution
+    IProfileResolutionService profileResolution,
+    ICaGroupAuthorizationService authService
 ) : ControllerBase
 {
     private readonly ModularCADbContext _db = db;
     private readonly ICurrentUserService _currentUser = currentUser;
 
     /// <summary>
-    /// Returns request profiles accessible to the authenticated user based on their group memberships.
-    /// System admins see all profiles; other users see profiles scoped to their accessible CAs plus system-wide profiles.
+    /// Returns the request profiles the caller could submit a certificate request under: those a
+    /// signing profile they may submit against goes with (<see cref="SubmittableProfiles"/>). That
+    /// is every unbound profile and the profiles of the CAs the caller holds <c>cert.request</c>
+    /// on that have a signing profile; group membership without <c>cert.request</c> lists nothing,
+    /// and the rule is the same for a system administrator. Each row names, in
+    /// <c>CertProfiles</c>, the leaf certificate profiles it designates that such a signing
+    /// profile's CA admits; a designated profile of another CA or space is left out, since a
+    /// submission naming it is refused. A row may name none: the form says so.
+    /// <para>
+    /// A row's <c>CertificateAuthorityId</c> is the CA it is bound to, null when unbound, and each
+    /// entry of <c>CertProfiles</c> carries the certificate profile's own scope
+    /// (<c>SpaceId</c>, <c>CertificateAuthorityId</c>). With the CA fields of
+    /// <c>GET /api/v1/user/signing-profiles</c> that is what the request form needs to offer, for
+    /// one chosen CA, exactly what a submission against it takes: the rows
+    /// <see cref="RequestProfileEnforcement.BindingAdmits"/> admits for that CA, and of each row's
+    /// certificate profiles those <see cref="ModularCA.Core.Authorization.CertProfileScope.Admits(Guid?, Guid?, Guid, Guid?)"/>
+    /// admits for it.
+    /// </para>
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> GetAccessibleRequestProfiles()
@@ -38,25 +57,15 @@ public class UserRequestProfileController(
 
         var userId = _currentUser.User.Id;
 
-        // Get CA IDs the user has access to
-        var userCaIds = await _db.CaGroupMembers
-            .Where(gm => gm.UserId == userId && gm.Group.CertificateAuthorityId != null)
-            .Select(gm => gm.Group.CertificateAuthorityId!.Value)
-            .Distinct()
-            .ToListAsync();
+        // What the caller could submit against decides the list: a request profile is offered
+        // when a signing profile they hold cert.request for goes with it, which is the rule the
+        // submission applies. Membership of a CA's group is not that rule (an auditor is a member).
+        var fence = SpaceFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRequest);
+        var submittable = await SubmittableProfiles.ForAsync(authService, _db, fence, userId);
 
-        // Audit-finding #49 consolidation: use the canonical super-admin idiom populated by
-        // SpaceFenceMiddleware (which checks all four SystemManage grant sources:
-        // direct group grant, role via group, direct user grant, role via user) instead of
-        // the previous open-coded query that only covered source #1 and could silently
-        // deny access to role-based system admins.
-        var isSystemAdmin = HttpContext.Items["IsSystemAdmin"] is true;
-
-        var profiles = await _db.RequestProfiles.ToListAsync();
-        if (!isSystemAdmin)
-            profiles = profiles
-                .Where(p => p.CertificateAuthorityId == null || userCaIds.Contains(p.CertificateAuthorityId.Value))
-                .ToList();
+        var profiles = (await _db.RequestProfiles.ToListAsync())
+            .Where(p => submittable.AdmitsRequestProfile(p.CertificateAuthorityId))
+            .ToList();
 
         // A user never edits a profile, so what they see are the effective rules after
         // inheritance, which are the rules issuance applies. The form validates against these.
@@ -73,9 +82,10 @@ public class UserRequestProfileController(
             effective.TryGetValue(p.Id, out var d) ? d.DefaultCertProfileId : p.DefaultCertProfileId,
             effective.TryGetValue(p.Id, out var a) ? a.AllowedCertProfileIds : p.AllowedCertProfileIds));
         var designatedIds = designated.Values.SelectMany(ids => ids).Distinct().ToList();
-        var certProfileNames = await _db.CertProfiles.AsNoTracking()
+        var certProfiles = await _db.CertProfiles.AsNoTracking()
             .Where(c => designatedIds.Contains(c.Id) && !c.IsCaProfile)
-            .ToDictionaryAsync(c => c.Id, c => c.Name);
+            .Select(c => new { c.Id, c.Name, c.SpaceId, c.CertificateAuthorityId })
+            .ToDictionaryAsync(c => c.Id);
 
         return Ok(profiles.Select(p => new
         {
@@ -83,8 +93,9 @@ public class UserRequestProfileController(
             p.Name,
             p.Description,
             CertProfiles = designated[p.Id]
-                .Where(certProfileNames.ContainsKey)
-                .Select(id => new { Id = id, Name = certProfileNames[id] }),
+                .Where(id => certProfiles.TryGetValue(id, out var c)
+                    && submittable.AdmitsCertProfile(p.CertificateAuthorityId, c.SpaceId, c.CertificateAuthorityId))
+                .Select(id => new { Id = id, certProfiles[id].Name, certProfiles[id].SpaceId, certProfiles[id].CertificateAuthorityId }),
             SubjectDnRules = effective.TryGetValue(p.Id, out var e) ? e.SubjectDnRules : p.SubjectDnRules,
             SanRules = effective.TryGetValue(p.Id, out var e2) ? e2.SanRules : p.SanRules,
             EffectiveSubjectDnRules = effective.TryGetValue(p.Id, out var e3) ? e3.SubjectDnRules : p.SubjectDnRules,

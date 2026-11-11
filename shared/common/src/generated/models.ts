@@ -1547,6 +1547,9 @@ export interface SigningProfileDto {
     policyQualifiersJson?: string | null;
     isDefault: boolean;
     issuerId?: string | null;
+    caId?: string | null;
+    caName?: string | null;
+    caSpaceId?: string | null;
     maxPathLength?: number | null;
     nameConstraintsPermitted?: string | null;
     nameConstraintsExcluded?: string | null;
