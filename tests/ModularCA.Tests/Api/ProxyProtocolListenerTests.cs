@@ -262,10 +262,25 @@ public sealed class ProxyProtocolListenerTests : IAsyncLifetime
         Assert.InRange(started.Elapsed, TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(20));
     }
 
+    /// <summary>
+    /// The server drops an untrusted peer as soon as it is accepted, before it reads a byte. On
+    /// Linux that reset can reach the client while its connect is still completing, which is the
+    /// same outcome one step earlier: the peer was closed and never answered.
+    /// </summary>
     [Fact]
     public async Task An_untrusted_peer_is_closed_even_with_a_valid_header()
     {
-        using var tcp = await ConnectAsync(_untrustedPort);
+        TcpClient tcp;
+        try
+        {
+            tcp = await ConnectAsync(_untrustedPort);
+        }
+        catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionReset)
+        {
+            return;
+        }
+
+        using var client = tcp;
         var stream = tcp.GetStream();
         await TryWriteAsync(stream, ProxyProtocolParserTests.V2Tcp(FakeClient, Front)
             .Concat(Encoding.ASCII.GetBytes("GET / HTTP/1.1\r\nHost: test\r\n\r\n")).ToArray());
