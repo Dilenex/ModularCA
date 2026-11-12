@@ -228,6 +228,27 @@ To check schema ownership read-only at any time, as the service user and never a
 
 It exits 0 when both databases are sound and 3 when not, and prints what it found and the repair.
 
+### Upgrading to 0.4.4
+
+0.4.4 adds four migrations. One of them drops two setting columns that nothing read, so going back
+to 0.4.3 means restoring the backup: take it first.
+
+1. **Run the upgrade check with the new build** and read its notes, not only its last line (see
+   "Checking an upgrade before installing it" above). They name what on this instance the release
+   changes, such as enrolment clients whose next request would be refused. `install.sh` runs the
+   same check and stops on a refusal.
+2. **Review who holds the Operator and Administrator roles on a CA or a space.** Those roles now
+   approve and issue with the profiles of their scope, and a scoped administrator administers the
+   users of its scope. Adding a member to a CA's operator group needs a second person, and an LDAP
+   group mapping no longer adds members to it.
+3. **The backup directory** must be reachable by the service account alone. **Split installs**
+   upgrade the signer with the node; **a pod's signer** has its own configuration volume.
+4. **After it starts,** check that `ModularCA.API.runtimeconfig.json` in the install directory
+   names 10.0.15 and that `logs/` holds a file for today. Expect SCEP's GetCACaps to answer 400 or
+   409 where SCEP is not served, CMP and EST audit rows under new names (`CR`, `KUR`,
+   `SimpleReenroll`), and an account to be signed out everywhere when it logs out or removes a
+   second factor. The changelog's "Upgrading from 0.4.3" lists the rest.
+
 ### Upgrading to 0.4.3
 
 0.4.3 adds one migration, which gives every certificate its expiry warning and alert instants.

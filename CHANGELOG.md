@@ -6,120 +6,63 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
-### 0.4.4-rc.1.1 — 2026-11-11
+Nothing yet.
 
-The second release candidate of 0.4.4, after 0.4.4-rc.1.0 was installed on a test host and its
-protocols and console were gone through. Since 0.4.4-rc.1.0:
+## [0.4.4] — 2026-11-11
 
-- **Built on the .NET 10.0.15 runtime.** 0.4.4-rc.1.0 and every earlier build carry 10.0.14 or
-  older, which is affected by GHSA-vmv3-wvjp-wqpj, a denial-of-service flaw in
-  `System.Formats.Cbor`. After installing, `ModularCA.API.runtimeconfig.json` in the install
-  directory names 10.0.15.
-- **An ACME client can change its account key.** A key-change request in the shape RFC 8555
-  defines was refused.
-- **"My Certificates" lists the caller's certificates**, where it listed every certificate the
-  caller could view. The page can still show the wider list.
-- **Smaller, in the console:** the self-service sidebar marks one page as current, and the
-  Deleted tab of the Users page shows its values whole.
+A release of fixes and tightening since 0.4.3, from a security pass, more of the November bug
+hunt and five days of test builds on a live install. Who may issue, approve and administer users
+now follows the roles held on a CA or a space, and a CA's operator group is a protected tier. An
+account's sessions end on every credential change, the first administrator is never handed over
+through the log, a restore keeps the audit history, and a separate signer and the bootstrap
+deliver their own audit records. The enrolment protocols record what they refused, the console
+follows the scope switcher on every page, and a listener can require the PROXY protocol. It is
+built on the .NET 10.0.15 runtime, which fixes GHSA-vmv3-wvjp-wqpj, and adds four migrations.
 
-No migration is added: the schema is the one 0.4.4-dev.1.1 left.
+Seven test builds went to test hosts and were not published: `0.4.4-dev.1.0` to `0.4.4-dev.1.4`,
+`0.4.4-rc.1.0` and `0.4.4-rc.1.1`. They are listed at the end of this section, with what came
+after the last of them.
 
-### 0.4.4-rc.1.0 — 2026-11-11
+### Upgrading from 0.4.3
 
-The first release candidate of 0.4.4, for test hosts. It is 0.4.4-dev.1.4 plus what running the
-enrolment protocols against the test install turned up. Since 0.4.4-dev.1.4:
+This is the checklist; "Every change that can need attention" under it says more.
+"Upgrading to 0.4.4" in `packaging/README-DEPLOY.md` has the same steps for a host.
 
-- **SCEP's GetCACaps is answered for the CA it is asked of.** A CA whose key is not RSA, a CA
-  with SCEP switched off, and a label that names no CA all used to list capabilities. A probe
-  that used GetCACaps as a liveness check will now see 400 or 409 where SCEP is not served.
-- **The protocol audit tabs say more, and two names changed.** CMP rows are named after the
-  request (`IR`, `CR`, `KUR` and their `Rejected` forms; every issuance was `IR`). An EST
-  re-enrolment writes `SimpleReenroll` where it wrote `SimpleEnroll`. New rows: an ACME key
-  change, contact change, deactivation and refused challenge response, and a refused CMP
-  revocation. Anything that counts issuance by filtering on `IR` or `SimpleEnroll` should
-  include the new names.
+**Before installing**
 
-No migration is added: the schema is the one 0.4.4-dev.1.1 left.
+- **Take a backup.** The release adds four migrations: `UserPasswordSource`, `UserClaimTokens`,
+  `DropUnreadSettingColumns` and `OperatorRoleUsesProfiles`. The third drops two columns that
+  nothing read, so going back to 0.4.3 means restoring the backup.
+- **Run the upgrade check with the new build, as the service account, and read what it prints**,
+  not only its last line: `sudo -u modularca <new build>/ModularCA.API --upgrade-check
+  --config-dir /opt/modularca/config`. Its notes name what on this instance the release
+  changes, such as enrolment clients whose next request would be refused. `install.sh` runs the
+  same check and stops on a refusal. With `--read-only` it can run beside the serving node.
+- **Review who holds the Operator and Administrator roles on a CA or a space.** From this
+  release those roles approve and issue with the profiles of their scope, and a scoped
+  administrator administers the users of its scope. An operator no longer creates accounts.
+- **Instances that provision CA operators:** adding a member to a CA's operator group now needs a
+  second person, and an LDAP group mapping no longer adds members to it.
+- **The backup directory** must be reachable by the service account alone.
+- **Split installs:** upgrade the signer with the node. **Pods:** the signer has its own
+  configuration volume.
+- **The runtime comes with the release.** The tarball and the image carry .NET 10.0.15 inside
+  them; installing this release is how a host gets it. Updating the host's packages does not.
 
-**Known in this candidate:** it is built on the .NET 10.0.14 runtime, which is affected by
-GHSA-vmv3-wvjp-wqpj, a denial-of-service flaw in `System.Formats.Cbor` published on
-2026-11-10 and fixed in 10.0.15. 0.4.4-rc.1.1 is built on 10.0.15.
+**After the first start**
 
-### 0.4.4-dev.1.4 — 2026-11-11
+- `ModularCA.API.runtimeconfig.json` in the install directory names 10.0.15, and `logs/` holds a
+  file for today: a systemd install of an earlier release may have written none.
+- **Sessions end more often.** Logging out, removing a security key or the authenticator app,
+  and a replayed refresh token each sign the account out on every device.
+- **Enrolment clients and anything that reads the audit tabs.** SCEP's GetCACaps answers 400 or
+  409 where SCEP is not served. CMP audit rows are named after the request (`IR`, `CR`, `KUR`),
+  and an EST re-enrolment writes `SimpleReenroll`. An ACME client can change its account key.
+- **Scripts on the infrastructure API:** a certificate outside the key's scope answers 404, and
+  revoking a certificate on hold revokes it for good.
+- **A step-up TOTP code** is accepted when the clocks differ by up to 15 seconds.
 
-The fourth test build of 0.4.4, after 0.4.4-dev.1.3 was installed and its operator tier,
-requesting and user deletion were checked live. Since 0.4.4-dev.1.3:
-
-- **The request form asks for the issuing CA first.** A CA picker at the top of the request
-  form narrows the signing profiles, request profiles and certificate profiles to that CA. It
-  starts empty unless the caller can use only one CA. The administrator's issue page has the
-  same picker. The profile lists of the API carry the CA of each signing profile for this.
-- **Deleted accounts can be seen.** The Users page has a Deleted tab listing the accounts kept
-  as a record, with the requests and approvals that still name each. The delete dialog says
-  beforehand when an account will be kept.
-- **A signing profile of a deleted CA is refused at submit**, with a message that says so.
-- **`--upgrade-check --read-only`** says whether migrations are pending without rehearsing
-  them, so it can run beside a serving node. It ends with exit status 5 when migrations are
-  pending and were not rehearsed.
-
-No migration is added: the schema is the one 0.4.4-dev.1.1 left.
-
-### 0.4.4-dev.1.3 — 2026-11-11
-
-The third test build of 0.4.4, after 0.4.4-dev.1.2 was installed and its roles, issuance and
-user administration were probed live. Since 0.4.4-dev.1.2:
-
-- **A CA's operator group is a protected tier.** On the test install one administrator of a CA
-  created an operator account, signed in as it and approved its own request. Adding a CA
-  operator now needs a second person; LDAP mappings no longer add members to such a group. Read
-  the upgrade notes before installing over an instance that provisions CA operators.
-- **Log files on Linux.** A systemd install wrote no `logs/modularca-*.log` at all; the test
-  install had had none since 19 October. Fixed. After installing, check that `logs/` holds a
-  file for today.
-- **Deleting users.** An account with requests or approvals could not be deleted (500). It is
-  now retained: hidden, stripped of everything it could sign in with or reach, its username
-  kept for good.
-- **A requester can request a certificate in the console.** The self-service profile lists now
-  list what the caller could submit against; some callers see fewer rows than before.
-- **Smaller:** the OID catalog is readable by anyone who can view certificates;
-  `--upgrade-check` refuses a build that cannot build its web host.
-
-No migration is added: the schema is the one 0.4.4-dev.1.1 left.
-
-### 0.4.4-dev.1.2 — 2026-11-10
-
-0.4.4-dev.1.1 did not start: its archive carried a command-line tool's copy of
-`Microsoft.Extensions.ObjectPool` (7.0.0) in place of the web framework's (10.0), and the server
-stopped with "Could not load file or assembly" before it read its configuration or touched a
-database. The build published its three programs into one directory and left it to file
-timestamps whose copy of a shared file stayed; turning on ReadyToRun changed the outcome. The
-build now merges them in a fixed order, the server last, and refuses an archive in which any
-file the server published is not the server's own copy. Nothing else differs from 0.4.4-dev.1.1.
-
-### 0.4.4-dev.1.1 — 2026-11-10
-
-The second test build of 0.4.4, after the first was installed and probed as accounts of every
-tier. Since 0.4.4-dev.1.0:
-
-- **Who may do what changed.** Administrators and operators of a CA or a space issue and approve
-  with the profiles of their own scope, and the Operator role gains `profile.use` (one
-  migration, `OperatorRoleUsesProfiles`). Administrators of a CA or a space administer the users
-  of their own scope through the API; MFA reset, and accounts in no group, stay with system
-  administrators. A requester no longer reads the users and groups of its space. Read the upgrade
-  notes before installing over an instance with delegated roles.
-- **Sessions and audit.** A replayed refresh token ends every session of the account. Step-up
-  audit rows carry the username. A lookup of an account that does not exist answers 404.
-- **Starting and upgrading.** A start that stops for good after applying a migration exits 4, and
-  3 from the schema check promises nothing was applied. The scheduler holds the jobs that need
-  the signer until its first answer. The PROXY protocol settings can come from the environment.
-- **The image and the build.** The image declares no volumes and sets a writable `HOME`, so its
-  log files are written. The Linux build is published ReadyToRun, on trial.
-
-### 0.4.4-dev.1.0 — 2026-11-10
-
-The first test build of 0.4.4. It carries everything below.
-
-**Upgrade notes**
+**Every change that can need attention**
 
 - **Making someone an operator of a CA now needs a second person.** A CA's operator group is a
   protected tier, as its administrator group and a space's operator group already are. An account
@@ -1220,6 +1163,128 @@ The first test build of 0.4.4. It carries everything below.
   or when an entry does not parse or trusts every address (`/0`). "Behind a passthrough proxy: the
   PROXY protocol" in the deploy guide has the HAProxy (`send-proxy-v2`) and nginx
   (`proxy_protocol on;`) lines.
+
+### Test builds
+
+These builds went to test hosts between 0.4.3 and this release and were not published. Each block
+says what its build added to the one before; the release carries all of them.
+
+**After 0.4.4-rc.1.1**, the release adds two things no test build had: a step-up TOTP code is
+accepted when the clocks differ by up to 15 seconds, and `--upgrade-check` says when it may not
+read the configuration instead of calling it not found. No migration is added.
+
+### 0.4.4-rc.1.1 — 2026-11-11
+
+The second release candidate of 0.4.4, after 0.4.4-rc.1.0 was installed on a test host and its
+protocols and console were gone through. Since 0.4.4-rc.1.0:
+
+- **Built on the .NET 10.0.15 runtime.** 0.4.4-rc.1.0 and every earlier build carry 10.0.14 or
+  older, which is affected by GHSA-vmv3-wvjp-wqpj, a denial-of-service flaw in
+  `System.Formats.Cbor`. After installing, `ModularCA.API.runtimeconfig.json` in the install
+  directory names 10.0.15.
+- **An ACME client can change its account key.** A key-change request in the shape RFC 8555
+  defines was refused.
+- **"My Certificates" lists the caller's certificates**, where it listed every certificate the
+  caller could view. The page can still show the wider list.
+- **Smaller, in the console:** the self-service sidebar marks one page as current, and the
+  Deleted tab of the Users page shows its values whole.
+
+No migration is added: the schema is the one 0.4.4-dev.1.1 left.
+
+### 0.4.4-rc.1.0 — 2026-11-11
+
+The first release candidate of 0.4.4, for test hosts. It is 0.4.4-dev.1.4 plus what running the
+enrolment protocols against the test install turned up. Since 0.4.4-dev.1.4:
+
+- **SCEP's GetCACaps is answered for the CA it is asked of.** A CA whose key is not RSA, a CA
+  with SCEP switched off, and a label that names no CA all used to list capabilities. A probe
+  that used GetCACaps as a liveness check will now see 400 or 409 where SCEP is not served.
+- **The protocol audit tabs say more, and two names changed.** CMP rows are named after the
+  request (`IR`, `CR`, `KUR` and their `Rejected` forms; every issuance was `IR`). An EST
+  re-enrolment writes `SimpleReenroll` where it wrote `SimpleEnroll`. New rows: an ACME key
+  change, contact change, deactivation and refused challenge response, and a refused CMP
+  revocation. Anything that counts issuance by filtering on `IR` or `SimpleEnroll` should
+  include the new names.
+
+No migration is added: the schema is the one 0.4.4-dev.1.1 left.
+
+**Known in this candidate:** it is built on the .NET 10.0.14 runtime, which is affected by
+GHSA-vmv3-wvjp-wqpj, a denial-of-service flaw in `System.Formats.Cbor` published on
+2026-11-10 and fixed in 10.0.15. 0.4.4-rc.1.1 is built on 10.0.15.
+
+### 0.4.4-dev.1.4 — 2026-11-11
+
+The fourth test build of 0.4.4, after 0.4.4-dev.1.3 was installed and its operator tier,
+requesting and user deletion were checked live. Since 0.4.4-dev.1.3:
+
+- **The request form asks for the issuing CA first.** A CA picker at the top of the request
+  form narrows the signing profiles, request profiles and certificate profiles to that CA. It
+  starts empty unless the caller can use only one CA. The administrator's issue page has the
+  same picker. The profile lists of the API carry the CA of each signing profile for this.
+- **Deleted accounts can be seen.** The Users page has a Deleted tab listing the accounts kept
+  as a record, with the requests and approvals that still name each. The delete dialog says
+  beforehand when an account will be kept.
+- **A signing profile of a deleted CA is refused at submit**, with a message that says so.
+- **`--upgrade-check --read-only`** says whether migrations are pending without rehearsing
+  them, so it can run beside a serving node. It ends with exit status 5 when migrations are
+  pending and were not rehearsed.
+
+No migration is added: the schema is the one 0.4.4-dev.1.1 left.
+
+### 0.4.4-dev.1.3 — 2026-11-11
+
+The third test build of 0.4.4, after 0.4.4-dev.1.2 was installed and its roles, issuance and
+user administration were probed live. Since 0.4.4-dev.1.2:
+
+- **A CA's operator group is a protected tier.** On the test install one administrator of a CA
+  created an operator account, signed in as it and approved its own request. Adding a CA
+  operator now needs a second person; LDAP mappings no longer add members to such a group. Read
+  the upgrade notes before installing over an instance that provisions CA operators.
+- **Log files on Linux.** A systemd install wrote no `logs/modularca-*.log` at all; the test
+  install had had none since 19 October. Fixed. After installing, check that `logs/` holds a
+  file for today.
+- **Deleting users.** An account with requests or approvals could not be deleted (500). It is
+  now retained: hidden, stripped of everything it could sign in with or reach, its username
+  kept for good.
+- **A requester can request a certificate in the console.** The self-service profile lists now
+  list what the caller could submit against; some callers see fewer rows than before.
+- **Smaller:** the OID catalog is readable by anyone who can view certificates;
+  `--upgrade-check` refuses a build that cannot build its web host.
+
+No migration is added: the schema is the one 0.4.4-dev.1.1 left.
+
+### 0.4.4-dev.1.2 — 2026-11-10
+
+0.4.4-dev.1.1 did not start: its archive carried a command-line tool's copy of
+`Microsoft.Extensions.ObjectPool` (7.0.0) in place of the web framework's (10.0), and the server
+stopped with "Could not load file or assembly" before it read its configuration or touched a
+database. The build published its three programs into one directory and left it to file
+timestamps whose copy of a shared file stayed; turning on ReadyToRun changed the outcome. The
+build now merges them in a fixed order, the server last, and refuses an archive in which any
+file the server published is not the server's own copy. Nothing else differs from 0.4.4-dev.1.1.
+
+### 0.4.4-dev.1.1 — 2026-11-10
+
+The second test build of 0.4.4, after the first was installed and probed as accounts of every
+tier. Since 0.4.4-dev.1.0:
+
+- **Who may do what changed.** Administrators and operators of a CA or a space issue and approve
+  with the profiles of their own scope, and the Operator role gains `profile.use` (one
+  migration, `OperatorRoleUsesProfiles`). Administrators of a CA or a space administer the users
+  of their own scope through the API; MFA reset, and accounts in no group, stay with system
+  administrators. A requester no longer reads the users and groups of its space. Read the upgrade
+  notes before installing over an instance with delegated roles.
+- **Sessions and audit.** A replayed refresh token ends every session of the account. Step-up
+  audit rows carry the username. A lookup of an account that does not exist answers 404.
+- **Starting and upgrading.** A start that stops for good after applying a migration exits 4, and
+  3 from the schema check promises nothing was applied. The scheduler holds the jobs that need
+  the signer until its first answer. The PROXY protocol settings can come from the environment.
+- **The image and the build.** The image declares no volumes and sets a writable `HOME`, so its
+  log files are written. The Linux build is published ReadyToRun, on trial.
+
+### 0.4.4-dev.1.0 — 2026-11-10
+
+The first test build of 0.4.4.
 
 ## [0.4.3] — 2026-11-08
 
