@@ -850,7 +850,10 @@ This is the checklist; "Every change that can need attention" under it says more
 - **mTLS sign-in works when the credential's signing CA is an intermediate.** Chain validation
   accepts a path that ends at an intermediate CA given as the trust anchor; every certificate
   issued under an intermediate failed with `cert_chain_validation_failed`. Revocation of the
-  certificate, and every other check, still apply.
+  certificate, and every other check, still apply. One limit on Linux: with "Require mTLS OCSP
+  Check" on, a certificate under an intermediate signing CA is still refused, because the
+  platform checks revocation online only for a chain that reaches a self-signed root; it is
+  refused rather than accepted unchecked. The database revocation check applies either way.
 - **The HTTP to HTTPS redirect uses the same public port as every other HTTPS link.** It could send
   clients to 443 when the listener was on 8443, or to the listener port behind a proxy publishing a
   different one.
