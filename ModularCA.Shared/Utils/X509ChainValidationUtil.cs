@@ -41,6 +41,12 @@ public static class X509ChainValidationUtil
     /// to have its own revocation gate.
     /// </para>
     /// <para>
+    /// Off Windows the chain engine checks revocation only for a chain that reaches a self-signed
+    /// root, so under an intermediate anchor it would check nothing. There a required revocation
+    /// check under an intermediate anchor is refused, as undetermined, rather than passed
+    /// unchecked (<see cref="EngineChecksRevocationOnPartialChains"/>).
+    /// </para>
+    /// <para>
     /// The chain is disposed via <c>using</c>. <see cref="X509Chain"/> holds native
     /// handles and undisposed instances leak them under sustained protocol traffic.
     /// </para>
@@ -74,7 +80,15 @@ public static class X509ChainValidationUtil
         var terminatesAtAnchor = terminal != null &&
             string.Equals(terminal.Thumbprint, anchorCert.Thumbprint, StringComparison.OrdinalIgnoreCase);
 
-        if (!built && !(terminatesAtAnchor && StopsShortOnlyAtAnchor(chain)))
+        var stopsShortAtAnchor = !built && terminatesAtAnchor && StopsShortOnlyAtAnchor(chain);
+        if (stopsShortAtAnchor && requireRevocationCheck && !EngineChecksRevocationOnPartialChains)
+        {
+            chainErrors = $"{X509ChainStatusFlags.RevocationStatusUnknown}:revocation cannot be checked on this platform " +
+                "for a chain that ends at an intermediate CA, and a revocation check is required.";
+            return false;
+        }
+
+        if (!built && !stopsShortAtAnchor)
         {
             chainErrors = string.Join("; ",
                 chain.ChainStatus.Select(s => $"{s.Status}:{s.StatusInformation?.Trim()}"));
@@ -97,6 +111,14 @@ public static class X509ChainValidationUtil
         return true;
     }
 
+    /// <summary>
+    /// Whether the chain engine consults revocation for a chain that stops short of a self-signed
+    /// root. Windows does, and reports each element's status. The OpenSSL-backed engine does not:
+    /// it processes revocation only once the chain is complete, so a partial chain comes back with
+    /// no revocation status at all, which must not be read as "not revoked".
+    /// </summary>
+    private static bool EngineChecksRevocationOnPartialChains => OperatingSystem.IsWindows();
+
     /// <summary>Revocation statuses that mean "could not be determined", as opposed to "revoked".</summary>
     private const X509ChainStatusFlags RevocationUndetermined =
         X509ChainStatusFlags.RevocationStatusUnknown | X509ChainStatusFlags.OfflineRevocation;
@@ -110,8 +132,10 @@ public static class X509ChainValidationUtil
     /// anchor's revocation status as undetermined.
     /// </summary>
     /// <remarks>
-    /// Accepted: <see cref="X509ChainStatusFlags.PartialChain"/>, plus an undetermined revocation
-    /// status on the anchor element alone, which keeps the contract that revocation covers
+    /// Accepted: <see cref="X509ChainStatusFlags.PartialChain"/>, on the chain and on the anchor
+    /// element (Windows reports it for the chain alone; the OpenSSL-backed engine also puts it on
+    /// the certificate whose issuer it could not find, which is the anchor), plus an undetermined
+    /// revocation status on the anchor element alone, which keeps the contract that revocation covers
     /// everything but the anchor (what <see cref="X509RevocationFlag.ExcludeRoot"/> gives a
     /// self-signed anchor). Every other status fails, on any element: a bad signature, an expired
     /// or not-yet-valid certificate, a usage or constraint violation, an explicit revocation, and
@@ -129,7 +153,9 @@ public static class X509ChainValidationUtil
         var elements = chain.ChainElements;
         for (var i = 0; i < elements.Count; i++)
         {
-            var tolerated = i == elements.Count - 1 ? RevocationUndetermined : X509ChainStatusFlags.NoError;
+            var tolerated = i == elements.Count - 1
+                ? RevocationUndetermined | X509ChainStatusFlags.PartialChain
+                : X509ChainStatusFlags.NoError;
             if ((Flags(elements[i].ChainElementStatus) & ~tolerated) != 0)
                 return false;
         }
