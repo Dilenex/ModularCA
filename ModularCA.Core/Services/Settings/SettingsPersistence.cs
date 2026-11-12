@@ -33,6 +33,7 @@ public sealed class SettingsPersistence(
     private volatile SettingsSnapshot? _snapshot;
     private volatile IReadOnlyDictionary<string, string>? _secretBaseline;
     private volatile IReadOnlyList<string> _waitingForRestart = [];
+    private volatile IReadOnlyList<string> _leftOutOfFile = [];
 
     /// <summary>
     /// The keys of secrets stored since this process started that it is not running on: it
@@ -69,6 +70,20 @@ public sealed class SettingsPersistence(
     {
         if (_secretBaseline != null)
             _secretBaseline = SettingsRuntime.SecretBaseline(config, environment.EnvSourcedPaths);
+    }
+
+    /// <summary>
+    /// Leaves the secret <paramref name="key"/> out of every <c>config.yaml</c> this process
+    /// writes, whatever the configuration holds for it: for a value the process made up for
+    /// itself (the temporary JWT secret), which must not reach the file as if it had been set,
+    /// even when no secret is stored for it to be left out in favour of.
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="key"/> is not a setting this build knows.</exception>
+    public void LeaveOutOfFile(string key)
+    {
+        var path = (SettingsCatalog.Find(key) ?? throw new ArgumentException($"{key} is not a setting this build knows.", nameof(key))).Path;
+        if (!_leftOutOfFile.Contains(path))
+            _leftOutOfFile = [.. _leftOutOfFile, path];
     }
 
     /// <summary>
@@ -138,7 +153,8 @@ public sealed class SettingsPersistence(
     /// <summary>
     /// Writes <c>config.yaml</c> from the configuration in memory: all of it before the move,
     /// and what belongs to the host after it. Secrets supplied by the environment are left out
-    /// either way. For a change that touches host-local settings only. After the move the file
+    /// either way, and so is a secret named to <see cref="LeaveOutOfFile"/>. For a change that
+    /// touches host-local settings only. After the move the file
     /// is left untouched when it already says what would be written, so saving a setting the
     /// store holds does not need the file to be writable.
     /// </summary>
@@ -154,7 +170,7 @@ public sealed class SettingsPersistence(
                     ConfigYamlWriter.Write(ConfigPath, config);
                     return;
                 }
-                var contents = ConfigYamlWriter.Serialize(config, StoredPaths());
+                var contents = ConfigYamlWriter.Serialize(config, StoredPaths().Concat(_leftOutOfFile));
                 if (File.Exists(ConfigPath) && File.ReadAllText(ConfigPath) == contents)
                     return;
                 ConfigYamlWriter.WriteKeepingAccess(ConfigPath, contents);

@@ -19,9 +19,9 @@ public static class AuditActionType
     public const string UserLogout = "UserLogout";
     /// <summary>
     /// Every session of an account was ended (security stamp rotated, refresh tokens revoked)
-    /// because an mTLS sign-in credential of it was revoked, or its certificate was revoked or put
-    /// on hold. Details name the reason, the credential or certificate, and how many refresh tokens
-    /// were revoked.
+    /// because an mTLS sign-in credential of it was revoked, its certificate was revoked or put
+    /// on hold, or a WebAuthn credential or the TOTP authenticator of it was removed. Details name
+    /// the reason, the credential or certificate, and how many refresh tokens were revoked.
     /// </summary>
     public const string UserSessionsEnded = "UserSessionsEnded";
 
@@ -56,6 +56,53 @@ public static class AuditActionType
     public const string UserPasswordChanged = "UserPasswordChanged";
     public const string UserPasswordReset = "UserPasswordReset";
 
+    /// <summary>
+    /// An <c>Inherit</c> account's password was accepted by the directory, so its password source
+    /// became <c>Directory</c>: from then on only the directory checks its password. The actor is
+    /// the account itself; details carry the old and new source and the sign-in path
+    /// (<c>login</c> or the protocol, e.g. <c>EST</c>).
+    /// </summary>
+    public const string UserPasswordSourceLearned = "UserPasswordSourceLearned";
+
+    /// <summary>
+    /// An account's password source was set on the host with <c>--set-password-source</c>, outside
+    /// the API. The actor is <c>host:break-glass</c>; details carry the old and new source, the host
+    /// and the operating-system user.
+    /// </summary>
+    public const string UserPasswordSourceSetOnHost = "UserPasswordSourceSetOnHost";
+
+    /// <summary>
+    /// An account was claimed: a one-time claim token set its password through
+    /// <c>POST /api/v1/auth/claim</c>, and the claim was used up. The actor is the account itself;
+    /// details carry what issued the claim (<c>bootstrap</c> or <c>host:break-glass</c>) and when.
+    /// A refused claim is recorded as <see cref="UserLoginFailed"/> with source <c>claim</c>.
+    /// </summary>
+    public const string UserAccountClaimed = "UserAccountClaimed";
+
+    /// <summary>
+    /// A claim token was issued for an account on the host with <c>--issue-claim-token</c>, outside
+    /// the API, replacing any claim the account had. The actor is <c>host:break-glass</c>; details
+    /// carry when the claim expires, whether it replaced one, the host and the operating-system user.
+    /// Never the token.
+    /// </summary>
+    public const string UserClaimTokenIssuedOnHost = "UserClaimTokenIssuedOnHost";
+
+    /// <summary>
+    /// The headless bootstrap created the first administrator with no password and a one-time
+    /// claim, because bootstrap.yaml gave <c>Administration.ClaimTokenSha256</c>. The actor is
+    /// <c>bootstrap</c>; details carry the username, when the claim expires and the host. Never
+    /// the token, which the bootstrap never sees, or its hash.
+    /// </summary>
+    public const string UserClaimTokenIssuedAtBootstrap = "UserClaimTokenIssuedAtBootstrap";
+
+    /// <summary>
+    /// An administrator changed an account's password source, directly or by executing a
+    /// controlled-user ceremony. Details carry the old and new source (<c>Old</c>, <c>New</c>) and,
+    /// for a ceremony, its id. A change to anything but <c>Directory</c> can bring the account's
+    /// local password into use, so it counts as a password change by that administrator.
+    /// </summary>
+    public const string UserPasswordSourceChanged = "UserPasswordSourceChanged";
+
     // CSR operations
     public const string CsrSubmitted = "CsrSubmitted";
     public const string CsrApproved = "CsrApproved";
@@ -71,6 +118,7 @@ public static class AuditActionType
     // ACME protocol
     public const string AcmeAccountCreated = "AcmeAccountCreated";
     public const string AcmeAccountDeactivated = "AcmeAccountDeactivated";
+    public const string AcmeAccountKeyChanged = "AcmeAccountKeyChanged";
     public const string AcmeOrderFinalized = "AcmeOrderFinalized";
 
     // SSH CA
@@ -125,6 +173,8 @@ public static class AuditActionType
     public const string KeystoreSignatureFailed = "KeystoreSignatureFailed";
     /// <summary>Emitted when the SPKI-pin MAC check fails — DB-side pin has been swapped or the secondary passphrase rotated without re-saving.</summary>
     public const string KeystorePinMacFailed = "KeystorePinMacFailed";
+    /// <summary>Emitted when a keystore could not be decrypted at unlock: a wrong passphrase, or a damaged file, wrapped passphrase or passphrase file. Names the keystore and the kind of failure; never holds a passphrase or anything derived from one.</summary>
+    public const string KeystoreUnlockFailed = "KeystoreUnlockFailed";
 
     // Configuration changes
     public const string ConfigUpdated = "ConfigUpdated";

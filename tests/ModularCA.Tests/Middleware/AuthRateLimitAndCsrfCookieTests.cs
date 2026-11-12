@@ -10,7 +10,8 @@ namespace ModularCA.Tests.Middleware;
 
 /// <summary>
 /// The sign-in paths that had no throttle — certificate login, refresh, the mTLS code exchange and
-/// the mTLS redirect sign-ins (GET navigations) — draw from per-IP buckets under both route shapes;
+/// the mTLS redirect sign-ins (GET navigations) — and the account claim draw from per-IP buckets
+/// under both route shapes;
 /// and the CSRF double-submit cookie is <c>__Host-CSRF-TOKEN</c> over HTTPS, where an unprefixed
 /// cookie is neither accepted nor kept, while plain HTTP keeps <c>CSRF-TOKEN</c>.
 /// </summary>
@@ -33,6 +34,8 @@ public sealed class AuthRateLimitAndCsrfCookieTests
     [InlineData("POST", "/api/v1/auth/mtls/exchange", "/api/v1/auth/mtls/exchange")]
     [InlineData("POST", "/auth/mtls/exchange/", "/api/v1/auth/mtls/exchange")]
     [InlineData("POST", "/auth/mfa/verify-stepup/mtls", "/api/v1/auth/mfa/verify-stepup/mtls")]
+    [InlineData("POST", "/api/v1/auth/claim", "/api/v1/auth/claim")]
+    [InlineData("POST", "/auth/claim", "/api/v1/auth/claim")]
     [InlineData("GET", "/api/v1/auth/mtls/login-redirect", "/api/v1/auth/mtls/login-redirect")]
     [InlineData("GET", "/auth/mtls/login-redirect", "/api/v1/auth/mtls/login-redirect")]
     [InlineData("GET", "/auth/mtls/verify-redirect", "/api/v1/auth/mtls/verify-redirect")]

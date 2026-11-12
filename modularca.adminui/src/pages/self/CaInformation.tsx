@@ -105,9 +105,10 @@ const CaInformation: React.FC = () => {
 
     const handleDownloadPem = async (cert: CaCertificate) => {
         try {
-            // The public CA endpoint is the one that serves CA certificates (the user-scoped
-            // /file route hides them); apiBlob still routes it through the shared client so the
-            // same base URL, refresh and error handling apply as for the chain below.
+            // The public CA endpoint serves every published CA certificate. The user-scoped
+            // /api/v1/user/authorities/{serial}/file route serves CA certificates too, but only
+            // those inside the caller's spaces. apiBlob still routes this through the shared
+            // client so the same base URL, refresh and error handling apply as for the chain below.
             const resp = await apiBlob(`/api/v1/public/ca/${cert.serialNumber}`, {
                 headers: { Accept: 'application/x-pem-file' }
             });

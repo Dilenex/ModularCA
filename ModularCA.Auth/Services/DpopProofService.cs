@@ -2,7 +2,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Caching.Distributed;
 
 namespace ModularCA.Auth.Services;
 
@@ -23,16 +22,46 @@ public interface IDpopProofService
     Task<string?> GetValidatedJktAsync(HttpContext context, CancellationToken ct = default);
 }
 
-/// <inheritdoc />
+/// <summary>
+/// Validates DPoP proofs: ES256 signature by the embedded P-256 key, method and path binding, an
+/// <c>iat</c> no older than <see cref="ProofMaxAge"/> and no further ahead than
+/// <see cref="MaxFutureSkew"/>, and a <c>jti</c> claimed once through <see cref="IReplayGuard"/>
+/// for <see cref="ReplayLifetime"/>, which outlasts the proof's acceptance window.
+/// </summary>
 public sealed class DpopProofService : IDpopProofService
 {
-    private readonly IDistributedCache _cache;
-    // iat acceptance + single-use replay window. Generous enough to tolerate moderate client clock
-    // skew (a too-tight window would lock out a legitimately-bound session), tight enough that a
-    // captured proof — already single-use via its jti — has a short life.
-    private static readonly TimeSpan ProofMaxAge = TimeSpan.FromSeconds(300);
+    private readonly IReplayGuard _replayGuard;
+    private readonly TimeProvider _time;
 
-    public DpopProofService(IDistributedCache cache) => _cache = cache;
+    /// <summary>
+    /// How old a proof may be. Generous enough to tolerate a client clock running behind (a
+    /// too-tight window would lock out a legitimately-bound session), tight enough that a captured
+    /// proof, already single-use via its jti, has a short life.
+    /// </summary>
+    internal static readonly TimeSpan ProofMaxAge = TimeSpan.FromSeconds(300);
+
+    /// <summary>
+    /// How far ahead of the server clock a proof's <c>iat</c> may be: the same one-minute skew the
+    /// JWT bearer validation allows. A proof dated further ahead is refused rather than accepted for
+    /// the longer life its future <c>iat</c> would give it.
+    /// </summary>
+    internal static readonly TimeSpan MaxFutureSkew = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// How long a consumed jti is remembered. A proof is accepted until <c>iat</c> +
+    /// <see cref="ProofMaxAge"/>, and <c>iat</c> is at most <see cref="MaxFutureSkew"/> ahead of the
+    /// moment it is first accepted, so this outlasts every proof's acceptance window.
+    /// </summary>
+    internal static readonly TimeSpan ReplayLifetime = ProofMaxAge + MaxFutureSkew;
+
+    /// <summary>Creates the validator.</summary>
+    /// <param name="replayGuard">Atomic single-use store for proof jtis.</param>
+    /// <param name="time">Clock for the freshness check; the system clock when null.</param>
+    public DpopProofService(IReplayGuard replayGuard, TimeProvider? time = null)
+    {
+        _replayGuard = replayGuard;
+        _time = time ?? TimeProvider.System;
+    }
 
     /// <inheritdoc />
     public async Task<string?> GetValidatedJktAsync(HttpContext context, CancellationToken ct = default)
@@ -69,16 +98,14 @@ public sealed class DpopProofService : IDpopProofService
                   || reqPath.EndsWith(htuPath, StringComparison.Ordinal)
                   || htuPath.EndsWith(reqPath, StringComparison.Ordinal))) return null;
 
-            // Freshness window.
+            // Freshness window: not too old, and not dated beyond the clock-skew allowance.
             if (!payload.TryGetProperty("iat", out var iatEl) || !iatEl.TryGetInt64(out var iat)) return null;
-            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            if (Math.Abs(now - iat) > ProofMaxAge.TotalSeconds) return null;
+            var now = _time.GetUtcNow().ToUnixTimeSeconds();
+            if (now - iat > ProofMaxAge.TotalSeconds) return null;
+            if (iat - now > MaxFutureSkew.TotalSeconds) return null;
 
-            // Single-use: reject replayed jti within the freshness window.
             var jti = GetStr(payload, "jti");
             if (string.IsNullOrEmpty(jti)) return null;
-            var replayKey = $"dpop:jti:{jti}";
-            if (await _cache.GetAsync(replayKey, ct) != null) return null;
 
             // Signature: ES256 over "header.payload" with the embedded public key (raw r||s).
             using var ecdsa = ECDsa.Create(new ECParameters
@@ -91,9 +118,10 @@ public sealed class DpopProofService : IDpopProofService
             if (!ecdsa.VerifyData(signingInput, signature, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation))
                 return null;
 
-            // Mark the jti consumed for the rest of the freshness window.
-            await _cache.SetAsync(replayKey, new byte[] { 1 },
-                new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = ProofMaxAge }, ct);
+            // Single-use: claim the jti, checked and recorded in one atomic step so two concurrent
+            // requests carrying the same proof cannot both pass. Claimed only after the signature
+            // verifies, so an unsigned request cannot burn a jti.
+            if (!await _replayGuard.TryClaimAsync($"dpop:jti:{jti}", ReplayLifetime, ct)) return null;
 
             return ComputeJkt(x, y);
         }

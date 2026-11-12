@@ -17,7 +17,18 @@ public class DeploymentFileTests
     [InlineData("deploy/modularca-signer.service")]
     public void Both_units_do_not_retry_exit_status_3(string unit)
     {
-        Assert.Contains("RestartPreventExitStatus=3", Directives(unit));
+        Assert.Contains(Directives(unit), d => d.StartsWith("RestartPreventExitStatus=", StringComparison.Ordinal)
+            && d["RestartPreventExitStatus=".Length..].Split(' ').Contains("3"));
+    }
+
+    /// <summary>
+    /// The node applies migrations, so it alone can stop with status 4 (it stopped for good after
+    /// applying one): a restart cannot fix that either, and must not be tried.
+    /// </summary>
+    [Fact]
+    public void The_node_unit_does_not_retry_exit_status_4()
+    {
+        Assert.Contains("RestartPreventExitStatus=3 4", Directives("deploy/modularca.service"));
     }
 
     [Theory]
@@ -158,6 +169,22 @@ public class DeploymentFileTests
         Assert.Contains("rmdir /opt/modularca/share", image);
         foreach (var directory in staged)
             Assert.Contains($"mv /opt/modularca/share/{directory} /usr/share/modularca/{directory}", image);
+    }
+
+    /// <summary>
+    /// The node requires a backup directory only its own account can reach, and restricts one that
+    /// is not at the first backup; the image creates it that way, so a fresh volume starts 0700
+    /// and nothing has to be tightened.
+    /// </summary>
+    [Fact]
+    public void The_image_creates_the_backup_directory_owner_only()
+    {
+        var image = string.Join("\n", CodeLines(Read("deploy/container/Containerfile")));
+        Assert.Contains("install -d -o modularca -g modularca -m 0700 /opt/modularca/backups", image);
+        // Not in the loop that makes the other runtime directories 0750.
+        var loop = Regex.Match(image, @"for dir in ([^;]+); do");
+        Assert.True(loop.Success);
+        Assert.DoesNotContain("backups", loop.Groups[1].Value.Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
 
     /// <summary>The non-blank, non-comment lines of a unit, trimmed.</summary>

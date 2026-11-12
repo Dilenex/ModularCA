@@ -8,7 +8,7 @@ namespace ModularCA.Tests.Middleware;
 /// <summary>
 /// A plain-HTTP request is sent to HTTPS on the public domain whatever host it named, so the
 /// Host header cannot steer the redirect; without a public domain, to the request host on the
-/// HTTPS listener port.
+/// public HTTPS port (PublicPort, else the listener port).
 /// </summary>
 public class HttpsRedirectTargetTests
 {
@@ -30,8 +30,39 @@ public class HttpsRedirectTargetTests
         => Assert.Equal("https://ca4.example.test:9443/msae/staging/cep?x=1", Target("evil.example.test", publicPort: 9443));
 
     [Fact]
-    public void Without_a_public_domain_the_request_host_and_listener_port_are_used()
-        => Assert.Equal("https://anything.example.test:8443/msae/staging/cep?x=1", Target("anything.example.test", publicDomain: null));
+    public void Without_a_public_domain_the_request_host_and_public_port_are_used()
+        => Assert.Equal("https://anything.example.test:9443/msae/staging/cep?x=1", Target("anything.example.test", publicDomain: null, publicPort: 9443));
+
+    [Fact]
+    public void Without_a_public_domain_or_public_port_the_request_host_and_listener_port_are_used()
+        => Assert.Equal("https://anything.example.test:8443/msae/staging/cep?x=1", Target("anything.example.test", publicDomain: null, publicPort: null));
+
+    /// <summary>
+    /// The redirect and the public base URL (AIA/CDP bases, the ACME directory, portal links) used
+    /// to compute the port differently: the redirect read <c>PublicPort ?? 443</c> with a public
+    /// domain and the listener port without one, the base URL <c>PublicPort ?? Port</c>. With a
+    /// listener on 8443 and no public port, the redirect sent clients to 443, where nothing
+    /// listened; behind a proxy publishing 443 for a listener on 8443 with no public domain, it
+    /// sent them to 8443, which the proxy does not publish. Both now take the port from
+    /// <see cref="HttpsConfig.GetPublicHttpsPort"/>.
+    /// </summary>
+    [Theory]
+    [InlineData(443, null, "")]          // default listener on 443
+    [InlineData(8443, null, ":8443")]    // non-default listener, nothing in front
+    [InlineData(8443, 443, "")]          // proxy publishes 443 for a listener on 8443
+    [InlineData(8443, 9443, ":9443")]    // proxy publishes another non-default port
+    [InlineData(443, 8443, ":8443")]     // an explicit public port wins over a 443 listener
+    [InlineData(0, null, "")]            // an unusable listener port degrades to 443
+    public void The_redirect_and_the_public_base_url_agree_on_the_port(int listener, int? publicPort, string suffix)
+    {
+        var withDomain = new SystemConfig { Https = { PublicDomain = "ca.example.test", PublicPort = publicPort, Port = listener } };
+        var withoutDomain = new SystemConfig { Https = { PublicDomain = "", PublicPort = publicPort, Port = listener } };
+
+        Assert.Equal($"https://ca.example.test{suffix}", withDomain.Https.GetPublicHttpsBaseUrl());
+        Assert.Equal($"https://ca.example.test{suffix}/admin", HttpsRedirectTarget.Build("evil.example.test", "/admin", withDomain));
+        Assert.Equal($"https://setup.example.test{suffix}/admin", HttpsRedirectTarget.Build("setup.example.test", "/admin", withoutDomain));
+        Assert.Equal($"https://setup.example.test{suffix}", withoutDomain.Https.GetHttpsBaseUrlFor("setup.example.test"));
+    }
 
     [Theory]
     [InlineData("ca4.example.test")]

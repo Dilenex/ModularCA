@@ -45,7 +45,7 @@ export default function UserUiGuide() {
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li>Upload a PEM-encoded CSR file or paste CSR text</li>
-                    <li>Select from available certificate templates or profiles</li>
+                    <li>Choose the issuing CA first, then the request, signing and certificate profile that go with it. The CA is already chosen when you can request from only one. Changing the CA clears the profiles</li>
                     <li>Fill in subject fields within allowed constraints</li>
                     <li>Add Subject Alternative Names</li>
                     <li>Choose key algorithm from the key generation dropdown, including post-quantum options</li>
@@ -240,11 +240,11 @@ export default function UserUiGuide() {
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li>Change password (requires MFA step-up)</li>
                     <li>Enroll or manage TOTP authenticator app</li>
-                    <li>Remove TOTP authenticator (requires MFA step-up)</li>
+                    <li>Remove TOTP authenticator (requires MFA step-up; signs the account out everywhere)</li>
                     <li>Register WebAuthn/FIDO2 security keys</li>
-                    <li>Remove WebAuthn security keys (requires MFA step-up)</li>
-                    <li>Revoke mTLS credentials (requires MFA step-up)</li>
-                    <li>View active sessions and revoke them</li>
+                    <li>Remove WebAuthn security keys (requires MFA step-up; signs the account out everywhere)</li>
+                    <li>Revoke mTLS credentials (requires MFA step-up; signs the account out everywhere)</li>
+                    <li>Sign out, which ends every session of the account on every device</li>
                 </ul>
                 <div className="border-l-4 border-warn bg-warn-soft p-4 rounded-r mb-3">
                     <h3 className="text-lg font-semibold text-warn mb-2">MFA Step-Up on Security Operations</h3>
@@ -272,6 +272,7 @@ export default function UserUiGuide() {
                     </p>
                     <ul className="list-disc list-inside space-y-1 text-ink mt-2">
                         <li><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/login</code> — Login form, shared with the management console</li>
+                        <li><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/claim</code> — Claim an account with a one-time claim token and set its password</li>
                         <li><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/mfa-setup</code> — First-time MFA enrollment</li>
                         <li><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/mfa-verify</code> — MFA challenge verification</li>
                         <li><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/mfa-callback</code> — WebAuthn callback handler</li>

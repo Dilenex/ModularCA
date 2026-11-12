@@ -35,3 +35,13 @@ public interface ISchedulerJob
     /// </summary>
     Task TickAsync(CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// Marks a scheduled job that cannot do its work without the signer: it has something signed
+/// (a CRL, a certificate). After a start the scheduler holds such a job until the signer has
+/// answered once, so a node that is up a few seconds before a separate signer listens does not
+/// log a failed run on every ordinary start. It changes nothing once the signer has answered.
+/// </summary>
+public interface ISignerDependentJob : ISchedulerJob
+{
+}

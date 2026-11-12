@@ -61,7 +61,8 @@ const Dashboard: React.FC = () => {
             })
             .catch(() => { /* keep the JWT username fallback */ });
 
-        apiGetAllPages<any>('/api/v1/user/certificates')
+        // The caller's own certificates: the counts are "yours", not the instance's.
+        apiGetAllPages<any>('/api/v1/user/certificates?mine=true')
             .then(({ items }) => setCertificates(items))
             .catch((err) => setErrorCerts(err.message))
             .finally(() => setLoadingCerts(false));

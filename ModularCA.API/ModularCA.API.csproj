@@ -5,21 +5,20 @@
 	<Nullable>enable</Nullable>
 	<ImplicitUsings>enable</ImplicitUsings>
 	<GenerateDocumentationFile>true</GenerateDocumentationFile>
-	<NoWarn>$(NoWarn);1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
 <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.2.0" />
-	<PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.14" />
-	<PackageReference Include="Microsoft.AspNetCore.DataProtection.StackExchangeRedis" Version="10.0.14" />
-	<PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.14" />
-	<PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.14" />
-	<PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.14">
+	<PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.15" />
+	<PackageReference Include="Microsoft.AspNetCore.DataProtection.StackExchangeRedis" Version="10.0.15" />
+	<PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.15" />
+	<PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.15" />
+	<PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.15">
 	  <PrivateAssets>all</PrivateAssets>
 	  <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
 	</PackageReference>
-	<PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.14" />
-	<PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.14" />
+	<PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.15" />
+	<PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.15" />
 	<PackageReference Include="Microsoft.OpenApi" Version="2.7.5" />
 	<PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
 	<PackageReference Include="NCrontab.Signed" Version="3.4.0" />

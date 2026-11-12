@@ -4,6 +4,8 @@ using Microsoft.Extensions.Logging;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
+using ModularCA.Shared.Errors;
+using ModularCA.Shared.Utils;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Core.Helpers;
 
@@ -19,6 +21,11 @@ namespace ModularCA.Core.Services
     /// <para>
     /// Revoking or holding a certificate that is an mTLS sign-in credential also ends every session
     /// of the accounts holding it (<see cref="UserSessionTermination"/>), in the same save.
+    /// </para>
+    /// <para>
+    /// Every operation refuses a missing certificate with <see cref="ResourceNotFoundException"/>
+    /// (404) and an ambiguous serial with <see cref="ResourceConflictException"/> (409,
+    /// <see cref="ErrorCodes.CertificateSerialAmbiguous"/>); see <see cref="ResolveCertificateEntityAsync"/>.
     /// </para>
     /// </summary>
     public class CertificateRevocationService : ICertificateRevocationService
@@ -60,7 +67,20 @@ namespace ModularCA.Core.Services
 
         /// <summary>
         /// Permanently revokes a certificate by ID or serial number with the specified reason.
-        /// Throws if the certificate is already revoked (idempotency guard).
+        /// Throws <see cref="CertificateRevocationStateException"/> (409) if the certificate is
+        /// already permanently revoked, or is on hold and <paramref name="reason"/> is
+        /// <see cref="RevocationReason.CertificateHold"/> again.
+        /// <para>
+        /// A certificate on hold may be revoked permanently without being released first, as
+        /// RFC 5280 §5.3.1 allows: the entry's reason becomes <paramref name="reason"/> and its
+        /// revocation date becomes now, the moment the CA processed the permanent revocation. The
+        /// date moves so the change reaches the next delta CRL, which carries the entries revoked
+        /// after its base (RFC 5280 §5.2.4), and OCSP reports the new reason and time. Unless the
+        /// caller gives an <paramref name="invalidityDate"/> (or one is already stored), the hold's
+        /// own date becomes the invalidity date, so the CRL entry still says the certificate has
+        /// not been trusted since it was suspended. The result's
+        /// <see cref="RevocationResult.PreviousReason"/> is <see cref="RevocationReason.CertificateHold"/>.
+        /// </para>
         /// Any mTLS sign-in credential issued as the certificate is revoked in the same save, and
         /// every session of the accounts holding one is ended.
         /// Triggers a full CRL regeneration after persistence and an
@@ -74,15 +94,23 @@ namespace ModularCA.Core.Services
         {
             var certEntity = await ResolveCertificateEntityAsync(certificateId, certificateSerialNumber);
 
-            if (certEntity.Revoked)
-                throw new InvalidOperationException($"Certificate is already revoked (reason: {certEntity.RevocationReason}).");
+            var wasOnHold = RevocationStatus.IsOnHold(certEntity.Revoked, certEntity.RevocationReason);
+            if (certEntity.Revoked && !wasOnHold)
+                throw new CertificateRevocationStateException(
+                    $"Certificate is already revoked (reason: {certEntity.RevocationReason}).", certEntity.RevocationReason);
+            if (wasOnHold && reason == RevocationReason.CertificateHold)
+                throw new CertificateRevocationStateException(
+                    "Certificate is already on hold. Revoke it with a permanent reason, or release the hold.", certEntity.RevocationReason);
 
             var now = DateTime.UtcNow;
+            var holdDate = wasOnHold ? certEntity.RevocationDate : null;
             certEntity.Revoked = true;
             certEntity.RevocationReason = reason.ToString();
             certEntity.RevocationDate = now;
             if (invalidityDate.HasValue)
                 certEntity.InvalidityDate = invalidityDate.Value.ToUniversalTime();
+            else if (holdDate.HasValue && certEntity.InvalidityDate == null)
+                certEntity.InvalidityDate = holdDate.Value;
             var holders = await MtlsCredentialStatus.HoldersOfCertificateAsync(_db, certEntity.CertificateId);
             var ended = await UserSessionTermination.EndAllSessionsAsync(_db, holders, now);
             var mtlsRevoked = await MtlsCredentialStatus.MarkRevokedForCertificateAsync(_db, certEntity.CertificateId, now);
@@ -105,12 +133,14 @@ namespace ModularCA.Core.Services
                 "Revoked",
                 reason,
                 now,
-                crlNumber);
+                crlNumber,
+                wasOnHold ? RevocationReason.CertificateHold : null);
         }
 
         /// <summary>
         /// Places a certificate on hold. Idempotent — repeating on an already-held
-        /// cert returns the current state without bumping <c>RevocationDate</c>.
+        /// cert returns the current state without bumping <c>RevocationDate</c>. A permanently
+        /// revoked certificate throws <see cref="CertificateRevocationStateException"/> (409).
         /// An mTLS sign-in credential issued as the certificate stays unrevoked, so a release
         /// restores it, but every session of the accounts holding one is ended in the same save.
         /// </summary>
@@ -119,7 +149,7 @@ namespace ModularCA.Core.Services
             var certEntity = await ResolveCertificateEntityAsync(certificateId, certificateSerialNumber);
 
             // Idempotent — already-held is a no-op.
-            if (certEntity.Revoked && certEntity.RevocationReason == nameof(RevocationReason.CertificateHold))
+            if (RevocationStatus.IsOnHold(certEntity.Revoked, certEntity.RevocationReason))
             {
                 return new RevocationResult(
                     certEntity.CertificateId,
@@ -130,8 +160,9 @@ namespace ModularCA.Core.Services
                     null);
             }
 
-            if (certEntity.Revoked && certEntity.RevocationReason != nameof(RevocationReason.CertificateHold))
-                throw new InvalidOperationException("Certificate is already permanently revoked and cannot be placed on hold.");
+            if (RevocationStatus.IsPermanentlyRevoked(certEntity.Revoked, certEntity.RevocationReason))
+                throw new CertificateRevocationStateException(
+                    "Certificate is already permanently revoked and cannot be placed on hold.", certEntity.RevocationReason);
 
             var now = DateTime.UtcNow;
             certEntity.Revoked = true;
@@ -152,16 +183,20 @@ namespace ModularCA.Core.Services
                 crlNumber);
         }
 
+        /// <summary>
+        /// Releases a certificate from hold, so it is good again. A certificate that is not
+        /// revoked, or is revoked permanently, throws <see cref="CertificateRevocationStateException"/> (409).
+        /// </summary>
         public async Task<RevocationResult> UnholdCertificateAsync(Guid? certificateId, string? certificateSerialNumber)
         {
             var certEntity = await ResolveCertificateEntityAsync(certificateId, certificateSerialNumber);
 
             if (!certEntity.Revoked)
-                throw new InvalidOperationException("Certificate is not revoked or on hold.");
+                throw new CertificateRevocationStateException("Certificate is not revoked or on hold.", null);
 
-            if (certEntity.RevocationReason != nameof(RevocationReason.CertificateHold))
-                throw new InvalidOperationException("Certificate is permanently revoked (reason: " +
-                    certEntity.RevocationReason + "). Only certificates on hold can be reinstated.");
+            if (!RevocationStatus.IsOnHold(certEntity.Revoked, certEntity.RevocationReason))
+                throw new CertificateRevocationStateException("Certificate is permanently revoked (reason: " +
+                    certEntity.RevocationReason + "). Only certificates on hold can be reinstated.", certEntity.RevocationReason);
 
             var now = DateTime.UtcNow;
             certEntity.Revoked = false;
@@ -399,34 +434,47 @@ namespace ModularCA.Core.Services
         /// Callers that can supply <paramref name="certificateId"/> should always do so; the serial
         /// overload exists for protocol paths that only ever see a serial on the wire.
         /// </para>
+        /// <para>
+        /// The refusals belong to the <see cref="RequestValidationException"/> family, so a path
+        /// without its own catch answers them through <c>RequestValidationMiddleware</c> instead of
+        /// the global handler's 500. They used to be bare <see cref="InvalidOperationException"/>s.
+        /// </para>
         /// </summary>
-        /// <exception cref="InvalidOperationException">
-        /// No certificate matches, or the serial is ambiguous across issuers.
+        /// <exception cref="ResourceNotFoundException">
+        /// No certificate matches (404, <see cref="ErrorCodes.ResourceNotFound"/>).
+        /// </exception>
+        /// <exception cref="ResourceConflictException">
+        /// The serial matches certificates of more than one issuer (409,
+        /// <see cref="ErrorCodes.CertificateSerialAmbiguous"/>).
+        /// </exception>
+        /// <exception cref="InvalidRequestException">
+        /// Neither an ID nor a serial number was supplied (400, <see cref="ErrorCodes.RequestInvalid"/>).
         /// </exception>
         private async Task<CertificateEntity> ResolveCertificateEntityAsync(Guid? certificateId, string? certificateSerialNumber)
         {
             if (certificateId.HasValue)
             {
                 return await _db.Certificates.FirstOrDefaultAsync(c => c.CertificateId == certificateId.Value)
-                    ?? throw new InvalidOperationException("Certificate not found.");
+                    ?? throw new ResourceNotFoundException("Certificate", "Certificate not found.", certificateId.Value.ToString());
             }
 
             if (string.IsNullOrWhiteSpace(certificateSerialNumber))
-                throw new InvalidOperationException("Certificate not found: neither an ID nor a serial number was supplied.");
+                throw new InvalidRequestException("Neither a certificate ID nor a serial number was supplied.");
 
             var resolution = await _db.Certificates.ResolveBySerialAsync(certificateSerialNumber);
 
             if (resolution.Outcome == SerialResolution.NotFound)
-                throw new InvalidOperationException("Certificate not found.");
+                throw new ResourceNotFoundException("Certificate", "Certificate not found.", certificateSerialNumber);
 
             if (resolution.Outcome == SerialResolution.Ambiguous)
             {
                 _logger.LogError(
                     "Refusing to act on serial {Serial}: it matches more than one certificate (issuers differ). "
                     + "Re-issue the request against the certificate ID.", certificateSerialNumber);
-                throw new InvalidOperationException(
+                throw new ResourceConflictException(
                     $"Serial number '{certificateSerialNumber}' matches more than one certificate. "
-                    + "Serials are unique only per issuer — retry using the certificate ID.");
+                    + "Serials are unique only per issuer — retry using the certificate ID.",
+                    ErrorCodes.CertificateSerialAmbiguous);
             }
 
             return resolution.Certificate!;

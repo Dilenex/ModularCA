@@ -47,6 +47,13 @@ public class MfaStepUpController : ControllerBase
     private readonly IAuditService _audit;
     private readonly IFido2? _fido2;
 
+    /// <summary>
+    /// How far the clock of the device showing a TOTP code may differ from this host's, in either
+    /// direction, for a step-up verification. Half a step: at any instant at most two codes are
+    /// accepted, the current one and the neighbour nearer in time.
+    /// </summary>
+    internal static readonly TimeSpan StepUpTotpTolerance = TimeSpan.FromSeconds(15);
+
     // FIDO2 assertion responses must be deserialized with plain web JSON defaults, not the app's
     // MVC options: the global JsonStringEnumConverter (StartModularCA) outranks the FIDO2 types'
     // own [JsonConverter] attributes and fails to read "type":"public-key". See WebAuthnController.
@@ -55,10 +62,12 @@ public class MfaStepUpController : ControllerBase
     private readonly IDataProtector _protector;
     private readonly SystemConfig _config;
     private readonly ISecurityPolicyService _securityPolicy;
+    private readonly ModularCA.Auth.Services.IReplayGuard _replayGuard;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="MfaStepUpController"/> class.
-    /// IFido2 is only injected when WebAuthn is enabled.
+    /// IFido2 is only injected when WebAuthn is enabled. <paramref name="replayGuard"/> makes a TOTP
+    /// time step and a WebAuthn challenge single-use under concurrency (<see cref="ModularCA.Auth.Utils.MfaSingleUse"/>).
     /// </summary>
     public MfaStepUpController(
         ModularCADbContext db,
@@ -68,8 +77,10 @@ public class MfaStepUpController : ControllerBase
         IDataProtectionProvider dataProtection,
         SystemConfig config,
         ISecurityPolicyService securityPolicy,
+        ModularCA.Auth.Services.IReplayGuard replayGuard,
         IFido2? fido2 = null)
     {
+        _replayGuard = replayGuard;
         _db = db;
         _cache = cache;
         _currentUser = currentUser;
@@ -107,6 +118,9 @@ public class MfaStepUpController : ControllerBase
     /// Step-up verification using a TOTP code. The request must include the operation
     /// and target being authorized. On success, caches an operation-scoped step-up token
     /// valid for the configured <c>SecurityPolicyEntity.StepUpTokenTtlSeconds</c> window (default 90 s).
+    /// The code's time step is claimed through <see cref="ModularCA.Auth.Utils.MfaSingleUse.TryClaimTotpStepAsync"/>,
+    /// so one code issues one step-up token even when presented by concurrent requests, and a code
+    /// already used to sign in is refused.
     /// </summary>
     [HttpPost("verify-stepup/totp")]
     public async Task<IActionResult> VerifyStepUpTotp([FromBody] StepUpTotpRequest request)
@@ -144,14 +158,16 @@ public class MfaStepUpController : ControllerBase
             return BadRequest(new { error = "No TOTP secret configured" });
 
         var secret = GetDecryptedSecret(totpSecret);
-        // Step-up uses windowSize=0 (single current code) rather than
-        // the ±1 login-flow tolerance. The user is actively at the keyboard, so clock drift
-        // should be minimal and brute-force surface is halved.
-        var (valid, timeStep) = TotpController.VerifyTotpCode(secret, request.Code, totpSecret.LastUsedTimeStep, windowSize: 0);
-        if (!valid)
+        // Step-up allows the clocks to differ by StepUpTotpTolerance in either direction, where
+        // sign-in allows a whole step each way. Accepting the current step alone refused a
+        // correct code whenever the two clocks sat on opposite sides of a step boundary: a host
+        // five seconds fast refused one code in six.
+        var (valid, timeStep) = TotpController.VerifyTotpCodeWithin(secret, request.Code, totpSecret.LastUsedTimeStep, StepUpTotpTolerance, DateTimeOffset.UtcNow);
+        var replayed = valid && !await ModularCA.Auth.Utils.MfaSingleUse.TryClaimTotpStepAsync(_replayGuard, userId.Value, timeStep);
+        if (!valid || replayed)
         {
             await RecordStepUpFailureAsync(userId.Value);
-            await LogStepUpFailureAsync(userId.Value, "TOTP", request.Operation, request.TargetId, "invalid_code");
+            await LogStepUpFailureAsync(userId.Value, "TOTP", request.Operation, request.TargetId, replayed ? "replayed_code" : "invalid_code");
             return Unauthorized(new { error = "Invalid TOTP code" });
         }
 
@@ -169,7 +185,7 @@ public class MfaStepUpController : ControllerBase
         await _audit.LogAsync(
             AuditActionType.MfaStepUpVerified,
             userId.Value,
-            _currentUser.User?.Username,
+            ActorUsername,
             details: new { Method = "TOTP", request.Operation, request.TargetId, request.TargetIds });
 
         return Ok(new { mfaToken = stepUpToken, expiresInSeconds = ttl, operation = request.Operation, targetId = request.TargetId, targetCount = request.TargetIds?.Count });
@@ -219,7 +235,9 @@ public class MfaStepUpController : ControllerBase
     /// Step-up verification using a WebAuthn assertion. The request must include the
     /// operation and target being authorized. On success, caches an operation-scoped
     /// step-up token valid for the configured <c>SecurityPolicyEntity.StepUpTokenTtlSeconds</c>
-    /// window (default 90 s).
+    /// window (default 90 s). The challenge is claimed through
+    /// <see cref="ModularCA.Auth.Utils.MfaSingleUse.TryClaimWebAuthnChallengeAsync"/> once the
+    /// assertion verifies, so one signed assertion issues one token under concurrency.
     /// </summary>
     [HttpPost("verify-stepup/webauthn")]
     public async Task<IActionResult> VerifyStepUpWebAuthn()
@@ -325,6 +343,14 @@ public class MfaStepUpController : ControllerBase
         // if the authenticator did not satisfy UV. The catch above maps that to the
         // failure branch — no extra check needed here.
 
+        // One challenge, one step-up token: concurrent requests replaying the same signed
+        // assertion all verify above, and the atomic claim lets exactly one through.
+        if (!await ModularCA.Auth.Utils.MfaSingleUse.TryClaimWebAuthnChallengeAsync(_replayGuard, assertionOpts.Challenge))
+        {
+            await LogStepUpFailureAsync(userId.Value, "WebAuthn", request.Operation, request.TargetId, "challenge_already_used");
+            return Unauthorized(new { error = "This security key challenge has already been used. Request new options." });
+        }
+
         storedCredential.SignCount = result.SignCount;
         storedCredential.LastUsedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
@@ -339,7 +365,7 @@ public class MfaStepUpController : ControllerBase
         await _audit.LogAsync(
             AuditActionType.MfaStepUpVerified,
             userId.Value,
-            _currentUser.User?.Username,
+            ActorUsername,
             details: new { Method = "WebAuthn", request.Operation, request.TargetId, request.TargetIds });
 
         return Ok(new { mfaToken = stepUpToken, expiresInSeconds = ttl, operation = request.Operation, targetId = request.TargetId, targetCount = request.TargetIds?.Count });
@@ -385,7 +411,7 @@ public class MfaStepUpController : ControllerBase
         {
             await _audit.LogAsync(
                 AuditActionType.MfaStepUpFailed,
-                userId.Value, _currentUser.User?.Username,
+                userId.Value, ActorUsername,
                 sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(), success: false,
                 details: new { reason = match.AuditReason, request.Operation, credentialId = credential.Id, certificateId = credential.CertificateId },
                 errorMessage: "StepUpFailed");
@@ -402,7 +428,7 @@ public class MfaStepUpController : ControllerBase
         {
             await _audit.LogAsync(
                 AuditActionType.MfaStepUpFailed,
-                userId.Value, _currentUser.User?.Username,
+                userId.Value, ActorUsername,
                 sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(), success: false,
                 details: new { reason = "mtls_chain_or_revocation_check_failed", request.Operation },
                 errorMessage: "StepUpFailed");
@@ -416,7 +442,7 @@ public class MfaStepUpController : ControllerBase
         await _audit.LogAsync(
             AuditActionType.MfaStepUpVerified,
             userId.Value,
-            _currentUser.User?.Username,
+            ActorUsername,
             details: new { Method = "mTLS-restricted", request.Operation, request.TargetId });
 
         return Ok(new { mfaToken = stepUpToken, expiresInSeconds = ttl, operation = request.Operation, targetId = request.TargetId });
@@ -489,6 +515,13 @@ public class MfaStepUpController : ControllerBase
     }
 
     /// <summary>
+    /// The signed-in user's name for an audit row: from the loaded user when a request has loaded it,
+    /// otherwise from the access token's <c>username</c> claim. The step-up actions never load the
+    /// user, so without the claim their audit rows carried the actor's id and no name.
+    /// </summary>
+    private string? ActorUsername => _currentUser.User?.Username ?? User.FindFirst("username")?.Value;
+
+    /// <summary>
     /// Effective step-up token TTL in seconds, clamped to a
     /// sane operator-tunable range.
     /// </summary>
@@ -555,7 +588,7 @@ public class MfaStepUpController : ControllerBase
             await _audit.LogAsync(
                 AuditActionType.MfaStepUpFailed,
                 userId,
-                _currentUser.User?.Username,
+                ActorUsername,
                 targetEntityType: "User",
                 targetEntityId: userId.ToString(),
                 sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
@@ -570,30 +603,63 @@ public class MfaStepUpController : ControllerBase
     }
 
     /// <summary>
-    /// Validates an operation-scoped step-up MFA token from the X-MFA-Token header.
-    /// The token must match the specific operation and target being performed, and
-    /// — when the caller supplies the current JWT <c>jti</c> — must have been
-    /// issued from the same session. Consumes the token on success (single-use).
+    /// How long a spent step-up token's claim is remembered. It must outlive the token itself,
+    /// whose lifetime is clamped to at most 300 seconds by <see cref="GetEffectiveStepUpTtlSecondsAsync"/>.
     /// </summary>
-    /// <param name="cache">The distributed cache instance.</param>
+    internal static readonly TimeSpan StepUpClaimLifetime = TimeSpan.FromMinutes(6);
+
+    /// <summary>
+    /// Guards used when the request's services provide none (a controller built directly in a
+    /// test), one per token cache. Every running node registers an
+    /// <see cref="ModularCA.Auth.Services.IReplayGuard"/>, so production never reaches this. The
+    /// guard lives exactly as long as the cache holding the tokens it spends: requests that share a
+    /// cache still spend each token once, and a new cache starts with nothing spent. A single
+    /// process-wide fallback outlived its cache, so a token value seeded again into a fresh cache
+    /// was refused as already spent.
+    /// </summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IDistributedCache, ModularCA.Auth.Services.IReplayGuard>
+        FallbackReplayGuards = new();
+
+    /// <summary>
+    /// The replay-guard key that spends <paramref name="token"/> for one cache key: a hash of
+    /// both, so a batch token stored under several targets is spent once per target, and neither
+    /// the token nor the user's session id is written to the guard's store.
+    /// </summary>
+    /// <param name="cacheKey">The step-up cache key (<see cref="BuildStepUpCacheKey"/>).</param>
+    /// <param name="token">The presented token.</param>
+    internal static string StepUpClaimKey(string cacheKey, string token)
+        => "mfa-stepup-used:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(cacheKey + "\n" + token)));
+
+    /// <summary>
+    /// Validates an operation-scoped step-up MFA token from the X-MFA-Token header, and spends it.
+    /// The token must match the specific operation and target being performed, and, when the
+    /// caller supplies the current JWT <c>jti</c>, must have been issued from the same session.
+    /// <para>
+    /// Single-use holds under concurrency: after the token matches, it is claimed through
+    /// <paramref name="replayGuard"/> (Redis <c>SET NX</c> when Redis is configured), and only the
+    /// request that makes the claim succeeds. The cache entry is removed afterwards. Reading and
+    /// then removing the entry, as this used to, let two simultaneous requests with one token both
+    /// pass, each performing the guarded operation.
+    /// </para>
+    /// </summary>
+    /// <param name="cache">The distributed cache holding issued step-up tokens.</param>
+    /// <param name="replayGuard">The atomic single-use guard that spends the token.</param>
     /// <param name="userId">The authenticated user's ID.</param>
     /// <param name="jti">The current JWT session identifier (<c>jti</c> claim), or null.</param>
     /// <param name="token">The step-up token from the X-MFA-Token header.</param>
     /// <param name="operation">The operation being performed (e.g. <c>delete-user</c>).</param>
     /// <param name="targetId">The target entity ID, or null for operations without a target.</param>
     public static async Task<bool> ValidateStepUpTokenAsync(
-        IDistributedCache cache, Guid userId, string? jti, string? token, string operation, string? targetId = null)
+        IDistributedCache cache, ModularCA.Auth.Services.IReplayGuard replayGuard,
+        Guid userId, string? jti, string? token, string operation, string? targetId = null)
     {
         if (string.IsNullOrWhiteSpace(token))
             return false;
 
-        // Primary (session-bound) key
+        // Session-bound key. There is no fallback to the userId-only key when jti is present:
+        // session binding is load-bearing. The userId-only key is used only when jti is null.
         var key = BuildStepUpCacheKey(userId, jti, operation, targetId);
         var cached = await cache.GetStringAsync(key);
-
-        // No fallback to the userId-only key when jti is
-        // present — we want session binding to be load-bearing. Fall back only
-        // when the caller explicitly passed null (truly session-less context).
         if (cached == null)
             return false;
 
@@ -602,37 +668,38 @@ public class MfaStepUpController : ControllerBase
                 Encoding.UTF8.GetBytes(token)))
             return false;
 
-        // Consume the token (single-use)
+        // Spend the token atomically; a concurrent request that matched the same entry loses here.
+        if (!await replayGuard.TryClaimAsync(StepUpClaimKey(key, token), StepUpClaimLifetime))
+            return false;
+
         await cache.RemoveAsync(key);
         return true;
     }
 
     /// <summary>
-    /// Legacy overload kept for call-sites that have not yet been updated to
-    /// pass the current JWT <c>jti</c>. New code should pass <c>User.FindFirst("jti")?.Value</c>
-    /// explicitly via the six-parameter overload so step-up tokens are bound to
-    /// the session. This overload performs the validation with a null jti, which
-    /// falls back to the userId-only cache key.
+    /// Validates and spends a step-up token for the request in <paramref name="http"/>: the user id
+    /// and <c>jti</c> come from its principal, and the replay guard from its services. Returns
+    /// <c>false</c> if the principal carries no resolvable sub/nameid claim.
     /// </summary>
+    /// <param name="cache">The distributed cache holding issued step-up tokens.</param>
+    /// <param name="http">The current request.</param>
+    /// <param name="token">The step-up token from the X-MFA-Token header.</param>
+    /// <param name="operation">The operation being performed.</param>
+    /// <param name="targetId">The target entity ID, or null for operations without a target.</param>
     public static Task<bool> ValidateStepUpTokenAsync(
-        IDistributedCache cache, Guid userId, string? token, string operation, string? targetId = null)
-        => ValidateStepUpTokenAsync(cache, userId, jti: null, token, operation, targetId);
-
-    /// <summary>
-    /// Convenience overload that extracts the user id and jti from a
-    /// <see cref="ClaimsPrincipal"/>. Returns <c>false</c> if the principal does
-    /// not carry a resolvable sub/nameid claim.
-    /// </summary>
-    public static Task<bool> ValidateStepUpTokenAsync(
-        IDistributedCache cache, ClaimsPrincipal principal, string? token, string operation, string? targetId = null)
+        IDistributedCache cache, HttpContext http, string? token, string operation, string? targetId = null)
     {
+        var principal = http.User;
         if (principal == null) return Task.FromResult(false);
         var sub = principal.FindFirst(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub)?.Value
                   ?? principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         if (!Guid.TryParse(sub, out var userId))
             return Task.FromResult(false);
         var jti = principal.FindFirst("jti")?.Value;
-        return ValidateStepUpTokenAsync(cache, userId, jti, token, operation, targetId);
+        var guard = http.RequestServices?.GetService(typeof(ModularCA.Auth.Services.IReplayGuard))
+            as ModularCA.Auth.Services.IReplayGuard
+            ?? FallbackReplayGuards.GetValue(cache, static _ => new ModularCA.Auth.Services.InProcessReplayGuard());
+        return ValidateStepUpTokenAsync(cache, guard, userId, jti, token, operation, targetId);
     }
 }
 

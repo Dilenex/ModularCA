@@ -71,12 +71,22 @@ public class AdminRequestProfileController(
     /// Returns the request profiles inside the caller's <see cref="SpaceFence"/> (see
     /// <see cref="InFenceAsync"/>), ordered by name; a caller who is not a system admin also
     /// sees only those they hold a <c>profile.*</c> grant for.
-    /// Supports optional filtering by CA ID; null returns system-wide profiles.
+    /// <para>
+    /// The console's scope narrows what the fence admits, and never widens it, by the rule the
+    /// console's Request Profiles list applies: a <paramref name="caId"/> view keeps the profiles
+    /// bound to that CA and the unbound (system-wide) ones, and a <paramref name="spaceId"/> view
+    /// keeps the profiles bound to a CA of that space and the unbound ones. A profile bound to an
+    /// instance CA, to a CA of another space or to a deleted CA is outside every space view. With
+    /// both, a profile must be in both views. Without either, every profile the fence admits is
+    /// listed.
+    /// </para>
     /// </summary>
-    /// <param name="caId">Optional certificate authority ID to filter profiles by CA scope.</param>
+    /// <param name="caId">Optional CA view: the profiles bound to this CA, and the unbound ones.</param>
+    /// <param name="spaceId">Optional space view: the profiles bound to a CA of this space, and the unbound ones. The pre-0.4.0 <c>tenantId</c> is refused (400).</param>
     [HttpGet]
     [Authorize(Policy = "CaOperator")]
-    public async Task<IActionResult> GetAll([FromQuery] Guid? caId = null)
+    [RefuseQueryKey("tenantId", "spaceId")]
+    public async Task<IActionResult> GetAll([FromQuery] Guid? caId = null, [FromQuery] Guid? spaceId = null)
     {
         await currentUser.EnsureLoadedAsync();
         var profiles = await requestProfileService.GetAllAsync();
@@ -99,7 +109,14 @@ public class AdminRequestProfileController(
 
         if (caId.HasValue)
             profiles = profiles.Where(p => p.CertificateAuthorityId == caId.Value || p.CertificateAuthorityId == null).ToList();
-        // Without caId filter, return all profiles (system-wide + all CA-scoped)
+        if (spaceId.HasValue)
+        {
+            // By the CA's current space; a deleted CA is not found, so its profiles are in no space.
+            var spaceCas = (await db.CertificateAuthorities.AsNoTracking()
+                .Where(c => c.SpaceId == spaceId.Value).Select(c => c.Id).ToListAsync()).ToHashSet();
+            profiles = profiles.Where(p => p.CertificateAuthorityId is not Guid boundCa || spaceCas.Contains(boundCa)).ToList();
+        }
+        // Without a view, every profile the fence admits (system-wide + all CA-scoped).
         return Ok(profiles);
     }
 
@@ -157,7 +174,7 @@ public class AdminRequestProfileController(
         await currentUser.EnsureLoadedAsync();
         if (currentUser.User == null)
             return Unauthorized();
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.UpdateRequestProfile, id.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.UpdateRequestProfile, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var current = await requestProfileService.GetByIdAsync(id);
@@ -199,7 +216,7 @@ public class AdminRequestProfileController(
         await currentUser.EnsureLoadedAsync();
         if (currentUser.User == null)
             return Unauthorized();
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.DeleteRequestProfile, id.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.DeleteRequestProfile, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var current = await requestProfileService.GetByIdAsync(id);

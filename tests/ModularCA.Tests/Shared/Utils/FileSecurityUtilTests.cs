@@ -108,6 +108,56 @@ public class FileSecurityUtilTests : IDisposable
     }
 
     [Fact]
+    public void A_new_staging_directory_has_an_unpredictable_name_and_is_owner_only_from_the_start()
+    {
+        const string prefix = "modularca-filesec-";
+        var first = FileSecurityUtil.CreateOwnerOnlyTempDirectory(prefix);
+        var second = FileSecurityUtil.CreateOwnerOnlyTempDirectory(prefix);
+        try
+        {
+            Assert.NotEqual(first, second);
+            foreach (var dir in new[] { first, second })
+            {
+                Assert.True(Directory.Exists(dir));
+                Assert.Empty(Directory.EnumerateFileSystemEntries(dir));
+                Assert.Equal(
+                    Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath())),
+                    Path.GetDirectoryName(dir));
+                var name = Path.GetFileName(dir);
+                Assert.StartsWith(prefix, name);
+                Assert.True(name.Length > prefix.Length, "the name must carry a random suffix");
+
+                if (OperatingSystem.IsWindows())
+                    AssertWindowsOwnerOnly(dir);
+                else
+                    Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(dir));
+            }
+        }
+        finally
+        {
+            foreach (var dir in new[] { first, second })
+                try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact]
+    public void A_directory_others_can_reach_fails_the_owner_only_check_rather_than_warning()
+    {
+        var dir = Path.Combine(_root, "loose");
+        Directory.CreateDirectory(dir);
+        // POSIX: world-readable and traversable. Windows: a new folder under the temp folder
+        // inherits its parent's permissions.
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+
+        Assert.Throws<IOException>(() => FileSecurityUtil.EnsureDirectoryOwnerOnly(dir));
+
+        FileSecurityUtil.SetDirectoryOwnerOnly(dir);
+        FileSecurityUtil.EnsureDirectoryOwnerOnly(dir);
+    }
+
+    [Fact]
     public void File_hardening_still_works_for_the_decrypted_archive()
     {
         var file = Path.Combine(_root, "decrypted.zip");
@@ -240,6 +290,86 @@ public class FileSecurityUtilTests : IDisposable
         Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(file));
         using var old = new StreamReader(reader);
         Assert.Equal("old", old.ReadToEnd());
+    }
+
+    /// <summary>
+    /// The stream form, for a PKCS#12 store, a keystore or an archive: the file is already
+    /// owner-only while its contents are being written, which a write followed by a chmod is not.
+    /// </summary>
+    [Fact]
+    public void CreateOwnerOnly_hands_the_writer_a_file_that_is_already_owner_only()
+    {
+        var file = Path.Combine(_root, "api-tls.pfx.new");
+        UnixFileMode? modeWhileWriting = null;
+
+        FileSecurityUtil.CreateOwnerOnly(file, stream =>
+        {
+            if (!OperatingSystem.IsWindows())
+                modeWhileWriting = File.GetUnixFileMode(file);
+            stream.Write([5, 6, 7]);
+            stream.Flush(flushToDisk: true);
+        });
+
+        Assert.Equal(new byte[] { 5, 6, 7 }, File.ReadAllBytes(file));
+        if (OperatingSystem.IsWindows())
+        {
+            AssertWindowsOwnerOnly(file, isDirectory: false);
+            return;
+        }
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, modeWhileWriting);
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(file));
+    }
+
+    /// <summary>The stream form refuses a file already there, and replaces one only when asked.</summary>
+    [Fact]
+    public void CreateOwnerOnly_with_a_writer_refuses_or_replaces_an_existing_file_as_asked()
+    {
+        var file = Path.Combine(_root, "ca-certs.keystore.tmp");
+        File.WriteAllText(file, "left over, and longer than what replaces it");
+
+        Assert.Throws<IOException>(() => FileSecurityUtil.CreateOwnerOnly(file, stream => stream.Write([1])));
+        Assert.Equal("left over, and longer than what replaces it", File.ReadAllText(file));
+
+        FileSecurityUtil.CreateOwnerOnly(file, stream => stream.Write([1, 2]), replaceExisting: true);
+        Assert.Equal(new byte[] { 1, 2 }, File.ReadAllBytes(file));
+    }
+
+    /// <summary>A writer that fails leaves no partly written file behind, and its exception is the one thrown.</summary>
+    [Fact]
+    public void CreateOwnerOnly_removes_the_file_when_the_writer_throws()
+    {
+        var file = Path.Combine(_root, "modularca-backup.zip");
+
+        var thrown = Assert.Throws<InvalidOperationException>(() => FileSecurityUtil.CreateOwnerOnly(file, stream =>
+        {
+            stream.Write([1, 2, 3]);
+            throw new InvalidOperationException("the dump was unreadable");
+        }));
+
+        Assert.Equal("the dump was unreadable", thrown.Message);
+        Assert.False(File.Exists(file));
+    }
+
+    /// <summary>
+    /// A keystore is written to a temp file and renamed into place, so the temp file's mode is the
+    /// keystore's: it must be owner-only without relying on the caller restricting it afterwards.
+    /// </summary>
+    [Fact]
+    public void A_keystore_file_is_owner_only_as_written_new_or_replacing()
+    {
+        var file = Path.Combine(_root, "ca-certs.keystore");
+        var scrypt = new ModularCA.Keystore.Crypto.KeystoreFileWriter.ScryptParams(16384, 8, 1);
+        var entry = new ModularCA.Keystore.Crypto.KeystoreFileWriter.EncryptedEntry(new byte[12], new byte[32], new byte[16], null);
+
+        foreach (var _ in new[] { "new", "replacing" })
+        {
+            ModularCA.Keystore.Crypto.KeystoreFileWriter.WriteEntireKeystore(file, new byte[16], scrypt, [entry]);
+
+            Assert.False(File.Exists(file + ".tmp"));
+            if (!OperatingSystem.IsWindows())
+                Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(file));
+        }
+        Assert.True(File.Exists(file + ".bak"));
     }
 
     [Fact]

@@ -123,6 +123,7 @@ public static partial class UserFieldValidators
 /// </summary>
 public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
 {
+    /// <summary>Builds the rules.</summary>
     public CreateUserRequestValidator()
     {
         RuleFor(x => x.Username).ValidUsername();
@@ -139,10 +140,13 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
 
 /// <summary>
 /// Validator for <see cref="UpdateUserRequest"/>. Username and email are optional but when
-/// supplied must match the same rules as create; no name field may hold a control character.
+/// supplied must match the same rules as create; no name field may hold a control character; a
+/// password source, when supplied, must be one of the defined values (the enum converter accepts
+/// any integer, which would otherwise store a source no sign-in rule knows).
 /// </summary>
 public class UpdateUserRequestValidator : AbstractValidator<UpdateUserRequest>
 {
+    /// <summary>Builds the rules described on the class.</summary>
     public UpdateUserRequestValidator()
     {
         RuleFor(x => x.Username).ValidOptionalUsername();
@@ -154,6 +158,8 @@ public class UpdateUserRequestValidator : AbstractValidator<UpdateUserRequest>
         RuleFor(x => x.FirstName).NoControlCharacters();
         RuleFor(x => x.LastName).NoControlCharacters();
         RuleFor(x => x.DisplayName).NoControlCharacters();
+        RuleFor(x => x.PasswordSource).IsInEnum()
+            .WithMessage("Password source must be Inherit, Local or Directory.");
     }
 }
 
@@ -164,6 +170,7 @@ public class UpdateUserRequestValidator : AbstractValidator<UpdateUserRequest>
 /// </summary>
 public class LoginRequestValidator : AbstractValidator<LoginRequest>
 {
+    /// <summary>Builds the rules.</summary>
     public LoginRequestValidator()
     {
         RuleFor(x => x.Username).ValidUsername();
@@ -181,6 +188,7 @@ public class LoginRequestValidator : AbstractValidator<LoginRequest>
 /// </summary>
 public class PreJwtChangePasswordRequestValidator : AbstractValidator<PreJwtChangePasswordRequest>
 {
+    /// <summary>Builds the rules.</summary>
     public PreJwtChangePasswordRequestValidator()
     {
         RuleFor(x => x.Username).ValidUsername();

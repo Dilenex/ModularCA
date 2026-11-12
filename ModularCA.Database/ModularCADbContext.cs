@@ -89,6 +89,13 @@ public class ModularCADbContext : DbContext
     /// </summary>
     public DbSet<PasswordHistoryEntity> PasswordHistory { get; set; }
 
+    /// <summary>
+    /// One-time account claims: the SHA-256 of a token that sets an account's password once, before
+    /// it expires. Written by the headless bootstrap (<c>Administration.ClaimTokenSha256</c>) and by
+    /// <c>--issue-claim-token</c>; redeemed by <c>POST /api/v1/auth/claim</c>.
+    /// </summary>
+    public DbSet<UserClaimTokenEntity> UserClaimTokens { get; set; }
+
     // Runtime-tunable policy tables (moved out of config.yaml so admins can
     // change them via the admin API without a restart).
     public DbSet<SecurityPolicyEntity> SecurityPolicies { get; set; }
@@ -696,6 +703,17 @@ public class ModularCADbContext : DbContext
             entity.Property(e => e.PasswordHash).HasMaxLength(500);
         });
 
+        // One claim per account, deleted with it. TokenHash is not indexed: redemption compares
+        // the presented hash with every claim in constant time rather than looking it up.
+        modelBuilder.Entity<UserClaimTokenEntity>(entity =>
+        {
+            entity.HasIndex(e => e.UserId).IsUnique();
+            entity.HasOne(e => e.User)
+                  .WithMany()
+                  .HasForeignKey(e => e.UserId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
         // mTLS credentials
         modelBuilder.Entity<MtlsCredentialEntity>(entity =>
         {
@@ -816,6 +834,13 @@ public class ModularCADbContext : DbContext
 
         modelBuilder.Entity<UserEntity>(entity =>
         {
+            // Stored by member name, like the other enums here. The database default is what
+            // every existing row gets on upgrade and what a raw insert that omits it gets: Inherit,
+            // the rule accounts followed before the column existed.
+            entity.Property(e => e.PasswordSource)
+                  .HasConversion<string>()
+                  .HasMaxLength(16)
+                  .HasDefaultValue(ModularCA.Shared.Enums.PasswordSource.Inherit);
             entity.HasIndex(e => e.IsServiceIdentity);
             entity.HasIndex(e => e.ServiceScopeSpaceId);
             entity.HasIndex(e => e.ServiceScopeCaId);

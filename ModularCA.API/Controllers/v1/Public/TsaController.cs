@@ -17,6 +17,14 @@ namespace ModularCA.API.Controllers.v1.Public;
 [NodeRole(ProcessRole.Enrollment)]
 public class TsaController(ITimestampService timestampService) : ControllerBase
 {
+    /// <summary>
+    /// Answers a DER RFC 3161 TimeStampReq (<c>application/timestamp-query</c>, at most 16 KB) with a
+    /// DER TimeStampResp signed by the TSA certificate of the CA named by <paramref name="caLabel"/>,
+    /// or of the default CA when it is omitted. Open to anonymous callers. An empty body is 400; a
+    /// request the TSA cannot serve gets a TimeStampResp with status rejection rather than an HTTP
+    /// error.
+    /// </summary>
+    /// <param name="caLabel">Label of the CA whose TSA signs; null for the default CA.</param>
     [HttpPost]
     [Consumes("application/timestamp-query")]
     [RequestSizeLimit(16 * 1024)]

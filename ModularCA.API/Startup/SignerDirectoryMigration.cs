@@ -12,7 +12,10 @@ namespace ModularCA.API.Startup;
 /// signer's half of <c>Signer:</c>, <c>Hsm:</c>, <c>Schema:</c> and the logging levels),
 /// <c>db.yaml</c> with only the application database, and copies <c>keystore.yaml</c> and the
 /// identity files, all owner-only. It changes nothing under <c>config/</c>, refuses a directory
-/// that is missing or already holds any of these files, and checks everything before it writes.
+/// that is missing or holds some of these files but not all, and checks everything before it
+/// writes. A directory that already holds all of them has been filled before: it is left as it
+/// is and the command exits zero, which lets the pod run it as an init container on every start
+/// without ever copying from the node's files again.
 /// </summary>
 public static class SignerDirectoryMigration
 {
@@ -25,8 +28,9 @@ public static class SignerDirectoryMigration
 
     /// <summary>
     /// Copies what the signer reads from the shared layout <paramref name="from"/> into the
-    /// signer's directory <paramref name="to"/> and returns the exit code: 0 done, 1 refused with
-    /// nothing written. Identity paths are rewritten to bare file names in the new directory; one
+    /// signer's directory <paramref name="to"/> and returns the exit code: 0 done, or done before
+    /// (every file it would write is already there, and none is touched), 1 refused with nothing
+    /// written. Identity paths are rewritten to bare file names in the new directory; one
     /// the shared layout does not have is left for <c>--init-identity</c> to create there.
     /// </summary>
     public static int Run(SignerPaths from, SignerPaths to, TextWriter output, TextWriter error)
@@ -77,6 +81,13 @@ public static class SignerDirectoryMigration
 
         var targets = copies.Select(c => c.Target).Prepend(to.DbYamlPath).Prepend(to.ConfigPath).ToList();
         var existing = targets.Where(File.Exists).ToList();
+        if (existing.Count == targets.Count)
+        {
+            // Done before: what is there is the signer's now, and is not replaced from config/.
+            output.WriteLine($"Signer directory {dir} already holds {string.Join(", ", existing.Select(Path.GetFileName))}; nothing was changed.");
+            output.WriteLine("Remove them first to migrate again.");
+            return 0;
+        }
         if (existing.Count > 0)
         {
             error.WriteLine($"[FATAL] {dir} already holds {string.Join(", ", existing.Select(Path.GetFileName))}; nothing was changed.");
@@ -140,6 +151,7 @@ public static class SignerDirectoryMigration
         output.WriteLine($"Review {to.ConfigPath} before the signer reads it, Hsm.ModulePath above all: it was copied from a file the node can write.");
         output.WriteLine("Then, as README-DEPLOY.md, \"Two units\", describes: point the unit at the directory, restart the signer,");
         output.WriteLine("and remove the signer's files from config/ (keystore.yaml, signer-server.pfx, signer-identity-ca.pfx).");
+        output.WriteLine($"(In the pod, --issue-node-identity --apply with {SignerPaths.Flag} removes them itself once it has checked these copies.)");
         return 0;
     }
 

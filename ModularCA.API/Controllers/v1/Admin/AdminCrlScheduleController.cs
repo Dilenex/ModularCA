@@ -320,7 +320,7 @@ namespace ModularCA.API.Controllers.v1.Admin
 
             // ONE BulkCrlSchedule token (no target) authorizes the whole batch — a selection can
             // span CAs, so the token cannot be bound to a single schedule/CA id.
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.BulkCrlSchedule))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.BulkCrlSchedule))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
             var results = new List<object>();

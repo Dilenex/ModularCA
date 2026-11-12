@@ -135,21 +135,18 @@ public class InfraController(
 
     /// <summary>
     /// Retrieves certificate details by serial number. Returns the certificate with
-    /// full PEM and chain data suitable for Terraform state refresh.
+    /// full PEM and chain data suitable for Terraform state refresh. A certificate outside the
+    /// key's space scope is answered 404, exactly as one that does not exist
+    /// (<see cref="CertificateInScopeBySerialAsync"/>).
     /// </summary>
     /// <param name="serial">The serial number of the certificate.</param>
-    /// <returns>The certificate details or 404 if not found.</returns>
+    /// <returns>The certificate details, or 404 if it is missing or outside the key's scope.</returns>
     [HttpGet("certificates/{serial}")]
     public async Task<IActionResult> GetCertificate(string serial)
     {
         var certInfo = await _certStore.GetCertificateInfoAsync(serial);
-        if (certInfo == null)
+        if (certInfo == null || !await CertificateInScopeBySerialAsync(serial))
             return NotFound(new { error = "Certificate not found." });
-
-        // AUTH-06: verify the certificate's issuing CA belongs to the configured space
-        var spaceCheck = await VerifyCertificateSpaceBySerialAsync(serial);
-        if (spaceCheck != null)
-            return spaceCheck;
 
         var chainPem = await BuildChainPemAsync(certInfo.CertificateId);
 
@@ -170,8 +167,24 @@ public class InfraController(
     }
 
     /// <summary>
-    /// Revokes a certificate by serial number. Idempotent: revoking an already-revoked
-    /// certificate returns success. The optional reason defaults to "unspecified".
+    /// Revokes a certificate by serial number. Idempotent: revoking a certificate already revoked
+    /// permanently returns success and changes nothing. The optional reason defaults to
+    /// "unspecified"; any other value must be the name of an RFC 5280 reason
+    /// (<see cref="TryParseRevocationReason"/>), or the request is refused with 400 and
+    /// <see cref="ErrorCodes.RequestInvalid"/>.
+    /// <para>
+    /// A certificate on hold is revoked permanently with the reason given, under the same rules as
+    /// the admin revoke (RFC 5280 §5.3.1, <see cref="ICertificateRevocationService.RevokeCertificateAsync"/>);
+    /// the response carries <c>previousReason</c> = <c>CertificateHold</c>. Asking for
+    /// <c>certificateHold</c> on a certificate already on hold returns success and changes nothing,
+    /// in keeping with the endpoint's idempotence. A revocation state that changed under the request
+    /// answers 409 with <see cref="ErrorCodes.CertificateRevocationState"/>.
+    /// </para>
+    /// A certificate outside the key's space scope is answered 404, exactly as one that does not
+    /// exist, before anything about its state is said (<see cref="CertificateInScopeBySerialAsync"/>).
+    /// The revocation acts on the ID of the certificate that lookup and scope check found, not on
+    /// the serial again; a certificate gone by the time it runs is answered with the same 404 and
+    /// body as one that never existed.
     /// </summary>
     /// <param name="serial">The serial number of the certificate to revoke.</param>
     /// <param name="request">Optional revocation reason.</param>
@@ -180,16 +193,12 @@ public class InfraController(
     public async Task<IActionResult> RevokeCertificate(string serial, [FromBody] InfraRevokeCertificateRequest? request)
     {
         var certInfo = await _certStore.GetCertificateInfoAsync(serial);
-        if (certInfo == null)
+        if (certInfo == null || !await CertificateInScopeBySerialAsync(serial))
             return NotFound(new { error = "Certificate not found." });
 
-        // AUTH-06: verify the certificate's issuing CA belongs to the configured space
-        var spaceCheck = await VerifyCertificateSpaceBySerialAsync(serial);
-        if (spaceCheck != null)
-            return spaceCheck;
-
-        // Idempotent: if already revoked, return success
-        if (certInfo.Revoked)
+        // Idempotent: a permanent revocation is final, so a repeat returns success. A hold is not
+        // final: it falls through and is made permanent with the reason given.
+        if (RevocationStatus.IsPermanentlyRevoked(certInfo.Revoked, certInfo.RevocationReason))
         {
             return Ok(new
             {
@@ -201,24 +210,36 @@ public class InfraController(
             });
         }
 
-        // Parse and validate the revocation reason string against the enum.
-        // Unknown values return 400 instead of silently being stored as "unspecified" garbage.
-        ModularCA.Shared.Enums.RevocationReason reasonEnum;
-        if (string.IsNullOrWhiteSpace(request?.Reason))
-        {
-            reasonEnum = ModularCA.Shared.Enums.RevocationReason.Unspecified;
-        }
-        else if (!Enum.TryParse(request!.Reason, ignoreCase: true, out reasonEnum))
+        // The reason is taken by name only. Enum.TryParse also accepts a number, defined or not,
+        // and a comma list whose values it ORs together, so "8", "99" or
+        // "KeyCompromise,CACompromise" (= AffiliationChanged) used to be stored as given.
+        if (!TryParseRevocationReason(request?.Reason, out var reasonEnum))
         {
             return BadRequest(new
             {
-                error = $"Invalid revocation reason '{request.Reason}'. Expected one of: {string.Join(", ", Enum.GetNames<ModularCA.Shared.Enums.RevocationReason>())}.",
+                error = $"Invalid revocation reason '{request!.Reason}'. Expected one of: {string.Join(", ", RevocationReasonNames)}.",
+                code = ErrorCodes.RequestInvalid,
+            });
+        }
+
+        var onHold = RevocationStatus.IsOnHold(certInfo.Revoked, certInfo.RevocationReason);
+        if (onHold && reasonEnum == ModularCA.Shared.Enums.RevocationReason.CertificateHold)
+        {
+            return Ok(new
+            {
+                id = certInfo.SerialNumber,
+                serialNumber = certInfo.SerialNumber,
+                revoked = true,
+                revocationReason = certInfo.RevocationReason,
+                message = "Certificate is already on hold."
             });
         }
 
         try
         {
-            await _revocationService.RevokeCertificateAsync(null, serial, reasonEnum);
+            // By ID: the certificate that was looked up and scope-checked above, not whichever row
+            // the serial resolves to now.
+            var result = await _revocationService.RevokeCertificateAsync(certInfo.CertificateId, null, reasonEnum);
 
             return Ok(new
             {
@@ -226,8 +247,22 @@ public class InfraController(
                 serialNumber = certInfo.SerialNumber,
                 revoked = true,
                 revocationReason = reasonEnum.ToString(),
-                message = "Certificate revoked."
+                previousReason = result.PreviousReason?.ToString(),
+                message = result.PreviousReason == ModularCA.Shared.Enums.RevocationReason.CertificateHold
+                    ? "Certificate on hold revoked permanently."
+                    : "Certificate revoked."
             });
+        }
+        catch (CertificateRevocationStateException ex)
+        {
+            // The certificate's state changed between the read above and the revoke.
+            return Conflict(new { error = ex.Message, code = ex.Code });
+        }
+        catch (ResourceNotFoundException)
+        {
+            // Gone between the lookup and the revoke. The same answer as a missing or out-of-scope
+            // certificate, so nothing here tells them apart.
+            return NotFound(new { error = "Certificate not found." });
         }
         catch (Exception ex)
         {
@@ -240,10 +275,11 @@ public class InfraController(
     /// Renews a certificate by serial number. Creates a new certificate request based on the
     /// original certificate's subject, SANs, and profile configuration, then issues it immediately.
     /// Returns the new certificate with Terraform-compatible id and PEM output.
-    /// Returns 404 when the source certificate is missing, 400 for invalid renewal input
-    /// (e.g. revoked source, missing profile), 502 when renewal succeeds but the follow-up
-    /// state read fails (to prevent Terraform retry causing double-issue), and 500 on unknown
-    /// server-side anomalies.
+    /// Returns 404 when the source certificate is missing or outside the key's space scope
+    /// (the two are indistinguishable, and the scope is checked before anything is said about the
+    /// certificate's state), 400 for invalid renewal input (e.g. revoked source, missing profile),
+    /// 409 for a retired source, 502 when renewal succeeds but the follow-up state read fails (to
+    /// prevent Terraform retry causing double-issue), and 500 on unknown server-side anomalies.
     /// </summary>
     /// <param name="serial">The serial number of the certificate to renew.</param>
     /// <returns>The newly issued certificate details.</returns>
@@ -253,12 +289,6 @@ public class InfraController(
         var certInfo = await _certStore.GetCertificateInfoAsync(serial);
         if (certInfo == null)
             return NotFound(new { error = "Certificate not found." });
-
-        if (certInfo.Revoked)
-            return BadRequest(new { error = "Cannot renew a revoked certificate." });
-
-        if (certInfo.RetiredAt != null)
-            return Conflict(new { error = CertificateIssuanceService.RetiredMessage, code = ModularCA.Shared.Errors.ErrorCodes.CertificateRetired });
 
         // Look up the certificate entity to get profile IDs
         var certEntity = await _db.Certificates
@@ -275,13 +305,20 @@ public class InfraController(
         var certProfileId = certEntity.CertProfileId ?? originalRequest?.CertProfileId;
         var signingProfileId = certEntity.SigningProfileId ?? originalRequest?.SigningProfileId;
 
+        // AUTH-06, before anything about the certificate is told: its revoked or retired state,
+        // or its profiles. A certificate outside the key's scope, including one whose space
+        // cannot be established, is answered exactly as one that does not exist.
+        if (!await RenewalSourceInScopeAsync(signingProfileId))
+            return NotFound(new { error = "Certificate not found." });
+
+        if (certInfo.Revoked)
+            return BadRequest(new { error = "Cannot renew a revoked certificate." });
+
+        if (certInfo.RetiredAt != null)
+            return Conflict(new { error = CertificateIssuanceService.RetiredMessage, code = ModularCA.Shared.Errors.ErrorCodes.CertificateRetired });
+
         if (certProfileId == null || signingProfileId == null)
             return BadRequest(new { error = "Cannot determine certificate or signing profile for renewal." });
-
-        // AUTH-06: verify the signing profile's CA belongs to the configured space
-        var spaceCheck = await VerifySigningProfileSpaceAsync(signingProfileId.Value);
-        if (spaceCheck != null)
-            return spaceCheck;
 
         try
         {
@@ -320,42 +357,85 @@ public class InfraController(
         }
     }
 
-    // ───────────────────────── Profile Read Endpoints ��────────────────────────
+    /// <summary>
+    /// The RFC 5280 §5.3.1 names of the reasons <see cref="RevokeCertificate"/> accepts, in code
+    /// order, as the refusal lists them.
+    /// </summary>
+    private static readonly string[] RevocationReasonNames =
+    [
+        "unspecified", "keyCompromise", "cACompromise", "affiliationChanged", "superseded",
+        "cessationOfOperation", "certificateHold", "privilegeWithdrawn", "aACompromise",
+    ];
 
     /// <summary>
-    /// Lists all certificate profiles. Used by Terraform data sources to discover
-    /// available profiles for certificate issuance.
+    /// Parses a revocation reason given by name: one of the defined
+    /// <see cref="ModularCA.Shared.Enums.RevocationReason"/> names, compared without regard to case,
+    /// so the RFC 5280 spelling (<c>keyCompromise</c>, <c>cACompromise</c>) and the enum's both
+    /// match. Null, empty or blank is <see cref="ModularCA.Shared.Enums.RevocationReason.Unspecified"/>.
+    /// A number, a comma list or any other name is refused, where <c>Enum.TryParse</c> would accept
+    /// it.
     /// </summary>
-    /// <returns>A list of all certificate profiles.</returns>
+    /// <param name="value">The reason as the client sent it.</param>
+    /// <param name="reason">The parsed reason; <see cref="ModularCA.Shared.Enums.RevocationReason.Unspecified"/> when refused.</param>
+    /// <returns>Whether <paramref name="value"/> names a defined reason or is empty.</returns>
+    internal static bool TryParseRevocationReason(string? value, out ModularCA.Shared.Enums.RevocationReason reason)
+    {
+        reason = ModularCA.Shared.Enums.RevocationReason.Unspecified;
+        if (string.IsNullOrWhiteSpace(value))
+            return true;
+        var name = Enum.GetNames<ModularCA.Shared.Enums.RevocationReason>()
+            .FirstOrDefault(n => string.Equals(n, value.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (name == null)
+            return false;
+        reason = Enum.Parse<ModularCA.Shared.Enums.RevocationReason>(name);
+        return true;
+    }
+
+    // ───────────────────────── Profile Read Endpoints��────────────────────────
+
+    /// <summary>
+    /// Lists the certificate profiles inside the key's space scope. Used by Terraform data sources
+    /// to discover available profiles for certificate issuance. A profile bound to no CA is
+    /// instance-wide configuration and is listed to every key whose scope is valid; one bound to a
+    /// CA is listed only when that CA is inside the scope (<see cref="ProfileCaInScope"/>).
+    /// </summary>
+    /// <returns>The certificate profiles inside the key's scope.</returns>
     [HttpGet("cert-profiles")]
     public async Task<IActionResult> ListCertProfiles()
     {
-        var profiles = await _certProfileService.GetAllAsync();
-        return Ok(profiles);
+        var profiles = await _certProfileService.GetAllAsync(Caller.Scope.Allows);
+        var inScope = await ProfileCaInScopeAsync();
+        return Ok(profiles.Where(p => inScope.ByCaId(p.CertificateAuthorityId, unbound: true)).ToList());
     }
 
     /// <summary>
-    /// Lists all signing profiles. Used by Terraform data sources to discover
-    /// available signing profiles for certificate issuance.
+    /// Lists the signing profiles inside the key's space scope: those whose issuing CA is inside
+    /// it. Used by Terraform data sources to discover available signing profiles for certificate
+    /// issuance. A key restricted to a space or to the instance does not see a profile with no
+    /// issuer, which it could not issue under (<see cref="VerifySigningProfileSpaceAsync"/>).
     /// </summary>
-    /// <returns>A list of all signing profiles.</returns>
+    /// <returns>The signing profiles inside the key's scope.</returns>
     [HttpGet("signing-profiles")]
     public async Task<IActionResult> ListSigningProfiles()
     {
         var profiles = await _signingProfileService.GetAllAsync();
-        return Ok(profiles);
+        var inScope = await ProfileCaInScopeAsync();
+        return Ok(profiles.Where(p => inScope.ByCertificateId(p.IssuerId)).ToList());
     }
 
     /// <summary>
-    /// Lists all request profiles. Used by Terraform data sources to discover
-    /// available request profiles and their enrollment constraints.
+    /// Lists the request profiles inside the key's space scope. Used by Terraform data sources to
+    /// discover available request profiles and their enrollment constraints. A profile bound to no
+    /// CA is listed to every key whose scope is valid; one bound to a CA only when that CA is inside
+    /// the scope.
     /// </summary>
-    /// <returns>A list of all request profiles.</returns>
+    /// <returns>The request profiles inside the key's scope.</returns>
     [HttpGet("request-profiles")]
     public async Task<IActionResult> ListRequestProfiles()
     {
         var profiles = await _requestProfileService.GetAllAsync();
-        return Ok(profiles);
+        var inScope = await ProfileCaInScopeAsync();
+        return Ok(profiles.Where(p => inScope.ByCaId(p.CertificateAuthorityId, unbound: true)).ToList());
     }
 
     // ──���────────────────────── CA Read Endpoints ────��────────────────────
@@ -448,6 +528,58 @@ public class InfraController(
     }
 
     /// <summary>
+    /// Which profiles a listing may return to this key, by the CA each is bound to. A key that
+    /// reaches everything sees every profile. A restricted key sees a profile bound to a CA inside
+    /// its scope (<see cref="InScope"/>), and a certificate or request profile bound to no CA; a
+    /// scope that is neither a space nor <c>instance</c> sees none.
+    /// </summary>
+    /// <param name="Scope">The key's scope.</param>
+    /// <param name="CaIds">The ids of the CAs inside a restricted scope.</param>
+    /// <param name="CaCertificateIds">The certificate ids of the CAs inside a restricted scope.</param>
+    private sealed record ProfileCaInScope(IntegrationSpaceScope Scope, HashSet<Guid> CaIds, HashSet<Guid> CaCertificateIds)
+    {
+        /// <summary>Whether a profile bound to CA <paramref name="caId"/> (null for none) is listed; <paramref name="unbound"/> says whether one bound to none is.</summary>
+        public bool ByCaId(Guid? caId, bool unbound) =>
+            !Scope.IsRestricted || (Scope.Kind != IntegrationScopeKind.Invalid && (caId is Guid id ? CaIds.Contains(id) : unbound));
+
+        /// <summary>Whether a profile issuing from CA certificate <paramref name="issuerId"/> is listed; a restricted key does not see one with no issuer.</summary>
+        public bool ByCertificateId(Guid? issuerId) =>
+            !Scope.IsRestricted || (issuerId is Guid id && CaCertificateIds.Contains(id));
+    }
+
+    /// <summary>
+    /// The CAs inside this key's scope, for filtering the profile listings; see
+    /// <see cref="ProfileCaInScope"/>. Reads nothing when the key reaches everything.
+    /// </summary>
+    private async Task<ProfileCaInScope> ProfileCaInScopeAsync()
+    {
+        var scope = Caller.Scope;
+        if (!scope.IsRestricted)
+            return new ProfileCaInScope(scope, [], []);
+        var cas = await InScope(_db.CertificateAuthorities.AsNoTracking())
+            .Select(ca => new { ca.Id, ca.CertificateId })
+            .ToListAsync();
+        return new ProfileCaInScope(scope,
+            cas.Select(ca => ca.Id).ToHashSet(),
+            cas.Where(ca => ca.CertificateId != null).Select(ca => ca.CertificateId!.Value).ToHashSet());
+    }
+
+    /// <summary>
+    /// AUTH-06 for <see cref="RenewCertificate"/>: whether the certificate being renewed, issued
+    /// under <paramref name="signingProfileId"/>, is inside the key's space scope. An unrestricted
+    /// key reaches everything; for a restricted key, a certificate with no signing profile, or one
+    /// whose issuing CA cannot be resolved, is outside the scope, as
+    /// <see cref="VerifySigningProfileSpaceAsync"/> decides.
+    /// </summary>
+    /// <param name="signingProfileId">The certificate's signing profile, or its original request's; null when neither has one.</param>
+    private async Task<bool> RenewalSourceInScopeAsync(Guid? signingProfileId)
+    {
+        if (!Caller.Scope.IsRestricted)
+            return true;
+        return signingProfileId != null && await VerifySigningProfileSpaceAsync(signingProfileId.Value) == null;
+    }
+
+    /// <summary>
     /// AUTH-06: verifies that the signing profile's issuing CA is inside the configured space
     /// scope (<see cref="IntegrationApiConfig.SpaceScope"/>). Returns null if the check passes (or
     /// no space restriction is configured), or an <see cref="IActionResult"/> to short-circuit the
@@ -487,11 +619,6 @@ public class InfraController(
     }
 
     /// <summary>
-    /// AUTH-06: verifies that a certificate (by serial) was issued by a CA belonging to
-    /// the configured space. Returns null if the check passes, or an <see cref="IActionResult"/>
-    /// to short-circuit the action if the space does not match.
-    /// </summary>
-    /// <summary>
     /// The space fence's DENY result. Used wherever the fence cannot positively establish that
     /// the target belongs to the configured space.
     /// </summary>
@@ -505,25 +632,32 @@ public class InfraController(
     private static IActionResult SpaceFenceDenied(string reason) =>
         new ObjectResult(new { error = $"Access denied: {reason}" }) { StatusCode = 403 };
 
-    private async Task<IActionResult?> VerifyCertificateSpaceBySerialAsync(string serial)
+    /// <summary>
+    /// AUTH-06 for the certificate read and revoke: whether the certificate with
+    /// <paramref name="serial"/> was issued by a CA inside the key's space scope. An unrestricted
+    /// key reaches everything. For a restricted key, a certificate the lookup cannot resolve, one
+    /// with no signing profile, or one whose issuing CA cannot be established is outside the
+    /// scope, as <see cref="VerifySigningProfileSpaceAsync"/> decides.
+    /// </summary>
+    /// <remarks>
+    /// The callers answer false with the same 404 as a certificate that does not exist. A 403
+    /// for a certificate outside the scope, against 404 for one that is missing, told a key scoped
+    /// to one space which serials exist in every other.
+    /// </remarks>
+    /// <param name="serial">The certificate's serial number.</param>
+    private async Task<bool> CertificateInScopeBySerialAsync(string serial)
     {
         if (!Caller.Scope.IsRestricted)
-            return null;
+            return true;
 
         var certEntity = await _db.Certificates
             .AsNoTracking()
             .ResolveBySerialOrNullAsync(serial);
 
-        if (certEntity == null)
-            return SpaceFenceDenied("the target certificate could not be found.");
-
-        // Walk from the cert's signing profile to the issuing CA
-        var signingProfileId = certEntity.SigningProfileId;
-        if (signingProfileId == null)
-            return SpaceFenceDenied("the target certificate is not associated with a signing profile, "
-                                   + "so its owning space cannot be established.");
-
-        return await VerifySigningProfileSpaceAsync(signingProfileId.Value);
+        // Walk from the cert's signing profile to the issuing CA. A certificate the lookup cannot
+        // resolve, or one with no signing profile, has no establishable space.
+        var signingProfileId = certEntity?.SigningProfileId;
+        return signingProfileId != null && await VerifySigningProfileSpaceAsync(signingProfileId.Value) == null;
     }
 
     /// <summary>
@@ -596,8 +730,9 @@ public class InfraIssueCertificateRequest
 public class InfraRevokeCertificateRequest
 {
     /// <summary>
-    /// Revocation reason per RFC 5280 (e.g., "keyCompromise", "cessationOfOperation", "unspecified").
-    /// Defaults to "unspecified" when omitted.
+    /// Revocation reason per RFC 5280, by name and in any case (e.g., "keyCompromise",
+    /// "cessationOfOperation", "unspecified"). Defaults to "unspecified" when omitted. A numeric
+    /// code, a comma list or an undefined name is refused with 400.
     /// </summary>
     public string? Reason { get; set; }
 }

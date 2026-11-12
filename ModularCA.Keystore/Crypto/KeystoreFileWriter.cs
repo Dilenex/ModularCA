@@ -35,7 +35,9 @@ public static class KeystoreFileWriter
 
     /// <summary>
     /// Writes a complete keystore file with all encrypted entries and a single file-level signature from the system CA.
-    /// Writes to <c>{path}.tmp</c> first, flushes+fsync, then atomically renames via
+    /// Writes to <c>{path}.tmp</c> first, a new file only its owner can read from the moment it is
+    /// created (<see cref="ModularCA.Shared.Utils.FileSecurityUtil.CreateOwnerOnly(string, Action{FileStream}, bool)"/>),
+    /// flushes+fsync, then atomically renames via
     /// <see cref="File.Replace(string, string, string?)"/>. The previous file is kept as <c>{path}.bak</c>
     /// so a crash mid-rename leaves both the pre-image and the new file on disk. A crash mid-write to
     /// the <c>.tmp</c> leaves the original file untouched.
@@ -54,9 +56,11 @@ public static class KeystoreFileWriter
         if (File.Exists(tmpPath))
             File.Delete(tmpPath);
 
-        using (var stream = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        // Owner-only from creation: the rename below gives the keystore the temp file's mode, so a
+        // temp file made at default permissions was the keystore's mode until the caller's chmod.
+        ModularCA.Shared.Utils.FileSecurityUtil.CreateOwnerOnly(tmpPath, stream =>
         {
-            using var writer = new BinaryWriter(stream);
+            using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
 
             writer.Write(MagicHeader);
             writer.Write((ushort)salt.Length);
@@ -86,7 +90,7 @@ public static class KeystoreFileWriter
 
             writer.Flush();
             stream.Flush(flushToDisk: true);
-        }
+        });
 
         if (File.Exists(path))
         {

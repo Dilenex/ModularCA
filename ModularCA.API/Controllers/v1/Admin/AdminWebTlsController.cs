@@ -170,7 +170,7 @@ public class AdminWebTlsController(
         var userId = _currentUser.User.Id;
         var username = _currentUser.User.Username;
 
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ReissueCert, "webtls"))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.ReissueCert, "webtls"))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var current = _certProvider.GetCertificate();
@@ -277,11 +277,10 @@ public class AdminWebTlsController(
                 new Org.BouncyCastle.Pkcs.AsymmetricKeyEntry(keyPair.Private),
                 chainEntries);
 
-            using (var fs = System.IO.File.Create(pfxPath))
-            {
-                pfxStore.Save(fs, pfxPassword.ToCharArray(), new Org.BouncyCastle.Security.SecureRandom());
-            }
-            ModularCA.Shared.Utils.FileSecurityUtil.SetOwnerOnly(pfxPath);
+            // A new owner-only file in place of the old one, not the old one truncated or a file
+            // created at default permissions and restricted after it was written.
+            ModularCA.Shared.Utils.FileSecurityUtil.CreateOwnerOnly(pfxPath,
+                fs => pfxStore.Save(fs, pfxPassword.ToCharArray(), new Org.BouncyCastle.Security.SecureRandom()), replaceExisting: true);
 
             // Update config with new PFX password
             _config.Https.CertificatePassword = pfxPassword;

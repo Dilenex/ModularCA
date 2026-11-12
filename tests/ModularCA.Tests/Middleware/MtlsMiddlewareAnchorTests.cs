@@ -2,6 +2,9 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.AspNetCore.Http;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using ModularCA.Database;
 using ModularCA.Shared.Models.Config;
 using ModularCA.Tests.Roles;
 using Xunit;
@@ -51,7 +54,14 @@ public sealed class MtlsMiddlewareAnchorTests
         RequestDelegate next = _ => { reached++; return Task.CompletedTask; };
         var middleware = Activator.CreateInstance(ApiAssembly.TypeNamed(Ns + "Middleware.MtlsMiddleware"), [next, .. ctorArgs])!;
 
-        var context = new DefaultHttpContext();
+        // An empty database: these anchors are not CAs of this instance, so the certificate's
+        // standing is not looked up (MtlsMiddlewareRevocationTests covers that), but the gate
+        // refuses outright when there is no database to look in.
+        var services = new ServiceCollection()
+            .AddDbContext<ModularCADbContext>(o => o.UseInMemoryDatabase($"mtls-anchor-{Guid.NewGuid():N}"));
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var context = new DefaultHttpContext { RequestServices = scope.ServiceProvider };
         context.Request.Path = "/api/v1/admin/users";
         context.Connection.RemoteIpAddress = IPAddress.Loopback;
         context.Connection.ClientCertificate = clientCert;

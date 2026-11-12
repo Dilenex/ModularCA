@@ -29,7 +29,7 @@ const NotificationManagement: React.FC = () => {
 
     // Single-row edit modal
     const [editTarget, setEditTarget] = useState<any | null>(null);
-    const [editForm, setEditForm] = useState<{ recipients: string[]; daysBeforeExpiry: string; enabled: boolean; hasDays: boolean }>({ recipients: [], daysBeforeExpiry: '', enabled: true, hasDays: false });
+    const [editForm, setEditForm] = useState<{ recipients: string[]; enabled: boolean }>({ recipients: [], enabled: true });
     const [editEmailError, setEditEmailError] = useState<NoticeInput | null>(null);
     const [saving, setSaving] = useState(false);
 
@@ -80,10 +80,9 @@ const NotificationManagement: React.FC = () => {
     };
 
     const openEdit = (p: any) => {
-        // CertExpiring's stored days are never read: when it is sent follows each certificate's
-        // expiry warning, and the reminders are the expiry notification settings. Not editable here.
-        const hasDays = p.eventType !== 'CertExpiring' && p.daysBeforeExpiry !== undefined && p.daysBeforeExpiry !== null;
-        setEditForm({ recipients: listFromValue(p.recipients), daysBeforeExpiry: hasDays ? String(p.daysBeforeExpiry) : '', enabled: !!p.enabled, hasDays });
+        // No lead time is edited here: when CertExpiring is sent follows each certificate's expiry
+        // warning and the expiry notification settings' reminders.
+        setEditForm({ recipients: listFromValue(p.recipients), enabled: !!p.enabled });
         setEditEmailError(null);
         setEditTarget(p);
     };
@@ -95,8 +94,7 @@ const NotificationManagement: React.FC = () => {
         if (recipientsInvalid) return;
         setSaving(true);
         try {
-            const body: any = { enabled: editForm.enabled, recipients: listToCsv(editForm.recipients) };
-            if (editForm.hasDays && editForm.daysBeforeExpiry) body.daysBeforeExpiry = parseInt(editForm.daysBeforeExpiry, 10);
+            const body = { enabled: editForm.enabled, recipients: listToCsv(editForm.recipients) };
             await apiPut(`/api/v1/admin/notifications/${editTarget.eventType}`, body);
             setEditTarget(null);
             loadPrefs();
@@ -128,8 +126,6 @@ const NotificationManagement: React.FC = () => {
                     {p.description && <div className="text-xs text-ink-muted truncate">{p.description}</div>}
                 </div>
             ) },
-        { key: 'days', header: 'Expiry Warning', defaultWidth: 130, align: 'right', exportValue: (p) => (p.daysBeforeExpiry ?? ''),
-            render: (p) => (p.daysBeforeExpiry ? `${p.daysBeforeExpiry}d` : '-') },
         { key: 'recipients', header: 'Recipients', defaultWidth: 220, exportValue: (p) => p.recipients || '',
             render: (p) => p.recipients || <span className="text-ink-muted">(admin default)</span> },
     ], []);
@@ -145,7 +141,6 @@ const NotificationManagement: React.FC = () => {
             <DetailField label="Event Type" value={p.eventType} />
             <DetailField label="Status" value={<StatusBadge status={p.enabled ? 'enabled' : 'disabled'} />} />
             {p.description && <DetailField label="Description" value={p.description} />}
-            {(p.daysBeforeExpiry !== undefined && p.daysBeforeExpiry !== null) && <DetailField label="Expiry Warning" value={`${p.daysBeforeExpiry} days before expiry`} />}
             <DetailField label="Recipients" value={p.recipients || '(uses admin default)'} />
             <p className="text-[11px] text-ink-muted pt-2">Select the row in the table to edit, enable, or disable.</p>
         </div>
@@ -257,22 +252,6 @@ const NotificationManagement: React.FC = () => {
                                     Sent once when a certificate&apos;s expiry warning starts and once when its alert starts, as its certificate
                                     profile sets them, plus each reminder of the expiry notification settings that falls inside the warning.
                                 </p>
-                            )}
-                            {editForm.hasDays && (
-                                <div>
-                                    <label className={labelClass}>Days Before Expiry</label>
-                                    <div className="flex items-center gap-2">
-                                        <input type="text" inputMode="numeric" value={editForm.daysBeforeExpiry}
-                                            onChange={(e) => setEditForm({ ...editForm, daysBeforeExpiry: e.target.value.replace(/\D/g, '') })}
-                                            className="w-24 bg-raised border border-line-strong text-ink rounded px-2 py-1 text-sm" />
-                                        <div className="flex gap-1">
-                                            {[90, 60, 30, 14, 7, 1].map((d) => (
-                                                <button key={d} onClick={() => setEditForm({ ...editForm, daysBeforeExpiry: String(d) })}
-                                                    className={`px-2 py-0.5 rounded text-xs border ${editForm.daysBeforeExpiry === String(d) ? 'bg-accent border-accent text-on-accent' : 'bg-raised border-line-strong text-ink-muted hover:border-ink-faint'}`}>{d}d</button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                </div>
                             )}
                             <div>
                                 <label htmlFor="notif-override-recipients" className={labelClass}>Override Recipients</label>

@@ -27,8 +27,10 @@ public class AcmeChallengeController(
     IAcmeAuthorizationService authzService,
     IAcmeChallengeService challengeService,
     ILogger<AcmeChallengeController> logger,
-    SystemConfig config) : ControllerBase
+    SystemConfig config,
+    IProtocolAuditService protocolAudit) : ControllerBase
 {
+    private readonly IProtocolAuditService _protocolAudit = protocolAudit;
     private readonly IAcmeAuthorizationService _authzService = authzService;
     private readonly IAcmeChallengeService _challengeService = challengeService;
     private readonly ILogger<AcmeChallengeController> _logger = logger;
@@ -71,7 +73,8 @@ public class AcmeChallengeController(
     /// Audit findings #23: maps service-layer <see cref="InvalidOperationException"/>
     /// messages (auth state mismatch, thumbprint mismatch, internal lookups) to a fixed
     /// RFC 7807 detail string so anonymous ACME clients cannot use the response as an
-    /// internal-state oracle. Underlying messages are logged at warn level.
+    /// internal-state oracle. Underlying messages are logged at warn level, and written as an
+    /// unsuccessful <c>ChallengeRefused</c> row on the ACME tab, which only reached the log file.
     /// </summary>
     [HttpPost("challenge/{id:guid}")]
     public async Task<IActionResult> RespondToChallenge(Guid id)
@@ -104,6 +107,12 @@ public class AcmeChallengeController(
             // Audit findings #23: do not echo internal exception text to anonymous ACME
             // clients. Keep the original message in operator logs only.
             _logger.LogWarning(ex, "ACME challenge {ChallengeId} rejected: {Reason}", id, ex.Message);
+            var ca = HttpContext.Items[AcmeJwsActionFilter.AddressedCaItem] as ModularCA.Shared.Entities.CertificateAuthorityEntity;
+            await _protocolAudit.LogAcmeAsync("ChallengeRefused", jws.AccountId, null,
+                subjectDN: null, certSerial: null, identifiers: null, revocationReason: null,
+                sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
+                success: false, errorMessage: $"Challenge {id}: {ex.Message}",
+                caLabel: ca?.Label, certificateAuthorityId: ca?.Id, spaceId: ca?.SpaceId);
             var error = new AcmeErrorResponse
             {
                 Type = "urn:ietf:params:acme:error:malformed",

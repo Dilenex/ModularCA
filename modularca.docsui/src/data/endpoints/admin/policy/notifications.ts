@@ -21,7 +21,7 @@ export const adminNotifications: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Array of notification preferences with eventType, enabled, recipients, and daysBeforeExpiry.',
+        responseDescription: 'Array of notification preferences, each with id, eventType, enabled, recipients and description.',
     },
     {
         method: 'PUT',
@@ -32,12 +32,12 @@ export const adminNotifications: ApiEndpoint[] = [
         requestBody: [
             { name: 'enabled', type: 'bool', required: false, description: 'Enable or disable notifications for this event type' },
             { name: 'recipients', type: 'string', required: false, description: 'Comma-separated list of email recipients' },
-            { name: 'daysBeforeExpiry', type: 'int', required: false, description: 'Days before expiry to trigger notification (for expiry-related events)' },
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Updated notification preference entity.',
+        responseDescription: 'The updated notification preference, in the shape the list returns.',
+        notes: 'From 0.4.4 a daysBeforeExpiry field, which was stored and never read, is ignored.',
     },
     {
         method: 'POST',

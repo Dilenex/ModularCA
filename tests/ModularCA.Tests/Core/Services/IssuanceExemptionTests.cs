@@ -23,8 +23,9 @@ public class IssuanceExemptionTests
         // CertificateBuilderService emits KeyUsage only when the bit set is non-zero, and per
         // RFC 5280 §4.2.1.3 a certificate with NO KeyUsage extension is unrestricted. So a
         // single spelling that no longer matches an OIDOptions row used to WIDEN the
-        // certificate rather than narrow it. PolicySyncService writes KeyUsages verbatim from
-        // YAML with no catalog validation, so that is a realistic way in.
+        // certificate rather than narrow it. PolicySyncService wrote KeyUsages verbatim from
+        // YAML with no catalog validation until 0.4.4, and a catalog row can still be removed
+        // under a profile, so that is a realistic way in.
         Assert.True(RefusesIssuance(requested: 3, resolved: 0));
     }
 

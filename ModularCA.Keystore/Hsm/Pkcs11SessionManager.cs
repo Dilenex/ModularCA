@@ -15,8 +15,8 @@ namespace ModularCA.Keystore.Hsm;
 /// is bounded by the session manager's lifetime rather than the process lifetime.
 /// </para>
 /// <para>
-/// <see cref="FindPrivateKey"/> and <see cref="FindPrivateKeyById"/> refuse
-/// key handles whose <c>CKA_TOKEN</c>, <c>CKA_PRIVATE</c>, <c>CKA_SENSITIVE</c>, and
+/// <see cref="IsHsmContained"/> (which <see cref="Pkcs11KeyBinder"/> applies to the one key a
+/// label finds) and <see cref="FindPrivateKeyById"/> refuse key handles whose <c>CKA_TOKEN</c>, <c>CKA_PRIVATE</c>, <c>CKA_SENSITIVE</c>, and
 /// <c>CKA_EXTRACTABLE</c> attributes disagree with the HSM-containment contract that
 /// <see cref="Pkcs11PrivateKeyHandle.CanExport"/> advertises. A session-scoped or
 /// extractable key is not adopted and a warning is logged so the operator can fix the
@@ -34,7 +34,7 @@ namespace ModularCA.Keystore.Hsm;
 /// in a SubjectPublicKeyInfo.
 /// </para>
 /// </summary>
-public sealed class Pkcs11SessionManager : IDisposable
+public sealed class Pkcs11SessionManager : IPkcs11Token, IDisposable
 {
     private readonly IPkcs11Library _library;
     private readonly ISlot _slot;
@@ -147,6 +147,20 @@ public sealed class Pkcs11SessionManager : IDisposable
     /// non-extractable, token-resident, sensitive private key. Any deviation is logged
     /// so the operator can fix the provisioning script, and the handle is rejected.
     /// </summary>
+    /// <param name="handle">The private key object.</param>
+    /// <param name="lookupDescription">How the key was found, for the warning a refusal logs.</param>
+    public bool IsHsmContained(IObjectHandle handle, string lookupDescription)
+    {
+        lock (_lock)
+        {
+            EnsureSession();
+            return IsHandleHsmContained(handle, lookupDescription);
+        }
+    }
+
+    /// <summary>
+    /// <see cref="IsHsmContained"/> for a caller that already holds the lock and an open session.
+    /// </summary>
     private bool IsHandleHsmContained(IObjectHandle handle, string lookupDescription)
     {
         try
@@ -181,15 +195,14 @@ public sealed class Pkcs11SessionManager : IDisposable
     }
 
     /// <summary>
-    /// Searches the token for a private key object whose <c>CKA_LABEL</c>
-    /// matches the supplied label string.
+    /// Every private key object on the token whose <c>CKA_LABEL</c> is <paramref name="label"/>,
+    /// with no other filter, so <see cref="Pkcs11KeyBinder"/> can refuse a label that more than
+    /// one object carries before it applies the containment check to the one that remains. This
+    /// replaces a lookup that returned the first contained match and so let a duplicated label
+    /// pick a key silently.
     /// </summary>
     /// <param name="label">The label to match against <c>CKA_LABEL</c>.</param>
-    /// <returns>
-    /// The handle of the first matching private key, or <c>null</c> if none is found
-    /// or no matching handle satisfies the HSM-containment policy.
-    /// </returns>
-    public IObjectHandle? FindPrivateKey(string label)
+    public IReadOnlyList<IObjectHandle> FindPrivateKeysByLabel(string label)
     {
         lock (_lock)
         {
@@ -198,17 +211,103 @@ public sealed class Pkcs11SessionManager : IDisposable
             {
                 _session!.Factories.ObjectAttributeFactory.Create(CKA.CKA_CLASS, CKO.CKO_PRIVATE_KEY),
                 _session.Factories.ObjectAttributeFactory.Create(CKA.CKA_LABEL, label),
-                _session.Factories.ObjectAttributeFactory.Create(CKA.CKA_TOKEN, true),
-                _session.Factories.ObjectAttributeFactory.Create(CKA.CKA_PRIVATE, true),
             };
-            var results = _session.FindAllObjects(attributes);
-            foreach (var h in results)
-            {
-                if (IsHandleHsmContained(h, $"label='{label}'"))
-                    return h;
-            }
-            return null;
+            return _session.FindAllObjects(attributes);
         }
+    }
+
+    /// <summary>
+    /// The public key that goes with <paramref name="privateKey"/>. An RSA private key object
+    /// carries its own <c>CKA_MODULUS</c> and <c>CKA_PUBLIC_EXPONENT</c>, which are read from it
+    /// directly. An EC or EdDSA private key carries only its curve, so the point is read from the
+    /// one public key object that pairs with it: the one with the same <c>CKA_ID</c>, or the same
+    /// label when the private key has no id. That object must be on the private key's curve.
+    /// </summary>
+    /// <param name="privateKey">The private key object.</param>
+    /// <param name="label">The label the private key was found under.</param>
+    /// <exception cref="InvalidOperationException">The attributes cannot be read, or the pairing public key object is missing, ambiguous or of another key type or curve.</exception>
+    public Pkcs11PublicKeyMaterial ReadPublicKey(IObjectHandle privateKey, string label)
+    {
+        lock (_lock)
+        {
+            EnsureSession();
+            var head = _session!.GetAttributeValue(privateKey, new List<CKA> { CKA.CKA_KEY_TYPE, CKA.CKA_ID });
+            if (head[0].CannotBeRead)
+                throw new InvalidOperationException("the private key's CKA_KEY_TYPE cannot be read.");
+            var keyType = head[0].GetValueAsUlong();
+            var id = head[1].CannotBeRead ? null : head[1].GetValueAsByteArray();
+
+            if (keyType == (ulong)CKK.CKK_RSA)
+            {
+                var own = ReadBytes(privateKey, CKA.CKA_MODULUS, CKA.CKA_PUBLIC_EXPONENT);
+                if (own[0] is { Length: > 0 } modulus && own[1] is { Length: > 0 } exponent)
+                    return Pkcs11PublicKeyMaterial.Rsa(modulus, exponent, "the private key object");
+
+                var (pub, source) = FindPairedPublicKey(id, label);
+                RequireKeyType(pub, keyType, source);
+                var paired = ReadBytes(pub, CKA.CKA_MODULUS, CKA.CKA_PUBLIC_EXPONENT);
+                if (paired[0] is not { Length: > 0 } pairedModulus || paired[1] is not { Length: > 0 } pairedExponent)
+                    throw new InvalidOperationException($"the RSA modulus and public exponent cannot be read from {source}.");
+                return Pkcs11PublicKeyMaterial.Rsa(pairedModulus, pairedExponent, source);
+            }
+
+            if (keyType == Pkcs11PublicKeyMaterial.CkkEc || keyType == Pkcs11PublicKeyMaterial.CkkEcEdwards)
+            {
+                var privateParams = ReadBytes(privateKey, CKA.CKA_EC_PARAMS)[0];
+                var (pub, source) = FindPairedPublicKey(id, label);
+                RequireKeyType(pub, keyType, source);
+                var attrs = ReadBytes(pub, CKA.CKA_EC_PARAMS, CKA.CKA_EC_POINT);
+                if (attrs[0] is not { Length: > 0 } ecParams || attrs[1] is not { Length: > 0 } ecPoint)
+                    throw new InvalidOperationException($"CKA_EC_PARAMS and CKA_EC_POINT cannot be read from {source}.");
+                if (privateParams is { Length: > 0 } && !privateParams.AsSpan().SequenceEqual(ecParams))
+                    throw new InvalidOperationException($"{source} is on another curve from the private key, so it is not its public half.");
+                return Pkcs11PublicKeyMaterial.Ec(keyType, ecParams, ecPoint, source);
+            }
+
+            throw new InvalidOperationException($"key type 0x{keyType:X} is not one the signer can compare with a certificate (RSA, EC or EdDSA).");
+        }
+    }
+
+    /// <summary>
+    /// The public key object that pairs with a private key: the one whose <c>CKA_ID</c> is
+    /// <paramref name="id"/>, or whose label is <paramref name="label"/> when the private key has
+    /// no id. Exactly one must exist. The caller holds the lock.
+    /// </summary>
+    private (IObjectHandle Handle, string Source) FindPairedPublicKey(byte[]? id, string label)
+    {
+        var byId = id is { Length: > 0 };
+        var source = byId ? $"the public key object with CKA_ID {Convert.ToHexString(id!)}" : $"the public key object labelled '{label}'";
+        var attributes = new List<IObjectAttribute>
+        {
+            _session!.Factories.ObjectAttributeFactory.Create(CKA.CKA_CLASS, CKO.CKO_PUBLIC_KEY),
+            byId
+                ? _session.Factories.ObjectAttributeFactory.Create(CKA.CKA_ID, id!)
+                : _session.Factories.ObjectAttributeFactory.Create(CKA.CKA_LABEL, label),
+        };
+        var found = _session.FindAllObjects(attributes);
+        if (found.Count == 0)
+            throw new InvalidOperationException($"no public key object pairs with it ({source} does not exist).");
+        if (found.Count > 1)
+            throw new InvalidOperationException($"{found.Count} public key objects pair with it ({source}), so its public half is ambiguous.");
+        return (found[0], source);
+    }
+
+    /// <summary>Throws unless <paramref name="handle"/> has <c>CKA_KEY_TYPE</c> <paramref name="keyType"/>. The caller holds the lock.</summary>
+    private void RequireKeyType(IObjectHandle handle, ulong keyType, string source)
+    {
+        var attr = _session!.GetAttributeValue(handle, new List<CKA> { CKA.CKA_KEY_TYPE })[0];
+        if (attr.CannotBeRead || attr.GetValueAsUlong() != keyType)
+            throw new InvalidOperationException($"{source} is not of the private key's key type.");
+    }
+
+    /// <summary>
+    /// Reads byte-array attributes of <paramref name="handle"/>, with null for any the token
+    /// will not reveal. The caller holds the lock.
+    /// </summary>
+    private byte[]?[] ReadBytes(IObjectHandle handle, params CKA[] attributes)
+    {
+        var values = _session!.GetAttributeValue(handle, attributes.ToList());
+        return values.Select(v => v.CannotBeRead ? null : v.GetValueAsByteArray()).ToArray();
     }
 
     /// <summary>
@@ -261,23 +360,21 @@ public sealed class Pkcs11SessionManager : IDisposable
     /// </summary>
     /// <param name="key">Handle to the private key stored on the token.</param>
     /// <param name="data">The data bytes to sign.</param>
-    /// <param name="mechanism">The <see cref="CKM"/> signing mechanism to use.</param>
+    /// <param name="mechanism">The signing mechanism to use, with its RSA-PSS or EdDSA parameters when it has them.</param>
     /// <returns>The raw signature bytes produced by the HSM.</returns>
     /// <exception cref="Pkcs11Exception">
     /// Re-thrown after one recovery attempt if the signing operation still fails,
     /// or immediately if the first error is not in the recoverable-codes allow-list.
     /// </exception>
-    public byte[] Sign(IObjectHandle key, byte[] data, CKM mechanism)
+    public byte[] Sign(IObjectHandle key, byte[] data, Pkcs11SignMechanism mechanism)
     {
+        ArgumentNullException.ThrowIfNull(mechanism);
         lock (_lock)
         {
             EnsureSession();
             try
             {
-                return _session!.Sign(
-                    _session.Factories.MechanismFactory.Create(mechanism),
-                    key,
-                    data);
+                return SignOnce(key, data, mechanism);
             }
             catch (Pkcs11Exception ex)
             {
@@ -290,12 +387,27 @@ public sealed class Pkcs11SessionManager : IDisposable
                     throw;
 
                 RecoverSession();
-                return _session!.Sign(
-                    _session.Factories.MechanismFactory.Create(mechanism),
-                    key,
-                    data);
+                return SignOnce(key, data, mechanism);
             }
         }
+    }
+
+    /// <summary>
+    /// One <c>C_Sign</c> on the current session with <paramref name="mechanism"/> built as a
+    /// PKCS#11 mechanism: <c>CK_RSA_PKCS_PSS_PARAMS</c> for RSA-PSS, <c>CK_EDDSA_PARAMS</c> for
+    /// Ed448, no parameter otherwise. The caller holds the lock and an open session.
+    /// </summary>
+    private byte[] SignOnce(IObjectHandle key, byte[] data, Pkcs11SignMechanism mechanism)
+    {
+        var factories = _session!.Factories;
+        using var native = mechanism switch
+        {
+            { Pss: { } pss } => factories.MechanismFactory.Create(mechanism.Mechanism,
+                factories.MechanismParamsFactory.CreateCkRsaPkcsPssParams((ulong)pss.HashAlgorithm, (ulong)pss.Mgf, pss.SaltLength)),
+            { Eddsa: { } eddsa } => factories.MechanismFactory.Create(mechanism.Mechanism, eddsa.ToNative()),
+            _ => factories.MechanismFactory.Create(mechanism.Mechanism),
+        };
+        return _session.Sign(native, key, data);
     }
 
     /// <summary>

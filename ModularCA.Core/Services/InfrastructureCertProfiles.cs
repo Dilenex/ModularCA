@@ -72,19 +72,46 @@ public static class InfrastructureCertProfiles
     /// <paramref name="parent"/> when it inherits from it, as itself otherwise.
     /// </summary>
     /// <param name="profile">The certificate profile.</param>
-    /// <param name="parent">The profile it inherits from, or null (<see cref="ParentOfAsync"/>).</param>
+    /// <param name="parent">The profile it inherits from with its effective values, or null (<see cref="ParentOfAsync"/>, <see cref="ParentOf"/>).</param>
     /// <param name="db">The database whose usage catalog the merge compares usages through, as issuance does; null compares them by spelling.</param>
     public static EffectiveCertProfile Effective(CertProfileEntity profile, CertProfileEntity? parent, ModularCADbContext? db = null)
-        => (db == null
-                ? ProfileResolutionService.ForLoadedRows(NullLogger<ProfileResolutionService>.Instance)
-                : new ProfileResolutionService(db, NullLogger<ProfileResolutionService>.Instance))
-            .ResolveLoaded(profile, parent);
+        => Resolver(db).ResolveLoaded(profile, parent);
 
-    /// <summary>The profile <paramref name="profile"/> inherits from, or null when it inherits from none.</summary>
-    public static async Task<CertProfileEntity?> ParentOfAsync(ModularCADbContext db, CertProfileEntity profile, CancellationToken ct = default)
-        => profile.InheritanceEnabled && profile.InheritsFromId is Guid parentId
-            ? await db.CertProfiles.AsNoTracking().FirstOrDefaultAsync(cp => cp.Id == parentId, ct)
-            : null;
+    /// <summary>
+    /// The profile <paramref name="profile"/> inherits from, carrying its effective values (its own
+    /// ancestors applied, as issuance resolves them), or null when it inherits from none.
+    /// <paramref name="profile"/> itself is taken as given, so a change not yet saved is judged.
+    /// </summary>
+    /// <param name="db">The database.</param>
+    /// <param name="profile">The certificate profile.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public static Task<CertProfileEntity?> ParentOfAsync(ModularCADbContext db, CertProfileEntity profile, CancellationToken ct = default)
+        => Resolver(db).EffectiveParentOfAsync(profile, ct);
+
+    /// <summary>
+    /// <see cref="ParentOfAsync"/> over profiles already loaded, by id.
+    /// </summary>
+    /// <param name="profile">The certificate profile.</param>
+    /// <param name="byId">Every certificate profile the chain may reach, by id.</param>
+    /// <param name="db">The database whose usage catalog the merge compares usages through; null compares them by spelling.</param>
+    public static CertProfileEntity? ParentOf(CertProfileEntity profile, IReadOnlyDictionary<Guid, CertProfileEntity> byId, ModularCADbContext? db = null)
+        => Resolver(db).EffectiveParentOf(profile, id => byId.GetValueOrDefault(id));
+
+    /// <summary>
+    /// <paramref name="profile"/> as a parent row for the profiles that inherit from it: its own
+    /// identity, with the effective values it has under <paramref name="parent"/>.
+    /// </summary>
+    /// <param name="profile">The certificate profile.</param>
+    /// <param name="parent">Its parent with its effective values, or null (<see cref="ParentOfAsync"/>).</param>
+    /// <param name="db">The database whose usage catalog the merge compares usages through; null compares them by spelling.</param>
+    public static CertProfileEntity AsParent(CertProfileEntity profile, CertProfileEntity? parent, ModularCADbContext? db = null)
+        => Resolver(db).EffectiveRow(profile, parent);
+
+    /// <summary>A resolver with <paramref name="db"/>'s usage catalog, or comparing usages by spelling when it is null.</summary>
+    private static ProfileResolutionService Resolver(ModularCADbContext? db)
+        => db == null
+            ? ProfileResolutionService.ForLoadedRows(NullLogger<ProfileResolutionService>.Instance)
+            : new ProfileResolutionService(db, NullLogger<ProfileResolutionService>.Instance);
 
     /// <summary>
     /// Why <paramref name="profile"/> cannot be the profile of <paramref name="role"/>, or null
@@ -149,7 +176,7 @@ public static class InfrastructureCertProfiles
     /// to issue one of its own certificates, or null when it would not: a profile a CA issues its
     /// timestamp signer, OCSP responder or CMP signer from (by name as the default, or because the
     /// CA names it) must keep the usage that certificate exists for after inheritance, and so must
-    /// every such profile that inherits from it.
+    /// every such profile that inherits from it. Each is judged with inheritance resolved the whole chain up.
     /// </summary>
     /// <param name="db">The database.</param>
     /// <param name="profile">The profile as stored.</param>
@@ -166,6 +193,8 @@ public static class InfrastructureCertProfiles
                 return $"{reason} {WhoIssues(role, uses)}";
         }
 
+        // A child inherits what the changed profile has after its own inheritance, not its stored row.
+        var changedAsParent = AsParent(changed, changedParent, db);
         var children = await db.CertProfiles.AsNoTracking()
             .Where(c => c.InheritanceEnabled && c.InheritsFromId == profile.Id)
             .ToListAsync(ct);
@@ -174,7 +203,7 @@ public static class InfrastructureCertProfiles
             var childUses = await UsesAsync(db, child.Id, ct);
             foreach (var role in RolesOf(child.Name, childUses))
             {
-                if (WhyUnsuitable(child, role, changed, db) is string reason)
+                if (WhyUnsuitable(child, role, changedAsParent, db) is string reason)
                     return $"{reason} It inherits its usages from '{profile.Name}', and this change would leave it without them. {WhoIssues(role, childUses)}";
             }
         }

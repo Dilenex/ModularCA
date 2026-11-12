@@ -149,7 +149,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         await currentUser.EnsureLoadedAsync();
         if (currentUser.User == null) return Unauthorized();
 
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, User, mfaToken, StepUpOps.CreateSshCa))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, HttpContext, mfaToken, StepUpOps.CreateSshCa))
             return StatusCode(403, new { error = "MFA re-verification required.", requiresStepUp = true });
 
         if (request.SpaceId != null)
@@ -270,6 +270,9 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> GetCaPublicKey(Guid id)
     {
+        // The service throws for an id that names no key; that is a 404 here, not a server error.
+        if (!await db.SshCaKeys.AsNoTracking().AnyAsync(k => k.Id == id))
+            return NotFound(new { error = "SSH CA key not found." });
         var pubKey = await sshCaService.GetPublicKeyAsync(id);
         return Content(pubKey, "text/plain");
     }
@@ -604,7 +607,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         await currentUser.EnsureLoadedAsync();
         if (currentUser.User == null) return Unauthorized();
 
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, User, mfaToken, StepUpOps.DisableSshCa, id.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, HttpContext, mfaToken, StepUpOps.DisableSshCa, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required.", requiresStepUp = true });
 
         var key = await db.SshCaKeys.Include(k => k.CertificateAuthority).FirstOrDefaultAsync(k => k.Id == id);
@@ -645,15 +648,20 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
 [System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
 public class GenerateSshCaKeyRequest
 {
+    /// <summary>Name of the SSH CA. Lower-cased with spaces turned into hyphens it becomes the CA's label, so it must satisfy the CA label rules; name and label must be unique.</summary>
     public string Name { get; set; } = string.Empty;
+    /// <summary><c>ed25519</c> (the default), <c>ecdsa</c> or <c>rsa</c>.</summary>
     public string? KeyType { get; set; }
     /// <summary>
     /// Key size in bits. RSA: 2048/3072/4096/7680/8192 (default 3072). ECDSA: 256/384/521 (default 256).
     /// Ignored for ed25519 (fixed size).
     /// </summary>
     public int? KeySize { get; set; }
+    /// <summary>Whether the key signs user certificates; null means true.</summary>
     public bool? IsUserCa { get; set; }
+    /// <summary>Whether the key signs host certificates; null means false.</summary>
     public bool? IsHostCa { get; set; }
+    /// <summary>Longest certificate the key may sign, in hours; null means 24 for a key that signs user certificates and 8760 for a host-only key.</summary>
     public int? MaxValidityHours { get; set; }
     /// <summary>
     /// Must be null or omitted: SSH CAs are instance CAs, and a space id is refused with 400. The

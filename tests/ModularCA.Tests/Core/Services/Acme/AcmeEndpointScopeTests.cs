@@ -349,6 +349,79 @@ public class AcmeEndpointScopeTests
         Assert.Equal("open", (await w.Db.AcmeOrders.AsNoTracking().SingleAsync()).CaLabel);
     }
 
+    /// <summary>Places an order for one DNS identifier with an account bound to <c>open</c>.</summary>
+    private static async Task<IActionResult> NewOrderForAsync(World w, string dnsName)
+    {
+        var (jwk, thumb) = NewKey();
+        var account = new AcmeAccountEntity { JwkJson = jwk, JwkThumbprint = thumb, CertificateAuthorityId = w.Open.Id };
+        w.Db.AcmeAccounts.Add(account);
+        await w.Db.SaveChangesAsync();
+        return await InvokeAsync(w, "AcmeOrderController", "NewOrder", new AcmeJwsPayload
+        {
+            AccountId = account.Id,
+            Payload = JsonSerializer.Serialize(new { identifiers = new[] { new { type = "dns", value = "ok.example.com" }, new { type = "dns", value = dnsName } } }),
+        }, w.Open);
+    }
+
+    /// <summary>
+    /// A DNS identifier longer than 253 characters, or with a label longer than 63 or empty, is
+    /// refused with 400 rejectedIdentifier and no order is created; such orders were accepted.
+    /// </summary>
+    [Theory]
+    [InlineData(254, 50)]
+    [InlineData(300, 63)]
+    [InlineData(80, 64)]
+    [InlineData(0, 0)]
+    public async Task New_order_refuses_a_dns_identifier_no_dns_name_can_be(int length, int labelLength)
+    {
+        var w = Seed();
+        var name = length == 0 ? "a..example.com" : DnsName(length, labelLength);
+
+        var result = await NewOrderForAsync(w, name);
+
+        Assert.Equal(400, StatusOf(result));
+        var error = Assert.IsType<AcmeErrorResponse>(Assert.IsType<ObjectResult>(result).Value);
+        Assert.Equal("urn:ietf:params:acme:error:rejectedIdentifier", error.Type);
+        Assert.True(error.Detail!.Length < 200, "the detail quotes only the start of the name");
+        Assert.Empty(await w.Db.AcmeOrders.ToListAsync());
+    }
+
+    /// <summary>A name of exactly 253 characters with 63-character labels is accepted, with or without the root's trailing dot, and as a wildcard.</summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData(".")]
+    [InlineData("wildcard")]
+    public async Task New_order_accepts_a_dns_identifier_at_the_limits(string form)
+    {
+        var w = Seed();
+        var name = form == "wildcard" ? "*." + DnsName(251, 63) : DnsName(253, 63) + form;
+
+        var result = await NewOrderForAsync(w, name);
+
+        Assert.Equal(201, StatusOf(result));
+        Assert.Single(await w.Db.AcmeOrders.ToListAsync());
+    }
+
+    /// <summary>A dotted name of exactly <paramref name="length"/> characters whose labels are at most <paramref name="labelLength"/> long.</summary>
+    private static string DnsName(int length, int labelLength)
+    {
+        var labels = new List<string>();
+        var remaining = length;
+        while (remaining > 0)
+        {
+            var take = Math.Min(labelLength, remaining);
+            // The last label may not be followed by a dot; any other label needs room for one.
+            if (take < remaining && take == remaining - 1)
+                take--;
+            labels.Add(new string('a', take));
+            remaining -= take + (take < remaining ? 1 : 0);
+        }
+        var name = string.Join('.', labels);
+        Assert.Equal(length, name.Length);
+        Assert.True(labels.Max(l => l.Length) <= labelLength && labels.Max(l => l.Length) >= Math.Min(labelLength, length));
+        return name;
+    }
+
     /// <summary>
     /// The finding: <c>AcmeAccountDeactivated</c> carried the route label (null on the label-less
     /// routes) and no CA id or space. It carries the bound CA's now.
@@ -368,6 +441,136 @@ public class AcmeEndpointScopeTests
         Assert.IsType<OkObjectResult>(result);
         var row = Assert.Single(w.Audit.Rows, r => r.Operation == "AcmeAccountDeactivated");
         Assert.Equal(("strict", w.Strict.Id, w.Strict.SpaceId), (row.CaLabel, row.CaId, row.SpaceId));
+
+        // The ACME tab gets its own row, under the same CA, so the tab that shows the account
+        // being registered also shows it ending.
+        var tab = Assert.Single(w.Audit.Rows, r => r.Operation == "AccountDeactivated");
+        Assert.Equal(("strict", w.Strict.Id, w.Strict.SpaceId), (tab.CaLabel, tab.CaId, tab.SpaceId));
+    }
+
+    /// <summary>
+    /// Replacing an account's key replaces its only credential, and left no record anywhere. A
+    /// rollover is in the main audit log and on the ACME tab, under the account's CA; a refused
+    /// one is a <c>KeyChangeRefused</c> row and changes nothing.
+    /// </summary>
+    [Fact]
+    public async Task A_key_change_is_audited_and_a_refused_one_too()
+    {
+        var w = Seed();
+        var (oldJwk, oldThumb) = NewKey();
+        var account = new AcmeAccountEntity { JwkJson = oldJwk, JwkThumbprint = oldThumb, CertificateAuthorityId = w.Strict.Id };
+        w.Db.AcmeAccounts.Add(account);
+        await w.Db.SaveChangesAsync();
+
+        var refused = await InvokeAsync(w, "AcmeAccountController", "KeyChange",
+            new AcmeJwsPayload { AccountId = account.Id, Payload = "{ not json" }, w.Strict);
+        Assert.Equal(400, StatusOf(refused));
+        var refusal = Assert.Single(w.Audit.Rows);
+        Assert.Equal(("KeyChangeRefused", "strict", (Guid?)w.Strict.Id), (refusal.Operation, refusal.CaLabel, refusal.CaId));
+
+        // A real rollover: the inner JWS is signed by the new key and names the old one.
+        using var newKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var p = newKey.ExportParameters(false);
+        var newJwk = $$"""{"crv":"P-256","kty":"EC","x":"{{B64(p.Q.X!)}}","y":"{{B64(p.Q.Y!)}}"}""";
+        var config = new SystemConfig();
+        config.Https.PublicDomain = Domain;
+        var basePublic = config.Https.GetPublicHttpsBaseUrl();
+        var protectedB64 = B64(Encoding.UTF8.GetBytes($$"""{"alg":"ES256","jwk":{{newJwk}},"url":"{{basePublic}}"}"""));
+        // The shape RFC 8555 §7.3.5 defines: "account" and "oldKey", with the new key in the inner
+        // header only. A "newKey" member was required, so no standard client could roll its key.
+        string Inner(string payloadJson)
+        {
+            var body = B64(Encoding.UTF8.GetBytes(payloadJson));
+            var sig = B64(newKey.SignData(Encoding.ASCII.GetBytes($"{protectedB64}.{body}"), HashAlgorithmName.SHA256));
+            return $$"""{"protected":"{{protectedB64}}","payload":"{{body}}","signature":"{{sig}}"}""";
+        }
+        var accountUrl = $"{basePublic}/api/v1/acme/account/{account.Id}";
+
+        // A newKey member that is not the header's key is still refused.
+        var (otherJwk, _) = NewKey();
+        var mismatched = await InvokeAsync(w, "AcmeAccountController", "KeyChange",
+            new AcmeJwsPayload { AccountId = account.Id, Payload = Inner($$"""{"account":"{{accountUrl}}","oldKey":{{oldJwk}},"newKey":{{otherJwk}}}""") }, w.Strict);
+        Assert.Equal(400, StatusOf(mismatched));
+
+        var inner = Inner($$"""{"account":"{{accountUrl}}","oldKey":{{oldJwk}}}""");
+
+        var changed = await InvokeAsync(w, "AcmeAccountController", "KeyChange",
+            new AcmeJwsPayload { AccountId = account.Id, Payload = inner }, w.Strict);
+
+        Assert.Equal(200, StatusOf(changed));
+        w.Db.ChangeTracker.Clear();
+        Assert.NotEqual(oldThumb, (await w.Db.AcmeAccounts.SingleAsync(a => a.Id == account.Id)).JwkThumbprint);
+        var log = Assert.Single(w.Audit.Rows, r => r.Operation == "AcmeAccountKeyChanged");
+        Assert.Equal(("strict", w.Strict.Id, w.Strict.SpaceId), (log.CaLabel, log.CaId, log.SpaceId));
+        var tab = Assert.Single(w.Audit.Rows, r => r.Operation == "AccountKeyChanged");
+        Assert.Equal(("strict", w.Strict.Id, w.Strict.SpaceId), (tab.CaLabel, tab.CaId, tab.SpaceId));
+        Assert.Equal(2, w.Audit.Rows.Count(r => r.Operation == "KeyChangeRefused"));
+    }
+
+    /// <summary>A change of contact left no trace. It is an <c>AccountUpdated</c> row on the ACME tab.</summary>
+    [Fact]
+    public async Task A_contact_update_is_on_the_acme_tab()
+    {
+        var w = Seed();
+        var (jwk, thumb) = NewKey();
+        var account = new AcmeAccountEntity { JwkJson = jwk, JwkThumbprint = thumb, CertificateAuthorityId = w.Strict.Id };
+        w.Db.AcmeAccounts.Add(account);
+        await w.Db.SaveChangesAsync();
+
+        var result = await InvokeAsync(w, "AcmeAccountController", "UpdateAccount",
+            new AcmeJwsPayload { AccountId = account.Id, Payload = """{"contact":["mailto:new@example.test"]}""" }, w.Strict, null, account.Id);
+
+        Assert.IsType<OkObjectResult>(result);
+        var row = Assert.Single(w.Audit.Rows);
+        Assert.Equal(("AccountUpdated", "strict", (Guid?)w.Strict.Id, w.Strict.SpaceId), (row.Operation, row.CaLabel, row.CaId, row.SpaceId));
+
+        // Reading the account (POST-as-GET) is not an update.
+        await InvokeAsync(w, "AcmeAccountController", "UpdateAccount",
+            new AcmeJwsPayload { AccountId = account.Id, Payload = "" }, w.Strict, null, account.Id);
+        Assert.Single(w.Audit.Rows);
+    }
+
+    /// <summary>A challenge service that owns every challenge and refuses every response.</summary>
+    public class RefusingChallenges : DispatchProxy
+    {
+        /// <summary>The account every challenge belongs to.</summary>
+        public Guid AccountId { get; set; }
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) => targetMethod!.Name switch
+        {
+            nameof(IAcmeChallengeService.GetAccountIdForChallengeAsync) => Task.FromResult<Guid?>(AccountId),
+            nameof(IAcmeChallengeService.RespondAsync) => throw new InvalidOperationException("Challenge is not pending."),
+            _ => throw new NotSupportedException(targetMethod.Name),
+        };
+    }
+
+    /// <summary>
+    /// A challenge response the service refuses is answered with a fixed sentence, and the real
+    /// reason reached only the log file. It is an unsuccessful <c>ChallengeRefused</c> row.
+    /// </summary>
+    [Fact]
+    public async Task A_refused_challenge_response_is_on_the_acme_tab()
+    {
+        var w = Seed();
+        var accountId = Guid.NewGuid();
+        var controller = ApiAssembly.TypeNamed("ModularCA.API.Controllers.v1.Acme.AcmeChallengeController");
+
+        var result = await InvokeAsync(w, "AcmeChallengeController", "RespondToChallenge",
+            new AcmeJwsPayload { AccountId = accountId, JwkThumbprint = "thumb" }, w.Strict,
+            services =>
+            {
+                var challenges = DispatchProxy.Create<IAcmeChallengeService, RefusingChallenges>();
+                ((RefusingChallenges)(object)challenges).AccountId = accountId;
+                services.Add(typeof(IAcmeChallengeService), challenges);
+                services.Add(typeof(IAcmeAuthorizationService), InstanceCeremonyEndpointTests.Fake<IAcmeAuthorizationService>.Create());
+                services.Add(typeof(Microsoft.Extensions.Logging.ILogger<>).MakeGenericType(controller),
+                    Activator.CreateInstance(typeof(Microsoft.Extensions.Logging.Abstractions.NullLogger<>).MakeGenericType(controller))!);
+            },
+            Guid.NewGuid());
+
+        Assert.Equal(400, StatusOf(result));
+        var row = Assert.Single(w.Audit.Rows);
+        Assert.Equal(("ChallengeRefused", "strict", (Guid?)w.Strict.Id, w.Strict.SpaceId), (row.Operation, row.CaLabel, row.CaId, row.SpaceId));
     }
 
     /// <summary>

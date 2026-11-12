@@ -51,6 +51,24 @@ namespace ModularCA.Core.Services
 
         private bool _firstRun = true;
 
+        /// <summary>
+        /// How long after the scheduler starts the jobs that need the signer are held for a
+        /// signer that has not answered yet. A separate signer normally listens a few seconds
+        /// after the node starts; one that is still silent after this long is an outage, and the
+        /// jobs run and report it as they always have.
+        /// </summary>
+        public static readonly TimeSpan SignerStartGrace = TimeSpan.FromMinutes(5);
+
+        /// <summary>How soon the scheduler looks again while it holds jobs for the signer's first answer.</summary>
+        private static readonly TimeSpan HeldPollInterval = TimeSpan.FromSeconds(5);
+
+        // True once the signer has answered a health call in this process, or the grace ran out:
+        // from then on no job is held, whatever the signer does.
+        private bool _signerHoldOver;
+        private bool _holdAnnounced;
+        private bool _holdingNow;
+        private DateTimeOffset? _startedAt;
+
         // Cached list of concrete ISchedulerJob types, captured once on first poll cycle.
         // Each tick resolves each type in its own DI scope so jobs don't share a
         // ModularCADbContext (or any other scoped service) across the same poll cycle —
@@ -85,7 +103,8 @@ namespace ModularCA.Core.Services
         /// <summary>
         /// Main polling loop. Each iteration: lease acquire → CA-exists check →
         /// enumerate <see cref="ISchedulerJob"/> implementations and call
-        /// <see cref="ISchedulerJob.TickAsync"/>. The scheduler is always running on every
+        /// <see cref="ISchedulerJob.TickAsync"/>, except that the jobs that need the signer wait
+        /// for its first answer after a start (<see cref="HoldSignerJobsAsync"/>). The scheduler is always running on every
         /// replica; the leader-election lease decides which replica actually executes jobs.
         /// <c>ExecuteAsync</c> is serial — multi-instance concurrency is owned by the lease.
         /// </summary>
@@ -118,7 +137,9 @@ namespace ModularCA.Core.Services
 
                 try
                 {
-                    await Task.Delay(_pollInterval, stoppingToken);
+                    // While jobs wait for the signer's first answer, look again soon, so they run
+                    // when it answers and not up to a poll interval later.
+                    await Task.Delay(_holdingNow ? HeldPollInterval : _pollInterval, _timeProvider, stoppingToken);
                 }
                 catch (OperationCanceledException) { break; }
             }
@@ -214,9 +235,14 @@ namespace ModularCA.Core.Services
                     .ToList();
             }
 
+            var holdSignerJobs = await HoldSignerJobsAsync(leaseScope.ServiceProvider, stoppingToken);
+
             foreach (var jobType in _jobTypes)
             {
                 if (stoppingToken.IsCancellationRequested) break;
+
+                if (holdSignerJobs && typeof(ISignerDependentJob).IsAssignableFrom(jobType))
+                    continue;
 
                 await using var perJobScope = _serviceProvider.CreateAsyncScope();
                 ISchedulerJob job;
@@ -243,6 +269,81 @@ namespace ModularCA.Core.Services
                         job.Name);
                 }
             }
+        }
+
+        /// <summary>
+        /// Whether the jobs that need the signer (<see cref="ISignerDependentJob"/>) are held this
+        /// cycle: only between the scheduler's start and the signer's first answer, and for at
+        /// most <see cref="SignerStartGrace"/>. With a separate signer the node is up a few
+        /// seconds before the signer listens, and a CRL generation or a renewal run in that
+        /// window failed with "the signer is unreachable" on every ordinary start. Held jobs are
+        /// not marked as run, so they run in the first cycle after the signer answers.
+        /// <para>
+        /// The hold ends for good at the first answer. A signer that goes away later is a fault,
+        /// and the jobs run and log it as an error as before; so does one that never answers
+        /// within the grace. With the signer in process the first health call answers at once
+        /// and nothing is ever held. No signing service registered (a process that does not
+        /// sign) means nothing to wait for.
+        /// </para>
+        /// </summary>
+        private async Task<bool> HoldSignerJobsAsync(IServiceProvider services, CancellationToken stoppingToken)
+        {
+            if (_signerHoldOver)
+                return false;
+            var held = _jobTypes!.Where(t => typeof(ISignerDependentJob).IsAssignableFrom(t)).Select(t => t.Name).ToList();
+            var signer = services.GetService<ModularCA.Shared.Signing.ISigningService>();
+            if (held.Count == 0 || signer == null)
+                return EndSignerHold(null);
+
+            _startedAt ??= _timeProvider.GetUtcNow();
+            ModularCA.Shared.Signing.SignerHealth health;
+            try
+            {
+                health = await signer.HealthAsync(stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // A health call that throws is not "has not answered yet": do not hide it behind the hold.
+                _logger.LogWarning(ex, "SchedulerService: the signer's health could not be read; running every job");
+                return EndSignerHold(null);
+            }
+
+            if (!string.Equals(health.Backend, ModularCA.Shared.Signing.SignerHealth.UnreachableBackend, StringComparison.Ordinal))
+                return EndSignerHold(_holdAnnounced ? "The signer answered; running the jobs that were waiting for it" : null);
+
+            var waited = _timeProvider.GetUtcNow() - _startedAt.Value;
+            if (waited >= SignerStartGrace)
+            {
+                _logger.LogWarning(
+                    "SchedulerService: the signer has not answered in the {Grace} since the scheduler started. "
+                    + "Its jobs ({Jobs}) run from now on and will fail until it does",
+                    SignerStartGrace, string.Join(", ", held));
+                return EndSignerHold(null);
+            }
+
+            if (!_holdAnnounced)
+            {
+                _logger.LogInformation(
+                    "SchedulerService: the signer has not answered yet; holding the jobs that need it ({Jobs}) until it does, for at most {Grace}",
+                    string.Join(", ", held), SignerStartGrace);
+                _holdAnnounced = true;
+            }
+            _holdingNow = true;
+            return true;
+        }
+
+        /// <summary>Ends the hold for the life of the process, logging <paramref name="message"/> when there is one. Always false.</summary>
+        private bool EndSignerHold(string? message)
+        {
+            if (message != null)
+                _logger.LogInformation("SchedulerService: {Message}", message);
+            _signerHoldOver = true;
+            _holdingNow = false;
+            return false;
         }
 
         /// <summary>

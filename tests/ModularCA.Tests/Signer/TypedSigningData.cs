@@ -21,7 +21,7 @@ namespace ModularCA.Tests.Signer;
 internal static class TypedSigningData
 {
     private static readonly DateTime NotBefore = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-    private static readonly DateTime NotAfter = new(2027, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime NotAfter = new(2048, 1, 1, 0, 0, 0, DateTimeKind.Utc);
     private static long _serial = 1000;
 
     /// <summary>Bytes that are no structure at all.</summary>

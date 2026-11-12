@@ -157,6 +157,10 @@ public sealed class NameConstraintIssuanceTests
                 AllowedKeySizes = "[]", AllowedSignatureAlgorithms = "[]", ValidityPeriodMax = "P10Y",
             };
             var leaf = Profile("NC Leaf");
+            // A leaf names a usage the CA's signing profile permits: one that lists none is
+            // refused, because it would leave the certificate valid for every purpose. clientAuth
+            // rather than serverAuth, so a SAN-less leaf stays valid.
+            leaf.ExtendedKeyUsages = "[\"1.3.6.1.5.5.7.3.2\"]";
             // The two infrastructure profiles carry their usages, as bootstrap seeds them: a CA
             // is not created from one that lists none.
             CertProfileEntity Infrastructure(string name, string eku)
@@ -170,6 +174,7 @@ public sealed class NameConstraintIssuanceTests
                 Infrastructure("OCSP Responder Certificate Profile", "1.3.6.1.5.5.7.3.9"),
                 Profile("Main CA Certificate Profile", isCa: true), leaf);
             Db.OIDOptions.AddRange(
+                new OIDOptionEntity { OID = "1.3.6.1.5.5.7.3.2", FriendlyName = "clientAuth", KeyUsage = "Extended" },
                 new OIDOptionEntity { OID = "1.3.6.1.5.5.7.3.9", FriendlyName = "OCSPSigning", KeyUsage = "Extended" },
                 new OIDOptionEntity { OID = "1.3.6.1.5.5.7.3.8", FriendlyName = "timeStamping", KeyUsage = "Extended" },
                 new OIDOptionEntity { OID = "2.5.29.15.0", FriendlyName = "digitalSignature", KeyUsage = "Standard" });

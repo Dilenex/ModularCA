@@ -12,7 +12,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.14">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.15">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
@@ -24,9 +24,14 @@
          project that names only the provider resolves Relational 10.0.4 and MSBuild reports an
          unresolvable MSB3277 conflict against the 10.0.12 the API pulls in. Same reason the
          previous provider needed this pin, different numbers. -->
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.14" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.15" />
     <PackageReference Include="NCrontab.Signed" Version="3.4.0" />
     <PackageReference Include="YamlDotNet" Version="16.3.0" />
+    <!-- Fido2 4.0.1 (through ModularCA.Auth) asks for System.Formats.Cbor 9.0.0, which is affected by
+         GHSA-vmv3-wvjp-wqpj. The API and the tests take the library from the ASP.NET Core shared
+         framework, which is why only this project resolved the package. Lifted to the patched
+         version here; drop the pin when Fido2 asks for a patched one itself. -->
+    <PackageReference Include="System.Formats.Cbor" Version="10.0.15" />
     <ProjectReference Include="..\ModularCA.Auth\ModularCA.Auth.csproj" />
 	<ProjectReference Include="..\ModularCA.Keystore\ModularCA.Keystore.csproj" />
 	<ProjectReference Include="..\ModularCA.Shared\ModularCA.Shared.csproj" />

@@ -48,8 +48,12 @@ public class WebAuthnController : ControllerBase
     private static readonly System.Text.Json.JsonSerializerOptions Fido2JsonOptions =
         new(System.Text.Json.JsonSerializerDefaults.Web);
 
+    private readonly ModularCA.Auth.Services.IReplayGuard _replayGuard;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="WebAuthnController"/> class.
+    /// <paramref name="replayGuard"/> makes an assertion challenge and a pending-MFA token
+    /// single-use under concurrency (<see cref="MfaSingleUse"/>, <see cref="PendingMfaToken.ConsumeAsync"/>).
     /// </summary>
     public WebAuthnController(
         ModularCADbContext db,
@@ -59,8 +63,10 @@ public class WebAuthnController : ControllerBase
         IJwtTokenService jwt,
         ICurrentUserService currentUser,
         IAuditService audit,
+        ModularCA.Auth.Services.IReplayGuard replayGuard,
         IFido2? fido2 = null)
     {
+        _replayGuard = replayGuard;
         _db = db;
         _fido2 = fido2!;
         _cache = cache;
@@ -176,10 +182,10 @@ public class WebAuthnController : ControllerBase
         // stays open so `mfa_setup_required` users can enroll their first key.
         var hasTotpPrecheck = await _db.TotpSecrets.AnyAsync(t => t.UserId == userId.Value && t.IsVerified);
         var hasWebAuthnPrecheck = await _db.Fido2Credentials.AnyAsync(c => c.UserId == userId.Value);
-        var hasMtlsPrecheck = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
+        var hasMtlsPrecheck = await _db.MtlsCredentials.Where(await ModularCA.Core.Helpers.MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
         if (hasTotpPrecheck || hasWebAuthnPrecheck || hasMtlsPrecheck)
         {
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.WebAuthnRegister))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.WebAuthnRegister))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
         }
 
@@ -312,6 +318,14 @@ public class WebAuthnController : ControllerBase
     /// Username-only resolution removed — MFA token is now mandatory to prevent
     /// assertion without prior password authentication.
     /// AUTH-009: Per-user failure counter added to match TOTP brute-force protection.
+    /// The issued session wears the user's default access badge when they have one.
+    /// <para>
+    /// Single-use under concurrency: once the assertion verifies, its challenge is claimed through
+    /// <see cref="MfaSingleUse.TryClaimWebAuthnChallengeAsync"/> and the pending-MFA token is
+    /// consumed with <see cref="PendingMfaToken.ConsumeAsync"/>. Of concurrent requests carrying the
+    /// same assertion, or completing the same token, exactly one issues a session. A failed
+    /// assertion claims nothing, so the user can retry against the same options.
+    /// </para>
     /// </summary>
     [AllowAnonymous]
     [HttpPost("assertion")]
@@ -442,12 +456,42 @@ public class WebAuthnController : ControllerBase
         // satisfied. The catch block above handles that case — no extra branch
         // needed here.
 
+        var sourceIp = HttpContext.Connection.RemoteIpAddress?.ToString();
+
+        // The verification above is not single-use: every concurrent request carrying the same
+        // signed assertion passes it, and a sign counter does not tell them apart (many
+        // authenticators report zero). The two atomic claims decide: one per challenge, then one
+        // per pending-MFA token, so exactly one request goes on to issue a session.
+        if (!await MfaSingleUse.TryClaimWebAuthnChallengeAsync(_replayGuard, assertionOpts.Challenge))
+        {
+            MetricsService.AuthMfaVerificationFailuresTotal.WithLabels("webauthn", "challenge_replayed").Inc();
+            await _audit.LogAsync(
+                Shared.Enums.AuditActionType.UserLoginFailed,
+                user.Id, user.Username,
+                sourceIp: sourceIp,
+                details: new { Reason = "webauthn_challenge_already_used", Flow = "webauthn-verify" },
+                success: false);
+            return Unauthorized(new { error = "This security key challenge has already been used. Sign in again." });
+        }
+        if (await ModularCA.Auth.Utils.PendingMfaToken.ConsumeAsync(_cache, _replayGuard, mfaToken) == null)
+        {
+            await _audit.LogAsync(
+                Shared.Enums.AuditActionType.MfaTokenInvalid,
+                user.Id, user.Username,
+                targetEntityType: "User",
+                targetEntityId: user.Id.ToString(),
+                sourceIp: sourceIp,
+                success: false,
+                errorMessage: "MFA token already consumed or expired");
+            return Unauthorized(new { error = "MFA token is invalid or expired" });
+        }
+
         // Update the sign count to detect cloned authenticators
         storedCredential.SignCount = result.SignCount;
         storedCredential.LastUsedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
 
-        // Clean up the assertion session (MFA token already consumed at read time)
+        // Clean up the assertion session
         await _cache.RemoveAsync(cacheKey);
 
         // AUTH-009: clear per-user failure counter on successful assertion
@@ -455,11 +499,7 @@ public class WebAuthnController : ControllerBase
 
         MetricsService.AuthMfaVerificationsTotal.WithLabels("webauthn").Inc();
 
-        // Consume MFA token on success
-        await _cache.RemoveAsync($"mfa:{mfaToken}");
-
         // 2FA is complete; issue the JWT.
-        var sourceIp = HttpContext.Connection.RemoteIpAddress?.ToString();
         // Re-check account state at issuance. The gate ran when AuthController.Login minted the
         // MFA token, but that was up to MfaSessionTtlSeconds ago (clamped to 900s) — long enough
         // for an administrator to disable or lock the account while its owner is part-way through
@@ -481,10 +521,13 @@ public class WebAuthnController : ControllerBase
             .Include(gm => gm.Group)
             .Select(gm => gm.Group)
             .ToListAsync();
-        var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp);
+        // A default access badge starts the session narrowed, as on every sign-in path.
+        var defaultBadge = await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeService>().GetDefaultClaimAsync(user.Id);
+        var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, badge: defaultBadge);
         var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
         var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash,
             await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Services.IDpopProofService>().GetValidatedJktAsync(HttpContext));
+        refreshToken.AccessBadgeId = defaultBadge?.Id;
         // Plaintext goes to the client; DB stores the hash.
         var refreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
 
@@ -562,8 +605,13 @@ public class WebAuthnController : ControllerBase
     /// <summary>
     /// Removes a registered FIDO2 credential by its identifier.
     /// Requires a valid step-up MFA token via X-MFA-Token header.
-    /// Blocks removal if this is the user's only remaining MFA method.
+    /// Blocks removal if this is the user's only remaining MFA method. Removes the credential and
+    /// ends every session of the account (the current one included) in one save, as revoking an
+    /// mTLS credential does, since a session does not record which credential opened it; the
+    /// ending is audited as <see cref="AuditActionType.UserSessionsEnded"/>.
     /// </summary>
+    /// <param name="id">The credential to remove; it must belong to the caller.</param>
+    /// <param name="mfaToken">The step-up token for <see cref="StepUpOps.WebAuthnDelete"/> on this credential.</param>
     [Authorize]
     [HttpDelete("credentials/{id:guid}")]
     public async Task<IActionResult> DeleteCredential(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -573,7 +621,7 @@ public class WebAuthnController : ControllerBase
             return Unauthorized(new { error = "Authentication required" });
 
         // Require step-up MFA verification
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.WebAuthnDelete, id.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.WebAuthnDelete, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var credential = await _db.Fido2Credentials
@@ -585,12 +633,18 @@ public class WebAuthnController : ControllerBase
         // Prevent removal of last MFA method
         var webAuthnCount = await _db.Fido2Credentials.CountAsync(c => c.UserId == userId.Value);
         var hasTotp = await _db.TotpSecrets.AnyAsync(t => t.UserId == userId.Value && t.IsVerified);
-        var hasActiveMtls = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
+        var hasActiveMtls = await _db.MtlsCredentials.Where(await ModularCA.Core.Helpers.MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow)).AnyAsync(c => c.UserId == userId.Value);
         if (webAuthnCount <= 1 && !hasTotp && !hasActiveMtls)
             return StatusCode(409, new { error = "Cannot remove your only MFA method. Set up TOTP, register another security key, or enroll an mTLS certificate first." });
 
         _db.Fido2Credentials.Remove(credential);
+
+        // Refresh tokens do not record the credential that opened them, so every session ends,
+        // as it does when an mTLS credential is revoked.
+        var now = DateTime.UtcNow;
+        var ended = await ModularCA.Core.Helpers.UserSessionTermination.EndAllSessionsAsync(_db, [userId.Value], now);
         await _db.SaveChangesAsync();
+        await ModularCA.Core.Helpers.UserSessionTermination.InvalidateStampCacheAsync(_cache, [userId.Value]);
 
         // Emit the dedicated MfaWebAuthnRemoved action type
         // with the source IP so MFA removal detection rules can key off the action
@@ -603,8 +657,19 @@ public class WebAuthnController : ControllerBase
             targetEntityId: userId.Value.ToString(),
             details: new { Action = "WebAuthnCredentialRemoved", CredentialId = id, DeviceName = credential.DeviceName },
             sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());
+        foreach (var e in ended)
+        {
+            await _audit.LogAsync(
+                Shared.Enums.AuditActionType.UserSessionsEnded,
+                userId.Value,
+                _currentUser.User?.Username,
+                targetEntityType: "User",
+                targetEntityId: e.UserId.ToString(),
+                details: new { reason = "webauthn_credential_removed", credentialId = id, refreshTokensRevoked = e.RefreshTokensRevoked },
+                sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());
+        }
 
-        return Ok(new { message = "Credential removed successfully" });
+        return Ok(new { message = "Credential removed. Every session of this account has been signed out; sign in again." });
     }
 }
 

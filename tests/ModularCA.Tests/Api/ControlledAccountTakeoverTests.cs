@@ -565,6 +565,9 @@ public sealed class ControlledAccountTakeoverTests
         super.IsLocked = true;
         super.FailedLoginAttempts = 9;
         var stamp = super.SecurityStamp;
+        // A session from before the lock, and another account's, which the unlock must leave alone.
+        h.W.Db.RefreshTokens.Add(new RefreshTokenEntity { Id = Guid.NewGuid(), UserId = super.Id, Token = "before-the-lock", ExpiresAt = DateTime.UtcNow.AddDays(1) });
+        h.W.Db.RefreshTokens.Add(new RefreshTokenEntity { Id = Guid.NewGuid(), UserId = h.W.Plain, Token = "someone-else", ExpiresAt = DateTime.UtcNow.AddDays(1) });
         h.W.Db.SaveChanges();
 
         var unlock = ApiAssembly.TypeNamed("ModularCA.API.Startup.UnlockUserCommand").GetMethod("RunAsync")!;
@@ -573,6 +576,11 @@ public sealed class ControlledAccountTakeoverTests
         Assert.False(h.User(h.W.Super).IsLocked);
         Assert.Equal(0, h.User(h.W.Super).FailedLoginAttempts);
         Assert.NotEqual(stamp, h.User(h.W.Super).SecurityStamp);
+        // Refresh does not read the stamp, so the unlock revokes the account's refresh tokens itself.
+        var ended = Assert.Single(h.W.Db.RefreshTokens.Where(t => t.UserId == super.Id));
+        Assert.True(ended.IsRevoked);
+        Assert.NotNull(ended.RevokedAt);
+        Assert.False(Assert.Single(h.W.Db.RefreshTokens.Where(t => t.UserId == h.W.Plain)).IsRevoked);
         Assert.Equal(1, await (Task<int>)unlock.Invoke(null, [h.W.Db, h.AuditDb, "no-such-user", output])!);
 
         // The unlock is in the hash-chained audit trail, by the host rather than any account.
@@ -600,6 +608,54 @@ public sealed class ControlledAccountTakeoverTests
             Assert.False(h.User(h.W.Super).IsLocked);
             Assert.Contains("WARNING: NO AUDIT RECORD WAS WRITTEN FOR THIS UNLOCK", output.ToString());
         }
+    }
+
+    /// <summary>
+    /// <c>--set-password-source</c> makes the one change the console cannot, an administrator's own
+    /// source: here the only super becomes Local. It ends the account's sessions as the console's
+    /// change does, and is audited by the host, not by any account.
+    /// </summary>
+    [Fact]
+    public async Task The_host_local_password_source_command_sets_a_supers_own_source_and_ends_its_sessions()
+    {
+        var h = new Harness();
+        var super = h.User(h.W.Super);
+        var stamp = super.SecurityStamp;
+        h.W.Db.RefreshTokens.Add(new RefreshTokenEntity { Id = Guid.NewGuid(), UserId = super.Id, Token = "live", ExpiresAt = DateTime.UtcNow.AddDays(1) });
+        h.W.Db.SaveChanges();
+        var command = ApiAssembly.TypeNamed("ModularCA.API.Startup.SetPasswordSourceCommand").GetMethod("RunAsync")!;
+        var output = new StringWriter();
+
+        Assert.Equal(0, await (Task<int>)command.Invoke(null, [h.W.Db, h.AuditDb, super.Username, "local", output])!);
+
+        Assert.Equal(PasswordSource.Local, h.User(h.W.Super).PasswordSource);
+        Assert.NotEqual(stamp, h.User(h.W.Super).SecurityStamp);
+        Assert.All(h.W.Db.RefreshTokens.Where(t => t.UserId == super.Id), t => Assert.True(t.IsRevoked));
+        var record = Assert.Single(h.AuditDb.AuditLogs.Where(a => a.ActionType == AuditActionType.UserPasswordSourceSetOnHost));
+        Assert.Equal("host:break-glass", record.ActorUsername);
+        Assert.Null(record.ActorUserId);
+        Assert.Equal(("User", h.W.Super.ToString()), (record.TargetEntityType, record.TargetEntityId));
+        Assert.Contains("\"Old\":\"Inherit\"", record.DetailsJson);
+        Assert.Contains("\"New\":\"Local\"", record.DetailsJson);
+
+        // The same source again changes nothing and writes no second record.
+        Assert.Equal(0, await (Task<int>)command.Invoke(null, [h.W.Db, h.AuditDb, super.Username, "Local", output])!);
+        Assert.Single(h.AuditDb.AuditLogs.Where(a => a.ActionType == AuditActionType.UserPasswordSourceSetOnHost));
+    }
+
+    [Theory]
+    [InlineData("no-such-user", "Local")]
+    [InlineData(null, "1")]
+    [InlineData(null, "Ldap")]
+    [InlineData(null, "")]
+    public async Task The_host_local_password_source_command_refuses_an_unknown_account_or_source(string? username, string source)
+    {
+        var h = new Harness();
+        var command = ApiAssembly.TypeNamed("ModularCA.API.Startup.SetPasswordSourceCommand").GetMethod("RunAsync")!;
+
+        Assert.Equal(1, await (Task<int>)command.Invoke(null, [h.W.Db, h.AuditDb, username ?? h.User(h.W.Super).Username, source, new StringWriter()])!);
+        Assert.Equal(PasswordSource.Inherit, h.User(h.W.Super).PasswordSource);
+        Assert.Empty(h.AuditDb.AuditLogs.Where(a => a.ActionType == AuditActionType.UserPasswordSourceSetOnHost));
     }
 
     [Fact]
@@ -835,5 +891,266 @@ public sealed class ControlledAccountTakeoverTests
         var detail = await Call(h.CeremonyController(h.W.SystemAdmin), "GetById", ids[0]);
         var scope = (string)Prop(detail, "TierScope")!;
         Assert.Equal(kind switch { "SysOp" => "instance", "CaAdmin" => "on CA a1", _ => "in space A" }, scope);
+    }
+
+    // --- Password source: changed like the other credential fields of an account. ---
+
+    [Fact]
+    public async Task A_password_source_change_needs_step_up_then_applies_to_an_uncontrolled_account_and_is_audited_with_both_values()
+    {
+        var h = new Harness();
+        var a = h.W.SystemAdmin;
+        var u = h.W.Plain;
+
+        // Without a step-up token: refused, nothing changed.
+        var noStepUp = await Call(h.UserManager(a), "UpdateUser", u, new UpdateUserRequest { PasswordSource = PasswordSource.Local }, null);
+        Assert.Equal(403, Status(noStepUp));
+        Assert.Equal(PasswordSource.Inherit, h.User(u).PasswordSource);
+
+        // Switching which password works is a credential change: the stamp rotates.
+        var stamp = h.User(u).SecurityStamp;
+        Assert.Equal(200, Status(await h.Update(a, u, new UpdateUserRequest { PasswordSource = PasswordSource.Local })));
+        Assert.Equal(PasswordSource.Local, h.User(u).PasswordSource);
+        Assert.NotEqual(stamp, h.User(u).SecurityStamp);
+        var audited = Assert.Single(h.Audit.Entries, e => e.Action == AuditActionType.UserPasswordSourceChanged);
+        Assert.Equal(u.ToString(), audited.TargetId);
+        var details = JsonSerializer.Serialize(audited.Details);
+        Assert.Contains("\"Old\":\"Inherit\"", details);
+        Assert.Contains("\"New\":\"Local\"", details);
+
+        // The value the account already has is no change, and records none.
+        Assert.Equal(200, Status(await h.Update(a, u, new UpdateUserRequest { PasswordSource = PasswordSource.Local })));
+        Assert.Single(h.Audit.Entries, e => e.Action == AuditActionType.UserPasswordSourceChanged);
+
+        // The administrator reads it back.
+        Assert.Equal(PasswordSource.Local, (await h.Users.GetUserById(u))!.PasswordSource);
+    }
+
+    /// <summary>
+    /// An account that made a certificate request, or approved one, is named by rows that must
+    /// keep naming it, and the database refuses to remove it: deleting it used to surface as a
+    /// 500. It is now retained: the row stays, hidden, with its id and username, and everything
+    /// it could sign in with or reach is gone. An account with no such record is removed outright.
+    /// </summary>
+    [Fact]
+    public async Task Deleting_an_account_with_history_retains_the_row_and_strips_everything_else()
+    {
+        var h = new Harness();
+        var super = h.W.Super;
+        var requester = h.W.User("made-a-request", h.W.A1Requester);
+        var approver = h.W.User("gave-an-approval", h.W.A1Requester);
+        var untouched = h.W.User("no-history", h.W.A1Requester);
+        var request = new CertRequestEntity { Subject = "CN=x", RequestorUserId = requester };
+        h.W.Db.CertificateRequests.Add(request);
+        h.W.Db.CsrApprovals.Add(new CsrApprovalEntity { CertRequestId = request.Id, ApproverId = approver, ApproverUsername = "gave-an-approval", Decision = "Approved" });
+        h.W.Db.RefreshTokens.Add(new RefreshTokenEntity { UserId = requester, Token = "live-session", ExpiresAt = DateTime.UtcNow.AddDays(1) });
+        var held = h.W.Db.Users.Single(u => u.Id == requester);
+        held.PasswordHash = "a-hash";
+        var stampBefore = held.SecurityStamp;
+        h.W.Db.SaveChanges();
+
+        Task<IActionResult> Delete(Guid target) => Call(h.UserManager(super), "DeleteUser", target, h.StepUp(super, StepUpOps.DeleteUser, target));
+
+        var first = await Delete(requester);
+        Assert.Equal(200, Status(first));
+        var said = JsonSerializer.Serialize(((ObjectResult)first).Value);
+        Assert.Contains("1 certificate request(s) it made", said);
+        Assert.Contains("\"retained\":true", said);
+        Assert.Equal(200, Status(await Delete(approver)));
+
+        h.W.Db.ChangeTracker.Clear();
+        Assert.False(h.W.Db.Users.Any(u => u.Id == requester || u.Id == approver));
+        var row = h.W.Db.Users.IgnoreQueryFilters().Single(u => u.Id == requester);
+        Assert.True(row.IsDeleted);
+        Assert.NotNull(row.DeletedAt);
+        Assert.False(row.IsActive);
+        Assert.Equal("made-a-request", row.Username);
+        Assert.Equal(string.Empty, row.PasswordHash);
+        Assert.Equal(UserManagementService.TombstoneEmail(requester), row.Email);
+        Assert.NotEqual(stampBefore, row.SecurityStamp);
+        Assert.False(h.W.Db.CaGroupMembers.Any(m => m.UserId == requester || m.UserId == approver));
+        Assert.False(h.W.Db.RefreshTokens.Any(r => r.UserId == requester));
+        Assert.Equal(requester, h.W.Db.CertificateRequests.Single(r => r.Id == request.Id).RequestorUserId);
+        Assert.Equal(approver, h.W.Db.CsrApprovals.Single(a => a.CertRequestId == request.Id).ApproverId);
+        Assert.Equal(2, h.Audit.Entries.Count(e => e.Action == AuditActionType.UserDeleted));
+
+        // Deleting it again finds nothing.
+        Assert.Equal(404, Status(await Delete(requester)));
+
+        // The retained accounts are listed apart, with what still names them.
+        var retained = await h.Users.GetRetainedAccounts();
+        Assert.Equal(2, retained.Count);
+        var listed = retained.Single(a => a.Id == requester);
+        Assert.Equal("made-a-request", listed.Username);
+        Assert.Equal((1, 0), (listed.Requests, listed.Approvals));
+        Assert.Equal((0, 1), (retained.Single(a => a.Id == approver).Requests, retained.Single(a => a.Id == approver).Approvals));
+        Assert.Equal(200, Status(await Call(h.UserManager(super), "GetDeletedUsers")));
+
+        // The name stays taken, and says why; the address is free again.
+        var again = await h.Users.CreateUser(new CreateUserRequest { Username = "made-a-request", Email = "someone-else@x", Password = "Chosen-Passw0rd!" });
+        Assert.False(again.Success);
+        Assert.Contains("deleted account", again.Error);
+        var reuse = await h.Users.CreateUser(new CreateUserRequest { Username = "newcomer", Email = "made-a-request@x", Password = "Chosen-Passw0rd!" });
+        Assert.True(reuse.Success, reuse.Error);
+
+        var before = await h.Users.RetainedHistoryAsync(untouched);
+        Assert.Null(before);
+        var plain = await Delete(untouched);
+        Assert.Equal(200, Status(plain));
+        Assert.Contains("\"retained\":false", JsonSerializer.Serialize(((ObjectResult)plain).Value));
+        Assert.False(h.W.Db.Users.IgnoreQueryFilters().Any(u => u.Id == untouched));
+        Assert.Null(await h.Users.RetainedHistoryAsync(Guid.NewGuid()));
+    }
+
+    /// <summary>
+    /// The enrolment account of a Kerberos realm is not deleted, retained or otherwise: the realm
+    /// enrols through it. The delete is refused (409) before a ceremony could be opened for it.
+    /// </summary>
+    [Fact]
+    public async Task The_enrolment_account_of_a_kerberos_realm_is_refused_deletion()
+    {
+        var h = new Harness();
+        var super = h.W.Super;
+        var enrols = h.W.User("realm-enrolment", h.W.A1Requester);
+        h.W.Db.KerberosRealms.Add(new KerberosRealmEntity { Realm = "EXAMPLE.TEST", DnsDomain = "example.test", ServicePrincipal = "HTTP/ca.example.test", EnrollmentUserId = enrols });
+        h.W.Db.SaveChanges();
+
+        var refused = await Call(h.UserManager(super), "DeleteUser", enrols, h.StepUp(super, StepUpOps.DeleteUser, enrols));
+        Assert.Equal(409, Status(refused));
+        Assert.Contains("1 Kerberos realm(s) enrol through it", JsonSerializer.Serialize(((ObjectResult)refused).Value));
+        Assert.True(h.W.Db.Users.Any(u => u.Id == enrols));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.Users.DeleteUser(enrols));
+        Assert.DoesNotContain(h.Audit.Entries, e => e.Action == AuditActionType.UserDeleted);
+    }
+
+    /// <summary>
+    /// A lookup that names no account answers 404, the same as one that names an account outside
+    /// the caller's scope. It used to throw (500), which told the two apart: a caller could learn
+    /// that a username exists in another space from getting 404 for it and 500 for a made-up one.
+    /// </summary>
+    [Fact]
+    public async Task A_lookup_of_an_account_that_does_not_exist_answers_404()
+    {
+        var h = new Harness();
+        var a = h.W.SystemAdmin;
+
+        Assert.Equal(404, Status(await Call(h.UserManager(a), "GetUserById", Guid.NewGuid())));
+        Assert.Equal(404, Status(await Call(h.UserManager(a), "GetUserByUsername", "no-such-account")));
+        Assert.Equal(404, Status(await Call(h.UserManager(a), "GetUserByEmail", "no-such-account@example.test")));
+        Assert.Null(await h.Users.GetUserById(Guid.NewGuid()));
+    }
+
+    [Fact]
+    public async Task A_password_source_change_to_a_controlled_account_opens_a_ceremony_and_applies_at_execute()
+    {
+        var h = new Harness();
+        var a = h.W.SystemAdmin;
+        var b = h.W.User("sysadmin-b", h.W.SystemAdminGroup);
+        var c = h.W.User("sysadmin-c", h.W.SystemAdminGroup);
+        h.User(b).PasswordSource = PasswordSource.Directory;
+        h.W.Db.SaveChanges();
+
+        // Back to Local would bring b's local password into use, perhaps one a peer once chose for it.
+        var id = CeremonyId(await h.Update(a, b, new UpdateUserRequest { PasswordSource = PasswordSource.Local }));
+        Assert.Equal(PasswordSource.Directory, h.User(b).PasswordSource);
+        Assert.DoesNotContain(h.Audit.Entries, e => e.Action == AuditActionType.UserPasswordSourceChanged);
+
+        Assert.Equal(200, Status(await h.Approve(c, id)));
+        Assert.Equal(200, Status(await h.Execute(a, id)));
+        Assert.Equal(PasswordSource.Local, h.User(b).PasswordSource);
+        var details = JsonSerializer.Serialize(Assert.Single(h.Audit.Entries, e => e.Action == AuditActionType.UserPasswordSourceChanged).Details);
+        Assert.Contains("\"Old\":\"Directory\"", details);
+        Assert.Contains("\"New\":\"Local\"", details);
+        Assert.Contains(id.ToString(), details);
+    }
+
+    [Fact]
+    public async Task An_approved_password_source_change_expires_when_the_source_changed_meanwhile()
+    {
+        var h = new Harness();
+        var a = h.W.SystemAdmin;
+        var b = h.W.User("sysadmin-b", h.W.SystemAdminGroup);
+        var c = h.W.User("sysadmin-c", h.W.SystemAdminGroup);
+
+        var id = CeremonyId(await h.Update(a, b, new UpdateUserRequest { PasswordSource = PasswordSource.Local }));
+        Assert.Equal(200, Status(await h.Approve(c, id)));
+
+        // b signs in through the directory and is learned as Directory before the change executes.
+        h.User(b).PasswordSource = PasswordSource.Directory;
+        h.W.Db.SaveChanges();
+
+        Assert.Equal(409, Status(await h.Execute(a, id)));
+        Assert.Equal("Expired", h.Ceremony(id).Status);
+        Assert.Equal(PasswordSource.Directory, h.User(b).PasswordSource);
+    }
+
+    [Fact]
+    public async Task Nobody_changes_their_own_password_source_and_a_caller_must_dominate_the_account()
+    {
+        var h = new Harness();
+
+        // Not even a super: a Directory account flipping itself to Local would revive a local password.
+        Assert.Equal(400, Status(await h.Update(h.W.Super, h.W.Super, new UpdateUserRequest { PasswordSource = PasswordSource.Directory })));
+        Assert.Equal(400, Status(await h.Update(h.W.SystemAdmin, h.W.SystemAdmin, new UpdateUserRequest { PasswordSource = PasswordSource.Local })));
+        Assert.Equal(PasswordSource.Inherit, h.User(h.W.Super).PasswordSource);
+        Assert.Equal(PasswordSource.Inherit, h.User(h.W.SystemAdmin).PasswordSource);
+
+        // A CA administrator does not dominate a system administrator.
+        Assert.Equal(403, Status(await h.Update(h.W.A1AdminUser, h.W.SystemAdmin, new UpdateUserRequest { PasswordSource = PasswordSource.Local })));
+        Assert.Equal(PasswordSource.Inherit, h.User(h.W.SystemAdmin).PasswordSource);
+
+        // A value outside the enum is refused before anything is looked at.
+        Assert.Equal(400, Status(await h.Update(h.W.Super, h.W.Plain, new UpdateUserRequest { PasswordSource = (PasswordSource)7 })));
+        Assert.Empty(h.W.Db.KeyCeremonies);
+    }
+
+    [Fact]
+    public async Task A_directory_accounts_password_is_not_reset_and_a_pending_reset_expires_once_the_account_is_learned()
+    {
+        var h = new Harness();
+        var a = h.W.SystemAdmin;
+        var u = h.W.Plain;
+        h.User(u).PasswordSource = PasswordSource.Directory;
+        h.W.Db.SaveChanges();
+        var hash = h.User(u).PasswordHash;
+
+        // A temporary local password for a directory account would never be used.
+        var refused = await h.ResetPassword(a, u);
+        Assert.Equal(409, Status(refused));
+        Assert.Null(Prop(refused, "newPassword"));
+        Assert.Equal(hash, h.User(u).PasswordHash);
+
+        // A reset opened while the account was Inherit, then learned as Directory, does not apply.
+        var b = h.W.User("sysadmin-b", h.W.SystemAdminGroup);
+        var c = h.W.User("sysadmin-c", h.W.SystemAdminGroup);
+        var id = CeremonyId(await h.ResetPassword(a, b));
+        Assert.Equal(200, Status(await h.Approve(c, id)));
+        h.User(b).PasswordSource = PasswordSource.Directory;
+        h.W.Db.SaveChanges();
+        var bHash = h.User(b).PasswordHash;
+
+        Assert.Equal(409, Status(await h.Execute(a, id)));
+        Assert.Equal("Expired", h.Ceremony(id).Status);
+        Assert.Equal(bHash, h.User(b).PasswordHash);
+    }
+
+    [Fact]
+    public async Task A_password_source_change_away_from_directory_is_disclosed_as_a_password_reset_by_its_administrator()
+    {
+        var h = new Harness();
+        var a = h.W.SystemAdmin;
+        var c = h.W.User("sysadmin-c", h.W.SystemAdminGroup);
+        var u = h.W.User("colleague");
+        var at = DateTime.UtcNow.AddDays(-1);
+        // Switched to Local: the local password, which c may know, now signs the account in.
+        h.SeedAudit(AuditActionType.UserPasswordSourceChanged, u, c, new { Old = "Directory", New = "Local" }, at);
+        // Switched to Directory: no local password comes into use, so nothing to disclose.
+        h.SeedAudit(AuditActionType.UserPasswordSourceChanged, u, a, new { Old = "Inherit", New = "Directory" }, at);
+
+        var ceremony = h.Ceremony(CeremonyId(await h.AddToGroup(a, u, h.W.A1Admin.Id)));
+
+        var p = JsonSerializer.Deserialize<ControlledUserChangeParameters>(ceremony.ParametersJson)!;
+        Assert.Equal(new[] { (ControlledCredentialReset.Password, (Guid?)c) },
+            p.RecentCredentialResets!.Select(r => (r.What, r.ActorUserId)).ToArray());
     }
 }

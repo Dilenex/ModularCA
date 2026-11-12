@@ -113,15 +113,19 @@ public interface ICaGroupAuthorizationService
     Task<List<Guid>> GetAccessibleCaIdsAsync(Guid userId, string capability, Guid? spaceId);
 
     /// <summary>
-    /// Checks if the user has a resource-scoped capability grant (e.g. profile.use on a specific CertProfile).
-    /// Matches both exact ResourceId grants and wildcard grants (ResourceId == null).
+    /// Checks if the user may exercise a capability on one resource (e.g. profile.use on a specific CertProfile).
+    /// Matches a grant naming the resource, a grant naming the resource type with no id, and an
+    /// unrestricted grant (no resource named, as the built-in roles give) held at a scope that
+    /// covers the resource: its CA, its space, or anywhere for a resource bound to neither.
     /// </summary>
     Task<bool> HasResourceCapabilityAsync(Guid userId, string capability, string resourceType, Guid resourceId);
 
     /// <summary>
     /// Returns all resource IDs the user has any grant for (matching the capability prefix and resource type),
-    /// plus a flag indicating whether the user holds a wildcard grant (ResourceId == null) meaning all resources.
-    /// Used for batch-filtering listing endpoints.
+    /// plus a flag indicating whether the user holds a wildcard grant meaning all resources: one
+    /// naming the type with no id, or an unrestricted grant at system scope. The ids include the
+    /// resources an unrestricted grant below system scope covers (those of the CAs and spaces it
+    /// is held in, and those bound to neither). Used for batch-filtering listing endpoints.
     /// </summary>
     Task<(List<Guid> ResourceIds, bool HasWildcard)> GetGrantedResourceIdsAsync(
         Guid userId, string capabilityPrefix, string resourceType);

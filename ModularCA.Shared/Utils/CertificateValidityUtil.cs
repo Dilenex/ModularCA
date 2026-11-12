@@ -292,27 +292,31 @@ public static class CertificateValidityUtil
     /// <para>
     /// The arithmetic deliberately mirrors the three enforcement sites rather than simplifying
     /// them into one rule, because they genuinely differ: the profile ceiling is measured from
-    /// <em>now</em> (<c>IssuanceValidationService.NotBeyondMaximumDate</c> and the <c>timeMax</c>
-    /// default both do), the space ceiling from <em>notBefore</em>
-    /// (<see cref="ClampToValidityCeiling"/>), and the CA ceiling is its <c>notAfter</c> less the
-    /// skew margin. A pre-flight that used one rule for all three would promise dates issuance
-    /// then clamps, which is worse than promising nothing.
+    /// the <em>requested</em> start, or from now when none is requested
+    /// (<c>IssuanceValidationService.MaximumNotAfter</c>, which both the maximum check and the
+    /// <c>timeMax</c> default use), the space ceiling from <em>notBefore</em> including the
+    /// default skew backdate (<see cref="ClampToValidityCeiling"/>), and the CA ceiling is its
+    /// <c>notAfter</c> less the skew margin. A pre-flight that used one rule for all three would
+    /// promise dates issuance then clamps, which is worse than promising nothing.
     /// </para>
     /// </remarks>
     /// <param name="notBefore">The certificate start the request would carry.</param>
-    /// <param name="now">Current UTC time, from which the cert profile's maximum is measured.</param>
+    /// <param name="profileStart">
+    /// The instant the cert profile's maximum is measured from: the requested start when the
+    /// caller names one, otherwise the current UTC time.
+    /// </param>
     /// <param name="certProfileMax">The cert profile's <c>ValidityPeriodMax</c>, already parsed and defaulted.</param>
     /// <param name="spaceMaxValidityDays">The space's ceiling in days; 0 or less means unlimited.</param>
     /// <param name="issuingCaNotAfter">The issuing CA certificate's expiry, or null when it is unknown.</param>
     /// <returns>The effective ceiling and the layer that set it.</returns>
     public static ValidityCeilingResolution ResolveCeiling(
         DateTime notBefore,
-        DateTime now,
+        DateTime profileStart,
         TimeSpan certProfileMax,
         int spaceMaxValidityDays,
         DateTime? issuingCaNotAfter)
     {
-        var profileCeiling = now + certProfileMax;
+        var profileCeiling = profileStart + certProfileMax;
         DateTime? spaceCeiling = spaceMaxValidityDays > 0 ? notBefore.AddDays(spaceMaxValidityDays) : null;
         // The same 5-minute margin the issuing-CA clamp applies, so the number shown here is the
         // number issuance will honour rather than five minutes more than it.

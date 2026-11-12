@@ -133,6 +133,7 @@ public sealed class CeremonyEndpointPipelineTests
                 options.FallbackPolicy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build();
             });
             services.AddSingleton<IAuthorizationHandler>(new CaGroupAuthorizationHandler(groupAuth, accessor, Db, NullLogger<CaGroupAuthorizationHandler>.Instance));
+            services.AddSingleton<IAuthorizationHandler>(new AnyScopeCapabilityAuthorizationHandler(groupAuth));
             var sp = services.BuildServiceProvider();
 
             var provider = sp.GetRequiredService<IAuthorizationPolicyProvider>();
@@ -286,7 +287,7 @@ public sealed class CeremonyEndpointPipelineTests
 
         Assert.Equal("Executed", w.Db.KeyCeremonies.Single(c => c.Id == id).Status);
         Assert.Single(w.Db.UserCapabilityGrants.Where(g => g.UserId == w.W.Plain && g.Capability == Capabilities.SystemManage));
-        Assert.Single(w.Audit.Entries.Where(e => e.Action == AuditActionType.ControlledUserChangeApplied));
+        Assert.Single(w.Audit.Entries, e => e.Action == AuditActionType.ControlledUserChangeApplied);
     }
 
     /// <summary>

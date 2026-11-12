@@ -30,8 +30,15 @@ namespace ModularCA.Auth.Services;
 ///     endpoint into an account enumerator.
 ///   </description></item>
 ///   <item><description>
-///     <b>LDAP first, local second</b>, matching interactive login, so an environment that moved
-///     authentication to a directory does not find EST still accepting a stale local hash.
+///     <b>The account's password source decides</b>, by the same
+///     <see cref="PasswordCredentialCheck"/> interactive login uses, so an environment that moved
+///     authentication to a directory does not find EST still accepting a stale local hash: a Local
+///     account checks the local hash only, a Directory account the directory only, and an Inherit
+///     account asks the directory first when LDAP is on and uses the local hash only for an account
+///     the directory does not know. A directory that cannot be reached refuses the request without
+///     counting a failure. An Inherit account the directory accepts is learned as a Directory
+///     account, as at interactive login. A forced password change or an expired password refuses
+///     the request only when the local hash answered, since both concern the local password.
 ///   </description></item>
 ///   <item><description>
 ///     <b>Failed attempts increment and lock.</b> Basic auth over a protocol endpoint is the most
@@ -102,24 +109,29 @@ public class ProtocolCredentialService(
         // enrollment. Interactive login catches both of these and forces the change; a protocol
         // client has no way to complete that, so it is refused. Without this, the temporary
         // password an administrator hands out at reset time was a working EST credential until
-        // the user got around to changing it.
+        // the user got around to changing it. Both concern the local password, so they are applied
+        // below only when the local hash answered; a password the directory accepted is the
+        // directory's to rotate and expire.
         var mustChangePassword = user.PasswordChangeOnNextLogon;
         var passwordExpired = !user.PasswordNeverExpires
             && user.PasswordExpirationDate.HasValue
             && user.PasswordExpirationDate < DateTime.UtcNow;
 
-        var passwordValid = false;
-        var viaLdap = false;
-        if (config.LdapAuth.Enabled)
-        {
-            var (ldapSuccess, _) = await ldapAuth.AuthenticateAsync(username, password);
-            passwordValid = ldapSuccess;
-            viaLdap = ldapSuccess;
-        }
-        if (!passwordValid)
-            passwordValid = PasswordUtil.VerifyPassword(password, user.PasswordHash);
+        var check = await PasswordCredentialCheck.VerifyAsync(config, ldapAuth, username, password, user.PasswordHash, user.PasswordSource);
+        var viaLdap = check == PasswordCheckResult.ValidViaLdap;
 
-        if (!passwordValid)
+        if (check == PasswordCheckResult.DirectoryUnavailable)
+        {
+            // The password was never checked, so this is not a failed attempt: counting it would
+            // lock every EST client out during a directory outage.
+            await audit.LogAsync(AuditActionType.UserLoginFailed, user.Id, user.Username,
+                sourceIp: sourceIp, success: false,
+                details: new { reason = "directory_unavailable", protocol },
+                errorMessage: "LoginFailed");
+            return null;
+        }
+
+        if (check is PasswordCheckResult.Invalid or PasswordCheckResult.NotInDirectory)
         {
             await db.Users
                 .Where(u => u.Id == user.Id)
@@ -139,13 +151,28 @@ public class ProtocolCredentialService(
 
             await audit.LogAsync(AuditActionType.UserLoginFailed, user.Id, user.Username,
                 sourceIp: sourceIp, success: false,
-                details: new { reason = "invalid_password", protocol, attempts = user.FailedLoginAttempts },
+                details: new
+                {
+                    reason = check == PasswordCheckResult.NotInDirectory ? "not_in_directory" : "invalid_password",
+                    protocol,
+                    attempts = user.FailedLoginAttempts,
+                },
                 errorMessage: "LoginFailed");
             return null;
         }
 
+        // An Inherit account the directory just accepted is a directory account from now on,
+        // exactly as at interactive login.
+        if (viaLdap)
+            await PasswordCredentialCheck.LearnDirectorySourceAsync(db, audit, user, sourceIp, protocol);
+
         // Password was correct — now the account state may be revealed, because the caller has
         // already demonstrated they hold the credential.
+        if (viaLdap)
+        {
+            mustChangePassword = false;
+            passwordExpired = false;
+        }
         if (isDisabled || isHardLocked || isTempLocked || mustChangePassword || passwordExpired)
         {
             await audit.LogAsync(AuditActionType.UserLoginFailed, user.Id, user.Username,

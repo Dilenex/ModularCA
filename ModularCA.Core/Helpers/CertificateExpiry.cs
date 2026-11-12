@@ -68,15 +68,14 @@ public static class CertificateExpiry
 
     /// <summary>
     /// The expiry warning settings issuance would use for <paramref name="profile"/> now: its own,
-    /// merged with its parent's when it inherits (<see cref="ProfileResolutionService"/>).
+    /// merged with its parent's effective settings when it inherits, every ancestor applied
+    /// (<see cref="ProfileResolutionService.EffectiveParentOfAsync(CertProfileEntity, CancellationToken)"/>).
+    /// <paramref name="profile"/> itself is taken as given, so a change not yet saved is used.
     /// </summary>
     public static async Task<ExpiryWarningSettings> EffectiveSettingsAsync(ModularCADbContext db, CertProfileEntity profile, CancellationToken ct = default)
     {
-        CertProfileEntity? parent = null;
-        if (profile.InheritanceEnabled && profile.InheritsFromId is Guid parentId)
-            parent = await db.CertProfiles.AsNoTracking().FirstOrDefaultAsync(p => p.Id == parentId, ct);
-        return ProfileResolutionService.ForLoadedRows(NullLogger<ProfileResolutionService>.Instance)
-            .ResolveLoaded(profile, parent).ExpiryWarnings;
+        var resolver = new ProfileResolutionService(db, NullLogger<ProfileResolutionService>.Instance);
+        return resolver.ResolveLoaded(profile, await resolver.EffectiveParentOfAsync(profile, ct)).ExpiryWarnings;
     }
 
     /// <summary>

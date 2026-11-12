@@ -15,8 +15,11 @@ namespace ModularCA.Tests.TestUtils;
 /// </summary>
 internal static class TestCertificates
 {
+    // Fixed, so the material is the same in every run, and wide: several tests check these
+    // certificates against the real clock, and a one-year validity would have expired under them.
+    // 2049 is the last year a certificate still writes as UTCTime.
     private static readonly DateTimeOffset NotBefore = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
-    private static readonly DateTimeOffset NotAfter = new(2027, 1, 1, 0, 0, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset NotAfter = new(2049, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
     /// <summary>Creates a self-signed CA certificate (basicConstraints cA=TRUE, keyCertSign).</summary>
     public static X509Certificate2 CreateCa(string subject = "CN=Test Root CA, O=ModularCA")

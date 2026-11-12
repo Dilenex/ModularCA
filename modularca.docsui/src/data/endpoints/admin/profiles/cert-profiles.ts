@@ -33,6 +33,7 @@ export const adminCertProfiles: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Resolved profile with effective values after inheritance, including the effective expiry warning settings, and fieldSources: the source of each field by its C# property name (for example ExpiryWarningPercent), "inherited", "overridden" or "clamped" (the child would warn later than its parent allows, so the parent\'s value is used).',
+        notes: 'Inheritance resolves the whole chain: the profile is clamped against its parent\'s effective values, so a limit set on a grandparent binds even when the profile in between leaves the field unset or stores a looser value.',
     },
     {
         method: 'POST',
@@ -44,6 +45,7 @@ export const adminCertProfiles: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
         responseDescription: 'Validation result with any inheritance violations, including expiry warning values that would warn later than the parent (unless the profile overrides its parent\'s expiry settings).',
+        notes: 'The profile is judged against its parent\'s effective values, every ancestor applied, not the parent\'s stored row.',
     },
     {
         method: 'POST',
@@ -64,7 +66,7 @@ export const adminCertProfiles: ApiEndpoint[] = [
             { name: 'expiryWarningOverridesParent', type: 'bool', required: false, description: 'With inheritance: the expiry values set here replace the parent\'s as they are. Without it, a child may only warn earlier than its parent (a percent and window at least the parent\'s, never-warn only when the parent never warns); a later value is clamped to the parent\'s. Between two CA profiles, a level the parent leaves unset counts as its CA default window, 30 days for the warning and 7 for the alert, so a longer window on the child is kept.' },
         ],
         responseDescription: 'Created certificate profile.',
-        notes: 'The request also takes the profile\'s usages, validity, key and signature limits, CT settings, CA scope and inheritance. Expiry warning settings outside the ranges above are refused with 400, code MCA-PRF-001.',
+        notes: 'The request also takes the profile\'s usages, validity, key and signature limits, CT settings, CA scope and inheritance. Expiry warning settings outside the ranges above are refused with 400, code MCA-PRF-001. keyUsages and extendedKeyUsages are each a JSON array of strings or a comma-separated list; every entry must be in the OID catalog (GET /api/v1/admin/oid-options), by friendly name or OID, a key usage among the Standard rows and an extended key usage among the Extended ones. An entry the catalog does not hold, or anyExtendedKeyUsage (2.5.29.37.0), is refused with 400, code MCA-PRF-002, and the message names it. A custom extended key usage OID is accepted once it has been added to the catalog.',
     },
     {
         method: 'PUT',
@@ -84,7 +86,7 @@ export const adminCertProfiles: ApiEndpoint[] = [
             { name: 'expiryWarningOverridesParent', type: 'bool', required: false, description: 'With inheritance: the expiry values set here replace the parent\'s as they are. Without it, a child may only warn earlier than its parent (a percent and window at least the parent\'s, never-warn only when the parent never warns); a later value is clamped to the parent\'s. Between two CA profiles, a level the parent leaves unset counts as its CA default window, 30 days for the warning and 7 for the alert, so a longer window on the child is kept.' },
         ],
         responseDescription: 'Updated certificate profile.',
-        notes: 'Takes every field of the create request. Invalid expiry warning settings are refused with 400, code MCA-PRF-001. When the expiry warning settings or the inheritance change, the expiry warning and alert instants of the profile\'s valid certificates (not revoked, not expired), and of those of the profiles inheriting from it, are re-computed in the same transaction as the save, so if the re-compute fails the profile is not changed either; the CertProfileUpdated audit entry records how many as ExpiryWarningsRecomputed.',
+        notes: 'Takes every field of the create request. Invalid expiry warning settings are refused with 400, code MCA-PRF-001. A key usage or extended key usage the update adds that is not in the OID catalog is refused with 400, code MCA-PRF-002, as on create; an entry the profile already stores is not checked again. When the expiry warning settings or the inheritance change, the expiry warning and alert instants of the profile\'s valid certificates (not revoked, not expired), and of those of the profiles inheriting from it, are re-computed in the same transaction as the save, so if the re-compute fails the profile is not changed either; the CertProfileUpdated audit entry records how many as ExpiryWarningsRecomputed.',
     },
     {
         method: 'DELETE',

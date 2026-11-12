@@ -26,6 +26,12 @@ public enum UpgradeReadiness
 
     /// <summary>The database could not be reached, or was locked: try again.</summary>
     Unreachable,
+
+    /// <summary>
+    /// Migrations are pending and were not rehearsed: the read-only check
+    /// (<c>--upgrade-check --read-only</c>) found nothing to refuse, and the full check must still run.
+    /// </summary>
+    PendingNotRehearsed,
 }
 
 /// <summary>
@@ -62,9 +68,40 @@ public static partial class SchemaStartup
     /// The exit code when the operator must act: a schema this build does not match, a
     /// misconfigured connection, broken ownership, or a migration that failed for good. An enabled
     /// HSM that cannot be initialised exits with it too: each restart would try the PIN again, and a
-    /// wrong one locks a token after a few tries. Units carry <c>RestartPreventExitStatus=3</c>.
+    /// wrong one locks a token after a few tries. From the schema step it also promises that the
+    /// step applied nothing (see <see cref="AppliedThenFailedExitCode"/>). Units carry
+    /// <c>RestartPreventExitStatus=3</c>; the node's, which alone applies migrations, <c>3 4</c>.
     /// </summary>
     public const int ExitCode = 3;
+
+    /// <summary>
+    /// The exit code when the operator must act and this start changed a database before it
+    /// stopped: a migration committed, or may have, and then the schema step failed for good.
+    /// <see cref="ExitCode"/> from the schema step therefore promises that the step applied
+    /// nothing, so the previous release can run on the same data; this one says the data must be
+    /// restored first, because migrations have no downgrade. An orchestrator that upgrades by
+    /// stop, swap and start reads the two apart. <see cref="TempFailExitCode"/> makes no such
+    /// promise either way: it asks for the same build to be started again. Only the role that
+    /// applies migrations can return it; the node's unit carries <c>RestartPreventExitStatus=3 4</c>.
+    /// </summary>
+    public const int AppliedThenFailedExitCode = 4;
+
+    /// <summary>
+    /// The exit code the schema step stops with: <paramref name="exit"/>, except that a stop the
+    /// operator must act on (<see cref="ExitCode"/>) becomes
+    /// <see cref="AppliedThenFailedExitCode"/> when this start has changed a database.
+    /// </summary>
+    /// <param name="exit">The code the step arrived at.</param>
+    /// <param name="changedADatabase">Whether a migration committed, or may have, in this start.</param>
+    internal static int ExitAfter(int exit, bool changedADatabase)
+        => changedADatabase && exit == ExitCode ? AppliedThenFailedExitCode : exit;
+
+    /// <summary>What this start has done to the databases so far, across the retries of the schema step.</summary>
+    private sealed class StartChanges
+    {
+        /// <summary>True once a migration committed, or may have.</summary>
+        public bool ChangedADatabase;
+    }
 
     /// <summary>
     /// The exit code for a condition that passes on its own (EX_TEMPFAIL): the wait ran out, or a
@@ -72,9 +109,25 @@ public static partial class SchemaStartup
     /// </summary>
     public const int TempFailExitCode = 75;
 
+    /// <summary>
+    /// The exit code of <c>--upgrade-check --read-only</c> when migrations are pending and nothing
+    /// it can read refuses them: nothing was rehearsed, no migration lock was taken, and the full
+    /// <c>--upgrade-check</c> must still be run with the node stopped. Only that command returns
+    /// it; a starting service never does, so no unit lists it in <c>RestartPreventExitStatus</c>.
+    /// </summary>
+    public const int PendingNotRehearsedExitCode = 5;
+
+    /// <summary>
+    /// What the last line of <c>--upgrade-check --read-only</c> starts with when it exits
+    /// <see cref="PendingNotRehearsedExitCode"/>. Scripts match on it; it shares no prefix with the
+    /// <c>UPGRADE CHECK: ...</c> verdict lines.
+    /// </summary>
+    public const string PendingNotRehearsedMarker = "UPGRADE PENDING, NOT REHEARSED";
+
     private const int GateConnectTimeoutSeconds = 10;
     private const int GateCommandTimeoutSeconds = 15;
     private const int GateLockTimeoutMilliseconds = 3000;
+    private const int ReadOnlyCheckLockTimeoutMilliseconds = 500;
     private const long ExtendTimeoutMicroseconds = 90_000_000;
     private const long PostGateExtendTimeoutMicroseconds = 300_000_000;
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(20);
@@ -106,8 +159,9 @@ public static partial class SchemaStartup
     /// migration that fails on a transient error (a lock timeout, a deadlock, a lost or refused
     /// connection) is retried in process, from phase 1, with backoff, for up to
     /// <c>Schema.WaitSeconds</c> from the first such failure. A systemd heartbeat runs throughout. Returns the exit code to
-    /// stop with (<see cref="ExitCode"/>, or <see cref="TempFailExitCode"/> once a wait or the
-    /// retries run out), or <see langword="null"/> to continue starting.
+    /// stop with (<see cref="ExitCode"/>, <see cref="AppliedThenFailedExitCode"/> when the stop
+    /// came after this start had changed a database, or <see cref="TempFailExitCode"/> once a
+    /// wait or the retries run out), or <see langword="null"/> to continue starting.
     /// </summary>
     /// <param name="targets">The databases this process uses, the application database first.</param>
     /// <param name="appliesMigrations">True for the control role only.</param>
@@ -120,6 +174,33 @@ public static partial class SchemaStartup
         SchemaConfig? config,
         ISystemdNotifier? notifier,
         CancellationToken ct = default)
+    {
+        var changes = new StartChanges();
+        var exit = await EnforceCoreAsync(targets, appliesMigrations, config, notifier, changes, ct);
+        if (exit is not int code)
+            return null;
+        var final = ExitAfter(code, changes.ChangedADatabase);
+        if (final == AppliedThenFailedExitCode)
+            Fatal($"This start applied migrations before it stopped, so the databases are no longer as the previous release left them: "
+                + $"exiting with status {AppliedThenFailedExitCode}, not {ExitCode}. Fix the cause and start this release again, "
+                + "or restore both databases from the backup taken before the upgrade before running the previous release.");
+        else if (code == TempFailExitCode && changes.ChangedADatabase)
+            Warn("This start applied migrations before it stopped. Starting this release again continues from where it stopped; "
+                + "the previous release cannot run on these databases without a restore.");
+        return final;
+    }
+
+    /// <summary>
+    /// <see cref="EnforceAllAsync"/> itself, recording in <paramref name="changes"/> whether a
+    /// migration committed.
+    /// </summary>
+    private static async Task<int?> EnforceCoreAsync(
+        IReadOnlyList<SchemaTarget> targets,
+        bool appliesMigrations,
+        SchemaConfig? config,
+        ISystemdNotifier? notifier,
+        StartChanges changes,
+        CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(targets);
         if (targets.Count == 0)
@@ -190,6 +271,7 @@ public static partial class SchemaStartup
             foreach (var o in transient is null ? toApply : [])
             {
                 var outcome = await ApplyAsync(o, config, heartbeat, ct);
+                changes.ChangedADatabase |= outcome.ChangedDatabase;
                 if (outcome.Exit is int applyExit)
                     return applyExit;
                 if (outcome.Retry is { } retry)
@@ -296,16 +378,31 @@ public static partial class SchemaStartup
     /// if requested again under the request profile each protocol uses now
     /// (<see cref="RequestProfileUpgradeNoteAsync"/>).
     /// </para>
+    /// <para>
+    /// With <paramref name="readOnly"/> (<c>--upgrade-check --read-only</c>) it does all of the
+    /// above except the dry run, for running beside a node that is still serving. Every connection
+    /// it opens is the read-only check connection (<see cref="ReadOnlyCheckConnectionString"/>):
+    /// the server refuses a write on it, and a statement gives up on a lock after
+    /// <c>500 ms</c>. No migration connection is opened, so no migration lock is taken and nothing
+    /// is rehearsed. Where migrations are pending and nothing read refuses them, the database's
+    /// finding is <see cref="UpgradeReadiness.PendingNotRehearsed"/>, the last line starts with
+    /// <see cref="PendingNotRehearsedMarker"/> and lists the pending migrations of each database,
+    /// and the exit status is <see cref="PendingNotRehearsedExitCode"/>. What only the dry run can
+    /// find (a migration's own refusal on the data, a statement that fails or times out) is not
+    /// found.
+    /// </para>
     /// </summary>
     /// <param name="targets">The databases the control role checks, the application database first.</param>
     /// <param name="config">The migration time budgets the dry run runs under.</param>
     /// <param name="output">Where the report goes; the console when null.</param>
     /// <param name="scopes">The integration keys whose <c>SpaceId</c> is set, by config key name; none when null.</param>
     /// <param name="installDirectory">The installed application directory, the parent of the config directory checked; null to leave the SSH CA keys out.</param>
+    /// <param name="readOnly">True to read only: no dry run, no migration lock, no write.</param>
     /// <param name="ct">Cancellation token.</param>
     public static async Task<int> UpgradeCheckAsync(
         IReadOnlyList<SchemaTarget> targets, SchemaConfig? config, TextWriter? output = null,
-        IReadOnlyList<(string Key, string Value)>? scopes = null, string? installDirectory = null, CancellationToken ct = default)
+        IReadOnlyList<(string Key, string Value)>? scopes = null, string? installDirectory = null,
+        bool readOnly = false, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(targets);
         config ??= new SchemaConfig();
@@ -317,22 +414,22 @@ public static partial class SchemaStartup
         {
             var instance = target.Instance;
             output.WriteLine($"{target.Name}: database '{instance.Database}' on {instance.Host}:{instance.Port} as '{instance.Username}'");
-            var observed = await ObserveAsync(target, appliesMigrations: true, ct);
+            var observed = await ObserveAsync(target, appliesMigrations: true, ct, readOnly);
             if (target.Kind == DatabaseKind.Application)
                 application = observed;
             else if (target.Kind == DatabaseKind.Audit)
                 audit = observed;
-            Report(output, await AssessUpgradeAsync(observed, config, output, ct), findings);
+            Report(output, await AssessUpgradeAsync(observed, config, output, readOnly, ct), findings);
         }
         if (scopes is { Count: > 0 } && application is { State.Presence: DatabasePresence.Managed or DatabasePresence.Unmanaged })
         {
             output.WriteLine("configuration: integration key scopes");
-            Report(output, await FoldedScopeFindingAsync(application.Target, scopes, ct), findings);
+            Report(output, await FoldedScopeFindingAsync(application.Target, scopes, readOnly, ct), findings);
         }
         if (installDirectory != null && application is { State.Presence: DatabasePresence.Managed or DatabasePresence.Unmanaged })
         {
             output.WriteLine($"{ModularCA.Core.Services.SshUpgradeCheck.KeysFindingName}: key files on this host, under {installDirectory}");
-            var ssh = await SshUpgradeAsync(application.Target, installDirectory, ct);
+            var ssh = await SshUpgradeAsync(application.Target, installDirectory, readOnly, ct);
             Report(output, ssh.Keys, findings);
             if (ssh.ProfilesNote != null)
             {
@@ -348,7 +445,7 @@ public static partial class SchemaStartup
         if (application is { State.Presence: DatabasePresence.Managed or DatabasePresence.Unmanaged }
             && audit is { State.Presence: DatabasePresence.Managed or DatabasePresence.Unmanaged })
         {
-            var note = await RequestProfileUpgradeNoteAsync(application.Target, audit.Target, ct);
+            var note = await RequestProfileUpgradeNoteAsync(application.Target, audit.Target, readOnly, ct);
             if (note != null)
             {
                 output.WriteLine(ModularCA.Core.Services.RequestProfileUpgradeCheck.NoteName);
@@ -366,6 +463,7 @@ public static partial class SchemaStartup
         {
             UpgradeReadiness.Clean => "ok",
             UpgradeReadiness.Refused => "REFUSED",
+            UpgradeReadiness.PendingNotRehearsed => "PENDING, NOT REHEARSED",
             _ => "UNREACHABLE",
         }}: {finding.Detail.ReplaceLineEndings(Environment.NewLine + "    ")}");
         findings.Add(finding);
@@ -374,17 +472,23 @@ public static partial class SchemaStartup
     /// <summary>
     /// The exit status of <c>--upgrade-check</c>: <see cref="ExitCode"/> when any database would
     /// be refused, otherwise <see cref="TempFailExitCode"/> when any could not be reached or was
-    /// locked, otherwise 0.
+    /// locked, otherwise <see cref="PendingNotRehearsedExitCode"/> when the read-only check left
+    /// any database's pending migrations unrehearsed, otherwise 0.
     /// </summary>
     internal static int UpgradeCheckExitCode(IEnumerable<UpgradeReadiness> readiness)
     {
         var all = readiness.ToList();
         return all.Contains(UpgradeReadiness.Refused) ? ExitCode
             : all.Contains(UpgradeReadiness.Unreachable) ? TempFailExitCode
+            : all.Contains(UpgradeReadiness.PendingNotRehearsed) ? PendingNotRehearsedExitCode
             : 0;
     }
 
-    /// <summary>The final one-line verdict of <c>--upgrade-check</c>.</summary>
+    /// <summary>
+    /// The final one-line verdict of <c>--upgrade-check</c>. The read-only check's "pending, not
+    /// rehearsed" line starts with <see cref="PendingNotRehearsedMarker"/>, not with
+    /// <c>UPGRADE CHECK:</c>, and lists each database's pending migrations.
+    /// </summary>
     internal static string UpgradeCheckVerdict(IReadOnlyList<UpgradeFinding> findings)
     {
         string Of(UpgradeReadiness r) => string.Join("; ", findings.Where(f => f.Readiness == r).Select(f => f.Summary));
@@ -392,6 +496,8 @@ public static partial class SchemaStartup
         {
             ExitCode => $"UPGRADE CHECK: REFUSED ({Of(UpgradeReadiness.Refused)}). Nothing was changed.",
             TempFailExitCode => $"UPGRADE CHECK: UNREACHABLE ({Of(UpgradeReadiness.Unreachable)}); try again. Nothing was changed.",
+            PendingNotRehearsedExitCode => $"{PendingNotRehearsedMarker} ({Of(UpgradeReadiness.PendingNotRehearsed)}). "
+                + "Nothing was rehearsed and nothing was changed: stop the node and run --upgrade-check without --read-only before upgrading.",
             _ => findings.Sum(f => f.Pending) is var n and > 0
                 ? $"UPGRADE CHECK: PASS ({n} pending migration(s) would apply cleanly). Nothing was changed."
                 : "UPGRADE CHECK: PASS (nothing to apply). Nothing was changed.",
@@ -403,8 +509,14 @@ public static partial class SchemaStartup
     /// exactly what the control role's start refuses, and an unsound ownership even with nothing
     /// pending. Prints the schema, ownership and dry-run lines to <paramref name="output"/> as it goes.
     /// A dry run that found a refusal is refused even when it then stopped on a transient error.
+    /// With <paramref name="readOnly"/> nothing is rehearsed and no migration connection is opened:
+    /// pending migrations are checked only for what this build alone decides (a model that differs
+    /// from its latest migration, a migration with a statement outside a transaction, which the dry
+    /// run could not rehearse either) and are otherwise reported as
+    /// <see cref="UpgradeReadiness.PendingNotRehearsed"/>.
     /// </summary>
-    private static async Task<UpgradeFinding> AssessUpgradeAsync(Observation o, SchemaConfig config, TextWriter output, CancellationToken ct)
+    private static async Task<UpgradeFinding> AssessUpgradeAsync(
+        Observation o, SchemaConfig config, TextWriter output, bool readOnly, CancellationToken ct)
     {
         var name = o.Target.Name;
         var port = o.Target.Instance.Port;
@@ -449,9 +561,26 @@ public static partial class SchemaStartup
         if (o.Verdict != SchemaVerdict.ApplyPending)
             return new(name, UpgradeReadiness.Clean, name, "current: nothing to apply.", 0);
 
-        await using var db = CreateMigrationContext(o.Target, config);
+        // The read-only check never builds a migration connection: this context is only asked about
+        // its model and its migrations' commands, and is never opened.
+        await using var db = readOnly
+            ? CreateContext(o.Target.Kind, ReadOnlyCheckConnectionString(o.Target.Instance), GateCommandTimeoutSeconds)
+            : CreateMigrationContext(o.Target, config);
         if (db.Database.HasPendingModelChanges())
             return Refuse("defective build", $"This build's {name} model differs from its latest migration; the build is defective.");
+        if (readOnly)
+        {
+            if (FirstNotRehearsable(db, state.Pending) is { } outsideTransaction)
+            {
+                var unrehearsable = new DryRunResult(state.Pending, [], outsideTransaction, null, NotRehearsable: true);
+                return Refuse(SchemaVersionGate.DryRunSummary(unrehearsable), SchemaVersionGate.DryRunFailedMessage(name, unrehearsable));
+            }
+            var ids = string.Join(", ", state.Pending);
+            output.WriteLine("  dry run: not run (--read-only); no migration lock was taken.");
+            return new(name, UpgradeReadiness.PendingNotRehearsed, $"{name}: {ids}",
+                $"{state.Pending.Count} migration(s) pending: {ids}. Nothing was rehearsed: whether they apply cleanly is not known "
+                + "until --upgrade-check runs without --read-only, with the node stopped.", 0);
+        }
         var timeout = config.MigrationCommandTimeoutSeconds > 0 ? config.MigrationCommandTimeoutSeconds : (int?)null;
         var result = await SchemaVersionGate.DryRunPendingAsync(db, ct);
         if (result.Passed)
@@ -465,6 +594,24 @@ public static partial class SchemaStartup
         if (result.Refusals.Count == 0 && result.Error is { } error && SchemaFailure.TransientForMigration(error))
             return new(name, UpgradeReadiness.Unreachable, $"{name} dry run hit a transient error", message, 0);
         return Refuse(summary, message);
+    }
+
+    /// <summary>
+    /// The first of <paramref name="pending"/> that runs a statement outside a transaction, which
+    /// the dry run refuses to rehearse, or null when none does or it cannot be told. Decided from
+    /// the migrations' generated commands (<see cref="SchemaVersionGate.UpCommands"/>), as the dry
+    /// run decides it, without a connection.
+    /// </summary>
+    private static string? FirstNotRehearsable(DbContext db, IReadOnlyList<string> pending)
+    {
+        try
+        {
+            return pending.FirstOrDefault(id => SchemaVersionGate.UpCommands(db, id).Any(c => c.TransactionSuppressed));
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     /// <summary>What <c>--upgrade-check</c> concluded for one database.</summary>
@@ -557,12 +704,14 @@ public static partial class SchemaStartup
 
     /// <summary>
     /// Phase 1 for one database: reads presence and history, then the ownership report, as the
-    /// runtime role on a gate-read connection. Failures are recorded and classified, not thrown.
+    /// runtime role on a gate-read connection, or on the read-only check connection with
+    /// <paramref name="readOnlyCheck"/>. Failures are recorded and classified, not thrown.
     /// </summary>
-    private static async Task<Observation> ObserveAsync(SchemaTarget target, bool appliesMigrations, CancellationToken ct)
+    private static async Task<Observation> ObserveAsync(
+        SchemaTarget target, bool appliesMigrations, CancellationToken ct, bool readOnlyCheck = false)
     {
         var o = new Observation(target);
-        await using var db = CreateContext(target.Kind, GateReadConnectionString(target.Instance), GateCommandTimeoutSeconds);
+        await using var db = CreateContext(target.Kind, CheckReadConnectionString(target.Instance, readOnlyCheck), GateCommandTimeoutSeconds);
         try
         {
             o.State = await SchemaVersionGate.ReadAsync(db, ct);
@@ -683,8 +832,14 @@ public static partial class SchemaStartup
     /// <summary>How a step of phase 3 ended for one database: an exit code, a transient failure to retry, or neither when it passed.</summary>
     private sealed record ApplyOutcome(int? Exit, string? Retry)
     {
-        /// <summary>The step passed: the dry run, or every pending migration was applied.</summary>
+        /// <summary>True when the step committed a migration, or may have. Never true for a dry run.</summary>
+        public bool ChangedDatabase { get; init; }
+
+        /// <summary>The dry run passed: nothing was applied.</summary>
         public static readonly ApplyOutcome Applied = new(null, null);
+
+        /// <summary>Every pending migration of the database was applied.</summary>
+        public static readonly ApplyOutcome Migrated = new(null, null) { ChangedDatabase = true };
     }
 
     /// <summary>
@@ -724,6 +879,9 @@ public static partial class SchemaStartup
     /// Phase 3 for one database: applies its pending migrations on a migration connection while
     /// the heartbeat extends the systemd start timeout. A failure the operator must fix returns
     /// <see cref="ExitCode"/>; a transient one returns its description for the caller to retry.
+    /// Every outcome says whether a migration committed, or may have
+    /// (<see cref="ApplyOutcome.ChangedDatabase"/>), which the caller turns into
+    /// <see cref="AppliedThenFailedExitCode"/> when the start then stops for good.
     /// </summary>
     private static async Task<ApplyOutcome> ApplyAsync(Observation o, SchemaConfig config, Heartbeat heartbeat, CancellationToken ct)
     {
@@ -748,11 +906,12 @@ public static partial class SchemaStartup
         var timeout = config.MigrationCommandTimeoutSeconds > 0 ? config.MigrationCommandTimeoutSeconds : (int?)null;
         if (thrown is not null)
         {
+            // The history is read before each migration, so one may have committed before this read failed.
             var message = $"The {name} migration history could not be read while applying migrations: {SchemaFailure.Describe(thrown, timeout)}.";
             if (SchemaFailure.TransientForMigration(thrown))
-                return new ApplyOutcome(null, message);
+                return new ApplyOutcome(null, message) { ChangedDatabase = true };
             Fatal(message + " Fix the cause and start again.");
-            return new ApplyOutcome(ExitCode, null);
+            return new ApplyOutcome(ExitCode, null) { ChangedDatabase = true };
         }
         if (failure is not null)
         {
@@ -760,17 +919,17 @@ public static partial class SchemaStartup
             if (SchemaFailure.TransientForMigration(failure.Error))
             {
                 Log.Warning(failure.Error, "Migration {Migration} of the {Context} database failed on a transient error", failure.Migration, name);
-                return new ApplyOutcome(null, message);
+                return new ApplyOutcome(null, message) { ChangedDatabase = failure.MayHaveChangedDatabase };
             }
             var advice = SchemaFailure.IsStatementTimeout(failure.Error)
                 ? " If the statement needs longer, raise Schema.MigrationCommandTimeoutSeconds (0 means no limit)."
                 : "";
             Fatal(message + advice);
             Log.Fatal(failure.Error, "Migration {Migration} of the {Context} database failed", failure.Migration, name);
-            return new ApplyOutcome(ExitCode, null);
+            return new ApplyOutcome(ExitCode, null) { ChangedDatabase = failure.MayHaveChangedDatabase };
         }
         Info($"{name} migrations applied.");
-        return ApplyOutcome.Applied;
+        return ApplyOutcome.Migrated;
     }
 
     /// <summary>
@@ -830,6 +989,27 @@ public static partial class SchemaStartup
             CommandTimeout = GateCommandTimeoutSeconds,
             Options = $"-c lock_timeout={GateLockTimeoutMilliseconds}",
         }.ConnectionString;
+
+    /// <summary>
+    /// The connection <c>--upgrade-check --read-only</c> reads with, beside a node that is still
+    /// serving: the gate-read connection with <c>default_transaction_read_only=on</c>, so the
+    /// server refuses any write on it, and a 500 ms <c>lock_timeout</c>, so a read that finds its
+    /// table locked ACCESS EXCLUSIVE (a migration in progress) is reported at once instead of
+    /// queueing. Its reads take ACCESS SHARE at most, which conflicts with nothing a serving node
+    /// takes.
+    /// </summary>
+    internal static string ReadOnlyCheckConnectionString(DbInstance instance) =>
+        new NpgsqlConnectionStringBuilder(GateReadConnectionString(instance))
+        {
+            Options = $"-c lock_timeout={ReadOnlyCheckLockTimeoutMilliseconds} -c default_transaction_read_only=on",
+        }.ConnectionString;
+
+    /// <summary>
+    /// The connection <c>--upgrade-check</c> reads with: <see cref="ReadOnlyCheckConnectionString"/>
+    /// for the read-only check, otherwise <see cref="GateReadConnectionString"/>.
+    /// </summary>
+    private static string CheckReadConnectionString(DbInstance instance, bool readOnlyCheck) =>
+        readOnlyCheck ? ReadOnlyCheckConnectionString(instance) : GateReadConnectionString(instance);
 
     /// <summary>
     /// The migration connection: unpooled, <c>lock_timeout</c> from

@@ -18,7 +18,10 @@ public interface ICtSubmissionService
     /// <param name="certDer">DER-encoded end-entity certificate.</param>
     /// <param name="issuerDer">DER-encoded issuer (CA) certificate.</param>
     /// <param name="ctLogIds">Optional list of specific CT log IDs to submit to. Null = all enabled logs.</param>
-    /// <returns>List of raw SCT JSON strings (one per successful log submission), or an empty list on failure.</returns>
+    /// <returns>
+    /// The raw JSON answers, one per log whose SCT verified against the log's configured public
+    /// key, or an empty list on failure. An SCT that does not verify is not returned.
+    /// </returns>
     Task<List<byte[]>> SubmitToCTLogsAsync(byte[] certDer, byte[] issuerDer, List<Guid>? ctLogIds);
 }
 
@@ -48,6 +51,9 @@ public class CtSubmissionService : ICtSubmissionService
     /// <summary>
     /// Submits a certificate chain to all matching CT logs and collects SCTs.
     /// Failures are logged as warnings but do not throw — CT submission must never block issuance.
+    /// Each SCT is verified against its log's configured public key
+    /// (<see cref="CtSctVerifier.VerifyX509Entry"/>) before it is kept; one that does not verify,
+    /// or comes from a log with no key configured, is discarded with a warning.
     /// </summary>
     public async Task<List<byte[]>> SubmitToCTLogsAsync(byte[] certDer, byte[] issuerDer, List<Guid>? ctLogIds)
     {
@@ -96,7 +102,15 @@ public class CtSubmissionService : ICtSubmissionService
                     }
 
                     var sctBytes = await response.Content.ReadAsByteArrayAsync();
-                    _logger.LogInformation("Received SCT from CT log '{LogName}'", log.Name);
+                    var problem = string.IsNullOrWhiteSpace(log.PublicKeyBase64)
+                        ? "the log has no public key configured, so its SCT cannot be verified"
+                        : CtSctVerifier.VerifyX509Entry(sctBytes, certDer, log.PublicKeyBase64);
+                    if (problem != null)
+                    {
+                        _logger.LogWarning("Discarding the SCT from CT log '{LogName}': {Problem}", log.Name, problem);
+                        return null;
+                    }
+                    _logger.LogInformation("Received and verified the SCT from CT log '{LogName}'", log.Name);
                     return sctBytes;
                 }
                 catch (Exception ex)

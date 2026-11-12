@@ -21,6 +21,7 @@
  * client.
  */
 import { createDpopProof } from './dpop';
+import { rateLimitMessage } from './rateLimit';
 import { problemNotice } from './notices';
 import { ApiError, parseProblem, type ApiProblem } from './problem';
 import type { NoticeInput, NoticeSeverity } from '@shared/notifications/notice';
@@ -604,6 +605,8 @@ export function createAuthClient(config: AuthClientConfig) {
 
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
+        // The rate limiter, or a proxy in front: say how long to wait rather than "HTTP 429".
+        if (resp.status === 429) throw new Error(rateLimitMessage(err, resp.headers.get('Retry-After')));
         throw new Error(err.error || err.message || `Login failed (${resp.status})`);
       }
 
@@ -647,9 +650,48 @@ export function createAuthClient(config: AuthClientConfig) {
       const body = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
 
       if (!resp.ok) {
+        if (resp.status === 429) throw new Error(rateLimitMessage(body, resp.headers.get('Retry-After')));
         const message = body.details
           ? `${body.error}: ${body.details.join(', ')}`
           : body.error || body.message || `Password change failed (${resp.status})`;
+        throw new Error(message);
+      }
+
+      return body;
+    }
+
+    /**
+     * Claims an account with a one-time claim token (POST /auth/claim): sets its password without
+     * a session or an old password. Resolves with the claimed account's username, so the caller can
+     * sign in with the new password. Every refused token gets the same error from the server; a
+     * password the policy turns down comes back with the policy's objections; a 429 from the rate
+     * limiter says how long to wait.
+     */
+    async function apiClaimAccount(
+      token: string,
+      newPassword: string,
+      confirmNewPassword: string,
+    ): Promise<{ message: string; username: string }> {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const csrf = readCsrfCookie();
+      if (csrf) {
+        headers['X-CSRF-Token'] = csrf;
+      }
+
+      const resp = await fetch(`${API_BASE}/auth/claim`, {
+        method: 'POST',
+        headers,
+        credentials: 'same-origin',
+        body: JSON.stringify({ token, newPassword, confirmNewPassword }),
+      });
+
+      const body = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
+
+      if (!resp.ok) {
+        if (resp.status === 429) throw new Error(rateLimitMessage(body, resp.headers.get('Retry-After')));
+        const message = body.details
+          ? `${body.error}: ${body.details.join(', ')}`
+          : body.error || body.message || `Claim failed (${resp.status})`;
         throw new Error(message);
       }
 
@@ -769,6 +811,7 @@ export function createAuthClient(config: AuthClientConfig) {
         apiBlobWithMfa,
         apiLogin,
         apiChangePassword,
+        apiClaimAccount,
         apiLogout,
         isStepUpRequired,
         apiWithMfa,

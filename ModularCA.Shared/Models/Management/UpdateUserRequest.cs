@@ -28,6 +28,14 @@ namespace ModularCA.Shared.Models.Management
         public bool? PasswordNeverExpires { get; set; }
         public bool? PasswordChangeOnNextLogon { get; set; }
 
+        /// <summary>
+        /// Where the account's sign-in password is checked: <c>Inherit</c> (the instance LDAP
+        /// setting), <c>Local</c> (the local hash only) or <c>Directory</c> (LDAP only). Null means
+        /// leave it unchanged. A credential field: it takes the same step-up, tier gate and
+        /// controlled-user ceremony as the other account fields, and an account cannot change its own.
+        /// </summary>
+        public Enums.PasswordSource? PasswordSource { get; set; }
+
         [MaxLength(255)]
         public string? LastName { get; set; }
 

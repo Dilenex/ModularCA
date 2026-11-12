@@ -24,6 +24,8 @@ namespace ModularCA.Tests.Database;
 /// <c>MODULARCA_TEST_PG</c>, as <see cref="PostgresUpgradeHarnessTests"/>.
 /// </summary>
 [Trait("Category", "PostgreSQL")]
+[Trait(TestTier.Name, TestTier.Slow)]
+[Collection(PostgresLane.Five)]
 public class PostgresSshCaTests
 {
     private const string ServerVariable = "MODULARCA_TEST_PG";
@@ -480,23 +482,21 @@ public class PostgresSshCaTests
         });
 
     /// <summary>
-    /// Creates a database on the <c>MODULARCA_TEST_PG</c> server, applies every application
-    /// migration, seeds the built-in roles and an instance that waives key ceremonies, runs
+    /// Copies the run's migrated template to a new database on the <c>MODULARCA_TEST_PG</c> server (every application
+    /// migration applied), seeds the built-in roles and an instance that waives key ceremonies, runs
     /// <paramref name="scenario"/> with a way to open contexts, the service over the real
     /// in-process signer and the relay between them, and drops the database, whatever the outcome.
     /// </summary>
     private static async Task OnPostgresAsync(Func<Func<ModularCADbContext>, SshCaService, RelayingSigner, Task> scenario)
     {
         var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var name = $"modularca_sshca_{Guid.NewGuid():N}"[..32];
-        await ExecAsync(server, $"CREATE DATABASE \"{name}\"");
+        var name = await PostgresTestDatabase.CreateMigratedAsync(server, "modularca_sshca");
         try
         {
             var connection = new NpgsqlConnectionStringBuilder(server) { Database = name, Pooling = false }.ConnectionString;
             ModularCADbContext Open() => new(new DbContextOptionsBuilder<ModularCADbContext>().UseNpgsql(connection).Options);
             await using (var db = Open())
             {
-                await db.Database.MigrateAsync();
                 ModularCA.Bootstrap.BootstrapProfileSeeder.SeedBuiltInRoles(db);
                 if (!await db.SecurityPolicies.AnyAsync())
                     db.SecurityPolicies.Add(new SecurityPolicyEntity { RequireKeyCeremony = false, CeremonyRequiredApprovals = 1 });

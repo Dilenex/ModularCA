@@ -11,7 +11,8 @@ namespace ModularCA.API.Controllers.v1.User;
 /// <summary>
 /// User endpoints for listing signing profiles available for certificate requests.
 /// Returns basic signing profile information needed to submit CSR upload requests.
-/// Profiles are filtered by the caller's profile.* capability grants.
+/// The list holds the profiles the caller could submit a request against
+/// (<see cref="SubmittableProfiles"/>), neither more nor fewer.
 /// </summary>
 [ApiController]
 [Route("api/v1/user/signing-profiles")]
@@ -26,10 +27,20 @@ public class UserSigningProfileController(
     private readonly ICaGroupAuthorizationService _authService = authService;
 
     /// <summary>
-    /// Returns signing profiles the caller has profile.* grants for, whose issuing CA is inside
-    /// the caller's <see cref="ModularCA.Auth.Authorization.SpaceFence"/> (a profile with no
-    /// issuer is unbound). System admins see all profiles; other users see only those with an
-    /// explicit capability grant.
+    /// Returns the signing profiles the caller could submit a certificate request against: those
+    /// of the CAs they hold <c>cert.request</c> on, inside their
+    /// <see cref="ModularCA.Auth.Authorization.SpaceFence"/>. This is the check the submission
+    /// endpoints make (<see cref="SubmittableProfiles"/>), so a requester sees the profiles of
+    /// their CA and no other CA's. A <c>profile.*</c> capability neither adds a row nor is needed
+    /// for one. A profile with no issuer is listed only for a caller who holds
+    /// <c>cert.request</c> at system scope, and one whose issuer is no live CA for nobody: a
+    /// submission naming either is refused for everyone else.
+    /// <para>
+    /// Each row names the CA the profile issues from, as submission reads it: <c>CaId</c>,
+    /// <c>CaName</c> and <c>CaSpaceId</c> (the CA's space, null for an instance CA). All three
+    /// are null for a profile with no issuer. The request form builds its CA picker from them
+    /// and offers the signing profiles of the chosen CA.
+    /// </para>
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> GetSigningProfiles()
@@ -39,13 +50,12 @@ public class UserSigningProfileController(
             return Unauthorized();
 
         var fence = ModularCA.Auth.Authorization.SpaceFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRequest);
-        var visibleIssuers = db.CertificateAuthorities.AsNoTracking()
-            .Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.SpaceId))
-            .Where(ca => ca.CertificateId != null)
-            .Select(ca => ca.CertificateId!.Value);
+        var submittable = await SubmittableProfiles.ForAsync(_authService, db, fence, currentUser.User.Id);
+        var issuing = submittable.SigningProfiles.ToDictionary(s => s.Id);
+        var ids = issuing.Keys.ToList();
         var profiles = await db.SigningProfiles
             .AsNoTracking()
-            .Where(sp => sp.IssuerId == null || visibleIssuers.Contains(sp.IssuerId.Value))
+            .Where(sp => ids.Contains(sp.Id))
             .Select(sp => new
             {
                 sp.Id,
@@ -56,15 +66,16 @@ public class UserSigningProfileController(
             })
             .ToListAsync();
 
-        // Filter by profile.* capability grants unless caller is a system admin
-        if (HttpContext.Items["IsSystemAdmin"] is not true)
+        return Ok(profiles.Select(sp => new
         {
-            var (grantedIds, hasWildcard) = await _authService.GetGrantedResourceIdsAsync(
-                currentUser.User.Id, "profile.", "SigningProfile");
-            if (!hasWildcard)
-                profiles = profiles.Where(p => grantedIds.Contains(p.Id)).ToList();
-        }
-
-        return Ok(profiles);
+            sp.Id,
+            sp.Name,
+            sp.Description,
+            sp.IsDefault,
+            sp.CreatedAt,
+            issuing[sp.Id].CaId,
+            issuing[sp.Id].CaName,
+            issuing[sp.Id].CaSpaceId,
+        }));
     }
 }

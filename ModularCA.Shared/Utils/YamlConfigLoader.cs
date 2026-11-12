@@ -59,7 +59,19 @@ public static class YamlConfigLoader
         if (!File.Exists(path))
             throw new FileNotFoundException($"YAML config file not found: {path}");
 
-        var yaml = UpgradeLegacyKeys(File.ReadAllText(path), path, warn);
+        return FromText(File.ReadAllText(path), path, warn);
+    }
+
+    /// <summary>
+    /// Deserializes configuration YAML already in memory as <see cref="Load(string, Action{string})"/>
+    /// reads a file, legacy and retired keys included; <paramref name="source"/> names it in the
+    /// warnings. For checking an edited copy of a file before anything is written.
+    /// </summary>
+    /// <exception cref="ConfigKeyConflictException">A legacy key and its replacement are both set and differ.</exception>
+    public static SystemConfig FromText(string yaml, string source, Action<string> warn)
+    {
+        ArgumentNullException.ThrowIfNull(yaml);
+        yaml = UpgradeLegacyKeys(yaml, source, warn);
 
         var deserializer = new DeserializerBuilder()
             .WithNamingConvention(PascalCaseNamingConvention.Instance)

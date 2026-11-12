@@ -39,6 +39,19 @@ public class AdminEnrollmentTokenController(
             : fence.Allows(token.SpaceId);
 
     /// <summary>
+    /// Whether <paramref name="token"/> belongs in the console's view of <paramref name="spaceId"/>:
+    /// it is scoped to that space, or bound to a CA inside it (by the CA's current space, so a
+    /// token whose own space column was never filled still follows its CA). A system-wide token,
+    /// one of another space, and one of an instance CA are outside every space view.
+    /// </summary>
+    /// <param name="token">The token to place.</param>
+    /// <param name="spaceId">The space the console is scoped to.</param>
+    /// <param name="caSpaces">The space of each CA the listed tokens are bound to (null for an instance CA).</param>
+    private static bool InSpaceView(EnrollmentTokenEntity token, Guid spaceId, IReadOnlyDictionary<Guid, Guid?> caSpaces)
+        => token.SpaceId == spaceId
+            || (token.CertificateAuthorityId is Guid caId && caSpaces.TryGetValue(caId, out var caSpace) && caSpace == spaceId);
+
+    /// <summary>
     /// Resolves the CA + space for a signing profile (or cert/request
     /// profile as a secondary path). Returns null if no CA can be resolved — the caller
     /// should treat null as "system-wide target" and require SystemOperator policy.
@@ -98,15 +111,38 @@ public class AdminEnrollmentTokenController(
     /// The <c>token</c> field is always null: only the hash is stored, so a token is visible
     /// exactly once, in the response to the call that created it.
     /// </para>
+    /// <para>
+    /// The console's scope narrows what the fence admits, and never widens it: a
+    /// <paramref name="caId"/> view keeps the tokens bound to that CA, and a
+    /// <paramref name="spaceId"/> view keeps those bound to the space or to a CA inside it
+    /// (<see cref="InSpaceView"/>). Without either, every token the fence admits is listed.
+    /// </para>
     /// </summary>
+    /// <param name="caId">Optional CA view: only the tokens bound to this CA.</param>
+    /// <param name="spaceId">Optional space view: the tokens of this space and of its CAs. The pre-0.4.0 <c>tenantId</c> is refused (400).</param>
     [HttpGet]
     [Authorize(Policy = "CaOperator")]
-    public async Task<IActionResult> GetActiveTokens()
+    [RefuseQueryKey("tenantId", "spaceId")]
+    public async Task<IActionResult> GetActiveTokens([FromQuery] Guid? caId = null, [FromQuery] Guid? spaceId = null)
     {
         var tokens = await tokenService.GetActiveTokensAsync();
 
         var fence = SpaceFence.From(HttpContext, Capabilities.CertRevoke);
         tokens = tokens.Where(t => MayManageToken(fence, t)).ToList();
+
+        if (caId.HasValue)
+            tokens = tokens.Where(t => t.CertificateAuthorityId == caId.Value).ToList();
+        if (spaceId.HasValue)
+        {
+            var boundCaIds = tokens.Where(t => t.CertificateAuthorityId != null).Select(t => t.CertificateAuthorityId!.Value).Distinct().ToList();
+            var caSpaces = await db.CertificateAuthorities
+                .AsNoTracking()
+                .IgnoreQueryFilters()
+                .Where(c => boundCaIds.Contains(c.Id))
+                .Select(c => new { c.Id, c.SpaceId })
+                .ToDictionaryAsync(c => c.Id, c => c.SpaceId);
+            tokens = tokens.Where(t => InSpaceView(t, spaceId.Value, caSpaces)).ToList();
+        }
 
         // No token value leaves this endpoint, for any row. Bearer tokens used to be echoed
         // back here, which made the list a way to recover a credential long after it was
@@ -272,6 +308,11 @@ public class AdminEnrollmentTokenController(
         return Ok(new { token, expiresIn = expiresIn.TotalHours });
     }
 
+    /// <summary>
+    /// Revokes an enrollment token or CMP shared secret so it is no longer accepted. Requires the
+    /// <c>CaOperator</c> policy; a token outside the caller's <see cref="SpaceFence"/>, or a
+    /// system-wide token for a caller who is not instance-wide, answers 404 like a missing one.
+    /// </summary>
     [HttpDelete("{id:guid}")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> RevokeToken(Guid id)
@@ -308,18 +349,33 @@ public class GenerateCmpSharedSecretRequest
 {
     /// <summary>The CMP <c>senderKID</c> / referenceValue the client will present.</summary>
     public string ReferenceValue { get; set; } = string.Empty;
+    /// <summary>Lifetime of the secret in hours; null means 30 days.</summary>
     public double? ExpiresInHours { get; set; }
+    /// <summary>How many enrolments the secret allows; null or zero means unlimited.</summary>
     public int? MaxUses { get; set; }
     /// <summary>Signing profile used to resolve the target CA for space enforcement.</summary>
     public Guid? SigningProfileId { get; set; }
 }
 
+/// <summary>Request body for generating an enrollment token.</summary>
 public class GenerateEnrollmentTokenRequest
 {
+    /// <summary>Lifetime of the token in hours; null means 24.</summary>
     public double? ExpiresInHours { get; set; }
+    /// <summary>How many enrolments the token allows; null means one, zero or less means unlimited.</summary>
     public int? MaxUses { get; set; }
+    /// <summary>
+    /// Patterns the CSR subject must match, at most 255 characters: a DN component such as
+    /// <c>O=Acme Corp</c>, or a DNS name that the CN must equal or fall under. Null leaves the subject
+    /// unrestricted. See <see cref="ModularCA.Shared.Utils.EnrollmentNameRestriction"/>.
+    /// </summary>
     public string? SubjectRestriction { get; set; }
+    /// <summary>
+    /// DNS-name patterns every SAN in the CSR must equal or fall under, at most 500 characters. Null
+    /// leaves the SANs unrestricted. See <see cref="ModularCA.Shared.Utils.EnrollmentNameRestriction"/>.
+    /// </summary>
     public string? SANRestriction { get; set; }
+    /// <summary>The only enrollment protocol the token is accepted on (e.g. <c>SCEP</c>, or <c>QR</c> for link enrollment); null or empty accepts any.</summary>
     public string? Protocol { get; set; }
     /// <summary>Pre-selected request profile for QR/link enrollment.</summary>
     public Guid? RequestProfileId { get; set; }

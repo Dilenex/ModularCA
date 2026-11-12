@@ -81,6 +81,54 @@ public static class BodyTargetAuthorization
         }
         return true;
     }
+
+    /// <summary>
+    /// Every signing profile for which <see cref="IsAllowedAsync"/> with
+    /// <see cref="CaTarget.SigningProfile"/> answers true for <paramref name="userId"/>: the same
+    /// decision, taken for all of them at once, so a list can offer exactly the profiles the
+    /// action would accept. A profile with no issuer needs the capability at system scope; one
+    /// whose issuer is no CA's certificate is never allowed; any other needs the capability on
+    /// its CA, which a system administrator holds everywhere. It asks the resolver once for the
+    /// caller's CAs instead of once per profile, and writes no audit row: nothing is being acted on.
+    /// </summary>
+    /// <param name="auth">The capability resolver, badge-aware as the action's check is.</param>
+    /// <param name="db">The application database.</param>
+    /// <param name="userId">The caller.</param>
+    /// <param name="capability">The capability the action demands.</param>
+    public static async Task<HashSet<Guid>> AllowedSigningProfileIdsAsync(
+        ICaGroupAuthorizationService auth, ModularCADbContext db, Guid userId, string capability)
+    {
+        var profiles = await db.SigningProfiles.AsNoTracking().Select(p => new { p.Id, p.IssuerId }).ToListAsync();
+        var allowed = new HashSet<Guid>();
+        if (profiles.Count == 0)
+            return allowed;
+
+        var atSystemScope = await auth.HasSystemCapabilityAsync(userId, capability);
+        var onEveryCa = atSystemScope || await auth.IsSystemAdminAsync(userId);
+        var heldCas = onEveryCa ? [] : (await auth.GetAccessibleCaIdsAsync(userId, capability)).ToHashSet();
+
+        // As CaTargetResolver reads it: the CA whose certificate the issuer is, a deleted CA included.
+        var issuers = profiles.Where(p => p.IssuerId != null).Select(p => p.IssuerId!.Value).Distinct().ToList();
+        var caByCertificate = (await db.CertificateAuthorities.AsNoTracking().IgnoreQueryFilters()
+                .Where(c => c.CertificateId != null && issuers.Contains(c.CertificateId.Value))
+                .Select(c => new { c.Id, CertificateId = c.CertificateId!.Value })
+                .ToListAsync())
+            .GroupBy(c => c.CertificateId)
+            .ToDictionary(g => g.Key, g => g.First().Id);
+
+        foreach (var profile in profiles)
+        {
+            if (profile.IssuerId is not Guid issuer)
+            {
+                if (atSystemScope) allowed.Add(profile.Id);
+            }
+            else if (caByCertificate.TryGetValue(issuer, out var caId) && (onEveryCa || heldCas.Contains(caId)))
+            {
+                allowed.Add(profile.Id);
+            }
+        }
+        return allowed;
+    }
 }
 
 /// <summary>

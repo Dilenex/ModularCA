@@ -19,20 +19,22 @@ public static partial class SchemaStartup
     /// <c>Tenants</c> (soft-deleted ones do not count), each found through <c>to_regclass</c> so
     /// the lookup follows the <c>search_path</c>. Read-only: one read-only transaction as the
     /// runtime role, rolled back. A database that cannot be read here is reported unreachable; its
-    /// schema finding says why.
+    /// schema finding says why. With <paramref name="readOnlyCheck"/> it reads on the read-only
+    /// check connection (<see cref="ReadOnlyCheckConnectionString"/>).
     /// </summary>
     /// <param name="target">The application database.</param>
     /// <param name="scopes">The integration keys whose <c>SpaceId</c> is set, by config key name.</param>
+    /// <param name="readOnlyCheck">True for <c>--upgrade-check --read-only</c>.</param>
     /// <param name="ct">Cancellation token.</param>
     private static async Task<UpgradeFinding> FoldedScopeFindingAsync(
-        SchemaTarget target, IReadOnlyList<(string Key, string Value)> scopes, CancellationToken ct)
+        SchemaTarget target, IReadOnlyList<(string Key, string Value)> scopes, bool readOnlyCheck, CancellationToken ct)
     {
         const string name = "configuration";
         var systemTenants = new List<Guid>();
         var spaces = new List<Guid>();
         try
         {
-            await using var connection = new NpgsqlConnection(GateReadConnectionString(target.Instance));
+            await using var connection = new NpgsqlConnection(CheckReadConnectionString(target.Instance, readOnlyCheck));
             await connection.OpenAsync(ct);
             await using var transaction = await connection.BeginTransactionAsync(ct);
             await using (var readOnly = new NpgsqlCommand("SET TRANSACTION READ ONLY", connection, transaction))

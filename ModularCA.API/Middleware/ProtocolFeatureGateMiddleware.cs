@@ -60,6 +60,8 @@ public class ProtocolFeatureGateMiddleware
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
+    /// <summary>Initializes a new <see cref="ProtocolFeatureGateMiddleware"/>.</summary>
+    /// <param name="next">The next delegate in the pipeline.</param>
     public ProtocolFeatureGateMiddleware(RequestDelegate next)
     {
         _next = next;

@@ -17,7 +17,7 @@ namespace ModularCA.Database.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.12")
+                .HasAnnotation("ProductVersion", "10.0.14")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "citext");
@@ -576,9 +576,6 @@ namespace ModularCA.Database.Migrations
                         .HasColumnType("boolean");
 
                     b.Property<bool>("MsaeAllowUsernameToken")
-                        .HasColumnType("boolean");
-
-                    b.Property<bool>("OcspSignResponses")
                         .HasColumnType("boolean");
 
                     b.Property<string>("Protocol")
@@ -2198,9 +2195,6 @@ namespace ModularCA.Database.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
-
-                    b.Property<int?>("DaysBeforeExpiry")
-                        .HasColumnType("integer");
 
                     b.Property<string>("Description")
                         .HasMaxLength(255)
@@ -3866,6 +3860,39 @@ namespace ModularCA.Database.Migrations
                     b.ToTable("UserCapabilityGrants");
                 });
 
+            modelBuilder.Entity("ModularCA.Shared.Entities.UserClaimTokenEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("IssuedBy")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<byte[]>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("bytea");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId")
+                        .IsUnique();
+
+                    b.ToTable("UserClaimTokens");
+                });
+
             modelBuilder.Entity("ModularCA.Shared.Entities.UserEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3940,6 +3967,13 @@ namespace ModularCA.Database.Migrations
 
                     b.Property<bool>("PasswordNeverExpires")
                         .HasColumnType("boolean");
+
+                    b.Property<string>("PasswordSource")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("Inherit");
 
                     b.Property<string>("SecurityStamp")
                         .IsRequired()
@@ -4872,6 +4906,17 @@ namespace ModularCA.Database.Migrations
                     b.Navigation("GrantedByUser");
 
                     b.Navigation("Space");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.UserClaimTokenEntity", b =>
+                {
+                    b.HasOne("ModularCA.Shared.Entities.UserEntity", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
 
                     b.Navigation("User");
                 });

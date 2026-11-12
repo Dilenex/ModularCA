@@ -114,7 +114,7 @@ public class OcspResponderTests
             Revoked = revoked,
             RevocationDate = revokedAt,
             NotBefore = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
-            NotAfter = new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            NotAfter = new DateTime(2049, 1, 1, 0, 0, 0, DateTimeKind.Utc),
         };
 
     /// <summary>Runs a request through the responder and returns the single certificate status.</summary>
@@ -324,6 +324,42 @@ public class OcspResponderTests
         }
     }
 
+    /// <summary>
+    /// OCSP switched off for one CA in its protocol configuration answers <c>tryLater</c> on every
+    /// route: the check is in the responder, which the bare <c>/ocsp</c> route (no label) and the
+    /// per-CA routes (the CA's label) all call.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("test-ca")]
+    public async Task A_ca_with_ocsp_switched_off_in_its_protocol_config_does_not_answer(string? routeLabel)
+    {
+        var ca = TestCaMaterial.CreateCa();
+        var (db, service) = Build(ca, (d, caCertId) =>
+        {
+            d.Certificates.Add(Row(ca, caCertId, LeafSerial, "CN=leaf.example.test", isCa: false));
+            d.CaProtocolConfigs.Add(new CaProtocolConfigEntity
+            {
+                CaId = d.CertificateAuthorities.Local.Single().Id,
+                Protocol = "OCSP",
+                IsEnabled = false,
+            });
+        });
+
+        using (db)
+        {
+            var result = new OcspProcessingResult();
+            var responseDer = await service.ProcessOcspRequestAsync(ca.BuildOcspRequest(LeafSerial), routeLabel, result);
+            Assert.Equal(OcspRespStatus.TryLater, new OcspResp(responseDer).Status);
+
+            // Switched back on, the same request on the same route is answered.
+            db.CaProtocolConfigs.Single().IsEnabled = true;
+            db.SaveChanges();
+            responseDer = await service.ProcessOcspRequestAsync(ca.BuildOcspRequest(LeafSerial), routeLabel, new OcspProcessingResult());
+            Assert.Equal(OcspRespStatus.Successful, new OcspResp(responseDer).Status);
+        }
+    }
+
     /// <summary>A disabled CA refuses to answer at all rather than guessing.</summary>
     [Fact]
     public async Task Disabled_CA_does_not_answer()
@@ -478,4 +514,77 @@ public class OcspResponderTests
         }
     }
 
+    // ── Multi-request issuer scope ───────────────────────────────────────────
+
+    /// <summary>Builds one OCSPRequest carrying a single request per (issuer, serial) pair, in order.</summary>
+    private static byte[] BuildMultiRequest(params (TestCaMaterial Issuer, BigInteger Serial, string HashAlg)[] entries)
+    {
+        var gen = new OcspReqGenerator();
+        foreach (var (issuer, serial, hashAlg) in entries)
+        {
+#pragma warning disable CS0618 // No non-deprecated CertificateID overload exists; the responder uses the same one.
+            gen.AddRequest(new CertificateID(hashAlg, issuer.Certificate, serial));
+#pragma warning restore CS0618
+        }
+        return gen.Generate().GetEncoded();
+    }
+
+    /// <summary>
+    /// Bug hunt 2026-11: every single request in an OCSPRequest was answered in the first
+    /// request's issuer scope. A second request naming another issuer was looked up among the
+    /// first CA's certificates and answered under the first CA's responder: here, the serial of a
+    /// certificate test-ca issued, asked about under a foreign issuer's CertID, came back "good",
+    /// signed for a CertID the responder is not authorized for (RFC 6960 §4.2.2.2). A request
+    /// that spans issuers is now refused as a whole with <c>unauthorized</c>.
+    /// </summary>
+    [Fact]
+    public async Task A_request_naming_a_second_issuer_is_refused_as_unauthorized()
+    {
+        var ca = TestCaMaterial.CreateCa();
+        var foreign = TestCaMaterial.CreateCa("CN=Foreign Issuing CA");
+        var (db, service) = Build(ca, (d, caId) =>
+            d.Certificates.Add(Row(ca, caId, LeafSerial, "CN=leaf.example.test", isCa: false)));
+        using (db)
+        {
+            var der = BuildMultiRequest(
+                (ca, LeafSerial, Org.BouncyCastle.Asn1.Oiw.OiwObjectIdentifiers.IdSha1.Id),
+                (foreign, LeafSerial, Org.BouncyCastle.Asn1.Oiw.OiwObjectIdentifiers.IdSha1.Id));
+            var result = new OcspProcessingResult();
+
+            var resp = new OcspResp(await service.ProcessOcspRequestAsync(der, "test-ca", result));
+
+            Assert.Equal(OcspRespStatus.Unauthorized, resp.Status);
+            Assert.Equal("unauthorized", result.Status);
+        }
+    }
+
+    /// <summary>
+    /// The same issuer named twice, once under each permitted CertID hash, is still one issuer:
+    /// the scope check compares the request's hashes under the request's own algorithm.
+    /// </summary>
+    [Fact]
+    public async Task Several_requests_for_the_same_issuer_are_all_answered()
+    {
+        var ca = TestCaMaterial.CreateCa();
+        var (db, service) = Build(ca, (d, caId) =>
+        {
+            d.Certificates.Add(Row(ca, caId, LeafSerial, "CN=leaf.example.test", isCa: false));
+            d.Certificates.Add(Row(ca, caId, IntermediateSerial, "CN=Sub CA", isCa: true, revoked: true,
+                revokedAt: new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc)));
+        });
+        using (db)
+        {
+            var der = BuildMultiRequest(
+                (ca, LeafSerial, Org.BouncyCastle.Asn1.Oiw.OiwObjectIdentifiers.IdSha1.Id),
+                (ca, IntermediateSerial, Org.BouncyCastle.Asn1.Nist.NistObjectIdentifiers.IdSha256.Id));
+
+            var resp = new OcspResp(await service.ProcessOcspRequestAsync(der, "test-ca", new OcspProcessingResult()));
+
+            Assert.Equal(OcspRespStatus.Successful, resp.Status);
+            var basic = (BasicOcspResp)resp.GetResponseObject();
+            Assert.Equal(2, basic.Responses.Length);
+            Assert.Null(basic.Responses[0].GetCertStatus());
+            Assert.IsType<RevokedStatus>(basic.Responses[1].GetCertStatus());
+        }
+    }
 }

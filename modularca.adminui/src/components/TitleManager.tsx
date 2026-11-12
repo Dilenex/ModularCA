@@ -17,6 +17,7 @@ const SUFFIX = 'ModularCA';
 // Sign-in pages at the site root, shared by both portals.
 const AUTH_ROUTE_TITLES: Array<[string, string]> = [
     ['/login', 'Sign In'],
+    ['/claim', 'Claim Account'],
     ['/mfa-setup', 'MFA Setup'],
     ['/mfa-verify', 'Verify MFA'],
     ['/mfa-callback', 'Signing In'],
@@ -37,6 +38,7 @@ const USER_ROUTE_TITLES: Array<[string, string]> = [
 
     // Auth (outside the main shell)
     ['/login', 'Sign In'],
+    ['/claim', 'Claim Account'],
     ['/mfa-setup', 'MFA Setup'],
     ['/mfa-verify', 'Verify MFA'],
     ['/mfa-callback', 'Signing In'],
@@ -126,6 +128,7 @@ const ADMIN_ROUTE_TITLES: Array<[string, string]> = [
 
     // Auth (rendered outside the Layout, but still worth a title)
     ['/login', 'Sign In'],
+    ['/claim', 'Claim Account'],
     ['/mfa-setup', 'MFA Setup'],
     ['/mfa-verify', 'Verify MFA'],
     ['/mfa-callback', 'Signing In'],

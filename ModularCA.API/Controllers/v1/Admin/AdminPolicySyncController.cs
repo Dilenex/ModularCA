@@ -44,7 +44,7 @@ public class AdminPolicySyncController(
         if (currentUser.User == null)
             return Unauthorized();
 
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, User, mfaToken, StepUpOps.PolicySync, "directory"))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, HttpContext, mfaToken, StepUpOps.PolicySync, "directory"))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         if (!config.PolicySync.Enabled)
@@ -110,7 +110,7 @@ public class AdminPolicySyncController(
         if (currentUser.User == null)
             return Unauthorized();
 
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, User, mfaToken, StepUpOps.PolicyImport, profileType))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, HttpContext, mfaToken, StepUpOps.PolicyImport, profileType))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         if (file == null || file.Length == 0)

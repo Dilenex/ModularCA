@@ -16,8 +16,8 @@ export const adminRevocation: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token (operation: RevokeCert or RevokeCa)' },
         ],
-        responseDescription: 'Revocation details including certificateId, serialNumber, newStatus, reason, crlNumber, and effectiveAt. CA cert revocation may return ceremonyId when key ceremony is required.',
-        notes: 'KC-06: CA certificate revocation is ceremony-gated when the space RequireKeyCeremony flag is set. Enforces space isolation. When the ceremony could never reach its quorum, because too few accounts other than the caller can approve it, nothing is opened and the answer is 409 (code MCA-CFG-020 when nobody else can approve, MCA-CFG-021 when some can but too few); the key ceremony endpoints describe the body.',
+        responseDescription: 'Revocation details including certificateId, serialNumber, newStatus, reason, previousReason (CertificateHold when a hold was made permanent, otherwise null), crlNumber, and effectiveAt. CA cert revocation may return ceremonyId when key ceremony is required.',
+        notes: 'A certificate on hold is revoked permanently in place, without a release first (RFC 5280 5.3.1): the reason changes, the revocation date becomes now so the next delta CRL carries the change, and the hold date becomes the invalidity date unless invalidityDate is given. A permanently revoked certificate is refused with 409 (code MCA-RES-009), here and by the hold endpoints, as is a held certificate asked to be held again. KC-06: CA certificate revocation is ceremony-gated when the space RequireKeyCeremony flag is set. Enforces space isolation. When the ceremony could never reach its quorum, because too few accounts other than the caller can approve it, nothing is opened and the answer is 409 (code MCA-CFG-020 when nobody else can approve, MCA-CFG-021 when some can but too few); the key ceremony endpoints describe the body.',
     },
     {
         method: 'POST',
@@ -34,8 +34,8 @@ export const adminRevocation: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token (operation: RevokeCert or RevokeCa)' },
         ],
-        responseDescription: 'Revocation details including certificateId, serialNumber, newStatus, reason, crlNumber, and effectiveAt. CA cert revocation may return ceremonyId when key ceremony is required.',
-        notes: 'KC-06: CA certificate revocation is ceremony-gated when the space RequireKeyCeremony flag is set. Enforces space isolation. When the ceremony could never reach its quorum, because too few accounts other than the caller can approve it, nothing is opened and the answer is 409 (code MCA-CFG-020 when nobody else can approve, MCA-CFG-021 when some can but too few); the key ceremony endpoints describe the body.',
+        responseDescription: 'Revocation details including certificateId, serialNumber, newStatus, reason, previousReason (CertificateHold when a hold was made permanent, otherwise null), crlNumber, and effectiveAt. CA cert revocation may return ceremonyId when key ceremony is required.',
+        notes: 'A certificate on hold is revoked permanently in place, without a release first (RFC 5280 5.3.1): the reason changes, the revocation date becomes now so the next delta CRL carries the change, and the hold date becomes the invalidity date unless invalidityDate is given. A permanently revoked certificate is refused with 409 (code MCA-RES-009), here and by the hold endpoints, as is a held certificate asked to be held again. KC-06: CA certificate revocation is ceremony-gated when the space RequireKeyCeremony flag is set. Enforces space isolation. A serial that matches certificates of more than one issuer is refused with 409 (code MCA-RES-010); retry by certificate ID. When the ceremony could never reach its quorum, because too few accounts other than the caller can approve it, nothing is opened and the answer is 409 (code MCA-CFG-020 when nobody else can approve, MCA-CFG-021 when some can but too few); the key ceremony endpoints describe the body.',
     },
     {
         method: 'POST',
@@ -67,7 +67,7 @@ export const adminRevocation: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token (operation: HoldCert)' },
         ],
         responseDescription: 'Hold details including certificateId, serialNumber, newStatus, crlNumber, and effectiveAt.',
-        notes: 'Enforces space isolation via the certificate signing profile linkage.',
+        notes: 'Enforces space isolation via the certificate signing profile linkage. A serial that matches certificates of more than one issuer is refused with 409 (code MCA-RES-010); retry by certificate ID.',
     },
     {
         method: 'POST',
@@ -99,6 +99,6 @@ export const adminRevocation: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token (operation: UnholdCert)' },
         ],
         responseDescription: 'Reinstatement details including certificateId, serialNumber, newStatus, crlNumber, and effectiveAt.',
-        notes: 'Enforces space isolation via the certificate signing profile linkage.',
+        notes: 'Enforces space isolation via the certificate signing profile linkage. A serial that matches certificates of more than one issuer is refused with 409 (code MCA-RES-010); retry by certificate ID.',
     },
 ];

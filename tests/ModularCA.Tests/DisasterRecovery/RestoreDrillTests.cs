@@ -14,6 +14,7 @@ using Npgsql;
 using Org.BouncyCastle.Asn1;
 using Org.BouncyCastle.Asn1.X509;
 using Org.BouncyCastle.X509;
+using ModularCA.Tests.TestUtils;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -42,23 +43,30 @@ public enum NewHost
 /// output. The unattended install needs a superuser in <c>setup-database.yaml</c>; the drill
 /// makes one for itself and drops it, so the harness's own credentials never reach a file or
 /// another process.
+/// <para>
+/// It runs after everything else (<see cref="RestoreDrillCollection"/>): under the load of the
+/// other test collections on the same PostgreSQL server, the unattended install's commands ran
+/// past Npgsql's command timeout in every full-suite run, though the drill passed on its own.
+/// The two new hosts are drilled by a class each, <see cref="RestoreDrillOntoEmptyDatabasesTests"/>
+/// and <see cref="RestoreDrillOntoFreshInstallTests"/>, so the two drills run beside each other;
+/// they share nothing but the server (each has its own roles, databases, directories and ports).
+/// </para>
 /// </remarks>
-[Trait("Category", "PostgreSQL")]
-public sealed class RestoreDrillTests(ITestOutputHelper output)
+public abstract class RestoreDrillTests(ITestOutputHelper output)
 {
-    private const string ServerVariable = "MODULARCA_TEST_PG";
+    /// <summary>The environment variable naming the test server.</summary>
+    protected const string ServerVariable = "MODULARCA_TEST_PG";
     private const string RootLabel = "drill-root";
 
-    [RequiresPostgresClientToolsTheory(ServerVariable)]
-    [InlineData(NewHost.EmptyDatabases)]
-    [InlineData(NewHost.FreshInstall)]
-    public async Task A_backup_restores_onto_a_new_host_and_the_ca_signs_again(NewHost newHost)
+    /// <summary>The drill, onto a new host prepared as <paramref name="newHost"/> says.</summary>
+    protected async Task DrillAsync(NewHost newHost)
     {
         await using var server = await DrillServer.CreateAsync(Environment.GetEnvironmentVariable(ServerVariable)!);
         var (httpsPort, httpPort) = (FreePort(), FreePort());
         var work = Path.Combine(Path.GetTempPath(), $"modularca-drill-{Guid.NewGuid():N}"[..40]);
         Directory.CreateDirectory(work);
         DrillHost? old = null, restored = null;
+        byte[]? rootDer = null;
         try
         {
             // The first host: installed unattended, started, used, stopped, backed up.
@@ -68,9 +76,10 @@ public sealed class RestoreDrillTests(ITestOutputHelper output)
             await old.RunAsync("install", ["--bootstrap"]);
             await old.StartAsync(httpPort);
             var root = await old.GetAsync(httpPort, $"/ca/{RootLabel}");
+            rootDer = root;
             var crlBefore = ParseCrl(await old.GetUntilAsync(httpPort, $"/crl/{RootLabel}", TimeSpan.FromMinutes(3)));
             var rootCertificate = new X509CertificateParser().ReadCertificate(root);
-            var leafBefore = await ServedUnderAsync(httpsPort, rootCertificate);
+            var leafBefore = await old.WithNodeLogOnFailureAsync(ServedUnderAsync(httpsPort, rootCertificate));
             await old.StopAsync();
 
             var dbYaml = old.Databases();
@@ -132,7 +141,8 @@ public sealed class RestoreDrillTests(ITestOutputHelper output)
             File.Copy(Path.Combine(kit, "backup.key"), Path.Combine(restored.ConfigDirectory, "backup.key"), overwrite: true);
             File.Copy(Path.Combine(kit, "keystore.yaml"), Path.Combine(restored.ConfigDirectory, "keystore.yaml"), overwrite: true);
 
-            var restore = await restored.RunAsync("restore", ["--restore", archiveOnNewHost], stdin: "RESTORE\n");
+            // The new host's audit database is empty, so it takes the archive's audit trail.
+            var restore = await restored.RunAsync("restore", ["--restore", archiveOnNewHost, "--restore-audit"], stdin: "RESTORE\n");
 
             var newDbYaml = restored.Databases();
             Assert.Equal(certificates, await CountAsync(newDbYaml.App, "SELECT count(*) FROM \"Certificates\""));
@@ -143,7 +153,7 @@ public sealed class RestoreDrillTests(ITestOutputHelper output)
             // The same root, and a certificate the restored key signed after the restore.
             Assert.Equal(root, await restored.GetAsync(httpPort, $"/ca/{RootLabel}"));
             // The web certificate's key is in no backup, so the one served now is new.
-            var leafAfter = await ServedUnderAsync(httpsPort, rootCertificate);
+            var leafAfter = await restored.WithNodeLogOnFailureAsync(ServedUnderAsync(httpsPort, rootCertificate));
             Assert.NotEqual(leafBefore.SerialNumber, leafAfter.SerialNumber);
             Assert.Equal(leafBefore.SubjectDN.ToString(), leafAfter.SubjectDN.ToString());
             Assert.Equal(SubjectAltNames(leafBefore), SubjectAltNames(leafAfter));
@@ -174,6 +184,29 @@ public sealed class RestoreDrillTests(ITestOutputHelper output)
                 Assert.False(chain.Truncated);
             }
 
+            // A later restore without --restore-audit keeps the audit history this host wrote
+            // after the backup: a record appended now survives it, and the chain stays whole.
+            await restored.StopAsync();
+            await using (var audit = new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+                             .UseNpgsql(PostgresConnection.Build(newDbYaml.Audit)).Options))
+            {
+                await new AuditHashChainService().AppendAsync(audit, new ModularCA.Shared.Entities.AuditLogEntity
+                {
+                    ActionType = "RestoreDrillMarker",
+                    ActorUsername = "restore-drill",
+                    TargetEntityType = "Drill",
+                    Success = true,
+                });
+            }
+            await restored.RunAsync("restore keeping the audit history", ["--restore", archiveOnNewHost], stdin: "RESTORE\n");
+            Assert.Equal(1, await CountAsync(newDbYaml.Audit, "SELECT count(*) FROM \"AuditLogs\" WHERE \"ActionType\" = 'RestoreDrillMarker'"));
+            Assert.Equal(certificates, await CountAsync(newDbYaml.App, "SELECT count(*) FROM \"Certificates\""));
+            await using (var audit = new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+                             .UseNpgsql(PostgresConnection.Build(newDbYaml.Audit)).Options))
+            {
+                Assert.Empty((await new AuditHashChainService().VerifyAsync(audit, null, limit: 100_000)).Breaks);
+            }
+
             output.WriteLine($"backup {backup.TotalSeconds:F0}s, restore {restore.TotalSeconds:F0}s, start to serving {start.TotalSeconds:F0}s");
         }
         finally
@@ -181,6 +214,7 @@ public sealed class RestoreDrillTests(ITestOutputHelper output)
             if (old is not null) await old.StopAsync();
             if (restored is not null) await restored.StopAsync();
             NpgsqlConnection.ClearAllPools();
+            if (rootDer is not null) RemoveFromWindowsCaStores(rootDer);
             try { Directory.Delete(work, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
     }
@@ -226,6 +260,39 @@ public sealed class RestoreDrillTests(ITestOutputHelper output)
         return new X509CertificateParser().ReadCertificate(tls.RemoteCertificate!.GetRawCertData());
     }
 
+    /// <summary>
+    /// Removes the drill's root from the Windows intermediate ("CA") stores, best effort. When
+    /// Kestrel builds its server certificate context on Windows, .NET puts the chain's extra
+    /// certificates into the CA store so SChannel can send them: LocalMachine when the process is
+    /// elevated, CurrentUser otherwise. Each drill makes a new root under the same name, so
+    /// without this they pile up, and with about a hundred same-named candidates the chain engine
+    /// fails every TLS handshake with "An unknown chain building error occurred".
+    /// </summary>
+    /// <param name="rootDer">The drill root, DER-encoded.</param>
+    private static void RemoveFromWindowsCaStores(byte[] rootDer)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        using var root = System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificate(rootDer);
+        foreach (var location in new[] { System.Security.Cryptography.X509Certificates.StoreLocation.CurrentUser, System.Security.Cryptography.X509Certificates.StoreLocation.LocalMachine })
+        {
+            try
+            {
+                using var store = new System.Security.Cryptography.X509Certificates.X509Store(System.Security.Cryptography.X509Certificates.StoreName.CertificateAuthority, location);
+                store.Open(System.Security.Cryptography.X509Certificates.OpenFlags.ReadWrite | System.Security.Cryptography.X509Certificates.OpenFlags.OpenExistingOnly);
+                foreach (var cached in store.Certificates.Find(System.Security.Cryptography.X509Certificates.X509FindType.FindByThumbprint, root.Thumbprint, validOnly: false))
+                {
+                    store.Remove(cached);
+                    cached.Dispose();
+                }
+            }
+            catch (System.Security.Cryptography.CryptographicException)
+            {
+                // Not elevated, or the store is not there: nothing this drill can clean.
+            }
+        }
+    }
+
     private static int FreePort()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -254,6 +321,49 @@ public sealed class RestoreDrillTests(ITestOutputHelper output)
         }
         throw new Xunit.Sdk.XunitException($"{failure} (waited {limit.TotalSeconds:F0}s{(last is null ? "" : "; last error: " + last.Message)})");
     }
+}
+
+/// <summary>The drill onto two roles and two empty databases made by hand.</summary>
+[Trait("Category", "PostgreSQL")]
+[Trait(TestTier.Name, TestTier.Slow)]
+[Collection(RestoreDrillCollection.EmptyDatabases)]
+public sealed class RestoreDrillOntoEmptyDatabasesTests(ITestOutputHelper output) : RestoreDrillTests(output)
+{
+    /// <summary>The drill.</summary>
+    [RequiresPostgresClientToolsTheory(ServerVariable)]
+    [InlineData(NewHost.EmptyDatabases)]
+    public Task A_backup_restores_onto_a_new_host_and_the_ca_signs_again(NewHost newHost) => DrillAsync(newHost);
+}
+
+/// <summary>The drill onto a complete new install with a root of its own, which the restore replaces.</summary>
+[Trait("Category", "PostgreSQL")]
+[Trait(TestTier.Name, TestTier.Slow)]
+[Collection(RestoreDrillCollection.FreshInstall)]
+public sealed class RestoreDrillOntoFreshInstallTests(ITestOutputHelper output) : RestoreDrillTests(output)
+{
+    /// <summary>The drill.</summary>
+    [RequiresPostgresClientToolsTheory(ServerVariable)]
+    [InlineData(NewHost.FreshInstall)]
+    public Task A_backup_restores_onto_a_new_host_and_the_ca_signs_again(NewHost newHost) => DrillAsync(newHost);
+}
+
+/// <summary>
+/// The collections of the two restore drills. They start when every other collection of the run
+/// that may run in parallel has finished, the PostgreSQL lanes included, and run beside each
+/// other (<see cref="PhasedTestFramework"/>): the drill installs, starts and restores whole
+/// nodes, and with the rest of the suite loading the same PostgreSQL server, its install hit
+/// Npgsql command timeouts.
+/// </summary>
+internal static class RestoreDrillCollection
+{
+    /// <summary>What both collection names start with.</summary>
+    public const string Prefix = "Restore drill ";
+
+    /// <summary>The collection of <see cref="RestoreDrillOntoEmptyDatabasesTests"/>.</summary>
+    public const string EmptyDatabases = Prefix + "onto empty databases";
+
+    /// <summary>The collection of <see cref="RestoreDrillOntoFreshInstallTests"/>.</summary>
+    public const string FreshInstall = Prefix + "onto a fresh install";
 }
 
 /// <summary>The role and database names of one install on the drill's server.</summary>
@@ -500,6 +610,23 @@ internal sealed class DrillHost
         Assert.True(process.ExitCode == 0, $"The {step} exited {process.ExitCode}:{Environment.NewLine}{Redact(log)}");
         _output.WriteLine($"--- {step} ({watch.Elapsed.TotalSeconds:F0}s){Environment.NewLine}{Redact(log)}");
         return watch.Elapsed;
+    }
+
+    /// <summary>
+    /// Awaits <paramref name="wait"/>, and when it fails, fails with the running node's log
+    /// (redacted) appended, so a node that starts but never gets as far as the check says why.
+    /// </summary>
+    /// <param name="wait">A wait on something the running node should do.</param>
+    public async Task<T> WithNodeLogOnFailureAsync<T>(Task<T> wait)
+    {
+        try
+        {
+            return await wait;
+        }
+        catch (Xunit.Sdk.XunitException ex)
+        {
+            throw new Xunit.Sdk.XunitException($"{ex.Message}{Environment.NewLine}{Redact(_nodeLog)}");
+        }
     }
 
     /// <summary>Starts the node and waits until it serves its root over plain HTTP.</summary>

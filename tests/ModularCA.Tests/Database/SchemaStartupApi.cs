@@ -25,8 +25,21 @@ internal static class SchemaStartupApi
     /// <summary><c>SchemaStartup.ExitCode</c>: the operator must act.</summary>
     public static int ExitCode => (int)Startup.GetField("ExitCode")!.GetRawConstantValue()!;
 
+    /// <summary><c>SchemaStartup.AppliedThenFailedExitCode</c>: the operator must act, and a migration had been applied.</summary>
+    public static int AppliedThenFailedExitCode => (int)Startup.GetField("AppliedThenFailedExitCode")!.GetRawConstantValue()!;
+
+    /// <summary>Calls <c>SchemaStartup.ExitAfter</c>: the code the schema step stops with, given whether it changed a database.</summary>
+    public static int ExitAfter(int exit, bool changedADatabase) =>
+        (int)Startup.GetMethod("ExitAfter", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [exit, changedADatabase])!;
+
     /// <summary><c>SchemaStartup.TempFailExitCode</c>: the service manager retries.</summary>
     public static int TempFailExitCode => (int)Startup.GetField("TempFailExitCode")!.GetRawConstantValue()!;
+
+    /// <summary><c>SchemaStartup.PendingNotRehearsedExitCode</c>: the read-only upgrade check found migrations pending.</summary>
+    public static int PendingNotRehearsedExitCode => (int)Startup.GetField("PendingNotRehearsedExitCode")!.GetRawConstantValue()!;
+
+    /// <summary><c>SchemaStartup.PendingNotRehearsedMarker</c>: what the read-only upgrade check's "pending" line starts with.</summary>
+    public static string PendingNotRehearsedMarker => (string)Startup.GetField("PendingNotRehearsedMarker")!.GetRawConstantValue()!;
 
     /// <summary>
     /// Calls <c>SchemaStartup.EnforceAllAsync</c> with no systemd notifier and returns its exit
@@ -77,17 +90,19 @@ internal static class SchemaStartupApi
     /// Calls <c>SchemaStartup.UpgradeCheckAsync</c>, the <c>--upgrade-check</c> verb, writing its report to
     /// <paramref name="output"/>, with the integration keys' configured <paramref name="scopes"/> when given,
     /// and the SSH CA key files looked for under <paramref name="installDirectory"/> when one is given.
+    /// With <paramref name="readOnly"/> it is <c>--upgrade-check --read-only</c>: no dry run.
     /// </summary>
     public static async Task<int> UpgradeCheckAsync(
         IReadOnlyList<(string Name, DatabaseKind Kind, DbInstance Instance)> targets, SchemaConfig config, TextWriter output,
-        IReadOnlyList<(string Key, string Value)>? scopes = null, string? installDirectory = null, CancellationToken ct = default)
+        IReadOnlyList<(string Key, string Value)>? scopes = null, string? installDirectory = null, bool readOnly = false,
+        CancellationToken ct = default)
     {
         var targetType = ApiAssembly.TypeNamed(Namespace + "SchemaTarget");
         var array = Array.CreateInstance(targetType, targets.Count);
         for (var i = 0; i < targets.Count; i++)
             array.SetValue(Activator.CreateInstance(targetType, targets[i].Name, targets[i].Kind, targets[i].Instance), i);
         var method = Startup.GetMethod("UpgradeCheckAsync", BindingFlags.Public | BindingFlags.Static)!;
-        return await (Task<int>)method.Invoke(null, [array, config, output, scopes, installDirectory, ct])!;
+        return await (Task<int>)method.Invoke(null, [array, config, output, scopes, installDirectory, readOnly, ct])!;
     }
 
     /// <summary>Calls <c>SchemaStartup.UpgradeCheckExitCode</c> with <c>UpgradeReadiness</c> values named by <paramref name="readiness"/>.</summary>
@@ -126,6 +141,10 @@ internal static class SchemaStartupApi
     public static string GateReadConnectionString(DbInstance instance) =>
         (string)Startup.GetMethod("GateReadConnectionString", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [instance])!;
 
+    /// <summary>The connection string <c>--upgrade-check --read-only</c> reads with.</summary>
+    public static string ReadOnlyCheckConnectionString(DbInstance instance) =>
+        (string)Startup.GetMethod("ReadOnlyCheckConnectionString", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [instance])!;
+
     /// <summary>The migration connection string the control role migrates with.</summary>
     public static string MigrationConnectionString(DbInstance instance, SchemaConfig config) =>
         (string)Startup.GetMethod("MigrationConnectionString", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [instance, config])!;
@@ -162,18 +181,35 @@ public class RecordingNotifier : DispatchProxy
 }
 
 /// <summary>
-/// Replaces the global Serilog logger with one that keeps every event, for the lifetime of the
-/// instance, and puts the previous logger back on dispose.
+/// Keeps every Serilog event logged by the async flow that created it, from its creation to its
+/// disposal. The product logs through the static <see cref="Log"/>, which is one logger for the
+/// process; the first capture replaces it, for the rest of the run, with a logger that hands each
+/// event to the capture of the flow that logged it and drops an event logged outside any
+/// capture. So a test that captures sees its own events only, whatever else is running, and
+/// tests that capture need not run one at a time.
 /// </summary>
 internal sealed class CapturedSerilog : IDisposable, ILogEventSink
 {
-    private readonly ILogger _previous = Log.Logger;
+    private static readonly AsyncLocal<CapturedSerilog?> Current = new();
+    private static readonly object InstallLock = new();
+    private static bool _installed;
+
+    private readonly CapturedSerilog? _outer;
     private readonly ConcurrentQueue<LogEvent> _events = new();
 
-    /// <summary>Starts capturing.</summary>
+    /// <summary>Starts capturing what this async flow, and whatever it starts, logs.</summary>
     public CapturedSerilog()
     {
-        Log.Logger = new LoggerConfiguration().MinimumLevel.Verbose().WriteTo.Sink(this).CreateLogger();
+        lock (InstallLock)
+        {
+            if (!_installed)
+            {
+                Log.Logger = new LoggerConfiguration().MinimumLevel.Verbose().WriteTo.Sink(new FlowRouter()).CreateLogger();
+                _installed = true;
+            }
+        }
+        _outer = Current.Value;
+        Current.Value = this;
     }
 
     /// <summary>Every event so far, rendered, with its level.</summary>
@@ -186,8 +222,15 @@ internal sealed class CapturedSerilog : IDisposable, ILogEventSink
     /// <inheritdoc/>
     public void Emit(LogEvent logEvent) => _events.Enqueue(logEvent);
 
-    /// <summary>Restores the previous logger.</summary>
-    public void Dispose() => Log.Logger = _previous;
+    /// <summary>Stops capturing; the flow's events go to the capture that was open before this one, if any.</summary>
+    public void Dispose() => Current.Value = _outer;
+
+    /// <summary>The process-wide sink: gives each event to the capture of the flow that logged it.</summary>
+    private sealed class FlowRouter : ILogEventSink
+    {
+        /// <inheritdoc/>
+        public void Emit(LogEvent logEvent) => Current.Value?.Emit(logEvent);
+    }
 }
 
 /// <summary>

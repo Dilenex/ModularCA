@@ -78,6 +78,11 @@ public class AdminLdapController(
         return Ok(new { message = $"Synced {groups.Count} groups for user {user.Username}" });
     }
 
+    /// <summary>
+    /// The LDAP group-sync settings: whether sync and auto-provisioning are on, the group search base
+    /// DN, filter and member attribute, and the group-to-CA-group mapping JSON. Requires the
+    /// <c>SystemOperator</c> policy.
+    /// </summary>
     [HttpGet("group-mappings")]
     public IActionResult GetGroupMappings()
     {
@@ -130,7 +135,7 @@ public class AdminLdapController(
         {
             var filter = request.GroupSearchFilter;
             if (!filter.Contains("{0}"))
-                return BadRequest(new { error = "GroupSearchFilter must contain a {0} placeholder for the username." });
+                return BadRequest(new { error = "GroupSearchFilter must contain a {0} placeholder, which is replaced with the user's DN." });
             if (filter.Count(c => c == '{') != filter.Count(c => c == '}'))
                 return BadRequest(new { error = "GroupSearchFilter has unbalanced braces." });
             if (filter.Count(c => c == '(') != filter.Count(c => c == ')'))
@@ -186,16 +191,26 @@ public class AdminLdapController(
     }
 }
 
+/// <summary>Request body for updating the LDAP group-sync settings. Each field left null keeps its current value.</summary>
 public class UpdateGroupMappingsRequest
 {
+    /// <summary>Whether CA group memberships are synced from LDAP group membership.</summary>
     public bool? GroupSyncEnabled { get; set; }
+    /// <summary>Whether a directory user who signs in without a ModularCA account gets one created.</summary>
     public bool? AutoProvisionUsers { get; set; }
 
+    /// <summary>DN under which groups are searched, e.g. <c>ou=Groups,dc=example,dc=com</c>. Changing it is super-only.</summary>
     [StringLength(1024)]
     public string? GroupSearchBaseDn { get; set; }
 
+    /// <summary>LDAP filter for the user's groups; must contain <c>{0}</c>, which stands for the user's DN, and balanced braces and parentheses. Changing it is super-only.</summary>
     [StringLength(1024)]
     public string? GroupSearchFilter { get; set; }
 
+    /// <summary>
+    /// JSON object mapping LDAP group DNs to CA group names, e.g.
+    /// <c>{"CN=CA-Admins,DC=example,DC=com": "my-ca-admin"}</c>. Targets that are system or
+    /// privilege-controlled groups are refused unless already stored. Changing it is super-only.
+    /// </summary>
     public string? GroupToRoleMappings { get; set; }
 }

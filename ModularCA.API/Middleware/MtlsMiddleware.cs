@@ -1,4 +1,6 @@
 ﻿using ModularCA.API.Startup;
+using ModularCA.Core.Helpers;
+using ModularCA.Database;
 using ModularCA.Shared.Models.Config;
 using System.Security.Cryptography.X509Certificates;
 
@@ -10,6 +12,12 @@ namespace ModularCA.API.Middleware;
 /// issued by one of the trusted CAs (<see cref="MtlsTrustAnchors"/>, shared with the handshake).
 /// Whether mTLS is on and which CAs are trusted are fixed at start, as the listener's handshake is; the required paths are read on every
 /// request, so a saved change to them applies to the next one.
+/// <para>
+/// A certificate issued by one of this instance's CAs must also be in good standing by this
+/// instance's records (<see cref="MtlsCredentialStatus.PresentedCertificateRefusalAsync"/>): not
+/// revoked or on hold, on record, and under CAs that are themselves good. A certificate from an
+/// external anchor, which this instance keeps no record of, passes on its chain alone.
+/// </para>
 /// </summary>
 public class MtlsMiddleware
 {
@@ -51,8 +59,11 @@ public class MtlsMiddleware
     /// <summary>
     /// Evaluates the incoming request against mTLS policy. If mTLS was enabled at start and
     /// the request path matches a required path as configured now, a valid client certificate
-    /// must be presented. Returns 403 if no certificate is provided or if the certificate
-    /// is not trusted.
+    /// must be presented. Returns 403 if no certificate is provided, if the certificate
+    /// is not trusted, or if it was issued by one of this instance's CAs and is revoked, on hold,
+    /// not on record, or under a CA that is revoked, on hold, disabled or deleted. Returns 403
+    /// too when no database is available to check that against, rather than letting the
+    /// certificate through unchecked.
     /// </summary>
     /// <param name="context">The HTTP context for the current request.</param>
     public async Task InvokeAsync(HttpContext context)
@@ -107,6 +118,24 @@ public class MtlsMiddleware
             context.Response.StatusCode = 403;
             context.Response.ContentType = "text/plain";
             await context.Response.WriteAsync("Client certificate not trusted");
+            return;
+        }
+
+        // The offline chain check above sees only the local CRL cache, which holds nothing this
+        // instance revoked, so revocation and holds are read from the certificate records, the
+        // source of truth sign-in uses.
+        var db = context.RequestServices?.GetService<ModularCADbContext>();
+        var issuer = chain.ChainElements.Count > 1 ? chain.ChainElements[1].Certificate : null;
+        var refusal = db == null
+            ? MtlsCredentialRefusal.CertificateRecordMissing
+            : await MtlsCredentialStatus.PresentedCertificateRefusalAsync(db, clientCert, issuer, context.RequestAborted);
+        if (refusal is { } r && r != MtlsCredentialRefusal.None)
+        {
+            context.Response.StatusCode = 403;
+            context.Response.ContentType = "text/plain";
+            await context.Response.WriteAsync(r == MtlsCredentialRefusal.CertificateRecordMissing
+                ? "Client certificate status could not be confirmed"
+                : "Client certificate has been revoked, or a CA above it is no longer in good standing");
             return;
         }
 

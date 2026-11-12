@@ -22,6 +22,7 @@ import { SYSTEM_ADMIN, SYSTEM_OPERATOR, CA_MANAGE, CA_MANAGE_SPACE, CA_AUDIT, GR
 // Auth pages — eagerly loaded (entry points, must render immediately)
 import LoginPage from './pages/Login';
 import LoginBannerPage from './pages/LoginBanner';
+import ClaimPage from './pages/Claim';
 import MfaSetupPage from './pages/MfaSetup';
 import MfaVerifyPage from './pages/MfaVerify';
 import MfaCallbackPage from './pages/MfaCallback';
@@ -159,6 +160,7 @@ const AuthRoutes: React.FC = () => (
     <Routes>
         <Route path="/banner" element={<LoginBannerPage />} />
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/claim" element={<ClaimPage />} />
         <Route path="/mfa-setup" element={<MfaSetupPage />} />
         <Route path="/mfa-verify" element={<MfaVerifyPage />} />
         <Route path="/mfa-callback" element={<MfaCallbackPage />} />
@@ -202,6 +204,7 @@ const App: React.FC = () => {
                                 <Routes>
                                     <Route path="/banner" element={<RootAuthRedirect to="/banner" />} />
                                     <Route path="/login" element={<RootAuthRedirect to="/login" />} />
+                                    <Route path="/claim" element={<RootAuthRedirect to="/claim" />} />
                                     <Route path="/mfa-setup" element={<RootAuthRedirect to="/mfa-setup" />} />
                                     <Route path="/mfa-verify" element={<RootAuthRedirect to="/mfa-verify" />} />
                                     <Route path="/mfa-callback" element={<RootAuthRedirect to="/mfa-callback" />} />

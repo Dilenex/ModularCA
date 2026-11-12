@@ -42,7 +42,7 @@ namespace ModularCA.Core.Services.SchedulerJobs
     /// regardless of <c>NextUpdateUtc</c>.
     /// </para>
     /// </summary>
-    public class CrlExportJob : PerRowScheduledJob<CrlConfigurationEntity>
+    public class CrlExportJob : PerRowScheduledJob<CrlConfigurationEntity>, ISignerDependentJob
     {
         private readonly ILogger<CrlExportJob> _logger;
         private readonly ICrlService _crlService;

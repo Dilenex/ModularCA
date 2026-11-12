@@ -119,10 +119,14 @@ public sealed class ProtocolConfigEndpointTests
         return await (Task<IActionResult>)method.Invoke(controller, new object?[] { caId, protocol, request, mfaToken })!;
     }
 
-    /// <summary>Seeds the step-up token the endpoint demands, under the key the validator builds.</summary>
+    /// <summary>
+    /// Seeds a fresh step-up token the endpoint demands, under the key the validator builds. Each
+    /// call makes a new value, as verification does: a token is spent once, so seeding the same
+    /// value again would be refused as already spent.
+    /// </summary>
     private static string SeedStepUp(IDistributedCache cache, Guid caId)
     {
-        var token = "step-up-token";
+        var token = "step-up-" + Guid.NewGuid().ToString("N");
         cache.SetString($"mfa-stepup:{Operator}:{StepUpOps.UpdateProtocolConfig}:{caId}", token);
         return token;
     }

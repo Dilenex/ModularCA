@@ -244,7 +244,7 @@ export default function AdminUiGuide() {
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li>Upload a PEM-encoded CSR or paste CSR text</li>
                     <li>Server-side key generation with algorithm and key size selection</li>
-                    <li>Select issuing CA and certificate profile</li>
+                    <li>Choose the issuing CA first, then the request, signing and certificate profile that go with it. The CA is already chosen when you can use only one or the console is scoped to one; under a space scope the space&apos;s CAs are offered. Changing the CA clears the profiles</li>
                     <li>Edit subject DN fields (CN, O, OU, L, ST, C)</li>
                     <li>Add Subject Alternative Names (DNS, IP, email, URI)</li>
                     <li>Set custom validity period within profile limits</li>
@@ -843,7 +843,8 @@ sshd -t && systemctl reload ssh`}</pre>
                     <li>Create new user accounts</li>
                     <li>Enable/disable user accounts</li>
                     <li>View and modify group assignments</li>
-                    <li>Reset user passwords</li>
+                    <li>Reset user passwords (not for a Directory account, whose password lives in LDAP)</li>
+                    <li>See and, in Edit, set a user&apos;s password source: Inherit (the instance LDAP setting), Local (the local password only, for break-glass) or Directory (LDAP only); not on your own account</li>
                     <li>View user MFA enrollment status</li>
                     <li>View user certificate and request history</li>
                     <li>See the SSH login names a user holds and their live SSH certificates, grant a login name, and revoke all of the certificates</li>
@@ -881,6 +882,21 @@ sshd -t && systemctl reload ssh`}</pre>
                     <li>Auto-generated groups per CA label</li>
                     <li>See and grant the SSH login names an instance group gives its members, per SSH CA</li>
                 </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    <strong>What a CA group narrows, and what it does not.</strong> The space is the boundary
+                    of what a member can see; a CA group decides what the member can do, and on which CA.
+                    A member of one CA's group acts only on that CA, and sees only that CA's certificates
+                    and audit records. It still sees that the other CAs of the same space exist: the list
+                    of certificate authorities, the hierarchy and the CRL schedules show every CA of the
+                    space, with the name, subject, serial and expiry each CA publishes anyway in its
+                    certificate and CRLs. Nothing of another space is shown. To keep two sets of CAs from
+                    knowing of each other, put them in separate spaces.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    The lists of users and groups need the <span className="data-mono">group.view</span> capability,
+                    which the Auditor, Operator and Administrator roles carry. A member with the Requester
+                    role alone does not see them.
+                </p>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/admin/groups<br />
                     POST /api/v1/admin/groups<br />
@@ -1233,11 +1249,10 @@ sshd -t && systemctl reload ssh`}</pre>
                     Personal security settings for the currently logged-in administrator.
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
-                    <li>Change password</li>
+                    <li>Change password (a Directory account is told to change it in the directory instead)</li>
                     <li>Enroll or manage TOTP authenticator</li>
                     <li>Register WebAuthn/FIDO2 security keys</li>
-                    <li>View active sessions</li>
-                    <li>Revoke sessions</li>
+                    <li>Sign out, which ends every session of the account on every device</li>
                 </ul>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/me<br />
@@ -1256,6 +1271,7 @@ sshd -t && systemctl reload ssh`}</pre>
                     </p>
                     <ul className="list-disc list-inside space-y-1 text-ink mt-2">
                         <li><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/login</code> — Username/password login form, shared with the self-service portal</li>
+                        <li><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/claim</code> — Claim an account with a one-time claim token and set its password (linked from the login form)</li>
                         <li><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/mfa-setup</code> — First-time MFA enrollment</li>
                         <li><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/mfa-verify</code> — MFA challenge verification</li>
                         <li><code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/mfa-callback</code> — WebAuthn callback handler</li>

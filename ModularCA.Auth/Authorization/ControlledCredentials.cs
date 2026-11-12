@@ -46,19 +46,25 @@ public static class ControlledCredentials
     /// True when <paramref name="now"/> still matches <paramref name="before"/> for <paramref name="change"/>:
     /// the username, email, enabled and locked state always, and the password-expiry and
     /// forced-change flags only when the change sets them, since every password change moves those.
+    /// The password source likewise only when the change sets it, since a directory sign-in can
+    /// learn it (Inherit to Directory) at any time.
     /// </summary>
     public static bool Unchanged(ControlledAccountState before, ControlledAccountState now, ControlledIdentityChange change)
         => now.Username == before.Username && now.Email == before.Email
            && now.IsActive == before.IsActive && now.IsLocked == before.IsLocked
            && (change.PasswordNeverExpires == null || now.PasswordNeverExpires == before.PasswordNeverExpires)
-           && (change.PasswordChangeOnNextLogon == null || now.PasswordChangeOnNextLogon == before.PasswordChangeOnNextLogon);
+           && (change.PasswordChangeOnNextLogon == null || now.PasswordChangeOnNextLogon == before.PasswordChangeOnNextLogon)
+           && (change.PasswordSource == null || now.PasswordSource == before.PasswordSource);
 
     /// <summary>
     /// The password resets, MFA resets and creations of <paramref name="userIds"/> since
     /// <paramref name="since"/>, by anyone, newest first, read from the audit trail: direct resets
     /// (<c>UserPasswordReset</c>, <c>UserUpdated</c> with action <c>MfaReset</c>), ceremony-executed
-    /// ones (the same, and <c>ControlledUserChangeApplied</c>), and <c>UserCreated</c>. One record
-    /// per account, kind, actor and day. Throws when the audit database cannot be read.
+    /// ones (the same, and <c>ControlledUserChangeApplied</c>), and <c>UserCreated</c>. A change of
+    /// the account's password source to anything but Directory (<c>UserPasswordSourceChanged</c>)
+    /// counts as a password reset, since it can bring a local password into use that the
+    /// administrator may know. One record per account, kind, actor and day. Throws when the audit
+    /// database cannot be read.
     /// </summary>
     public static async Task<List<ControlledCredentialReset>> RecentResetsAsync(
         ModularCADbContext db, AuditDbContext audit, IReadOnlyCollection<Guid> userIds, DateTime since)
@@ -69,7 +75,8 @@ public static class ControlledCredentials
             .Where(a => a.TargetEntityType == "User" && a.TargetEntityId != null && ids.Contains(a.TargetEntityId)
                 && a.Timestamp >= since && a.Success
                 && (a.ActionType == AuditActionType.UserPasswordReset || a.ActionType == AuditActionType.UserUpdated
-                    || a.ActionType == AuditActionType.ControlledUserChangeApplied || a.ActionType == AuditActionType.UserCreated))
+                    || a.ActionType == AuditActionType.ControlledUserChangeApplied || a.ActionType == AuditActionType.UserCreated
+                    || a.ActionType == AuditActionType.UserPasswordSourceChanged))
             .Select(a => new { a.TargetEntityId, a.ActionType, a.DetailsJson, a.ActorUserId, a.ActorUsername, a.Timestamp })
             .ToListAsync();
 
@@ -80,6 +87,8 @@ public static class ControlledCredentials
             {
                 AuditActionType.UserPasswordReset => ControlledCredentialReset.Password,
                 AuditActionType.UserCreated => ControlledCredentialReset.Created,
+                AuditActionType.UserPasswordSourceChanged =>
+                    Detail(r.DetailsJson, "New") == nameof(PasswordSource.Directory) ? null : ControlledCredentialReset.Password,
                 AuditActionType.UserUpdated => Detail(r.DetailsJson, "Action") == "MfaReset" ? ControlledCredentialReset.Mfa : null,
                 _ => Detail(r.DetailsJson, "ChangeType") switch
                 {
@@ -139,14 +148,15 @@ public static class ControlledCredentials
     public static Task<ControlledAccountState?> AccountStateAsync(ModularCADbContext db, Guid userId)
         => db.Users.AsNoTracking()
             .Where(u => u.Id == userId)
-            .Select(u => new ControlledAccountState(u.Username, u.Email, u.IsActive, u.IsLocked, u.PasswordNeverExpires, u.PasswordChangeOnNextLogon))
+            .Select(u => new ControlledAccountState(u.Username, u.Email, u.IsActive, u.IsLocked, u.PasswordNeverExpires, u.PasswordChangeOnNextLogon, u.PasswordSource))
             .FirstOrDefaultAsync();
 
     /// <summary>
     /// SHA-256 over the account's MFA enrolment time and the ids of its TOTP secrets (with their
     /// verified flag), WebAuthn credentials, usable mTLS credentials and unused recovery codes.
-    /// An mTLS credential counts by the authentication rule (<see cref="MtlsCredentialStatus.Usable"/>),
-    /// so revoking, holding or losing its certificate, or its expiry, changes the marker.
+    /// An mTLS credential counts by the authentication rule (<see cref="MtlsCredentialStatus.UsableAsync"/>),
+    /// so revoking, holding or losing its certificate, its expiry, or a change in the standing of a
+    /// CA above it, changes the marker.
     /// Counters that change on every sign-in are left out.
     /// </summary>
     private static async Task<string> MfaMarkerAsync(ModularCADbContext db, Guid userId, DateTime? mfaEnrolledAt)
@@ -156,7 +166,7 @@ public static class ControlledCredentials
             .Select(t => new { t.Id, t.IsVerified }).ToListAsync()).Select(t => $"t:{t.Id}:{t.IsVerified}"));
         parts.AddRange((await db.Fido2Credentials.AsNoTracking().Where(c => c.UserId == userId)
             .Select(c => c.Id).ToListAsync()).Select(id => $"f:{id}"));
-        parts.AddRange((await db.MtlsCredentials.AsNoTracking().Where(MtlsCredentialStatus.Usable(DateTime.UtcNow))
+        parts.AddRange((await db.MtlsCredentials.AsNoTracking().Where(await MtlsCredentialStatus.UsableAsync(db, DateTime.UtcNow))
             .Where(c => c.UserId == userId)
             .Select(c => c.Id).ToListAsync()).Select(id => $"m:{id}"));
         parts.AddRange((await db.TotpRecoveryCodes.AsNoTracking().Where(c => c.UserId == userId && c.UsedAt == null)

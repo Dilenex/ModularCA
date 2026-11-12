@@ -131,8 +131,14 @@ public sealed class ScopedAuthorizationTests
     }
 
     /// <summary>The groups the membership tests write to, none of them privilege-controlled.</summary>
+    /// <summary>
+    /// Groups to place accounts in. The auditor groups confer no controlled tier, so a test of
+    /// who has the right on a group's scope uses them; the operator groups confer the CA operator
+    /// tier, which nobody below system-super can give at creation.
+    /// </summary>
     private sealed record Targets(CaGroupEntity A1Operators, CaGroupEntity A2Operators, CaGroupEntity B1Operators,
-        CaGroupEntity ARequesters, CaGroupEntity InstanceRequesters);
+        CaGroupEntity ARequesters, CaGroupEntity InstanceRequesters,
+        CaGroupEntity A1Auditors, CaGroupEntity A2Auditors, CaGroupEntity B1Auditors);
 
     private static Targets SeedTargets(ControlledUserWorld w)
     {
@@ -141,7 +147,10 @@ public sealed class ScopedAuthorizationTests
             w.Group("org_a2_operator", w.SpaceA, w.CaA2, "Operator"),
             w.Group("org_b1_operator", w.SpaceB, w.CaB1, "Operator"),
             w.Group("space-a-requesters", w.SpaceA, null, "Requester"),
-            w.Group("instance-requesters", null, null, "Requester"));
+            w.Group("instance-requesters", null, null, "Requester"),
+            w.Group("org_a1_auditor", w.SpaceA, w.CaA1, "Auditor"),
+            w.Group("org_a2_auditor", w.SpaceA, w.CaA2, "Auditor"),
+            w.Group("org_b1_auditor", w.SpaceB, w.CaB1, "Auditor"));
         w.Db.SaveChanges();
         return t;
     }
@@ -185,16 +194,16 @@ public sealed class ScopedAuthorizationTests
         var t = SeedTargets(w);
         var narrowed = w.User("narrowed-admin", w.SystemAdminGroup, w.A1Admin);
 
-        Assert.Equal(403, await CreateIn(w, narrowed, "badged-b1", t.B1Operators, w.A1Admin.Id));
+        Assert.Equal(403, await CreateIn(w, narrowed, "badged-b1", t.B1Auditors, w.A1Admin.Id));
         Assert.Equal(403, await CreateIn(w, narrowed, "badged-instance", t.InstanceRequesters, w.A1Admin.Id));
-        Assert.Equal(200, await CreateIn(w, narrowed, "badged-a1", t.A1Operators, w.A1Admin.Id));
-        Assert.Equal(200, await CreateIn(w, narrowed, "badgeless-b1", t.B1Operators));
+        Assert.Equal(200, await CreateIn(w, narrowed, "badged-a1", t.A1Auditors, w.A1Admin.Id));
+        Assert.Equal(200, await CreateIn(w, narrowed, "badgeless-b1", t.B1Auditors));
 
-        var refused = await Call(GroupController(w, narrowed, w.A1Admin.Id), "AddMember", t.B1Operators.Id,
+        var refused = await Call(GroupController(w, narrowed, w.A1Admin.Id), "AddMember", t.B1Auditors.Id,
             Body("AddGroupMemberRequest", ("UserId", w.Plain)));
         Assert.Equal(403, Status(refused));
-        Assert.False(w.Db.CaGroupMembers.Any(m => m.UserId == w.Plain && m.GroupId == t.B1Operators.Id));
-        Assert.Equal(200, Status(await Call(GroupController(w, narrowed), "AddMember", t.B1Operators.Id,
+        Assert.False(w.Db.CaGroupMembers.Any(m => m.UserId == w.Plain && m.GroupId == t.B1Auditors.Id));
+        Assert.Equal(200, Status(await Call(GroupController(w, narrowed), "AddMember", t.B1Auditors.Id,
             Body("AddGroupMemberRequest", ("UserId", w.Plain)))));
     }
 
@@ -205,9 +214,9 @@ public sealed class ScopedAuthorizationTests
         var w = new ControlledUserWorld();
         var t = SeedTargets(w);
 
-        Assert.Equal(200, await CreateIn(w, w.A1AdminUser, "a1-op", t.A1Operators));
-        Assert.Equal(403, await CreateIn(w, w.A1AdminUser, "a2-op", t.A2Operators));
-        Assert.Equal(403, await CreateIn(w, w.A1AdminUser, "b1-op", t.B1Operators));
+        Assert.Equal(200, await CreateIn(w, w.A1AdminUser, "a1-aud", t.A1Auditors));
+        Assert.Equal(403, await CreateIn(w, w.A1AdminUser, "a2-aud", t.A2Auditors));
+        Assert.Equal(403, await CreateIn(w, w.A1AdminUser, "b1-aud", t.B1Auditors));
         Assert.Equal(403, await CreateIn(w, w.A1AdminUser, "space-req", t.ARequesters));
         Assert.Equal(403, await CreateIn(w, w.A1AdminUser, "instance-req", t.InstanceRequesters));
     }
@@ -221,9 +230,9 @@ public sealed class ScopedAuthorizationTests
         var spaceAdmin = w.User("space-a-admin", w.SpaceAdminA);
 
         Assert.Equal(200, await CreateIn(w, spaceAdmin, "space-req", t.ARequesters));
-        Assert.Equal(200, await CreateIn(w, spaceAdmin, "a1-op", t.A1Operators));
-        Assert.Equal(200, await CreateIn(w, spaceAdmin, "a2-op", t.A2Operators));
-        Assert.Equal(403, await CreateIn(w, spaceAdmin, "b1-op", t.B1Operators));
+        Assert.Equal(200, await CreateIn(w, spaceAdmin, "a1-aud", t.A1Auditors));
+        Assert.Equal(200, await CreateIn(w, spaceAdmin, "a2-aud", t.A2Auditors));
+        Assert.Equal(403, await CreateIn(w, spaceAdmin, "b1-aud", t.B1Auditors));
         Assert.Equal(403, await CreateIn(w, spaceAdmin, "instance-req", t.InstanceRequesters));
     }
 
@@ -237,10 +246,35 @@ public sealed class ScopedAuthorizationTests
         var w = new ControlledUserWorld();
         var t = SeedTargets(w);
 
-        Assert.Equal(200, await CreateIn(w, w.SystemAdmin, "b1-op", t.B1Operators));
+        Assert.Equal(200, await CreateIn(w, w.SystemAdmin, "b1-aud", t.B1Auditors));
         Assert.Equal(200, await CreateIn(w, w.SystemAdmin, "instance-req", t.InstanceRequesters));
         Assert.Equal(403, await CreateIn(w, w.SystemAdmin, "sys-aud", w.SystemAuditorGroup));
         Assert.Equal(200, await CreateIn(w, w.Super, "sys-aud-by-super", w.SystemAuditorGroup));
+    }
+
+    /// <summary>
+    /// A CA's operators approve and issue its requests, so nobody below system-super creates an
+    /// account straight into them, with a password of the creator's choosing: not the CA's own
+    /// administrator, not the space's, not a system administrator. They create the account
+    /// elsewhere and add the membership, which opens a ceremony. Left open, one administrator
+    /// could make its own second approver.
+    /// </summary>
+    [Fact]
+    public async Task Nobody_below_super_creates_an_account_straight_into_a_cas_operators()
+    {
+        var w = new ControlledUserWorld();
+        var t = SeedTargets(w);
+        var spaceAdmin = w.User("space-a-admin", w.SpaceAdminA);
+
+        Assert.Equal(403, await CreateIn(w, w.A1AdminUser, "puppet-by-ca-admin", t.A1Operators));
+        Assert.Equal(403, await CreateIn(w, spaceAdmin, "puppet-by-space-admin", t.A1Operators));
+        Assert.Equal(403, await CreateIn(w, w.SystemAdmin, "puppet-by-system-admin", t.A1Operators));
+        Assert.False(w.Db.Users.Any(u => u.Username.StartsWith("puppet-")));
+        Assert.Equal(200, await CreateIn(w, w.Super, "operator-by-super", t.A1Operators));
+
+        Assert.Equal(ControlledTierLevel.CaOperator, ControlledGroupClassifier.Classify(t.A1Operators)!.Value.Level);
+        Assert.Equal(w.CaA1, ControlledGroupClassifier.Classify(t.A1Operators)!.Value.CaId);
+        Assert.Null(ControlledGroupClassifier.Classify(t.A1Auditors));
     }
 
     // ---- security policy ---------------------------------------------------------------------
@@ -252,6 +286,10 @@ public sealed class ScopedAuthorizationTests
         var method = type.GetMethod(action)!;
         var claims = new List<Claim> { new("sub", userId.ToString()), new(ClaimTypes.NameIdentifier, userId.ToString()) };
         var http = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test")) };
+        // The action's own verb: a CA-scoped policy lets a read through on "any CA" and refuses a
+        // write that names no CA, so the verb decides.
+        http.Request.Method = method.GetCustomAttributes(true).OfType<Microsoft.AspNetCore.Mvc.Routing.HttpMethodAttribute>()
+            .SelectMany(m => m.HttpMethods).FirstOrDefault() ?? "GET";
         var accessor = new HttpContextAccessor { HttpContext = http };
         var groupAuth = new CaGroupAuthorizationService(w.Db, NullLogger<CaGroupAuthorizationService>.Instance, null, accessor);
 
@@ -261,11 +299,85 @@ public sealed class ScopedAuthorizationTests
             options.FallbackPolicy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build();
         });
         services.AddSingleton<IAuthorizationHandler>(new CaGroupAuthorizationHandler(groupAuth, accessor, w.Db, NullLogger<CaGroupAuthorizationHandler>.Instance));
+        services.AddSingleton<IAuthorizationHandler>(new AnyScopeCapabilityAuthorizationHandler(groupAuth));
         var sp = services.BuildServiceProvider();
         var provider = sp.GetRequiredService<IAuthorizationPolicyProvider>();
         var attributes = type.GetCustomAttributes(true).Concat(method.GetCustomAttributes(true)).OfType<IAuthorizeData>();
         var policy = await AuthorizationPolicy.CombineAsync(provider, attributes) ?? await provider.GetFallbackPolicyAsync();
         return (await sp.GetRequiredService<IAuthorizationService>().AuthorizeAsync(http.User, http, policy!)).Succeeded;
+    }
+
+    /// <summary>
+    /// The directory of a scope (its users, with e-mail addresses, last sign-in and memberships,
+    /// and its groups) needs <c>group.view</c>, which the auditor, operator and administrator
+    /// roles hold. A requester holds <c>cert.view</c> to see certificates and used to pass these
+    /// routes with it; it is refused now, and so is an account in no group.
+    /// </summary>
+    [Fact]
+    public async Task A_requester_cannot_read_the_users_or_groups_of_its_scope()
+    {
+        var w = new ControlledUserWorld();
+        var requester = w.User("rita-requester", w.A1Requester);
+        var nobody = w.User("nora-nobody");
+        var caAuditor = w.User("andy-auditor", w.Group("a1-auditor", w.SpaceA, w.CaA1, "Auditor"));
+        var caOperator = w.User("olga-operator", w.Group("a1-operator", w.SpaceA, w.CaA1, "Operator"));
+        await w.Db.SaveChangesAsync();
+
+        Assert.Equal(Capabilities.GroupView, PolicyDefinitions.All["CaDirectoryViewer"].Capability);
+        Assert.False(PolicyDefinitions.All["CaDirectoryViewer"].SystemOnly);
+
+        var reads = new[]
+        {
+            ("Management.AdminUserManagerController", "GetUsers"), ("Management.AdminUserManagerController", "GetUserById"),
+            ("Management.AdminUserManagerController", "GetUserByUsername"), ("Management.AdminUserManagerController", "GetUserByEmail"),
+            ("AdminGroupController", "GetAll"),
+        };
+        var wrong = new List<string>();
+        foreach (var (controller, action) in reads)
+        {
+            foreach (var (who, id, expected) in new[]
+            {
+                ("requester", requester, false), ("no groups", nobody, false), ("CA auditor", caAuditor, true),
+                ("CA operator", caOperator, true), ("CA admin", w.A1AdminUser, true), ("system auditor", w.Auditor, true),
+                ("system admin", w.SystemAdmin, true),
+            })
+            {
+                if (await PolicyAllows(w, id, controller, action) != expected)
+                    wrong.Add($"{who} {action}: expected {(expected ? "allowed" : "refused")}");
+            }
+        }
+        Assert.Empty(wrong);
+
+        // The requester still passes what cert.view is for.
+        Assert.True(await PolicyAllows(w, requester, "AdminCertificateController", "ListCertificates"));
+    }
+
+    /// <summary>
+    /// The OID catalog is read by anyone who can view certificates, because the profile editor
+    /// is built from it, and written only by a system operator. A policy on the class used to
+    /// stack on the read, so only a system operator could read it either.
+    /// </summary>
+    [Fact]
+    public async Task The_oid_catalog_is_read_by_auditors_and_written_only_at_system_scope()
+    {
+        var w = new ControlledUserWorld();
+        var caAuditor = w.User("oid-auditor", w.Group("a1-oid-auditor", w.SpaceA, w.CaA1, "Auditor"));
+        var nobody = w.User("oid-nobody");
+        await w.Db.SaveChangesAsync();
+
+        foreach (var reader in new[] { caAuditor, w.A1AdminUser, w.Auditor, w.Operator, w.SystemAdmin })
+            Assert.True(await PolicyAllows(w, reader, "AdminOidController", "GetAll"));
+        Assert.False(await PolicyAllows(w, nobody, "AdminOidController", "GetAll"));
+
+        foreach (var write in new[] { "Create", "Delete" })
+        {
+            Assert.True(await PolicyAllows(w, w.Operator, "AdminOidController", write));
+            Assert.True(await PolicyAllows(w, w.SystemAdmin, "AdminOidController", write));
+            Assert.False(await PolicyAllows(w, caAuditor, "AdminOidController", write));
+            Assert.False(await PolicyAllows(w, w.A1AdminUser, "AdminOidController", write));
+            Assert.False(await PolicyAllows(w, w.Auditor, "AdminOidController", write));
+        }
+        Assert.All(Actions("AdminOidController").Where(IsWrite), a => Assert.True(HasStepUp(a), a.Name));
     }
 
     /// <summary>
@@ -368,7 +480,7 @@ public sealed class ScopedAuthorizationTests
         var w = new ControlledUserWorld();
         var config = new SystemConfig();
         var controller = New(Ns + "AdminConfigController", w.SystemAdmin, config, null, new RecordingAuditService(),
-            new CurrentUserStub(w.SystemAdmin), NewCache(), new RecordingAlertService(), null, null, null, null);
+            new CurrentUserStub(w.SystemAdmin), NewCache(), new RecordingAlertService(), null, null, null, null, null);
 
         foreach (var days in new[] { 0, 31, 365, int.MaxValue })
         {

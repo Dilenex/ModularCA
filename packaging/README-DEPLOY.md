@@ -131,6 +131,34 @@ inserts included, in one transaction that is then rolled back. The last line is 
 It applies nothing. While its dry run runs, it holds the locks the migrations take, as the upgrade
 itself would, so run it with the units stopped, as `install.sh` does, on a large database.
 
+#### Checking beside a running service: `--read-only`
+
+    sudo -u modularca <new build>/ModularCA.API --upgrade-check --read-only --config-dir /opt/modularca/config
+
+With `--read-only` the check reads and never rehearses, so it is safe while the service is
+serving. It opens no migration connection and takes no migration lock; the server refuses any
+write on its connections; and a read gives up after half a second if its table is locked, instead
+of queueing. It does everything else the check does: it proves the build can start, reads the
+schema and the ownership of both databases, and refuses what needs no rehearsal (a schema newer
+than the build, tables with no history, ownership that is not sound, PostgreSQL older than 14, a
+database that cannot be read, a configuration the build cannot use, a defective build, an
+integration key scoped to no space, a missing SSH CA key file).
+
+| Exit | Last line | Meaning |
+|---|---|---|
+| 0 | `UPGRADE CHECK: PASS (nothing to apply). Nothing was changed.` | nothing is pending: the upgrade applies no migration |
+| 5 | `UPGRADE PENDING, NOT REHEARSED (application: <ids>; audit: <ids>). ...` | migrations are pending, listed for each database that has any, and **were not rehearsed** |
+| 3 | `UPGRADE CHECK: REFUSED (...)` | refused, in the same words as without `--read-only` |
+| 75 | `UPGRADE CHECK: UNREACHABLE (...)` | a database could not be reached, or was locked; try again |
+
+Status 5 is not a pass. Whether the pending migrations apply cleanly on this data is only known
+from the dry run: stop the units and run the check again without `--read-only`. What only the dry
+run finds is a migration's own precondition refusing the data, and a statement that fails or runs
+out of time. `install.sh` does not use `--read-only`: it has already stopped the units. The flag
+is for an orchestrator that wants to know, before it stops anything, whether an upgrade is refused
+outright or has nothing to apply. No unit needs to know status 5: only this command returns it,
+never a starting service.
+
 The dry run does not stop at the first refusal. It runs each statement under its own savepoint,
 so one run lists every precondition that refuses, in every pending migration, and you can fix them
 all before checking again. The report numbers them ("1 of 3") and quotes each message as the
@@ -174,6 +202,7 @@ operator sees:
 | The dry run or a migration failed on a lock timeout, a deadlock or a lost connection | — then **75** | retried in the service with backoff for up to `Schema.WaitSeconds`, then exits and systemd retries |
 | A pending migration refuses in the dry run | **3** | nothing applied to either database; the journal lists every refusal of both databases, each with its migration and message |
 | Schema newer than this build, tables without history, wrong password, `pg_hba.conf` refusal, TLS failure, tables the runtime role does not own, a migration that failed for good, PostgreSQL older than 14 | **3** | not retried (`RestartPreventExitStatus=3`); the journal says why and prints the fix |
+| The start stopped for good after it had applied a migration: one failed during the apply, or the check afterwards did not match | **4** | not retried (`RestartPreventExitStatus=3 4`). The databases are no longer as the previous release left them: fix the cause and start this release again, or restore both databases before running the previous one. Status 3 from the schema check promises that it applied nothing |
 | `Hsm.Enabled: true` and the HSM cannot be initialised (module, slot, PIN or token) | **3** | not retried, so a wrong PIN is not tried again until the token locks |
 | Another setting that cannot work (see "Some settings stop the start") | **1** | retried every 5 s until the unit's start limit (5 starts in 300 s) |
 
@@ -198,6 +227,27 @@ To check schema ownership read-only at any time, as the service user and never a
     sudo -u modularca /opt/modularca/ModularCA.API --db-ownership check
 
 It exits 0 when both databases are sound and 3 when not, and prints what it found and the repair.
+
+### Upgrading to 0.4.4
+
+0.4.4 adds four migrations. One of them drops two setting columns that nothing read, so going back
+to 0.4.3 means restoring the backup: take it first.
+
+1. **Run the upgrade check with the new build** and read its notes, not only its last line (see
+   "Checking an upgrade before installing it" above). They name what on this instance the release
+   changes, such as enrolment clients whose next request would be refused. `install.sh` runs the
+   same check and stops on a refusal.
+2. **Review who holds the Operator and Administrator roles on a CA or a space.** Those roles now
+   approve and issue with the profiles of their scope, and a scoped administrator administers the
+   users of its scope. Adding a member to a CA's operator group needs a second person, and an LDAP
+   group mapping no longer adds members to it.
+3. **The backup directory** must be reachable by the service account alone. **Split installs**
+   upgrade the signer with the node; **a pod's signer** has its own configuration volume.
+4. **After it starts,** check that `ModularCA.API.runtimeconfig.json` in the install directory
+   names 10.0.15 and that `logs/` holds a file for today. Expect SCEP's GetCACaps to answer 400 or
+   409 where SCEP is not served, CMP and EST audit rows under new names (`CR`, `KUR`,
+   `SimpleReenroll`), and an account to be signed out everywhere when it logs out or removes a
+   second factor. The changelog's "Upgrading from 0.4.3" lists the rest.
 
 ### Upgrading to 0.4.3
 
@@ -699,7 +749,7 @@ Three things, and a restore needs all three. Losing any one of them loses the CA
 |---|---|---|
 | A backup archive, `modularca-backup-<timestamp>.enc` | `backups/` | Every backup |
 | The backup key, `backup.key` (or the backup password you set) | `config/` | Never, unless you reset the instance or change the password |
-| The keystore passphrases, `keystore.yaml` | `config/` | Never |
+| The keystore passphrases, `keystore.yaml` | `config/`; with the signer apart, the signer's directory (`signer/`, or the pod's `modularca-signer-config` volume) | Never |
 
 Copy the key and the passphrases off the host once, when you install, and keep them apart from
 the archives: an archive with its key and the passphrases is the CA. Copy each new archive off
@@ -756,13 +806,19 @@ the price of slower revocation.
 
 ### Restoring onto the same host
 
-`--restore` puts back the databases, the keystores and `config/` from an archive; the console's
-Backup page does the same for an archive in `backups/`. From the command line, with the service
+`--restore` puts back the application database, the keystores and `config/` from an archive;
+the console's Backup page does the same for an archive in `backups/`. From the command line, with the service
 stopped:
 
     sudo systemctl stop modularca
     sudo -u modularca /opt/modularca/ModularCA.API --restore /opt/modularca/backups/<archive>.enc
     sudo systemctl start modularca
+
+**The audit database is kept.** Audit history survives a restore as it survives a reset: the
+live audit database is left as it is, and the restore is recorded in it. To replace it with the
+archive's audit trail instead, add `--restore-audit` (on the Backup page, tick *Also replace the
+audit history with the backup's*). Every audit record made since the backup was taken is then
+lost, so do that only when this host's own audit history is empty or gone.
 
 It asks you to type `RESTORE`. Before it changes anything it writes the live `config/` and
 keystores to `backups/pre-restore-<timestamp>.zip`, owner-only. That file holds every secret in
@@ -790,8 +846,9 @@ without it. A host with no `db.yaml` is refused before anything changes.
      `0600`. Do not start the service.
 3. **Put the kit in place**, owned by `modularca`, `0600`: `keystore.yaml` and `backup.key` in
    `config/`, replacing the ones a fresh install made, and the archive in `backups/`.
-4. **Restore**, as above. For an archive protected by a password, give `--password` or answer
-   the prompt.
+4. **Restore**, as above, adding `--restore-audit` so the new host gets the archive's audit
+   trail; its own audit database is empty. For an archive protected by a password, give
+   `--password` or answer the prompt.
 5. **Start the service.** At this start it unwraps the stored-data secrets the restore staged in
    `config/restore-pending/`, issues its web certificate and publishes a new CRL.
 6. **Check it**, from another machine:
@@ -874,6 +931,9 @@ the journal; fix the named setting in that host's `config/config.yaml` and start
   internal proxy address would pass the internal-only IP whitelist rules. Name the proxy (for a
   proxy on the same host, `TrustedProxyCidrs: "127.0.0.1/32,::1/128"`), or set
   `BehindReverseProxy: false` if nothing is in front of the host.
+- `Https.ProxyProtocol` or `Http.ProxyProtocol` on with no `Http.ProxyProtocolTrustedCidrs`, or an
+  entry there that does not parse or trusts every address (`/0`). See "Behind a passthrough
+  proxy: the PROXY protocol".
 
 An enabled HSM that cannot be initialised stops the start with status **3** instead, which systemd
 does not retry: each restart would try the PIN again, and a token locks after a few wrong ones.
@@ -886,9 +946,61 @@ and the PFX gone, the service starts on a temporary self-signed certificate, log
 its SHA-256 fingerprint and writes a `WebTlsTemporaryCertificateServed` audit entry. Put the file
 back at `Https.CertificatePath` or reissue the Web TLS certificate from the console.
 
-**The initial administrator password must be changed on first login.** When the password was
-generated rather than chosen, it is printed once to the service log and the account is flagged
-`PasswordChangeOnNextLogon`; the first login returns 403 and directs you through a change.
+**The headless bootstrap never prints the initial administrator's password.** Standard output is
+the journal under systemd and Podman, where anyone who can read the journal would keep a copy. The
+bootstrap hands over `superadmin` in one of two ways, chosen in `bootstrap.yaml`:
+
+- **By default** it generates a password and writes it to `config/initial-admin-password`,
+  readable by the service account only, and prints only the file's path. Read it
+  (`sudo -u modularca cat /opt/modularca/config/initial-admin-password`), sign in, and change the
+  password when asked: the account is flagged `PasswordChangeOnNextLogon`, so the first login
+  returns 403 and directs you through the change. The file is deleted when the change replaces
+  the password in it; if it is still there afterwards (the warning in the log says why), delete it.
+- **With a claim token**, nothing secret exists on the instance at all, which is what a party that
+  must never hold the password (a hub provisioning the instance for someone else) needs. Generate a
+  token and its hash, give the token to the person who will administer the instance, and put only
+  the hash in `bootstrap.yaml`:
+
+      ./ModularCA.API --new-claim-token
+
+  prints the token and the line `ClaimTokenSha256: "<hex>"` to put under `Administration:`. Any
+  32 random bytes in base64url work too; the hash is `printf %s "$token" | sha256sum`.
+  `superadmin` is created with no password, and the bootstrap prints only that it is waiting to be
+  claimed and when the claim expires (`Administration.ClaimTokenLifetimeHours`, seven days by
+  default). The person with the token opens the console's sign-in page, chooses
+  **Have a claim token?** (`/claim`), and sets the password. The token works once. The bootstrap
+  writes the claim to the audit trail as `UserClaimTokenIssuedAtBootstrap` by `bootstrap`, with
+  the account and the expiry and without the token or its hash.
+
+A claim that expired unused, or a handover of any local account, is issued on the host:
+
+    sudo -u modularca /opt/modularca/ModularCA.API --issue-claim-token <username> [--claim-lifetime-hours <hours>]
+
+It prints the new token once, replaces any claim the account had, and is written to the audit trail
+as `UserClaimTokenIssuedOnHost` by `host:break-glass`, without the token. The account's current
+password, if it has one, keeps working until the claim is used. A claim used is audited as
+`UserAccountClaimed`.
+
+The setup wizard is unchanged: you choose the administrator's password there, or it shows a
+generated one in the browser and the first login makes you change it.
+
+**The initial administrator signs in with its local password, never LDAP.** From 0.4.4 every
+account has a password source: `Inherit` (the instance `LdapAuth` setting, the default), `Local`
+(the local password only; the directory is never asked) or `Directory` (LDAP only; the local
+password is never used). Setup creates the first administrator as `Local`, so break-glass sign-in
+works through an LDAP outage and in direct-bind mode (no `BindDn`). An `Inherit` account becomes
+`Directory` the first time the directory accepts its password. Upgrading does not change existing
+accounts: all start as `Inherit`, the bootstrap administrator of an existing install included. To
+make it a break-glass account, have another administrator open it under Users, switch to Edit and
+set Password source to `Local`. Nobody can change their own source in the console; on an install
+with a single administrator, set it on the host instead:
+
+    sudo -u modularca /opt/modularca/ModularCA.API --set-password-source <username> Local
+
+Like `--unlock-user` it connects with the credentials in `config/db.yaml`, never over HTTP, ends the
+account's sessions, and is written to the audit trail as `UserPasswordSourceSetOnHost` by
+`host:break-glass` (or warns that it could not be). Turning LDAP sign-in off
+refuses password sign-in for `Directory` accounts until they are set back to `Local` or `Inherit`.
 
 **Privileged ports** are granted by `AmbientCapabilities=CAP_NET_BIND_SERVICE` in the unit. Do
 not also `setcap` the binary — the unit already covers it, and a stale file capability survives
@@ -905,9 +1017,36 @@ each side pins the other's public key, and there is no trust-store lookup.
 The signer reads its settings from its own directory, `/opt/modularca/signer/`, which belongs to
 `modularca-signer` and which the node can neither read nor write. The packaged unit says so:
 `--signer-dir /opt/modularca/signer`. From there it reads `signer.yaml` (its settings only),
-`db.yaml`, `keystore.yaml` and its identity files, and writes its logs and keystore audit to
-`signer/logs/`. It reads nothing under `config/`. The node keeps `config/` to itself, and nothing
-the node writes, its console's settings pages included, can change what the signer loads.
+`db.yaml`, `keystore.yaml` and its identity files, and writes its logs to `signer/logs/`. It reads
+nothing under `config/`. The node keeps `config/` to itself, and nothing the node writes, its
+console's settings pages included, can change what the signer loads.
+
+**The signer's keystore events reach the audit trail through the node.** The signer cannot write
+to the audit database (its `db.yaml` holds the application database only), so it records what
+happens to its keystores (loaded at each start, a keystore created, a key appended for a new CA
+or SSH CA key, a signature or pin that did not verify) in `signer/audit-journal/`, one
+`keystore-audit-<date>.jsonl` per day, owner-only. The node's control role reads that journal
+over the signer channel, a few seconds after it starts and then every minute, and writes each
+event into the audit trail as a `Keystore…` row by `system-signer` marked `DeliveredBySigner`
+(rows replayed from the node's own `logs/` are by `system-bootstrap`). A keystore the signer
+could not decrypt at unlock, because a passphrase is wrong or a file is damaged, is among them as
+`KeystoreUnlockFailed`; it names the keystore and never a passphrase. A command-line `--backup` or
+`--restore` run as the signer with `--signer-dir` writes to the same journal, and arrives as a
+`BackupCreated` or `BackupRestored` row by `system-signer` with its exit code and archive name.
+While the node, the signer or the audit database is away the events wait in the journal and are
+recorded afterwards, in order, each once. The call only reads: the node cannot remove or change
+a journal line, and keeps its own note of how far it has read in `config/signer-audit-cursor.json`
+(delete it and the node reads the journal again from the beginning, recording nothing twice).
+The journal is never pruned by the product and holds no secret; it grows by a few lines per
+signer start and per key, so leave it, or archive files older than your audit retention if you
+must. Events an earlier build wrote to `signer/logs/bootstrap-audit-*.jsonl`, which nothing read,
+are moved into the journal at the signer's first start on this version and delivered with the
+rest. A signer still on the shared layout (no `--signer-dir`) has no journal: its events go to
+`logs/` as before, where the node replays them at its next start if the signer's account can
+write there. A single process (no separate signer) writes its keystore events to
+`logs/bootstrap-audit-*.jsonl` and, given an audit database, records each in the audit trail as
+it happens, by `system-bootstrap`; the file is renamed `.replayed` at the next start, when
+nothing in it is recorded a second time.
 
 Do this after the first install has completed its wizard as a single process, so the keystores
 and `config/keystore.yaml` exist.
@@ -942,7 +1081,9 @@ and `config/keystore.yaml` exist.
    An HSM is configured here, not in the node's `config.yaml`: move any `Hsm:` section (and a
    `Schema:` or `Logging:` you changed) from `config.yaml` into `signer.yaml`, and delete it from
    `config.yaml`. The node with a remote signer never reads `Hsm:`, and the PIN then lives only in
-   the signer's directory.
+   the signer's directory. The console's Settings page still shows the signer's HSM settings: the
+   signer reports whether its HSM is on, the module path, the slot and the key labels in its
+   health answer (the pod's signer does the same), and never the PIN or a key id.
 
 3. On the signer, create the identity CA and the signer's server certificate, then issue the
    node its client certificate:
@@ -954,7 +1095,8 @@ and `config/keystore.yaml` exist.
    The first writes `signer/signer-identity-ca.pfx` and `signer/signer-server.pfx`, owner-only. The
    second writes `/tmp/node-identity/signer-client.pfx` and `signer-pin.txt` and prints two things:
    the `PinnedClientSpki` for the signer, and the `Signer:` section for the node. (`--apply`, which
-   writes both halves into one `config.yaml`, is the pod's and is refused with `--signer-dir`.)
+   writes the two halves into the two files itself, is the pod's: it needs one account that can
+   write both `config/` and `signer/`, and here they belong to two.)
 
 4. Configure both sides. The signer side, in `signer/signer.yaml` (`sudo -e` keeps its owner and
    mode):
@@ -999,12 +1141,16 @@ and `config/keystore.yaml` exist.
    `journalctl -u modularca-signer` shows where the signer read its settings from, the listener
    and the pins it holds; `/health/ready` on the node shows the signer as a step. While the signer
    is down the node answers 503 on every enrollment endpoint with "The signer is unreachable" and
-   reconnects on its own.
+   reconnects on its own. Because the signer starts after the node, the node starts without the
+   secrets the signer wraps and reads them once the signer answers, reporting itself not ready
+   until then; "The pod", below, says what that means.
 
 Backups taken by the node's scheduled job go through the signer and keep working. The
 command-line `--backup` and `--restore` read the keystore files directly, so on a split
 install run them on the signer host as the signer's user, with `--role signer --signer-dir
-/opt/modularca/signer` so they find its `keystore.yaml`. On one host that user can neither
+/opt/modularca/signer` so they find its `keystore.yaml`. Run that way they record themselves in
+`signer/audit-journal/`, and the node writes a `BackupCreated` or `BackupRestored` audit row by
+`system-signer` when it next reads the journal. On one host that user can neither
 read the node's backup key (`config/backup.key` or `config/backup-password.key`) nor write
 `backups/`, so there the scheduled or console backup is the one that works as installed. The
 node's client certificate lives one year; reissue it with `--issue-node-identity` and replace the
@@ -1055,7 +1201,10 @@ the signer says so in a warning at every start. The packaged unit already names
 
    Remove `Hsm:` and the signer's half of `Signer:` (`Listen`, `ServerCertificate`,
    `PinnedClientSpki`, `IdentityCa` and their passwords) from `config/config.yaml`; the node never
-   reads them. Restart the node.
+   reads them. Restart the node. (The pod does all of this itself, in `--issue-node-identity
+   --apply`, because there one account can write both directories. Here they belong to two
+   accounts and you do it by hand; `signer/keystore.yaml` is then the only copy of the keystore
+   passphrases, so keep `signer/` in your backups.)
 
 To go back, stop the signer, remove `--signer-dir` from its unit (or the drop-in) and restore the
 files and the group read of step 1 above as they were.
@@ -1206,7 +1355,9 @@ Things to know:
   whoever can request a certificate can make the server fetch from addresses inside your network.
 - **To install unattended**, put a `bootstrap.yaml` and a `setup-database.yaml` in the `config`
   volume before the first start (each has an `.example` under `config/`). The container then
-  bootstraps without the wizard and prints the first administrator's password once, in its log.
+  bootstraps without the wizard. The first administrator's password is not printed: read it with
+  `docker compose exec modularca cat config/initial-admin-password`, or give `bootstrap.yaml` a
+  claim token hash instead (see "Things worth knowing before the first production start").
   Set `HttpsApi.PublicDomain` in `bootstrap.yaml` to the name clients will use. Left out, it is
   the first DNS name under `HttpsApi.SANs` that is not `localhost`, and `localhost` when there
   is none, which only works from the host itself.
@@ -1214,6 +1365,20 @@ Things to know:
   version starts. Take a backup first; going back means restoring it. To see whether the new
   version would refuse the upgrade before committing to it, run its check, which changes
   nothing: `docker compose run --rm modularca --upgrade-check`.
+- **`docker compose ps` says whether the node is up.** The `modularca` service has a healthcheck,
+  the node's own exec check (the image has no `curl`): `--role node --check-ready --live`, every
+  30 seconds with a 10 second timeout, three failures to "unhealthy", and a 16 minute start
+  period that covers `Schema.WaitSeconds`. It asks the loopback-only health port that
+  `compose.yaml` sets with `MODULARCA__HEALTH__LOOPBACKPORT` (8081, inside the container and
+  published by nothing; "The health port" under the pod below describes it), so it keeps working
+  if the main listeners take the PROXY protocol. "healthy" means the process is up and
+  answering, not that every check passes. For that, run the readiness check, which exits 0 only
+  when the database answers and the keys are unlocked:
+  `docker compose exec modularca /opt/modularca/ModularCA.API --role node --check-ready`.
+  Until setup is finished (the wizard, or a headless bootstrap) there is no node to ask, so the
+  service shows "starting" and, once the start period is over, "unhealthy"; that is expected, and
+  nothing restarts the container for it. Keep 8081 clear of the ports you give the wizard, or
+  change the variable.
 
 For the signer in its own container, holding the keys where the node cannot read them, use the
 pod below.
@@ -1238,31 +1403,237 @@ already there. If one person will administer the
 instance, set `Administration.MultipleAdministrators: false` in `bootstrap.yaml`: key ceremonies
 then start off for the instance and the first space, where a lone administrator could never get
 one approved, and a system super-administrator may approve their own certificate requests. Left
-out, ceremonies start on and self-approval off. Three init containers run every start and find their work
-done after the first:
+out, ceremonies start on and self-approval off. To hand the first administrator over by claim token
+rather than a generated password, set `Administration.ClaimTokenSha256`. Four init containers run every start and find their
+work done after the first:
 
 1. **bootstrap** completes the first install as a single process, because bootstrap writes the
-   keystore locally and there is nothing to split until it exists. The initial administrator
-   password is printed once, into this container's log: `podman logs modularca-bootstrap`.
-2. **signer-init** creates the signer's identity CA and server certificate. It refuses to replace
-   an existing CA, so it does nothing on later starts.
-3. **node-identity** issues the node its client certificate and writes both halves of the channel
-   into the one `Signer:` section of the shared `config.yaml` — the node reads its keys from it,
-   the signer reads its own. It exits without touching a file that already names a remote signer
-   with both pins set.
+   keystore locally and there is nothing to split until it exists. It does not print the initial
+   administrator's password, since under Quadlet this container's log is the journal. By default
+   the password is in the config volume, readable by the image's account only:
+   `podman exec modularca-node cat /opt/modularca/config/initial-admin-password`. Sign in, change
+   it when asked, and the node deletes the file. To provision an instance without anyone on the
+   host ever seeing a password, put `Administration.ClaimTokenSha256` in `bootstrap.yaml` instead
+   and give the token to its administrator, who claims the account at `/claim` (see "Things worth
+   knowing before the first production start"). For a claim that expired unused:
+   `podman exec modularca-node /opt/modularca/ModularCA.API --issue-claim-token superadmin`.
+   Before it exits it writes its audit records (the keystore writes, the setup choices, the
+   claim) into the audit database itself, as every bootstrap does on any install type, so they
+   do not depend on its `logs/`, which this container does not keep. If the audit database
+   refuses the write, it prints a `[WARNING]` and moves the queued file into
+   `config/audit-pending/` in the config volume (owner-only; it holds names and choices, never a
+   secret), and the node writes those records into the audit trail when it starts, each once.
+   The same holds on every install type: a bootstrap whose audit write is refused leaves the
+   records in `config/audit-pending/`, not in `logs/`.
+2. **signer-dir** fills the signer's own directory, the `modularca-signer-config` volume mounted
+   at `/opt/modularca/signer`, from what bootstrap wrote: `signer.yaml` with only the sections
+   the signer reads (its half of `Signer:`, `Hsm:`, `Schema:`, the logging levels), `db.yaml`
+   with only the application database, and `keystore.yaml`. It is `--role signer --signer-dir
+   /opt/modularca/signer --migrate-signer-dir`, the command "Two units" uses. Once the directory
+   holds those files it exits without reading them from `config/` again, so nothing the node
+   later writes there reaches the signer; a directory holding some of them but not all stops the
+   pod.
+3. **signer-init** creates the signer's identity CA and server certificate in its directory. On
+   later starts it finds them, checks that they belong together, and exits without changing
+   anything. It never replaces an existing CA (only `--force` does), and it stops the pod when
+   what it finds is partial or inconsistent: one file without the other, a file it cannot open,
+   or a server certificate the CA did not issue, that has expired, or that names another host.
+4. **node-identity** issues the node its client certificate into the config volume and writes
+   each half of the channel where its process reads it: the node's (`Mode`, `Endpoint`,
+   `ClientCertificate`, `PinnedServerSpki`) into `config/config.yaml`, the signer's
+   (`PinnedClientSpki`) into `signer.yaml`, each file copied beside itself first. It is the one
+   container that mounts both volumes. On later starts it checks that the node pins the signer's
+   server certificate and the signer pins the node's client certificate, and exits without
+   touching either file; after an identity CA was replaced with `--force` it issues and pins the
+   node again. Once the pins are in place it also cleans the config volume of what the node never
+   reads, each file only after checking the signer's copy: `config/keystore.yaml`, once the
+   signer's `keystore.yaml` is byte-identical or holds the same passphrases; and, after an upgrade
+   from 0.4.3, `config/signer-server.pfx`, `config/signer-identity-ca.pfx` and, in
+   `config/config.yaml`, the signer's half of `Signer:` (`Listen`, `ServerCertificate`,
+   `PinnedClientSpki`, `IdentityCa` and their passwords) and `Hsm:`, once the identity in the
+   signer's directory opens and is the one both pins match. `config.yaml` keeps the node's half
+   (`Mode`, `Endpoint`, `ClientCertificate` and its password, `PinnedServerSpki`) and every other
+   section as it was, and is copied beside itself first as `config.yaml.pre-signer-cleanup-*.bak`.
+   On the same evidence it scrubs the copies of `config.yaml` kept beside it
+   (`config.yaml.*.bak`: `.pre-signer-*`, `.pre-settings-*`, `.mariadb-*`): the same keys go, and
+   `Hsm:` too when the signer's `signer.yaml` has its own, or else only `Hsm.Pin`. Everything else
+   in each copy stays byte for byte, the copies are written back owner-only, and none is deleted:
+   they are your way back to an earlier configuration. The copies `--apply` and the clean-up write
+   are made the same way, so no copy in the config volume holds the signer's passwords or the HSM
+   PIN. A file that does not check out is left where it is, with a `[WARNING]` in the container's
+   log saying why (never what it holds); the pod starts regardless. Later starts find nothing to
+   remove and say nothing about it.
 
-Then the two containers start: `signer` with `--role signer`, `node` with `--role node`.
+Then the two containers start: `signer` with `--role signer --signer-dir /opt/modularca/signer`,
+`node` with `--role node`.
 
-The volumes are the security division, not housekeeping. `modularca-config` is shared, and the
-signer mounts it read-only. `modularca-keystores` is mounted by the signer alone — **the node
-never sees it**, which is the whole point of the split. `modularca-data` is the node's alone. The
-signer listens on the pod's loopback, publishes no port, and cannot be reached from outside the
-pod at all.
+The volumes are the security division, not housekeeping:
 
-To do the same by hand on a host with the two units, the command the third init container runs
-is the one to know: `--role signer --issue-node-identity --apply config/config.yaml` writes what
-the earlier steps in this file have you transcribe, and takes a `.pre-signer-*.bak` copy of the
-file first.
+| Volume | Mounted by | Holds |
+|---|---|---|
+| `modularca-config` | the node; the init containers | `config.yaml`, `db.yaml` and the node's client certificate. Bootstrap leaves `keystore.yaml` here too, and `node-identity` removes it at the first start once the signer holds its copy. The node writes here while it runs: `config.yaml` when settings are saved or moved into the database (each time with a `config.yaml.pre-settings-*.bak` copy), the web TLS certificate (`api-tls.pfx`) when it is provisioned or renewed, the Data Protection key ring (`dp-keys/`), made at start and rotated, and `signer-audit-cursor.json`, its note of how far it has read the signer's keystore events. Copy it as often as anything else that changes. |
+| `modularca-signer-config` | the signer; the init containers | `signer.yaml`, the signer's `db.yaml` and `keystore.yaml`, the identity CA and the server certificate. **The node never mounts it**, so it cannot change what the signer loads (`Hsm.ModulePath`, `Signer.PinnedClientSpki`, `Signer.Listen`). Only the init containers write its settings; the signer's logs go to an `emptyDir` mounted over its `logs/`. The signer writes one thing here, `audit-journal/`: its keystore events (loaded, created, a key appended, a verification failure) wait there, across restarts of the pod, until the node has read them over the signer channel and written them into the audit trail (see "Two units"). **It MUST be in your volume backups**: after the first start the keystore passphrases (`keystore.yaml`) live in this volume and nowhere else, and no backup archive carries them, so losing it loses every keystore. |
+| `modularca-keystores` | the signer; bootstrap | The keystores. **The node never sees them**, which is the whole point of the split. |
+| `modularca-data` | the node | Its backup archives. |
+
+The signer listens on the pod's loopback, publishes no port, and cannot be reached from outside
+the pod at all.
+
+Things to know about the signer's directory:
+
+- **Change the signer's settings in `signer.yaml`**, in the `modularca-signer-config` volume: an
+  HSM (`Hsm:`), the listen address, the logging levels. The node's `config.yaml` no longer
+  decides them; `signer-dir` copied them once, at the first start.
+- **When the database password changes** (`modularca-migrate`, a rotation), update the signer's
+  `db.yaml` as well as the node's.
+- **Back up `modularca-signer-config` with the other volumes.** The keystore passphrases are in its
+  `keystore.yaml` and, once `node-identity` has removed the node's copy, nowhere else: backup
+  archives never carry them. A restore onto a new pod needs that file as well as the backup key
+  from the `config` volume; without it the keystores cannot be opened.
+- **The node's volume holds nothing of the signer's** after the first start: `node-identity`
+  removes `config/keystore.yaml` once the signer has its copy. The node with a remote signer never
+  reads it.
+
+**Upgrading a pod from 0.4.3**, where the signer read the shared `config` volume: create the
+`modularca-signer-config` volume, empty, and start the pod from this file. `signer-dir` copies the
+signer's settings and its identity files across, and `signer-init` and `node-identity` find the
+identity and the pins as they were, so nothing is reissued. `node-identity` then removes from the
+node's volume what it no longer needs, as described above: `config/keystore.yaml`,
+`config/signer-server.pfx`, `config/signer-identity-ca.pfx`, and the `Hsm:` section and the
+signer's half of `Signer:` from `config/config.yaml` and from the copies of it that 0.4.3 left
+beside it (`config.yaml.pre-signer-*.bak`, `config.yaml.pre-settings-*.bak`), which are kept
+otherwise as they were. Its log lists what it removed, and a
+`[WARNING]` names anything it left and why. Read `signer.yaml` once afterwards: it was copied from
+a file the node could write, so check `Hsm.ModulePath`, `Signer.PinnedClientSpki` and
+`Signer.Listen`. **From then on the keystore passphrases are only in `modularca-signer-config`**:
+add that volume to your volume backups before you rely on the upgraded pod. Copies of the config
+volume taken before the upgrade (volume snapshots, `cp -a`) still hold the signer's settings and
+the HSM PIN; the clean-up cannot reach those.
+
+**Is the signer up?** `--role signer --check-ready` (with the signer's `--signer-dir`, when it has
+one) exits 0 when the local signer is listening and answering, and 1 otherwise, saying why on one
+line. It connects to `Signer.Listen` and completes a TLS 1.3 handshake, succeeding only when the
+server answers with the signer's own server certificate, the one `Signer.ServerCertificate`
+names. It makes no gRPC call, since the signer admits only the node's client certificate, which
+the signer's container does not hold; it reads the signer's settings file and server certificate
+and writes nothing, not even a log line. A signer whose keystore is locked still counts as ready:
+it is up, and the node's `/health/ready` reports the lock. The pod file uses it as the signer's
+startup and liveness probes. Under Quadlet, put it on the signer's `.container` unit:
+
+    [Container]
+    HealthCmd=/opt/modularca/ModularCA.API --role signer --signer-dir /opt/modularca/signer --check-ready
+    HealthInterval=30s
+    HealthStartPeriod=15m
+    HealthOnFailure=restart
+
+The long start period covers an upgrade: a new version's signer waits for the node to apply the
+migrations (up to `Schema.WaitSeconds`) before it listens. For the same reason, do not hold the
+node back until the signer is healthy (no `Requires=` or `After=` on the signer's health, no
+`Notify=healthy` that the node's unit waits for): after an upgrade the signer waits for the node,
+and the two would wait for each other. Start them together; the node copes with a signer that is
+not there yet, as described next.
+
+**Is the node up, and is it ready?** The image has no `curl`, and Podman runs an `httpGet` probe
+as `curl` inside the container, so the node has an exec check of its own, the same command with
+the node's role: `--role node --check-ready` (the roles the node runs; any role set but the
+signer alone, or none on a single-process install). It reads `config/config.yaml`, finds the
+node's listener there and asks it over loopback, writing nothing, not even a log line:
+
+- `--check-ready --live` asks `/health`, which runs no health check, and exits 0 on 200: the
+  process accepts connections and answers. This is the liveness check. A node waiting for its
+  signer or for its database still passes, since a restart would fix neither.
+- `--check-ready` asks `/health/live` and exits 0 only on 200: every health check passes. It is
+  1, with the status on one line, while the signer's secrets are unread (the 503 below), the
+  signer is locked or unreachable, or the database is down. This is the readiness check: run it
+  as `podman exec modularca-node /opt/modularca/ModularCA.API --role node --check-ready` to
+  know when the instance can take traffic. (`/health/ready` reports the same checks in full but
+  needs a SystemAuditor token, which a probe should not hold.)
+
+Either exits 1 when nothing answers within 5 seconds, saying why.
+
+**The health port.** The check asks the node's loopback-only health listener when the host has
+one: `Health.LoopbackPort` in `config.yaml`, or the environment variable
+`MODULARCA__HEALTH__LOOPBACKPORT`, which overrides it and is never written to the file. The pod
+file sets the variable to 8081 on the node container, so every start of the pod has it, a first
+install and an upgraded one alike, and the check (a probe runs with the container's
+environment) finds it there. The listener is:
+
+- plain HTTP on `127.0.0.1` only, never `::1` (the check uses IPv4, and binding `::1` would stop
+  the start where IPv6 is off) and never another address;
+- never the PROXY protocol, whatever `Https.ProxyProtocol` and `Http.ProxyProtocol` say;
+- `/health`, `/health/live` and `/health/ready` only, by GET or HEAD. Every other path, and every
+  other method, is answered 404 before any other step of the node runs: no console, no API, no
+  enrollment protocol, no ingress route. The health paths then go through the node as a loopback
+  health request on the HTTPS listener does (the IP allow-list, which lets loopback in by
+  default; the request audit, which leaves `/health` out), and `/health/ready` still needs its
+  SystemAuditor token.
+
+Inside a pod, loopback is shared only by the pod's own containers, this node and its signer, and
+nothing publishes the port, so nothing outside the pod reaches it. The setting is per host and
+applies at restart; 0, the default, opens nothing. The start is refused when it is not a port or
+is `Https.Port`, `Http.Port` or the signer's port (`Signer.Listen`, or `Signer.Endpoint` when that
+is loopback, as in the pod, where the signer has 8446).
+
+Without a health port the check asks a main listener: `Https.Port`, or `Http.Port` where the
+process opens the plain-HTTP listener (the validation or ingress role); a wildcard
+`Https.ListenAddress` is reached at `127.0.0.1`, and a list with neither a wildcard nor a
+loopback address is refused rather than probed across the network. The web TLS certificate is
+not checked: the connection is to loopback, where only this host (this pod) can answer, the
+probe sends nothing secret, and the certificate is often the temporary one or names the public
+hostname, not `127.0.0.1`; the health checks report its expiry. The IP allow-list lets loopback
+reach the health endpoints by default (the System rule); a node whose System rule leaves
+loopback out fails the check. For a main listener that takes the PROXY protocol, see "Behind a
+passthrough proxy" below.
+
+The pod file uses `--check-ready --live` as the node's startup and liveness probes. There is no
+readiness probe in it: Podman does not run one, and on Kubernetes it would take the whole node,
+console included, out of its Service whenever the signer is locked or away. Under Quadlet, on
+the node's `.container` unit:
+
+    [Container]
+    Environment=MODULARCA__HEALTH__LOOPBACKPORT=8081
+    HealthCmd=/opt/modularca/ModularCA.API --role node --check-ready --live
+    HealthInterval=30s
+    HealthTimeout=10s
+    HealthStartPeriod=16m
+    HealthOnFailure=restart
+
+Every run starts a .NET process, so keep the interval at 30 seconds or more. The start period
+covers `Schema.WaitSeconds` (900 seconds by default), the longest the node waits for its database
+or another process's migration before it exits 75; lengthen it with that setting, or ahead of an
+upgrade whose migrations take longer.
+
+**A node that starts before its signer listens.** The signer needs a few seconds before it
+listens (it derives keys with scrypt and checks both keystore files first), so in the pod the node
+usually starts first. The secrets the node keeps wrapped by the signer (`JWT.Secret`, the
+directory bind password, the mail passwords and tokens, the webhook endpoints) then cannot be
+read, or, on the first start, moved out of `config.yaml`. The node says so in its log ("the signer
+at ... does not answer yet"), starts anyway, and asks the signer again in the background, after
+2 seconds and then twice as long each time up to once a minute. As soon as the signer answers it
+reads the secrets onto the running configuration and, on the control role, moves those still in
+`config.yaml` into the database and rewrites the file, as a start would; no restart is needed.
+Until then:
+
+- `/health/live` and `/health/ready` answer 503, with a `signerSecrets` entry saying what waits,
+  so a load balancer or a probe treats the node as not ready rather than whole. `--check-ready`
+  exits 1; `--check-ready --live`, the pod's liveness probe, still passes, so the node is not
+  restarted while it waits.
+- Sign-in works with a temporary JWT secret. Sessions signed with it end when the stored secret
+  is read; a refresh or a new sign-in gets a session under the stored one.
+- Directory sign-in, mail and webhooks that need one of those secrets fail, and enrollment answers
+  503 because the signer is unreachable.
+
+The two units on one host behave the same way, since the signer's unit is ordered after the
+node's.
+
+The command the fourth init container runs, `--role signer --signer-dir <dir> --issue-node-identity
+--apply config/config.yaml`, writes what "Two units" has you transcribe, copies both files
+beside themselves first, and then does the clean-up "Two units" step 4 does by hand, with the
+checks described above. It needs one account that can write both the node's `config/` and the
+signer's directory, which is how the pod runs it; on a host where the two belong to two accounts,
+follow the steps in "Two units" instead. Without `--signer-dir`, `--apply` writes both halves into
+the one named `config.yaml`, for a layout where both processes read that file, and removes
+nothing.
 
 ## The ingress in front of nodes
 
@@ -1338,6 +1709,126 @@ the process that hosts control and enrollment, so those names must stay on that 
 upstream for them, and the ingress running in the same process as control), or that
 process must be reached directly. `X-Forwarded-For`, `-Proto` and `-Host` are added on the
 way to a node; `Authorization: Negotiate` and `WWW-Authenticate` pass through untouched.
+
+## Behind a passthrough proxy: the PROXY protocol
+
+A proxy that passes TLS through without opening it (HAProxy in `mode tcp`, routing by SNI, as
+ModularCA Hub does in front of every instance; nginx `stream`; a cloud network load balancer)
+cannot add `X-Forwarded-For`: it never sees the HTTP request. The node then sees every client
+as the proxy. Under rootless Podman (pasta) it is worse: every connection through a published
+port appears to come from the host's own LAN address. The audit then records the server, the IP
+allow-list lets in everyone or no one, one client's failed sign-ins lock out every user, and
+JWT IP binding checks nothing.
+
+**Do not list a passthrough proxy in `Http.TrustedProxyCidrs`.** That list trusts the
+`X-Forwarded-For` header, and behind a passthrough proxy the header the node reads arrives inside
+the client's own TLS: the client writes it, so any client could pick its own address, past the
+allow-list and the rate limits. Keep `Http.TrustedProxyCidrs` for proxies that end TLS.
+
+Use the PROXY protocol instead. The proxy writes a short header before the client's first byte,
+before TLS, carrying the client's address and port as it saw them on the TCP connection; the
+client cannot choose it. The node accepts it on the listeners you mark, in `config.yaml`:
+
+    Https:
+      Port: 8443
+      ProxyProtocol: true                       # the HTTPS listener (and the setup wizard's)
+    Http:
+      Port: 8080
+      ProxyProtocol: true                       # the plain-HTTP listener (CRL, OCSP, ACME http-01)
+      ProxyProtocolTrustedCidrs: "10.100.105.22/32"   # the proxy, as this node sees it
+
+All three are per host and take effect at the next restart. A standalone install leaves them
+off and nothing changes.
+
+In a container, set them from the environment instead of editing the file, so that every
+instance behind one ingress gets the same values from its unit or manifest:
+
+    MODULARCA__HTTPS__PROXYPROTOCOL=true
+    MODULARCA__HTTP__PROXYPROTOCOL=true
+    MODULARCA__HTTP__PROXYPROTOCOLTRUSTEDCIDRS=127.0.0.1/32
+
+A variable that is set overrides the file's value and is never written to the file. The two
+switches take `true` or `false`; anything else stops the start, naming the variable. The list
+is checked like the file's. `--role node --check-ready` reads the same variables, so run it in
+the node's container (as the pod's probes and Quadlet's `HealthCmd=` do).
+
+On a listener marked this way:
+
+- A connection from an address outside `Http.ProxyProtocolTrustedCidrs` is closed before a byte
+  is read.
+- From a trusted address the header is required. A connection that sends anything else, a
+  malformed header, or nothing within 5 seconds, is closed, and its bytes are never read as TLS
+  or HTTP. (If the header were optional, a client reaching the node directly could send one and
+  choose its address.) So mark a listener only when every client reaches it through the proxy.
+- The header's client address becomes the connection's address for everything: the audit, the
+  IP allow-list, the per-IP rate limits and JWT IP binding. TLS, the SNI-gated client
+  certificates (mTLS sign-in, EST) and ALPN work as before on the bytes after the header.
+- `X-Forwarded-For`, `-Proto` and `-Host` are ignored on those connections, whatever
+  `Http.TrustedProxyCidrs` and `Security.BehindReverseProxy` say. Other listeners treat them as
+  before.
+- A health check that connects and closes, or sends a v2 `LOCAL` header, is fine: it keeps the
+  proxy's own address.
+- The node's own check, `--role node --check-ready` (the pod's probes, Quadlet's `HealthCmd=`),
+  connects from loopback, which a listener taking the protocol from a proxy elsewhere closes.
+  **Give the node a health port** (`Health.LoopbackPort`, or `MODULARCA__HEALTH__LOOPBACKPORT`,
+  which the pod file already sets to 8081): the loopback-only health listener never takes the
+  protocol, serves the health paths and nothing else, and the check asks it first, so both
+  listeners can take the protocol and the probes keep working, with no new trust given to
+  anyone ("The pod", "The health port"). Inside a pod that loopback is shared only by the pod's
+  own containers. Without a health port the check asks a main listener without the protocol, or,
+  where loopback is already in `Http.ProxyProtocolTrustedCidrs`, sends a v2 `LOCAL` header, which
+  names no client and keeps `127.0.0.1` as the peer; with both listeners taking the protocol from
+  another proxy only and no health port, it fails and says to set one. Do not add loopback to
+  `Http.ProxyProtocolTrustedCidrs` for the check's sake: every trusted address may name any client.
+
+The start is refused when a listener takes the protocol and `Http.ProxyProtocolTrustedCidrs` is
+empty, when an entry is not `address/prefix` with no bits after the prefix, and when an entry
+trusts every address (`0.0.0.0/0`, `::/0`).
+
+Name the proxy as the node sees it, which is not always the proxy's own address. Under rootless
+Podman with pasta, a proxy on the host connecting to a port published on the host appears inside
+the pod as the host's LAN address (read it from `/proc/net/tcp6` in the node container while a
+connection is open, or from the `[PROXY]` warning the node logs when it closes a connection from
+an untrusted peer). Anything else on the host that connects to the published port appears from
+the same address and is trusted to send a header too, so publish the node's ports on loopback
+only and keep other services off them.
+
+HAProxy sends version 2 with `send-proxy-v2` on the server line:
+
+    frontend tls_in
+        mode tcp
+        bind :443
+        tcp-request inspect-delay 5s
+        tcp-request content accept if { req_ssl_hello_type 1 }
+        use_backend ca_a if { req_ssl_sni -i ca-a.example }
+
+    backend ca_a
+        mode tcp
+        server node 127.0.0.1:18443 send-proxy-v2 check
+
+    frontend http_in
+        mode tcp
+        bind :80
+        default_backend ca_a_http
+
+    backend ca_a_http
+        mode tcp
+        server node 127.0.0.1:18080 send-proxy-v2 check
+
+nginx's `stream` module sends version 1, which the node also accepts:
+
+    stream {
+        server {
+            listen 443;
+            proxy_pass 127.0.0.1:8443;
+            proxy_protocol on;
+        }
+    }
+
+The node accepts version 2 (TCP over IPv4 or IPv6, `LOCAL`, and UNSPEC, with TLVs up to 1024
+bytes in all, which it skips) and version 1 (`TCP4`, `TCP6`, `UNKNOWN`). A version 2 header for
+UDP or a UNIX socket is refused rather than treated as UNSPEC, since on a TCP listener it means
+the proxy is misconfigured and the client's address would be lost without a trace.
 
 ## SSH servers: fetching the revocation list
 

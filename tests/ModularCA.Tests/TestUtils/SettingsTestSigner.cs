@@ -63,7 +63,9 @@ internal sealed class SettingsTestSigner : ISigningService
             throw new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted, $"A {context.Purpose} context does not handle a {kind}.");
     }
 
-    public Task<SignerHealth> HealthAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
+    /// <summary>Unreachable while <see cref="Unreachable"/> is set, as the remote signer reports it; unlocked otherwise.</summary>
+    public Task<SignerHealth> HealthAsync(CancellationToken cancellationToken = default)
+        => Task.FromResult(Unreachable ? SignerHealth.Unreachable() : new SignerHealth(true, 0, SignerHealth.SoftwareBackend));
     public Task<byte[]> SignAsync(KeyRef key, SignatureAlgorithm algorithm, byte[] data, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     public Task<byte[]> SignSshCertificateAsync(SshCertificateRequest request, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     public Task<byte[]> DecryptAsync(KeyRef key, byte[] enveloped, SigningContext context, CancellationToken cancellationToken = default) => throw new NotSupportedException();

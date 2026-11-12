@@ -4,7 +4,6 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using ModularCA.API.Startup;
-using ModularCA.API.Validation.SigningProfiles;
 using ModularCA.Auth.Implementations;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Auth.Services;
@@ -73,6 +72,33 @@ catch (ArgumentException ex)
     Console.Error.WriteLine($"[FATAL] {ex.Message}");
     Environment.Exit(1);
     throw;
+}
+
+// --check-ready: the health command of a container (Quadlet HealthCmd=, an exec probe). It runs
+// before the startup logger exists because it is run every few seconds, and writes nothing. With
+// --role signer it checks the local signer (SignerReadinessCheck: a TLS handshake with the
+// signer's own server certificate); with any other role set, or none, the local node's health
+// endpoint over loopback, /health/live, or /health with --live (NodeReadinessCheck).
+if (ModularCA.API.Startup.SignerReadinessCheck.IsNamedIn(args))
+{
+    bool checksSigner;
+    try { checksSigner = ModularCA.API.Startup.ProcessRoles.Parse(args) == ModularCA.API.Startup.ProcessRole.Signer; }
+    catch (ArgumentException ex)
+    {
+        Console.Error.WriteLine($"[FATAL] {ex.Message}");
+        Environment.Exit(1);
+        throw;
+    }
+    if (checksSigner)
+    {
+        if (ModularCA.API.Startup.NodeReadinessCheck.IsLiveNamedIn(args))
+        {
+            Console.Error.WriteLine($"[FATAL] {ModularCA.API.Startup.NodeReadinessCheck.LiveFlag} is the node's: the signer's {ModularCA.API.Startup.SignerReadinessCheck.Flag} serves as its liveness check too.");
+            Environment.Exit(1);
+        }
+        Environment.Exit(await ModularCA.API.Startup.SignerReadinessCheck.RunAsync(signerPaths, Console.Out, Console.Error));
+    }
+    Environment.Exit(await ModularCA.API.Startup.NodeReadinessCheck.RunAsync(args, AppContext.BaseDirectory, Console.Out, Console.Error));
 }
 
 var bootstrapConfig = new LoggerConfiguration().MinimumLevel.Information();
@@ -246,7 +272,11 @@ if (args.Contains("--backup", StringComparer.OrdinalIgnoreCase))
 {
     var outputPath = args.SkipWhile(a => !a.Equals("--backup", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
     Log.Information("Operator triggered backup (--backup) outputPath={OutputPath}", outputPath ?? "(default)");
-    var exitCode = await BackupRestore.Backup(outputPath, BackupSignerFor);
+    // Run as the signer from its own directory, the backup leaves its record, and the keystore
+    // events it raises, in the signer's audit journal, where the node reads them (SignerToolJournal).
+    var backupJournal = ModularCA.Keystore.Services.SignerToolJournal.Open(signerPaths, message => Log.Warning("{Message}", message));
+    var exitCode = await ModularCA.Keystore.Services.SignerToolJournal.BackupAsync(
+        backupJournal, outputPath, () => BackupRestore.Backup(outputPath, BackupSignerFor));
     Environment.Exit(exitCode);
 }
 if (args.Contains("--restore", StringComparer.OrdinalIgnoreCase))
@@ -254,7 +284,7 @@ if (args.Contains("--restore", StringComparer.OrdinalIgnoreCase))
     var archivePath = args.SkipWhile(a => !a.Equals("--restore", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
     if (string.IsNullOrWhiteSpace(archivePath))
     {
-        Console.WriteLine("Usage: --restore <backup-archive.enc> [--password <password>]");
+        Console.WriteLine("Usage: --restore <backup-archive.enc> [--password <password>] [--restore-audit]");
         Environment.Exit(1);
     }
 
@@ -336,8 +366,15 @@ if (args.Contains("--restore", StringComparer.OrdinalIgnoreCase))
         Environment.Exit(1);
     }
 
-    Log.Warning("Operator triggered restore (--restore) archive={ArchivePath}", archivePath);
-    var exitCode = await BackupRestore.Restore(archivePath, MaintenanceSignerFor, skipSchemaCheck: false, providedPassword: providedPassword);
+    // The audit database is kept unless --restore-audit asks for the archive's audit trail.
+    var restoreAudit = args.Contains("--restore-audit", StringComparer.OrdinalIgnoreCase);
+    Log.Warning("Operator triggered restore (--restore) archive={ArchivePath} restoreAudit={RestoreAudit}", archivePath, restoreAudit);
+    // As for --backup: run as the signer from its own directory, the restore is recorded in the
+    // signer's audit journal. The password is never part of what is recorded.
+    var restoreJournal = ModularCA.Keystore.Services.SignerToolJournal.Open(signerPaths, message => Log.Warning("{Message}", message));
+    var exitCode = await ModularCA.Keystore.Services.SignerToolJournal.RestoreAsync(
+        restoreJournal, archivePath, restoreAudit,
+        () => BackupRestore.Restore(archivePath, MaintenanceSignerFor, skipSchemaCheck: false, providedPassword: providedPassword, restoreAudit: restoreAudit));
     Environment.Exit(exitCode);
 }
 if (args.Contains("--backfill-keystore-pins", StringComparer.OrdinalIgnoreCase))
@@ -442,17 +479,21 @@ if (args.Contains("--db-ownership", StringComparer.OrdinalIgnoreCase))
 // Read-only apart from a dry run it rolls back: would this build's control role upgrade the
 // databases cleanly? Runs as the service user with the db.yaml roles; --config-dir names the
 // installed config, so a new build can be checked from where it was unpacked. 0 clean, 3 refused,
-// 75 unreachable, 1 usage.
+// 75 unreachable, 1 usage. With --read-only there is no dry run and no migration lock, for a check
+// beside a node that is still serving: 5 then says migrations are pending and were not rehearsed.
 if (args.Contains("--upgrade-check", StringComparer.OrdinalIgnoreCase))
 {
     var checkConfigDir = args.SkipWhile(a => !a.Equals("--config-dir", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
     if (args.Contains("--config-dir", StringComparer.OrdinalIgnoreCase) && (string.IsNullOrWhiteSpace(checkConfigDir) || checkConfigDir.StartsWith("--", StringComparison.Ordinal)))
     {
-        Console.Error.WriteLine("Usage: --upgrade-check [--config-dir <installed config directory>]   (run as the service user, never as root)");
+        Console.Error.WriteLine("Usage: --upgrade-check [--read-only] [--config-dir <installed config directory>]   (run as the service user, never as root)");
+        Console.Error.WriteLine("  --read-only   Read only, beside a node that is still serving: no dry run and no migration lock.");
+        Console.Error.WriteLine("                Exits 5 when migrations are pending; the check must then be run without it, with the node stopped.");
         Environment.Exit(1);
     }
     checkConfigDir = Path.GetFullPath(checkConfigDir ?? Path.Combine(AppContext.BaseDirectory, "config"));
-    Environment.Exit(await ModularCA.API.Startup.UpgradeCheckCommand.RunAsync(checkConfigDir));
+    Environment.Exit(await ModularCA.API.Startup.UpgradeCheckCommand.RunAsync(
+        checkConfigDir, readOnly: args.Contains("--read-only", StringComparer.OrdinalIgnoreCase)));
 }
 // Host-local recovery: unlocks an account with the db.yaml application credentials and audits it
 // with the db.yaml audit credentials. See UnlockUserCommand.
@@ -486,6 +527,80 @@ if (args.Contains(ModularCA.API.Startup.UnlockUserCommand.Flag, StringComparer.O
             .UseNpgsql(ModularCA.Shared.Utils.PostgresConnection.Build(unlockConfig.DB.Audit)).Options);
     Log.Warning("Operator triggered --unlock-user for {Username}", unlockName);
     Environment.Exit(await ModularCA.API.Startup.UnlockUserCommand.RunAsync(unlockDb, unlockAuditDb, unlockName, Console.Out));
+}
+// Host-local recovery: sets an account's password source with the db.yaml credentials, for the
+// one change the console cannot make, an administrator's own. See SetPasswordSourceCommand.
+if (args.Contains(ModularCA.API.Startup.SetPasswordSourceCommand.Flag, StringComparer.OrdinalIgnoreCase))
+{
+    var sourceArgs = args.SkipWhile(a => !a.Equals(ModularCA.API.Startup.SetPasswordSourceCommand.Flag, StringComparison.OrdinalIgnoreCase)).Skip(1).Take(2).ToArray();
+    var sourceDbYaml = YamlDbConfigLoader.Load(Path.Combine(AppContext.BaseDirectory, "config", "db.yaml"));
+    if (sourceArgs.Length < 2 || sourceArgs.Any(a => string.IsNullOrWhiteSpace(a) || a.StartsWith("--", StringComparison.Ordinal)) || sourceDbYaml == null)
+    {
+        Console.Error.WriteLine(ModularCA.API.Startup.SetPasswordSourceCommand.Usage);
+        Environment.Exit(1);
+    }
+    var sourceConfig = new SystemConfig();
+    sourceConfig.DB.App.Host = sourceDbYaml.App.Host;
+    sourceConfig.DB.App.Port = sourceDbYaml.App.Port;
+    sourceConfig.DB.App.Database = sourceDbYaml.App.Database;
+    sourceConfig.DB.App.Username = sourceDbYaml.App.Username;
+    sourceConfig.DB.App.Password = sourceDbYaml.App.Password;
+    sourceConfig.DB.App.SslMode = sourceDbYaml.App.SslMode;
+    sourceConfig.DB.Audit.Host = sourceDbYaml.Audit.Host;
+    sourceConfig.DB.Audit.Port = sourceDbYaml.Audit.Port;
+    sourceConfig.DB.Audit.Database = sourceDbYaml.Audit.Database;
+    sourceConfig.DB.Audit.Username = sourceDbYaml.Audit.Username;
+    sourceConfig.DB.Audit.Password = sourceDbYaml.Audit.Password;
+    sourceConfig.DB.Audit.SslMode = sourceDbYaml.Audit.SslMode;
+    new ModularCA.Shared.Utils.EnvVarConfigOverlay().Apply(sourceConfig);
+    using var sourceDb = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>()
+        .UseNpgsql(ModularCA.Shared.Utils.PostgresConnection.Build(sourceConfig.DB.App)).Options);
+    using var sourceAuditDb = string.IsNullOrWhiteSpace(sourceConfig.DB.Audit.Database) ? null
+        : new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+            .UseNpgsql(ModularCA.Shared.Utils.PostgresConnection.Build(sourceConfig.DB.Audit)).Options);
+    Log.Warning("Operator triggered --set-password-source for {Username} to {Source}", sourceArgs[0], sourceArgs[1]);
+    Environment.Exit(await ModularCA.API.Startup.SetPasswordSourceCommand.RunAsync(sourceDb, sourceAuditDb, sourceArgs[0], sourceArgs[1], Console.Out));
+}
+// One-time account claims. --new-claim-token prints a token and the bootstrap.yaml line holding its
+// hash, and needs nothing installed. --issue-claim-token gives an existing account a claim with the
+// db.yaml credentials and prints its token once. Neither token is logged. See ClaimTokenCommand.
+if (args.Contains(ModularCA.API.Startup.ClaimTokenCommand.NewFlag, StringComparer.OrdinalIgnoreCase))
+{
+    Environment.Exit(ModularCA.API.Startup.ClaimTokenCommand.RunNew(Console.Out));
+}
+if (args.Contains(ModularCA.API.Startup.ClaimTokenCommand.IssueFlag, StringComparer.OrdinalIgnoreCase))
+{
+    var claimName = args.SkipWhile(a => !a.Equals(ModularCA.API.Startup.ClaimTokenCommand.IssueFlag, StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
+    var claimLifetime = args.Contains(ModularCA.API.Startup.ClaimTokenCommand.LifetimeFlag, StringComparer.OrdinalIgnoreCase)
+        ? args.SkipWhile(a => !a.Equals(ModularCA.API.Startup.ClaimTokenCommand.LifetimeFlag, StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault() ?? ""
+        : null;
+    var claimDbYaml = YamlDbConfigLoader.Load(Path.Combine(AppContext.BaseDirectory, "config", "db.yaml"));
+    if (string.IsNullOrWhiteSpace(claimName) || claimName.StartsWith("--", StringComparison.Ordinal) || claimDbYaml == null)
+    {
+        Console.Error.WriteLine(ModularCA.API.Startup.ClaimTokenCommand.Usage);
+        Environment.Exit(1);
+    }
+    var claimConfig = new SystemConfig();
+    claimConfig.DB.App.Host = claimDbYaml.App.Host;
+    claimConfig.DB.App.Port = claimDbYaml.App.Port;
+    claimConfig.DB.App.Database = claimDbYaml.App.Database;
+    claimConfig.DB.App.Username = claimDbYaml.App.Username;
+    claimConfig.DB.App.Password = claimDbYaml.App.Password;
+    claimConfig.DB.App.SslMode = claimDbYaml.App.SslMode;
+    claimConfig.DB.Audit.Host = claimDbYaml.Audit.Host;
+    claimConfig.DB.Audit.Port = claimDbYaml.Audit.Port;
+    claimConfig.DB.Audit.Database = claimDbYaml.Audit.Database;
+    claimConfig.DB.Audit.Username = claimDbYaml.Audit.Username;
+    claimConfig.DB.Audit.Password = claimDbYaml.Audit.Password;
+    claimConfig.DB.Audit.SslMode = claimDbYaml.Audit.SslMode;
+    new ModularCA.Shared.Utils.EnvVarConfigOverlay().Apply(claimConfig);
+    using var claimDb = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>()
+        .UseNpgsql(ModularCA.Shared.Utils.PostgresConnection.Build(claimConfig.DB.App)).Options);
+    using var claimAuditDb = string.IsNullOrWhiteSpace(claimConfig.DB.Audit.Database) ? null
+        : new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+            .UseNpgsql(ModularCA.Shared.Utils.PostgresConnection.Build(claimConfig.DB.Audit)).Options);
+    Log.Warning("Operator triggered --issue-claim-token for {Username}", claimName);
+    Environment.Exit(await ModularCA.API.Startup.ClaimTokenCommand.RunIssueAsync(claimDb, claimAuditDb, claimName, claimLifetime, Console.Out));
 }
 
 // Host-local access to the stored settings, with the db.yaml credentials: the way to read and
@@ -652,6 +767,9 @@ envOverlay.Apply(config);
 // Where a change to the configuration is saved: config.yaml alone until the instance-wide
 // settings have been moved to the database, the settings store and the file after that.
 var settingsPersistence = new ModularCA.Core.Services.Settings.SettingsPersistence(config, envOverlay, configPath);
+// Whether the secrets the signer wraps still wait to be read because the remote signer did not
+// answer at start; the node's health reports it until SignerSecretsRetryService reads them.
+var signerSecretsState = new ModularCA.Core.Services.Settings.SignerSecretsState();
 
 // CRYPTO-001: the central KeyAlgorithmPolicy takes the RSA signature padding mode from
 // CertPolicy config each time it signs. This must happen before any certificate or CRL
@@ -817,13 +935,17 @@ builder.Host.UseSerilog((context, services, configuration) =>
         ? configuredLogPath
         : Path.Combine(AppContext.BaseDirectory, configuredLogPath);
 
+    // Not shared: one process writes this file (the signer role logs under its own directory).
+    // Shared mode makes the sink create a named system mutex before it opens the file, which
+    // .NET cannot do when the account's home is not writable. That is so under the hardened
+    // systemd unit: the step failed for every file name the sink tried, the sink dropped every
+    // event, and the node ran with no log file at all (LogFileSinkGuardTests).
     configuration.WriteTo.File(new CompactJsonFormatter(), resolvedLogPath,
         restrictedToMinimumLevel: persistentSinkMinLevel,
         rollingInterval: RollingInterval.Day,
         retainedFileCountLimit: config.Logging.RetentionDays,
         fileSizeLimitBytes: (long)config.Logging.MaxFileSizeMb * 1024 * 1024,
         rollOnFileSizeLimit: true,
-        shared: true,
         flushToDiskInterval: TimeSpan.FromSeconds(2));
 
     // Syslog sink (RFC 5424 — SecurityOnion, Splunk, rsyslog) — gated solely by the
@@ -989,9 +1111,14 @@ if (!isSetupMode)
             // The secrets come back through a signer: the remote one this node is configured
             // for, or this process's own keystore. An ingress holds no key and uses no secret.
             var settingsSignerIsRemote = !processRoles.HasFlag(ModularCA.API.Startup.ProcessRole.Signer) && config.Signer.IsRemote;
-            await ModularCA.API.Startup.SettingsStartup.RunAsync(config, envOverlay, settingsPersistence, controlActive,
+            var settingsOutcome = await ModularCA.API.Startup.SettingsStartup.RunAsync(config, envOverlay, settingsPersistence, controlActive,
                 ingressOnly ? null : new ModularCA.API.Startup.SettingsStartup.SignerAccess(
                     settingsSignerIsRemote, signerPaths.KeystoresDirectory, signerPaths.KeystoreYamlPath));
+            // A node started before its signer listens (a pod or two units started together)
+            // reads the wrapped secrets in the background once the signer answers, and its
+            // health says not ready until then: SignerSecretsRetryService.
+            if (settingsOutcome.SignerUnreachable && settingsOutcome.Report.Snapshot.ImportedAt != null)
+                signerSecretsState.MarkPending("The secrets the signer wraps have not been read: the signer has not answered since this process started.");
         }
         catch (Exception ex)
         {
@@ -1096,6 +1223,7 @@ else
 builder.Services.AddSingleton(config);
 builder.Services.AddSingleton(envOverlay);
 builder.Services.AddSingleton(settingsPersistence);
+builder.Services.AddSingleton(signerSecretsState);
 builder.Services.AddSingleton<ModularCA.Core.Services.AuditHashChainService>();
 
 // Entitlements are resolved once from a signed licence file and never change while the process
@@ -1285,7 +1413,7 @@ builder.Services.AddScoped<ModularCA.Shared.Enrollment.IEnrollmentProtocol>(
     sp => (ModularCA.Shared.Enrollment.IEnrollmentProtocol)sp.GetRequiredService<ModularCA.Core.Services.Msae.IMsaeEnrollmentService>());
 builder.Services.AddScoped<ModularCA.Shared.Enrollment.IEnrollmentProtocol>(
     sp => (ModularCA.Shared.Enrollment.IEnrollmentProtocol)sp.GetRequiredService<IAcmeOrderService>());
-// Kerberos for MSAE: realm bindings and keys, a replay cache over the distributed cache, and the
+// Kerberos for MSAE: realm bindings and keys, a replay cache claimed through IReplayGuard, and the
 // managed acceptor (Kerberos.NET) that validates tickets without the OS Kerberos stack.
 builder.Services.AddScoped<ModularCA.Core.Services.Msae.Kerberos.KerberosRealmService>();
 builder.Services.AddScoped<ModularCA.Core.Services.Msae.Kerberos.IKerberosRealmKeyProvider>(sp =>
@@ -1316,14 +1444,24 @@ if (isSetupMode && string.IsNullOrWhiteSpace(loadedConfig.JWT.Secret))
 // The JWT secret is kept in the settings store, wrapped by the signer. A process that could
 // not read it back (its signer is locked or out of reach, or it is an ingress, which holds no
 // key) has none. It runs on one made up for this start rather than refuse every sign-in: the
-// console stays reachable to put things right. Sessions signed with it end when the process
-// does and are not accepted by another node.
+// console stays reachable to put things right. Sessions signed with it are not accepted by
+// another node, and end when the process does, or, for a signer that did not answer at start,
+// when the stored secret is read in the background (SignerSecretsRetryService).
 if (!isSetupMode && string.IsNullOrWhiteSpace(loadedConfig.JWT.Secret) && settingsPersistence.StoreInUse)
 {
     loadedConfig.JWT.Secret = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(64));
-    // Nobody set this one, so a later save of the settings does not store it.
+    // Nobody set this one, so a later save of the settings does not store it, nor write it to
+    // config.yaml.
     settingsPersistence.KeepSecretsAsHeld();
-    if (!ingressOnly)
+    settingsPersistence.LeaveOutOfFile(ModularCA.Core.Services.Settings.SettingsPersistence.JwtSecretKey);
+    signerSecretsState.MarkMadeUp(ModularCA.Core.Services.Settings.SettingsPersistence.JwtSecretKey);
+    if (!ingressOnly && signerSecretsState.Pending)
+    {
+        Log.Warning("The signer has not answered yet, so this process signs sessions with a temporary JWT secret until it does. "
+            + "The stored secret replaces it as soon as the signer answers, without a restart; sessions signed with the temporary one end then.");
+        Console.WriteLine("[WARNING] The signer has not answered yet; using a temporary JWT secret until it does.");
+    }
+    else if (!ingressOnly)
     {
         Log.Error("The JWT secret could not be read from the settings store, so this process signs sessions with a temporary one. "
             + "Everyone is signed out at its next restart, and another node will not accept its sessions. See the Settings warnings above for why. "
@@ -1340,10 +1478,11 @@ if (!isSetupMode && Encoding.UTF8.GetByteCount(loadedConfig.JWT.Secret) < 64)
     Environment.Exit(1);
 }
 
+// Read at each check, not fixed here: see JwtSigningKey.
+var jwtSigningKey = new ModularCA.API.Startup.JwtSigningKey(loadedConfig);
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
-        var key = Encoding.UTF8.GetBytes(loadedConfig.JWT.Secret);
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -1351,7 +1490,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateAudience = true,
             ValidAudience = loadedConfig.JWT.Audience,
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new SymmetricSecurityKey(key),
+            IssuerSigningKeyResolver = (_, _, _, _) => jwtSigningKey.Keys(),
             ValidateLifetime = true,
             ValidAlgorithms = new[] { SecurityAlgorithms.HmacSha256 },
             ClockSkew = TimeSpan.FromMinutes(1),
@@ -1387,6 +1526,9 @@ builder.Services.AddScoped<ModularCA.Shared.Interfaces.IWornBadgeProvider>(sp =>
 builder.Services.AddScoped<ModularCA.Auth.Authorization.AccessBadgeService>();
 builder.Services.AddScoped<ModularCA.Auth.Authorization.ServiceIdentityService>();
 builder.Services.AddScoped<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, ModularCA.Auth.Authorization.CaGroupAuthorizationHandler>();
+// The gate of the user-administration routes: holds the capability at some scope. Its own handler,
+// so the CA-scoped handler above keeps refusing every write whose route names no CA.
+builder.Services.AddScoped<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, ModularCA.Auth.Authorization.AnyScopeCapabilityAuthorizationHandler>();
 
 builder.Services.AddAuthorization(options =>
 {
@@ -1466,21 +1608,21 @@ else
     }
 }
 
-// Data Protection API — encrypts TOTP secrets at rest.
+// Data Protection API: the key ring that protects TOTP secrets, LDAP publisher passwords and the
+// other DP-protected columns at rest (BackupWrappedSecrets lists them).
 //
-// SINGLE-NODE LIMITATION. The Data Protection keyring is
-// persisted to the local filesystem at config/dp-keys with no shared backend.
-// In a multi-node deployment each instance generates its own keyring and the
-// nodes will be unable to decrypt each other's TOTP secrets — TOTP login on
-// node A will silently fail on node B. Until this is migrated to a shared
-// store (Redis with ProtectKeysWithCertificate, a database-backed XML
-// repository, or a cloud KMS like Azure Key Vault) operators MUST run a
-// single instance OR pin sticky sessions to a single backend per user.
+// Where the ring lives. With Redis.Enabled it is kept in Redis, below, and every node shares it.
+// Otherwise it is on this host at config/dp-keys, created here at start and rotated by the
+// runtime, and a second node would have a ring of its own and could not unprotect what the first
+// protected (a TOTP enrolled through node A fails on node B): a deployment of more than one node
+// uses Redis, or routes each user to one node.
 //
-// The on-disk dp-keys directory has its ACLs tightened to the service account
-// via FileSecurityUtil.SetOwnerOnly below — disk read still equals TOTP
-// plaintext recovery, so backups MUST exclude config/dp-keys (or encrypt the
-// backup with a key not co-located on the same host).
+// Backups carry config/dp-keys only wrapped by the signer (BackupWrappedSecrets.DataProtectionDirectory),
+// so an archive does not open the ring without the keystore, and a restore brings the ring back,
+// unwrapped at the next start. On the host the ring is in the clear, and with the database it
+// opens every protected column, so its files are made owner-only below. A copy of the config
+// directory taken outside the backup (a volume copied to a standby, say) carries the ring in
+// the clear and needs the same protection as the host.
 var dpKeysDir = Path.Combine(AppContext.BaseDirectory, "config", "dp-keys");
 Directory.CreateDirectory(dpKeysDir);
 // Tighten ACLs on every keyring file inside dp-keys so disk
@@ -1513,10 +1655,18 @@ if (config.Redis.Enabled && !string.IsNullOrWhiteSpace(config.Redis.ConnectionSt
     var redis = StackExchange.Redis.ConnectionMultiplexer.Connect(config.Redis.ConnectionString);
     dpBuilder.PersistKeysToStackExchangeRedis(redis, "ModularCA:DataProtection-Keys");
     Console.WriteLine("[DataProtection] Keyring persisted to Redis");
+    // Single-use claims (DPoP jti, MSAE Kerberos authenticators, pending-MFA tokens, TOTP time
+    // steps, WebAuthn challenges) need an
+    // atomic add-if-absent, which IDistributedCache lacks.
+    // SET NX on the same connection keeps the guarantee across nodes.
+    builder.Services.AddSingleton<ModularCA.Auth.Services.IReplayGuard>(
+        new ModularCA.API.Services.RedisReplayGuard(redis, (config.Redis.InstanceName ?? "ModularCA:") + "replay:"));
 }
 else
 {
     dpBuilder.PersistKeysToFileSystem(new DirectoryInfo(dpKeysDir));
+    // Process-local, like the memory cache this branch runs with.
+    builder.Services.AddSingleton<ModularCA.Auth.Services.IReplayGuard>(new ModularCA.Auth.Services.InProcessReplayGuard());
 }
 
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
@@ -1767,6 +1917,32 @@ builder.Services.AddScoped<IAuditService, AuditService>();
 builder.Services.AddScoped<IProtocolAuditService, ProtocolAuditService>();
 // Drains logs/bootstrap-audit-*.jsonl on first successful startup.
 builder.Services.AddScoped<ModularCA.Core.Services.BootstrapAuditReplayService>();
+// A remote signer cannot reach the audit database: it keeps its keystore events (loaded, a key
+// appended, a verification failure) in a journal on its own disk. The control role reads that
+// journal over the signer channel, at start and every minute, and writes the events into the
+// audit trail. How far it has read is this node's own note, in config/; the signer is never
+// written to. With the signer in process the events are in logs/; see below.
+if (!isSetupMode && controlActive && signerIsRemote && !string.IsNullOrWhiteSpace(config.DB.Audit.Database))
+{
+    builder.Services.AddSingleton<ModularCA.Shared.Signing.ISignerEventJournal>(sp =>
+        (ModularCA.Signer.Client.RemoteSigningService)sp.GetRequiredService<ModularCA.Shared.Signing.ISigningService>());
+    builder.Services.AddSingleton(new ModularCA.Core.Services.SignerJournalCursorFile(
+        Path.Combine(AppContext.BaseDirectory, "config", ModularCA.Core.Services.SignerJournalCursorFile.FileName)));
+    builder.Services.AddScoped<ModularCA.Core.Services.SignerKeystoreEventDelivery>();
+    builder.Services.AddHostedService<ModularCA.API.Services.SignerKeystoreEventDeliveryService>();
+}
+// With the signer in process the keystore service writes its events to logs/bootstrap-audit-*.jsonl
+// in this process. The control role records each in the audit trail when it is written, with the
+// id the replay at the next start gives the same line, so that replay adds no second row. Without
+// an audit database a line cannot be told from one already recorded, and the replay at the next
+// start is all there is, as before.
+if (!isSetupMode && controlActive && !signerIsRemote && !string.IsNullOrWhiteSpace(config.DB.Audit.Database))
+{
+    builder.Services.AddSingleton(sp => new ModularCA.Core.Services.LocalKeystoreEventRecorder(
+        sp.GetRequiredService<IServiceScopeFactory>(),
+        sp.GetRequiredService<ILogger<ModularCA.Core.Services.LocalKeystoreEventRecorder>>()));
+    builder.Services.AddHostedService<ModularCA.API.Services.LocalKeystoreEventRecorderService>();
+}
 builder.Services.AddSingleton<SiemLogFormatter>();
 builder.Services.AddScoped<IEnrollmentTokenService, EnrollmentTokenService>();
 builder.Services.AddScoped<IEnrollmentAuthorizationService, EnrollmentAuthorizationService>();
@@ -1818,12 +1994,25 @@ var healthChecks = builder.Services.AddHealthChecks()
     .AddCheck<ModularCA.API.HealthChecks.ModularCAHealthCheck>("modularca")
     // The active roles and, per role, whether what it needs is there (validation: the signer
     // reachable; enrollment: the signer unlocked; control: the database).
-    .AddCheck<ModularCA.API.HealthChecks.NodeRoleHealthCheck>("roles");
+    .AddCheck<ModularCA.API.HealthChecks.NodeRoleHealthCheck>("roles")
+    // Whether the secrets the signer wraps have been read: not while a node that started before
+    // its signer answered waits for it.
+    .AddCheck<ModularCA.API.HealthChecks.SignerSecretsHealthCheck>("signer-secrets");
+// A node whose remote signer did not answer at start reads the wrapped secrets in the background
+// once it does, without a restart, and reports itself not ready until then.
+if (signerSecretsState.Pending)
+    builder.Services.AddHostedService(sp => new ModularCA.API.Services.SignerSecretsRetryService(
+        sp.GetRequiredService<IServiceScopeFactory>(),
+        sp.GetRequiredService<ModularCA.Shared.Signing.ISigningService>(),
+        signerSecretsState, config, settingsPersistence, envOverlay, controlActive,
+        sp.GetRequiredService<ILogger<ModularCA.API.Services.SignerSecretsRetryService>>()));
 // The ingress: whether the route table is built, and what the probe of each upstream found.
 if (activeRoles.Has(ModularCA.API.Startup.ProcessRole.Ingress))
     healthChecks.AddCheck<ModularCA.API.HealthChecks.IngressHealthCheck>("ingress");
 
-builder.Services.AddValidatorsFromAssemblyContaining<CreateSigningProfileValidator>();
+// The user and sign-in validators. Nothing runs them automatically: AuthController and
+// AdminUserManagerController inject IValidator<T> and call it themselves.
+builder.Services.AddValidatorsFromAssemblyContaining<ModularCA.API.Validation.Users.CreateUserRequestValidator>();
 
 builder.Services.AddScoped<ICsrParserService, CsrParserService>();
 
@@ -1863,6 +2052,35 @@ if (ModularCA.Shared.Utils.ConfigInputRules.ReverseProxyError(config.Security.Be
     Console.Error.WriteLine("        Both settings are per host: fix Http.TrustedProxyCidrs or Security.BehindReverseProxy in this host's config/config.yaml, then start again.");
     Environment.Exit(1);
 }
+
+// The PROXY protocol, for a proxy that passes connections through without reading them (the
+// hub's HAProxy). Such a proxy cannot write X-Forwarded-For, and listing it in
+// Http.TrustedProxyCidrs would let every client choose its own address, so it gets a list of its
+// own and a per-listener switch. A listener taking the protocol with no proxy named would close
+// every connection, so that stops the start, as does a list that trusts every address.
+if (ModularCA.Shared.Utils.ConfigInputRules.ProxyProtocolError(config.Https.ProxyProtocol, config.Http.ProxyProtocol, config.Http.ProxyProtocolTrustedCidrs) is { } proxyProtocolError)
+{
+    Console.Error.WriteLine($"[FATAL] {proxyProtocolError}");
+    Console.Error.WriteLine("        These settings are per host: fix Https.ProxyProtocol, Http.ProxyProtocol or Http.ProxyProtocolTrustedCidrs in this host's config/config.yaml, then start again.");
+    Environment.Exit(1);
+}
+var proxyProtocolNetworks = ModularCA.Shared.Utils.ConfigInputRules.TrustedProxyNetworks(config.Http.ProxyProtocolTrustedCidrs, "Http.ProxyProtocolTrustedCidrs");
+if (config.Https.ProxyProtocol || config.Http.ProxyProtocol)
+{
+    Console.WriteLine($"[PROXY] PROXY protocol required on {(config.Https.ProxyProtocol && config.Http.ProxyProtocol ? "the HTTPS and plain-HTTP listeners" : config.Https.ProxyProtocol ? "the HTTPS listener" : "the plain-HTTP listener")}, "
+        + $"from {string.Join(", ", proxyProtocolNetworks)} only; X-Forwarded-* is ignored on those connections.");
+}
+
+// Health.LoopbackPort: the loopback-only health listener for this host's own health command
+// (HealthListener). A port that is not one, or that another listener of this host or its signer
+// uses, stops the start rather than failing at the bind or answering for the wrong process.
+if (ModularCA.Shared.Utils.ConfigInputRules.HealthLoopbackPortError(config) is { } healthPortError)
+{
+    Console.Error.WriteLine($"[FATAL] {healthPortError}");
+    Console.Error.WriteLine($"        This setting is per host: fix Health.LoopbackPort in this host's config/config.yaml, or {ModularCA.Shared.Utils.EnvVarConfigOverlay.HealthLoopbackPortVariable} where it is set, then start again.");
+    Environment.Exit(1);
+}
+var healthLoopbackPort = config.Health.LoopbackPort;
 
 // The policy follows Http.EnableCors and Http.CorsOrigins as they are saved.
 var corsPolicies = new ModularCA.API.Middleware.SettingsCorsPolicyProvider(config);
@@ -1994,6 +2212,9 @@ if (isSetupMode)
 
         options.Listen(setupBindAddress, port, listenOptions =>
         {
+            // Before UseHttps, so the PROXY header is read ahead of the TLS handshake.
+            if (config.Https.ProxyProtocol)
+                ModularCA.API.ProxyProtocol.ProxyProtocolHosting.UseProxyProtocol(listenOptions, proxyProtocolNetworks, $"setup HTTPS :{port}");
             listenOptions.UseHttps(httpsOptions =>
             {
                 httpsOptions.ServerCertificateSelector = (context, name) => apiCertProvider.GetCertificate();
@@ -2343,6 +2564,11 @@ else
 
             Action<Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions> configureHttps = listenOptions =>
             {
+                // Https.ProxyProtocol: the PROXY header is read from the raw connection BEFORE
+                // UseHttps, so the TLS handshake, the SNI-gated client certificates and ALPN below
+                // run unchanged on the bytes that follow it.
+                if (config.Https.ProxyProtocol)
+                    ModularCA.API.ProxyProtocol.ProxyProtocolHosting.UseProxyProtocol(listenOptions, proxyProtocolNetworks, $"HTTPS {listenOptions.EndPoint}");
                 listenOptions.UseHttps(new Microsoft.AspNetCore.Server.Kestrel.Https.TlsHandshakeCallbackOptions
                 {
                     OnConnection = ctx =>
@@ -2552,14 +2778,30 @@ else
                 // ConnectionDelegate plumbing, so the middleware compares
                 // Connection.LocalPort == config.Http.Port and resizes the
                 // IHttpMaxRequestBodySizeFeature at request-entry time.
+                // Http.ProxyProtocol: the same connection middleware as the HTTPS listener, ahead
+                // of the HTTP parser. Without it the listener is configured exactly as before.
+                Action<Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions> configureHttp = listenOptions =>
+                {
+                    if (config.Http.ProxyProtocol)
+                        ModularCA.API.ProxyProtocol.ProxyProtocolHosting.UseProxyProtocol(listenOptions, proxyProtocolNetworks, $"HTTP {listenOptions.EndPoint}");
+                };
                 foreach (var addr in addresses)
                 {
                     if (addr is "0.0.0.0" or "[::]" or "*")
-                        options.ListenAnyIP(httpPort);
+                        options.ListenAnyIP(httpPort, configureHttp);
                     else
-                        options.Listen(System.Net.IPAddress.Parse(addr), httpPort);
+                        options.Listen(System.Net.IPAddress.Parse(addr), httpPort, configureHttp);
                 }
                 Console.WriteLine($"[HTTP] Listening on port {httpPort} (plain HTTP for CRL/OCSP/AIA, 256 KB body cap)");
+            }
+
+            // Health.LoopbackPort: 127.0.0.1 only, plain HTTP, never the PROXY protocol, and only
+            // the health paths (the gate at the head of the pipeline). For this host's own health
+            // command, which a main listener taking the PROXY protocol would close.
+            if (healthLoopbackPort > 0)
+            {
+                ModularCA.API.Startup.HealthListener.Listen(options, FindAvailablePort(healthLoopbackPort, failFast: true));
+                Console.WriteLine($"[HEALTH] Listening on 127.0.0.1:{healthLoopbackPort} for /health, /health/live and /health/ready only (loopback, plain HTTP, no PROXY protocol)");
             }
         });
     }
@@ -3080,6 +3322,13 @@ if (!needsSetup)
 
 // Configure the HTTP request pipeline.
 
+// The health port's gate, first of all: on Health.LoopbackPort only a GET or HEAD of /health,
+// /health/live or /health/ready goes on; anything else is answered 404 before any other step,
+// so the port serves no console, API, protocol or ingress route. The health paths then take the
+// same pipeline as a loopback health request on a main listener.
+if (healthLoopbackPort > 0 && !isSetupMode)
+    ModularCA.API.Startup.HealthListener.UseHealthPortGate(app, healthLoopbackPort);
+
 // Global exception handler — writes a sanitized
 // application/problem+json response with the correlation ID populated by
 // CorrelationIdMiddleware. No stack traces or SQL ever leak to
@@ -3138,13 +3387,13 @@ if (app.Environment.IsDevelopment() || config.Http.SwaggerEnabled)
     app.UseSwaggerUI();
 }
 
-// HTTPS redirection is intentionally NOT applied. The app binds three listeners:
-//   • 8443 — HTTPS management UI
-//   • 8444 — HTTPS mTLS auth port
+// HTTPS redirection is intentionally NOT applied. The app binds two listeners:
+//   • 8443 — HTTPS: management UI, protocols, and the mTLS and EST names, which are
+//            SNI-gated on the same port rather than given one of their own
 //   • 8080 — plain HTTP for CRL / OCSP / AIA (RFC 5280 §4.2.1.13 recommends HTTP
 //            for CDP to avoid chicken-and-egg trust during certificate validation;
 //            most crypto clients also don't follow redirects on CRL fetches).
-// HttpsRedirectionMiddleware can't pick between 8443/8444 and would redirect the
+// HttpsRedirectionMiddleware would redirect the
 // plain-HTTP PKI endpoints to HTTPS, breaking revocation consumers. HSTS set by
 // SecurityHeadersMiddleware already handles the "prefer HTTPS" signal for browsers
 // hitting the management UI.
@@ -3173,7 +3422,13 @@ forwardedOptions.KnownIPNetworks.Add(new System.Net.IPNetwork(System.Net.IPAddre
 foreach (var trustedProxy in ModularCA.Shared.Utils.ConfigInputRules.TrustedProxyNetworks(config.Http.TrustedProxyCidrs))
     forwardedOptions.KnownIPNetworks.Add(trustedProxy);
 
-app.UseForwardedHeaders(forwardedOptions);
+// Not on a connection whose address came from a PROXY header (Https.ProxyProtocol,
+// Http.ProxyProtocol). There the trusted proxy wrote the address from the TCP connection, while
+// any X-Forwarded-For was written by the client inside its own TLS. Without this a client whose
+// real address is loopback or inside Http.TrustedProxyCidrs (loopback is always added above)
+// could replace its PROXY-given address with one of its choosing. Every other connection gets
+// the step exactly as before.
+ModularCA.API.ProxyProtocol.ProxyProtocolHosting.UseForwardedHeadersUnlessProxyProtocol(app, forwardedOptions);
 
 // The ingress branch. A request whose host the route table sends elsewhere is proxied here,
 // after the forwarded headers from any proxy in front of this one are honoured and before
@@ -3188,7 +3443,12 @@ if (ingressRoutes != null)
     Console.WriteLine(ingressRouteCount == 0
         ? "[INGRESS] No route has an upstream; every name is served by this process."
         : $"[INGRESS] {ingressRouteCount} route(s): " + string.Join(", ", ingressRoutes.Routes.Select(r => $"{r.Host} -> {r.Upstream}" + (r.PlainHttpUpstream != null ? $" (plain {r.PlainHttpUpstream})" : string.Empty))));
-    ModularCA.API.Ingress.IngressHosting.UseIngress(app, ingressRoutes, config.Http.Port);
+    // Never from the health port: its health paths are this process's own, whatever Host says.
+    if (healthLoopbackPort > 0 && !isSetupMode)
+        app.UseWhen(context => !ModularCA.API.Startup.HealthListener.ArrivedOnHealthPort(context, healthLoopbackPort),
+            branch => ModularCA.API.Ingress.IngressHosting.UseIngress(branch, ingressRoutes, config.Http.Port));
+    else
+        ModularCA.API.Ingress.IngressHosting.UseIngress(app, ingressRoutes, config.Http.Port);
 }
 
 // Standard error response format: { "error": "message" }
@@ -3399,6 +3659,9 @@ app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.Health
 // Legacy /health compatibility shim — redirects callers to the split endpoints.
 // Anonymous GET returns the minimal liveness payload so existing probes do not break.
 // It also names the roles this process runs, so a probe can tell which process it reached.
+// `--check-ready --live` (NodeReadinessCheck), the pod's liveness probe, asks this endpoint
+// because it runs no health check: keep it that way, or a node waiting for its signer or its
+// database would be restarted by its own liveness probe.
 app.MapGet("/health", async context =>
 {
     context.Response.ContentType = "application/json";
@@ -3454,7 +3717,7 @@ if (sinkFlagsQueryFailed && !isSetupMode)
 // The console's sign-in pages sit at the site root, shared by /admin and /user.
 static bool IsConsoleAuthPath(string path)
 {
-    foreach (var p in new[] { "/login", "/banner", "/mfa-setup", "/mfa-verify", "/mfa-callback" })
+    foreach (var p in new[] { "/login", "/banner", "/claim", "/mfa-setup", "/mfa-verify", "/mfa-callback" })
     {
         if (path.Equals(p, StringComparison.OrdinalIgnoreCase)
             || path.StartsWith(p + "/", StringComparison.OrdinalIgnoreCase))
@@ -3580,6 +3843,9 @@ if (controlActive && config.PolicySync.Enabled && config.PolicySync.SyncOnStartu
         var syncResult = policySyncService.SyncFromDirectoryAsync(policyDir).GetAwaiter().GetResult();
         policySyncLogger.LogInformation("Policy sync on startup: Created={Created}, Updated={Updated}, Unchanged={Unchanged}, Errors={Errors}",
             syncResult.Created, syncResult.Updated, syncResult.Unchanged, syncResult.Errors.Count);
+        // The count alone hides what was skipped: a profile left out of the sync is named.
+        foreach (var syncError in syncResult.Errors)
+            policySyncLogger.LogWarning("Policy sync on startup: {Error}", syncError);
     }
     catch (Exception ex)
     {
@@ -3587,9 +3853,10 @@ if (controlActive && config.PolicySync.Enabled && config.PolicySync.SyncOnStartu
     }
 }
 
-// Drain any logs/bootstrap-audit-*.jsonl files left behind by
-// bootstrap (where audit writes must be deferred because the audit DB is not yet
-// reachable) and replay each entry into the real audit DB. Wrapped in try/catch
+// Replay the bootstrap-audit-*.jsonl files that wait for the audit database: those the bootstrap
+// could not write itself and kept in config/audit-pending (config/ is kept on every install
+// type; the pod's bootstrap container has no logs/ that outlives it), then those in logs/ (an
+// older bootstrap's, and the keystore events of this node's previous run). Wrapped in try/catch
 // so a replay failure never blocks startup. Bootstrap ran where the control plane runs.
 if (!isSetupMode && controlActive)
 {

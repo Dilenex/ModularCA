@@ -70,7 +70,10 @@ public sealed class SignerDirectoryTests : IDisposable
         Assert.Contains("var keystoresDirectory = paths.KeystoresDirectory;", role);
         Assert.Contains("SignerBootstrap.Unlock(keystoreYamlPath, keystoresDirectory, appConnStr)", role);
         Assert.Contains("paths.ResolveFile(signerConfig.ServerCertificate)", role);
-        Assert.Contains("KeystoreService.AuditLogDirectory = paths.LogsDirectory", role);
+        // The keystore events go to the journal in the signer's directory, not to a log directory that may not be kept.
+        Assert.Contains("KeystoreAuditJournal.Open(", role);
+        Assert.Contains("paths.AuditJournalDirectory!, paths.LogsDirectory,", role);
+        Assert.DoesNotContain("AuditLogDirectory = paths.LogsDirectory", role);
     }
 
     [Fact]
@@ -120,7 +123,7 @@ public sealed class SignerDirectoryTests : IDisposable
     }
 
     [Fact]
-    public void Apply_is_refused_with_the_signers_directory_and_the_config_is_untouched()
+    public void Apply_with_the_signers_directory_and_no_signer_yaml_there_is_refused_and_the_config_is_untouched()
     {
         var paths = SignerPaths.Dedicated(_base, _dir);
         var signer = new SignerConfig { Listen = "127.0.0.1:18446" };
@@ -206,10 +209,21 @@ public sealed class SignerDirectoryTests : IDisposable
         Assert.Equal(before, Snapshot(config));
         Assert.Contains("Hsm.ModulePath", output);
 
-        // A second run refuses and changes nothing.
+        // A second run finds the work done, exits zero and changes nothing, even when the shared
+        // file has changed since: the signer's directory is not refilled from config/.
         var signerYaml = File.ReadAllText(to.ConfigPath);
-        Assert.Equal(1, RunMigration(SignerPaths.Shared(_base), to, out _, out var again));
+        var shared = Path.Combine(config, "config.yaml");
+        File.WriteAllText(shared, File.ReadAllText(shared).Replace("/usr/lib/softhsm/libsofthsm2.so", "/tmp/evil.so"));
+        Assert.Equal(0, RunMigration(SignerPaths.Shared(_base), to, out var again, out var againError));
+        Assert.True(againError.Length == 0, againError);
         Assert.Contains("already holds", again);
+        Assert.Equal(signerYaml, File.ReadAllText(to.ConfigPath));
+
+        // Some of the files but not all is refused, and nothing is written.
+        File.Delete(to.KeystoreYamlPath);
+        Assert.Equal(1, RunMigration(SignerPaths.Shared(_base), to, out _, out var partial));
+        Assert.Contains("already holds", partial);
+        Assert.False(File.Exists(to.KeystoreYamlPath));
         Assert.Equal(signerYaml, File.ReadAllText(to.ConfigPath));
     }
 

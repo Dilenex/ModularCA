@@ -28,7 +28,10 @@ public static class X509ChainValidationUtil
     /// build a path and is rejected.
     /// <para>
     /// Returns <c>true</c> only when the chain builds cleanly and terminates at
-    /// <paramref name="anchorCert"/>. On failure, <paramref name="chainErrors"/> carries the
+    /// <paramref name="anchorCert"/>. The anchor may be an intermediate CA, given without its own
+    /// issuer: the path then stops at it short of a self-signed root, which the chain engine
+    /// reports as a partial chain and which is accepted when it is the only fault
+    /// (<see cref="StopsShortOnlyAtAnchor"/>). On failure, <paramref name="chainErrors"/> carries the
     /// joined <see cref="X509ChainStatus"/> text for the caller's audit record.
     /// </para>
     /// <para>
@@ -64,7 +67,14 @@ public static class X509ChainValidationUtil
         chain.ChainPolicy.RevocationFlag = X509RevocationFlag.ExcludeRoot;
         chain.ChainPolicy.VerificationFlags = X509VerificationFlags.NoFlag;
 
-        if (!chain.Build(leafCert))
+        var built = chain.Build(leafCert);
+        var terminal = chain.ChainElements.Count > 0
+            ? chain.ChainElements[^1].Certificate
+            : null;
+        var terminatesAtAnchor = terminal != null &&
+            string.Equals(terminal.Thumbprint, anchorCert.Thumbprint, StringComparison.OrdinalIgnoreCase);
+
+        if (!built && !(terminatesAtAnchor && StopsShortOnlyAtAnchor(chain)))
         {
             chainErrors = string.Join("; ",
                 chain.ChainStatus.Select(s => $"{s.Status}:{s.StatusInformation?.Trim()}"));
@@ -73,15 +83,12 @@ public static class X509ChainValidationUtil
             return false;
         }
 
-        // Belt-and-braces: confirm the path actually terminated at the anchor we supplied.
-        // CustomRootTrust with a single trust-store entry already guarantees this, but the
-        // assertion is free and it keeps a future ChainPolicy edit (e.g. re-enabling system
-        // trust) from silently widening what counts as "issued by this CA".
-        var terminal = chain.ChainElements.Count > 0
-            ? chain.ChainElements[^1].Certificate
-            : null;
-        if (terminal == null ||
-            !string.Equals(terminal.Thumbprint, anchorCert.Thumbprint, StringComparison.OrdinalIgnoreCase))
+        // Confirm the path actually terminated at the anchor we supplied. For a self-signed anchor
+        // CustomRootTrust with a single trust-store entry already guarantees this; for an
+        // intermediate anchor it is the check that makes the partial chain acceptable above. It
+        // also keeps a future ChainPolicy edit (e.g. re-enabling system trust) from silently
+        // widening what counts as "issued by this CA".
+        if (!terminatesAtAnchor)
         {
             chainErrors = "Chain did not terminate at the expected CA certificate.";
             return false;
@@ -89,4 +96,48 @@ public static class X509ChainValidationUtil
 
         return true;
     }
+
+    /// <summary>Revocation statuses that mean "could not be determined", as opposed to "revoked".</summary>
+    private const X509ChainStatusFlags RevocationUndetermined =
+        X509ChainStatusFlags.RevocationStatusUnknown | X509ChainStatusFlags.OfflineRevocation;
+
+    /// <summary>
+    /// True when the chain failed only because it stops at an intermediate anchor. The chain engine
+    /// reports <see cref="X509ChainStatusFlags.PartialChain"/> whenever the path ends at a
+    /// certificate that is not self-signed, which is always the case when the custom trust anchor
+    /// is an intermediate CA whose own issuer is not supplied. With revocation checking on, it also
+    /// checks the anchor itself, whose CRL it cannot verify without that issuer, and reports the
+    /// anchor's revocation status as undetermined.
+    /// </summary>
+    /// <remarks>
+    /// Accepted: <see cref="X509ChainStatusFlags.PartialChain"/>, plus an undetermined revocation
+    /// status on the anchor element alone, which keeps the contract that revocation covers
+    /// everything but the anchor (what <see cref="X509RevocationFlag.ExcludeRoot"/> gives a
+    /// self-signed anchor). Every other status fails, on any element: a bad signature, an expired
+    /// or not-yet-valid certificate, a usage or constraint violation, an explicit revocation, and
+    /// an undetermined revocation status on any certificate below the anchor.
+    /// </remarks>
+    /// <param name="chain">The chain after <see cref="X509Chain.Build(X509Certificate2)"/>; its last element is the anchor.</param>
+    private static bool StopsShortOnlyAtAnchor(X509Chain chain)
+    {
+        var chainFlags = Flags(chain.ChainStatus);
+        if ((chainFlags & X509ChainStatusFlags.PartialChain) == 0)
+            return false;
+        if ((chainFlags & ~(X509ChainStatusFlags.PartialChain | RevocationUndetermined)) != 0)
+            return false;
+
+        var elements = chain.ChainElements;
+        for (var i = 0; i < elements.Count; i++)
+        {
+            var tolerated = i == elements.Count - 1 ? RevocationUndetermined : X509ChainStatusFlags.NoError;
+            if ((Flags(elements[i].ChainElementStatus) & ~tolerated) != 0)
+                return false;
+        }
+        return true;
+    }
+
+    /// <summary>The union of the flags in <paramref name="statuses"/>.</summary>
+    /// <param name="statuses">Chain or element statuses.</param>
+    private static X509ChainStatusFlags Flags(X509ChainStatus[] statuses)
+        => statuses.Aggregate(X509ChainStatusFlags.NoError, (all, s) => all | s.Status);
 }

@@ -118,6 +118,9 @@ internal static class SshKrlHttp
     /// read first, without building it, and a match is 304 with the ETag. Otherwise the list is
     /// built and sent with the ETag computed from the rows it was built from.
     /// </summary>
+    /// <param name="controller">The controller answering, for its request headers and results.</param>
+    /// <param name="service">The SSH CA service that builds the list and reports its state.</param>
+    /// <param name="id">The SSH CA key whose revocation list is asked for.</param>
     /// <param name="nothingServed">The answer when no list is served for a key with nothing revoked.</param>
     /// <exception cref="InvalidOperationException">There is no such key, or its public key cannot be read.</exception>
     public static async Task<IActionResult> ServeAsync(ControllerBase controller, ISshCaService service, Guid id, Func<IActionResult> nothingServed)

@@ -230,16 +230,36 @@ public static class WireMapping
             ? kind
             : throw new ArgumentException($"'{value}' is not a secret kind.", "kind");
 
-    /// <summary>Maps a health report to the wire.</summary>
-    public static HealthResponse ToWire(SignerHealth health) => new()
+    /// <summary>
+    /// Maps a health report to the wire, with the HSM settings when the report carries them:
+    /// whether it is on, the module path, the slot and the key labels. The types have no field
+    /// for the PIN or a key id.
+    /// </summary>
+    public static HealthResponse ToWire(SignerHealth health)
     {
-        Unlocked = health.Unlocked,
-        KeyCount = health.KeyCount,
-        Backend = health.Backend,
-    };
+        var wire = new HealthResponse
+        {
+            Unlocked = health.Unlocked,
+            KeyCount = health.KeyCount,
+            Backend = health.Backend,
+        };
+        if (health.Hsm is { } hsm)
+        {
+            wire.Hsm = new HsmStatus { Enabled = hsm.Enabled, ModulePath = hsm.ModulePath, SlotId = hsm.SlotId };
+            foreach (var label in hsm.KeyLabels)
+                wire.Hsm.KeyLabels.Add(new HsmKeyLabel { CaLabel = label.CaLabel, KeyLabel = label.KeyLabel });
+        }
+        return wire;
+    }
 
-    /// <summary>Reads a health report from the wire.</summary>
-    public static SignerHealth FromWire(HealthResponse health) => new(health.Unlocked, health.KeyCount, health.Backend);
+    /// <summary>Reads a health report from the wire; the HSM settings are null from a signer that sent none.</summary>
+    public static SignerHealth FromWire(HealthResponse health) => new(health.Unlocked, health.KeyCount, health.Backend)
+    {
+        Hsm = health.Hsm is { } hsm
+            ? new SignerHsmStatus(hsm.Enabled, hsm.ModulePath, hsm.SlotId,
+                hsm.KeyLabels.Select(l => new SignerHsmKeyLabel(l.CaLabel, l.KeyLabel)).ToList())
+            : null,
+    };
 
     /// <summary>
     /// The status a refusal crosses the wire as: PermissionDenied, the message as the detail,

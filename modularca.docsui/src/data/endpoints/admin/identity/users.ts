@@ -5,7 +5,7 @@ export const adminUsers: ApiEndpoint[] = [
         method: 'GET',
         path: '/api/v1/admin/users',
         summary: 'List all user accounts. Read-only; accessible to auditors.',
-        auth: 'Authorize (CaAuditor)',
+        auth: 'Authorize (CaDirectoryViewer: group.view)',
         category: 'Admin Users',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
@@ -16,7 +16,7 @@ export const adminUsers: ApiEndpoint[] = [
         method: 'GET',
         path: '/api/v1/admin/users/{id}',
         summary: 'Get a single user account by ID. Read-only; accessible to auditors.',
-        auth: 'Authorize (CaAuditor)',
+        auth: 'Authorize (CaDirectoryViewer: group.view)',
         category: 'Admin Users',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
@@ -25,9 +25,20 @@ export const adminUsers: ApiEndpoint[] = [
     },
     {
         method: 'GET',
+        path: '/api/v1/admin/users/deleted',
+        summary: 'List the deleted accounts that are kept as a record because certificate requests or approvals still name them.',
+        auth: 'Authorize (SystemUserAdministrator: user.manage at system scope)',
+        category: 'Admin Users',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: 'An array, newest deletion first. Each entry has id, username, displayName, deletedAt, requests and approvals. These accounts hold nothing, cannot sign in, and their usernames cannot be reused.',
+    },
+    {
+        method: 'GET',
         path: '/api/v1/admin/users/by-username/{username}',
         summary: 'Look up a user by username. Read-only; accessible to auditors.',
-        auth: 'Authorize (CaAuditor)',
+        auth: 'Authorize (CaDirectoryViewer: group.view)',
         category: 'Admin Users',
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
@@ -38,7 +49,7 @@ export const adminUsers: ApiEndpoint[] = [
         method: 'GET',
         path: '/api/v1/admin/users/by-email',
         summary: 'Look up a user by email address.',
-        auth: 'Authorize (CaAuditor)',
+        auth: 'Authorize (CaDirectoryViewer: group.view)',
         category: 'Admin Users',
         queryParams: [
             { name: 'email', type: 'string', required: true, description: 'Email address to search for' },
@@ -91,13 +102,14 @@ export const adminUsers: ApiEndpoint[] = [
             { name: 'isLocked', type: 'bool', required: false, description: 'Lock or unlock the account' },
             { name: 'passwordNeverExpires', type: 'bool', required: false, description: 'Disable password expiration' },
             { name: 'passwordChangeOnNextLogon', type: 'bool', required: false, description: 'Force password change on next login' },
+            { name: 'passwordSource', type: 'string', required: false, description: 'Where the password is checked: Inherit (the instance LDAP setting), Local (the local hash only) or Directory (LDAP only). Not on your own account.' },
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
             { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup. Required for this operation.' },
         ],
         responseDescription: '200 with a confirmation message when applied. 202 with { ceremonyId, requiresCeremony: true, message } when a controlled-user ceremony was opened instead; nothing changes until it is approved and executed.',
-        notes: 'Only identity fields whose value differs from the account\'s count as a change: username, email, enabled, locked, password expiry, forced change. Changing one on another account needs a caller who dominates every privileged tier it holds (403 otherwise). When that account holds an admin / operator / CA-admin tier and the caller is not system-super, the whole update opens a controlled-user ceremony (202), approved by someone other than the initiator and the account. Disabling or locking the last other active dominator of the account\'s scope is refused (400). An empty or whitespace username or email is refused (400); omit a field to leave it unchanged. Unlocking (isLocked false) also clears a temporary lockout and the failed-login count. While a promotion of the account is pending or approved, an identity change by anyone but a system-super is refused (409). An approved ceremony expires at execute (409) when the account\'s username, email, enabled or locked state changed since it was opened. A username or email change rotates the security stamp. You cannot deactivate your own account. Cached security stamp is invalidated on update.',
+        notes: 'Only identity fields whose value differs from the account\'s count as a change: username, email, enabled, locked, password expiry, forced change, password source. Changing one on another account needs a caller who dominates every privileged tier it holds (403 otherwise). When that account holds an admin / operator / CA-admin tier and the caller is not system-super, the whole update opens a controlled-user ceremony (202), approved by someone other than the initiator and the account. Disabling or locking the last other active dominator of the account\'s scope is refused (400). An empty or whitespace username or email is refused (400); omit a field to leave it unchanged. Unlocking (isLocked false) also clears a temporary lockout and the failed-login count. While a promotion of the account is pending or approved, an identity change by anyone but a system-super is refused (409). An approved ceremony expires at execute (409) when the account\'s username, email, enabled or locked state changed since it was opened. A username or email change rotates the security stamp. You cannot deactivate your own account, nor change your own password source (400). A password source change rotates the security stamp, revokes refresh tokens and is audited as UserPasswordSourceChanged with the old and new value; an approved ceremony that sets it expires at execute (409) when the source changed since it was opened (a directory sign-in can turn Inherit into Directory). Cached security stamp is invalidated on update.',
     },
     {
         method: 'DELETE',
@@ -123,7 +135,7 @@ export const adminUsers: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: false, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup. Required for this operation.' },
         ],
         responseDescription: '200 with { message, newPassword } when applied: the temporary password, shown once. All outstanding JWT tokens for the user are invalidated. 202 with { ceremonyId, requiresCeremony: true, message } and no password when a controlled-user ceremony was opened instead.',
-        notes: 'Refused (403) when the account holds a privileged tier the caller does not dominate. When it holds an admin / operator / CA-admin tier and the caller is not system-super, a controlled-user ceremony is opened (202); the temporary password is generated only when the approved ceremony is executed and returned only in that execute response, to whoever executes it. It is never stored or audited. While a promotion of the account is pending or approved, a direct reset by anyone but a system-super is refused (409, "a promotion of this user is pending"). Triggers a security alert (AdminPasswordReset, severity Warning) when the reset is applied.',
+        notes: 'Refused (403) when the account holds a privileged tier the caller does not dominate. When it holds an admin / operator / CA-admin tier and the caller is not system-super, a controlled-user ceremony is opened (202); the temporary password is generated only when the approved ceremony is executed and returned only in that execute response, to whoever executes it. It is never stored or audited. While a promotion of the account is pending or approved, a direct reset by anyone but a system-super is refused (409, "a promotion of this user is pending"). Refused (409) for a Directory account, which would never use a local password: reset it in the directory, or set the password source to Local first; an approved reset ceremony expires at execute (409) if the account became Directory meanwhile. Triggers a security alert (AdminPasswordReset, severity Warning) when the reset is applied.',
     },
     {
         method: 'POST',

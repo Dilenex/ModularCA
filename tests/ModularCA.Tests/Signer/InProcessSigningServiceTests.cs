@@ -50,6 +50,40 @@ public sealed class InProcessSigningServiceTests : SigningServiceContractTests
         Assert.Equal("refused", row.Outcome);
     }
 
+    /// <summary>
+    /// A CA whose PKCS#11 key was refused at load (here, its label found another CA's key) has
+    /// no key in the registry, and a request to sign for it is refused with the reason the key
+    /// was refused, not as an unknown key, and the refusal is audited like any other.
+    /// </summary>
+    [Fact]
+    public async Task A_ca_whose_hsm_key_was_refused_at_load_is_refused_with_the_reason_and_audited()
+    {
+        var world = SignerTestWorld.Create();
+        var keyless = world["keyless"];
+        var refusal = new ModularCA.Keystore.Hsm.HsmKeyRefusal(keyless.Certificate, "keyless-ca-key", "Keyless",
+            "the key labelled 'keyless-ca-key' is not the certificate's key: the RSA modulus of the token key (the private key object) differs from the certificate's.");
+        var signer = new InProcessSigningService(world.Keystore, world.Scopes, new DatabaseSignerAuditSink(world.Scopes), world.Persistence,
+            NullLogger<InProcessSigningService>.Instance, unlocked: true, backend: SignerHealth.Pkcs11Backend, hsmKeyRefusals: new[] { refusal });
+
+        var ex = await Assert.ThrowsAsync<SigningRefusedException>(
+            () => signer.SignAsync(keyless.Ref, SignatureAlgorithm.FromName("SHA256withRSA"), new byte[] { 1, 2, 3 },
+                new SigningContext("contract-test", SigningPurpose.Certificate, world.SpaceA, world.KeylessCaId)));
+
+        Assert.Equal(SigningRefusalReason.CertificateMismatch, ex.Reason);
+        Assert.Contains("keyless-ca-key", ex.Message);
+        Assert.Contains("RSA modulus", ex.Message);
+        var row = Assert.Single(await ReadAuditAsync(world));
+        Assert.Equal("refused", row.Outcome);
+        Assert.Equal("Sign", row.Operation);
+        Assert.Contains("RSA modulus", row.Reason);
+
+        // Another CA's key that the signer does hold is unaffected.
+        var rsa = world["ca-rsa"];
+        var algorithm = SignatureAlgorithm.FromName("SHA256withRSA");
+        await signer.SignAsync(rsa.Ref, algorithm, TypedSigningData.Crl(rsa.Certificate.SubjectDN, algorithm),
+            new SigningContext("contract-test", SigningPurpose.Crl, world.SpaceA, world.CaRsaId));
+    }
+
     [Fact]
     public async Task A_locked_signer_manages_no_keys()
     {

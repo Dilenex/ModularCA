@@ -93,7 +93,7 @@ public class AdminQuotaController(
             .Where(gm => gm.Group.SpaceId == null)
             .Select(gm => gm.UserId).Distinct().CountAsync();
 
-        object CaDto(Guid id, string name, string label, string? type, bool isEnabled, bool isSshCa)
+        object CaDto(Guid id, string name, string? label, string? type, bool isEnabled, bool isSshCa)
         {
             var q = quotaByCa.GetValueOrDefault(id);
             return new

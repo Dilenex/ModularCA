@@ -12,8 +12,16 @@ public class DocsAuthMiddleware
 {
     private readonly RequestDelegate _next;
 
+    /// <summary>Creates the middleware.</summary>
+    /// <param name="next">The next middleware in the pipeline.</param>
     public DocsAuthMiddleware(RequestDelegate next) { _next = next; }
 
+    /// <summary>
+    /// For a <c>/docs</c> path carrying a Bearer token that did not authenticate, answers 401 JSON when
+    /// the client accepts <c>application/json</c> and otherwise redirects to <c>/login</c> with the path
+    /// as <c>returnUrl</c>. Every other request passes through.
+    /// </summary>
+    /// <param name="context">The current request.</param>
     public async Task InvokeAsync(HttpContext context)
     {
         var path = context.Request.Path.Value ?? "";

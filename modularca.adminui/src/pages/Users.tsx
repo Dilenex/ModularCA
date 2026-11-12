@@ -15,6 +15,7 @@ import { StepUpOps } from '@shared/generated';
 import { FilterBar, FilterField, filterControlClass } from '@shared/components/FilterBar';
 import { userMatches } from './userFilters';
 import ServiceIdentitiesPanel from '../components/ServiceIdentitiesPanel';
+import DeletedAccountsPanel from '../components/DeletedAccountsPanel';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -40,7 +41,7 @@ const Users: React.FC = () => {
     const [createForm, setCreateForm] = useState({ username: '', email: '', password: '', firstName: '', lastName: '', groupIds: [] as string[] });
     const [creating, setCreating] = useState(false);
     const [refreshTrigger, setRefreshTrigger] = useState(0);
-    const [tab, setTab] = useState<'people' | 'service'>('people');
+    const [tab, setTab] = useState<'people' | 'service' | 'deleted'>('people');
 
     useEffect(() => {
         let cancelled = false;
@@ -130,7 +131,7 @@ const Users: React.FC = () => {
                 <div className="flex items-center gap-4">
                     <h1 className="text-xl font-semibold text-ink">Users</h1>
                     <div className="flex gap-1 border-b border-line">
-                        {([['people', 'People'], ['service', 'Service identities']] as const).map(([k, label]) => (
+                        {([['people', 'People'], ['service', 'Service identities'], ['deleted', 'Deleted']] as const).map(([k, label]) => (
                             <button key={k} onClick={() => setTab(k)}
                                 className={`px-3 py-1.5 text-sm font-medium border-b-2 -mb-px transition-colors ${tab === k ? 'border-accent text-accent-ink' : 'border-transparent text-ink-muted hover:text-ink'}`}>
                                 {label}
@@ -141,6 +142,7 @@ const Users: React.FC = () => {
             </div>
 
             {tab === 'service' && <ServiceIdentitiesPanel />}
+            {tab === 'deleted' && <DeletedAccountsPanel />}
 
             {tab === 'people' && (<>
             {/* Create User Form */}

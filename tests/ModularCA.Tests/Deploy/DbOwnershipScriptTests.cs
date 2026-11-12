@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using ModularCA.Tests.TestUtils;
 using Xunit;
 
 namespace ModularCA.Tests.Deploy;
@@ -27,6 +28,7 @@ public sealed class RequiresBashFactAttribute : FactAttribute
 /// <c>-v</c> variables, only administrator-owned objects are repaired, the units are stopped
 /// first and restored afterwards, and a failure prints the manual command.
 /// </summary>
+[Trait(TestTier.Name, TestTier.Slow)]
 public sealed class DbOwnershipScriptTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), $"mca-dbown-{Guid.NewGuid():N}");

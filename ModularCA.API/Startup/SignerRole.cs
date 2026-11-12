@@ -59,12 +59,17 @@ public static class SignerRole
             return 1;
         }
 
+        ModularCA.Keystore.Services.KeystoreAuditJournal? journal = null;
         if (paths.IsDedicated)
         {
             await UseOwnLogsAsync(config.Logging, paths);
-            ModularCA.Keystore.Services.KeystoreService.AuditLogDirectory = paths.LogsDirectory;
+            // The keystore events of this run, and those an earlier build left in logs/, go to the journal
+            // in the signer's own directory, where they wait for the node to read them over the channel.
+            journal = ModularCA.Keystore.Services.KeystoreAuditJournal.Open(
+                paths.AuditJournalDirectory!, paths.LogsDirectory, message => Log.Warning("{Message}", message));
             WarnIfOthersCanWrite(paths, config.Signer);
-            Log.Information("Signer configuration from {Directory}; logs and keystore audit in {Logs}", paths.SignerDirectory, paths.LogsDirectory);
+            Log.Information("Signer configuration from {Directory}; logs in {Logs}; keystore audit journal in {Journal}",
+                paths.SignerDirectory, paths.LogsDirectory, journal.Directory);
         }
         else
         {
@@ -178,6 +183,12 @@ public static class SignerRole
                     File.Exists(keystoreYamlPath)
                         ? new KeystoreKeyWrappingPassphraseProvider(keystoreYamlPath)
                         : new SetupModeKeyWrappingPassphraseProvider());
+                // The journal of keystore events, for the node to read; none in the shared layout.
+                if (journal != null)
+                    builder.Services.AddSingleton<ISignerEventJournal>(journal);
+                // What the health answer says of the HSM, for the node's console: on or off, the
+                // module path, the slot and the key labels. The type has no PIN and no key id.
+                builder.Services.AddSingleton(SignerHsmStatus.From(config.Hsm));
                 builder.Services.AddSingleton<ISignerAuditSink>(sp =>
                     new DatabaseSignerAuditSink(sp.GetRequiredService<IServiceScopeFactory>()));
                 builder.Services.AddSingleton<ISigningService>(sp => bootstrap.CreateSigner(
@@ -218,7 +229,9 @@ public static class SignerRole
     /// Replaces the startup logger with the signer's own: the console as the node renders it,
     /// and the file sink at <c>Logging.FilePath</c> resolved against the signer's directory
     /// (<c>logs/modularca-.log</c> there by default), capped at Information like the node's.
-    /// The startup logger is closed first so the two never hold the same file.
+    /// The startup logger is closed first so the two never hold the same file. The file is not
+    /// opened in shared mode: only the signer writes it, and shared mode depends on a named system
+    /// mutex whose creation failed on a Linux install and left the node without a log file.
     /// </summary>
     private static async Task UseOwnLogsAsync(LoggingConfig logging, SignerPaths paths)
     {
@@ -260,7 +273,6 @@ public static class SignerRole
             retainedFileCountLimit: logging.RetentionDays,
             fileSizeLimitBytes: (long)logging.MaxFileSizeMb * 1024 * 1024,
             rollOnFileSizeLimit: true,
-            shared: true,
             flushToDiskInterval: TimeSpan.FromSeconds(2));
 
         await Log.CloseAndFlushAsync();

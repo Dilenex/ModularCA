@@ -14,6 +14,11 @@ using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Acme;
 
+/// <summary>
+/// ACME directory and nonce endpoints (RFC 8555 §7.1.1, §7.2), served for the default CA on
+/// <c>/api/v1/acme</c> and per CA label. Open to anonymous callers; a CA that does not serve ACME
+/// is answered as not found, and every request is refused with 503 while the signer is locked.
+/// </summary>
 [ApiController]
 [Route("api/v1/acme")]
 [Route("api/v1/acme/{caLabel}")]

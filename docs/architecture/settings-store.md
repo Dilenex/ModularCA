@@ -141,6 +141,8 @@ the state when this was drawn (2026-10-05); the readers made live since are list
 | `Http.CorsOrigins`, `EnableCors` | d | `AddCors` at startup | restart | live (a CORS policy provider reads the monitor) |
 | `Http.SwaggerEnabled` | d | pipeline built at startup | restart | restart |
 | `Http.TrustedProxyCidrs`, `ForwardedHeaderHopLimit`, `Security.BehindReverseProxy` | c | forwarded-headers options; `LoginRateLimitMiddleware` reads `BehindReverseProxy` live | restart | restart |
+| `Https.ProxyProtocol`, `Http.ProxyProtocol`, `Http.ProxyProtocolTrustedCidrs` | c | Kestrel listener setup (`ProxyProtocolHosting.UseProxyProtocol`), the forwarded-headers step | restart | restart |
+| `Health.LoopbackPort` (or `MODULARCA__HEALTH__LOOPBACKPORT`, never written to the file) | c | Kestrel listener setup and the pipeline's first step (`HealthListener`), the ingress branch, `NodeReadinessCheck` (`--check-ready`) | restart | restart |
 | `Http.Hsts.MaxAgeSeconds`, `IncludeSubDomains`, `Preload` | d | `AddHsts` at startup; `SecurityHeadersMiddleware` per request | split | live (one reader, the middleware) |
 | `JWT.Secret` | e | `AddJwtBearer` signing key (startup); `JwtTokenService` (live) | split: signing live, validation restart | live, through an issuer-key resolver that also accepts the previous key for one token lifetime |
 | `JWT.ExpirationMinutes` | d | `JwtTokenService`, `AuthController` | live | live |
@@ -217,9 +219,11 @@ host-local key in it holds the default.
   cost is that a control process needs the signer to unwrap it at start (section 3). Refresh
   tokens are database rows, so a per-host key would have cost only one refresh at failover. That
   makes this a close call (open question 2).
-- **Network position is host-local.** `TrustedProxyCidrs`, `ForwardedHeaderHopLimit` and
-  `BehindReverseProxy` describe what sits in front of *this* host. A different value on the
-  ingress host and on a node is correct, not drift.
+- **Network position is host-local.** `TrustedProxyCidrs`, `ForwardedHeaderHopLimit`,
+  `BehindReverseProxy`, and the PROXY protocol switches with `ProxyProtocolTrustedCidrs`, describe
+  what sits in front of *this* host. A different value on the
+  ingress host and on a node is correct, not drift. `Health.LoopbackPort`, the loopback-only
+  health listener for the host's own health command, is a port of this host like the others.
 - **Paths are host-local, and one of them leaves the API.** `PolicySync.PolicyDirectory` lets a
   holder of config rights point the server at a directory of YAML that rewrites profiles. It
   becomes host-local and read-only in the console, so changing it needs the host. A second such

@@ -30,6 +30,19 @@ public class SigningProfileDto
 
     public Guid? IssuerId { get; set; }
 
+    /// <summary>
+    /// The live CA whose certificate <see cref="IssuerId"/> names, which is the CA a request
+    /// against this profile is issued by. Null when the profile has no issuer or its issuer is
+    /// no live CA's certificate. Read-only: the service fills it in.
+    /// </summary>
+    public Guid? CaId { get; set; }
+
+    /// <summary>The name of the CA in <see cref="CaId"/>; null when that is null.</summary>
+    public string? CaName { get; set; }
+
+    /// <summary>The space of the CA in <see cref="CaId"/>; null for an instance CA or when there is no CA.</summary>
+    public Guid? CaSpaceId { get; set; }
+
     public int? MaxPathLength { get; set; }
 
     /// <summary>

@@ -23,6 +23,7 @@ namespace ModularCA.Keystore.Signing;
 public sealed class SignerBootstrap
 {
     private readonly MultiCARegistry _registry;
+    private readonly List<HsmKeyRefusal> _hsmRefusals = new();
     private string _backend = SignerHealth.SoftwareBackend;
 
     private SignerBootstrap(MultiCARegistry registry, bool unlocked)
@@ -78,18 +79,23 @@ public sealed class SignerBootstrap
 
     /// <summary>
     /// Adds the PKCS#11-backed CAs to the registry: every enabled CA whose key storage is
-    /// <c>Pkcs11</c> and whose key is found on the token under its label. The signer then
-    /// reports the PKCS#11 backend. Returns the certificates that were added, for the node to
-    /// report.
+    /// <c>Pkcs11</c> and whose key is found on the token under its label and bound to the CA
+    /// certificate by public key (<see cref="Pkcs11KeyBinder"/>). A CA whose key was found but
+    /// refused is not registered; the refusal is kept and handed to the signer
+    /// <see cref="CreateSigner"/> makes, which refuses and audits every request for that CA with
+    /// the reason. The signer then reports the PKCS#11 backend. Returns the certificates that
+    /// were added, for the node to report.
     /// </summary>
     public IReadOnlyList<X509Certificate> AddHsmSigners(Pkcs11SessionManager hsm, string dbConnectionString)
     {
         var added = new List<X509Certificate>();
-        foreach (var (cert, handle) in StartupKeystoreLoader.LoadHsmSigners(hsm, dbConnectionString))
+        var (signers, refused) = StartupKeystoreLoader.LoadHsmSigners(hsm, dbConnectionString);
+        foreach (var (cert, handle) in signers)
         {
             _registry.RegisterSigner(cert, handle);
             added.Add(cert);
         }
+        _hsmRefusals.AddRange(refused);
         _backend = SignerHealth.Pkcs11Backend;
         return added;
     }
@@ -98,7 +104,9 @@ public sealed class SignerBootstrap
     /// Creates the in-process signer over the registry: the one door to the keys, judging every
     /// request against its policy and writing its own audit row. A key it commits is appended
     /// to the keystore files through <see cref="FileKeystorePersistence"/>, under the passphrases
-    /// the keystore configuration holds and re-signed by the pinned system signer.
+    /// the keystore configuration holds and re-signed by the pinned system signer. The PKCS#11
+    /// keys <see cref="AddHsmSigners"/> refused go with it, so a request for one of those CAs is
+    /// refused with the reason rather than as an unknown key.
     /// </summary>
     /// <param name="keystoresDirectory">The directory holding the keystore files.</param>
     /// <param name="yamlPath">The keystore configuration file.</param>
@@ -125,6 +133,7 @@ public sealed class SignerBootstrap
             unlocked: Unlocked,
             backend: _backend,
             keyWrapping: keyWrapping,
-            failClosedOnAuditFailure: failClosedOnAuditFailure);
+            failClosedOnAuditFailure: failClosedOnAuditFailure,
+            hsmKeyRefusals: _hsmRefusals);
     }
 }

@@ -160,20 +160,46 @@ internal sealed class SignerTestWorld
         return (caId, new KeyRef(keyId, KeyRef.SshKeystore), publicKey);
     }
 
-    /// <summary>Builds the material, seeds the rows and returns the world.</summary>
-    public static SignerTestWorld Create()
+    /// <summary>
+    /// The key pairs and certificates of every world, generated once per test run. They are
+    /// never changed after they are made, and generating six RSA and three ECDSA keys for each
+    /// world was most of what a signer test cost. A world still has its own database, its own
+    /// ids for every row, its own keystore and its own persistence, so what one test commits,
+    /// imports or retires is never seen by another.
+    /// </summary>
+    private static readonly Lazy<IReadOnlyList<Material>> SharedMaterial = new(GenerateMaterial);
+
+    private static IReadOnlyList<Material> GenerateMaterial()
     {
         var world = new Builder();
         var caRsa = world.SelfSignedCa("ca-rsa", "CN=Signer Test RSA CA, O=ModularCA", KeyAlgorithmPolicy.GenerateKeyPair("RSA", "2048"));
-        var caEc = world.SelfSignedCa("ca-ec", "CN=Signer Test EC CA, O=ModularCA", KeyAlgorithmPolicy.GenerateKeyPair("ECDSA", "P-256"));
-        var ocsp = world.Issued("ocsp", caRsa, "CN=Signer Test OCSP Responder", KeyAlgorithmPolicy.GenerateKeyPair("RSA", "2048"));
-        var tsa = world.Issued("tsa", caRsa, "CN=Signer Test TSA", KeyAlgorithmPolicy.GenerateKeyPair("RSA", "2048"),
+        world.SelfSignedCa("ca-ec", "CN=Signer Test EC CA, O=ModularCA", KeyAlgorithmPolicy.GenerateKeyPair("ECDSA", "P-256"));
+        world.Issued("ocsp", caRsa, "CN=Signer Test OCSP Responder", KeyAlgorithmPolicy.GenerateKeyPair("RSA", "2048"));
+        world.Issued("tsa", caRsa, "CN=Signer Test TSA", KeyAlgorithmPolicy.GenerateKeyPair("RSA", "2048"),
             new ExtendedKeyUsage(KeyPurposeID.id_kp_timeStamping));
-        var cmp = world.Issued("cmp", caRsa, "CN=Signer Test CMP Signer", KeyAlgorithmPolicy.GenerateKeyPair("ECDSA", "P-256"));
-        var leaf = world.Issued("leaf", caRsa, "CN=leaf.signer.test", KeyAlgorithmPolicy.GenerateKeyPair("RSA", "2048"));
-        var leafUnheld = world.Issued("leaf-unheld", caRsa, "CN=unheld.signer.test", KeyAlgorithmPolicy.GenerateKeyPair("ECDSA", "P-256"));
-        var orphan = world.SelfSignedCa("orphan", "CN=Signer Test Orphan CA, O=ModularCA", KeyAlgorithmPolicy.GenerateKeyPair("RSA", "2048"));
-        var keyless = world.SelfSignedCa("keyless", "CN=Signer Test Keyless CA, O=ModularCA", KeyAlgorithmPolicy.GenerateKeyPair("RSA", "2048"));
+        world.Issued("cmp", caRsa, "CN=Signer Test CMP Signer", KeyAlgorithmPolicy.GenerateKeyPair("ECDSA", "P-256"));
+        world.Issued("leaf", caRsa, "CN=leaf.signer.test", KeyAlgorithmPolicy.GenerateKeyPair("RSA", "2048"));
+        world.Issued("leaf-unheld", caRsa, "CN=unheld.signer.test", KeyAlgorithmPolicy.GenerateKeyPair("ECDSA", "P-256"));
+        world.SelfSignedCa("orphan", "CN=Signer Test Orphan CA, O=ModularCA", KeyAlgorithmPolicy.GenerateKeyPair("RSA", "2048"));
+        world.SelfSignedCa("keyless", "CN=Signer Test Keyless CA, O=ModularCA", KeyAlgorithmPolicy.GenerateKeyPair("RSA", "2048"));
+        return world.Materials;
+    }
+
+    /// <summary>
+    /// Seeds the rows of a new world over the run's key material and returns the world. Every
+    /// certificate row gets an id of this world's own.
+    /// </summary>
+    public static SignerTestWorld Create()
+    {
+        var materials = SharedMaterial.Value.Select(m => m with { Id = Guid.NewGuid() }).ToList();
+        Material Named(string name) => materials.Single(m => m.Name == name);
+        var caRsa = Named("ca-rsa");
+        var caEc = Named("ca-ec");
+        var ocsp = Named("ocsp");
+        var tsa = Named("tsa");
+        var cmp = Named("cmp");
+        var leaf = Named("leaf");
+        var keyless = Named("keyless");
 
         var databaseName = $"signer-{Guid.NewGuid():N}";
         var ids = new Ids(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
@@ -187,7 +213,7 @@ internal sealed class SignerTestWorld
             db.Spaces.Add(new SpaceEntity { Id = ids.SpaceA, Name = "signer-test-a", Slug = "signer-test-a", RequireKeyCeremony = false });
             db.Spaces.Add(new SpaceEntity { Id = ids.SpaceB, Name = "signer-test-b", Slug = "signer-test-b", RequireKeyCeremony = false });
 
-            foreach (var m in world.Materials)
+            foreach (var m in materials)
                 db.Certificates.Add(CertificateRow(m));
 
             // The leaf's key is stored on its row the way the node stored end-entity keys before
@@ -221,7 +247,7 @@ internal sealed class SignerTestWorld
             db.SaveChanges();
         }
 
-        var keystore = new TestKeystore(world.Materials
+        var keystore = new TestKeystore(materials
             .Where(m => !Unheld.Contains(m.Name))
             .Select(m => (m.Certificate, (ModularCA.Keystore.IPrivateKeyHandle)new ModularCA.Keystore.Adapters.SoftwarePrivateKeyHandle(m.KeyPair.Private)))
             .ToArray());
@@ -233,7 +259,7 @@ internal sealed class SignerTestWorld
         var scopes = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
         var keys = new Dictionary<string, SignerTestKey>();
-        foreach (var m in world.Materials)
+        foreach (var m in materials)
         {
             (Guid? caId, Guid? spaceId) = m.Name switch
             {
@@ -267,7 +293,7 @@ internal sealed class SignerTestWorld
     private sealed class Builder
     {
         private static readonly DateTime NotBefore = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-        private static readonly DateTime NotAfter = new(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        private static readonly DateTime NotAfter = new(2049, 1, 1, 0, 0, 0, DateTimeKind.Utc);
         private long _serial = 1;
 
         public List<Material> Materials { get; } = new();

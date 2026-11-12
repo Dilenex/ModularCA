@@ -53,20 +53,20 @@ export const adminCertificates: ApiEndpoint[] = [
     {
         method: 'POST',
         path: '/api/v1/admin/certificates/{serial}/export',
-        summary: 'Export a certificate in PEM-with-key format. PFX export is not supported on the admin backend; use the User Portal for PFX.',
+        summary: 'Export the public certificate as PEM, DER or PKCS#7, optionally with its issuer chain. No private key is ever exported here.',
         auth: 'Authorize (CaOperator)',
         category: 'Admin Certificates',
         requestBody: [
-            { name: 'format', type: 'string', required: true, description: 'Export format. Only \'pem-key\' is supported.' },
-            { name: 'password', type: 'string', required: false, description: 'Optional password (not used for pem-key format)' },
-            { name: 'includeChain', type: 'bool', required: false, description: 'Whether to include the certificate chain' },
+            { name: 'format', type: 'string', required: false, description: 'pem (the default), der, or pkcs7 (alias p7b), case-insensitive. pem-key and PKCS#12 (pkcs12, pfx, p12) are refused with 400 and the reason.' },
+            { name: 'password', type: 'string', required: false, description: 'Not used: only PKCS#12 takes a password, and this endpoint does not produce PKCS#12.' },
+            { name: 'includeChain', type: 'bool', required: false, description: 'Add the issuer chain to a PEM or PKCS#7 file: nearest issuer first, the root only when it is the direct issuer. DER holds one certificate, so der with includeChain is refused.' },
         ],
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
-            { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup. Required for this operation.' },
+            { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token (operation ExportCert, target the serial) from /api/v1/auth/mfa/verify-stepup. Required for this operation.' },
         ],
-        responseDescription: 'PEM file download containing the certificate and private key.',
-        notes: 'Triggers a Critical security alert (PrivateKeyExported). Requires step-up MFA verification.',
+        responseDescription: 'application/x-pem-file (.pem, or -fullchain.pem with the chain), application/pkix-cert (.cer) or application/pkcs7-mime (.p7b, certs-only SignedData).',
+        notes: 'Requires manage access to the certificate; CA certificates and the System Signing CA get 404. The holder of a stored private key exports it as PKCS#12 from the User Portal (POST /api/v1/user/certificates/{serial}/export).',
     },
     {
         method: 'POST',

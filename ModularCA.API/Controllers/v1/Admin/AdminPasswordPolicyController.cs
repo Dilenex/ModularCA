@@ -163,17 +163,29 @@ public static class PasswordPolicyBounds
 /// <summary>Request body for PUT /api/v1/admin/password-policy; null fields are left untouched.</summary>
 public class PasswordPolicyUpdateRequest
 {
+    /// <summary>Shortest password allowed, in characters; at least <see cref="PasswordPolicyBounds.MinLengthFloor"/>.</summary>
     public int? MinLength { get; set; }
+    /// <summary>Longest password allowed, in characters; 0 means no cap. Must not be below <see cref="MinLength"/> or the character-class minimums together.</summary>
     public int? MaxLength { get; set; }
+    /// <summary>Whether a password needs at least one upper-case letter.</summary>
     public bool? RequireUppercase { get; set; }
+    /// <summary>Whether a password needs at least one lower-case letter.</summary>
     public bool? RequireLowercase { get; set; }
+    /// <summary>Whether a password needs at least one digit.</summary>
     public bool? RequireDigit { get; set; }
+    /// <summary>Whether a password needs at least one character that is neither a letter nor a digit.</summary>
     public bool? RequireSymbol { get; set; }
+    /// <summary>Least number of upper-case letters; 0 sets no count.</summary>
     public int? MinUppercase { get; set; }
+    /// <summary>Least number of lower-case letters; 0 sets no count.</summary>
     public int? MinLowercase { get; set; }
+    /// <summary>Least number of digits; 0 sets no count.</summary>
     public int? MinDigits { get; set; }
+    /// <summary>Least number of characters that are neither letters nor digits; 0 sets no count.</summary>
     public int? MinSpecial { get; set; }
+    /// <summary>Days after a password change before the password expires; 0 means passwords do not expire.</summary>
     public int? MaxAgeDays { get; set; }
+    /// <summary>How many prior passwords a new one may not repeat, at most <see cref="PasswordPolicyBounds.MaxHistoryCount"/>; 0 keeps no history.</summary>
     public int? HistoryCount { get; set; }
 
     /// <summary>
@@ -181,5 +193,6 @@ public class PasswordPolicyUpdateRequest
     /// empty clears it. A path is refused.
     /// </summary>
     public string? DictionaryPath { get; set; }
+    /// <summary>Whether the dictionary lists hex SHA-256 hashes (UTF-8, either case) of passwords rather than the passwords themselves.</summary>
     public bool? DictionaryIsHashed { get; set; }
 }

@@ -14,14 +14,14 @@ namespace ModularCA.Shared.Enrollment;
 /// request profile pins values of that SAN type.
 /// </remarks>
 /// <param name="CaId">The CA that will issue.</param>
-/// <param name="CaLabel">Its label.</param>
+/// <param name="CaLabel">Its label; null for a CA row that has none.</param>
 /// <param name="RequestProfileId">The request profile in force, or null when the protocol has none.</param>
 /// <param name="CertProfileId">The certificate profile the request resolved to.</param>
 /// <param name="Subject">The subject DN as it now stands, after any fixed values the profile applied.</param>
 /// <param name="SubjectAlternativeNames">The alternative names, unchanged from the submission.</param>
 public sealed record EnrollmentPolicyContext(
     Guid CaId,
-    string CaLabel,
+    string? CaLabel,
     Guid? RequestProfileId,
     Guid CertProfileId,
     string? Subject,

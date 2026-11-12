@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
-import { useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { apiLogin, apiChangePassword, apiGet } from '../api/client';
+import type { ClaimedState } from './Claim';
 import { setMfaSetupRequired } from '../components/auth';
 import { useAuth } from '../context/AuthContext';
 import { rememberReturnUrl, consumeReturnUrl, homeFor, type PortalUser } from '../portal';
@@ -12,8 +13,10 @@ import { CERTIFICATE_PICKER_HINT, loginErrorMessage, withLoginError } from './lo
 const Login: React.FC = () => {
     const navigate = useNavigate();
     const { refresh: refreshAuth } = useAuth();
+    // The claim page comes back here with the claimed account's username.
+    const claimed = (useLocation().state as Partial<ClaimedState> | null)?.claimed;
 
-    const [username, setUsername] = useState('');
+    const [username, setUsername] = useState(claimed?.username ?? '');
     const [password, setPassword] = useState('');
     const [error, setError] = useState<NoticeInput | null>(null);
     const [loading, setLoading] = useState(false);
@@ -22,7 +25,8 @@ const Login: React.FC = () => {
     const [showPasswordChange, setShowPasswordChange] = useState(false);
     const [newPassword, setNewPassword] = useState('');
     const [confirmNewPassword, setConfirmNewPassword] = useState('');
-    const [changeSuccess, setChangeSuccess] = useState<string | null>(null);
+    const [changeSuccess, setChangeSuccess] = useState<string | null>(
+        claimed ? 'Account claimed. Sign in with your new password.' : null);
     const [mtlsInfo, setMtlsInfo] = useState<{ enabled: boolean; subdomain?: string } | null>(null);
 
     useEffect(() => {
@@ -201,6 +205,13 @@ const Login: React.FC = () => {
                     >
                         {loading ? 'Logging in...' : 'Login'}
                     </button>
+
+                    <Link
+                        to="/claim"
+                        className="block w-full text-center text-ink-muted hover:text-ink text-sm transition-colors"
+                    >
+                        Have a claim token?
+                    </Link>
 
                     {mtlsInfo?.enabled && (
                         <>

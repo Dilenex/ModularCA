@@ -118,6 +118,70 @@ public class ProtocolPathMiddlewareTests
         Assert.True(reached);
     }
 
+    /// <summary>
+    /// Every route the API declares that runs the OCSP responder, as the route attributes spell
+    /// it: the versioned and the short path, POST and GET, with and without a CA label.
+    /// </summary>
+    private static List<string> DeclaredOcspRoutes()
+    {
+        var routes = new List<string>();
+        foreach (var controller in ApiAssembly.ControllerTypes().Where(t => t.Namespace == "ModularCA.API.Controllers.v1.Public"))
+        {
+            var prefixes = controller.GetCustomAttributes(inherit: true)
+                .Where(a => a.GetType().Name == "RouteAttribute")
+                .Select(a => (string)a.GetType().GetProperty("Template")!.GetValue(a)!)
+                .DefaultIfEmpty(string.Empty)
+                .ToList();
+            foreach (var method in controller.GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.DeclaredOnly))
+            {
+                foreach (var verb in method.GetCustomAttributes(inherit: true).Where(a => a.GetType().Name is "HttpGetAttribute" or "HttpPostAttribute"))
+                {
+                    var template = (string?)verb.GetType().GetProperty("Template")!.GetValue(verb) ?? string.Empty;
+                    // A template that starts with a slash is the whole path; any other is appended to each class route.
+                    IEnumerable<string> paths = template.StartsWith('/')
+                        ? new[] { template }
+                        : prefixes.Select(p => "/" + string.Join('/', new[] { p.Trim('/'), template }.Where(s => s.Length > 0)));
+                    routes.AddRange(paths.Where(p => p.Split('/').Contains("ocsp", StringComparer.OrdinalIgnoreCase)));
+                }
+            }
+        }
+        return routes.Distinct(StringComparer.Ordinal).OrderBy(r => r, StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>
+    /// With <c>OCSP.Enabled</c> off, no OCSP route the API declares reaches its controller. The
+    /// routes are read from the route attributes, so one added later is covered without being
+    /// listed here; the count guards against the reflection finding none.
+    /// </summary>
+    [Fact]
+    public async Task Every_declared_ocsp_route_is_gated_by_the_ocsp_flag()
+    {
+        var routes = DeclaredOcspRoutes();
+        Assert.Equal(
+            [
+                "/api/v1/public/ocsp",
+                "/api/v1/public/ocsp/ca/{caLabel}",
+                "/api/v1/public/ocsp/ca/{caLabel}/{encodedRequest}",
+                "/api/v1/public/ocsp/{encodedRequest}",
+                "/ocsp",
+                "/ocsp/ca/{caLabel}",
+                "/ocsp/ca/{caLabel}/{encodedRequest}",
+                "/ocsp/{encodedRequest}",
+            ],
+            routes);
+
+        foreach (var route in routes)
+        {
+            var path = route.Replace("{caLabel}", "prod").Replace("{encodedRequest}", "MEIwQDA-MDwwOjAJBgUrDgMCGgUABBQ");
+            var (reached, status) = await GatedAsync(path, "OCSP.Enabled");
+            Assert.False(reached, $"{route} is not gated by OCSP.Enabled");
+            Assert.Equal(503, status);
+
+            // Another protocol's flag does not close it.
+            Assert.True((await GatedAsync(path, "CRL.Enabled")).Reached, $"{route} is gated by the wrong flag");
+        }
+    }
+
     [Fact]
     public async Task An_enabled_protocol_passes()
     {

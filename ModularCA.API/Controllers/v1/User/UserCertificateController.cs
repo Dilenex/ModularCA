@@ -65,14 +65,20 @@ public class UserCertificateController(
 
     /// <summary>
     /// Lists certificates the authenticated user has access to, filtered by space scope and access control, with pagination.
+    /// With <paramref name="mine"/>, only the caller's own: those issued from a request the caller
+    /// made, and those an access entry names the caller on. Without it the list is everything the
+    /// caller may view, which for an operator or administrator is every certificate of their CAs;
+    /// the self-service pages showed that under "My Certificates".
     /// </summary>
     /// <param name="page">Page number (1-based). Defaults to 1.</param>
     /// <param name="pageSize">Number of items per page. Defaults to 25, clamped to 1-100.</param>
+    /// <param name="mine">True to list only the caller's own certificates. Defaults to false.</param>
     /// <returns>A paginated result containing accessible certificates and total count metadata.</returns>
     [HttpGet]
     public async Task<IActionResult> ListCertificates(
         [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 25)
+        [FromQuery] int pageSize = 25,
+        [FromQuery] bool mine = false)
     {
 
         await _currentUser.EnsureLoadedAsync();
@@ -111,6 +117,13 @@ public class UserCertificateController(
                 .ToListAsync();
             var accessibleSet = new HashSet<Guid>(accessibleIssuedCertIds);
             nonCaCerts = nonCaCerts.Where(c => accessibleSet.Contains(c.CertificateId)).ToList();
+        }
+
+        if (mine)
+        {
+            // Narrowing only: every certificate kept here still passes the view check below.
+            var own = await ModularCA.Auth.Authorization.CertificateOwnership.OwnedByAsync(_dbContext, _currentUser.User.Id);
+            nonCaCerts = nonCaCerts.Where(c => own.Contains(c.CertificateId)).ToList();
         }
 
         var allowedCerts = new List<CertificateInfoModel>();
@@ -153,6 +166,13 @@ public class UserCertificateController(
         });
     }
 
+    /// <summary>
+    /// Details of an end-entity certificate the caller may view (through a CA-scoped role or an ACL
+    /// entry), marked when it has been replaced, with the successor's serial when the caller may view
+    /// that too. Requires the <c>CaUser</c> policy. CA certificates, the System Signing CA and
+    /// certificates the caller may not view all answer 404.
+    /// </summary>
+    /// <param name="serial">Serial number of the certificate.</param>
     [HttpGet("{serial}")]
     public async Task<ActionResult<CertificateInfoModel>> GetCertificateInfo(string serial)
     {
@@ -197,6 +217,13 @@ public class UserCertificateController(
         }
     }
 
+    /// <summary>
+    /// Downloads an end-entity certificate the caller may view: PEM when <c>Accept</c> names
+    /// <c>application/x-pem-file</c>, DER (<c>application/pkix-cert</c>) otherwise. Requires the
+    /// <c>CaUser</c> policy. CA certificates, the System Signing CA and certificates the caller may not
+    /// view all answer 404.
+    /// </summary>
+    /// <param name="serial">Serial number of the certificate.</param>
     [HttpGet("{serial}/file")]
     public async Task<IActionResult> GetCertificate(string serial)
     {
@@ -243,7 +270,7 @@ public class UserCertificateController(
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
             return Unauthorized();
 
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ExportCert, serial))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.ExportCert, serial))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var cert = await _certStore.GetCertificateInfoAsync(serial);
@@ -428,6 +455,15 @@ public class UserCertificateController(
     /// Requires step-up MFA. The revocation is permanent and triggers a best-effort CRL
     /// regeneration. CA certificates, the System signing cert, and CA-level revocation reasons
     /// are not permitted through this self-service path.
+    /// <para>
+    /// A certificate an administrator has put on hold can be revoked permanently here, under the
+    /// same rules as the admin revoke (RFC 5280 §5.3.1, <see cref="ICertificateRevocationService.RevokeCertificateAsync"/>):
+    /// the reason changes in place and the response carries <c>previousReason</c> =
+    /// <c>CertificateHold</c>. A certificate already revoked permanently answers 409 with
+    /// <see cref="ModularCA.Shared.Errors.ErrorCodes.CertificateRevocationState"/>.
+    /// </para>
+    /// A certificate that disappears between the ownership check and the revoke answers 404, as a
+    /// missing one does; the revocation service's not-found refusal used to come back as a 400.
     /// </summary>
     /// <param name="serial">The serial number of the certificate to revoke.</param>
     /// <param name="request">Revocation request containing the reason and optional invalidity date.</param>
@@ -441,7 +477,7 @@ public class UserCertificateController(
         if (!_currentUser.IsAuthenticated || _currentUser.User == null)
             return Unauthorized();
 
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.RevokeSelfCert, serial))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.RevokeSelfCert, serial))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         if (!SelfRevokeAllowedReasons.Contains(request.Reason))
@@ -459,18 +495,26 @@ public class UserCertificateController(
         if (!_certificateAccessEvaluator.CanManageCertificate(_currentUser.User.Id, cert.CertificateId))
             return NotFound();
 
-        if (cert.Revoked)
-            return BadRequest(new { error = "Certificate is already revoked." });
+        // A hold is not final: it can be made permanent with one of the permitted reasons, as on the
+        // admin path. Only a permanent revocation is refused.
+        if (RevocationStatus.IsPermanentlyRevoked(cert.Revoked, cert.RevocationReason))
+            return Conflict(new { error = "Certificate is already revoked.", code = ModularCA.Shared.Errors.ErrorCodes.CertificateRevocationState });
 
         RevocationResult result;
         try
         {
-            result = await _revocationService.RevokeCertificateAsync(null, serial, request.Reason, request.InvalidityDate);
+            // By id: the certificate whose ownership was checked above, not whichever row the serial resolves to.
+            result = await _revocationService.RevokeCertificateAsync(cert.CertificateId, null, request.Reason, request.InvalidityDate);
         }
-        catch (InvalidOperationException ex)
+        catch (ModularCA.Shared.Errors.CertificateRevocationStateException ex)
         {
-            // e.g. concurrent revoke hit the service-level idempotency guard.
-            return BadRequest(new { error = ex.Message });
+            // A concurrent revoke got there first.
+            return Conflict(new { error = ex.Message, code = ex.Code });
+        }
+        catch (ModularCA.Shared.Errors.ResourceNotFoundException)
+        {
+            // Gone between the ownership check and the revoke: answered as the other not-found cases above.
+            return NotFound();
         }
 
         await _audit.LogAsync(
@@ -478,7 +522,7 @@ public class UserCertificateController(
             _currentUser.User.Id,
             _currentUser.User.Username,
             "Certificate", serial,
-            new { Reason = request.Reason.ToString(), SelfService = true, request.InvalidityDate },
+            new { Reason = request.Reason.ToString(), PreviousReason = result.PreviousReason?.ToString(), SelfService = true, request.InvalidityDate },
             HttpContext.Connection.RemoteIpAddress?.ToString());
 
         return Ok(new
@@ -486,6 +530,7 @@ public class UserCertificateController(
             serialNumber = result.SerialNumber,
             status = result.NewStatus,
             reason = result.Reason?.ToString(),
+            previousReason = result.PreviousReason?.ToString(),
             revocationDate = result.EffectiveAt,
             crlNumber = result.CrlNumber
         });

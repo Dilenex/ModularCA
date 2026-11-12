@@ -28,6 +28,9 @@ public class AuditRetentionMarkerTests
         IServiceProvider sp, SystemConfig config, SchedulerJobRunner runner, AuditDbContext db, AuditHashChainService chain)
         : AuditRetentionJob(sp, config, NullLogger<AuditRetentionJob>.Instance, runner, db, chain)
     {
+        // The same context the job was given, kept here rather than captured from the constructor.
+        private readonly AuditDbContext _db = db;
+
         public List<Guid?> BatchSpaces { get; } = [];
         public Action<int, Guid?>? BeforeBatch { get; set; }
 
@@ -39,10 +42,10 @@ public class AuditRetentionMarkerTests
             Assert.True(bySpace);
             BatchSpaces.Add(spaceId);
             BeforeBatch?.Invoke(BatchSpaces.Count, spaceId);
-            var rows = db.AuditLogs.Where(a => a.Timestamp < cutoff && a.TenantId == spaceId)
+            var rows = _db.AuditLogs.Where(a => a.Timestamp < cutoff && a.TenantId == spaceId)
                 .OrderBy(a => a.Timestamp).Take(batchSize).ToList();
-            db.AuditLogs.RemoveRange(rows);
-            db.SaveChanges();
+            _db.AuditLogs.RemoveRange(rows);
+            _db.SaveChanges();
             return Task.FromResult(rows.Count);
         }
 
@@ -55,7 +58,7 @@ public class AuditRetentionMarkerTests
             foreach (var range in ranges)
             {
                 Assert.True(range.BySpace);
-                var rows = await db.AuditLogs.AsNoTracking()
+                var rows = await _db.AuditLogs.AsNoTracking()
                     .Where(a => a.Timestamp < range.Cutoff && a.TenantId == range.SpaceId).ToListAsync(ct);
                 foreach (var row in rows)
                     yield return new Dictionary<string, object?> { ["Id"] = row.Id, ["TenantId"] = row.TenantId, ["ActionType"] = row.ActionType };

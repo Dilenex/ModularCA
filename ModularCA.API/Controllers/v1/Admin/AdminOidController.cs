@@ -31,10 +31,15 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// <c>CaAuditor</c> because the certificate-profile editor needs the list to render its usage
 /// pickers, and the contents are public identifiers, not secrets.
 /// </para>
+/// <para>
+/// The policy is on each action, not on the class. Policies stack: with <c>SystemOperator</c> on
+/// the class the read needed both, so an auditor or an administrator of a CA was refused the list
+/// its profile editor is built from.
+/// </para>
 /// </remarks>
 [ApiController]
 [Route("api/v1/admin/oid-options")]
-[Authorize(Policy = "SystemOperator")]
+[Authorize]
 [NodeRole(ProcessRole.Control)]
 public class AdminOidController(
     ModularCADbContext db,
@@ -84,6 +89,7 @@ public class AdminOidController(
     /// which maps friendly names onto those nine bits and nothing else.
     /// </remarks>
     [HttpPost]
+    [Authorize(Policy = "SystemOperator")]
     [RequireStepUp(StepUpOps.ManageOidCatalog)]
     public async Task<IActionResult> Create([FromBody] CreateOidOptionRequest request)
     {
@@ -144,6 +150,7 @@ public class AdminOidController(
     /// Logon or KDC Authentication EKU means a logon that stops working for no visible reason.
     /// </remarks>
     [HttpDelete("{oid}")]
+    [Authorize(Policy = "SystemOperator")]
     [RequireStepUp(StepUpOps.ManageOidCatalog)]
     public async Task<IActionResult> Delete(string oid)
     {

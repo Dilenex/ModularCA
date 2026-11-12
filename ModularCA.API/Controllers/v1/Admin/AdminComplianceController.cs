@@ -99,6 +99,7 @@ public class AdminComplianceController : ControllerBase
     /// <param name="includeResolved">When true, includes resolved findings. Default false.</param>
     /// <param name="page">Page number (1-based). Default 1.</param>
     /// <param name="pageSize">Number of items per page. Default 50, max 200.</param>
+    /// <param name="sort">Order: <c>detectedAt</c> (the default, newest first), <c>severity</c> or <c>type</c>, with a leading <c>-</c> for descending.</param>
     [HttpGet]
     public async Task<IActionResult> GetFindings(
         [FromQuery] string? severity,

@@ -2,6 +2,7 @@ using System.Reflection;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
+using ModularCA.Auth.Services;
 using ModularCA.Shared.Enums;
 using ModularCA.Tests.Roles;
 using Xunit;
@@ -26,10 +27,16 @@ public class StepUpBatchTokenTests
         => (Task)Controller.GetMethod("StoreStepUpTokenAsync", BindingFlags.NonPublic | BindingFlags.Static)!
             .Invoke(null, [cache, User, Session, operation, targetId, targetIds, Token, 90])!;
 
-    private static Task<bool> SpendAsync(IDistributedCache cache, string operation, string? targetId, string token = Token, string session = Session)
+    /// <summary>One guard per test (xUnit makes a new instance for each), shared by its spends.</summary>
+    private readonly IReplayGuard _guard = new InProcessReplayGuard();
+
+    private Task<bool> SpendAsync(IDistributedCache cache, string operation, string? targetId, string token = Token, string session = Session)
+        => SpendWithAsync(_guard, cache, operation, targetId, token, session);
+
+    private static Task<bool> SpendWithAsync(IReplayGuard guard, IDistributedCache cache, string operation, string? targetId, string token = Token, string session = Session)
         => (Task<bool>)Controller.GetMethod("ValidateStepUpTokenAsync",
-                [typeof(IDistributedCache), typeof(Guid), typeof(string), typeof(string), typeof(string), typeof(string)])!
-            .Invoke(null, [cache, User, session, token, operation, targetId])!;
+                [typeof(IDistributedCache), typeof(IReplayGuard), typeof(Guid), typeof(string), typeof(string), typeof(string), typeof(string)])!
+            .Invoke(null, [cache, guard, User, session, token, operation, targetId])!;
 
     private static string? ListError(string? targetId, List<string>? targetIds)
         => (string?)Controller.GetMethod("TargetListError", BindingFlags.NonPublic | BindingFlags.Static)!
@@ -107,5 +114,39 @@ public class StepUpBatchTokenTests
 
         Assert.All(added, op => Assert.Contains(op, StepUpOps.All));
         Assert.All(added, op => Assert.DoesNotContain(op, StepUpOps.AllowedViaMtls));
+    }
+
+    /// <summary>
+    /// Concurrent requests presenting one step-up token: exactly one is let through. The cache
+    /// here delays every read, so all of them read the token before any removes it, which is the
+    /// interleaving that let each of them pass when the token was read and then removed.
+    /// </summary>
+    [Fact]
+    public async Task Concurrent_spends_of_one_token_let_exactly_one_through()
+    {
+        var cache = new SlowReadDistributedCache(NewCache());
+        await StoreAsync(cache, StepUpOps.RevokeCert, "cert-1", null);
+
+        var results = await Task.WhenAll(Enumerable.Range(0, 8)
+            .Select(_ => Task.Run(() => SpendAsync(cache, StepUpOps.RevokeCert, "cert-1"))));
+
+        Assert.Equal(1, results.Count(ok => ok));
+    }
+
+    /// <summary>
+    /// Spending a batch token for one target does not spend it for another: the claim is keyed
+    /// by target as well as by token.
+    /// </summary>
+    [Fact]
+    public async Task Spending_one_listed_target_leaves_the_others_spendable()
+    {
+        var cache = new SlowReadDistributedCache(NewCache());
+        await StoreAsync(cache, StepUpOps.ApproveRequest, null, ["a", "b"]);
+
+        var both = await Task.WhenAll(
+            Task.Run(() => SpendAsync(cache, StepUpOps.ApproveRequest, "a")),
+            Task.Run(() => SpendAsync(cache, StepUpOps.ApproveRequest, "b")));
+
+        Assert.All(both, Assert.True);
     }
 }

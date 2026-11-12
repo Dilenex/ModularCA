@@ -3,7 +3,8 @@ using ModularCA.Shared.Models.Config;
 namespace ModularCA.Shared.Utils;
 
 /// <summary>
-/// Overlays environment variable values onto secret fields in <see cref="SystemConfig"/>.
+/// Overlays environment variable values onto secret fields in <see cref="SystemConfig"/>, and
+/// onto the few per-host settings a container manifest sets (<c>Health.LoopbackPort</c>).
 /// After YAML config is loaded, this class checks for known env vars and applies any that are set.
 /// Tracks which paths were sourced from env vars so PersistConfig() can avoid writing them to disk.
 /// </summary>
@@ -44,12 +45,70 @@ public class EnvVarConfigOverlay
         ("MODULARCA__HSM__PIN", "Hsm.Pin", (c, v) => c.Hsm.Pin = v),
     ];
 
+    /// <summary>The environment variable that sets <c>Health.LoopbackPort</c>, the loopback-only health listener.</summary>
+    public const string HealthLoopbackPortVariable = "MODULARCA__HEALTH__LOOPBACKPORT";
+
+    /// <summary>The environment variable that sets <c>Https.ProxyProtocol</c>: the HTTPS listener requires a PROXY header.</summary>
+    public const string HttpsProxyProtocolVariable = "MODULARCA__HTTPS__PROXYPROTOCOL";
+
+    /// <summary>The environment variable that sets <c>Http.ProxyProtocol</c>: the HTTP listener requires a PROXY header.</summary>
+    public const string HttpProxyProtocolVariable = "MODULARCA__HTTP__PROXYPROTOCOL";
+
+    /// <summary>The environment variable that sets <c>Http.ProxyProtocolTrustedCidrs</c>: the proxies a PROXY header is accepted from.</summary>
+    public const string ProxyProtocolTrustedCidrsVariable = "MODULARCA__HTTP__PROXYPROTOCOLTRUSTEDCIDRS";
+
+    /// <summary>
+    /// Per-host settings that are not secrets but may come from the environment, so that a
+    /// container manifest can set them on every start without editing <c>config.yaml</c>: the
+    /// health listener's port and the three PROXY protocol settings, which an orchestrator sets
+    /// the same way on every instance behind its ingress. The value from the environment is never
+    /// written to the file: <see cref="WithSecretsProtected"/> puts the file's own value back
+    /// for the length of each write. A port that is not a number becomes -1, which the setting's
+    /// start-up check refuses; a PROXY switch that is neither <c>true</c> nor <c>false</c> stops
+    /// the start (<see cref="ParseSwitch"/>), because guessing either way would be wrong; the
+    /// trusted list is checked at start like the file's.
+    /// </summary>
+    private static readonly (string EnvVar, string Path, Func<SystemConfig, object> Getter, Action<SystemConfig, object> Setter, Func<string, string, object> Parse)[] HostMappings =
+    [
+        (HealthLoopbackPortVariable, "Health.LoopbackPort", c => c.Health.LoopbackPort, (c, v) => c.Health.LoopbackPort = (int)v,
+            (_, value) => int.TryParse(value.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var number) ? number : -1),
+        (HttpsProxyProtocolVariable, "Https.ProxyProtocol", c => c.Https.ProxyProtocol, (c, v) => c.Https.ProxyProtocol = (bool)v, ParseSwitch),
+        (HttpProxyProtocolVariable, "Http.ProxyProtocol", c => c.Http.ProxyProtocol, (c, v) => c.Http.ProxyProtocol = (bool)v, ParseSwitch),
+        (ProxyProtocolTrustedCidrsVariable, "Http.ProxyProtocolTrustedCidrs", c => c.Http.ProxyProtocolTrustedCidrs, (c, v) => c.Http.ProxyProtocolTrustedCidrs = (string)v,
+            (_, value) => value.Trim()),
+    ];
+
+    /// <summary>
+    /// Reads an on/off setting from the environment: <c>true</c> or <c>false</c>, in any case.
+    /// Anything else throws, naming the variable and never the value: the start stops instead of
+    /// running with a listener in a state nobody asked for.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The value is neither <c>true</c> nor <c>false</c>.</exception>
+    private static object ParseSwitch(string envVar, string value)
+        => bool.TryParse(value.Trim(), out var on)
+            ? on
+            : throw new InvalidOperationException($"{envVar} must be true or false.");
+
+    /// <summary>The values the file held for the <see cref="HostMappings"/> the environment replaced, by path.</summary>
+    private readonly Dictionary<string, object> _fileHostValues = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// Checks each known env var and overlays non-empty values onto the config.
     /// Logs the config path (never the value) for each override applied.
     /// </summary>
-    public void Apply(SystemConfig config)
+    public void Apply(SystemConfig config) => Apply(config, Console.Out);
+
+    /// <summary>
+    /// Checks each known env var and overlays non-empty values onto the config, logging the
+    /// config path (never the value) of each override to <paramref name="log"/>;
+    /// <see cref="TextWriter.Null"/> for a command that must print nothing else.
+    /// </summary>
+    /// <param name="config">The configuration as loaded from the file.</param>
+    /// <param name="log">Where the override lines go.</param>
+    public void Apply(SystemConfig config, TextWriter log)
     {
+        ArgumentNullException.ThrowIfNull(log);
+        var secrets = 0;
         foreach (var (envVar, path, setter) in Mappings)
         {
             var value = Environment.GetEnvironmentVariable(envVar);
@@ -57,12 +116,26 @@ public class EnvVarConfigOverlay
             {
                 setter(config, value);
                 _envSourcedPaths.Add(path);
-                Console.WriteLine($"[INF] Config secret overridden from environment variable: {path}");
+                secrets++;
+                log.WriteLine($"[INF] Config secret overridden from environment variable: {path}");
             }
         }
 
-        if (_envSourcedPaths.Count > 0)
-            Console.WriteLine($"[INF] Applied {_envSourcedPaths.Count} secret(s) from environment variables");
+        foreach (var (envVar, path, getter, setter, parse) in HostMappings)
+        {
+            var value = Environment.GetEnvironmentVariable(envVar);
+            if (string.IsNullOrWhiteSpace(value))
+                continue;
+            var parsed = parse(envVar, value);
+            if (!_fileHostValues.ContainsKey(path))
+                _fileHostValues[path] = getter(config);
+            setter(config, parsed);
+            _envSourcedPaths.Add(path);
+            log.WriteLine($"[INF] Config setting overridden from environment variable {envVar}: {path}");
+        }
+
+        if (secrets > 0)
+            log.WriteLine($"[INF] Applied {secrets} secret(s) from environment variables");
     }
 
     /// <summary>
@@ -135,7 +208,9 @@ public class EnvVarConfigOverlay
     /// temporarily put back from the file, restoring them in a <c>finally</c>. Use this
     /// around any code that serializes <see cref="SystemConfig"/> to disk so env-sourced
     /// secrets do not leak from the running process into <c>config.yaml</c>, and released ones
-    /// are not lost from it. If <paramref name="body"/> throws, the exception propagates and the
+    /// are not lost from it. A per-host setting the environment set (<c>Health.LoopbackPort</c>,
+    /// the PROXY protocol settings) is put back to the file's own value for the write, so the file never takes the
+    /// environment's. If <paramref name="body"/> throws, the exception propagates and the
     /// original values are still restored. Cross-thread-safe via an internal lock.
     /// </summary>
     public void WithSecretsProtected(SystemConfig config, Action body)
@@ -157,6 +232,17 @@ public class EnvVarConfigOverlay
                     {
                         // Read before anything changes: a file that cannot be read stops the write.
                         var fromFile = reread();
+                        var saved = getter(config);
+                        setter(config, fromFile);
+                        restoreActions.Add(() => setter(config, saved));
+                    }
+                }
+
+                // A per-host value from the environment (HostMappings): the file keeps its own.
+                foreach (var (_, path, getter, setter, _) in HostMappings)
+                {
+                    if (_fileHostValues.TryGetValue(path, out var fromFile))
+                    {
                         var saved = getter(config);
                         setter(config, fromFile);
                         restoreActions.Add(() => setter(config, saved));

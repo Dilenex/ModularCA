@@ -154,17 +154,31 @@ public class ValidityCeilingResolutionTests
     }
 
     [Fact]
-    public void The_space_ceiling_is_measured_from_notBefore_and_the_profile_from_now()
+    public void The_space_ceiling_counts_the_default_backdate_and_the_profile_does_not()
     {
         // They genuinely differ in the code this mirrors: ClampToValidityCeiling measures from
-        // notBefore, while NotBeyondMaximumDate and the timeMax default both measure from now.
-        // Collapsing the two into one rule would promise dates issuance then clamps.
+        // the notBefore the certificate carries, skew backdate included, while
+        // IssuanceValidationService.MaximumNotAfter measures from now when no start was
+        // requested. Collapsing the two into one rule would promise dates issuance then clamps.
+        var result = CertificateValidityUtil.ResolveCeiling(
+            NotBefore, Now, TimeSpan.FromDays(365), spaceMaxValidityDays: 365, issuingCaNotAfter: null);
+
+        Assert.Equal(ValidityCeilingSource.Space, result.BoundBy);
+        Assert.Equal(NotBefore.AddDays(365), result.EffectiveNotAfter);
+    }
+
+    [Fact]
+    public void A_requested_backdated_start_moves_the_profile_ceiling_with_it()
+    {
+        // The profile maximum bounds the lifetime from a requested start. Measured from now, a
+        // start backdated by thirty days was promised (and issued) thirty days beyond the maximum.
         var backdated = Now.AddDays(-30);
 
         var result = CertificateValidityUtil.ResolveCeiling(
-            backdated, Now, TimeSpan.FromDays(365), spaceMaxValidityDays: 365, issuingCaNotAfter: null);
+            backdated, backdated, TimeSpan.FromDays(365), spaceMaxValidityDays: 0, issuingCaNotAfter: null);
 
-        Assert.Equal(ValidityCeilingSource.Space, result.BoundBy);
+        Assert.Equal(ValidityCeilingSource.CertProfile, result.BoundBy);
         Assert.Equal(backdated.AddDays(365), result.EffectiveNotAfter);
+        Assert.Equal(365, result.EffectiveMaxDays);
     }
 }

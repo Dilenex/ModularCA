@@ -30,7 +30,8 @@ namespace ModularCA.Tests.Auth;
 /// <summary>
 /// A client certificate revoked through the ordinary revocation service no longer signs in or
 /// passes step-up on any mTLS path, a certificate on hold is refused until released, a credential
-/// whose certificate record is gone is refused, and a redirect sign-in's session is bound to the
+/// whose certificate record is gone is refused, a certificate whose issuing CA or a CA above it is
+/// revoked, held, disabled or deleted is refused, and a redirect sign-in's session is bound to the
 /// DPoP key that proves possession at the code exchange. Revoking or holding the certificate, or
 /// revoking the credential from the account page, ends every session of its holder. Real
 /// certificates and chain validation, SQLite, and the real controllers.
@@ -62,6 +63,33 @@ public sealed class MtlsRevokedCertificateTests
         public Task EnsureLoadedAsync() => Task.CompletedTask;
     }
 
+    /// <summary>Records the CA certificates a CRL is regenerated for.</summary>
+    private sealed class RecordingCrls : ICrlService
+    {
+        public List<Guid> Generated { get; } = [];
+        public Task<string> GenerateCrlAsync(Guid caCertificateId, CancellationToken cancellationToken = default)
+        {
+            Generated.Add(caCertificateId);
+            return Task.FromResult("");
+        }
+        public Task<string> GenerateDeltaCrlAsync(Guid caCertificateId, CancellationToken cancellationToken = default) => Task.FromResult("");
+        public Task<string?> GetLatestCrlAsync(Guid caCertificateId, CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
+        public Task<string?> GetLatestDeltaCrlAsync(Guid caCertificateId, CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
+        public Task<CrlBlob?> GetLatestCrlRawAsync(Guid caCertificateId, CancellationToken cancellationToken = default) => Task.FromResult<CrlBlob?>(null);
+        public Task<CrlBlob?> GetLatestDeltaCrlRawAsync(Guid caCertificateId, CancellationToken cancellationToken = default) => Task.FromResult<CrlBlob?>(null);
+    }
+
+    /// <summary>Records the serial numbers revocation notifications were sent for.</summary>
+    private sealed class RecordingNotifications : NoopNotificationService
+    {
+        public List<string> Revoked { get; } = [];
+        public override Task NotifyCertRevokedAsync(string subjectDN, string serial, string reason)
+        {
+            Revoked.Add(serial);
+            return Task.CompletedTask;
+        }
+    }
+
     private sealed class World : IDisposable
     {
         private readonly Microsoft.Data.Sqlite.SqliteConnection _connection = new("DataSource=:memory:");
@@ -80,10 +108,29 @@ public sealed class MtlsRevokedCertificateTests
         public IDistributedCache Cache { get; } = new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions()));
         public Guid OtherUserId { get; } = Guid.NewGuid();
 
+        /// <summary>The CRL regenerations the revocation service asked for.</summary>
+        public RecordingCrls Crls { get; } = new();
+
+        /// <summary>The revocation notifications the revocation service sent.</summary>
+        public RecordingNotifications Notifications { get; } = new();
+
         /// <summary>The <c>MfaMtlsHandoff</c> cookie the next controller call carries, when set.</summary>
         public string? HandoffCookie { get; set; }
 
-        public World(bool linkCertificate = true)
+        /// <summary>The signing CA's certificate row.</summary>
+        public Guid CaCertificateId { get; } = Guid.NewGuid();
+
+        /// <summary>The root CA above the signing CA, when the world has one.</summary>
+        public Guid RootCaId { get; } = Guid.NewGuid();
+
+        /// <summary>The root CA's certificate row, when the world has one.</summary>
+        public Guid RootCertificateId { get; } = Guid.NewGuid();
+
+        /// <summary>
+        /// A self-signed signing CA, or with <paramref name="withRoot"/> a signing CA issued by a
+        /// root CA, each with its CA row and certificate row, and a client certificate it issued.
+        /// </summary>
+        public World(bool linkCertificate = true, bool withRoot = false)
         {
             Config.Https.PublicDomain = "ca.example.test";
             _connection.Open();
@@ -95,7 +142,16 @@ public sealed class MtlsRevokedCertificateTests
             caRequest.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
             caRequest.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign, true));
             caRequest.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(caRequest.PublicKey, false));
-            using var ca = caRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(2));
+            using var rootKey = RSA.Create(2048);
+            using var root = withRoot ? SelfSignedRoot(rootKey) : null;
+            using var ca = root == null
+                ? caRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(2))
+                : IssueWithKey(caRequest, root, caKey);
+            if (root != null)
+            {
+                db.Certificates.Add(Row(RootCertificateId, root, "00", isCa: true));
+                db.CertificateAuthorities.Add(new CertificateAuthorityEntity { Id = RootCaId, Name = "Mtls Test Root", Label = "mtls-root", Type = "Root", CertificateId = RootCertificateId });
+            }
 
             using var leafKey = RSA.Create(2048);
             var leafRequest = new CertificateRequest("CN=maya, O=ModularCA mTLS", leafKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
@@ -104,11 +160,15 @@ public sealed class MtlsRevokedCertificateTests
             using var leaf = leafRequest.Create(ca, DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow.AddYears(1), RandomNumberGenerator.GetBytes(16));
             Leaf = X509CertificateLoader.LoadCertificate(leaf.RawData);
 
-            var caCertId = Guid.NewGuid();
+            var caCertId = CaCertificateId;
             db.Users.Add(new UserEntity { Id = UserId, Username = "maya", Email = "maya@example.test", IsActive = true, SecurityStamp = "s" });
             db.Users.Add(new UserEntity { Id = OtherUserId, Username = "noor", Email = "noor@example.test", IsActive = true, SecurityStamp = "o" });
-            db.Certificates.Add(Row(caCertId, ca, "01", isCa: true));
-            db.CertificateAuthorities.Add(new CertificateAuthorityEntity { Id = CaId, Name = "Mtls Test CA", Label = "mtls-test", CertificateId = caCertId });
+            db.Certificates.Add(Row(caCertId, ca, "01", isCa: true, issuerId: root == null ? null : RootCertificateId));
+            db.CertificateAuthorities.Add(new CertificateAuthorityEntity
+            {
+                Id = CaId, Name = "Mtls Test CA", Label = "mtls-test", CertificateId = caCertId,
+                Type = root == null ? "Root" : "Issuing", ParentCaId = root == null ? null : RootCaId,
+            });
             db.Certificates.Add(Row(LeafCertificateId, Leaf, "02", isCa: false, issuerId: caCertId));
             db.MtlsCredentials.Add(new MtlsCredentialEntity
             {
@@ -122,6 +182,22 @@ public sealed class MtlsRevokedCertificateTests
                 ExpiresAt = DateTime.UtcNow.AddYears(1),
             });
             db.SaveChanges();
+        }
+
+        private static X509Certificate2 SelfSignedRoot(RSA key)
+        {
+            var request = new CertificateRequest("CN=Mtls Test Root", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            request.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+            request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign, true));
+            request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
+            return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-2), DateTimeOffset.UtcNow.AddYears(3));
+        }
+
+        /// <summary>Issues <paramref name="request"/> under <paramref name="issuer"/> and attaches <paramref name="key"/>, so the result can sign.</summary>
+        private static X509Certificate2 IssueWithKey(CertificateRequest request, X509Certificate2 issuer, RSA key)
+        {
+            using var issued = request.Create(issuer, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(2), RandomNumberGenerator.GetBytes(16));
+            return issued.CopyWithPrivateKey(key);
         }
 
         private static CertificateEntity Row(Guid id, X509Certificate2 cert, string serial, bool isCa, Guid? issuerId = null) => new()
@@ -167,10 +243,44 @@ public sealed class MtlsRevokedCertificateTests
             else await svc.UnholdCertificateAsync(LeafCertificateId, null);
         }
 
-        // The keystore, store, notifier and CRL service are not reached on these paths except for
-        // the best-effort notification and CRL regeneration, which swallow their own failures.
+        /// <summary>Revokes a CA certificate through the ordinary revocation service.</summary>
+        public async Task RevokeCaCertificateAsync(Guid caCertificateId)
+        {
+            using var db = Db();
+            await NewRevocationService(db).RevokeCertificateAsync(caCertificateId, null, RevocationReason.CACompromise);
+        }
+
+        /// <summary>Places a CA certificate on hold, or releases it, through the revocation service.</summary>
+        public async Task HoldCaCertificateAsync(Guid caCertificateId, bool hold)
+        {
+            using var db = Db();
+            var svc = NewRevocationService(db);
+            if (hold) await svc.HoldCertificateAsync(caCertificateId, null);
+            else await svc.UnholdCertificateAsync(caCertificateId, null);
+        }
+
+        /// <summary>Disables or soft-deletes a CA row, as the CA pages do.</summary>
+        public void SetCaState(Guid caId, bool disabled, bool deleted)
+        {
+            using var db = Db();
+            var ca = db.CertificateAuthorities.IgnoreQueryFilters().Single(c => c.Id == caId);
+            ca.IsEnabled = !disabled;
+            ca.IsDeleted = deleted;
+            ca.DeletedAt = deleted ? DateTime.UtcNow : null;
+            db.SaveChanges();
+        }
+
+        // The keystore and store are not reached on these paths; the notifier and CRL service
+        // record what the service asked of them.
         private CertificateRevocationService NewRevocationService(ModularCADbContext db)
-            => new(db, null!, null!, null!, null!, NullLogger<CertificateRevocationService>.Instance, Cache, Audit);
+            => new(db, null!, null!, Notifications, Crls, NullLogger<CertificateRevocationService>.Instance, Cache, Audit);
+
+        /// <summary>A certificate row as stored now.</summary>
+        public CertificateEntity CertificateRow(Guid certificateId)
+        {
+            using var db = Db();
+            return db.Certificates.AsNoTracking().Single(c => c.CertificateId == certificateId);
+        }
 
         /// <summary>
         /// Two live sessions for the certificate's holder and one for another account, and the
@@ -220,14 +330,17 @@ public sealed class MtlsRevokedCertificateTests
             var ctor = type.GetConstructors().OrderByDescending(c => c.GetParameters().Length).First();
             var available = new object[]
             {
-                db, new JwtTokenService(Config), Audit, Config, new FixedPolicy(), Cache,
-                new CurrentUserStub(UserId), new EphemeralDataProtectionProvider(),
+                db, new JwtTokenService(Config), Audit, Config, new FixedPolicy(), Cache, NewRevocationService(db),
+                new CurrentUserStub(UserId), new EphemeralDataProtectionProvider(), new ModularCA.Auth.Services.InProcessReplayGuard(),
             };
             var controller = ctor.Invoke(ctor.GetParameters()
                 .Select(p => available.FirstOrDefault(a => p.ParameterType.IsInstanceOfType(a)))
                 .ToArray());
 
-            var services = new ServiceCollection().AddSingleton<IDpopProofService>(Dpop).BuildServiceProvider();
+            var services = new ServiceCollection()
+                .AddSingleton<IDpopProofService>(Dpop)
+                .AddSingleton(new ModularCA.Auth.Authorization.AccessBadgeService(db))
+                .BuildServiceProvider();
             var http = new DefaultHttpContext
             {
                 RequestServices = services,
@@ -300,10 +413,26 @@ public sealed class MtlsRevokedCertificateTests
             return db.MtlsCredentials.AsNoTracking().Single(c => c.Id == CredentialId);
         }
 
-        public bool CountsAsActiveFactor()
+        /// <summary>Whether the holder's credential counts as an active MFA factor (<see cref="MtlsCredentialStatus.UsableAsync"/>).</summary>
+        public async Task<bool> CountsAsActiveFactorAsync()
         {
             using var db = Db();
-            return db.MtlsCredentials.Where(MtlsCredentialStatus.Usable(DateTime.UtcNow)).Any(c => c.UserId == UserId);
+            return await db.MtlsCredentials.Where(await MtlsCredentialStatus.UsableAsync(db, DateTime.UtcNow)).AnyAsync(c => c.UserId == UserId);
+        }
+
+        /// <summary>
+        /// Presents the client certificate on every sign-in path and on step-up, and asserts each
+        /// is refused, with no session opened and the credential no longer an active factor.
+        /// </summary>
+        public async Task AssertRefusedEverywhereAsync()
+        {
+            Assert.IsType<UnauthorizedObjectResult>(await CertLoginAsync());
+            Assert.Contains("error=cert_revoked", Location(await LoginRedirectAsync()));
+            Assert.Contains("error=cert_revoked", Location(await VerifyRedirectAsync()));
+            Assert.IsType<UnauthorizedObjectResult>(await MtlsVerifyAsync());
+            Assert.IsType<UnauthorizedObjectResult>(await StepUpAsync());
+            Assert.Empty(RefreshTokens());
+            Assert.False(await CountsAsActiveFactorAsync());
         }
 
         /// <summary>Revokes the client certificate's row only, leaving the credential row unrevoked.</summary>
@@ -351,7 +480,7 @@ public sealed class MtlsRevokedCertificateTests
         Assert.Contains("/mfa-callback?code=", Location(await w.LoginRedirectAsync()));
         Assert.IsType<OkObjectResult>(await w.MtlsVerifyAsync());
         Assert.IsType<OkObjectResult>(await w.StepUpAsync());
-        Assert.True(w.CountsAsActiveFactor());
+        Assert.True(await w.CountsAsActiveFactorAsync());
     }
 
     [Fact]
@@ -367,7 +496,7 @@ public sealed class MtlsRevokedCertificateTests
         Assert.IsType<UnauthorizedObjectResult>(await w.StepUpAsync());
 
         Assert.Empty(w.RefreshTokens());
-        Assert.False(w.CountsAsActiveFactor());
+        Assert.False(await w.CountsAsActiveFactorAsync());
         // Belt and braces: the permanent revocation also revoked the credential row.
         Assert.True(w.Credential().IsRevoked);
         // The revoked credential row is still recognised, so each refusal says why.
@@ -449,6 +578,24 @@ public sealed class MtlsRevokedCertificateTests
     }
 
     [Fact]
+    public async Task Revoking_the_credential_from_the_account_page_revokes_its_certificate_through_the_revocation_service()
+    {
+        using var w = new World();
+        w.AddVerifiedTotp();
+
+        Assert.IsType<OkObjectResult>(await w.RevokeCredentialAsync());
+
+        var cert = w.CertificateRow(w.LeafCertificateId);
+        Assert.True(cert.Revoked);
+        Assert.Equal(nameof(RevocationReason.Superseded), cert.RevocationReason);
+        // The service's side effects: the issuing CA's CRL is regenerated and the revocation notified.
+        Assert.Equal([w.CaCertificateId], w.Crls.Generated);
+        Assert.Equal(["02"], w.Notifications.Revoked);
+        // And the certificate revocation is audited as every other revocation is.
+        Assert.Single(w.Audit.Entries, e => e.Action == AuditActionType.CertificateRevoked && e.TargetId == w.LeafCertificateId.ToString());
+    }
+
+    [Fact]
     public async Task A_revoked_certificate_whose_credential_row_was_left_unrevoked_is_refused_and_audited()
     {
         using var w = new World();
@@ -493,7 +640,7 @@ public sealed class MtlsRevokedCertificateTests
 
         Assert.IsType<UnauthorizedObjectResult>(await w.CertLoginAsync());
         Assert.True(w.AuditedRefusal("mtls_certificate_record_missing"));
-        Assert.False(w.CountsAsActiveFactor());
+        Assert.False(await w.CountsAsActiveFactorAsync());
     }
 
     [Fact]
@@ -554,6 +701,31 @@ public sealed class MtlsRevokedCertificateTests
     }
 
     [Fact]
+    public async Task Every_certificate_sign_in_starts_the_session_wearing_the_default_badge()
+    {
+        using var w = new World();
+        var badgeId = Guid.NewGuid();
+        using (var db = w.Db())
+        {
+            db.AccessBadges.Add(new AccessBadgeEntity { Id = badgeId, UserId = w.UserId, Name = "Narrow", IsDefault = true });
+            db.SaveChanges();
+        }
+
+        // A default badge narrows every new session, whichever factor opened it; a certificate
+        // sign-in that skipped it handed the user a full-strength session.
+        var certLogin = Assert.IsType<ModularCA.Auth.Models.LoginResponse>(Assert.IsType<OkObjectResult>(await w.CertLoginAsync()).Value);
+        Assert.Equal(badgeId.ToString(), new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler()
+            .ReadJwtToken(certLogin.Token).Claims.SingleOrDefault(c => c.Type == ModularCA.Auth.Authorization.AccessBadgeContext.BadgeClaim)?.Value);
+        Assert.Contains("/mfa-callback?code=", Location(await w.LoginRedirectAsync()));
+        Assert.IsType<OkObjectResult>(await w.MtlsVerifyAsync());
+        Assert.Contains("/mfa-callback?code=", Location(await w.VerifyRedirectAsync()));
+
+        var sessions = w.RefreshTokens();
+        Assert.Equal(4, sessions.Count);
+        Assert.All(sessions, s => Assert.Equal(badgeId, s.AccessBadgeId));
+    }
+
+    [Fact]
     public async Task The_mtls_verify_endpoint_binds_its_session_to_the_proving_key()
     {
         using var w = new World();
@@ -562,5 +734,79 @@ public sealed class MtlsRevokedCertificateTests
         Assert.IsType<OkObjectResult>(await w.MtlsVerifyAsync());
 
         Assert.Equal("jkt-of-this-client", Assert.Single(w.RefreshTokens()).CnfJkt);
+    }
+
+    [Fact]
+    public async Task A_leaf_under_an_intermediate_signs_in_while_every_CA_above_it_is_good()
+    {
+        using var w = new World(withRoot: true);
+
+        // Asserted on the credential status rather than through a controller: the controllers'
+        // chain build anchors at the issuing CA alone, and a non-self-signed anchor does not
+        // build on every platform, which is not what this test is about.
+        using var db = w.Db();
+        var match = await MtlsCredentialStatus.FindForAuthenticationAsync(db, w.Leaf.GetCertHashString(HashAlgorithmName.SHA256), null, DateTime.UtcNow);
+        Assert.True(match.Authenticates);
+        Assert.True(await w.CountsAsActiveFactorAsync());
+    }
+
+    [Fact]
+    public async Task A_leaf_whose_issuing_CA_is_revoked_cannot_sign_in_step_up_or_count_as_a_factor()
+    {
+        using var w = new World();
+        await w.RevokeCaCertificateAsync(w.CaCertificateId);
+
+        await w.AssertRefusedEverywhereAsync();
+        Assert.Equal(5, w.AuditedRefusals("mtls_issuer_revoked"));
+        // The leaf itself was never revoked; the refusal is the issuer's.
+        Assert.False(w.Credential().IsRevoked);
+    }
+
+    [Fact]
+    public async Task A_leaf_whose_issuing_CA_is_on_hold_is_refused_until_the_CA_is_released()
+    {
+        using var w = new World();
+        await w.HoldCaCertificateAsync(w.CaCertificateId, hold: true);
+
+        await w.AssertRefusedEverywhereAsync();
+        Assert.True(w.AuditedRefusal("mtls_issuer_revoked"));
+
+        await w.HoldCaCertificateAsync(w.CaCertificateId, hold: false);
+        Assert.IsType<OkObjectResult>(await w.CertLoginAsync());
+        Assert.True(await w.CountsAsActiveFactorAsync());
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task A_leaf_whose_issuing_CA_is_disabled_or_deleted_cannot_sign_in_step_up_or_count_as_a_factor(bool disabled, bool deleted)
+    {
+        using var w = new World();
+        w.SetCaState(w.CaId, disabled, deleted);
+
+        await w.AssertRefusedEverywhereAsync();
+        Assert.Equal(5, w.AuditedRefusals("mtls_issuer_disabled"));
+    }
+
+    [Fact]
+    public async Task A_leaf_is_refused_when_the_root_above_its_issuing_CA_is_revoked()
+    {
+        using var w = new World(withRoot: true);
+        await w.RevokeCaCertificateAsync(w.RootCertificateId);
+
+        await w.AssertRefusedEverywhereAsync();
+        Assert.Equal(5, w.AuditedRefusals("mtls_issuer_revoked"));
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task A_leaf_is_refused_when_the_root_above_its_issuing_CA_is_disabled_or_deleted(bool disabled, bool deleted)
+    {
+        using var w = new World(withRoot: true);
+        w.SetCaState(w.RootCaId, disabled, deleted);
+
+        await w.AssertRefusedEverywhereAsync();
+        Assert.Equal(5, w.AuditedRefusals("mtls_issuer_disabled"));
     }
 }

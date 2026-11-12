@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using ModularCA.Auth.Interfaces;
 using ModularCA.Auth.Utils;
+using ModularCA.Core.Helpers;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Interfaces;
@@ -49,10 +50,14 @@ namespace ModularCA.Auth.Services
         /// </summary>
         public async Task<(bool Success, string? Error)> CreateUser(CreateUserRequest request)
         {
-            if (await _dbContext.Users.AnyAsync(u => u.Username == request.Username))
+            // A deleted account that was retained for its history keeps its username for good.
+            if (await _dbContext.Users.IgnoreQueryFilters().Where(u => u.Username == request.Username)
+                    .Select(u => (bool?)u.IsDeleted).FirstOrDefaultAsync() is { } taken)
             {
                 _logger.LogWarning("Attempted to create user with existing username {Username}", request.Username);
-                return (false, $"Username '{request.Username}' already exists");
+                return (false, taken
+                    ? $"Username '{request.Username}' belonged to a deleted account whose history is kept, and cannot be used again"
+                    : $"Username '{request.Username}' already exists");
             }
             if (await _dbContext.Users.AnyAsync(u => u.Email == request.Email))
             {
@@ -129,10 +134,11 @@ namespace ModularCA.Auth.Services
 
         /// <summary>
         /// Updates an existing user's profile fields (username, email, name, active/locked status,
-        /// password-expiry exemption, forced change at next logon). <see cref="UpdateUserRequest.Password"/>
+        /// password-expiry exemption, forced change at next logon, password source). <see cref="UpdateUserRequest.Password"/>
         /// is never applied; passwords change only through reset or the user's own change. An empty
         /// or whitespace username or email is left unchanged. A username or email change, enabling,
-        /// disabling, locking or unlocking rotates the security stamp; an unlock (IsLocked false)
+        /// disabling, locking or unlocking rotates the security stamp, and enabling, disabling,
+        /// locking, unlocking or a password source change also revokes every refresh token; an unlock (IsLocked false)
         /// also clears the failed-login count and any temporary lockout. Disabling revokes every
         /// live SSH certificate issued for the user, and so does a username change, since their
         /// key id is the old username.
@@ -151,7 +157,7 @@ namespace ModularCA.Auth.Services
         public async Task<bool> UpdateUser(Guid userId, UpdateUserRequest request)
         {
             if (!string.IsNullOrEmpty(request.Username)
-                && await _dbContext.Users.AnyAsync(u => u.Id != userId && u.Username == request.Username))
+                && await _dbContext.Users.IgnoreQueryFilters().AnyAsync(u => u.Id != userId && u.Username == request.Username))
             {
                 _logger.LogWarning("Attempted to update user {UserId} with existing username {Username}", userId, request.Username);
                 return false;
@@ -170,6 +176,7 @@ namespace ModularCA.Auth.Services
             }
             var wasActive = user.IsActive;
             var wasLocked = user.IsLocked;
+            var previousSource = user.PasswordSource;
             var previousUsername = user.Username;
             var identityChanged = (!string.IsNullOrWhiteSpace(request.Username) && request.Username != user.Username)
                                   || (!string.IsNullOrWhiteSpace(request.Email) && request.Email != user.Email);
@@ -192,6 +199,7 @@ namespace ModularCA.Auth.Services
             user.IsLocked = request.IsLocked ?? user.IsLocked;
             user.PasswordNeverExpires = request.PasswordNeverExpires ?? user.PasswordNeverExpires;
             user.PasswordChangeOnNextLogon = request.PasswordChangeOnNextLogon ?? user.PasswordChangeOnNextLogon;
+            user.PasswordSource = request.PasswordSource ?? user.PasswordSource;
             // An unlock starts the failure count afresh; otherwise one wrong password re-locks.
             if (request.IsLocked == false)
             {
@@ -199,26 +207,20 @@ namespace ModularCA.Auth.Services
                 user.LockoutEndUtc = null;
             }
 
+            // A new username or email only makes access tokens stale: the stamp rotates so the
+            // client refreshes and picks up the new claims, and its sessions carry on.
             if (identityChanged)
                 user.SecurityStamp = Guid.NewGuid().ToString();
 
-            // Rotate the security stamp whenever an admin toggles
+            // End the account's sessions whenever an admin toggles
             // IsActive or IsLocked so outstanding JWTs invalidate on the next request
-            // rather than waiting out their TTL.
-            if (wasActive != user.IsActive || wasLocked != user.IsLocked)
+            // rather than waiting out their TTL. A password source change switches which password
+            // signs the account in, a credential change like a reset, so it ends sessions too.
+            if (wasActive != user.IsActive || wasLocked != user.IsLocked || previousSource != user.PasswordSource)
             {
-                user.SecurityStamp = Guid.NewGuid().ToString();
-
-                // Also revoke all outstanding refresh tokens so the next /auth/refresh
-                // attempt can't re-mint a valid JWT.
-                var refreshTokens = await _dbContext.Set<RefreshTokenEntity>()
-                    .Where(t => t.UserId == userId && !t.IsRevoked)
-                    .ToListAsync();
-                foreach (var t in refreshTokens)
-                {
-                    t.IsRevoked = true;
-                    t.RevokedAt = DateTime.UtcNow;
-                }
+                // The stamp rotates and every refresh token is revoked, so the next /auth/refresh
+                // attempt can't re-mint a valid JWT. Saved below with the change itself.
+                await UserSessionTermination.EndAllSessionsAsync(_dbContext, user, DateTime.UtcNow);
             }
 
             var renamed = !string.Equals(previousUsername, user.Username, StringComparison.Ordinal);
@@ -234,11 +236,77 @@ namespace ModularCA.Auth.Services
             return saved;
         }
 
-        /// <summary>
-        /// Deletes a user by ID and all associated group memberships (via cascade). Every live SSH
-        /// certificate issued for the user is revoked first, and the SSH login names granted to
-        /// the user are removed.
-        /// </summary>
+        /// <inheritdoc />
+        /// <remarks>
+        /// A realm's foreign key to its enrolment account neither cascades nor clears, and the
+        /// realm cannot enrol without the account, so the realm is moved to another account first.
+        /// </remarks>
+        public async Task<string?> DeletionBlockerAsync(Guid userId)
+        {
+            var realms = await _dbContext.KerberosRealms.CountAsync(k => k.EnrollmentUserId == userId);
+            return realms == 0
+                ? null
+                : $"This account cannot be deleted: {realms} Kerberos realm(s) enrol through it. "
+                  + "Give each realm another enrolment account first.";
+        }
+
+        /// <inheritdoc />
+        public async Task<string?> RetainedHistoryAsync(Guid userId)
+        {
+            var requests = await _dbContext.CertificateRequests.CountAsync(r => r.RequestorUserId == userId);
+            var approvals = await _dbContext.CsrApprovals.CountAsync(a => a.ApproverId == userId);
+            var held = new List<string>();
+            if (requests > 0) held.Add($"{requests} certificate request(s) it made");
+            if (approvals > 0) held.Add($"{approvals} approval(s) it gave");
+            return held.Count == 0 ? null : string.Join(" and ", held);
+        }
+
+        /// <inheritdoc />
+        public async Task<List<RetainedAccountDto>> GetRetainedAccounts()
+        {
+            var accounts = await _dbContext.Users.IgnoreQueryFilters().AsNoTracking()
+                .Where(u => u.IsDeleted)
+                .OrderByDescending(u => u.DeletedAt)
+                .Select(u => new RetainedAccountDto { Id = u.Id, Username = u.Username, DisplayName = u.DisplayName, DeletedAt = u.DeletedAt })
+                .ToListAsync();
+            if (accounts.Count == 0)
+                return accounts;
+            var ids = accounts.Select(a => a.Id).ToList();
+            var requests = await _dbContext.CertificateRequests.AsNoTracking()
+                .Where(r => r.RequestorUserId != null && ids.Contains(r.RequestorUserId.Value))
+                .GroupBy(r => r.RequestorUserId!.Value)
+                .Select(g => new { g.Key, Count = g.Count() })
+                .ToDictionaryAsync(g => g.Key, g => g.Count);
+            var approvals = await _dbContext.CsrApprovals.AsNoTracking()
+                .Where(a => ids.Contains(a.ApproverId))
+                .GroupBy(a => a.ApproverId)
+                .Select(g => new { g.Key, Count = g.Count() })
+                .ToDictionaryAsync(g => g.Key, g => g.Count);
+            foreach (var account in accounts)
+            {
+                account.Requests = requests.GetValueOrDefault(account.Id);
+                account.Approvals = approvals.GetValueOrDefault(account.Id);
+            }
+            return accounts;
+        }
+
+        /// <summary>The address a retained account's row carries once its own is given up.</summary>
+        internal static string TombstoneEmail(Guid userId) => $"deleted-{userId:N}@deleted.invalid";
+
+        /// <inheritdoc />
+        /// <remarks>
+        /// Every live SSH certificate issued for the user is revoked first and the SSH login names
+        /// granted to the user are removed. Access to single certificates goes in both cases: that
+        /// foreign key restricts, and access is not history.
+        /// <para>
+        /// A retained account keeps its id and username, so requests and approvals stay attributed
+        /// and the name cannot be taken by someone else. It loses its group memberships, roles,
+        /// direct grants, badges, sessions, MFA credentials, mTLS credentials, password, password
+        /// history, claim tokens, the enrolment tokens it created and its email address, which is
+        /// replaced so the address can be used again. The security stamp changes so access tokens
+        /// already issued stop working. Nothing restores a retained account.
+        /// </para>
+        /// </remarks>
         public async Task<bool> DeleteUser(Guid userId)
         {
             var user = await _dbContext.Users.FindAsync(userId);
@@ -247,9 +315,39 @@ namespace ModularCA.Auth.Services
                 _logger.LogWarning("User {UserId} not found for deletion", userId);
                 return false;
             }
+            if (await DeletionBlockerAsync(userId) is { } blocker)
+                throw new InvalidOperationException(blocker);
+            var history = await RetainedHistoryAsync(userId);
             if (_sshLoginNames != null)
                 await _sshLoginNames.UserDeletingAsync(userId);
-            _dbContext.Users.Remove(user);
+            _dbContext.CertificateAccessLists.RemoveRange(await _dbContext.CertificateAccessLists.Where(a => a.UserId == userId).ToListAsync());
+            if (history == null)
+            {
+                _dbContext.Users.Remove(user);
+                return await _dbContext.SaveChangesAsync() > 0;
+            }
+
+            // Access tokens already issued stop working; the sessions' rows then go with the rest.
+            await UserSessionTermination.EndAllSessionsAsync(_dbContext, user, DateTime.UtcNow);
+            _dbContext.CaGroupMembers.RemoveRange(await _dbContext.CaGroupMembers.Where(m => m.UserId == userId).ToListAsync());
+            _dbContext.RoleAssignments.RemoveRange(await _dbContext.RoleAssignments.Where(a => a.UserId == userId).ToListAsync());
+            _dbContext.UserCapabilityGrants.RemoveRange(await _dbContext.UserCapabilityGrants.Where(g => g.UserId == userId).ToListAsync());
+            _dbContext.AccessBadges.RemoveRange(await _dbContext.AccessBadges.Where(b => b.UserId == userId).ToListAsync());
+            _dbContext.RefreshTokens.RemoveRange(await _dbContext.RefreshTokens.Where(r => r.UserId == userId).ToListAsync());
+            _dbContext.Fido2Credentials.RemoveRange(await _dbContext.Fido2Credentials.Where(c => c.UserId == userId).ToListAsync());
+            _dbContext.TotpSecrets.RemoveRange(await _dbContext.TotpSecrets.Where(s => s.UserId == userId).ToListAsync());
+            _dbContext.TotpRecoveryCodes.RemoveRange(await _dbContext.TotpRecoveryCodes.Where(c => c.UserId == userId).ToListAsync());
+            _dbContext.MtlsCredentials.RemoveRange(await _dbContext.MtlsCredentials.Where(c => c.UserId == userId).ToListAsync());
+            _dbContext.PasswordHistory.RemoveRange(await _dbContext.PasswordHistory.Where(p => p.UserId == userId).ToListAsync());
+            _dbContext.UserClaimTokens.RemoveRange(await _dbContext.UserClaimTokens.Where(c => c.UserId == userId).ToListAsync());
+            _dbContext.EnrollmentTokens.RemoveRange(await _dbContext.EnrollmentTokens.Where(e => e.CreatedByUserId == userId).ToListAsync());
+
+            user.IsDeleted = true;
+            user.DeletedAt = DateTime.UtcNow;
+            user.IsActive = false;
+            user.PasswordHash = string.Empty;
+            user.Email = TombstoneEmail(userId);
+            _logger.LogInformation("User {UserId} retained as a deleted account: the record keeps {History}", userId, history);
             return await _dbContext.SaveChangesAsync() > 0;
         }
 
@@ -277,45 +375,39 @@ namespace ModularCA.Auth.Services
         }
 
         /// <summary>
-        /// Returns a single user by ID with group memberships, or throws if not found.
+        /// Returns a single user by ID with group memberships, or null when there is none.
         /// </summary>
-        public async Task<UserEntityDto> GetUserById(Guid userId)
+        public async Task<UserEntityDto?> GetUserById(Guid userId)
         {
             var user = await _dbContext.Users
                 .Include(u => u.GroupMemberships)
                     .ThenInclude(gm => gm.Group)
                 .FirstOrDefaultAsync(u => u.Id == userId);
-            if (user == null)
-                throw new Exception("User not found");
-            return MapToDto(user);
+            return user == null ? null : MapToDto(user);
         }
 
         /// <summary>
-        /// Returns a single user by username with group memberships, or throws if not found.
+        /// Returns a single user by username with group memberships, or null when there is none.
         /// </summary>
-        public async Task<UserEntityDto> GetUserByUsername(string username)
+        public async Task<UserEntityDto?> GetUserByUsername(string username)
         {
             var user = await _dbContext.Users
                 .Include(u => u.GroupMemberships)
                     .ThenInclude(gm => gm.Group)
                 .FirstOrDefaultAsync(u => u.Username == username);
-            if (user == null)
-                throw new Exception("User not found");
-            return MapToDto(user);
+            return user == null ? null : MapToDto(user);
         }
 
         /// <summary>
-        /// Returns a single user by email with group memberships, or throws if not found.
+        /// Returns a single user by email with group memberships, or null when there is none.
         /// </summary>
-        public async Task<UserEntityDto> GetUserByEmail(string email)
+        public async Task<UserEntityDto?> GetUserByEmail(string email)
         {
             var user = await _dbContext.Users
                 .Include(u => u.GroupMemberships)
                     .ThenInclude(gm => gm.Group)
                 .FirstOrDefaultAsync(u => u.Email == email);
-            if (user == null)
-                throw new Exception("User not found");
-            return MapToDto(user);
+            return user == null ? null : MapToDto(user);
         }
 
         /// <summary>
@@ -421,13 +513,22 @@ namespace ModularCA.Auth.Services
         }
 
         /// <summary>
-        /// Updates a user's password after verifying the current password matches.
+        /// Updates a user's password after verifying the current password matches. Refused (false,
+        /// no failed attempt counted) for a service identity and for a Directory account, whose
+        /// password lives in the directory and which would never use a local one. A change ends
+        /// the account's sessions (<see cref="UserSessionTermination"/>) in the save that writes
+        /// the new password.
         /// </summary>
         public async Task<bool> UpdateUserPassword(Guid userId, UpdatePasswordRequest request)
         {
             if (await _dbContext.Users.AnyAsync(u => u.Id == userId && u.IsServiceIdentity))
             {
                 _logger.LogWarning("Password change refused for service identity {UserId}", userId);
+                return false;
+            }
+            if (await _dbContext.Users.AnyAsync(u => u.Id == userId && u.PasswordSource == Shared.Enums.PasswordSource.Directory))
+            {
+                _logger.LogWarning("Password change refused for directory account {UserId}: its password lives in the directory", userId);
                 return false;
             }
             if (request.OldPassword == null || request.NewPassword == null || request.ConfirmNewPassword == null)
@@ -505,23 +606,12 @@ namespace ModularCA.Auth.Services
             // Append to rotating history + prune.
             // No-op when HistoryCount <= 0.
             await _passwordPolicy.RecordPasswordHistoryAsync(userId, newHash);
-            // Rotate security stamp so outstanding JWTs get invalidated.
-            user.SecurityStamp = Guid.NewGuid().ToString();
             if (!user.PasswordNeverExpires)
                 user.PasswordExpirationDate = DateTime.UtcNow.AddDays(90);
             _dbContext.Users.Update(user);
-            await _dbContext.SaveChangesAsync();
-
-            // Revoke all refresh tokens for this user to invalidate existing sessions
-            // This ensures compromised sessions don't persist after password change
-            var refreshTokens = await _dbContext.Set<RefreshTokenEntity>()
-                .Where(t => t.UserId == userId && !t.IsRevoked)
-                .ToListAsync();
-            foreach (var token in refreshTokens)
-            {
-                token.IsRevoked = true;
-                token.RevokedAt = DateTime.UtcNow;
-            }
+            // The stamp rotates and every refresh token is revoked in the save that writes the new
+            // password, so a compromised session cannot persist after the change.
+            await UserSessionTermination.EndAllSessionsAsync(_dbContext, user, DateTime.UtcNow);
             await _dbContext.SaveChangesAsync();
 
             _logger.LogInformation("Password changed and all sessions invalidated for user {UserId}", userId);
@@ -530,7 +620,10 @@ namespace ModularCA.Auth.Services
 
         /// <summary>
         /// Resets a user's password to a randomly generated value and returns it.
-        /// The user will be forced to change password on next logon.
+        /// The user will be forced to change password on next logon, and the account's sessions
+        /// end (<see cref="UserSessionTermination"/>) in the save that writes the password. Throws
+        /// <see cref="InvalidOperationException"/> for a service identity, which has no password,
+        /// and for a Directory account, which would never use a local one.
         /// </summary>
         public async Task<string> ResetUserPassword(Guid userId)
         {
@@ -540,6 +633,10 @@ namespace ModularCA.Auth.Services
                 throw new Exception("User not found");
             if (user.IsServiceIdentity)
                 throw new InvalidOperationException("A service identity has no password.");
+            if (user.PasswordSource == Shared.Enums.PasswordSource.Directory)
+                throw new InvalidOperationException(
+                    "This account's password is checked by the directory only, so a local password would never be used. "
+                    + "Set its password source to Local first if it needs one.");
             var newPassword = PasswordUtil.Generate();
             var newHash = PasswordUtil.HashPassword(newPassword);
             user.PasswordHash = newHash;
@@ -547,21 +644,12 @@ namespace ModularCA.Auth.Services
             // the user's rotating history so the next user-driven change can't
             // bounce back to the admin-generated temporary password.
             await _passwordPolicy.RecordPasswordHistoryAsync(userId, newHash);
-            user.SecurityStamp = Guid.NewGuid().ToString();
             user.PasswordChangeOnNextLogon = true;
             user.PasswordExpirationDate = DateTime.UtcNow.AddDays(90);
             _dbContext.Users.Update(user);
-            await _dbContext.SaveChangesAsync();
-
-            // Revoke all refresh tokens for this user to invalidate existing sessions
-            var refreshTokens = await _dbContext.Set<RefreshTokenEntity>()
-                .Where(t => t.UserId == userId && !t.IsRevoked)
-                .ToListAsync();
-            foreach (var token in refreshTokens)
-            {
-                token.IsRevoked = true;
-                token.RevokedAt = DateTime.UtcNow;
-            }
+            // The stamp rotates and every refresh token is revoked in the save that writes the
+            // temporary password.
+            await UserSessionTermination.EndAllSessionsAsync(_dbContext, user, DateTime.UtcNow);
             await _dbContext.SaveChangesAsync();
 
             _logger.LogInformation("Password reset and all sessions invalidated for user {UserId}", userId);
@@ -570,8 +658,8 @@ namespace ModularCA.Auth.Services
 
         /// <summary>
         /// Removes every MFA method of a user (TOTP secrets and WebAuthn credentials) and clears
-        /// <see cref="UserEntity.MfaEnrolledAt"/>, so they must enrol again at next login. Rotates the
-        /// security stamp and revokes every refresh token, so no session outlives the reset. Returns
+        /// <see cref="UserEntity.MfaEnrolledAt"/>, so they must enrol again at next login. Ends the
+        /// account's sessions (<see cref="UserSessionTermination"/>), so none outlives the reset. Returns
         /// the counts removed, or null when the user does not exist.
         /// </summary>
         public async Task<(int TotpSecretsRemoved, int WebAuthnCredentialsRemoved)?> ResetUserMfa(Guid userId)
@@ -585,12 +673,7 @@ namespace ModularCA.Auth.Services
             var webAuthnCreds = await _dbContext.Fido2Credentials.Where(c => c.UserId == userId).ToListAsync();
             _dbContext.Fido2Credentials.RemoveRange(webAuthnCreds);
             user.MfaEnrolledAt = null;
-            user.SecurityStamp = Guid.NewGuid().ToString();
-            foreach (var token in await _dbContext.Set<RefreshTokenEntity>().Where(t => t.UserId == userId && !t.IsRevoked).ToListAsync())
-            {
-                token.IsRevoked = true;
-                token.RevokedAt = DateTime.UtcNow;
-            }
+            await UserSessionTermination.EndAllSessionsAsync(_dbContext, user, DateTime.UtcNow);
             await _dbContext.SaveChangesAsync();
 
             _logger.LogInformation("MFA reset for user {UserId}", userId);
@@ -617,6 +700,7 @@ namespace ModularCA.Auth.Services
                 Description = user.Description,
                 IsLocked = user.IsLocked,
                 PasswordNeverExpires = user.PasswordNeverExpires,
+                PasswordSource = user.PasswordSource,
                 CreatedAt = user.CreatedAt,
                 LastLoginAt = user.LastLoginAt,
                 Groups = user.GroupMemberships?.Select(gm => new GroupMembershipDto

@@ -612,8 +612,10 @@ ingress-only process are not checked. The check has four phases.
    extended every 20 s throughout steps 1 to 4.
 4. **Verify.** Both databases are read again, and each must now be current.
 
-Both units carry `RestartPreventExitStatus=3`. A refusal therefore leaves the unit failed, with its
-reason in the journal, instead of being retried. Status 75 is retried, up to the unit's
+Both units carry `RestartPreventExitStatus=3` (the node's, `3 4`). A refusal therefore leaves the unit failed, with its
+reason in the journal, instead of being retried. Status 3 from the schema check means it applied
+nothing; status 4 means it stopped for good after a migration had committed, so the previous
+release cannot run on these databases without a restore. Status 75 is retried, up to the unit's
 `StartLimitBurst` (5 in 300 s). `modularca-signer.service` is ordered after `modularca.service`,
 so on a shared host the signer starts once the node has migrated. Enrollment, validation and signer
 processes may be started together with control, and they wait for it. To recover from a refusal,
@@ -634,6 +636,41 @@ ownership probe and its warnings, and the dry-run result. The last line is a one
 | 0 | `UPGRADE CHECK: PASS (...)` | every pending migration would apply cleanly, or there is nothing to apply (a missing or empty database included) |
 | 3 | `UPGRADE CHECK: REFUSED (...)` | anything the start would refuse with 3, a migration that refuses in the dry run, ownership that is not sound even with nothing pending, or a configuration this build cannot use |
 | 75 | `UPGRADE CHECK: UNREACHABLE (...)` | a database could not be reached or was locked, or the dry run hit a transient error |
+
+`--upgrade-check --read-only` runs steps 1 and 2 and stops before the dry run, for an
+orchestrator that checks a build beside a node that is still serving. The dry run holds the
+migrations' locks until it rolls back, which makes that node's clients wait; this mode never
+starts one.
+
+- **What it reads.** Each database's catalog and migration history, and the ownership probe
+  (`pg_catalog` only); then, in one read-only transaction each, the spaces (for the integration
+  key scopes), the SSH CA keys, profiles and live user certificates, and the protocol audit
+  tables with the request profiles they are replayed against.
+- **Locks.** ACCESS SHARE on the tables it selects from, for the length of each statement or of
+  its short read-only transaction. That conflicts only with ACCESS EXCLUSIVE, which a serving
+  node does not take and a migration does. It never opens a migration connection, so it never
+  takes the history table's ACCESS EXCLUSIVE lock or any lock a migration statement takes, and
+  it takes no advisory lock.
+- **It does not queue.** Its connections carry `lock_timeout=500ms` (the start's reads use 3 s):
+  behind a migration in progress a read fails at once and the check exits 75.
+- **It cannot write.** Its connections carry `default_transaction_read_only=on`, so the server
+  refuses a write on them, in either database.
+- **What it refuses**, with status 3 and the full check's words: everything in the table above
+  that is decided without a dry run, a model that differs from its latest migration, and a
+  pending migration with a statement outside a transaction.
+- **What it cannot find:** a migration's own refusal on the data it finds (the `P1`... checks),
+  and a statement that fails, cannot get its lock, or runs out of time. Those need the dry run.
+
+| Exit | Last line | When |
+|---|---|---|
+| 0 | `UPGRADE CHECK: PASS (nothing to apply). Nothing was changed.` | nothing is pending in either database |
+| 5 | `UPGRADE PENDING, NOT REHEARSED (application: <ids>; audit: <ids>). Nothing was rehearsed and nothing was changed: stop the node and run --upgrade-check without --read-only before upgrading.` | migrations are pending and nothing read refuses them; each database with any is listed with its migration ids |
+| 3 | `UPGRADE CHECK: REFUSED (...)` | as above, without the dry-run refusals |
+| 75 | `UPGRADE CHECK: UNREACHABLE (...)` | a database could not be reached or was locked |
+
+Status 5 is returned by this command only (`SchemaStartup.PendingNotRehearsedExitCode`), never
+by a starting service, so the units' `RestartPreventExitStatus` does not list it. On 5 the
+orchestrator stops the node and runs the full check; on 0 it has nothing to rehearse.
 
 `packaging/install.sh` runs the new build's check on an upgrade, as the service account, against
 `/opt/modularca/config`, after it stops the units and before it replaces anything. It runs the build

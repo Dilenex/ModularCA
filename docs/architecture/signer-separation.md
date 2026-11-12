@@ -555,6 +555,188 @@ still stands — the pod is the "node container + signer sidecar" row of the dep
 the multi-tenant shape), and a live proof of the pod on ca4, which needs Podman on a host that
 has it. Stage 3 follows that proof.
 
+**Later (2026-11-09), after a run of the pod under rootless Podman and Quadlet.** Three things
+above no longer hold. `--init-identity` refused an existing CA with exit 1, so the pod failed at
+its second start; it now exits 0 for an identity that is whole and still fails for a partial or
+inconsistent one. The shared config volume let the node write what the signer loads
+(`Hsm.ModulePath` above all); the signer now has its own volume, mounted as its `--signer-dir`,
+filled once by `--migrate-signer-dir` as an init container, and `--issue-node-identity --apply`
+with `--signer-dir` writes the node's half into the node's `config.yaml` and the signer's into
+`signer.yaml`. And the config volume is not written only by the init containers: the node writes
+`config.yaml`, the web TLS certificate and the Data Protection key ring there while it runs. The
+node also no longer depends on starting after the signer: it reads the wrapped secrets in the
+background once the signer answers, and `--role signer --check-ready` gives a container manager
+something to probe. `packaging/README-DEPLOY.md`, "The pod", is the current description.
+
+**Later the same day: the node's volume is cleaned.** The config volume still held what the node
+never reads once the signer had its own directory: `keystore.yaml` as bootstrap left it, and after
+an upgrade from 0.4.3 the identity files and the signer's half of `Signer:` and `Hsm:` in
+`config.yaml`. `--issue-node-identity --apply` with `--signer-dir`, the `node-identity` init
+container and the only one that mounts both volumes read-write, now removes each once the signer's
+copy checks out (`NodeSideSignerCleanup`): the passphrases byte-identical or equal, the identity
+whole and the one both pins match. One line-based redaction, checked by deserialising the result,
+takes the signer's keys out of `config.yaml` (keeping the node's half and every other line), out
+of the `config.yaml.*.bak` copies beside it (which are kept), and out of every new copy `--apply`
+and the clean-up write. A file that does not check out is
+left with a warning and never fails the pod. The keystore passphrases then exist only in the
+signer's volume, which therefore has to be in the volume backups. The two-unit install keeps its
+manual step, since there the two directories belong to two accounts and `--apply` is not used.
+
+## Keystore events from a separate signer (2026-11-09)
+
+The keystore service records what happens to a keystore file from static code with no audit
+service at hand (`KeystoreService.EmitKeystoreAudit`): `KeystoreLoaded` for `ca-certs.keystore`,
+`ca-trust.keystore` and `ssh-ca.keystore` at every unlock, `KeystoreInitialized` when
+`ssh-ca.keystore` is first created, `KeystoreAppended` when a key is committed or imported (a new
+CA and its responder keys, an SSH CA key, a restore), and `KeystoreSignatureFailed` or
+`KeystorePinMacFailed` when a file, an entry or a pin does not verify, on load and on append. It
+appends them to a JSON-lines file. A wrong passphrase was not among them when this was written:
+only verification failures were recorded. The follow-ups below add `KeystoreUnlockFailed`.
+
+In one process that file is `logs/bootstrap-audit-*.jsonl`, which the node replays into the audit
+trail at its next start (`BootstrapAuditReplayService`). With the signer apart it was the signer's
+own `logs/` (`<signer-dir>/logs`), which nothing read: on two units the events piled up there, and
+in the pod that directory is an `emptyDir`, so they were discarded at every restart. None reached
+the audit trail.
+
+**What the signer can write.** The signer's `db.yaml` holds the application database only; it has
+no credential for the audit database, and the audit trail (`AuditLogs`, the hash chain) is written
+by the control plane as the audit role. The signer does write `SignerAudit`, itself, in the
+application database, as the same database role the node uses: one row per decision before it
+answers. Nothing reads that table into the console's audit views and it is not on the hash chain;
+it is the signer's record, and the node, sharing the role, can rewrite it (see "What this does not
+fix").
+
+**The choice.** The signer keeps its keystore events in a journal on its own disk and the node
+reads them over the existing channel:
+
+- The signer role with `--signer-dir` points the keystore service at `<signer-dir>/audit-journal/`
+  (`keystore-audit-yyyyMMdd.jsonl`, owner-only), not at `logs/`, so the pod keeps it in the
+  `modularca-signer-config` volume. Files an earlier build left in `<signer-dir>/logs` are moved
+  in at the first start. Nothing in the product prunes the journal.
+- One call is added to the wire, `ReadKeystoreEvents(after_file, after_line, max)`, which returns
+  the events after a position, oldest first, the event at the position itself (`anchor_json`) and
+  whether there are more. It takes no signing context and is not a signer decision: it reads a
+  file. It is the only thing the node can do with the journal. `after_file` is compared with the
+  journal's file names and never opened. The signer rebuilds each line from the six fields a
+  keystore event has (timestamp, action, keystore name, success, detail, instance id), each held
+  to a length, so nothing else a line might hold crosses the wire.
+- The control role polls it (five seconds after start, then every minute;
+  `SignerKeystoreEventDelivery`) and writes each event through `AuditService` and
+  `AuditHashChainService`, as a `Keystore` row by `system-signer` (at first `system-bootstrap`;
+  see the follow-ups below) marked `DeliveredBySigner`,
+  with the `BootstrapEntryId` the file replay uses (a hash of file, line and text). An event the
+  trail holds is passed over. Each event is looked for in the audit database after it is logged,
+  and the first that is missing ends the pass, so the order of the journal is the order of the
+  trail and the position never passes an event that is not recorded.
+- The position is the node's own, `config/signer-audit-cursor.json`: file, line and the id of the
+  last event recorded. It is kept in a file and not derived from the trail because audit
+  retention removes old rows, and a node that then read from the beginning would record them
+  again. When the event the signer returns at that position is not the one the node recorded
+  (the signer's directory was restored from a copy, or replaced), the node reads from the
+  beginning; the ids keep what is still in the trail from being recorded twice.
+
+**What a compromised node can and cannot do.** It can withhold: stop polling, or write nothing.
+It can delete audit rows it can reach through the audit role, as before. It cannot remove,
+reorder or alter an event on the signer, because no call does that and the journal's files are
+the signer's account's alone; after the incident the journal is the record to compare the trail
+with. It cannot forge a signer event's id into suppressing a later one except by writing audit
+rows, which it could always do. Events the signer raises while the node is down wait in the
+journal for as long as it takes.
+
+**Alternatives weighed.**
+
+- *Record keystore events in `SignerAudit`, where the signer already writes.* No new call and no
+  file, but the table is not the audit trail: no view reads it and it is not chained, so the
+  events would still not be where auditors look, and getting them there means the node copying
+  rows from a table it can rewrite as the same database role. An event raised while the database
+  is down would also be lost, and the loudest ones are raised exactly then.
+- *Give the signer the audit database.* It would write the trail directly, with a credential and
+  a database right it does not have today, on a process whose point is to hold as little as
+  possible, and two writers would contend for one hash chain. Rejected.
+- *Have the signer push to the node.* The signer talks to nothing outbound, by design.
+- *An acknowledgement call, so the signer can prune.* It would let the node change what the
+  signer keeps. The journal is a few lines per start and per key; it is kept.
+
+The shared layout (a signer without `--signer-dir`) has no journal: its events go to `logs/` as
+before, where the node replays them if the signer's account can write there. A single process
+was left unchanged by this work, including that its runtime events were replayed at the next
+start, not sooner; the follow-ups below change that.
+
+## Follow-ups to the keystore event journal (2026-11-10)
+
+Four things the journal work left open, each built on it and none changing what it decided.
+
+**An actor of their own.** Rows written from the signer's journal were by `system-bootstrap`, the
+actor of the file replay, and could be told from the node's own only by `DeliveredBySigner` in the
+details. They are now by `system-signer` (`BootstrapAuditReplayService.SignerActor`) and keep the
+mark. The ids that keep an event from being recorded twice are read from the rows of both actors,
+so a node that delivered events on the earlier build and is then upgraded records none of them
+again, whether it reads on from `config/signer-audit-cursor.json` or, having lost it, reads the
+journal from the beginning. The old rows are not rewritten: the trail is append-only and they are
+on the hash chain.
+
+**A failed unlock is an event.** `KeystoreSignatureFailed` and `KeystorePinMacFailed` covered a
+file, entry or pin that did not verify. A keystore that verified and then could not be decrypted
+(the secondary passphrase does not unwrap the main one; the main one opens no entry; the file,
+the wrapped passphrase or `keystore.yaml` cannot be read as what it is) raised nothing. The three
+load paths now record `KeystoreUnlockFailed` for the keystore and rethrow. What counts is a
+`CryptographicException`, which an AES-GCM tag mismatch is, or an `InvalidDataException`; a
+missing passphrase file or a database that cannot be reached is not recorded as one, because
+nothing was tried against the keystore, and because the node of a split install runs the
+command-line backup without a passphrase file and falls back to a locked signer, which must not
+look like an attack. The event's detail is fixed text and the exception's type name. The message
+is left out on purpose, and where the event is written no passphrase is in scope: nothing of one,
+or derived from one, can reach the journal, the replayed file, the wire, the audit row or the
+console. A wrong secondary passphrase on a keystore whose pin has a MAC is still caught earlier,
+as `KeystorePinMacFailed`, which is what a changed secondary passphrase looks like from the pin.
+
+**The signer's command-line tools.** `--backup` and `--restore` with `--role signer --signer-dir`
+are a process beside the signer. They did not open the journal, so the keystore service in that
+process wrote its events to `logs/` under the application directory, which on a split install is
+the node's and not the signer's to write, and the run itself was recorded nowhere. Both now open
+the journal first (`SignerToolJournal.Open`, the same `KeystoreAuditJournal.Open` the signer role
+calls) and append one event when they end: `BackupCreated` or `BackupRestored`, a failure when
+the exit code is not 0 or an exception stopped the run, with the exit code and the archive's file
+name. The node writes these two as `Backup` rows, as the console's are; every other journal event
+stays a `Keystore` row. The wire is unchanged: the event uses the six fields, with no keystore
+name. The signer and the tool append to the same day's file from two processes, so the writer
+tries again a few times when the other holds the file. `Append` is on the journal class and not on
+`ISignerEventJournal`: the node still has no call that writes.
+
+**A single process records as it goes.** With the signer in process the events of a running node
+(a key appended, `ssh-ca.keystore` created, a verification failure during an append) sat in
+`logs/bootstrap-audit-*.jsonl` until the next start. The keystore service now raises
+`KeystoreService.AuditEventWritten` after it appends a line, and the control role runs
+`LocalKeystoreEventRecorder`, which on that signal, a moment later, has
+`BootstrapAuditReplayService.RecordNewLinesAsync` record every whole line the trail lacks. Two
+things keep this from duplicating what the drain replays. The row is the replay's row with the
+replay's `BootstrapEntryId` (file name, line position, text), so the drain at the next start, or
+a bootstrap's, finds each line recorded and writes none. And the recorder never renames or
+removes the file: the keystore service may be appending to it, and a line written between a read
+and a rename would be lost, so the rename stays with the drain, which runs before the node
+serves anything. Each line is looked for in the audit database after it is logged and the first
+that is missing ends the pass; a pass that could not finish is tried again every minute, and the
+lines are in the file for the next start if the node stops first. It runs only with an audit
+database, since without one a line cannot be told from one already recorded. A node whose signer
+is remote does not run it; it reads the journal instead.
+
+What this does not do: a signer on the shared layout that runs as its own process still has its
+events replayed only at the node's next start, and the journal is still never pruned.
+
+## The signer's HSM settings in its health answer (2026-11-09)
+
+`HealthAsync` answered unlocked, key count and backend. As a role the signer now adds what it
+loaded from `Hsm:` at start: enabled, the module path, the slot and each CA label with its key
+label (`HealthResponse.hsm`, `SignerHealth.Hsm`). The signer role registers that status and the
+gRPC host attaches it; the in-process signer reports none, since a node that hosts the signer
+reads its own file. The console's Settings page shows it for a remote signer
+(`HsmSettingsSummary.From(config, signerHsm)`), and never the node's own stale `Hsm:` section.
+The types have no field for the PIN or a mapping's key id, so neither can be asked for. No call
+was added and nothing the node sends changes the answer. What it costs: a node, and so a
+compromised node, learns the module path, the slot and the key labels of its signer; it could
+already see the backend and, through `ListKeys`, which keys are on the token.
+
 ## Secrets the node must keep, wrapped behind the signer (2026-09-18)
 
 The signer holds every private key, and a node in remote mode holds none. Three database columns

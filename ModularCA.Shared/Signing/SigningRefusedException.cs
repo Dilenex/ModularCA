@@ -39,7 +39,9 @@ public enum SigningRefusalReason
 
     /// <summary>
     /// The certificate the operation names is missing, or its public key is not the key's, so
-    /// the key cannot be committed to or imported for it.
+    /// the key cannot be committed to or imported for it. Also the reason a CA whose PKCS#11 key
+    /// was refused at load (ambiguous label, not contained, or not the certificate's key) signs
+    /// nothing.
     /// </summary>
     CertificateMismatch,
 

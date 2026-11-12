@@ -125,10 +125,57 @@ public class UsageResolutionTests
     }
 
     [Fact]
-    public void Empty_cert_profile_list_yields_no_usages()
+    public void An_empty_cert_profile_list_under_a_restricting_signing_profile_refuses_to_issue()
+    {
+        // This test used to be "Empty_cert_profile_list_yields_no_usages" and asserted an empty
+        // result. An empty result means the builder emits no ExtendedKeyUsage extension, and a
+        // leaf with no EKU extension is valid for every purpose (RFC 5280 §4.2.1.12). So a cert
+        // profile that listed nothing escaped the signing profile's allow-list entirely, ending
+        // up wider than the signing profile permits.
+        using var db = Seeded();
+
+        var ex = Assert.Throws<CertificatePolicyViolationException>(
+            () => Service(db).SetupAllowedExtendedOids("[]", $"[\"{ServerAuthOid}\"]"));
+
+        Assert.Contains("AllowedEKUs", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("")]
+    [InlineData("[ ]")]
+    public void Every_empty_spelling_of_the_cert_profile_list_is_refused(string certProfileEkus)
     {
         using var db = Seeded();
-        Assert.Empty(Service(db).SetupAllowedExtendedOids("[]", $"[\"{ServerAuthOid}\"]"));
+
+        Assert.Throws<CertificatePolicyViolationException>(
+            () => Service(db).SetupAllowedExtendedOids(certProfileEkus, $"[\"{ClientAuthOid}\"]"));
+    }
+
+    [Fact]
+    public void A_ca_or_infrastructure_certificate_may_carry_no_eku_under_a_restricting_signing_profile()
+    {
+        // CA certificates must not carry an EKU at all (CaCertificateRules), and the system-issued
+        // CMP signer is defined with none (RFC 4210 §5.1.3.3). Both are issued under the parent
+        // CA's signing profile, whose allow-list governs the leaves beneath it, so they are the
+        // callers that may opt out of the refusal.
+        using var db = Seeded();
+
+        Assert.Empty(Service(db).SetupAllowedExtendedOids(
+            "[]", $"[\"{ServerAuthOid}\"]", allowNoExtendedKeyUsage: true));
+    }
+
+    [Fact]
+    public void A_signing_profile_list_of_only_unresolvable_entries_still_restricts()
+    {
+        // The allow-list is restrictive because it lists something, not because what it lists
+        // happens to be in the OIDOptions catalog. A misspelled entry once resolved to an empty
+        // set, and an empty set read as "no restriction", so a typo opened it to every usage.
+        using var db = Seeded();
+
+        Assert.Throws<CertificatePolicyViolationException>(
+            () => Service(db).SetupAllowedExtendedOids(
+                $"[\"{ServerAuthOid}\"]", "[\"serverAuht\"]"));
     }
 
     // ---- The drop that started the error-reporting work -------------------------------------

@@ -178,7 +178,8 @@ public class ControlledUserBypassGuardTests
         Assert.Equal(sysOp, Assert.Single(await svc.GetUserTiersAsync(viaGrant)));
         Assert.Equal(sysOp, Assert.Single(await svc.GetUserTiersAsync(viaRole)));
         Assert.Equal(sysOp, svc.ClassifyCapabilityGrant(Capabilities.CaManage, null));
-        Assert.Null(svc.ClassifyCapabilityGrant(Capabilities.CaManage, w.CaA1));
+        // On one CA it is that CA's operator tier, minted without the CA's space.
+        Assert.Equal(new ControlledTier(ControlledTierLevel.CaOperator, w.CaA1), svc.ClassifyCapabilityGrant(Capabilities.CaManage, w.CaA1));
         Assert.False(await svc.CanAdministerAccountAsync(w.A1AdminUser, viaGrant));
         Assert.True(await svc.CanAdministerAccountAsync(w.SystemAdmin, viaGrant));
 
@@ -863,16 +864,19 @@ public class ControlledUserBypassGuardTests
     {
         var w = new ControlledUserWorld();
         var a1Operators = w.Group("org_a1_operator", w.SpaceA, w.CaA1, "Operator");
+        var a1Auditors = w.Group("org_a1_auditor", w.SpaceA, w.CaA1, "Auditor");
         w.Db.SaveChanges();
 
         await Sync(w.Db).SyncUserGroupsAsync(w.Plain, new List<string>
         {
             w.SuperGroup.Name, w.SystemAdminGroup.Name, w.A1Admin.Name, w.SpaceAdminA.Name,
-            w.B1Requester.Name, a1Operators.Name,
+            w.B1Requester.Name, a1Operators.Name, a1Auditors.Name,
         });
 
         var groups = w.Db.CaGroupMembers.Where(m => m.UserId == w.Plain).Select(m => m.GroupId).ToHashSet();
-        Assert.Contains(a1Operators.Id, groups);
+        Assert.Contains(a1Auditors.Id, groups);
+        // A CA's operators approve and issue, so the directory cannot place anyone among them.
+        Assert.DoesNotContain(a1Operators.Id, groups);
         Assert.DoesNotContain(w.SuperGroup.Id, groups);
         Assert.DoesNotContain(w.SystemAdminGroup.Id, groups);
         Assert.DoesNotContain(w.A1Admin.Id, groups);

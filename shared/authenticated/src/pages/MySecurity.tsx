@@ -15,7 +15,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuthClient } from '../api/AuthClientContext';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { generateQrSvg } from '../utils/qrcode';
-import { StepUpOps } from '@shared/generated';
+import { PasswordSource, StepUpOps, type UserEntityDto } from '@shared/generated';
 
 interface TotpStatus { enrolled: boolean; deviceName?: string; registeredAt?: string; lastUsedAt?: string; }
 interface WebAuthnCred { id: string; deviceName?: string; registeredAt: string; lastUsedAt?: string; }
@@ -161,6 +161,7 @@ export const MySecurity: React.FC<{ embedded?: boolean }> = ({ embedded = false 
     };
 
     const handleRemoveTotp = () => {
+        if (!confirm('Remove the authenticator app? Every session of your account will be signed out, this one included.')) return;
         openTotpModal('Confirm TOTP Removal', async (code: string) => {
             const stepUp = await apiPost<{ mfaToken: string }>('/auth/mfa/verify-stepup/totp', { code, operation: 'totp-remove', targetId: null });
             await api('/auth/totp', { method: 'DELETE', headers: { 'X-MFA-Token': stepUp.mfaToken } });
@@ -216,7 +217,7 @@ export const MySecurity: React.FC<{ embedded?: boolean }> = ({ embedded = false 
     };
 
     const handleRemoveWebauthn = (credId: string) => {
-        if (!confirm('Remove this security key?')) return;
+        if (!confirm('Remove this security key? Every session of your account will be signed out, this one included.')) return;
         openTotpModal('Confirm Security Key Removal', async (code: string) => {
             const stepUp = await apiPost<{ mfaToken: string }>('/auth/mfa/verify-stepup/totp', { code, operation: 'webauthn-delete', targetId: credId });
             await api(`/auth/webauthn/credentials/${credId}`, { method: 'DELETE', headers: { 'X-MFA-Token': stepUp.mfaToken } });
@@ -516,13 +517,24 @@ export const MySecurity: React.FC<{ embedded?: boolean }> = ({ embedded = false 
     );
 };
 
-/* ── Inline Change Password ── */
+/* ── Inline Change Password ──
+ * A Directory account's password lives in the directory, so instead of the form it is told where
+ * to change it (the server refuses the change too). */
 const ChangePasswordSection: React.FC<{
     requireStepUp: (op: string, tid?: string) => Promise<string>;
     showMsg: (msg: string) => void;
     setError: (msg: string) => void;
 }> = ({ requireStepUp, showMsg, setError }) => {
-    const { apiPutWithMfa } = useAuthClient();
+    const { apiGet, apiPutWithMfa } = useAuthClient();
+    const [passwordSource, setPasswordSource] = useState<PasswordSource | null>(null);
+    useEffect(() => {
+        let cancelled = false;
+        apiGet<UserEntityDto>('/api/v1/account')
+            .then((me) => { if (!cancelled) setPasswordSource(me.passwordSource ?? null); })
+            .catch(() => { /* the form still works; the server refuses a Directory account */ });
+        return () => { cancelled = true; };
+    }, []);
+    const directoryManaged = passwordSource === PasswordSource.Directory;
     const [open, setOpen] = useState(false);
     const [oldPassword, setOldPassword] = useState('');
     const [newPassword, setNewPassword] = useState('');
@@ -562,13 +574,19 @@ const ChangePasswordSection: React.FC<{
         <div className="bg-raised border border-line rounded-lg p-5 space-y-4">
             <div className="flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-ink">Password</h2>
-                {!open && (
+                {!open && !directoryManaged && (
                     <button onClick={() => setOpen(true)} className="text-sm bg-sunken text-ink px-4 py-2 rounded hover:bg-hover transition-colors">
                         Change Password
                     </button>
                 )}
             </div>
-            {open && (
+            {directoryManaged && (
+                <p className="text-sm text-ink-muted">
+                    Your password is managed by your organisation's directory (LDAP). Change it there; ModularCA does not
+                    keep a password for this account.
+                </p>
+            )}
+            {open && !directoryManaged && (
                 <form onSubmit={handleChange} className="space-y-3">
                     <div>
                         <label className="block text-xs text-ink-muted mb-1">Current Password</label>

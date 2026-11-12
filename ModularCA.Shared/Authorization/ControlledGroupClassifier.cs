@@ -14,8 +14,11 @@ public static class ControlledGroupClassifier
     /// <summary>
     /// The tier membership in <paramref name="group"/> confers, or <c>null</c> when the group is not
     /// privilege-controlled: system-super and system groups map to the system tiers, a CA
-    /// <c>Administrator</c> group to CA-admin, space-wide <c>Administrator</c>/<c>Operator</c>
-    /// groups to the space tiers. CA operator groups are uncontrolled. A space-less, CA-less,
+    /// <c>Administrator</c> group to CA-admin and a CA <c>Operator</c> group to CA-operator,
+    /// space-wide <c>Administrator</c>/<c>Operator</c> groups to the space tiers. A CA operator
+    /// approves and issues requests, so its membership is controlled like the others: left
+    /// uncontrolled, an administrator of the CA could create an operator account with a password
+    /// of its choosing and approve its own requests through it. A space-less, CA-less,
     /// non-system Administrator or Operator group is classified at the system-admin tier, so
     /// changing it needs a system-tier dominator; it confers no system capability.
     /// </summary>
@@ -30,8 +33,8 @@ public static class ControlledGroupClassifier
         var isOperator = string.Equals(group.TemplateName, "Operator", StringComparison.OrdinalIgnoreCase);
 
         if (group.CertificateAuthorityId != null)
-            return isAdmin
-                ? new ControlledTier(ControlledTierLevel.CaAdmin, group.CertificateAuthorityId) { SpaceId = group.SpaceId }
+            return isAdmin ? new ControlledTier(ControlledTierLevel.CaAdmin, group.CertificateAuthorityId) { SpaceId = group.SpaceId }
+                : isOperator ? new ControlledTier(ControlledTierLevel.CaOperator, group.CertificateAuthorityId) { SpaceId = group.SpaceId }
                 : null;
 
         if (!isAdmin && !isOperator) return null;

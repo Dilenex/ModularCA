@@ -6,6 +6,7 @@ using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Models;
 using ModularCA.Shared.Models.Config;
+using ModularCA.Tests.TestUtils;
 using Npgsql;
 using System.Text.Json;
 using Xunit;
@@ -53,8 +54,13 @@ public sealed class RequiresEnvironmentFactAttribute : FactAttribute
 /// at a disposable restore. <c>MODULARCA_TEST_PG_REHEARSAL_AUDIT</c> optionally does the same
 /// for the audit database. See docs/architecture/postgresql-migration.md.
 /// </para>
+/// <para>
+/// The tests are in nested classes, one per subject, so xUnit runs the groups beside each other
+/// (a class is a collection, and the tests of one collection run one after another). This class
+/// holds what they share: the names, the seed SQL and the helpers. A filter on
+/// <c>PostgresUpgradeHarnessTests</c> still selects them all.
+/// </para>
 /// </remarks>
-[Trait("Category", "PostgreSQL")]
 public class PostgresUpgradeHarnessTests
 {
     /// <summary>The application context's frozen baseline, applied by production on 2026-09-19.</summary>
@@ -113,6 +119,9 @@ public class PostgresUpgradeHarnessTests
 
     /// <summary>The 0.4.3 migration that adds profile-driven expiry warnings, without its timestamp.</summary>
     public const string ProfileExpiryWarnings = "ProfileExpiryWarnings";
+
+    /// <summary>The 0.4.4 migration that adds each account's password source, without its timestamp.</summary>
+    public const string UserPasswordSource = "UserPasswordSource";
 
     private const string ServerVariable = "MODULARCA_TEST_PG";
     private const string RehearsalVariable = "MODULARCA_TEST_PG_REHEARSAL";
@@ -227,549 +236,1916 @@ public class PostgresUpgradeHarnessTests
                    '{"tenantId":"{{SecondOrgTenant}}"}','[]','{{SecondOrgTenant}}');
         """;
 
-    /// <summary>
-    /// The upgrade, one stage at a time: each stage's assertions run at that stage's migration, in
-    /// SQL against that stage's names, so a later rename cannot break an earlier stage's checks.
-    /// The audit database is seeded at its baseline with records hashed by the real
-    /// <see cref="AuditHashChainService.ComputeHash"/>: the instance chain and two tenant chains,
-    /// which the control role's start then seals. Before the S6 rename, open ceremonies in every
-    /// stored shape and casing, the space's <c>org-*</c> groups and a signer audit row are added;
-    /// after it, an LDAP mapping that still names an <c>org-*</c> group is synced.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task Baseline_with_a_030_shape_migrates_stage_by_stage()
+    /// <summary>The upgrade from the 0.3.x shape as a whole: stage by stage, through the dry run and the startup gate, and what stops it.</summary>
+    [Trait("Category", "PostgreSQL")]
+    [Trait(TestTier.Name, TestTier.Slow)]
+    [Collection(PostgresLane.Four)]
+    public sealed class Stages
     {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var suffix = Guid.NewGuid().ToString("N")[..12];
-        var appName = $"modularca_upgrade_app_{suffix}";
-        var auditName = $"modularca_upgrade_audit_{suffix}";
-
-        await CreateDatabaseAsync(server, appName);
-        await CreateDatabaseAsync(server, auditName);
-        try
+        /// <summary>
+        /// The upgrade, one stage at a time: each stage's assertions run at that stage's migration, in
+        /// SQL against that stage's names, so a later rename cannot break an earlier stage's checks.
+        /// The audit database is seeded at its baseline with records hashed by the real
+        /// <see cref="AuditHashChainService.ComputeHash"/>: the instance chain and two tenant chains,
+        /// which the control role's start then seals. Before the S6 rename, open ceremonies in every
+        /// stored shape and casing, the space's <c>org-*</c> groups and a signer audit row are added;
+        /// after it, an LDAP mapping that still names an <c>org-*</c> group is synced.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task Baseline_with_a_030_shape_migrates_stage_by_stage()
         {
-            await using (var app = CreateApp(WithDatabase(server, appName)))
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var suffix = Guid.NewGuid().ToString("N")[..12];
+            var appName = $"modularca_upgrade_app_{suffix}";
+            var auditName = $"modularca_upgrade_audit_{suffix}";
+
+            await CreateDatabaseAsync(server, appName);
+            await CreateDatabaseAsync(server, auditName);
+            try
             {
+                await using (var app = CreateApp(WithDatabase(server, appName)))
+                {
+                    await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
+                    Assert.Equal([AppBaseline], await app.Database.GetAppliedMigrationsAsync());
+
+                    await ExecAsync(app, Seed030Sql + SeedFoldSql);
+                    Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"TenantHostnames\""));
+                    Assert.Equal(12, await ScalarAsync(app, "SELECT count(*) FROM \"CaGroups\""));
+
+                    await MigrateThroughAsync(app, RetireTenantHostnames);
+                    Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'TenantHostnames'"));
+
+                    await MigrateThroughAsync(app, FoldSystemTenant);
+                    await AssertFoldedAsync(app);
+
+                    await MigrateThroughAsync(app, InstanceUniqueCaNames);
+                    await AssertInstanceUniqueAsync(app);
+
+                    await ExecAsync(app, SeedRenameSql);
+                    var before = await RowValuesAsync(app, renamed: false);
+                    await MigrateThroughAsync(app, RenameTenantToSpace);
+                    await AssertRenamedAsync(app, before);
+
+                    await MigrateToLatestAsync(app, "application");
+                    await AssertCatalogMatchesModelAsync(app);
+                    await AssertLegacyLdapMappingStillGrantsAsync(app);
+                }
+
+                await using (var audit = CreateAudit(WithDatabase(server, auditName)))
+                {
+                    await audit.GetService<IMigrator>().MigrateAsync(AuditBaseline);
+                    Assert.Equal([AuditBaseline], await audit.Database.GetAppliedMigrationsAsync());
+                    await SeedAuditChainsAsync(audit, AuditTenantChains);
+
+                    await MigrateToLatestAsync(audit, "audit");
+                    await AssertAuditChainsSealedAsync(audit, AuditTenantChains);
+                }
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+                await DropDatabaseAsync(server, auditName);
+            }
+        }
+
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task A_tenant_hostname_row_stops_the_upgrade_with_3_through_the_startup_gate_and_nothing_is_applied()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var suffix = Guid.NewGuid().ToString("N")[..12];
+            var appName = $"modularca_upgrade_app_{suffix}";
+
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                var connection = WithDatabase(server, appName);
+                await using (var app = CreateApp(connection))
+                {
+                    await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
+                    // Fixture SQL written in this file from its own constants; nothing in it comes from input.
+                    var seed = Seed030Sql + SeedTenantHostnameSql;
+                    await app.Database.ExecuteSqlRawAsync(seed);
+                }
+
+                using var log = new CapturedSerilog();
+                var exit = await SchemaStartupApi.EnforceAllAsync(
+                    [("application", DatabaseKind.Application, Instance(connection))], true, new SchemaConfig { WaitSeconds = 1 });
+
+                Assert.Equal(3, exit);
+                Assert.True(log.Events.Any(e => e.Text.Contains("This instance has 1 tenant hostname(s)", StringComparison.Ordinal)),
+                    string.Join(Environment.NewLine, log.Events.Select(e => $"{e.Level}: {e.Text}")));
+                await using (var app = CreateApp(connection))
+                {
+                    Assert.Equal([AppBaseline], await app.Database.GetAppliedMigrationsAsync());
+                    Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"TenantHostnames\""));
+                }
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+        }
+
+        /// <summary>
+        /// A 0.3.x database where a later migration refuses (<c>InstanceUniqueCaNames</c> P1, a label
+        /// two CAs share) after <c>RetireTenantHostnames</c> and <c>FoldSystemTenant</c> pass: the dry
+        /// run lists P1 with its message and P2 (the same label, also shared up to case) as also found,
+        /// skips the rest of the migration, whose unique index the duplicate breaks, then stops at
+        /// <c>RenameTenantToSpace</c>, which renames an index the skipped steps would have created. It
+        /// applies nothing and leaves no lock behind; then <c>--upgrade-check</c> and the control
+        /// role's start both refuse with 3 and list the same, still applying nothing.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task A_later_refusal_is_caught_by_the_dry_run_and_nothing_is_applied()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            var p1 = RefusedUniqueness().Single(r => (string)r[0] == "P1");
+            var expected = (string)p1[2];
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                var connection = WithDatabase(server, appName);
+                string refusing, rename;
+                await using (var app = CreateApp(connection))
+                {
+                    await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
+                    await ExecAsync(app, Seed030Sql + SeedFoldSql + (string)p1[1]);
+                    refusing = MigrationId(app, InstanceUniqueCaNames);
+                    rename = MigrationId(app, RenameTenantToSpace);
+
+                    var result = await SchemaVersionGate.DryRunPendingAsync(app);
+
+                    Assert.False(result.Passed);
+                    Assert.Equal([(refusing, "P1", false), (refusing, "P2", true)], result.Refusals.Select(r => (r.Migration, r.Check, r.AlsoFound)));
+                    Assert.Contains(expected, result.Refusals[0].Message);
+                    var skip = Assert.Single(result.Skipped);
+                    Assert.Equal((refusing, PostgresErrorCodes.UniqueViolation), (skip.Migration, SchemaFailure.SqlState(skip.Error)));
+                    Assert.Equal(rename, result.Migration);
+                    Assert.True(result.Stopped);
+                    Assert.Equal([MigrationId(app, RetireTenantHostnames), MigrationId(app, FoldSystemTenant)], result.Rehearsed);
+                    await AssertNothingAppliedAsync(app);
+                }
+                await AssertNoLockHeldAsync(connection);
+
+                var output = new StringWriter();
+                var target = ("application", DatabaseKind.Application, Instance(connection));
+                Assert.Equal(3, await SchemaStartupApi.UpgradeCheckAsync([target], new SchemaConfig(), output));
+                var report = output.ToString();
+                Assert.Contains($"UPGRADE CHECK: REFUSED (application: migration {refusing} refuses; then migration {rename} fails, "
+                    + "and the checks after it could not run). Nothing was changed.", report);
+                Assert.Contains($"1 of 2: migration {refusing} (P1) refuses: {expected}", report);
+                Assert.Contains($"2 of 2, also found: migration {refusing} (P2) refuses: ", report);
+                Assert.Contains($"Skipped: the rest of migration {refusing}, from command 6 of ", report);
+                Assert.Contains("which may follow from the steps skipped above. The checks after this point could not run.", report);
+                Assert.Contains("nothing was applied", report);
+
+                using var log = new CapturedSerilog();
+                Assert.Equal(3, await SchemaStartupApi.EnforceAllAsync([target], true, new SchemaConfig { WaitSeconds = 1 }));
+                var events = string.Join(Environment.NewLine, log.Events.Select(e => $"{e.Level}: {e.Text}"));
+                Assert.True(log.Has(Serilog.Events.LogEventLevel.Fatal, expected), events);
+                Assert.True(log.Has(Serilog.Events.LogEventLevel.Fatal, $"1 of 2: migration {refusing} (P1) refuses: "), events);
+                Assert.True(log.Has(Serilog.Events.LogEventLevel.Fatal, $"2 of 2, also found: migration {refusing} (P2) refuses: "), events);
+                Assert.True(log.Has(Serilog.Events.LogEventLevel.Fatal, "nothing was applied to either database"), events);
+                await using (var app = CreateApp(connection))
+                    await AssertNothingAppliedAsync(app);
+                await AssertNoLockHeldAsync(connection);
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+        }
+
+        /// <summary>
+        /// A refusal raised after the renames of its own migration (<c>RenameTenantToSpace</c> P2, a
+        /// taken group name), followed by its knock-on (the group rename then breaks the unique index
+        /// on group names): the dry run reports the refusal and the skipped rest of the migration, not a
+        /// crash and not a second problem, and rolls back the renames and every earlier migration with
+        /// them. <c>--upgrade-check</c> lists the same and exits 3; nothing stopped it early.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task A_refusal_after_renames_in_the_same_migration_leaves_every_name_as_it_was()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            var taken = RefusedRenames().Single(r => (string)r[0] == "P2 taken");
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                var connection = WithDatabase(server, appName);
+                string rename;
+                List<string> before;
+                await using (var app = CreateApp(connection))
+                {
+                    await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
+                    await ExecAsync(app, Seed030Sql + SeedFoldSql + (string)taken[1]);
+                    rename = MigrationId(app, RenameTenantToSpace);
+                    before = await FingerprintAsync(app);
+
+                    var result = await SchemaVersionGate.DryRunPendingAsync(app);
+
+                    Assert.False(result.Passed);
+                    Assert.False(result.Stopped);
+                    Assert.Null(result.Migration);
+                    Assert.Equal(result.Pending.Where(id => id != rename), result.Rehearsed);
+                    var refusal = Assert.Single(result.Refusals);
+                    Assert.Equal((rename, "P2", false), (refusal.Migration, refusal.Check, refusal.AlsoFound));
+                    Assert.Contains((string)taken[2], refusal.Message);
+                    var skip = Assert.Single(result.Skipped);
+                    Assert.Equal((rename, PostgresErrorCodes.UniqueViolation), (skip.Migration, SchemaFailure.SqlState(skip.Error)));
+                    await AssertNothingAppliedAsync(app);
+                }
+                await AssertNoLockHeldAsync(connection);
+
+                var output = new StringWriter();
+                Assert.Equal(3, await SchemaStartupApi.UpgradeCheckAsync(
+                    [("application", DatabaseKind.Application, Instance(connection))], new SchemaConfig(), output));
+                var report = output.ToString();
+                Assert.Contains($"UPGRADE CHECK: REFUSED (application: migration {rename} refuses). Nothing was changed.", report);
+                Assert.Contains($"1 of 1: migration {rename} (P2) refuses: {(string)taken[2]}", report);
+                Assert.Contains($"Skipped: the rest of migration {rename}, from command ", report);
+                Assert.Contains("Those steps depend on fixing that refusal; they are checked once it is fixed.", report);
+                Assert.DoesNotContain("could not run", report);
+                Assert.DoesNotContain("also found", report);
+                await using (var app = CreateApp(connection))
+                    Assert.Equal(before, await FingerprintAsync(app));
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+        }
+
+        /// <summary>
+        /// Two independent refusals in different migrations, a tenant hostname
+        /// (<c>RetireTenantHostnames</c>) and a label two CAs share (<c>InstanceUniqueCaNames</c> P1):
+        /// one <c>--upgrade-check</c> run lists both, numbered, the second as also found, exits 3, and
+        /// leaves every row and catalog entry of the database as it was. The control role's start
+        /// refuses with the same list in the journal, still changing nothing.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task One_upgrade_check_lists_refusals_from_different_migrations_and_changes_nothing()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            var p1 = RefusedUniqueness().Single(r => (string)r[0] == "P1");
+            const string hostnames = "This instance has 1 tenant hostname(s), which 0.4.0 no longer serves.";
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                var connection = WithDatabase(server, appName);
+                string retire, unique;
+                List<string> before;
+                await using (var app = CreateApp(connection))
+                {
+                    await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
+                    await ExecAsync(app, Seed030Sql + SeedFoldSql + SeedTenantHostnameSql + (string)p1[1]);
+                    retire = MigrationId(app, RetireTenantHostnames);
+                    unique = MigrationId(app, InstanceUniqueCaNames);
+                    before = await FingerprintAsync(app);
+
+                    var result = await SchemaVersionGate.DryRunPendingAsync(app);
+
+                    Assert.Equal([(retire, null, false), (unique, "P1", true), (unique, "P2", true)],
+                        result.Refusals.Select(r => (r.Migration, r.Check, r.AlsoFound)));
+                    Assert.StartsWith(hostnames, result.Refusals[0].Message);
+                    Assert.Contains((string)p1[2], result.Refusals[1].Message);
+                    Assert.Equal(unique, Assert.Single(result.Skipped).Migration);
+                    Assert.Equal([MigrationId(app, FoldSystemTenant)], result.Rehearsed);
+                    Assert.Equal(before, await FingerprintAsync(app));
+                }
+
+                var output = new StringWriter();
+                var target = ("application", DatabaseKind.Application, Instance(connection));
+                Assert.Equal(3, await SchemaStartupApi.UpgradeCheckAsync([target], new SchemaConfig(), output));
+                var report = output.ToString();
+                Assert.Contains("found 3 refusal(s); fix each, then check again:", report);
+                Assert.Contains($"1 of 3: migration {retire} refuses: {hostnames}", report);
+                Assert.Contains($"2 of 3, also found: migration {unique} (P1) refuses: {(string)p1[2]}", report);
+                Assert.Contains($"3 of 3, also found: migration {unique} (P2) refuses: ", report);
+                Assert.Contains("\"Also found\" refusals came after an earlier refusal", report);
+                Assert.Contains($"UPGRADE CHECK: REFUSED (application: migrations {retire}, {unique} refuse; then migration ", report);
+                Assert.Single(report.Split('\n'), l => l.StartsWith("UPGRADE CHECK: ", StringComparison.Ordinal));
+                await using (var app = CreateApp(connection))
+                    Assert.Equal(before, await FingerprintAsync(app));
+
+                using var log = new CapturedSerilog();
+                Assert.Equal(3, await SchemaStartupApi.EnforceAllAsync([target], true, new SchemaConfig { WaitSeconds = 1 }));
+                var events = string.Join(Environment.NewLine, log.Events.Select(e => $"{e.Level}: {e.Text}"));
+                Assert.True(log.Has(Serilog.Events.LogEventLevel.Fatal, $"1 of 3: migration {retire} refuses: {hostnames}"), events);
+                Assert.True(log.Has(Serilog.Events.LogEventLevel.Fatal, $"2 of 3, also found: migration {unique} (P1) refuses: {(string)p1[2]}"), events);
+                await using (var app = CreateApp(connection))
+                {
+                    Assert.Equal(before, await FingerprintAsync(app));
+                    await AssertNothingAppliedAsync(app);
+                }
+                await AssertNoLockHeldAsync(connection);
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+        }
+
+        /// <summary>
+        /// An error that is not a refusal, with no refusal before it (an index of the name
+        /// <c>InstanceUniqueCaNames</c> creates already exists): the dry run stops there and says the
+        /// checks after it could not run, so the refusal <c>RenameTenantToSpace</c> P2 would raise
+        /// later (a taken group name) is not reported, and nothing is changed.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task An_error_with_no_refusal_before_it_stops_the_check_and_says_the_rest_could_not_run()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            var taken = RefusedRenames().Single(r => (string)r[0] == "P2 taken");
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                var connection = WithDatabase(server, appName);
+                string unique;
+                List<string> before;
+                await using (var app = CreateApp(connection))
+                {
+                    await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
+                    await ExecAsync(app, Seed030Sql + SeedFoldSql + (string)taken[1]
+                        + "CREATE INDEX \"IX_CertificateAuthorities_LabelLower\" ON \"CertificateAuthorities\" (\"Name\");");
+                    unique = MigrationId(app, InstanceUniqueCaNames);
+                    before = await FingerprintAsync(app);
+
+                    var result = await SchemaVersionGate.DryRunPendingAsync(app);
+
+                    Assert.Empty(result.Refusals);
+                    Assert.Empty(result.Skipped);
+                    Assert.True(result.Stopped);
+                    Assert.Equal(unique, result.Migration);
+                    Assert.Equal(6, result.Command);
+                    Assert.Equal(PostgresErrorCodes.DuplicateTable, SchemaFailure.SqlState(result.Error!));
+                    Assert.Equal([MigrationId(app, RetireTenantHostnames), MigrationId(app, FoldSystemTenant)], result.Rehearsed);
+                }
+
+                var output = new StringWriter();
+                Assert.Equal(3, await SchemaStartupApi.UpgradeCheckAsync(
+                    [("application", DatabaseKind.Application, Instance(connection))], new SchemaConfig(), output));
+                var report = output.ToString();
+                Assert.Contains($"The dry run of the application database failed at migration {unique}, command 6 of ", report);
+                Assert.Contains("The checks after this point could not run.", report);
+                Assert.Contains($"UPGRADE CHECK: REFUSED (application: migration {unique} fails). Nothing was changed.", report);
+                Assert.DoesNotContain((string)taken[2], report);
+                await using (var app = CreateApp(connection))
+                    Assert.Equal(before, await FingerprintAsync(app));
+                await AssertNoLockHeldAsync(connection);
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+        }
+
+        /// <summary>
+        /// A clean 0.3.x database: the dry run passes and leaves it unchanged, the audit database's
+        /// dry run passes, <c>--upgrade-check</c> exits 0 still changing nothing, refuses an integration
+        /// key scoped to the system tenant (but not one scoped to the instance), and the control role's
+        /// start then applies every migration.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task A_clean_030_database_passes_the_dry_run_unchanged_then_the_control_role_upgrades_it()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var suffix = Guid.NewGuid().ToString("N")[..12];
+            var appName = $"modularca_upgrade_app_{suffix}";
+            var auditName = $"modularca_upgrade_audit_{suffix}";
+            await CreateDatabaseAsync(server, appName);
+            await CreateDatabaseAsync(server, auditName);
+            try
+            {
+                var appConnection = WithDatabase(server, appName);
+                var auditConnection = WithDatabase(server, auditName);
+                int pending, auditPending;
+                List<string> before;
+                await using (var app = CreateApp(appConnection))
+                {
+                    await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
+                    await ExecAsync(app, Seed030Sql + SeedFoldSql);
+                    pending = app.Database.GetMigrations().Count() - 1;
+                    before = await FingerprintAsync(app);
+
+                    var result = await SchemaVersionGate.DryRunPendingAsync(app);
+
+                    Assert.True(result.Passed, result.Error?.ToString());
+                    Assert.Empty(result.Refusals);
+                    Assert.Empty(result.Skipped);
+                    Assert.False(result.Stopped);
+                    Assert.Equal(pending, result.Rehearsed.Count);
+                    Assert.Equal(result.Pending, result.Rehearsed);
+                    await AssertNothingAppliedAsync(app);
+                }
+                await using (var audit = CreateAudit(auditConnection))
+                {
+                    await audit.GetService<IMigrator>().MigrateAsync(AuditBaseline);
+                    var result = await SchemaVersionGate.DryRunPendingAsync(audit);
+                    Assert.True(result.Passed, result.Error?.ToString());
+                    Assert.Equal(audit.Database.GetMigrations().Skip(1), result.Rehearsed);
+                    auditPending = result.Rehearsed.Count;
+                    Assert.Equal([AuditBaseline], await audit.Database.GetAppliedMigrationsAsync());
+                }
+                await AssertNoLockHeldAsync(appConnection);
+
+                var targets = new[]
+                {
+                    ("application", DatabaseKind.Application, Instance(appConnection)),
+                    ("audit", DatabaseKind.Audit, Instance(auditConnection)),
+                };
+                var output = new StringWriter();
+                Assert.Equal(0, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output));
+                var report = output.ToString();
+                Assert.Contains($"UPGRADE CHECK: PASS ({pending + auditPending} pending migration(s) would apply cleanly). Nothing was changed.", report);
+                Assert.Contains($"would apply {auditPending} migration(s) cleanly.", report);
+                Assert.DoesNotContain("REFUSED", report);
+                Assert.Contains($"dry run: passed; {pending} migration(s) ran in one transaction and were rolled back.", report);
+
+                // An integration key scoped to the system tenant is refused, read-only, with its remedy;
+                // one scoped to the instance or an organisation is not.
+                output = new StringWriter();
+                Assert.Equal(3, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output,
+                    [("IntegrationApi.SpaceId", SystemTenant.ToString()), ("CertManager.SpaceId", OrgTenant.ToString())]));
+                report = output.ToString();
+                Assert.Contains("UPGRADE CHECK: REFUSED (configuration: IntegrationApi.SpaceId scoped to the system tenant). Nothing was changed.", report);
+                Assert.Contains("Set IntegrationApi.SpaceId to 'instance'", report);
+                Assert.DoesNotContain("CertManager.SpaceId (named", report);
+                output = new StringWriter();
+                Assert.Equal(0, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output,
+                    [("IntegrationApi.SpaceId", "instance"), ("CertManager.SpaceId", OrgTenant.ToString())]));
+                Assert.Contains("no integration key is scoped to the system tenant or to a space that does not exist.", output.ToString());
+
+                // Before the fold, a GUID that names no tenant at all is refused too.
+                output = new StringWriter();
+                Assert.Equal(3, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output,
+                    [("CertManager.SpaceId", Guid.NewGuid().ToString())]));
+                Assert.Contains("UPGRADE CHECK: REFUSED (configuration: CertManager.SpaceId scoped to no existing space). Nothing was changed.", output.ToString());
+
+                await using (var app = CreateApp(appConnection))
+                {
+                    await AssertNothingAppliedAsync(app);
+                    Assert.Equal(before, await FingerprintAsync(app));
+                }
+
+                Assert.Null(await SchemaStartupApi.EnforceAllAsync(targets, true, new SchemaConfig { WaitSeconds = 1 }));
+                await using (var app = CreateApp(appConnection))
+                    Assert.Equal(SchemaVerdict.Current, SchemaVersionGate.Evaluate(await SchemaVersionGate.ReadAsync(app), appliesMigrations: true));
+                await AssertNoLockHeldAsync(appConnection);
+
+                // After the fold, as an enrollment host checks once the control host has upgraded: the
+                // system tenant is gone, so its id, like any id naming no space, is refused read-only
+                // with the remedy; the instance and an existing space pass.
+                List<string> folded;
+                await using (var app = CreateApp(appConnection))
+                    folded = await FingerprintAsync(app);
+                output = new StringWriter();
+                Assert.Equal(3, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output,
+                    [("IntegrationApi.SpaceId", SystemTenant.ToString()), ("CertManager.SpaceId", OrgTenant.ToString())]));
+                report = output.ToString();
+                Assert.Contains("UPGRADE CHECK: REFUSED (configuration: IntegrationApi.SpaceId scoped to no existing space). Nothing was changed.", report);
+                Assert.Contains($"IntegrationApi.SpaceId (named IntegrationApi.TenantId before 0.4.0) is {SystemTenant}, which names no existing space", report);
+                Assert.Contains("set IntegrationApi.SpaceId to 'instance'", report);
+                Assert.Contains("otherwise set it to an existing space's id", report);
+                Assert.DoesNotContain("CertManager.SpaceId (named", report);
+                output = new StringWriter();
+                Assert.Equal(0, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output,
+                    [("IntegrationApi.SpaceId", "instance"), ("CertManager.SpaceId", OrgTenant.ToString())]));
+                Assert.Contains("no integration key is scoped to the system tenant or to a space that does not exist.", output.ToString());
+                await using (var app = CreateApp(appConnection))
+                    Assert.Equal(folded, await FingerprintAsync(app));
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+                await DropDatabaseAsync(server, auditName);
+            }
+        }
+
+        /// <summary>
+        /// A 0.3.x database with the system tenant and two organisation tenants, each with a root CA,
+        /// groups, a CA-bound profile and an open ceremony: the dry run passes unchanged,
+        /// <c>--upgrade-check</c> exits 0, and the control role's start upgrades it. Each organisation
+        /// is then a space with its own rows and policy, the instance has the system tenant's policy,
+        /// and the three retired audit chains seal and verify.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task Two_organisations_become_two_spaces_each_keeping_its_own_rows_and_policy()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var suffix = Guid.NewGuid().ToString("N")[..12];
+            var appName = $"modularca_upgrade_app_{suffix}";
+            var auditName = $"modularca_upgrade_audit_{suffix}";
+            Guid[] chains = [OrgTenant, SecondOrgTenant, SystemTenant];
+            await CreateDatabaseAsync(server, appName);
+            await CreateDatabaseAsync(server, auditName);
+            try
+            {
+                var appConnection = WithDatabase(server, appName);
+                var auditConnection = WithDatabase(server, auditName);
+                await using (var app = CreateApp(appConnection))
+                {
+                    await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
+                    await ExecAsync(app, Seed030Sql + SeedFoldSql + SeedSecondOrganisationSql);
+                    var result = await SchemaVersionGate.DryRunPendingAsync(app);
+                    Assert.True(result.Passed, result.Error?.ToString());
+                    await AssertNothingAppliedAsync(app);
+                }
+                await using (var audit = CreateAudit(auditConnection))
+                {
+                    await audit.GetService<IMigrator>().MigrateAsync(AuditBaseline);
+                    await SeedAuditChainsAsync(audit, chains);
+                }
+
+                var targets = new[]
+                {
+                    ("application", DatabaseKind.Application, Instance(appConnection)),
+                    ("audit", DatabaseKind.Audit, Instance(auditConnection)),
+                };
+                var output = new StringWriter();
+                Assert.Equal(0, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output));
+                Assert.Contains("UPGRADE CHECK: PASS", output.ToString());
+                Assert.Null(await SchemaStartupApi.EnforceAllAsync(targets, true, new SchemaConfig { WaitSeconds = 1 }));
+
+                await using (var app = CreateApp(appConnection))
+                    await AssertTwoSpacesAsync(app);
+                await using (var audit = CreateAudit(auditConnection))
+                    await AssertAuditChainsSealedAsync(audit, chains);
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+                await DropDatabaseAsync(server, auditName);
+            }
+        }
+
+        /// <summary>
+        /// The audit context's dry run on an empty database rehearses the history table, the baseline
+        /// and every migration after it, and leaves the database empty.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task The_audit_dry_run_rehearses_its_baseline_on_an_empty_database_and_leaves_it_empty()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var auditName = $"modularca_upgrade_audit_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, auditName);
+            try
+            {
+                await using var audit = CreateAudit(WithDatabase(server, auditName));
+                var result = await SchemaVersionGate.DryRunPendingAsync(audit);
+
+                Assert.True(result.Passed, result.Error?.ToString());
+                Assert.Equal(audit.Database.GetMigrations(), result.Rehearsed);
+                Assert.Equal(AuditBaseline, result.Rehearsed[0]);
+                Assert.Equal(DatabasePresence.Empty, (await SchemaVersionGate.ReadAsync(audit)).Presence);
+                Assert.Equal(0, await ScalarAsync(audit, "SELECT count(*) FROM pg_catalog.pg_class WHERE relnamespace = 'public'::regnamespace"));
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, auditName);
+            }
+        }
+    }
+
+    /// <summary>The tenant-to-space rename: the preconditions that refuse it, and stored parameters it must survive.</summary>
+    [Trait("Category", "PostgreSQL")]
+    [Trait(TestTier.Name, TestTier.Slow)]
+    [Collection(PostgresLane.Six)]
+    public sealed class Renames
+    {
+        /// <summary>
+        /// Each S6 precondition refuses its own shape, names it, and rolls back: S6 is not recorded,
+        /// the tables keep their tenant names and the groups their old ones.
+        /// </summary>
+        [RequiresEnvironmentTheory(ServerVariable)]
+        [MemberData(nameof(RefusedRenames), MemberType = typeof(PostgresUpgradeHarnessTests))]
+        public async Task A_precondition_refuses_the_rename_and_nothing_of_it_is_applied(string precondition, string offendingSql, string expected)
+        {
+            var failure = await FoldAsync(Seed030Sql + SeedFoldSql + offendingSql, RenameTenantToSpace, async app =>
+            {
+                var applied = await app.Database.GetAppliedMigrationsAsync();
+                Assert.DoesNotContain(applied, m => m.EndsWith("_" + RenameTenantToSpace, StringComparison.Ordinal));
+                Assert.Contains(applied, m => m.EndsWith("_" + InstanceUniqueCaNames, StringComparison.Ordinal));
+                Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'Tenants' AND relnamespace = 'public'::regnamespace"));
+                Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'Spaces' AND relnamespace = 'public'::regnamespace"));
+                Assert.Equal(1, await ScalarAsync(app, $"SELECT count(*) FROM \"CaGroups\" WHERE \"Id\" = '{OrgAdminGroup}' AND \"Name\" = 'org-acme-admin'"));
+                Assert.Equal(1, await ScalarAsync(app, $"SELECT count(*) FROM \"KeyCeremonies\" WHERE \"Id\" = '{ExecutedCeremony}' AND \"ParametersJson\" LIKE '%\"tenantId\"%'"));
+            });
+
+            Assert.NotNull(failure);
+            Assert.EndsWith("_" + RenameTenantToSpace, failure!.Migration, StringComparison.Ordinal);
+            var raised = Assert.IsType<PostgresException>(failure.Error.GetBaseException());
+            Assert.True(raised.MessageText.Contains(expected, StringComparison.Ordinal), $"{precondition}: {raised.MessageText}");
+        }
+
+        /// <summary>
+        /// A closed ceremony whose stored names hold the JSON escape <c>\u0000</c>, which jsonb rejects,
+        /// does not block the rename: each such escape becomes U+FFFD, here and in a ceremony naming no
+        /// tenant, an escaped backslash before <c>u0000</c> is left alone, and the row reads.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task A_nul_escape_in_stored_parameters_is_neutralised_and_the_rename_succeeds()
+        {
+            var identity = F.Legacy.ControlledUserChange.Replace(@"""Identity"":null", """
+                "Identity":{"FirstName":"Bob\u0000\u0000","LastName":"O\\u0000Neil","DisplayName":"x\\\u0000y"}
+                """, StringComparison.Ordinal);
+            Assert.NotEqual(F.Legacy.ControlledUserChange, identity);
+            const string ssh = """{"Name":"a\u0000b","KeyType":"ed25519"}""";
+            var seed = $"""
+                INSERT INTO "KeyCeremonies" ("Id","OperationType","Description","TargetEntityId","InitiatedByUserId","InitiatedByUsername",
+                    "RequiredApprovals","CurrentApprovals","Status","CreatedAt","ExpiresAt","ParametersJson","ApprovalsJson","TenantId")
+                VALUES ('{NulCeremony}','ControlledUserChange','x','','{Operator}','operator',1,1,'Executed',now(),now(),'{identity}','[]','{OrgTenant}'),
+                       ('{NulSshCeremony}','CreateSshCa','x','','{Operator}','operator',1,0,'Rejected',now(),now(),'{ssh}','[]',NULL);
+                """;
+
+            var failure = await FoldAsync(Seed030Sql + SeedFoldSql + seed, RenameTenantToSpace, async app =>
+            {
+                Assert.Contains(await app.Database.GetAppliedMigrationsAsync(), m => m.EndsWith("_" + RenameTenantToSpace, StringComparison.Ordinal));
+                var fffd = (char)0xFFFD;
+                var stored = await TextAsync(app,
+                    $"SELECT \"ParametersJson\" FROM \"KeyCeremonies\" WHERE \"Id\" = '{NulCeremony}' AND \"Status\" = 'Executed' AND (\"ParametersJson\"::jsonb ->> 'SpaceId') = '{F.SpaceA}'");
+                var controlled = CeremonyParametersJson.Read<ControlledUserChangeParameters>(stored)!;
+                Assert.Equal((F.SpaceA, F.SpaceB), (controlled.SpaceId, controlled.MintedTierSpaceId));
+                Assert.Equal($"Bob{fffd}{fffd}", controlled.Identity!.FirstName);
+                Assert.Equal(@"O\u0000Neil", controlled.Identity.LastName);
+                Assert.Equal(@"x\" + fffd + "y", controlled.Identity.DisplayName);
+
+                var other = await TextAsync(app, $"SELECT \"ParametersJson\" FROM \"KeyCeremonies\" WHERE \"Id\" = '{NulSshCeremony}' AND \"Status\" = 'Rejected'");
+                Assert.Equal($"a{fffd}b", CeremonyParametersJson.Read<SshKeyCeremonyParameters>(other)!.Name);
+                Assert.Equal(0, await ScalarAsync(app,
+                    $"SELECT count(*) FROM \"KeyCeremonies\" WHERE \"ParametersJson\" ~ '{RenameMigration.NulEscapePattern}'"));
+            });
+            Assert.Null(failure);
+        }
+    }
+
+    /// <summary>The preconditions that refuse the instance-unique CA names migration.</summary>
+    [Trait("Category", "PostgreSQL")]
+    [Trait(TestTier.Name, TestTier.Slow)]
+    [Collection(PostgresLane.Two)]
+    public sealed class Uniqueness
+    {
+        /// <summary>
+        /// Each S4 precondition refuses its own shape (P1-P3 counting soft-deleted CAs, P4 and P5 only
+        /// enabled rows), names the offenders, and rolls back: S4 is not recorded and the old
+        /// indexes and the quota columns are still there.
+        /// </summary>
+        [RequiresEnvironmentTheory(ServerVariable)]
+        [MemberData(nameof(RefusedUniqueness), MemberType = typeof(PostgresUpgradeHarnessTests))]
+        public async Task A_precondition_refuses_the_upgrade_and_nothing_of_it_is_applied(string precondition, string offendingSql, string expected)
+        {
+            var failure = await FoldAsync(Seed030Sql + SeedFoldSql + offendingSql, InstanceUniqueCaNames, async app =>
+            {
+                Assert.DoesNotContain(await app.Database.GetAppliedMigrationsAsync(), m => m.EndsWith("_" + InstanceUniqueCaNames, StringComparison.Ordinal));
+                Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM pg_catalog.pg_indexes WHERE indexname = 'IX_CertificateAuthorities_TenantId_Label'"));
+                Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM pg_catalog.pg_indexes WHERE indexname = 'IX_CertificateAuthorities_Label'"));
+                Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'Tenants' AND column_name = 'MaxUsers'"));
+            });
+
+            Assert.NotNull(failure);
+            Assert.EndsWith("_" + InstanceUniqueCaNames, failure!.Migration, StringComparison.Ordinal);
+            var raised = Assert.IsType<PostgresException>(failure.Error.GetBaseException());
+            foreach (var fragment in expected.Split('|'))
+                Assert.True(raised.MessageText.Contains(fragment, StringComparison.Ordinal), $"{precondition}: {raised.MessageText}");
+        }
+    }
+
+    /// <summary>What each later migration adds or backfills on rows written before it.</summary>
+    [Trait("Category", "PostgreSQL")]
+    [Trait(TestTier.Name, TestTier.Slow)]
+    [Collection(PostgresLane.Five)]
+    public sealed class Backfills
+    {
+        /// <summary>
+        /// The <c>BindAcmeAccountsToCa</c> backfill, seeded at the stage before it with
+        /// <see cref="SeedAcmeAccountsSql"/>: a label binds to the CA with that label ignoring case
+        /// and surrounding blanks, a soft-deleted CA's included; a label naming no CA leaves the
+        /// account unbound; a label-less or blank account binds to the CA
+        /// <c>CaResolverService.DefaultCandidates</c> puts first, passing over deleted, disabled,
+        /// <c>system-</c> and SSH CAs marked default and breaking the tie between two defaults by name.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task The_acme_account_backfill_binds_by_label_ignoring_case_and_label_less_accounts_to_the_default()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                await using var app = CreateApp(WithDatabase(server, appName));
                 await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
-                Assert.Equal([AppBaseline], await app.Database.GetAppliedMigrationsAsync());
-
                 await ExecAsync(app, Seed030Sql + SeedFoldSql);
-                Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"TenantHostnames\""));
-                Assert.Equal(12, await ScalarAsync(app, "SELECT count(*) FROM \"CaGroups\""));
-
-                await MigrateThroughAsync(app, RetireTenantHostnames);
-                Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'TenantHostnames'"));
-
-                await MigrateThroughAsync(app, FoldSystemTenant);
-                await AssertFoldedAsync(app);
-
-                await MigrateThroughAsync(app, InstanceUniqueCaNames);
-                await AssertInstanceUniqueAsync(app);
-
-                await ExecAsync(app, SeedRenameSql);
-                var before = await RowValuesAsync(app, renamed: false);
                 await MigrateThroughAsync(app, RenameTenantToSpace);
-                await AssertRenamedAsync(app, before);
+
+                await ExecAsync(app, SeedAcmeAccountsSql);
+                await MigrateThroughAsync(app, BindAcmeAccountsToCa);
+
+                async Task<string> BoundTo(Guid account) => await TextAsync(app,
+                    $"SELECT coalesce(\"CertificateAuthorityId\"::text, '') FROM \"AcmeAccounts\" WHERE \"Id\" = '{account}'");
+                Assert.Equal(MixedCaseCa.ToString(), await BoundTo(MixedCaseAccount));
+                Assert.Equal(RootCa.ToString(), await BoundTo(PaddedAccount));
+                Assert.Equal(RetiredDefaultCa.ToString(), await BoundTo(RetiredAccount));
+                Assert.Equal("", await BoundTo(GoneAccount));
+                Assert.Equal(RootCa.ToString(), await BoundTo(LabelLessAccount));
+                Assert.Equal(RootCa.ToString(), await BoundTo(BlankLabelAccount));
+                Assert.Equal(6, await ScalarAsync(app, "SELECT count(*) FROM \"AcmeAccounts\""));
 
                 await MigrateToLatestAsync(app, "application");
-                await AssertCatalogMatchesModelAsync(app);
-                await AssertLegacyLdapMappingStillGrantsAsync(app);
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+        }
+
+        /// <summary>
+        /// The <c>SshKeyStorage</c> backfill, seeded at the stage before it: an SSH CA key row that
+        /// has a key file path becomes <c>LegacyFile</c>, so its key waits for the import into the
+        /// signer; a row with an empty path is left at the column default, <c>Signer</c>. Afterwards
+        /// the path may be null, and a row written without a storage gets <c>Signer</c>.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task The_ssh_key_storage_backfill_marks_rows_with_a_key_file_as_legacy_files()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                await using var app = CreateApp(WithDatabase(server, appName));
+                await MigrateThroughAsync(app, ApiKeys);
+
+                var ca = Guid.NewGuid();
+                var withFile = Guid.NewGuid();
+                var withoutFile = Guid.NewGuid();
+                var added = Guid.NewGuid();
+                const string columns = "\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"PrivateKeyPath\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"IsEnabled\",\"CreatedAt\"";
+                await ExecAsync(app,
+                    "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"SpaceId\",\"IsDeleted\") "
+                    + $"VALUES ('{ca}','Ops SSH','ops-ssh',false,'SSH',true,'Software',true,NULL,false); "
+                    + $"INSERT INTO \"SshCaKeys\" ({columns}) "
+                    + $"VALUES ('{withFile}','Ops SSH','ed25519','ssh-ed25519 AAAA','config/ssh-ca-keys/{withFile}','{ca}',true,false,24,true,now()), "
+                    + $"('{withoutFile}','Ops SSH empty','ed25519','ssh-ed25519 AAAA','','{ca}',true,false,24,false,now());");
+
+                await MigrateThroughAsync(app, SshKeyStorage);
+
+                async Task<string> Storage(Guid key) => await TextAsync(app, $"SELECT \"KeyStorage\" FROM \"SshCaKeys\" WHERE \"Id\" = '{key}'");
+                Assert.Equal("LegacyFile", await Storage(withFile));
+                Assert.Equal("Signer", await Storage(withoutFile));
+                Assert.Equal($"config/ssh-ca-keys/{withFile}", await TextAsync(app, $"SELECT \"PrivateKeyPath\" FROM \"SshCaKeys\" WHERE \"Id\" = '{withFile}'"));
+
+                await ExecAsync(app,
+                    $"INSERT INTO \"SshCaKeys\" ({columns}) "
+                    + $"VALUES ('{added}','Ops SSH new','ed25519','ssh-ed25519 AAAA',NULL,'{ca}',true,false,24,true,now());");
+                Assert.Equal("Signer", await Storage(added));
+                Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshCaKeys\" WHERE \"PrivateKeyPath\" IS NULL"));
+                Assert.Equal(3, await ScalarAsync(app, "SELECT count(*) FROM \"SshCaKeys\""));
+
+                await MigrateToLatestAsync(app, "application");
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+        }
+
+        /// <summary>
+        /// The <c>SignerAuditSummary</c> column, seeded at the stage before it: the signer's audit
+        /// rows written before the column keep every value they had and have no summary; the column
+        /// takes a summary of the longest length the signer writes, and no longer; and a row of an
+        /// operation that has none is still written without one.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task The_signer_audit_summary_column_is_added_empty_and_old_rows_are_unchanged()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                await using var app = CreateApp(WithDatabase(server, appName));
+                await MigrateThroughAsync(app, SshKeyStorage);
+                Assert.Equal(0, await ScalarAsync(app,
+                    "SELECT count(*) FROM information_schema.columns WHERE table_name = 'SignerAudit' AND column_name = 'Summary'"));
+
+                var signed = Guid.NewGuid();
+                var refused = Guid.NewGuid();
+                var ca = Guid.NewGuid();
+                var key = Guid.NewGuid();
+                var hash = new string('a', 64);
+                await ExecAsync(app,
+                    "INSERT INTO \"SignerAudit\" (\"Id\",\"At\",\"Operation\",\"Caller\",\"Purpose\",\"KeyCertificateId\",\"Keystore\",\"CaId\",\"SpaceId\",\"EffectiveScope\",\"Algorithm\",\"Outcome\",\"Reason\",\"DataHash\") "
+                    + $"VALUES ('{signed}','2026-10-01T12:00:00Z','Sign','control','Certificate','{key}','ca-certs.keystore','{ca}',NULL,'instance','SHA256withRSA','allowed',NULL,'{hash}'), "
+                    + $"('{refused}','2026-10-01T12:00:01Z','CommitKey','control','Ceremony','{key}','ssh-ca.keystore','{ca}',NULL,'instance',NULL,'refused','No SSH CA key row exists.',NULL);");
+                const string everyOldColumn = "\"Id\"::text || '|' || to_char(\"At\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS') || '|' || \"Operation\" || '|' || \"Caller\" || '|' || \"Purpose\" || '|' || "
+                    + "\"KeyCertificateId\"::text || '|' || \"Keystore\" || '|' || \"CaId\"::text || '|' || coalesce(\"SpaceId\"::text,'-') || '|' || \"EffectiveScope\" || '|' || "
+                    + "coalesce(\"Algorithm\",'-') || '|' || \"Outcome\" || '|' || coalesce(\"Reason\",'-') || '|' || coalesce(\"DataHash\",'-')";
+                async Task<string> Row(Guid id) => await TextAsync(app, $"SELECT {everyOldColumn} FROM \"SignerAudit\" WHERE \"Id\" = '{id}'");
+                var signedBefore = await Row(signed);
+                var refusedBefore = await Row(refused);
+
+                await MigrateThroughAsync(app, SignerAuditSummary);
+
+                Assert.Equal(signedBefore, await Row(signed));
+                Assert.Equal(refusedBefore, await Row(refused));
+                Assert.Equal(2, await ScalarAsync(app, "SELECT count(*) FROM \"SignerAudit\" WHERE \"Summary\" IS NULL"));
+                Assert.Equal("YES", await TextAsync(app,
+                    "SELECT is_nullable FROM information_schema.columns WHERE table_name = 'SignerAudit' AND column_name = 'Summary'"));
+                Assert.Equal(ModularCA.Shared.Entities.SignerAuditEntity.SummaryMaxLength, await ScalarAsync(app,
+                    "SELECT character_maximum_length FROM information_schema.columns WHERE table_name = 'SignerAudit' AND column_name = 'Summary'"));
+
+                // A row with the longest summary the column holds goes in, one character more does
+                // not, and a row of an operation with no summary is written as before.
+                var longest = new string('x', ModularCA.Shared.Entities.SignerAuditEntity.SummaryMaxLength);
+                var withSummary = Guid.NewGuid();
+                const string newColumns = "\"Id\",\"At\",\"Operation\",\"Caller\",\"Purpose\",\"Keystore\",\"Outcome\",\"Summary\"";
+                await ExecAsync(app,
+                    $"INSERT INTO \"SignerAudit\" ({newColumns}) VALUES ('{withSummary}',now(),'SignSsh','control','SshCertificate','ssh-ca.keystore','allowed','{longest}');");
+                Assert.Equal(longest, await TextAsync(app, $"SELECT \"Summary\" FROM \"SignerAudit\" WHERE \"Id\" = '{withSummary}'"));
+                await Assert.ThrowsAsync<PostgresException>(() => ExecAsync(app,
+                    $"INSERT INTO \"SignerAudit\" ({newColumns}) VALUES ('{Guid.NewGuid()}',now(),'SignSsh','control','SshCertificate','ssh-ca.keystore','allowed','{longest}x');"));
+                await ExecAsync(app,
+                    $"INSERT INTO \"SignerAudit\" (\"Id\",\"At\",\"Operation\",\"Caller\",\"Purpose\",\"Outcome\") VALUES ('{Guid.NewGuid()}',now(),'Sign','control','Crl','allowed');");
+                Assert.Equal(3, await ScalarAsync(app, "SELECT count(*) FROM \"SignerAudit\" WHERE \"Summary\" IS NULL"));
+                Assert.Equal(4, await ScalarAsync(app, "SELECT count(*) FROM \"SignerAudit\""));
+
+                await MigrateToLatestAsync(app, "application");
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+        }
+
+        /// <summary>
+        /// The <c>SshKeyImports</c> table, seeded at the stage before it: it is added empty, the SSH
+        /// CA key rows are untouched, it takes one record per key and no second one, and a record
+        /// outlives its key row, since the notice it is read for is about the past.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task The_ssh_key_imports_table_is_added_empty_and_holds_one_record_per_key()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                await using var app = CreateApp(WithDatabase(server, appName));
+                await MigrateThroughAsync(app, SignerAuditSummary);
+                Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM information_schema.tables WHERE table_name = 'SshKeyImports'"));
+
+                var ca = Guid.NewGuid();
+                var key = Guid.NewGuid();
+                await ExecAsync(app,
+                    "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"SpaceId\",\"IsDeleted\") "
+                    + $"VALUES ('{ca}','Ops SSH','ops-ssh',false,'SSH',true,'Software',true,NULL,false); "
+                    + "INSERT INTO \"SshCaKeys\" (\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"PrivateKeyPath\",\"KeyStorage\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"IsEnabled\",\"CreatedAt\") "
+                    + $"VALUES ('{key}','Ops SSH','ed25519','ssh-ed25519 AAAA','config/ssh-ca-keys/{key}','LegacyFile','{ca}',true,false,24,true,now());");
+
+                await MigrateThroughAsync(app, SshKeyImports);
+
+                Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"SshKeyImports\""));
+                Assert.Equal("LegacyFile", await TextAsync(app, $"SELECT \"KeyStorage\" FROM \"SshCaKeys\" WHERE \"Id\" = '{key}'"));
+                Assert.Equal($"config/ssh-ca-keys/{key}", await TextAsync(app, $"SELECT \"PrivateKeyPath\" FROM \"SshCaKeys\" WHERE \"Id\" = '{key}'"));
+
+                const string columns = "\"SshCaKeyId\",\"Name\",\"Fingerprint\",\"FilePath\",\"ImportedAt\"";
+                await ExecAsync(app, $"INSERT INTO \"SshKeyImports\" ({columns}) VALUES ('{key}','Ops SSH','SHA256:abc','/opt/modularca/config/ssh-ca-keys/{key}',now());");
+                Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshKeyImports\" WHERE \"FileRemovedAt\" IS NULL AND \"AuditedAt\" IS NULL"));
+                await Assert.ThrowsAsync<PostgresException>(() => ExecAsync(app,
+                    $"INSERT INTO \"SshKeyImports\" ({columns}) VALUES ('{key}','Ops SSH again','SHA256:abc','/elsewhere',now());"));
+                Assert.Equal(1024, await ScalarAsync(app,
+                    "SELECT character_maximum_length FROM information_schema.columns WHERE table_name = 'SshKeyImports' AND column_name = 'FilePath'"));
+
+                // No foreign key: the record stays when its key row goes.
+                await ExecAsync(app, $"DELETE FROM \"SshCaKeys\" WHERE \"Id\" = '{key}';");
+                Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshKeyImports\""));
+
+                await MigrateToLatestAsync(app, "application");
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+        }
+
+        /// <summary>
+        /// The <c>SshLoginNames</c> backfill, seeded at the stage before it. A user certificate whose
+        /// key id is exactly its issuer's username gets that user as its subject. A key id that was
+        /// typed, one that differs from the username in case, a host certificate, and a certificate
+        /// with no issuer keep no subject. No certificate is revoked, none gets grounds, every
+        /// existing SSH CA key lets everyone log in as their own username, and no grant is made.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task The_ssh_login_names_backfill_gives_a_subject_only_where_the_key_id_is_the_issuer_s_username()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                await using var app = CreateApp(WithDatabase(server, appName));
+                await MigrateThroughAsync(app, SshKeyImports);
+                Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM information_schema.tables WHERE table_name = 'SshLoginNameGrants'"));
+
+                var ca = Guid.NewGuid();
+                var key = Guid.NewGuid();
+                var alice = Guid.NewGuid();
+                var own = Guid.NewGuid();
+                var typed = Guid.NewGuid();
+                var otherCase = Guid.NewGuid();
+                var host = Guid.NewGuid();
+                var noIssuer = Guid.NewGuid();
+                var revoked = Guid.NewGuid();
+                const string certificateColumns = "\"Id\",\"SshCaKeyId\",\"CertificateType\",\"KeyId\",\"SerialNumber\",\"Principals\",\"ValidAfter\",\"ValidBefore\","
+                    + "\"PublicKey\",\"SignedCertificate\",\"IsRevoked\",\"IssuedByUserId\",\"CreatedAt\"";
+                string Certificate(Guid id, string type, string keyId, int serial, string issuer, bool isRevoked = false)
+                    => $"('{id}','{key}','{type}','{keyId}',{serial},'[\"root\"]',now(),now() + interval '1 day','ssh-ed25519 AAAA','ssh-ed25519-cert-v01@openssh.com AAAA',"
+                        + $"{(isRevoked ? "true" : "false")},{issuer},now())";
+                await ExecAsync(app,
+                    "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"SpaceId\",\"IsDeleted\") "
+                    + $"VALUES ('{ca}','Ops SSH','ops-ssh',false,'SSH',true,'Software',true,NULL,false); "
+                    + "INSERT INTO \"SshCaKeys\" (\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"KeyStorage\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"IsEnabled\",\"CreatedAt\") "
+                    + $"VALUES ('{key}','Ops SSH','ed25519','ssh-ed25519 AAAA','Signer','{ca}',true,true,24,true,now()); "
+                    + "INSERT INTO \"Users\" (\"Id\",\"Username\",\"Email\",\"PasswordHash\",\"PasswordNeverExpires\",\"PasswordChangeOnNextLogon\",\"FirstName\","
+                    + "\"LastName\",\"IsActive\",\"IsServiceIdentity\",\"IsLocked\",\"FailedLoginAttempts\",\"CreatedAt\",\"SecurityStamp\",\"IsDeleted\") "
+                    + $"VALUES ('{alice}','alice','alice@acme.example','not-a-hash',false,false,'A','Lice',true,false,false,0,now(),'stamp',false); "
+                    + $"INSERT INTO \"SshCertificates\" ({certificateColumns}) VALUES "
+                    + Certificate(own, "user", "alice", 1, $"'{alice}'") + ", "
+                    + Certificate(typed, "user", "alice-laptop", 2, $"'{alice}'") + ", "
+                    + Certificate(otherCase, "user", "Alice", 3, $"'{alice}'") + ", "
+                    + Certificate(host, "host", "alice", 4, $"'{alice}'") + ", "
+                    + Certificate(noIssuer, "user", "alice", 5, "NULL") + ", "
+                    + Certificate(revoked, "user", "alice", 6, $"'{alice}'", isRevoked: true) + ";");
+
+                await MigrateThroughAsync(app, SshLoginNames);
+
+                async Task<string> Subject(Guid certificate)
+                    => await TextAsync(app, $"SELECT coalesce(\"SubjectUserId\"::text, 'none') FROM \"SshCertificates\" WHERE \"Id\" = '{certificate}'");
+                Assert.Equal(alice.ToString(), await Subject(own));
+                Assert.Equal(alice.ToString(), await Subject(revoked));
+                Assert.Equal("none", await Subject(typed));
+                Assert.Equal("none", await Subject(otherCase));
+                Assert.Equal("none", await Subject(host));
+                Assert.Equal("none", await Subject(noIssuer));
+
+                Assert.Equal(6, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertificates\" WHERE \"LoginNameGrounds\" IS NULL"));
+                Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertificates\" WHERE \"IsRevoked\""));
+                Assert.Equal(1, await ScalarAsync(app, $"SELECT count(*) FROM \"SshCaKeys\" WHERE \"Id\" = '{key}' AND \"AllowOwnUsername\""));
+                Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"SshLoginNameGrants\""));
+
+                // Deleting the user leaves the certificates, with no subject.
+                await ExecAsync(app, $"UPDATE \"SshCertificates\" SET \"IssuedByUserId\" = NULL; DELETE FROM \"Users\" WHERE \"Id\" = '{alice}';");
+                Assert.Equal(6, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertificates\" WHERE \"SubjectUserId\" IS NULL"));
+
+                await MigrateToLatestAsync(app, "application");
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+        }
+
+        /// <summary>
+        /// The <c>SshCertificateRevokedAt</c> column, seeded at the stage before it. It is added
+        /// empty and may stay empty: a certificate that was already revoked stays revoked and gets
+        /// no time, since none was recorded, and no other column of any row changes. The partial
+        /// index a KRL's state is read from covers the revoked rows only, and the index on the key
+        /// alone is still there. Afterwards a row takes a time.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task The_ssh_certificate_revoked_at_column_is_added_empty_and_a_revoked_row_keeps_no_time()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                await using var app = CreateApp(WithDatabase(server, appName));
+                await MigrateThroughAsync(app, SshLoginNames);
+                Assert.Equal(0, await ScalarAsync(app,
+                    "SELECT count(*) FROM information_schema.columns WHERE table_name = 'SshCertificates' AND column_name = 'RevokedAt'"));
+
+                var ca = Guid.NewGuid();
+                var key = Guid.NewGuid();
+                var live = Guid.NewGuid();
+                var revoked = Guid.NewGuid();
+                var expiredAndRevoked = Guid.NewGuid();
+                const string certificateColumns = "\"Id\",\"SshCaKeyId\",\"CertificateType\",\"KeyId\",\"SerialNumber\",\"Principals\",\"ValidAfter\",\"ValidBefore\","
+                    + "\"PublicKey\",\"SignedCertificate\",\"IsRevoked\",\"CreatedAt\"";
+                string Certificate(Guid id, int serial, bool isRevoked, string validBefore)
+                    => $"('{id}','{key}','user','alice',{serial},'[\"alice\"]','2026-10-01T12:00:00Z',{validBefore},'ssh-ed25519 AAAA','ssh-ed25519-cert-v01@openssh.com AAAA',"
+                        + $"{(isRevoked ? "true" : "false")},'2026-10-01T12:00:00Z')";
+                await ExecAsync(app,
+                    "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"SpaceId\",\"IsDeleted\") "
+                    + $"VALUES ('{ca}','Ops SSH','ops-ssh',false,'SSH',true,'Software',true,NULL,false); "
+                    + "INSERT INTO \"SshCaKeys\" (\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"KeyStorage\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"IsEnabled\",\"CreatedAt\") "
+                    + $"VALUES ('{key}','Ops SSH','ed25519','ssh-ed25519 AAAA','Signer','{ca}',true,true,24,true,now()); "
+                    + $"INSERT INTO \"SshCertificates\" ({certificateColumns}) VALUES "
+                    + Certificate(live, 1, false, "now() + interval '1 day'") + ", "
+                    + Certificate(revoked, 2, true, "now() + interval '1 day'") + ", "
+                    + Certificate(expiredAndRevoked, 3, true, "'2026-10-02T12:00:00Z'") + ";");
+                const string everyOldColumn = "\"Id\"::text || '|' || \"SshCaKeyId\"::text || '|' || \"CertificateType\" || '|' || \"KeyId\" || '|' || \"SerialNumber\"::text || '|' || "
+                    + "\"Principals\" || '|' || to_char(\"ValidAfter\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US') || '|' || "
+                    + "to_char(\"ValidBefore\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US') || '|' || \"PublicKey\" || '|' || \"SignedCertificate\" || '|' || "
+                    + "\"IsRevoked\"::text || '|' || coalesce(\"SubjectUserId\"::text,'-') || '|' || coalesce(\"LoginNameGrounds\",'-') || '|' || "
+                    + "to_char(\"CreatedAt\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US')";
+                async Task<string> Row(Guid id) => await TextAsync(app, $"SELECT {everyOldColumn} FROM \"SshCertificates\" WHERE \"Id\" = '{id}'");
+                var before = new[] { await Row(live), await Row(revoked), await Row(expiredAndRevoked) };
+
+                await MigrateThroughAsync(app, SshCertificateRevokedAt);
+
+                Assert.Equal(before, new[] { await Row(live), await Row(revoked), await Row(expiredAndRevoked) });
+                Assert.Equal("YES", await TextAsync(app,
+                    "SELECT is_nullable FROM information_schema.columns WHERE table_name = 'SshCertificates' AND column_name = 'RevokedAt'"));
+                Assert.Equal("timestamp with time zone", await TextAsync(app,
+                    "SELECT data_type FROM information_schema.columns WHERE table_name = 'SshCertificates' AND column_name = 'RevokedAt'"));
+                Assert.Equal(3, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertificates\" WHERE \"RevokedAt\" IS NULL"));
+                Assert.Equal(2, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertificates\" WHERE \"IsRevoked\""));
+
+                var partial = await TextAsync(app, "SELECT indexdef FROM pg_indexes WHERE indexname = 'IX_SshCertificates_SshCaKeyId_RevokedAt'");
+                Assert.Contains("(\"SshCaKeyId\", \"RevokedAt\")", partial);
+                Assert.Contains("WHERE \"IsRevoked\"", partial);
+                Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM pg_indexes WHERE indexname = 'IX_SshCertificates_SshCaKeyId'"));
+
+                // From here on a revocation has a time, and the newest of a key is what its KRL is dated by.
+                await ExecAsync(app, $"UPDATE \"SshCertificates\" SET \"IsRevoked\" = true, \"RevokedAt\" = '2026-10-08T09:30:00Z' WHERE \"Id\" = '{live}';");
+                Assert.Equal("2026-10-08T09:30:00", await TextAsync(app,
+                    $"SELECT to_char(max(\"RevokedAt\") AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS') FROM \"SshCertificates\" WHERE \"SshCaKeyId\" = '{key}' AND \"IsRevoked\""));
+                Assert.Equal(3, await ScalarAsync(app, $"SELECT count(*) FROM \"SshCertificates\" WHERE \"SshCaKeyId\" = '{key}' AND \"IsRevoked\""));
+
+                await MigrateToLatestAsync(app, "application");
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+        }
+
+        /// <summary>
+        /// The <c>SshCaKeyReviewBy</c> column and its backfill, seeded at the stage before it. Every
+        /// existing key gets a review date counted from when it was created: two years for a key
+        /// that signs user certificates, alone or with host certificates, and five for a host-only
+        /// key. A key whose date is then already past, and a disabled key, get theirs all the same
+        /// and are otherwise untouched: no other column of a key changes, and no signing profile,
+        /// certificate profile, request profile or certificate row is edited, here or by any later
+        /// migration, beyond the certificate type <c>SshProfileCertificateType</c> adds to a profile.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task The_ssh_ca_key_review_date_is_set_from_each_key_s_creation_and_no_profile_or_other_column_changes()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                await using var app = CreateApp(WithDatabase(server, appName));
+                await MigrateThroughAsync(app, SshCertificateRevokedAt);
+                Assert.Equal(0, await ScalarAsync(app,
+                    "SELECT count(*) FROM information_schema.columns WHERE table_name = 'SshCaKeys' AND column_name = 'ReviewBy'"));
+
+                var userKey = Guid.NewGuid();
+                var bothKey = Guid.NewGuid();
+                var hostKey = Guid.NewGuid();
+                var oldKey = Guid.NewGuid();
+                var disabledKey = Guid.NewGuid();
+                var leapKey = Guid.NewGuid();
+                var signingProfile = Guid.NewGuid();
+                var certProfile = Guid.NewGuid();
+                var requestProfile = Guid.NewGuid();
+                var certificate = Guid.NewGuid();
+                var sql = new System.Text.StringBuilder();
+                void Key(Guid id, string name, bool user, bool host, int hours, bool enabled, string createdAt)
+                {
+                    var ca = Guid.NewGuid();
+                    sql.Append("INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"SpaceId\",\"IsDeleted\") "
+                        + $"VALUES ('{ca}','{name}','{name.ToLowerInvariant().Replace(' ', '-')}',false,'SSH',{(enabled ? "true" : "false")},'Software',true,NULL,false); "
+                        + "INSERT INTO \"SshCaKeys\" (\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"KeyStorage\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"AllowOwnUsername\",\"IsEnabled\",\"CreatedAt\") "
+                        + $"VALUES ('{id}','{name}','ed25519','ssh-ed25519 AAAA','Signer','{ca}',{(user ? "true" : "false")},{(host ? "true" : "false")},{hours},true,{(enabled ? "true" : "false")},'{createdAt}'); ");
+                }
+                Key(userKey, "Users SSH", user: true, host: false, 720, enabled: true, "2026-03-01T08:15:30.123456Z");
+                Key(bothKey, "Both SSH", user: true, host: true, 720, enabled: true, "2026-03-01T08:15:30Z");
+                Key(hostKey, "Hosts SSH", user: false, host: true, 8760, enabled: true, "2026-03-01T08:15:30Z");
+                Key(oldKey, "Old SSH", user: true, host: false, 24, enabled: true, "2021-06-30T23:30:00Z");
+                Key(disabledKey, "Disabled SSH", user: true, host: false, 24, enabled: false, "2025-01-01T00:00:00Z");
+                Key(leapKey, "Leap SSH", user: true, host: false, 24, enabled: true, "2024-02-29T23:30:00Z");
+                sql.Append("INSERT INTO \"SshSigningProfiles\" (\"Id\",\"Name\",\"SshCaKeyId\",\"MaxValidityHours\",\"AllowUserCerts\",\"AllowHostCerts\",\"SourceAddressRestrictions\",\"DefaultExtensions\",\"CreatedAt\") "
+                    + $"VALUES ('{signingProfile}','Users SSH - User Signing','{userKey}',24,true,false,'[]','[\"permit-pty\",\"permit-agent-forwarding\",\"permit-port-forwarding\"]','2026-03-01T08:15:30Z'); "
+                    + "INSERT INTO \"SshCertProfiles\" (\"Id\",\"Name\",\"AllowedPrincipalPatterns\",\"MaxPrincipals\",\"AllowedExtensions\",\"RequiredExtensions\",\"MaxValidityHours\",\"CreatedAt\") "
+                    + $"VALUES ('{certProfile}','SSH User Cert - Standard','[\"^[a-z_][a-z0-9_-]{{0,31}}$\"]',5,"
+                    + "'[\"permit-pty\",\"permit-agent-forwarding\",\"permit-port-forwarding\",\"permit-X11-forwarding\",\"permit-user-rc\"]','[]',24,'2026-03-01T08:15:30Z'); "
+                    + "INSERT INTO \"SshRequestProfiles\" (\"Id\",\"Name\",\"AllowedSshSigningProfileIds\",\"AllowedSshCertProfileIds\",\"RequireApproval\",\"MaxValidityHours\",\"CreatedAt\") "
+                    + $"VALUES ('{requestProfile}','SSH User Request - Default','[]','[\"{certProfile}\"]',false,24,'2026-03-01T08:15:30Z'); "
+                    + "INSERT INTO \"SshCertificates\" (\"Id\",\"SshCaKeyId\",\"CertificateType\",\"KeyId\",\"SerialNumber\",\"Principals\",\"ValidAfter\",\"ValidBefore\",\"PublicKey\",\"SignedCertificate\",\"IsRevoked\",\"CreatedAt\") "
+                    + $"VALUES ('{certificate}','{oldKey}','user','alice',1,'[\"alice\"]',now(),now() + interval '1 day','ssh-ed25519 AAAA','ssh-ed25519-cert-v01@openssh.com AAAA',false,now());");
+                await ExecAsync(app, sql.ToString());
+
+                const string everyOldKeyColumn = "\"Id\"::text || '|' || \"Name\" || '|' || \"KeyType\" || '|' || coalesce(\"KeySize\"::text,'-') || '|' || \"PublicKey\" || '|' || "
+                    + "coalesce(\"PrivateKeyPath\",'-') || '|' || \"KeyStorage\" || '|' || \"CertificateAuthorityId\"::text || '|' || \"IsUserCa\"::text || '|' || \"IsHostCa\"::text || '|' || "
+                    + "\"MaxValidityHours\"::text || '|' || \"AllowOwnUsername\"::text || '|' || \"IsEnabled\"::text || '|' || to_char(\"CreatedAt\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US')";
+                async Task<string> Keys() => await TextAsync(app, $"SELECT string_agg({everyOldKeyColumn}, E'\\n' ORDER BY \"Id\") FROM \"SshCaKeys\"");
+                // Every column but the profile type, which SshProfileCertificateType adds later and sets on the profiles a new install seeds.
+                async Task<string> Rows(string table) => await TextAsync(app,
+                    $"SELECT string_agg((to_jsonb(t) - 'CertificateType')::text, E'\\n' ORDER BY t.\"Id\") FROM \"{table}\" t");
+                var keysBefore = await Keys();
+                var signingBefore = await Rows("SshSigningProfiles");
+                var certProfilesBefore = await Rows("SshCertProfiles");
+                var requestProfilesBefore = await Rows("SshRequestProfiles");
+                var certificatesBefore = await Rows("SshCertificates");
+
+                await MigrateThroughAsync(app, SshCaKeyReviewBy);
+
+                Assert.Equal("YES", await TextAsync(app,
+                    "SELECT is_nullable FROM information_schema.columns WHERE table_name = 'SshCaKeys' AND column_name = 'ReviewBy'"));
+                Assert.Equal("timestamp with time zone", await TextAsync(app,
+                    "SELECT data_type FROM information_schema.columns WHERE table_name = 'SshCaKeys' AND column_name = 'ReviewBy'"));
+                async Task<string> ReviewBy(Guid key) => await TextAsync(app,
+                    $"SELECT to_char(\"ReviewBy\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US') FROM \"SshCaKeys\" WHERE \"Id\" = '{key}'");
+                Assert.Equal("2028-03-01T08:15:30.123456", await ReviewBy(userKey));
+                Assert.Equal("2028-03-01T08:15:30.000000", await ReviewBy(bothKey));
+                Assert.Equal("2031-03-01T08:15:30.000000", await ReviewBy(hostKey));
+                Assert.Equal("2023-06-30T23:30:00.000000", await ReviewBy(oldKey));
+                Assert.Equal("2027-01-01T00:00:00.000000", await ReviewBy(disabledKey));
+                Assert.Equal("2026-02-28T23:30:00.000000", await ReviewBy(leapKey));
+                Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"SshCaKeys\" WHERE \"ReviewBy\" IS NULL"));
+
+                // The same rule as a key created from now on is given.
+                Assert.Equal(new DateTime(2028, 3, 1, 8, 15, 30, DateTimeKind.Utc),
+                    ModularCA.Shared.Utils.SshCaKeyDefaults.ReviewBy(new DateTime(2026, 3, 1, 8, 15, 30, DateTimeKind.Utc), isUserCa: true, isHostCa: true));
+                Assert.Equal(new DateTime(2031, 3, 1, 8, 15, 30, DateTimeKind.Utc),
+                    ModularCA.Shared.Utils.SshCaKeyDefaults.ReviewBy(new DateTime(2026, 3, 1, 8, 15, 30, DateTimeKind.Utc), isUserCa: false, isHostCa: true));
+                Assert.Equal(new DateTime(2026, 2, 28, 23, 30, 0, DateTimeKind.Utc),
+                    ModularCA.Shared.Utils.SshCaKeyDefaults.ReviewBy(new DateTime(2024, 2, 29, 23, 30, 0, DateTimeKind.Utc), isUserCa: true, isHostCa: false));
+
+                // A key long past its date is as enabled as it was, and its certificate as live.
+                Assert.Equal(keysBefore, await Keys());
+                Assert.Equal(1, await ScalarAsync(app, $"SELECT count(*) FROM \"SshCaKeys\" WHERE \"Id\" = '{oldKey}' AND \"IsEnabled\" AND \"ReviewBy\" < now()"));
+                Assert.Equal(1, await ScalarAsync(app, $"SELECT count(*) FROM \"SshCertificates\" WHERE \"Id\" = '{certificate}' AND NOT \"IsRevoked\""));
+
+                await MigrateToLatestAsync(app, "application");
+
+                // No migration edits what a profile allows: the profiles of an existing install stay as seeded before,
+                // and gain only the certificate type their seeded names stand for.
+                Assert.Equal(keysBefore, await Keys());
+                Assert.Equal(signingBefore, await Rows("SshSigningProfiles"));
+                Assert.Equal(certProfilesBefore, await Rows("SshCertProfiles"));
+                Assert.Equal(requestProfilesBefore, await Rows("SshRequestProfiles"));
+                Assert.Equal(certificatesBefore, await Rows("SshCertificates"));
+                Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertProfiles\""));
+
+                // The column takes a date and takes none.
+                await ExecAsync(app, $"UPDATE \"SshCaKeys\" SET \"ReviewBy\" = '2030-01-01T00:00:00Z' WHERE \"Id\" = '{userKey}'; UPDATE \"SshCaKeys\" SET \"ReviewBy\" = NULL WHERE \"Id\" = '{hostKey}';");
+                Assert.Equal("2030-01-01T00:00:00.000000", await ReviewBy(userKey));
+                Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshCaKeys\" WHERE \"ReviewBy\" IS NULL"));
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+        }
+    }
+
+    /// <summary>The migrations that seed or change profiles and accounts, and what the upgrade check reports about them.</summary>
+    [Trait("Category", "PostgreSQL")]
+    [Trait(TestTier.Name, TestTier.Slow)]
+    [Collection(PostgresLane.Three)]
+    public sealed class Profiles
+    {
+        /// <summary>
+        /// The <c>SshProfileCertificateType</c> columns and their backfill, seeded at the stage before
+        /// them. The three certificate profiles and two request profiles a new install seeds get
+        /// their type, found by their exact names: <c>user</c> for the user profiles, <c>host</c> for
+        /// the host profiles. Every other profile stays without one, a name that only resembles a
+        /// seeded one and a seeded name in another letter case included, and no other column of any
+        /// profile changes.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task The_ssh_profile_certificate_type_is_set_on_the_seeded_names_only_and_every_other_profile_stays_without_one()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            const string typesOf = "SELECT string_agg(\"Name\"::text || '=' || coalesce(\"CertificateType\", 'none'), E'\\n' ORDER BY \"Name\"::text COLLATE \"C\") FROM \"{0}\"";
+            const string columnCount = "SELECT count(*) FROM information_schema.columns WHERE table_name = '{0}' AND column_name = 'CertificateType'";
+
+            static string Seed(string[] certProfiles, string[] requestProfiles)
+            {
+                var sql = new System.Text.StringBuilder();
+                foreach (var name in certProfiles)
+                    sql.Append("INSERT INTO \"SshCertProfiles\" (\"Id\",\"Name\",\"AllowedPrincipalPatterns\",\"MaxPrincipals\",\"AllowedExtensions\",\"RequiredExtensions\",\"MaxValidityHours\",\"CreatedAt\") "
+                        + $"VALUES ('{Guid.NewGuid()}','{name}','[]',5,'[\"permit-pty\"]','[]',24,'2026-03-01T08:15:30Z'); ");
+                foreach (var name in requestProfiles)
+                    sql.Append("INSERT INTO \"SshRequestProfiles\" (\"Id\",\"Name\",\"AllowedSshSigningProfileIds\",\"AllowedSshCertProfileIds\",\"RequireApproval\",\"MaxValidityHours\",\"CreatedAt\") "
+                        + $"VALUES ('{Guid.NewGuid()}','{name}','[]','[]',false,24,'2026-03-01T08:15:30Z'); ");
+                return sql.ToString();
             }
 
-            await using (var audit = CreateAudit(WithDatabase(server, auditName)))
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, appName);
+            try
             {
-                await audit.GetService<IMigrator>().MigrateAsync(AuditBaseline);
-                Assert.Equal([AuditBaseline], await audit.Database.GetAppliedMigrationsAsync());
-                await SeedAuditChainsAsync(audit, AuditTenantChains);
+                await using var app = CreateApp(WithDatabase(server, appName));
+                await MigrateThroughAsync(app, SshCaKeyReviewBy);
+                Assert.Equal(0, await ScalarAsync(app, string.Format(columnCount, "SshCertProfiles")));
+                Assert.Equal(0, await ScalarAsync(app, string.Format(columnCount, "SshRequestProfiles")));
 
+                await ExecAsync(app, Seed(
+                    ["SSH User Cert - Standard", "SSH User Cert - Forwarding", "SSH Host Cert - Standard", "Ops users", "SSH User Cert - Standard 2", "SSH Host Cert"],
+                    ["SSH User Request - Default", "SSH Host Request - Default", "Developers", "SSH Host Request - Default (copy)"]));
+                async Task<string> Rows(string table) => await TextAsync(app,
+                    $"SELECT string_agg((to_jsonb(t) - 'CertificateType')::text, E'\\n' ORDER BY t.\"Id\") FROM \"{table}\" t");
+                var certProfilesBefore = await Rows("SshCertProfiles");
+                var requestProfilesBefore = await Rows("SshRequestProfiles");
+
+                await MigrateThroughAsync(app, SshProfileCertificateType);
+
+                foreach (var table in new[] { "SshCertProfiles", "SshRequestProfiles" })
+                {
+                    Assert.Equal("YES", await TextAsync(app, $"SELECT is_nullable FROM information_schema.columns WHERE table_name = '{table}' AND column_name = 'CertificateType'"));
+                    Assert.Equal("character varying", await TextAsync(app, $"SELECT data_type FROM information_schema.columns WHERE table_name = '{table}' AND column_name = 'CertificateType'"));
+                    Assert.Equal(10, await ScalarAsync(app, $"SELECT character_maximum_length FROM information_schema.columns WHERE table_name = '{table}' AND column_name = 'CertificateType'"));
+                }
+
+                Assert.Equal(
+                    "Ops users=none\nSSH Host Cert=none\nSSH Host Cert - Standard=host\nSSH User Cert - Forwarding=user\nSSH User Cert - Standard=user\nSSH User Cert - Standard 2=none",
+                    await TextAsync(app, string.Format(typesOf, "SshCertProfiles")));
+                Assert.Equal(
+                    "Developers=none\nSSH Host Request - Default=host\nSSH Host Request - Default (copy)=none\nSSH User Request - Default=user",
+                    await TextAsync(app, string.Format(typesOf, "SshRequestProfiles")));
+
+                // Nothing else about a profile changed, here or in any later migration.
+                Assert.Equal(certProfilesBefore, await Rows("SshCertProfiles"));
+                Assert.Equal(requestProfilesBefore, await Rows("SshRequestProfiles"));
+                await MigrateToLatestAsync(app, "application");
+                Assert.Equal(certProfilesBefore, await Rows("SshCertProfiles"));
+                Assert.Equal(requestProfilesBefore, await Rows("SshRequestProfiles"));
+                Assert.Equal(3, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertProfiles\" WHERE \"CertificateType\" IS NOT NULL"));
+                Assert.Equal(2, await ScalarAsync(app, "SELECT count(*) FROM \"SshRequestProfiles\" WHERE \"CertificateType\" IS NOT NULL"));
+
+                // The column takes either type and takes none.
+                await ExecAsync(app, "UPDATE \"SshCertProfiles\" SET \"CertificateType\" = 'host' WHERE \"Name\" = 'Ops users'; "
+                    + "UPDATE \"SshRequestProfiles\" SET \"CertificateType\" = NULL WHERE \"Name\" = 'SSH User Request - Default';");
+                Assert.Equal(4, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertProfiles\" WHERE \"CertificateType\" IS NOT NULL"));
+                Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshRequestProfiles\" WHERE \"CertificateType\" IS NOT NULL"));
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+
+            // The names are matched exactly: a seeded name in another letter case is another profile, and gets no type.
+            var otherCase = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, otherCase);
+            try
+            {
+                await using var app = CreateApp(WithDatabase(server, otherCase));
+                await MigrateThroughAsync(app, SshCaKeyReviewBy);
+                await ExecAsync(app, Seed(
+                    ["ssh user cert - standard", "SSH USER CERT - FORWARDING", "Ssh Host Cert - Standard"],
+                    ["ssh user request - default", "SSH HOST REQUEST - DEFAULT"]));
+
+                await MigrateToLatestAsync(app, "application");
+
+                Assert.Equal(3, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertProfiles\" WHERE \"CertificateType\" IS NULL"));
+                Assert.Equal(2, await ScalarAsync(app, "SELECT count(*) FROM \"SshRequestProfiles\" WHERE \"CertificateType\" IS NULL"));
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, otherCase);
+            }
+        }
+
+        /// <summary>
+        /// The <c>StandardCertProfiles</c> migration on an install that predates the profiles: each
+        /// is added as <see cref="ModularCA.Shared.Utils.StandardCertProfiles"/> defines it, except
+        /// one whose name the install already uses in any letter case; each added profile is linked
+        /// to the signing profiles the main profile is linked to; and a seeded request profile gets
+        /// its default only where it has neither a default nor an allowed list. Nothing else of any
+        /// profile changes, and an empty database is left empty for bootstrap.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task The_standard_certificate_profiles_are_added_to_an_install_that_predates_them_and_nothing_is_overwritten()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            Guid main = Guid.NewGuid(), webTls = Guid.NewGuid(), ownCodeSigning = Guid.NewGuid(), linked = Guid.NewGuid(), unlinked = Guid.NewGuid();
+
+            string CertProfile(Guid id, string name) =>
+                "INSERT INTO \"CertProfiles\" (\"Id\",\"Name\",\"Description\",\"IsCaProfile\",\"KeyUsages\",\"ExtendedKeyUsages\",\"AllowedKeyAlgorithms\",\"AllowedKeySizes\","
+                + "\"AllowedSignatureAlgorithms\",\"CreatedAt\",\"Revision\",\"UpdatedAt\",\"CanBeDeleted\",\"ProfileHash\",\"CtEnabled\",\"AllowWildcard\",\"InheritanceEnabled\") "
+                + $"VALUES ('{id}','{name}','',false,'[]','[]','[]','[]','[]','2026-03-01T08:15:30Z',0,'2026-03-01T08:15:30Z',true,'',false,false,false); ";
+            string SigningProfile(Guid id, string name) =>
+                "INSERT INTO \"SigningProfiles\" (\"Id\",\"Name\",\"Description\",\"AllowedAlgorithms\",\"AllowedEKUs\",\"CreatedAt\",\"UpdatedAt\",\"Revision\","
+                + "\"ExtendedKeyUsageCritical\",\"InheritanceEnabled\",\"InhibitAnyPolicy\",\"IsDefault\") "
+                + $"VALUES ('{id}','{name}','','[]','[]','2026-03-01T08:15:30Z','2026-03-01T08:15:30Z',0,false,false,false,false); ";
+            string RequestProfile(string name, string defaultId = "NULL", string allowed = "[]") =>
+                "INSERT INTO \"RequestProfiles\" (\"Id\",\"Name\",\"SubjectDnRules\",\"SanRules\",\"AllowedCertProfileIds\",\"DefaultCertProfileId\",\"RequireApproval\","
+                + "\"RequiredApprovalCount\",\"CreatedAt\",\"UpdatedAt\",\"InheritanceEnabled\") "
+                + $"VALUES ('{Guid.NewGuid()}','{name}','[]','{{}}','{allowed}',{defaultId},false,1,'2026-03-01T08:15:30Z','2026-03-01T08:15:30Z',false); ";
+
+            const string defaults = "SELECT string_agg(r.\"Name\"::text || '=' || coalesce(c.\"Name\"::text, 'none'), E'\\n' ORDER BY r.\"Name\"::text COLLATE \"C\") "
+                + "FROM \"RequestProfiles\" r LEFT JOIN \"CertProfiles\" c ON c.\"Id\" = r.\"DefaultCertProfileId\"";
+
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                await using var app = CreateApp(WithDatabase(server, appName));
+                await MigrateThroughAsync(app, CaInfrastructureCertProfiles);
+                await ExecAsync(app,
+                    CertProfile(main, "Main Certificate Profile") + CertProfile(webTls, "Web TLS Certificate Profile") + CertProfile(ownCodeSigning, "code signing")
+                    + SigningProfile(linked, "Issuing Signing Profile") + SigningProfile(unlinked, "Other Signing Profile")
+                    + $"INSERT INTO \"AllowedCertProfileSigningProfiles\" (\"Id\",\"CertProfileId\",\"SigningProfileId\") VALUES ('{Guid.NewGuid()}','{main}','{linked}'); "
+                    + RequestProfile("Web Server (ACME)") + RequestProfile("Web TLS (Internal)")
+                    + RequestProfile("Enterprise Server (EST)", $"'{main}'")
+                    + RequestProfile("MDM Device (SCEP)", allowed: $"[\"{main}\"]")
+                    + RequestProfile("Enterprise User (CMP)") + RequestProfile("Code Signing") + RequestProfile("Custom"));
+                async Task<string> Untouched(string strip = "") => await TextAsync(app,
+                    $"SELECT string_agg((to_jsonb(t){strip})::text, E'\\n' ORDER BY t.\"Id\") FROM \"CertProfiles\" t WHERE t.\"Id\" IN "
+                    + $"('{main}','{webTls}','{ownCodeSigning}')")
+                    + await TextAsync(app, "SELECT string_agg((to_jsonb(t) - 'DefaultCertProfileId' - 'UpdatedAt')::text, E'\\n' ORDER BY t.\"Id\") FROM \"RequestProfiles\" t");
+                var before = await Untouched();
+                // ProfileExpiryWarnings (0.4.3) adds the expiry warning columns and sets the Web TLS profile to never warn.
+                const string expiryColumns = " - 'ExpiryWarningPercent' - 'ExpiryWarningMaxWindow' - 'ExpiryAlertPercent' - 'ExpiryAlertMaxWindow'"
+                    + " - 'ExpiryNeverWarn' - 'ExpiryWarningOverridesParent' - 'UpdatedAt'";
+                var beforeExpiry = await Untouched(expiryColumns);
+
+                await MigrateThroughAsync(app, StandardCertProfilesMigration);
+
+                // A request records its request profile from here on; nothing already stored names one.
+                Assert.Equal("YES", await TextAsync(app, "SELECT is_nullable FROM information_schema.columns WHERE table_name = 'CertificateRequests' AND column_name = 'RequestProfileId'"));
+
+                // The install's own "code signing" stands; the three other profiles are added as defined.
+                Assert.Equal("Device Client\nMain Certificate Profile\nTLS Server\nUser Authentication and Email\nWeb TLS Certificate Profile\ncode signing",
+                    await TextAsync(app, "SELECT string_agg(\"Name\"::text, E'\\n' ORDER BY \"Name\"::text COLLATE \"C\") FROM \"CertProfiles\""));
+                foreach (var standard in ModularCA.Shared.Utils.StandardCertProfiles.All.Where(p => p.Name != ModularCA.Shared.Utils.StandardCertProfiles.CodeSigning))
+                {
+                    var row = System.Text.Json.JsonDocument.Parse(await TextAsync(app, $"SELECT to_jsonb(t)::text FROM \"CertProfiles\" t WHERE t.\"Name\" = '{standard.Name}'")).RootElement;
+                    Assert.Equal(standard.Description, row.GetProperty("Description").GetString());
+                    Assert.Equal(standard.KeyUsages, System.Text.Json.JsonSerializer.Deserialize<string[]>(row.GetProperty("KeyUsages").GetString()!));
+                    Assert.Equal(standard.ExtendedKeyUsageOids, System.Text.Json.JsonSerializer.Deserialize<string[]>(row.GetProperty("ExtendedKeyUsages").GetString()!));
+                    Assert.Equal(ModularCA.Shared.Utils.StandardCertProfiles.ValidityPeriodMin, row.GetProperty("ValidityPeriodMin").GetString());
+                    Assert.Equal(standard.ValidityPeriodMax, row.GetProperty("ValidityPeriodMax").GetString());
+                    Assert.False(row.GetProperty("IsCaProfile").GetBoolean());
+                    Assert.True(row.GetProperty("CanBeDeleted").GetBoolean());
+                    Assert.Equal(System.Text.Json.JsonValueKind.Null, row.GetProperty("SpaceId").ValueKind);
+                    Assert.Equal(System.Text.Json.JsonValueKind.Null, row.GetProperty("CertificateAuthorityId").ValueKind);
+                }
+
+                // Linked where the main profile is linked, and nowhere else.
+                Assert.Equal(4, await ScalarAsync(app, $"SELECT count(*) FROM \"AllowedCertProfileSigningProfiles\" WHERE \"SigningProfileId\" = '{linked}'"));
+                Assert.Equal(0, await ScalarAsync(app, $"SELECT count(*) FROM \"AllowedCertProfileSigningProfiles\" WHERE \"SigningProfileId\" = '{unlinked}'"));
+                Assert.Equal(0, await ScalarAsync(app, $"SELECT count(*) FROM \"AllowedCertProfileSigningProfiles\" WHERE \"CertProfileId\" = '{ownCodeSigning}'"));
+
+                // A default only where the profile had neither a default nor an allowed list, and only from an added profile.
+                Assert.Equal(
+                    "Code Signing=none\nCustom=none\nEnterprise Server (EST)=Main Certificate Profile\nEnterprise User (CMP)=User Authentication and Email\n"
+                    + "MDM Device (SCEP)=none\nWeb Server (ACME)=TLS Server\nWeb TLS (Internal)=Web TLS Certificate Profile",
+                    await TextAsync(app, defaults));
+                Assert.Equal(before, await Untouched());
+
+                await MigrateToLatestAsync(app, "application");
+                Assert.Equal(beforeExpiry, await Untouched(expiryColumns));
+                Assert.Equal(6, await ScalarAsync(app, "SELECT count(*) FROM \"CertProfiles\""));
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+
+            // An empty database stays empty: bootstrap seeds the profiles itself.
+            var empty = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, empty);
+            try
+            {
+                await using var app = CreateApp(WithDatabase(server, empty));
+                await MigrateToLatestAsync(app, "application");
+                Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"CertProfiles\""));
+                Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"RequestProfiles\""));
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, empty);
+            }
+        }
+
+        /// <summary>
+        /// The <c>ProfileExpiryWarnings</c> backfill: every existing end-entity certificate gets its
+        /// warning at 30 % and its alert at 10 % of its lifetime left, every CA certificate 30 and 7
+        /// days before it expires (never before it became valid), as <see cref="ModularCA.Shared.Utils.ExpiryWarningRule"/>
+        /// computes them with no profile settings; the instance's Web TLS certificate profile is set to
+        /// never warn and its certificates warn at their expiry; every other profile keeps the
+        /// defaults; and the stored value of the retired <c>ComplianceScan.ExpiringWithinDays</c>
+        /// setting is removed while the others stay.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task The_expiry_warning_backfill_gives_leaves_30_and_10_percent_cas_30_and_7_days_and_the_web_tls_profile_never_warns()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            Guid main = Guid.NewGuid(), webTls = Guid.NewGuid();
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                await using var app = CreateApp(WithDatabase(server, appName));
+                await MigrateThroughAsync(app, CertificateRetireAndDismiss);
+
+                string CertProfile(Guid id, string name) =>
+                    "INSERT INTO \"CertProfiles\" (\"Id\",\"Name\",\"Description\",\"IsCaProfile\",\"KeyUsages\",\"ExtendedKeyUsages\",\"AllowedKeyAlgorithms\",\"AllowedKeySizes\","
+                    + "\"AllowedSignatureAlgorithms\",\"CreatedAt\",\"Revision\",\"UpdatedAt\",\"CanBeDeleted\",\"ProfileHash\",\"CtEnabled\",\"AllowWildcard\",\"InheritanceEnabled\") "
+                    + $"VALUES ('{id}','{name}','',false,'[]','[]','[]','[]','[]','2026-03-01T08:15:30Z',0,'2026-03-01T08:15:30Z',true,'',false,false,false); ";
+                string Cert(string serial, string notBefore, string notAfter, bool isCa, Guid? profile) =>
+                    "INSERT INTO \"Certificates\" (\"CertificateId\",\"SerialNumber\",\"Pem\",\"SubjectDN\",\"Issuer\",\"SubjectAlternativeNamesJson\",\"KeyUsagesJson\","
+                    + "\"ExtendedKeyUsagesJson\",\"NotBefore\",\"NotAfter\",\"IsCA\",\"IsReissued\",\"Revoked\",\"CreatedAt\",\"CertProfileId\") "
+                    + $"VALUES ('{Guid.NewGuid()}','{serial}','','CN={serial}','CN=Upgrade CA','[]','[]','[]','{notBefore}','{notAfter}',{(isCa ? "true" : "false")},false,false,"
+                    + $"'2026-03-01T08:15:30Z',{(profile is Guid p ? $"'{p}'" : "NULL")}); ";
+                string Setting(string key, string json) =>
+                    "INSERT INTO \"Settings\" (\"Key\",\"ValueJson\",\"Version\",\"Revision\",\"UpdatedAt\",\"ActorName\",\"Source\") "
+                    + $"VALUES ('{key}','{json}',1,1,'2026-10-01T00:00:00Z','system','import'); ";
+
+                await ExecAsync(app,
+                    CertProfile(main, "Main Certificate Profile") + CertProfile(webTls, "Web TLS Certificate Profile")
+                    + Cert("leaf-90d", "2026-01-01T00:00:00Z", "2026-04-01T00:00:00Z", false, main)
+                    + Cert("leaf-10h", "2026-01-01T00:00:00Z", "2026-01-01T10:00:00Z", false, null)
+                    + Cert("leaf-backwards", "2026-02-01T00:00:00Z", "2026-01-01T00:00:00Z", false, null)
+                    + Cert("ca-10y", "2020-01-01T00:00:00Z", "2030-01-01T00:00:00Z", true, null)
+                    + Cert("ca-3d", "2026-01-01T00:00:00Z", "2026-01-04T00:00:00Z", true, null)
+                    + Cert("console-tls", "2026-01-01T00:00:00Z", "2027-02-02T00:00:00Z", false, webTls)
+                    + Setting("ComplianceScan_ExpiringWithinDays", "30") + Setting("ComplianceScan_WarnOverValidityDays", "825"));
+
+                await MigrateThroughAsync(app, ProfileExpiryWarnings);
+
+                async Task<string> Instants(string serial) => await TextAsync(app,
+                    "SELECT to_char(\"ExpiryWarningAt\" AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' / ' || to_char(\"ExpiryAlertAt\" AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') "
+                    + $"FROM \"Certificates\" WHERE \"SerialNumber\" = '{serial}'");
+                // 90 days: 27 and 9 days before 1 April.
+                Assert.Equal("2026-03-05 00:00:00 / 2026-03-23 00:00:00", await Instants("leaf-90d"));
+                // 10 hours: 3 hours and 1 hour before.
+                Assert.Equal("2026-01-01 07:00:00 / 2026-01-01 09:00:00", await Instants("leaf-10h"));
+                Assert.Equal("2026-01-01 00:00:00 / 2026-01-01 00:00:00", await Instants("leaf-backwards"));
+                Assert.Equal("2029-12-02 00:00:00 / 2029-12-25 00:00:00", await Instants("ca-10y"));
+                Assert.Equal("2026-01-01 00:00:00 / 2026-01-01 00:00:00", await Instants("ca-3d"));
+                Assert.Equal("2027-02-02 00:00:00 / 2027-02-02 00:00:00", await Instants("console-tls"));
+
+                // The rule gives the same instants, to the microsecond.
+                foreach (var serial in new[] { "leaf-90d", "leaf-10h", "ca-10y" })
+                {
+                    var row = await app.Certificates.AsNoTracking().SingleAsync(c => c.SerialNumber == serial);
+                    var (warningAt, alertAt) = ModularCA.Shared.Utils.ExpiryWarningRule.Compute(row.NotBefore, row.NotAfter, row.IsCA, null);
+                    Assert.True(Math.Abs((warningAt - row.ExpiryWarningAt).TotalMilliseconds) < 1, serial);
+                    Assert.True(Math.Abs((alertAt - row.ExpiryAlertAt).TotalMilliseconds) < 1, serial);
+                }
+
+                Assert.Equal("Web TLS Certificate Profile", await TextAsync(app,
+                    "SELECT string_agg(\"Name\"::text, ',' ORDER BY \"Name\"::text) FROM \"CertProfiles\" WHERE \"ExpiryNeverWarn\""));
+                Assert.Equal(0, await ScalarAsync(app,
+                    "SELECT count(*) FROM \"CertProfiles\" WHERE \"ExpiryWarningPercent\" IS NOT NULL OR \"ExpiryAlertPercent\" IS NOT NULL "
+                    + "OR \"ExpiryWarningMaxWindow\" IS NOT NULL OR \"ExpiryAlertMaxWindow\" IS NOT NULL OR \"ExpiryWarningOverridesParent\""));
+                Assert.Equal("ComplianceScan_WarnOverValidityDays", await TextAsync(app, "SELECT string_agg(\"Key\"::text, ',') FROM \"Settings\""));
+
+                await MigrateToLatestAsync(app, "application");
+                Assert.Equal("2026-03-05 00:00:00 / 2026-03-23 00:00:00", await Instants("leaf-90d"));
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+        }
+
+        /// <summary>
+        /// <c>UserPasswordSource</c> gives every existing account, the bootstrap administrator
+        /// included, the password source <c>Inherit</c>, so every account signs in by the instance LDAP
+        /// setting exactly as before; a row inserted without the column later gets it too.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task Every_existing_account_gets_the_password_source_inherit()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            Guid admin = Guid.NewGuid(), operatorUser = Guid.NewGuid(), later = Guid.NewGuid();
+            string User(Guid id, string name) =>
+                "INSERT INTO \"Users\" (\"Id\",\"Username\",\"Email\",\"PasswordHash\",\"PasswordNeverExpires\",\"PasswordChangeOnNextLogon\",\"FirstName\","
+                + "\"LastName\",\"IsActive\",\"IsServiceIdentity\",\"IsLocked\",\"FailedLoginAttempts\",\"CreatedAt\",\"SecurityStamp\",\"IsDeleted\") "
+                + $"VALUES ('{id}','{name}','{name}@acme.example','not-a-hash',false,false,'','',true,false,false,0,now(),'stamp',false); ";
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                await using var app = CreateApp(WithDatabase(server, appName));
+                await MigrateThroughAsync(app, ProfileExpiryWarnings);
+                await ExecAsync(app, User(admin, "superadmin") + User(operatorUser, "operator"));
+
+                await MigrateThroughAsync(app, UserPasswordSource);
+
+                Assert.Equal("operator=Inherit,superadmin=Inherit", await TextAsync(app,
+                    "SELECT string_agg(\"Username\"::text || '=' || \"PasswordSource\", ',' ORDER BY \"Username\"::text COLLATE \"C\") FROM \"Users\""));
+                await ExecAsync(app, User(later, "later"));
+                Assert.Equal("Inherit", await TextAsync(app, $"SELECT \"PasswordSource\" FROM \"Users\" WHERE \"Id\" = '{later}'"));
+                Assert.Equal(ModularCA.Shared.Enums.PasswordSource.Inherit,
+                    (await app.Users.AsNoTracking().SingleAsync(u => u.Id == admin)).PasswordSource);
+
+                await MigrateToLatestAsync(app, "application");
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+        }
+
+        /// <summary>
+        /// <c>OperatorRoleUsesProfiles</c> gives <c>profile.use</c> to the built-in Operator role
+        /// and to every group made from the Operator template, once each, and to nothing else: not
+        /// a custom role, not another built-in role, not another template's group, not a group
+        /// that already holds it. A grant naming one profile does not count as holding it.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task The_operator_role_and_the_groups_made_from_it_gain_profile_use_once()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                await using var app = CreateApp(WithDatabase(server, appName));
+                await MigrateThroughAsync(app, "DropUnreadSettingColumns");
+
+                RoleEntity Role(string name, bool builtIn, params string[] caps)
+                {
+                    var role = new RoleEntity { Name = name, Description = name, IsBuiltIn = builtIn };
+                    app.Roles.Add(role);
+                    foreach (var cap in caps)
+                        app.RoleCapabilities.Add(new RoleCapabilityEntity { RoleId = role.Id, Capability = cap });
+                    return role;
+                }
+                CaGroupEntity Group(string name, string? template, params (string Capability, string? ResourceType)[] grants)
+                {
+                    var group = new CaGroupEntity { Name = name, DisplayName = name, TemplateName = template };
+                    app.CaGroups.Add(group);
+                    foreach (var (capability, resourceType) in grants)
+                        app.CapabilityGrants.Add(new CapabilityGrantEntity { GroupId = group.Id, Capability = capability, ResourceType = resourceType });
+                    return group;
+                }
+                var builtInOperator = Role("Operator", true, "cert.revoke", "profile.view");
+                var builtInAuditor = Role("Auditor", true, "cert.view");
+                var customOperator = Role("Operations", false, "cert.revoke");
+                var plainGroup = Group("ca-operator", "Operator", ("cert.revoke", null));
+                var alreadyGroup = Group("space-operator", "Operator", ("profile.use", null));
+                var namedGroup = Group("named-operator", "Operator", ("profile.use", "SigningProfile"));
+                var auditorGroup = Group("ca-auditor", "Auditor", ("cert.view", null));
+                var customGroup = Group("custom", null, ("cert.revoke", null));
+                await app.SaveChangesAsync();
+
+                await MigrateThroughAsync(app, "OperatorRoleUsesProfiles");
+
+                Task<long> RoleHas(RoleEntity role) => ScalarAsync(app,
+                    $"SELECT count(*) FROM \"RoleCapabilities\" WHERE \"RoleId\" = '{role.Id}' AND \"Capability\" = 'profile.use' AND \"ResourceType\" IS NULL");
+                Task<long> GroupHas(CaGroupEntity group) => ScalarAsync(app,
+                    $"SELECT count(*) FROM \"CapabilityGrants\" WHERE \"GroupId\" = '{group.Id}' AND \"Capability\" = 'profile.use' AND \"ResourceType\" IS NULL");
+                Assert.Equal(1, await RoleHas(builtInOperator));
+                Assert.Equal(0, await RoleHas(builtInAuditor));
+                Assert.Equal(0, await RoleHas(customOperator));
+                Assert.Equal(1, await GroupHas(plainGroup));
+                Assert.Equal(1, await GroupHas(alreadyGroup));
+                Assert.Equal(1, await GroupHas(namedGroup));
+                Assert.Equal(0, await GroupHas(auditorGroup));
+                Assert.Equal(0, await GroupHas(customGroup));
+                // The grant naming a profile type is still there beside the new one.
+                Assert.Equal(2, await ScalarAsync(app,
+                    $"SELECT count(*) FROM \"CapabilityGrants\" WHERE \"GroupId\" = '{namedGroup.Id}' AND \"Capability\" = 'profile.use'"));
+
+                await MigrateToLatestAsync(app, "application");
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+        }
+
+        /// <summary>
+        /// The SSH part of <c>--upgrade-check</c> against a database from before the SSH keystore:
+        /// every key file there and holding its key is clean, with the count; a file that is gone
+        /// refuses the upgrade, naming the SSH CA, its row and the path, until the file is back or
+        /// the SSH CA is disabled; and the user signing profiles whose certificates will carry fewer
+        /// permits are noted without refusing anything. Nothing is applied and no file is touched.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task The_upgrade_check_reports_the_ssh_ca_key_files_and_the_signing_profiles_that_relied_on_default_extensions()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            var install = Path.Combine(Path.GetTempPath(), $"mca-upgrade-ssh-{Guid.NewGuid():N}");
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                var connection = WithDatabase(server, appName);
+                await using var app = CreateApp(connection);
+                await MigrateThroughAsync(app, ApiKeys);
+                var targets = new[] { ("application", DatabaseKind.Application, Instance(connection)) };
+                async Task<(int Exit, string Report)> CheckAsync()
+                {
+                    var output = new StringWriter();
+                    var exit = await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output, installDirectory: install);
+                    return (exit, output.ToString());
+                }
+
+                // No SSH CA at all.
+                var (exit, report) = await CheckAsync();
+                Assert.Equal(0, exit);
+                Assert.Contains("SSH CA keys: key files on this host", report);
+                Assert.Contains("ok: no SSH CA key is a file on a node; nothing to import.", report);
+                Assert.DoesNotContain("SSH signing profiles", report);
+
+                // One SSH CA with its key file where its row says, relative as an older install could record it, and two user profiles.
+                var ca = Guid.NewGuid();
+                var key = Guid.NewGuid();
+                var keys = Path.Combine(install, "config", "ssh-ca-keys");
+                Directory.CreateDirectory(keys);
+                var keyFile = Path.Combine(keys, key.ToString());
+                File.Copy(ModularCA.Tests.Ssh.SshFixtures.PathOf("ca-ed25519.testkey"), keyFile);
+                var publicKey = ModularCA.Tests.Ssh.SshFixtures.Text("ca-ed25519.pub").Trim();
+                var narrow = Guid.NewGuid();
+                var complete = Guid.NewGuid();
+                const string profileColumns = "\"Id\",\"Name\",\"SshCaKeyId\",\"MaxValidityHours\",\"AllowUserCerts\",\"AllowHostCerts\",\"SourceAddressRestrictions\",\"DefaultExtensions\",\"CreatedAt\"";
+                await ExecAsync(app,
+                    "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"SpaceId\",\"IsDeleted\") "
+                    + $"VALUES ('{ca}','Ops SSH','ops-ssh',false,'SSH',true,'Software',true,NULL,false); "
+                    + "INSERT INTO \"SshCaKeys\" (\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"PrivateKeyPath\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"IsEnabled\",\"CreatedAt\") "
+                    + $"VALUES ('{key}','Ops SSH','ed25519','{publicKey}','config/ssh-ca-keys/{key}','{ca}',true,false,24,true,now()); "
+                    + $"INSERT INTO \"SshSigningProfiles\" ({profileColumns}) VALUES "
+                    + $"('{narrow}','Ops SSH - User Signing','{key}',24,true,false,'[]','[\"permit-pty\"]',now()), "
+                    + $"('{complete}','Ops SSH - Everything','{key}',24,true,false,'[]','[\"permit-X11-forwarding\",\"permit-agent-forwarding\",\"permit-port-forwarding\",\"permit-pty\",\"permit-user-rc\"]',now());");
+
+                (exit, report) = await CheckAsync();
+                Assert.Equal(0, exit);
+                Assert.Contains("ok: 1 SSH CA key(s) will be imported into the signer at first start and their files deleted; "
+                    + "archives made before this upgrade still contain them in plaintext", report);
+                Assert.Contains("SSH signing profiles", report);
+                Assert.Contains("note: 1 SSH signing profile(s) for user certificates relied on the extensions", report);
+                Assert.Contains($"'Ops SSH - User Signing' ({narrow}): names permit-pty; certificates from it will no longer carry "
+                    + "permit-X11-forwarding, permit-agent-forwarding, permit-port-forwarding, permit-user-rc", report);
+                Assert.DoesNotContain("Ops SSH - Everything", report);
+                Assert.DoesNotContain("REFUSED", report);
+                Assert.Contains("UPGRADE CHECK: PASS", report);
+
+                // The key file is gone: the upgrade is refused, by name, row and path, and the note is still only a note.
+                var bytes = File.ReadAllBytes(keyFile);
+                File.Delete(keyFile);
+                (exit, report) = await CheckAsync();
+                Assert.Equal(3, exit);
+                Assert.Contains("REFUSED: 1 SSH CA key file(s) are missing or do not hold their SSH CA's key.", report);
+                Assert.Contains($"'Ops SSH' ({key}), expected at {keyFile}", report);
+                Assert.Contains("run this check on that host", report);
+                Assert.Contains("UPGRADE CHECK: REFUSED (SSH CA keys: 1 key file(s) missing or not matching). Nothing was changed.", report);
+
+                // Disabling the SSH CA is the other way out.
+                await ExecAsync(app, $"UPDATE \"SshCaKeys\" SET \"IsEnabled\" = false WHERE \"Id\" = '{key}'; UPDATE \"CertificateAuthorities\" SET \"IsEnabled\" = false WHERE \"Id\" = '{ca}';");
+                (exit, report) = await CheckAsync();
+                Assert.Equal(0, exit);
+                Assert.Contains("1 disabled SSH CA key(s) have no usable key file and stay as they are", report);
+
+                // Nothing was applied, and the check read the key file without changing it.
+                await ExecAsync(app, $"UPDATE \"SshCaKeys\" SET \"IsEnabled\" = true WHERE \"Id\" = '{key}'; UPDATE \"CertificateAuthorities\" SET \"IsEnabled\" = true WHERE \"Id\" = '{ca}';");
+                File.WriteAllBytes(keyFile, bytes);
+                (exit, _) = await CheckAsync();
+                Assert.Equal(0, exit);
+                Assert.Equal(bytes, File.ReadAllBytes(keyFile));
+                Assert.Equal(0, await ScalarAsync(app,
+                    "SELECT count(*) FROM information_schema.columns WHERE table_name = 'SshCaKeys' AND column_name = 'KeyStorage'"));
+
+                // After the upgrade the same check still finds the key awaiting its import, and words the note for a change that has happened.
+                await MigrateToLatestAsync(app, "application");
+                (exit, report) = await CheckAsync();
+                Assert.Equal(0, exit);
+                Assert.Contains("ok: 1 SSH CA key(s) will be imported into the signer at first start", report);
+                Assert.Contains("name fewer permits than every user certificate carried by default", report);
+                Assert.DoesNotContain("will be narrower than before", report);
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+                try { Directory.Delete(install, true); } catch (IOException) { }
+            }
+        }
+
+        /// <summary>
+        /// The request profile part of <c>--upgrade-check</c>: the certificates a protocol issued are
+        /// found in the audit database, their requests in the application database, and the ones the
+        /// request profile that protocol uses now would refuse are noted, without refusing the
+        /// upgrade. Old audit rows and protocols switched off are left out.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task The_upgrade_check_notes_the_protocol_certificates_their_request_profile_would_now_refuse()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var suffix = Guid.NewGuid().ToString("N")[..12];
+            var appName = $"modularca_upgrade_app_{suffix}";
+            var auditName = $"modularca_upgrade_audit_{suffix}";
+            await CreateDatabaseAsync(server, appName);
+            await CreateDatabaseAsync(server, auditName);
+            try
+            {
+                var appConnection = WithDatabase(server, appName);
+                var auditConnection = WithDatabase(server, auditName);
+                await using var app = CreateApp(appConnection);
+                await using var audit = CreateAudit(auditConnection);
+                await MigrateToLatestAsync(app, "application");
                 await MigrateToLatestAsync(audit, "audit");
-                await AssertAuditChainsSealedAsync(audit, AuditTenantChains);
+
+                var ca = new CertificateAuthorityEntity { Name = "Issuing", Label = "issuing-ca", Type = "Root", KeyStorageType = "Software", IsEnabled = true };
+                var sanRules = JsonSerializer.Serialize(new
+                {
+                    allowedTypes = new[] { "DNS", "IP" },
+                    required = true,
+                    rules = new Dictionary<string, object> { ["DNS"] = new { regex = (string?)null, maxCount = 10 } },
+                });
+                var profile = new RequestProfileEntity
+                {
+                    Name = "Enterprise Server (EST)",
+                    SubjectDnRules = """[{"Field":"CN","Requirement":"Required","MaxLength":64}]""",
+                    SanRules = sanRules,
+                };
+                app.CertificateAuthorities.Add(ca);
+                app.RequestProfiles.Add(profile);
+                app.CaProtocolConfigs.Add(new CaProtocolConfigEntity { CaId = ca.Id, Protocol = "EST", IsEnabled = true, RequestProfileId = profile.Id });
+                app.CaProtocolConfigs.Add(new CaProtocolConfigEntity { CaId = ca.Id, Protocol = "CMP", IsEnabled = false, RequestProfileId = profile.Id });
+                CertificateEntity Certificate(string serial) => new()
+                {
+                    SerialNumber = serial, SubjectDN = "CN=x", Issuer = "CN=Issuing", Pem = "", SubjectAlternativeNamesJson = "[]",
+                    KeyUsagesJson = "[]", ExtendedKeyUsagesJson = "[]", NotBefore = DateTime.UtcNow.AddDays(-1), NotAfter = DateTime.UtcNow.AddDays(30),
+                };
+                var withSan = Certificate("0A1B");
+                var withoutSan = Certificate("0C2D");
+                var fromCmp = Certificate("0E3F");
+                var old = Certificate("0F40");
+                app.Certificates.AddRange(withSan, withoutSan, fromCmp, old);
+                CertRequestEntity Request(CertificateEntity certificate, string subject, params string[] sans) => new()
+                {
+                    CSR = "", Subject = subject, SubjectAlternativeNames = JsonSerializer.Serialize(sans), Status = "Issued",
+                    IssuedCertificateId = certificate.CertificateId,
+                };
+                app.CertificateRequests.AddRange(
+                    Request(withSan, "CN=printer1", "DNS:printer1"),
+                    Request(withoutSan, "CN=printer2"),
+                    Request(fromCmp, "CN=printer3"),
+                    Request(old, "CN=printer4"));
+                await app.SaveChangesAsync();
+
+                AuditEstEntity Est(string serial, int daysAgo) => new()
+                {
+                    Timestamp = DateTime.UtcNow.AddDays(-daysAgo), Operation = "simpleenroll", CertificateSerial = serial, CaLabel = "issuing-ca", Success = true,
+                };
+                audit.AuditEst.AddRange(Est("0a1b", 3), Est("0c2d", 2), Est("0f40", 120));
+                audit.AuditCmp.Add(new AuditCmpEntity
+                {
+                    Timestamp = DateTime.UtcNow.AddDays(-1), MessageType = "ir", CertificateSerial = "0E3F", CaLabel = "issuing-ca", Success = true,
+                });
+                await audit.SaveChangesAsync();
+
+                var targets = new[]
+                {
+                    ("application", DatabaseKind.Application, Instance(appConnection)),
+                    ("audit", DatabaseKind.Audit, Instance(auditConnection)),
+                };
+                var output = new StringWriter();
+                Assert.Equal(0, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output));
+                var report = output.ToString();
+
+                Assert.Contains("Request profiles", report);
+                Assert.True(report.Contains("note: 2 certificate(s) issued through enrollment protocols in the last 90 days were checked", StringComparison.Ordinal), report);
+                Assert.Contains("1 would be refused if requested again:", report);
+                Assert.Contains("EST on 'issuing-ca', request profile 'Enterprise Server (EST)': 1 certificate(s)", report);
+                Assert.Contains("'CN=printer2':", report);
+                Assert.DoesNotContain("printer1", report);
+                Assert.DoesNotContain("printer3", report);
+                Assert.DoesNotContain("printer4", report);
+                Assert.Contains("UPGRADE CHECK: PASS", report);
             }
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-            await DropDatabaseAsync(server, auditName);
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+                await DropDatabaseAsync(server, auditName);
+            }
         }
     }
 
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task A_tenant_hostname_row_stops_the_upgrade_with_3_through_the_startup_gate_and_nothing_is_applied()
+    /// <summary>Folding the system tenant into the instance: a fresh database, a missing policy row, the preconditions that refuse it, and the rehearsal on a restored dump.</summary>
+    [Trait("Category", "PostgreSQL")]
+    [Trait(TestTier.Name, TestTier.Slow)]
+    [Collection(PostgresLane.Six)]
+    public sealed class Folds
     {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var suffix = Guid.NewGuid().ToString("N")[..12];
-        var appName = $"modularca_upgrade_app_{suffix}";
-
-        await CreateDatabaseAsync(server, appName);
-        try
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task A_fresh_database_migrates_and_the_fold_changes_nothing()
         {
-            var connection = WithDatabase(server, appName);
-            await using (var app = CreateApp(connection))
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, appName);
+            try
             {
-                await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
-                await app.Database.ExecuteSqlRawAsync(Seed030Sql + SeedTenantHostnameSql);
+                await using var app = CreateApp(WithDatabase(server, appName));
+                await MigrateThroughAsync(app, FoldSystemTenant);
+                Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"Tenants\""));
+                // Bootstrap seeds the policy with the wizard's values; the fold must not pre-empt it.
+                Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"SecurityPolicy\""));
+                await MigrateToLatestAsync(app, "application");
             }
-
-            using var log = new CapturedSerilog();
-            var exit = await SchemaStartupApi.EnforceAllAsync(
-                [("application", DatabaseKind.Application, Instance(connection))], true, new SchemaConfig { WaitSeconds = 1 });
-
-            Assert.Equal(3, exit);
-            Assert.True(log.Events.Any(e => e.Text.Contains("This instance has 1 tenant hostname(s)", StringComparison.Ordinal)),
-                string.Join(Environment.NewLine, log.Events.Select(e => $"{e.Level}: {e.Text}")));
-            await using (var app = CreateApp(connection))
+            finally
             {
-                Assert.Equal([AppBaseline], await app.Database.GetAppliedMigrationsAsync());
-                Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"TenantHostnames\""));
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
             }
         }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-        }
-    }
 
-    /// <summary>
-    /// A 0.3.x database where a later migration refuses (<c>InstanceUniqueCaNames</c> P1, a label
-    /// two CAs share) after <c>RetireTenantHostnames</c> and <c>FoldSystemTenant</c> pass: the dry
-    /// run lists P1 with its message and P2 (the same label, also shared up to case) as also found,
-    /// skips the rest of the migration, whose unique index the duplicate breaks, then stops at
-    /// <c>RenameTenantToSpace</c>, which renames an index the skipped steps would have created. It
-    /// applies nothing and leaves no lock behind; then <c>--upgrade-check</c> and the control
-    /// role's start both refuse with 3 and list the same, still applying nothing.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task A_later_refusal_is_caught_by_the_dry_run_and_nothing_is_applied()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
-        var p1 = RefusedUniqueness().Single(r => (string)r[0] == "P1");
-        var expected = (string)p1[2];
-        await CreateDatabaseAsync(server, appName);
-        try
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task An_upgrade_without_a_security_policy_row_gets_one_with_the_system_tenants_values()
         {
-            var connection = WithDatabase(server, appName);
-            string refusing, rename;
-            await using (var app = CreateApp(connection))
+            var failure = await FoldAsync(Seed030Sql, FoldSystemTenant, async app =>
             {
-                await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
-                await ExecAsync(app, Seed030Sql + SeedFoldSql + (string)p1[1]);
-                refusing = MigrationId(app, InstanceUniqueCaNames);
-                rename = MigrationId(app, RenameTenantToSpace);
+                var defaults = new ModularCA.Shared.Entities.SecurityPolicyEntity();
+                Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SecurityPolicy\""));
+                Assert.Equal(1, await ScalarAsync(app,
+                    $"SELECT count(*) FROM \"SecurityPolicy\" WHERE \"MaxFailedLoginAttempts\" = {defaults.MaxFailedLoginAttempts} "
+                    + $"AND \"KeystoreScryptN\" = {defaults.KeystoreScryptN} AND \"UserQuorum\" = {defaults.UserQuorum} "
+                    + "AND \"RequireKeyCeremony\" AND \"CeremonyRequiredApprovals\" = 3 AND \"UserCeremonyRequiredApprovals\" = 2"));
+            });
+            Assert.Null(failure);
+        }
 
-                var result = await SchemaVersionGate.DryRunPendingAsync(app);
+        /// <summary>
+        /// Each precondition refuses its own shape, names it, and rolls back: the fold is not
+        /// recorded and the system tenant is still there.
+        /// </summary>
+        [RequiresEnvironmentTheory(ServerVariable)]
+        [MemberData(nameof(RefusedFolds), MemberType = typeof(PostgresUpgradeHarnessTests))]
+        public async Task A_precondition_refuses_the_fold_and_nothing_is_applied(string precondition, string offendingSql, string expected)
+        {
+            var failure = await FoldAsync(Seed030Sql + SeedFoldSql + offendingSql, FoldSystemTenant, async app =>
+            {
+                Assert.DoesNotContain(await app.Database.GetAppliedMigrationsAsync(), m => m.EndsWith("_" + FoldSystemTenant, StringComparison.Ordinal));
+                Assert.Equal(1, await ScalarAsync(app, $"SELECT count(*) FROM \"Tenants\" WHERE \"Id\" = '{SystemTenant}'"));
+                Assert.Equal(4, await ScalarAsync(app, "SELECT count(*) FROM \"CaGroups\" WHERE \"Name\" LIKE 'org-system-%'"));
+            });
 
-                Assert.False(result.Passed);
-                Assert.Equal([(refusing, "P1", false), (refusing, "P2", true)], result.Refusals.Select(r => (r.Migration, r.Check, r.AlsoFound)));
-                Assert.Contains(expected, result.Refusals[0].Message);
-                var skip = Assert.Single(result.Skipped);
-                Assert.Equal((refusing, PostgresErrorCodes.UniqueViolation), (skip.Migration, SchemaFailure.SqlState(skip.Error)));
-                Assert.Equal(rename, result.Migration);
-                Assert.True(result.Stopped);
-                Assert.Equal([MigrationId(app, RetireTenantHostnames), MigrationId(app, FoldSystemTenant)], result.Rehearsed);
-                await AssertNothingAppliedAsync(app);
+            Assert.NotNull(failure);
+            Assert.EndsWith("_" + FoldSystemTenant, failure!.Migration, StringComparison.Ordinal);
+            var raised = Assert.IsType<PostgresException>(failure.Error.GetBaseException());
+            Assert.True(raised.MessageText.Contains(expected, StringComparison.Ordinal), $"{precondition}: {raised.MessageText}");
+        }
+
+        [RequiresEnvironmentFact(RehearsalVariable)]
+        public async Task A_restored_dump_migrates_to_latest_without_losing_rows()
+        {
+            await using var app = CreateApp(Environment.GetEnvironmentVariable(RehearsalVariable)!);
+            var ownership = await SchemaOwnership.ProbeAsync(app.Database.GetDbConnection(), DatabaseKind.Application);
+            Assert.True(ownership.IsSound,
+                "The rehearsal copy does not reproduce staging's ownership; restore it with pg_restore --role=<service role> "
+                + "and connect as the service role. " + SchemaOwnership.RefusalMessage(ownership, null));
+
+            var before = await CountsAsync(app);
+            await MigrateThroughAsync(app, InstanceUniqueCaNames);
+            var after = await CountsAsync(app);
+
+            // The fold removes the system tenant and its four org-system-* groups, and nothing else.
+            Assert.Equal(before with { Tenants = before.Tenants - 1, Groups = before.Groups - 4 }, after);
+            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'Tenants' AND column_name = 'IsSystemTenant'"));
+            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"CaGroups\" WHERE \"Name\" LIKE 'org-system-%'"));
+            Assert.Equal(0, await ScalarAsync(app,
+                "SELECT count(*) FROM information_schema.columns WHERE table_name = 'Tenants' AND column_name IN ('MaxCertificateAuthorities','MaxCertificatesTotal','MaxUsers')"));
+            Assert.Equal(2, await ScalarAsync(app,
+                "SELECT count(*) FROM pg_catalog.pg_indexes WHERE indexname IN ('IX_CertificateAuthorities_Label','IX_CertificateAuthorities_Name') AND indexdef LIKE 'CREATE UNIQUE INDEX%'"));
+            await MigrateToLatestAsync(app, "application");
+
+            var auditConnection = Environment.GetEnvironmentVariable(RehearsalAuditVariable);
+            if (!string.IsNullOrWhiteSpace(auditConnection))
+            {
+                await using var audit = CreateAudit(auditConnection);
+                var auditOwnership = await SchemaOwnership.ProbeAsync(audit.Database.GetDbConnection(), DatabaseKind.Audit);
+                Assert.True(auditOwnership.IsSound, SchemaOwnership.RefusalMessage(auditOwnership, null));
+                await MigrateToLatestAsync(audit, "audit");
             }
-            await AssertNoLockHeldAsync(connection);
-
-            var output = new StringWriter();
-            var target = ("application", DatabaseKind.Application, Instance(connection));
-            Assert.Equal(3, await SchemaStartupApi.UpgradeCheckAsync([target], new SchemaConfig(), output));
-            var report = output.ToString();
-            Assert.Contains($"UPGRADE CHECK: REFUSED (application: migration {refusing} refuses; then migration {rename} fails, "
-                + "and the checks after it could not run). Nothing was changed.", report);
-            Assert.Contains($"1 of 2: migration {refusing} (P1) refuses: {expected}", report);
-            Assert.Contains($"2 of 2, also found: migration {refusing} (P2) refuses: ", report);
-            Assert.Contains($"Skipped: the rest of migration {refusing}, from command 6 of ", report);
-            Assert.Contains("which may follow from the steps skipped above. The checks after this point could not run.", report);
-            Assert.Contains("nothing was applied", report);
-
-            using var log = new CapturedSerilog();
-            Assert.Equal(3, await SchemaStartupApi.EnforceAllAsync([target], true, new SchemaConfig { WaitSeconds = 1 }));
-            var events = string.Join(Environment.NewLine, log.Events.Select(e => $"{e.Level}: {e.Text}"));
-            Assert.True(log.Has(Serilog.Events.LogEventLevel.Fatal, expected), events);
-            Assert.True(log.Has(Serilog.Events.LogEventLevel.Fatal, $"1 of 2: migration {refusing} (P1) refuses: "), events);
-            Assert.True(log.Has(Serilog.Events.LogEventLevel.Fatal, $"2 of 2, also found: migration {refusing} (P2) refuses: "), events);
-            Assert.True(log.Has(Serilog.Events.LogEventLevel.Fatal, "nothing was applied to either database"), events);
-            await using (var app = CreateApp(connection))
-                await AssertNothingAppliedAsync(app);
-            await AssertNoLockHeldAsync(connection);
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-        }
-    }
-
-    /// <summary>
-    /// A refusal raised after the renames of its own migration (<c>RenameTenantToSpace</c> P2, a
-    /// taken group name), followed by its knock-on (the group rename then breaks the unique index
-    /// on group names): the dry run reports the refusal and the skipped rest of the migration, not a
-    /// crash and not a second problem, and rolls back the renames and every earlier migration with
-    /// them. <c>--upgrade-check</c> lists the same and exits 3; nothing stopped it early.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task A_refusal_after_renames_in_the_same_migration_leaves_every_name_as_it_was()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
-        var taken = RefusedRenames().Single(r => (string)r[0] == "P2 taken");
-        await CreateDatabaseAsync(server, appName);
-        try
-        {
-            var connection = WithDatabase(server, appName);
-            string rename;
-            List<string> before;
-            await using (var app = CreateApp(connection))
-            {
-                await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
-                await ExecAsync(app, Seed030Sql + SeedFoldSql + (string)taken[1]);
-                rename = MigrationId(app, RenameTenantToSpace);
-                before = await FingerprintAsync(app);
-
-                var result = await SchemaVersionGate.DryRunPendingAsync(app);
-
-                Assert.False(result.Passed);
-                Assert.False(result.Stopped);
-                Assert.Null(result.Migration);
-                Assert.Equal(result.Pending.Where(id => id != rename), result.Rehearsed);
-                var refusal = Assert.Single(result.Refusals);
-                Assert.Equal((rename, "P2", false), (refusal.Migration, refusal.Check, refusal.AlsoFound));
-                Assert.Contains((string)taken[2], refusal.Message);
-                var skip = Assert.Single(result.Skipped);
-                Assert.Equal((rename, PostgresErrorCodes.UniqueViolation), (skip.Migration, SchemaFailure.SqlState(skip.Error)));
-                await AssertNothingAppliedAsync(app);
-            }
-            await AssertNoLockHeldAsync(connection);
-
-            var output = new StringWriter();
-            Assert.Equal(3, await SchemaStartupApi.UpgradeCheckAsync(
-                [("application", DatabaseKind.Application, Instance(connection))], new SchemaConfig(), output));
-            var report = output.ToString();
-            Assert.Contains($"UPGRADE CHECK: REFUSED (application: migration {rename} refuses). Nothing was changed.", report);
-            Assert.Contains($"1 of 1: migration {rename} (P2) refuses: {(string)taken[2]}", report);
-            Assert.Contains($"Skipped: the rest of migration {rename}, from command ", report);
-            Assert.Contains("Those steps depend on fixing that refusal; they are checked once it is fixed.", report);
-            Assert.DoesNotContain("could not run", report);
-            Assert.DoesNotContain("also found", report);
-            await using (var app = CreateApp(connection))
-                Assert.Equal(before, await FingerprintAsync(app));
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-        }
-    }
-
-    /// <summary>
-    /// Two independent refusals in different migrations, a tenant hostname
-    /// (<c>RetireTenantHostnames</c>) and a label two CAs share (<c>InstanceUniqueCaNames</c> P1):
-    /// one <c>--upgrade-check</c> run lists both, numbered, the second as also found, exits 3, and
-    /// leaves every row and catalog entry of the database as it was. The control role's start
-    /// refuses with the same list in the journal, still changing nothing.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task One_upgrade_check_lists_refusals_from_different_migrations_and_changes_nothing()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
-        var p1 = RefusedUniqueness().Single(r => (string)r[0] == "P1");
-        const string hostnames = "This instance has 1 tenant hostname(s), which 0.4.0 no longer serves.";
-        await CreateDatabaseAsync(server, appName);
-        try
-        {
-            var connection = WithDatabase(server, appName);
-            string retire, unique;
-            List<string> before;
-            await using (var app = CreateApp(connection))
-            {
-                await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
-                await ExecAsync(app, Seed030Sql + SeedFoldSql + SeedTenantHostnameSql + (string)p1[1]);
-                retire = MigrationId(app, RetireTenantHostnames);
-                unique = MigrationId(app, InstanceUniqueCaNames);
-                before = await FingerprintAsync(app);
-
-                var result = await SchemaVersionGate.DryRunPendingAsync(app);
-
-                Assert.Equal([(retire, null, false), (unique, "P1", true), (unique, "P2", true)],
-                    result.Refusals.Select(r => (r.Migration, r.Check, r.AlsoFound)));
-                Assert.StartsWith(hostnames, result.Refusals[0].Message);
-                Assert.Contains((string)p1[2], result.Refusals[1].Message);
-                Assert.Equal(unique, Assert.Single(result.Skipped).Migration);
-                Assert.Equal([MigrationId(app, FoldSystemTenant)], result.Rehearsed);
-                Assert.Equal(before, await FingerprintAsync(app));
-            }
-
-            var output = new StringWriter();
-            var target = ("application", DatabaseKind.Application, Instance(connection));
-            Assert.Equal(3, await SchemaStartupApi.UpgradeCheckAsync([target], new SchemaConfig(), output));
-            var report = output.ToString();
-            Assert.Contains("found 3 refusal(s); fix each, then check again:", report);
-            Assert.Contains($"1 of 3: migration {retire} refuses: {hostnames}", report);
-            Assert.Contains($"2 of 3, also found: migration {unique} (P1) refuses: {(string)p1[2]}", report);
-            Assert.Contains($"3 of 3, also found: migration {unique} (P2) refuses: ", report);
-            Assert.Contains("\"Also found\" refusals came after an earlier refusal", report);
-            Assert.Contains($"UPGRADE CHECK: REFUSED (application: migrations {retire}, {unique} refuse; then migration ", report);
-            Assert.Single(report.Split('\n'), l => l.StartsWith("UPGRADE CHECK: ", StringComparison.Ordinal));
-            await using (var app = CreateApp(connection))
-                Assert.Equal(before, await FingerprintAsync(app));
-
-            using var log = new CapturedSerilog();
-            Assert.Equal(3, await SchemaStartupApi.EnforceAllAsync([target], true, new SchemaConfig { WaitSeconds = 1 }));
-            var events = string.Join(Environment.NewLine, log.Events.Select(e => $"{e.Level}: {e.Text}"));
-            Assert.True(log.Has(Serilog.Events.LogEventLevel.Fatal, $"1 of 3: migration {retire} refuses: {hostnames}"), events);
-            Assert.True(log.Has(Serilog.Events.LogEventLevel.Fatal, $"2 of 3, also found: migration {unique} (P1) refuses: {(string)p1[2]}"), events);
-            await using (var app = CreateApp(connection))
-            {
-                Assert.Equal(before, await FingerprintAsync(app));
-                await AssertNothingAppliedAsync(app);
-            }
-            await AssertNoLockHeldAsync(connection);
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-        }
-    }
-
-    /// <summary>
-    /// An error that is not a refusal, with no refusal before it (an index of the name
-    /// <c>InstanceUniqueCaNames</c> creates already exists): the dry run stops there and says the
-    /// checks after it could not run, so the refusal <c>RenameTenantToSpace</c> P2 would raise
-    /// later (a taken group name) is not reported, and nothing is changed.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task An_error_with_no_refusal_before_it_stops_the_check_and_says_the_rest_could_not_run()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
-        var taken = RefusedRenames().Single(r => (string)r[0] == "P2 taken");
-        await CreateDatabaseAsync(server, appName);
-        try
-        {
-            var connection = WithDatabase(server, appName);
-            string unique;
-            List<string> before;
-            await using (var app = CreateApp(connection))
-            {
-                await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
-                await ExecAsync(app, Seed030Sql + SeedFoldSql + (string)taken[1]
-                    + "CREATE INDEX \"IX_CertificateAuthorities_LabelLower\" ON \"CertificateAuthorities\" (\"Name\");");
-                unique = MigrationId(app, InstanceUniqueCaNames);
-                before = await FingerprintAsync(app);
-
-                var result = await SchemaVersionGate.DryRunPendingAsync(app);
-
-                Assert.Empty(result.Refusals);
-                Assert.Empty(result.Skipped);
-                Assert.True(result.Stopped);
-                Assert.Equal(unique, result.Migration);
-                Assert.Equal(6, result.Command);
-                Assert.Equal(PostgresErrorCodes.DuplicateTable, SchemaFailure.SqlState(result.Error!));
-                Assert.Equal([MigrationId(app, RetireTenantHostnames), MigrationId(app, FoldSystemTenant)], result.Rehearsed);
-            }
-
-            var output = new StringWriter();
-            Assert.Equal(3, await SchemaStartupApi.UpgradeCheckAsync(
-                [("application", DatabaseKind.Application, Instance(connection))], new SchemaConfig(), output));
-            var report = output.ToString();
-            Assert.Contains($"The dry run of the application database failed at migration {unique}, command 6 of ", report);
-            Assert.Contains("The checks after this point could not run.", report);
-            Assert.Contains($"UPGRADE CHECK: REFUSED (application: migration {unique} fails). Nothing was changed.", report);
-            Assert.DoesNotContain((string)taken[2], report);
-            await using (var app = CreateApp(connection))
-                Assert.Equal(before, await FingerprintAsync(app));
-            await AssertNoLockHeldAsync(connection);
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-        }
-    }
-
-    /// <summary>
-    /// A clean 0.3.x database: the dry run passes and leaves it unchanged, the audit database's
-    /// dry run passes, <c>--upgrade-check</c> exits 0 still changing nothing, refuses an integration
-    /// key scoped to the system tenant (but not one scoped to the instance), and the control role's
-    /// start then applies every migration.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task A_clean_030_database_passes_the_dry_run_unchanged_then_the_control_role_upgrades_it()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var suffix = Guid.NewGuid().ToString("N")[..12];
-        var appName = $"modularca_upgrade_app_{suffix}";
-        var auditName = $"modularca_upgrade_audit_{suffix}";
-        await CreateDatabaseAsync(server, appName);
-        await CreateDatabaseAsync(server, auditName);
-        try
-        {
-            var appConnection = WithDatabase(server, appName);
-            var auditConnection = WithDatabase(server, auditName);
-            int pending, auditPending;
-            List<string> before;
-            await using (var app = CreateApp(appConnection))
-            {
-                await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
-                await ExecAsync(app, Seed030Sql + SeedFoldSql);
-                pending = app.Database.GetMigrations().Count() - 1;
-                before = await FingerprintAsync(app);
-
-                var result = await SchemaVersionGate.DryRunPendingAsync(app);
-
-                Assert.True(result.Passed, result.Error?.ToString());
-                Assert.Empty(result.Refusals);
-                Assert.Empty(result.Skipped);
-                Assert.False(result.Stopped);
-                Assert.Equal(pending, result.Rehearsed.Count);
-                Assert.Equal(result.Pending, result.Rehearsed);
-                await AssertNothingAppliedAsync(app);
-            }
-            await using (var audit = CreateAudit(auditConnection))
-            {
-                await audit.GetService<IMigrator>().MigrateAsync(AuditBaseline);
-                var result = await SchemaVersionGate.DryRunPendingAsync(audit);
-                Assert.True(result.Passed, result.Error?.ToString());
-                Assert.Equal(audit.Database.GetMigrations().Skip(1), result.Rehearsed);
-                auditPending = result.Rehearsed.Count;
-                Assert.Equal([AuditBaseline], await audit.Database.GetAppliedMigrationsAsync());
-            }
-            await AssertNoLockHeldAsync(appConnection);
-
-            var targets = new[]
-            {
-                ("application", DatabaseKind.Application, Instance(appConnection)),
-                ("audit", DatabaseKind.Audit, Instance(auditConnection)),
-            };
-            var output = new StringWriter();
-            Assert.Equal(0, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output));
-            var report = output.ToString();
-            Assert.Contains($"UPGRADE CHECK: PASS ({pending + auditPending} pending migration(s) would apply cleanly). Nothing was changed.", report);
-            Assert.Contains($"would apply {auditPending} migration(s) cleanly.", report);
-            Assert.DoesNotContain("REFUSED", report);
-            Assert.Contains($"dry run: passed; {pending} migration(s) ran in one transaction and were rolled back.", report);
-
-            // An integration key scoped to the system tenant is refused, read-only, with its remedy;
-            // one scoped to the instance or an organisation is not.
-            output = new StringWriter();
-            Assert.Equal(3, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output,
-                [("IntegrationApi.SpaceId", SystemTenant.ToString()), ("CertManager.SpaceId", OrgTenant.ToString())]));
-            report = output.ToString();
-            Assert.Contains("UPGRADE CHECK: REFUSED (configuration: IntegrationApi.SpaceId scoped to the system tenant). Nothing was changed.", report);
-            Assert.Contains("Set IntegrationApi.SpaceId to 'instance'", report);
-            Assert.DoesNotContain("CertManager.SpaceId (named", report);
-            output = new StringWriter();
-            Assert.Equal(0, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output,
-                [("IntegrationApi.SpaceId", "instance"), ("CertManager.SpaceId", OrgTenant.ToString())]));
-            Assert.Contains("no integration key is scoped to the system tenant or to a space that does not exist.", output.ToString());
-
-            // Before the fold, a GUID that names no tenant at all is refused too.
-            output = new StringWriter();
-            Assert.Equal(3, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output,
-                [("CertManager.SpaceId", Guid.NewGuid().ToString())]));
-            Assert.Contains("UPGRADE CHECK: REFUSED (configuration: CertManager.SpaceId scoped to no existing space). Nothing was changed.", output.ToString());
-
-            await using (var app = CreateApp(appConnection))
-            {
-                await AssertNothingAppliedAsync(app);
-                Assert.Equal(before, await FingerprintAsync(app));
-            }
-
-            Assert.Null(await SchemaStartupApi.EnforceAllAsync(targets, true, new SchemaConfig { WaitSeconds = 1 }));
-            await using (var app = CreateApp(appConnection))
-                Assert.Equal(SchemaVerdict.Current, SchemaVersionGate.Evaluate(await SchemaVersionGate.ReadAsync(app), appliesMigrations: true));
-            await AssertNoLockHeldAsync(appConnection);
-
-            // After the fold, as an enrollment host checks once the control host has upgraded: the
-            // system tenant is gone, so its id, like any id naming no space, is refused read-only
-            // with the remedy; the instance and an existing space pass.
-            List<string> folded;
-            await using (var app = CreateApp(appConnection))
-                folded = await FingerprintAsync(app);
-            output = new StringWriter();
-            Assert.Equal(3, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output,
-                [("IntegrationApi.SpaceId", SystemTenant.ToString()), ("CertManager.SpaceId", OrgTenant.ToString())]));
-            report = output.ToString();
-            Assert.Contains("UPGRADE CHECK: REFUSED (configuration: IntegrationApi.SpaceId scoped to no existing space). Nothing was changed.", report);
-            Assert.Contains($"IntegrationApi.SpaceId (named IntegrationApi.TenantId before 0.4.0) is {SystemTenant}, which names no existing space", report);
-            Assert.Contains("set IntegrationApi.SpaceId to 'instance'", report);
-            Assert.Contains("otherwise set it to an existing space's id", report);
-            Assert.DoesNotContain("CertManager.SpaceId (named", report);
-            output = new StringWriter();
-            Assert.Equal(0, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output,
-                [("IntegrationApi.SpaceId", "instance"), ("CertManager.SpaceId", OrgTenant.ToString())]));
-            Assert.Contains("no integration key is scoped to the system tenant or to a space that does not exist.", output.ToString());
-            await using (var app = CreateApp(appConnection))
-                Assert.Equal(folded, await FingerprintAsync(app));
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-            await DropDatabaseAsync(server, auditName);
-        }
-    }
-
-    /// <summary>
-    /// A 0.3.x database with the system tenant and two organisation tenants, each with a root CA,
-    /// groups, a CA-bound profile and an open ceremony: the dry run passes unchanged,
-    /// <c>--upgrade-check</c> exits 0, and the control role's start upgrades it. Each organisation
-    /// is then a space with its own rows and policy, the instance has the system tenant's policy,
-    /// and the three retired audit chains seal and verify.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task Two_organisations_become_two_spaces_each_keeping_its_own_rows_and_policy()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var suffix = Guid.NewGuid().ToString("N")[..12];
-        var appName = $"modularca_upgrade_app_{suffix}";
-        var auditName = $"modularca_upgrade_audit_{suffix}";
-        Guid[] chains = [OrgTenant, SecondOrgTenant, SystemTenant];
-        await CreateDatabaseAsync(server, appName);
-        await CreateDatabaseAsync(server, auditName);
-        try
-        {
-            var appConnection = WithDatabase(server, appName);
-            var auditConnection = WithDatabase(server, auditName);
-            await using (var app = CreateApp(appConnection))
-            {
-                await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
-                await ExecAsync(app, Seed030Sql + SeedFoldSql + SeedSecondOrganisationSql);
-                var result = await SchemaVersionGate.DryRunPendingAsync(app);
-                Assert.True(result.Passed, result.Error?.ToString());
-                await AssertNothingAppliedAsync(app);
-            }
-            await using (var audit = CreateAudit(auditConnection))
-            {
-                await audit.GetService<IMigrator>().MigrateAsync(AuditBaseline);
-                await SeedAuditChainsAsync(audit, chains);
-            }
-
-            var targets = new[]
-            {
-                ("application", DatabaseKind.Application, Instance(appConnection)),
-                ("audit", DatabaseKind.Audit, Instance(auditConnection)),
-            };
-            var output = new StringWriter();
-            Assert.Equal(0, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output));
-            Assert.Contains("UPGRADE CHECK: PASS", output.ToString());
-            Assert.Null(await SchemaStartupApi.EnforceAllAsync(targets, true, new SchemaConfig { WaitSeconds = 1 }));
-
-            await using (var app = CreateApp(appConnection))
-                await AssertTwoSpacesAsync(app);
-            await using (var audit = CreateAudit(auditConnection))
-                await AssertAuditChainsSealedAsync(audit, chains);
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-            await DropDatabaseAsync(server, auditName);
         }
     }
 
@@ -819,34 +2195,6 @@ public class PostgresUpgradeHarnessTests
         Assert.Equal(Values(await resolver.ResolveAsync(null)), Values(await resolver.ResolveForCaAsync(SysCa)));
         Assert.Equal((false, 2, 825, ModularCA.Shared.Enums.ValidityCeilingBehavior.Refuse, (int?)null), Values(await resolver.ResolveForCaAsync(RootCa)));
         Assert.Equal((true, 4, 397, ModularCA.Shared.Enums.ValidityCeilingBehavior.Shorten, (int?)3), Values(await resolver.ResolveForCaAsync(SecondRootCa)));
-    }
-
-    /// <summary>
-    /// The audit context's dry run on an empty database rehearses the history table, the baseline
-    /// and every migration after it, and leaves the database empty.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task The_audit_dry_run_rehearses_its_baseline_on_an_empty_database_and_leaves_it_empty()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var auditName = $"modularca_upgrade_audit_{Guid.NewGuid().ToString("N")[..12]}";
-        await CreateDatabaseAsync(server, auditName);
-        try
-        {
-            await using var audit = CreateAudit(WithDatabase(server, auditName));
-            var result = await SchemaVersionGate.DryRunPendingAsync(audit);
-
-            Assert.True(result.Passed, result.Error?.ToString());
-            Assert.Equal(audit.Database.GetMigrations(), result.Rehearsed);
-            Assert.Equal(AuditBaseline, result.Rehearsed[0]);
-            Assert.Equal(DatabasePresence.Empty, (await SchemaVersionGate.ReadAsync(audit)).Presence);
-            Assert.Equal(0, await ScalarAsync(audit, "SELECT count(*) FROM pg_catalog.pg_class WHERE relnamespace = 'public'::regnamespace"));
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, auditName);
-        }
     }
 
     /// <summary>
@@ -1181,71 +2529,6 @@ public class PostgresUpgradeHarnessTests
         VALUES ('{BadCeremony}','RevokeCa','x','','{Operator}','operator',1,1,'Executed',now(),now(),'{parametersJson}','[]',NULL);
         """;
 
-    /// <summary>
-    /// Each S6 precondition refuses its own shape, names it, and rolls back: S6 is not recorded,
-    /// the tables keep their tenant names and the groups their old ones.
-    /// </summary>
-    [RequiresEnvironmentTheory(ServerVariable)]
-    [MemberData(nameof(RefusedRenames))]
-    public async Task A_precondition_refuses_the_rename_and_nothing_of_it_is_applied(string precondition, string offendingSql, string expected)
-    {
-        var failure = await FoldAsync(Seed030Sql + SeedFoldSql + offendingSql, RenameTenantToSpace, async app =>
-        {
-            var applied = await app.Database.GetAppliedMigrationsAsync();
-            Assert.DoesNotContain(applied, m => m.EndsWith("_" + RenameTenantToSpace, StringComparison.Ordinal));
-            Assert.Contains(applied, m => m.EndsWith("_" + InstanceUniqueCaNames, StringComparison.Ordinal));
-            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'Tenants' AND relnamespace = 'public'::regnamespace"));
-            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'Spaces' AND relnamespace = 'public'::regnamespace"));
-            Assert.Equal(1, await ScalarAsync(app, $"SELECT count(*) FROM \"CaGroups\" WHERE \"Id\" = '{OrgAdminGroup}' AND \"Name\" = 'org-acme-admin'"));
-            Assert.Equal(1, await ScalarAsync(app, $"SELECT count(*) FROM \"KeyCeremonies\" WHERE \"Id\" = '{ExecutedCeremony}' AND \"ParametersJson\" LIKE '%\"tenantId\"%'"));
-        });
-
-        Assert.NotNull(failure);
-        Assert.EndsWith("_" + RenameTenantToSpace, failure!.Migration, StringComparison.Ordinal);
-        var raised = Assert.IsType<PostgresException>(failure.Error.GetBaseException());
-        Assert.True(raised.MessageText.Contains(expected, StringComparison.Ordinal), $"{precondition}: {raised.MessageText}");
-    }
-
-    /// <summary>
-    /// A closed ceremony whose stored names hold the JSON escape <c>\u0000</c>, which jsonb rejects,
-    /// does not block the rename: each such escape becomes U+FFFD, here and in a ceremony naming no
-    /// tenant, an escaped backslash before <c>u0000</c> is left alone, and the row reads.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task A_nul_escape_in_stored_parameters_is_neutralised_and_the_rename_succeeds()
-    {
-        var identity = F.Legacy.ControlledUserChange.Replace(@"""Identity"":null", """
-            "Identity":{"FirstName":"Bob\u0000\u0000","LastName":"O\\u0000Neil","DisplayName":"x\\\u0000y"}
-            """, StringComparison.Ordinal);
-        Assert.NotEqual(F.Legacy.ControlledUserChange, identity);
-        const string ssh = """{"Name":"a\u0000b","KeyType":"ed25519"}""";
-        var seed = $"""
-            INSERT INTO "KeyCeremonies" ("Id","OperationType","Description","TargetEntityId","InitiatedByUserId","InitiatedByUsername",
-                "RequiredApprovals","CurrentApprovals","Status","CreatedAt","ExpiresAt","ParametersJson","ApprovalsJson","TenantId")
-            VALUES ('{NulCeremony}','ControlledUserChange','x','','{Operator}','operator',1,1,'Executed',now(),now(),'{identity}','[]','{OrgTenant}'),
-                   ('{NulSshCeremony}','CreateSshCa','x','','{Operator}','operator',1,0,'Rejected',now(),now(),'{ssh}','[]',NULL);
-            """;
-
-        var failure = await FoldAsync(Seed030Sql + SeedFoldSql + seed, RenameTenantToSpace, async app =>
-        {
-            Assert.Contains(await app.Database.GetAppliedMigrationsAsync(), m => m.EndsWith("_" + RenameTenantToSpace, StringComparison.Ordinal));
-            var fffd = (char)0xFFFD;
-            var stored = await TextAsync(app,
-                $"SELECT \"ParametersJson\" FROM \"KeyCeremonies\" WHERE \"Id\" = '{NulCeremony}' AND \"Status\" = 'Executed' AND (\"ParametersJson\"::jsonb ->> 'SpaceId') = '{F.SpaceA}'");
-            var controlled = CeremonyParametersJson.Read<ControlledUserChangeParameters>(stored)!;
-            Assert.Equal((F.SpaceA, F.SpaceB), (controlled.SpaceId, controlled.MintedTierSpaceId));
-            Assert.Equal($"Bob{fffd}{fffd}", controlled.Identity!.FirstName);
-            Assert.Equal(@"O\u0000Neil", controlled.Identity.LastName);
-            Assert.Equal(@"x\" + fffd + "y", controlled.Identity.DisplayName);
-
-            var other = await TextAsync(app, $"SELECT \"ParametersJson\" FROM \"KeyCeremonies\" WHERE \"Id\" = '{NulSshCeremony}' AND \"Status\" = 'Rejected'");
-            Assert.Equal($"a{fffd}b", CeremonyParametersJson.Read<SshKeyCeremonyParameters>(other)!.Name);
-            Assert.Equal(0, await ScalarAsync(app,
-                $"SELECT count(*) FROM \"KeyCeremonies\" WHERE \"ParametersJson\" ~ '{RenameMigration.NulEscapePattern}'"));
-        });
-        Assert.Null(failure);
-    }
-
     public static TheoryData<string, string, string> RefusedUniqueness() => new()
     {
         { "P1", $"UPDATE \"CertificateAuthorities\" SET \"Label\" = 'acme-root' WHERE \"Id\" = '{SshCa}';",
@@ -1265,1072 +2548,6 @@ public class PostgresUpgradeHarnessTests
             "This instance has 1 enabled certificate template(s) whose signing profile does not issue from the template's CA: 'Workstation' on acme-root uses 'Orphan Signing'. |From 0.4.0 MSAE refuses such a template." },
     };
 
-    /// <summary>
-    /// Each S4 precondition refuses its own shape (P1-P3 counting soft-deleted CAs, P4 and P5 only
-    /// enabled rows), names the offenders, and rolls back: S4 is not recorded and the old
-    /// indexes and the quota columns are still there.
-    /// </summary>
-    [RequiresEnvironmentTheory(ServerVariable)]
-    [MemberData(nameof(RefusedUniqueness))]
-    public async Task A_precondition_refuses_the_upgrade_and_nothing_of_it_is_applied(string precondition, string offendingSql, string expected)
-    {
-        var failure = await FoldAsync(Seed030Sql + SeedFoldSql + offendingSql, InstanceUniqueCaNames, async app =>
-        {
-            Assert.DoesNotContain(await app.Database.GetAppliedMigrationsAsync(), m => m.EndsWith("_" + InstanceUniqueCaNames, StringComparison.Ordinal));
-            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM pg_catalog.pg_indexes WHERE indexname = 'IX_CertificateAuthorities_TenantId_Label'"));
-            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM pg_catalog.pg_indexes WHERE indexname = 'IX_CertificateAuthorities_Label'"));
-            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'Tenants' AND column_name = 'MaxUsers'"));
-        });
-
-        Assert.NotNull(failure);
-        Assert.EndsWith("_" + InstanceUniqueCaNames, failure!.Migration, StringComparison.Ordinal);
-        var raised = Assert.IsType<PostgresException>(failure.Error.GetBaseException());
-        foreach (var fragment in expected.Split('|'))
-            Assert.True(raised.MessageText.Contains(fragment, StringComparison.Ordinal), $"{precondition}: {raised.MessageText}");
-    }
-
-    /// <summary>
-    /// The <c>BindAcmeAccountsToCa</c> backfill, seeded at the stage before it with
-    /// <see cref="SeedAcmeAccountsSql"/>: a label binds to the CA with that label ignoring case
-    /// and surrounding blanks, a soft-deleted CA's included; a label naming no CA leaves the
-    /// account unbound; a label-less or blank account binds to the CA
-    /// <c>CaResolverService.DefaultCandidates</c> puts first, passing over deleted, disabled,
-    /// <c>system-</c> and SSH CAs marked default and breaking the tie between two defaults by name.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task The_acme_account_backfill_binds_by_label_ignoring_case_and_label_less_accounts_to_the_default()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
-        await CreateDatabaseAsync(server, appName);
-        try
-        {
-            await using var app = CreateApp(WithDatabase(server, appName));
-            await app.GetService<IMigrator>().MigrateAsync(AppBaseline);
-            await ExecAsync(app, Seed030Sql + SeedFoldSql);
-            await MigrateThroughAsync(app, RenameTenantToSpace);
-
-            await ExecAsync(app, SeedAcmeAccountsSql);
-            await MigrateThroughAsync(app, BindAcmeAccountsToCa);
-
-            async Task<string> BoundTo(Guid account) => await TextAsync(app,
-                $"SELECT coalesce(\"CertificateAuthorityId\"::text, '') FROM \"AcmeAccounts\" WHERE \"Id\" = '{account}'");
-            Assert.Equal(MixedCaseCa.ToString(), await BoundTo(MixedCaseAccount));
-            Assert.Equal(RootCa.ToString(), await BoundTo(PaddedAccount));
-            Assert.Equal(RetiredDefaultCa.ToString(), await BoundTo(RetiredAccount));
-            Assert.Equal("", await BoundTo(GoneAccount));
-            Assert.Equal(RootCa.ToString(), await BoundTo(LabelLessAccount));
-            Assert.Equal(RootCa.ToString(), await BoundTo(BlankLabelAccount));
-            Assert.Equal(6, await ScalarAsync(app, "SELECT count(*) FROM \"AcmeAccounts\""));
-
-            await MigrateToLatestAsync(app, "application");
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-        }
-    }
-
-    /// <summary>
-    /// The <c>SshKeyStorage</c> backfill, seeded at the stage before it: an SSH CA key row that
-    /// has a key file path becomes <c>LegacyFile</c>, so its key waits for the import into the
-    /// signer; a row with an empty path is left at the column default, <c>Signer</c>. Afterwards
-    /// the path may be null, and a row written without a storage gets <c>Signer</c>.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task The_ssh_key_storage_backfill_marks_rows_with_a_key_file_as_legacy_files()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
-        await CreateDatabaseAsync(server, appName);
-        try
-        {
-            await using var app = CreateApp(WithDatabase(server, appName));
-            await MigrateThroughAsync(app, ApiKeys);
-
-            var ca = Guid.NewGuid();
-            var withFile = Guid.NewGuid();
-            var withoutFile = Guid.NewGuid();
-            var added = Guid.NewGuid();
-            const string columns = "\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"PrivateKeyPath\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"IsEnabled\",\"CreatedAt\"";
-            await ExecAsync(app,
-                "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"SpaceId\",\"IsDeleted\") "
-                + $"VALUES ('{ca}','Ops SSH','ops-ssh',false,'SSH',true,'Software',true,NULL,false); "
-                + $"INSERT INTO \"SshCaKeys\" ({columns}) "
-                + $"VALUES ('{withFile}','Ops SSH','ed25519','ssh-ed25519 AAAA','config/ssh-ca-keys/{withFile}','{ca}',true,false,24,true,now()), "
-                + $"('{withoutFile}','Ops SSH empty','ed25519','ssh-ed25519 AAAA','','{ca}',true,false,24,false,now());");
-
-            await MigrateThroughAsync(app, SshKeyStorage);
-
-            async Task<string> Storage(Guid key) => await TextAsync(app, $"SELECT \"KeyStorage\" FROM \"SshCaKeys\" WHERE \"Id\" = '{key}'");
-            Assert.Equal("LegacyFile", await Storage(withFile));
-            Assert.Equal("Signer", await Storage(withoutFile));
-            Assert.Equal($"config/ssh-ca-keys/{withFile}", await TextAsync(app, $"SELECT \"PrivateKeyPath\" FROM \"SshCaKeys\" WHERE \"Id\" = '{withFile}'"));
-
-            await ExecAsync(app,
-                $"INSERT INTO \"SshCaKeys\" ({columns}) "
-                + $"VALUES ('{added}','Ops SSH new','ed25519','ssh-ed25519 AAAA',NULL,'{ca}',true,false,24,true,now());");
-            Assert.Equal("Signer", await Storage(added));
-            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshCaKeys\" WHERE \"PrivateKeyPath\" IS NULL"));
-            Assert.Equal(3, await ScalarAsync(app, "SELECT count(*) FROM \"SshCaKeys\""));
-
-            await MigrateToLatestAsync(app, "application");
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-        }
-    }
-
-    /// <summary>
-    /// The <c>SignerAuditSummary</c> column, seeded at the stage before it: the signer's audit
-    /// rows written before the column keep every value they had and have no summary; the column
-    /// takes a summary of the longest length the signer writes, and no longer; and a row of an
-    /// operation that has none is still written without one.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task The_signer_audit_summary_column_is_added_empty_and_old_rows_are_unchanged()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
-        await CreateDatabaseAsync(server, appName);
-        try
-        {
-            await using var app = CreateApp(WithDatabase(server, appName));
-            await MigrateThroughAsync(app, SshKeyStorage);
-            Assert.Equal(0, await ScalarAsync(app,
-                "SELECT count(*) FROM information_schema.columns WHERE table_name = 'SignerAudit' AND column_name = 'Summary'"));
-
-            var signed = Guid.NewGuid();
-            var refused = Guid.NewGuid();
-            var ca = Guid.NewGuid();
-            var key = Guid.NewGuid();
-            var hash = new string('a', 64);
-            await ExecAsync(app,
-                "INSERT INTO \"SignerAudit\" (\"Id\",\"At\",\"Operation\",\"Caller\",\"Purpose\",\"KeyCertificateId\",\"Keystore\",\"CaId\",\"SpaceId\",\"EffectiveScope\",\"Algorithm\",\"Outcome\",\"Reason\",\"DataHash\") "
-                + $"VALUES ('{signed}','2026-10-01T12:00:00Z','Sign','control','Certificate','{key}','ca-certs.keystore','{ca}',NULL,'instance','SHA256withRSA','allowed',NULL,'{hash}'), "
-                + $"('{refused}','2026-10-01T12:00:01Z','CommitKey','control','Ceremony','{key}','ssh-ca.keystore','{ca}',NULL,'instance',NULL,'refused','No SSH CA key row exists.',NULL);");
-            const string everyOldColumn = "\"Id\"::text || '|' || to_char(\"At\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS') || '|' || \"Operation\" || '|' || \"Caller\" || '|' || \"Purpose\" || '|' || "
-                + "\"KeyCertificateId\"::text || '|' || \"Keystore\" || '|' || \"CaId\"::text || '|' || coalesce(\"SpaceId\"::text,'-') || '|' || \"EffectiveScope\" || '|' || "
-                + "coalesce(\"Algorithm\",'-') || '|' || \"Outcome\" || '|' || coalesce(\"Reason\",'-') || '|' || coalesce(\"DataHash\",'-')";
-            async Task<string> Row(Guid id) => await TextAsync(app, $"SELECT {everyOldColumn} FROM \"SignerAudit\" WHERE \"Id\" = '{id}'");
-            var signedBefore = await Row(signed);
-            var refusedBefore = await Row(refused);
-
-            await MigrateThroughAsync(app, SignerAuditSummary);
-
-            Assert.Equal(signedBefore, await Row(signed));
-            Assert.Equal(refusedBefore, await Row(refused));
-            Assert.Equal(2, await ScalarAsync(app, "SELECT count(*) FROM \"SignerAudit\" WHERE \"Summary\" IS NULL"));
-            Assert.Equal("YES", await TextAsync(app,
-                "SELECT is_nullable FROM information_schema.columns WHERE table_name = 'SignerAudit' AND column_name = 'Summary'"));
-            Assert.Equal(ModularCA.Shared.Entities.SignerAuditEntity.SummaryMaxLength, await ScalarAsync(app,
-                "SELECT character_maximum_length FROM information_schema.columns WHERE table_name = 'SignerAudit' AND column_name = 'Summary'"));
-
-            // A row with the longest summary the column holds goes in, one character more does
-            // not, and a row of an operation with no summary is written as before.
-            var longest = new string('x', ModularCA.Shared.Entities.SignerAuditEntity.SummaryMaxLength);
-            var withSummary = Guid.NewGuid();
-            const string newColumns = "\"Id\",\"At\",\"Operation\",\"Caller\",\"Purpose\",\"Keystore\",\"Outcome\",\"Summary\"";
-            await ExecAsync(app,
-                $"INSERT INTO \"SignerAudit\" ({newColumns}) VALUES ('{withSummary}',now(),'SignSsh','control','SshCertificate','ssh-ca.keystore','allowed','{longest}');");
-            Assert.Equal(longest, await TextAsync(app, $"SELECT \"Summary\" FROM \"SignerAudit\" WHERE \"Id\" = '{withSummary}'"));
-            await Assert.ThrowsAsync<PostgresException>(() => ExecAsync(app,
-                $"INSERT INTO \"SignerAudit\" ({newColumns}) VALUES ('{Guid.NewGuid()}',now(),'SignSsh','control','SshCertificate','ssh-ca.keystore','allowed','{longest}x');"));
-            await ExecAsync(app,
-                $"INSERT INTO \"SignerAudit\" (\"Id\",\"At\",\"Operation\",\"Caller\",\"Purpose\",\"Outcome\") VALUES ('{Guid.NewGuid()}',now(),'Sign','control','Crl','allowed');");
-            Assert.Equal(3, await ScalarAsync(app, "SELECT count(*) FROM \"SignerAudit\" WHERE \"Summary\" IS NULL"));
-            Assert.Equal(4, await ScalarAsync(app, "SELECT count(*) FROM \"SignerAudit\""));
-
-            await MigrateToLatestAsync(app, "application");
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-        }
-    }
-
-    /// <summary>
-    /// The <c>SshKeyImports</c> table, seeded at the stage before it: it is added empty, the SSH
-    /// CA key rows are untouched, it takes one record per key and no second one, and a record
-    /// outlives its key row, since the notice it is read for is about the past.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task The_ssh_key_imports_table_is_added_empty_and_holds_one_record_per_key()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
-        await CreateDatabaseAsync(server, appName);
-        try
-        {
-            await using var app = CreateApp(WithDatabase(server, appName));
-            await MigrateThroughAsync(app, SignerAuditSummary);
-            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM information_schema.tables WHERE table_name = 'SshKeyImports'"));
-
-            var ca = Guid.NewGuid();
-            var key = Guid.NewGuid();
-            await ExecAsync(app,
-                "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"SpaceId\",\"IsDeleted\") "
-                + $"VALUES ('{ca}','Ops SSH','ops-ssh',false,'SSH',true,'Software',true,NULL,false); "
-                + "INSERT INTO \"SshCaKeys\" (\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"PrivateKeyPath\",\"KeyStorage\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"IsEnabled\",\"CreatedAt\") "
-                + $"VALUES ('{key}','Ops SSH','ed25519','ssh-ed25519 AAAA','config/ssh-ca-keys/{key}','LegacyFile','{ca}',true,false,24,true,now());");
-
-            await MigrateThroughAsync(app, SshKeyImports);
-
-            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"SshKeyImports\""));
-            Assert.Equal("LegacyFile", await TextAsync(app, $"SELECT \"KeyStorage\" FROM \"SshCaKeys\" WHERE \"Id\" = '{key}'"));
-            Assert.Equal($"config/ssh-ca-keys/{key}", await TextAsync(app, $"SELECT \"PrivateKeyPath\" FROM \"SshCaKeys\" WHERE \"Id\" = '{key}'"));
-
-            const string columns = "\"SshCaKeyId\",\"Name\",\"Fingerprint\",\"FilePath\",\"ImportedAt\"";
-            await ExecAsync(app, $"INSERT INTO \"SshKeyImports\" ({columns}) VALUES ('{key}','Ops SSH','SHA256:abc','/opt/modularca/config/ssh-ca-keys/{key}',now());");
-            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshKeyImports\" WHERE \"FileRemovedAt\" IS NULL AND \"AuditedAt\" IS NULL"));
-            await Assert.ThrowsAsync<PostgresException>(() => ExecAsync(app,
-                $"INSERT INTO \"SshKeyImports\" ({columns}) VALUES ('{key}','Ops SSH again','SHA256:abc','/elsewhere',now());"));
-            Assert.Equal(1024, await ScalarAsync(app,
-                "SELECT character_maximum_length FROM information_schema.columns WHERE table_name = 'SshKeyImports' AND column_name = 'FilePath'"));
-
-            // No foreign key: the record stays when its key row goes.
-            await ExecAsync(app, $"DELETE FROM \"SshCaKeys\" WHERE \"Id\" = '{key}';");
-            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshKeyImports\""));
-
-            await MigrateToLatestAsync(app, "application");
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-        }
-    }
-
-    /// <summary>
-    /// The <c>SshLoginNames</c> backfill, seeded at the stage before it. A user certificate whose
-    /// key id is exactly its issuer's username gets that user as its subject. A key id that was
-    /// typed, one that differs from the username in case, a host certificate, and a certificate
-    /// with no issuer keep no subject. No certificate is revoked, none gets grounds, every
-    /// existing SSH CA key lets everyone log in as their own username, and no grant is made.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task The_ssh_login_names_backfill_gives_a_subject_only_where_the_key_id_is_the_issuer_s_username()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
-        await CreateDatabaseAsync(server, appName);
-        try
-        {
-            await using var app = CreateApp(WithDatabase(server, appName));
-            await MigrateThroughAsync(app, SshKeyImports);
-            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM information_schema.tables WHERE table_name = 'SshLoginNameGrants'"));
-
-            var ca = Guid.NewGuid();
-            var key = Guid.NewGuid();
-            var alice = Guid.NewGuid();
-            var own = Guid.NewGuid();
-            var typed = Guid.NewGuid();
-            var otherCase = Guid.NewGuid();
-            var host = Guid.NewGuid();
-            var noIssuer = Guid.NewGuid();
-            var revoked = Guid.NewGuid();
-            const string certificateColumns = "\"Id\",\"SshCaKeyId\",\"CertificateType\",\"KeyId\",\"SerialNumber\",\"Principals\",\"ValidAfter\",\"ValidBefore\","
-                + "\"PublicKey\",\"SignedCertificate\",\"IsRevoked\",\"IssuedByUserId\",\"CreatedAt\"";
-            string Certificate(Guid id, string type, string keyId, int serial, string issuer, bool isRevoked = false)
-                => $"('{id}','{key}','{type}','{keyId}',{serial},'[\"root\"]',now(),now() + interval '1 day','ssh-ed25519 AAAA','ssh-ed25519-cert-v01@openssh.com AAAA',"
-                    + $"{(isRevoked ? "true" : "false")},{issuer},now())";
-            await ExecAsync(app,
-                "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"SpaceId\",\"IsDeleted\") "
-                + $"VALUES ('{ca}','Ops SSH','ops-ssh',false,'SSH',true,'Software',true,NULL,false); "
-                + "INSERT INTO \"SshCaKeys\" (\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"KeyStorage\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"IsEnabled\",\"CreatedAt\") "
-                + $"VALUES ('{key}','Ops SSH','ed25519','ssh-ed25519 AAAA','Signer','{ca}',true,true,24,true,now()); "
-                + "INSERT INTO \"Users\" (\"Id\",\"Username\",\"Email\",\"PasswordHash\",\"PasswordNeverExpires\",\"PasswordChangeOnNextLogon\",\"FirstName\","
-                + "\"LastName\",\"IsActive\",\"IsServiceIdentity\",\"IsLocked\",\"FailedLoginAttempts\",\"CreatedAt\",\"SecurityStamp\",\"IsDeleted\") "
-                + $"VALUES ('{alice}','alice','alice@acme.example','not-a-hash',false,false,'A','Lice',true,false,false,0,now(),'stamp',false); "
-                + $"INSERT INTO \"SshCertificates\" ({certificateColumns}) VALUES "
-                + Certificate(own, "user", "alice", 1, $"'{alice}'") + ", "
-                + Certificate(typed, "user", "alice-laptop", 2, $"'{alice}'") + ", "
-                + Certificate(otherCase, "user", "Alice", 3, $"'{alice}'") + ", "
-                + Certificate(host, "host", "alice", 4, $"'{alice}'") + ", "
-                + Certificate(noIssuer, "user", "alice", 5, "NULL") + ", "
-                + Certificate(revoked, "user", "alice", 6, $"'{alice}'", isRevoked: true) + ";");
-
-            await MigrateThroughAsync(app, SshLoginNames);
-
-            async Task<string> Subject(Guid certificate)
-                => await TextAsync(app, $"SELECT coalesce(\"SubjectUserId\"::text, 'none') FROM \"SshCertificates\" WHERE \"Id\" = '{certificate}'");
-            Assert.Equal(alice.ToString(), await Subject(own));
-            Assert.Equal(alice.ToString(), await Subject(revoked));
-            Assert.Equal("none", await Subject(typed));
-            Assert.Equal("none", await Subject(otherCase));
-            Assert.Equal("none", await Subject(host));
-            Assert.Equal("none", await Subject(noIssuer));
-
-            Assert.Equal(6, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertificates\" WHERE \"LoginNameGrounds\" IS NULL"));
-            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertificates\" WHERE \"IsRevoked\""));
-            Assert.Equal(1, await ScalarAsync(app, $"SELECT count(*) FROM \"SshCaKeys\" WHERE \"Id\" = '{key}' AND \"AllowOwnUsername\""));
-            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"SshLoginNameGrants\""));
-
-            // Deleting the user leaves the certificates, with no subject.
-            await ExecAsync(app, $"UPDATE \"SshCertificates\" SET \"IssuedByUserId\" = NULL; DELETE FROM \"Users\" WHERE \"Id\" = '{alice}';");
-            Assert.Equal(6, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertificates\" WHERE \"SubjectUserId\" IS NULL"));
-
-            await MigrateToLatestAsync(app, "application");
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-        }
-    }
-
-    /// <summary>
-    /// The <c>SshCertificateRevokedAt</c> column, seeded at the stage before it. It is added
-    /// empty and may stay empty: a certificate that was already revoked stays revoked and gets
-    /// no time, since none was recorded, and no other column of any row changes. The partial
-    /// index a KRL's state is read from covers the revoked rows only, and the index on the key
-    /// alone is still there. Afterwards a row takes a time.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task The_ssh_certificate_revoked_at_column_is_added_empty_and_a_revoked_row_keeps_no_time()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
-        await CreateDatabaseAsync(server, appName);
-        try
-        {
-            await using var app = CreateApp(WithDatabase(server, appName));
-            await MigrateThroughAsync(app, SshLoginNames);
-            Assert.Equal(0, await ScalarAsync(app,
-                "SELECT count(*) FROM information_schema.columns WHERE table_name = 'SshCertificates' AND column_name = 'RevokedAt'"));
-
-            var ca = Guid.NewGuid();
-            var key = Guid.NewGuid();
-            var live = Guid.NewGuid();
-            var revoked = Guid.NewGuid();
-            var expiredAndRevoked = Guid.NewGuid();
-            const string certificateColumns = "\"Id\",\"SshCaKeyId\",\"CertificateType\",\"KeyId\",\"SerialNumber\",\"Principals\",\"ValidAfter\",\"ValidBefore\","
-                + "\"PublicKey\",\"SignedCertificate\",\"IsRevoked\",\"CreatedAt\"";
-            string Certificate(Guid id, int serial, bool isRevoked, string validBefore)
-                => $"('{id}','{key}','user','alice',{serial},'[\"alice\"]','2026-10-01T12:00:00Z',{validBefore},'ssh-ed25519 AAAA','ssh-ed25519-cert-v01@openssh.com AAAA',"
-                    + $"{(isRevoked ? "true" : "false")},'2026-10-01T12:00:00Z')";
-            await ExecAsync(app,
-                "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"SpaceId\",\"IsDeleted\") "
-                + $"VALUES ('{ca}','Ops SSH','ops-ssh',false,'SSH',true,'Software',true,NULL,false); "
-                + "INSERT INTO \"SshCaKeys\" (\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"KeyStorage\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"IsEnabled\",\"CreatedAt\") "
-                + $"VALUES ('{key}','Ops SSH','ed25519','ssh-ed25519 AAAA','Signer','{ca}',true,true,24,true,now()); "
-                + $"INSERT INTO \"SshCertificates\" ({certificateColumns}) VALUES "
-                + Certificate(live, 1, false, "now() + interval '1 day'") + ", "
-                + Certificate(revoked, 2, true, "now() + interval '1 day'") + ", "
-                + Certificate(expiredAndRevoked, 3, true, "'2026-10-02T12:00:00Z'") + ";");
-            const string everyOldColumn = "\"Id\"::text || '|' || \"SshCaKeyId\"::text || '|' || \"CertificateType\" || '|' || \"KeyId\" || '|' || \"SerialNumber\"::text || '|' || "
-                + "\"Principals\" || '|' || to_char(\"ValidAfter\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US') || '|' || "
-                + "to_char(\"ValidBefore\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US') || '|' || \"PublicKey\" || '|' || \"SignedCertificate\" || '|' || "
-                + "\"IsRevoked\"::text || '|' || coalesce(\"SubjectUserId\"::text,'-') || '|' || coalesce(\"LoginNameGrounds\",'-') || '|' || "
-                + "to_char(\"CreatedAt\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US')";
-            async Task<string> Row(Guid id) => await TextAsync(app, $"SELECT {everyOldColumn} FROM \"SshCertificates\" WHERE \"Id\" = '{id}'");
-            var before = new[] { await Row(live), await Row(revoked), await Row(expiredAndRevoked) };
-
-            await MigrateThroughAsync(app, SshCertificateRevokedAt);
-
-            Assert.Equal(before, new[] { await Row(live), await Row(revoked), await Row(expiredAndRevoked) });
-            Assert.Equal("YES", await TextAsync(app,
-                "SELECT is_nullable FROM information_schema.columns WHERE table_name = 'SshCertificates' AND column_name = 'RevokedAt'"));
-            Assert.Equal("timestamp with time zone", await TextAsync(app,
-                "SELECT data_type FROM information_schema.columns WHERE table_name = 'SshCertificates' AND column_name = 'RevokedAt'"));
-            Assert.Equal(3, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertificates\" WHERE \"RevokedAt\" IS NULL"));
-            Assert.Equal(2, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertificates\" WHERE \"IsRevoked\""));
-
-            var partial = await TextAsync(app, "SELECT indexdef FROM pg_indexes WHERE indexname = 'IX_SshCertificates_SshCaKeyId_RevokedAt'");
-            Assert.Contains("(\"SshCaKeyId\", \"RevokedAt\")", partial);
-            Assert.Contains("WHERE \"IsRevoked\"", partial);
-            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM pg_indexes WHERE indexname = 'IX_SshCertificates_SshCaKeyId'"));
-
-            // From here on a revocation has a time, and the newest of a key is what its KRL is dated by.
-            await ExecAsync(app, $"UPDATE \"SshCertificates\" SET \"IsRevoked\" = true, \"RevokedAt\" = '2026-10-08T09:30:00Z' WHERE \"Id\" = '{live}';");
-            Assert.Equal("2026-10-08T09:30:00", await TextAsync(app,
-                $"SELECT to_char(max(\"RevokedAt\") AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS') FROM \"SshCertificates\" WHERE \"SshCaKeyId\" = '{key}' AND \"IsRevoked\""));
-            Assert.Equal(3, await ScalarAsync(app, $"SELECT count(*) FROM \"SshCertificates\" WHERE \"SshCaKeyId\" = '{key}' AND \"IsRevoked\""));
-
-            await MigrateToLatestAsync(app, "application");
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-        }
-    }
-
-    /// <summary>
-    /// The <c>SshCaKeyReviewBy</c> column and its backfill, seeded at the stage before it. Every
-    /// existing key gets a review date counted from when it was created: two years for a key
-    /// that signs user certificates, alone or with host certificates, and five for a host-only
-    /// key. A key whose date is then already past, and a disabled key, get theirs all the same
-    /// and are otherwise untouched: no other column of a key changes, and no signing profile,
-    /// certificate profile, request profile or certificate row is edited, here or by any later
-    /// migration, beyond the certificate type <c>SshProfileCertificateType</c> adds to a profile.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task The_ssh_ca_key_review_date_is_set_from_each_key_s_creation_and_no_profile_or_other_column_changes()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
-        await CreateDatabaseAsync(server, appName);
-        try
-        {
-            await using var app = CreateApp(WithDatabase(server, appName));
-            await MigrateThroughAsync(app, SshCertificateRevokedAt);
-            Assert.Equal(0, await ScalarAsync(app,
-                "SELECT count(*) FROM information_schema.columns WHERE table_name = 'SshCaKeys' AND column_name = 'ReviewBy'"));
-
-            var userKey = Guid.NewGuid();
-            var bothKey = Guid.NewGuid();
-            var hostKey = Guid.NewGuid();
-            var oldKey = Guid.NewGuid();
-            var disabledKey = Guid.NewGuid();
-            var leapKey = Guid.NewGuid();
-            var signingProfile = Guid.NewGuid();
-            var certProfile = Guid.NewGuid();
-            var requestProfile = Guid.NewGuid();
-            var certificate = Guid.NewGuid();
-            var sql = new System.Text.StringBuilder();
-            void Key(Guid id, string name, bool user, bool host, int hours, bool enabled, string createdAt)
-            {
-                var ca = Guid.NewGuid();
-                sql.Append("INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"SpaceId\",\"IsDeleted\") "
-                    + $"VALUES ('{ca}','{name}','{name.ToLowerInvariant().Replace(' ', '-')}',false,'SSH',{(enabled ? "true" : "false")},'Software',true,NULL,false); "
-                    + "INSERT INTO \"SshCaKeys\" (\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"KeyStorage\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"AllowOwnUsername\",\"IsEnabled\",\"CreatedAt\") "
-                    + $"VALUES ('{id}','{name}','ed25519','ssh-ed25519 AAAA','Signer','{ca}',{(user ? "true" : "false")},{(host ? "true" : "false")},{hours},true,{(enabled ? "true" : "false")},'{createdAt}'); ");
-            }
-            Key(userKey, "Users SSH", user: true, host: false, 720, enabled: true, "2026-03-01T08:15:30.123456Z");
-            Key(bothKey, "Both SSH", user: true, host: true, 720, enabled: true, "2026-03-01T08:15:30Z");
-            Key(hostKey, "Hosts SSH", user: false, host: true, 8760, enabled: true, "2026-03-01T08:15:30Z");
-            Key(oldKey, "Old SSH", user: true, host: false, 24, enabled: true, "2021-06-30T23:30:00Z");
-            Key(disabledKey, "Disabled SSH", user: true, host: false, 24, enabled: false, "2025-01-01T00:00:00Z");
-            Key(leapKey, "Leap SSH", user: true, host: false, 24, enabled: true, "2024-02-29T23:30:00Z");
-            sql.Append("INSERT INTO \"SshSigningProfiles\" (\"Id\",\"Name\",\"SshCaKeyId\",\"MaxValidityHours\",\"AllowUserCerts\",\"AllowHostCerts\",\"SourceAddressRestrictions\",\"DefaultExtensions\",\"CreatedAt\") "
-                + $"VALUES ('{signingProfile}','Users SSH - User Signing','{userKey}',24,true,false,'[]','[\"permit-pty\",\"permit-agent-forwarding\",\"permit-port-forwarding\"]','2026-03-01T08:15:30Z'); "
-                + "INSERT INTO \"SshCertProfiles\" (\"Id\",\"Name\",\"AllowedPrincipalPatterns\",\"MaxPrincipals\",\"AllowedExtensions\",\"RequiredExtensions\",\"MaxValidityHours\",\"CreatedAt\") "
-                + $"VALUES ('{certProfile}','SSH User Cert - Standard','[\"^[a-z_][a-z0-9_-]{{0,31}}$\"]',5,"
-                + "'[\"permit-pty\",\"permit-agent-forwarding\",\"permit-port-forwarding\",\"permit-X11-forwarding\",\"permit-user-rc\"]','[]',24,'2026-03-01T08:15:30Z'); "
-                + "INSERT INTO \"SshRequestProfiles\" (\"Id\",\"Name\",\"AllowedSshSigningProfileIds\",\"AllowedSshCertProfileIds\",\"RequireApproval\",\"MaxValidityHours\",\"CreatedAt\") "
-                + $"VALUES ('{requestProfile}','SSH User Request - Default','[]','[\"{certProfile}\"]',false,24,'2026-03-01T08:15:30Z'); "
-                + "INSERT INTO \"SshCertificates\" (\"Id\",\"SshCaKeyId\",\"CertificateType\",\"KeyId\",\"SerialNumber\",\"Principals\",\"ValidAfter\",\"ValidBefore\",\"PublicKey\",\"SignedCertificate\",\"IsRevoked\",\"CreatedAt\") "
-                + $"VALUES ('{certificate}','{oldKey}','user','alice',1,'[\"alice\"]',now(),now() + interval '1 day','ssh-ed25519 AAAA','ssh-ed25519-cert-v01@openssh.com AAAA',false,now());");
-            await ExecAsync(app, sql.ToString());
-
-            const string everyOldKeyColumn = "\"Id\"::text || '|' || \"Name\" || '|' || \"KeyType\" || '|' || coalesce(\"KeySize\"::text,'-') || '|' || \"PublicKey\" || '|' || "
-                + "coalesce(\"PrivateKeyPath\",'-') || '|' || \"KeyStorage\" || '|' || \"CertificateAuthorityId\"::text || '|' || \"IsUserCa\"::text || '|' || \"IsHostCa\"::text || '|' || "
-                + "\"MaxValidityHours\"::text || '|' || \"AllowOwnUsername\"::text || '|' || \"IsEnabled\"::text || '|' || to_char(\"CreatedAt\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US')";
-            async Task<string> Keys() => await TextAsync(app, $"SELECT string_agg({everyOldKeyColumn}, E'\\n' ORDER BY \"Id\") FROM \"SshCaKeys\"");
-            // Every column but the profile type, which SshProfileCertificateType adds later and sets on the profiles a new install seeds.
-            async Task<string> Rows(string table) => await TextAsync(app,
-                $"SELECT string_agg((to_jsonb(t) - 'CertificateType')::text, E'\\n' ORDER BY t.\"Id\") FROM \"{table}\" t");
-            var keysBefore = await Keys();
-            var signingBefore = await Rows("SshSigningProfiles");
-            var certProfilesBefore = await Rows("SshCertProfiles");
-            var requestProfilesBefore = await Rows("SshRequestProfiles");
-            var certificatesBefore = await Rows("SshCertificates");
-
-            await MigrateThroughAsync(app, SshCaKeyReviewBy);
-
-            Assert.Equal("YES", await TextAsync(app,
-                "SELECT is_nullable FROM information_schema.columns WHERE table_name = 'SshCaKeys' AND column_name = 'ReviewBy'"));
-            Assert.Equal("timestamp with time zone", await TextAsync(app,
-                "SELECT data_type FROM information_schema.columns WHERE table_name = 'SshCaKeys' AND column_name = 'ReviewBy'"));
-            async Task<string> ReviewBy(Guid key) => await TextAsync(app,
-                $"SELECT to_char(\"ReviewBy\" AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US') FROM \"SshCaKeys\" WHERE \"Id\" = '{key}'");
-            Assert.Equal("2028-03-01T08:15:30.123456", await ReviewBy(userKey));
-            Assert.Equal("2028-03-01T08:15:30.000000", await ReviewBy(bothKey));
-            Assert.Equal("2031-03-01T08:15:30.000000", await ReviewBy(hostKey));
-            Assert.Equal("2023-06-30T23:30:00.000000", await ReviewBy(oldKey));
-            Assert.Equal("2027-01-01T00:00:00.000000", await ReviewBy(disabledKey));
-            Assert.Equal("2026-02-28T23:30:00.000000", await ReviewBy(leapKey));
-            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"SshCaKeys\" WHERE \"ReviewBy\" IS NULL"));
-
-            // The same rule as a key created from now on is given.
-            Assert.Equal(new DateTime(2028, 3, 1, 8, 15, 30, DateTimeKind.Utc),
-                ModularCA.Shared.Utils.SshCaKeyDefaults.ReviewBy(new DateTime(2026, 3, 1, 8, 15, 30, DateTimeKind.Utc), isUserCa: true, isHostCa: true));
-            Assert.Equal(new DateTime(2031, 3, 1, 8, 15, 30, DateTimeKind.Utc),
-                ModularCA.Shared.Utils.SshCaKeyDefaults.ReviewBy(new DateTime(2026, 3, 1, 8, 15, 30, DateTimeKind.Utc), isUserCa: false, isHostCa: true));
-            Assert.Equal(new DateTime(2026, 2, 28, 23, 30, 0, DateTimeKind.Utc),
-                ModularCA.Shared.Utils.SshCaKeyDefaults.ReviewBy(new DateTime(2024, 2, 29, 23, 30, 0, DateTimeKind.Utc), isUserCa: true, isHostCa: false));
-
-            // A key long past its date is as enabled as it was, and its certificate as live.
-            Assert.Equal(keysBefore, await Keys());
-            Assert.Equal(1, await ScalarAsync(app, $"SELECT count(*) FROM \"SshCaKeys\" WHERE \"Id\" = '{oldKey}' AND \"IsEnabled\" AND \"ReviewBy\" < now()"));
-            Assert.Equal(1, await ScalarAsync(app, $"SELECT count(*) FROM \"SshCertificates\" WHERE \"Id\" = '{certificate}' AND NOT \"IsRevoked\""));
-
-            await MigrateToLatestAsync(app, "application");
-
-            // No migration edits what a profile allows: the profiles of an existing install stay as seeded before,
-            // and gain only the certificate type their seeded names stand for.
-            Assert.Equal(keysBefore, await Keys());
-            Assert.Equal(signingBefore, await Rows("SshSigningProfiles"));
-            Assert.Equal(certProfilesBefore, await Rows("SshCertProfiles"));
-            Assert.Equal(requestProfilesBefore, await Rows("SshRequestProfiles"));
-            Assert.Equal(certificatesBefore, await Rows("SshCertificates"));
-            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertProfiles\""));
-
-            // The column takes a date and takes none.
-            await ExecAsync(app, $"UPDATE \"SshCaKeys\" SET \"ReviewBy\" = '2030-01-01T00:00:00Z' WHERE \"Id\" = '{userKey}'; UPDATE \"SshCaKeys\" SET \"ReviewBy\" = NULL WHERE \"Id\" = '{hostKey}';");
-            Assert.Equal("2030-01-01T00:00:00.000000", await ReviewBy(userKey));
-            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshCaKeys\" WHERE \"ReviewBy\" IS NULL"));
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-        }
-    }
-
-    /// <summary>
-    /// The <c>SshProfileCertificateType</c> columns and their backfill, seeded at the stage before
-    /// them. The three certificate profiles and two request profiles a new install seeds get
-    /// their type, found by their exact names: <c>user</c> for the user profiles, <c>host</c> for
-    /// the host profiles. Every other profile stays without one, a name that only resembles a
-    /// seeded one and a seeded name in another letter case included, and no other column of any
-    /// profile changes.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task The_ssh_profile_certificate_type_is_set_on_the_seeded_names_only_and_every_other_profile_stays_without_one()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        const string typesOf = "SELECT string_agg(\"Name\"::text || '=' || coalesce(\"CertificateType\", 'none'), E'\\n' ORDER BY \"Name\"::text COLLATE \"C\") FROM \"{0}\"";
-        const string columnCount = "SELECT count(*) FROM information_schema.columns WHERE table_name = '{0}' AND column_name = 'CertificateType'";
-
-        static string Seed(string[] certProfiles, string[] requestProfiles)
-        {
-            var sql = new System.Text.StringBuilder();
-            foreach (var name in certProfiles)
-                sql.Append("INSERT INTO \"SshCertProfiles\" (\"Id\",\"Name\",\"AllowedPrincipalPatterns\",\"MaxPrincipals\",\"AllowedExtensions\",\"RequiredExtensions\",\"MaxValidityHours\",\"CreatedAt\") "
-                    + $"VALUES ('{Guid.NewGuid()}','{name}','[]',5,'[\"permit-pty\"]','[]',24,'2026-03-01T08:15:30Z'); ");
-            foreach (var name in requestProfiles)
-                sql.Append("INSERT INTO \"SshRequestProfiles\" (\"Id\",\"Name\",\"AllowedSshSigningProfileIds\",\"AllowedSshCertProfileIds\",\"RequireApproval\",\"MaxValidityHours\",\"CreatedAt\") "
-                    + $"VALUES ('{Guid.NewGuid()}','{name}','[]','[]',false,24,'2026-03-01T08:15:30Z'); ");
-            return sql.ToString();
-        }
-
-        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
-        await CreateDatabaseAsync(server, appName);
-        try
-        {
-            await using var app = CreateApp(WithDatabase(server, appName));
-            await MigrateThroughAsync(app, SshCaKeyReviewBy);
-            Assert.Equal(0, await ScalarAsync(app, string.Format(columnCount, "SshCertProfiles")));
-            Assert.Equal(0, await ScalarAsync(app, string.Format(columnCount, "SshRequestProfiles")));
-
-            await ExecAsync(app, Seed(
-                ["SSH User Cert - Standard", "SSH User Cert - Forwarding", "SSH Host Cert - Standard", "Ops users", "SSH User Cert - Standard 2", "SSH Host Cert"],
-                ["SSH User Request - Default", "SSH Host Request - Default", "Developers", "SSH Host Request - Default (copy)"]));
-            async Task<string> Rows(string table) => await TextAsync(app,
-                $"SELECT string_agg((to_jsonb(t) - 'CertificateType')::text, E'\\n' ORDER BY t.\"Id\") FROM \"{table}\" t");
-            var certProfilesBefore = await Rows("SshCertProfiles");
-            var requestProfilesBefore = await Rows("SshRequestProfiles");
-
-            await MigrateThroughAsync(app, SshProfileCertificateType);
-
-            foreach (var table in new[] { "SshCertProfiles", "SshRequestProfiles" })
-            {
-                Assert.Equal("YES", await TextAsync(app, $"SELECT is_nullable FROM information_schema.columns WHERE table_name = '{table}' AND column_name = 'CertificateType'"));
-                Assert.Equal("character varying", await TextAsync(app, $"SELECT data_type FROM information_schema.columns WHERE table_name = '{table}' AND column_name = 'CertificateType'"));
-                Assert.Equal(10, await ScalarAsync(app, $"SELECT character_maximum_length FROM information_schema.columns WHERE table_name = '{table}' AND column_name = 'CertificateType'"));
-            }
-
-            Assert.Equal(
-                "Ops users=none\nSSH Host Cert=none\nSSH Host Cert - Standard=host\nSSH User Cert - Forwarding=user\nSSH User Cert - Standard=user\nSSH User Cert - Standard 2=none",
-                await TextAsync(app, string.Format(typesOf, "SshCertProfiles")));
-            Assert.Equal(
-                "Developers=none\nSSH Host Request - Default=host\nSSH Host Request - Default (copy)=none\nSSH User Request - Default=user",
-                await TextAsync(app, string.Format(typesOf, "SshRequestProfiles")));
-
-            // Nothing else about a profile changed, here or in any later migration.
-            Assert.Equal(certProfilesBefore, await Rows("SshCertProfiles"));
-            Assert.Equal(requestProfilesBefore, await Rows("SshRequestProfiles"));
-            await MigrateToLatestAsync(app, "application");
-            Assert.Equal(certProfilesBefore, await Rows("SshCertProfiles"));
-            Assert.Equal(requestProfilesBefore, await Rows("SshRequestProfiles"));
-            Assert.Equal(3, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertProfiles\" WHERE \"CertificateType\" IS NOT NULL"));
-            Assert.Equal(2, await ScalarAsync(app, "SELECT count(*) FROM \"SshRequestProfiles\" WHERE \"CertificateType\" IS NOT NULL"));
-
-            // The column takes either type and takes none.
-            await ExecAsync(app, "UPDATE \"SshCertProfiles\" SET \"CertificateType\" = 'host' WHERE \"Name\" = 'Ops users'; "
-                + "UPDATE \"SshRequestProfiles\" SET \"CertificateType\" = NULL WHERE \"Name\" = 'SSH User Request - Default';");
-            Assert.Equal(4, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertProfiles\" WHERE \"CertificateType\" IS NOT NULL"));
-            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SshRequestProfiles\" WHERE \"CertificateType\" IS NOT NULL"));
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-        }
-
-        // The names are matched exactly: a seeded name in another letter case is another profile, and gets no type.
-        var otherCase = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
-        await CreateDatabaseAsync(server, otherCase);
-        try
-        {
-            await using var app = CreateApp(WithDatabase(server, otherCase));
-            await MigrateThroughAsync(app, SshCaKeyReviewBy);
-            await ExecAsync(app, Seed(
-                ["ssh user cert - standard", "SSH USER CERT - FORWARDING", "Ssh Host Cert - Standard"],
-                ["ssh user request - default", "SSH HOST REQUEST - DEFAULT"]));
-
-            await MigrateToLatestAsync(app, "application");
-
-            Assert.Equal(3, await ScalarAsync(app, "SELECT count(*) FROM \"SshCertProfiles\" WHERE \"CertificateType\" IS NULL"));
-            Assert.Equal(2, await ScalarAsync(app, "SELECT count(*) FROM \"SshRequestProfiles\" WHERE \"CertificateType\" IS NULL"));
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, otherCase);
-        }
-    }
-
-    /// <summary>
-    /// The <c>StandardCertProfiles</c> migration on an install that predates the profiles: each
-    /// is added as <see cref="ModularCA.Shared.Utils.StandardCertProfiles"/> defines it, except
-    /// one whose name the install already uses in any letter case; each added profile is linked
-    /// to the signing profiles the main profile is linked to; and a seeded request profile gets
-    /// its default only where it has neither a default nor an allowed list. Nothing else of any
-    /// profile changes, and an empty database is left empty for bootstrap.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task The_standard_certificate_profiles_are_added_to_an_install_that_predates_them_and_nothing_is_overwritten()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        Guid main = Guid.NewGuid(), webTls = Guid.NewGuid(), ownCodeSigning = Guid.NewGuid(), linked = Guid.NewGuid(), unlinked = Guid.NewGuid();
-
-        string CertProfile(Guid id, string name) =>
-            "INSERT INTO \"CertProfiles\" (\"Id\",\"Name\",\"Description\",\"IsCaProfile\",\"KeyUsages\",\"ExtendedKeyUsages\",\"AllowedKeyAlgorithms\",\"AllowedKeySizes\","
-            + "\"AllowedSignatureAlgorithms\",\"CreatedAt\",\"Revision\",\"UpdatedAt\",\"CanBeDeleted\",\"ProfileHash\",\"CtEnabled\",\"AllowWildcard\",\"InheritanceEnabled\") "
-            + $"VALUES ('{id}','{name}','',false,'[]','[]','[]','[]','[]','2026-03-01T08:15:30Z',0,'2026-03-01T08:15:30Z',true,'',false,false,false); ";
-        string SigningProfile(Guid id, string name) =>
-            "INSERT INTO \"SigningProfiles\" (\"Id\",\"Name\",\"Description\",\"AllowedAlgorithms\",\"AllowedEKUs\",\"CreatedAt\",\"UpdatedAt\",\"Revision\","
-            + "\"ExtendedKeyUsageCritical\",\"InheritanceEnabled\",\"InhibitAnyPolicy\",\"IsDefault\") "
-            + $"VALUES ('{id}','{name}','','[]','[]','2026-03-01T08:15:30Z','2026-03-01T08:15:30Z',0,false,false,false,false); ";
-        string RequestProfile(string name, string defaultId = "NULL", string allowed = "[]") =>
-            "INSERT INTO \"RequestProfiles\" (\"Id\",\"Name\",\"SubjectDnRules\",\"SanRules\",\"AllowedCertProfileIds\",\"DefaultCertProfileId\",\"RequireApproval\","
-            + "\"RequiredApprovalCount\",\"CreatedAt\",\"UpdatedAt\",\"InheritanceEnabled\") "
-            + $"VALUES ('{Guid.NewGuid()}','{name}','[]','{{}}','{allowed}',{defaultId},false,1,'2026-03-01T08:15:30Z','2026-03-01T08:15:30Z',false); ";
-
-        const string defaults = "SELECT string_agg(r.\"Name\"::text || '=' || coalesce(c.\"Name\"::text, 'none'), E'\\n' ORDER BY r.\"Name\"::text COLLATE \"C\") "
-            + "FROM \"RequestProfiles\" r LEFT JOIN \"CertProfiles\" c ON c.\"Id\" = r.\"DefaultCertProfileId\"";
-
-        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
-        await CreateDatabaseAsync(server, appName);
-        try
-        {
-            await using var app = CreateApp(WithDatabase(server, appName));
-            await MigrateThroughAsync(app, CaInfrastructureCertProfiles);
-            await ExecAsync(app,
-                CertProfile(main, "Main Certificate Profile") + CertProfile(webTls, "Web TLS Certificate Profile") + CertProfile(ownCodeSigning, "code signing")
-                + SigningProfile(linked, "Issuing Signing Profile") + SigningProfile(unlinked, "Other Signing Profile")
-                + $"INSERT INTO \"AllowedCertProfileSigningProfiles\" (\"Id\",\"CertProfileId\",\"SigningProfileId\") VALUES ('{Guid.NewGuid()}','{main}','{linked}'); "
-                + RequestProfile("Web Server (ACME)") + RequestProfile("Web TLS (Internal)")
-                + RequestProfile("Enterprise Server (EST)", $"'{main}'")
-                + RequestProfile("MDM Device (SCEP)", allowed: $"[\"{main}\"]")
-                + RequestProfile("Enterprise User (CMP)") + RequestProfile("Code Signing") + RequestProfile("Custom"));
-            async Task<string> Untouched(string strip = "") => await TextAsync(app,
-                $"SELECT string_agg((to_jsonb(t){strip})::text, E'\\n' ORDER BY t.\"Id\") FROM \"CertProfiles\" t WHERE t.\"Id\" IN "
-                + $"('{main}','{webTls}','{ownCodeSigning}')")
-                + await TextAsync(app, "SELECT string_agg((to_jsonb(t) - 'DefaultCertProfileId' - 'UpdatedAt')::text, E'\\n' ORDER BY t.\"Id\") FROM \"RequestProfiles\" t");
-            var before = await Untouched();
-            // ProfileExpiryWarnings (0.4.3) adds the expiry warning columns and sets the Web TLS profile to never warn.
-            const string expiryColumns = " - 'ExpiryWarningPercent' - 'ExpiryWarningMaxWindow' - 'ExpiryAlertPercent' - 'ExpiryAlertMaxWindow'"
-                + " - 'ExpiryNeverWarn' - 'ExpiryWarningOverridesParent' - 'UpdatedAt'";
-            var beforeExpiry = await Untouched(expiryColumns);
-
-            await MigrateThroughAsync(app, StandardCertProfilesMigration);
-
-            // A request records its request profile from here on; nothing already stored names one.
-            Assert.Equal("YES", await TextAsync(app, "SELECT is_nullable FROM information_schema.columns WHERE table_name = 'CertificateRequests' AND column_name = 'RequestProfileId'"));
-
-            // The install's own "code signing" stands; the three other profiles are added as defined.
-            Assert.Equal("Device Client\nMain Certificate Profile\nTLS Server\nUser Authentication and Email\nWeb TLS Certificate Profile\ncode signing",
-                await TextAsync(app, "SELECT string_agg(\"Name\"::text, E'\\n' ORDER BY \"Name\"::text COLLATE \"C\") FROM \"CertProfiles\""));
-            foreach (var standard in ModularCA.Shared.Utils.StandardCertProfiles.All.Where(p => p.Name != ModularCA.Shared.Utils.StandardCertProfiles.CodeSigning))
-            {
-                var row = System.Text.Json.JsonDocument.Parse(await TextAsync(app, $"SELECT to_jsonb(t)::text FROM \"CertProfiles\" t WHERE t.\"Name\" = '{standard.Name}'")).RootElement;
-                Assert.Equal(standard.Description, row.GetProperty("Description").GetString());
-                Assert.Equal(standard.KeyUsages, System.Text.Json.JsonSerializer.Deserialize<string[]>(row.GetProperty("KeyUsages").GetString()!));
-                Assert.Equal(standard.ExtendedKeyUsageOids, System.Text.Json.JsonSerializer.Deserialize<string[]>(row.GetProperty("ExtendedKeyUsages").GetString()!));
-                Assert.Equal(ModularCA.Shared.Utils.StandardCertProfiles.ValidityPeriodMin, row.GetProperty("ValidityPeriodMin").GetString());
-                Assert.Equal(standard.ValidityPeriodMax, row.GetProperty("ValidityPeriodMax").GetString());
-                Assert.False(row.GetProperty("IsCaProfile").GetBoolean());
-                Assert.True(row.GetProperty("CanBeDeleted").GetBoolean());
-                Assert.Equal(System.Text.Json.JsonValueKind.Null, row.GetProperty("SpaceId").ValueKind);
-                Assert.Equal(System.Text.Json.JsonValueKind.Null, row.GetProperty("CertificateAuthorityId").ValueKind);
-            }
-
-            // Linked where the main profile is linked, and nowhere else.
-            Assert.Equal(4, await ScalarAsync(app, $"SELECT count(*) FROM \"AllowedCertProfileSigningProfiles\" WHERE \"SigningProfileId\" = '{linked}'"));
-            Assert.Equal(0, await ScalarAsync(app, $"SELECT count(*) FROM \"AllowedCertProfileSigningProfiles\" WHERE \"SigningProfileId\" = '{unlinked}'"));
-            Assert.Equal(0, await ScalarAsync(app, $"SELECT count(*) FROM \"AllowedCertProfileSigningProfiles\" WHERE \"CertProfileId\" = '{ownCodeSigning}'"));
-
-            // A default only where the profile had neither a default nor an allowed list, and only from an added profile.
-            Assert.Equal(
-                "Code Signing=none\nCustom=none\nEnterprise Server (EST)=Main Certificate Profile\nEnterprise User (CMP)=User Authentication and Email\n"
-                + "MDM Device (SCEP)=none\nWeb Server (ACME)=TLS Server\nWeb TLS (Internal)=Web TLS Certificate Profile",
-                await TextAsync(app, defaults));
-            Assert.Equal(before, await Untouched());
-
-            await MigrateToLatestAsync(app, "application");
-            Assert.Equal(beforeExpiry, await Untouched(expiryColumns));
-            Assert.Equal(6, await ScalarAsync(app, "SELECT count(*) FROM \"CertProfiles\""));
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-        }
-
-        // An empty database stays empty: bootstrap seeds the profiles itself.
-        var empty = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
-        await CreateDatabaseAsync(server, empty);
-        try
-        {
-            await using var app = CreateApp(WithDatabase(server, empty));
-            await MigrateToLatestAsync(app, "application");
-            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"CertProfiles\""));
-            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"RequestProfiles\""));
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, empty);
-        }
-    }
-
-    /// <summary>
-    /// The <c>ProfileExpiryWarnings</c> backfill: every existing end-entity certificate gets its
-    /// warning at 30 % and its alert at 10 % of its lifetime left, every CA certificate 30 and 7
-    /// days before it expires (never before it became valid), as <see cref="ModularCA.Shared.Utils.ExpiryWarningRule"/>
-    /// computes them with no profile settings; the instance's Web TLS certificate profile is set to
-    /// never warn and its certificates warn at their expiry; every other profile keeps the
-    /// defaults; and the stored value of the retired <c>ComplianceScan.ExpiringWithinDays</c>
-    /// setting is removed while the others stay.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task The_expiry_warning_backfill_gives_leaves_30_and_10_percent_cas_30_and_7_days_and_the_web_tls_profile_never_warns()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        Guid main = Guid.NewGuid(), webTls = Guid.NewGuid();
-        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
-        await CreateDatabaseAsync(server, appName);
-        try
-        {
-            await using var app = CreateApp(WithDatabase(server, appName));
-            await MigrateThroughAsync(app, CertificateRetireAndDismiss);
-
-            string CertProfile(Guid id, string name) =>
-                "INSERT INTO \"CertProfiles\" (\"Id\",\"Name\",\"Description\",\"IsCaProfile\",\"KeyUsages\",\"ExtendedKeyUsages\",\"AllowedKeyAlgorithms\",\"AllowedKeySizes\","
-                + "\"AllowedSignatureAlgorithms\",\"CreatedAt\",\"Revision\",\"UpdatedAt\",\"CanBeDeleted\",\"ProfileHash\",\"CtEnabled\",\"AllowWildcard\",\"InheritanceEnabled\") "
-                + $"VALUES ('{id}','{name}','',false,'[]','[]','[]','[]','[]','2026-03-01T08:15:30Z',0,'2026-03-01T08:15:30Z',true,'',false,false,false); ";
-            string Cert(string serial, string notBefore, string notAfter, bool isCa, Guid? profile) =>
-                "INSERT INTO \"Certificates\" (\"CertificateId\",\"SerialNumber\",\"Pem\",\"SubjectDN\",\"Issuer\",\"SubjectAlternativeNamesJson\",\"KeyUsagesJson\","
-                + "\"ExtendedKeyUsagesJson\",\"NotBefore\",\"NotAfter\",\"IsCA\",\"IsReissued\",\"Revoked\",\"CreatedAt\",\"CertProfileId\") "
-                + $"VALUES ('{Guid.NewGuid()}','{serial}','','CN={serial}','CN=Upgrade CA','[]','[]','[]','{notBefore}','{notAfter}',{(isCa ? "true" : "false")},false,false,"
-                + $"'2026-03-01T08:15:30Z',{(profile is Guid p ? $"'{p}'" : "NULL")}); ";
-            string Setting(string key, string json) =>
-                "INSERT INTO \"Settings\" (\"Key\",\"ValueJson\",\"Version\",\"Revision\",\"UpdatedAt\",\"ActorName\",\"Source\") "
-                + $"VALUES ('{key}','{json}',1,1,'2026-10-01T00:00:00Z','system','import'); ";
-
-            await ExecAsync(app,
-                CertProfile(main, "Main Certificate Profile") + CertProfile(webTls, "Web TLS Certificate Profile")
-                + Cert("leaf-90d", "2026-01-01T00:00:00Z", "2026-04-01T00:00:00Z", false, main)
-                + Cert("leaf-10h", "2026-01-01T00:00:00Z", "2026-01-01T10:00:00Z", false, null)
-                + Cert("leaf-backwards", "2026-02-01T00:00:00Z", "2026-01-01T00:00:00Z", false, null)
-                + Cert("ca-10y", "2020-01-01T00:00:00Z", "2030-01-01T00:00:00Z", true, null)
-                + Cert("ca-3d", "2026-01-01T00:00:00Z", "2026-01-04T00:00:00Z", true, null)
-                + Cert("console-tls", "2026-01-01T00:00:00Z", "2027-02-02T00:00:00Z", false, webTls)
-                + Setting("ComplianceScan_ExpiringWithinDays", "30") + Setting("ComplianceScan_WarnOverValidityDays", "825"));
-
-            await MigrateThroughAsync(app, ProfileExpiryWarnings);
-
-            async Task<string> Instants(string serial) => await TextAsync(app,
-                "SELECT to_char(\"ExpiryWarningAt\" AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' / ' || to_char(\"ExpiryAlertAt\" AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') "
-                + $"FROM \"Certificates\" WHERE \"SerialNumber\" = '{serial}'");
-            // 90 days: 27 and 9 days before 1 April.
-            Assert.Equal("2026-03-05 00:00:00 / 2026-03-23 00:00:00", await Instants("leaf-90d"));
-            // 10 hours: 3 hours and 1 hour before.
-            Assert.Equal("2026-01-01 07:00:00 / 2026-01-01 09:00:00", await Instants("leaf-10h"));
-            Assert.Equal("2026-01-01 00:00:00 / 2026-01-01 00:00:00", await Instants("leaf-backwards"));
-            Assert.Equal("2029-12-02 00:00:00 / 2029-12-25 00:00:00", await Instants("ca-10y"));
-            Assert.Equal("2026-01-01 00:00:00 / 2026-01-01 00:00:00", await Instants("ca-3d"));
-            Assert.Equal("2027-02-02 00:00:00 / 2027-02-02 00:00:00", await Instants("console-tls"));
-
-            // The rule gives the same instants, to the microsecond.
-            foreach (var serial in new[] { "leaf-90d", "leaf-10h", "ca-10y" })
-            {
-                var row = await app.Certificates.AsNoTracking().SingleAsync(c => c.SerialNumber == serial);
-                var (warningAt, alertAt) = ModularCA.Shared.Utils.ExpiryWarningRule.Compute(row.NotBefore, row.NotAfter, row.IsCA, null);
-                Assert.True(Math.Abs((warningAt - row.ExpiryWarningAt).TotalMilliseconds) < 1, serial);
-                Assert.True(Math.Abs((alertAt - row.ExpiryAlertAt).TotalMilliseconds) < 1, serial);
-            }
-
-            Assert.Equal("Web TLS Certificate Profile", await TextAsync(app,
-                "SELECT string_agg(\"Name\"::text, ',' ORDER BY \"Name\"::text) FROM \"CertProfiles\" WHERE \"ExpiryNeverWarn\""));
-            Assert.Equal(0, await ScalarAsync(app,
-                "SELECT count(*) FROM \"CertProfiles\" WHERE \"ExpiryWarningPercent\" IS NOT NULL OR \"ExpiryAlertPercent\" IS NOT NULL "
-                + "OR \"ExpiryWarningMaxWindow\" IS NOT NULL OR \"ExpiryAlertMaxWindow\" IS NOT NULL OR \"ExpiryWarningOverridesParent\""));
-            Assert.Equal("ComplianceScan_WarnOverValidityDays", await TextAsync(app, "SELECT string_agg(\"Key\"::text, ',') FROM \"Settings\""));
-
-            await MigrateToLatestAsync(app, "application");
-            Assert.Equal("2026-03-05 00:00:00 / 2026-03-23 00:00:00", await Instants("leaf-90d"));
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-        }
-    }
-
-    /// <summary>
-    /// The SSH part of <c>--upgrade-check</c> against a database from before the SSH keystore:
-    /// every key file there and holding its key is clean, with the count; a file that is gone
-    /// refuses the upgrade, naming the SSH CA, its row and the path, until the file is back or
-    /// the SSH CA is disabled; and the user signing profiles whose certificates will carry fewer
-    /// permits are noted without refusing anything. Nothing is applied and no file is touched.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task The_upgrade_check_reports_the_ssh_ca_key_files_and_the_signing_profiles_that_relied_on_default_extensions()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
-        var install = Path.Combine(Path.GetTempPath(), $"mca-upgrade-ssh-{Guid.NewGuid():N}");
-        await CreateDatabaseAsync(server, appName);
-        try
-        {
-            var connection = WithDatabase(server, appName);
-            await using var app = CreateApp(connection);
-            await MigrateThroughAsync(app, ApiKeys);
-            var targets = new[] { ("application", DatabaseKind.Application, Instance(connection)) };
-            async Task<(int Exit, string Report)> CheckAsync()
-            {
-                var output = new StringWriter();
-                var exit = await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output, installDirectory: install);
-                return (exit, output.ToString());
-            }
-
-            // No SSH CA at all.
-            var (exit, report) = await CheckAsync();
-            Assert.Equal(0, exit);
-            Assert.Contains("SSH CA keys: key files on this host", report);
-            Assert.Contains("ok: no SSH CA key is a file on a node; nothing to import.", report);
-            Assert.DoesNotContain("SSH signing profiles", report);
-
-            // One SSH CA with its key file where its row says, relative as an older install could record it, and two user profiles.
-            var ca = Guid.NewGuid();
-            var key = Guid.NewGuid();
-            var keys = Path.Combine(install, "config", "ssh-ca-keys");
-            Directory.CreateDirectory(keys);
-            var keyFile = Path.Combine(keys, key.ToString());
-            File.Copy(ModularCA.Tests.Ssh.SshFixtures.PathOf("ca-ed25519.testkey"), keyFile);
-            var publicKey = ModularCA.Tests.Ssh.SshFixtures.Text("ca-ed25519.pub").Trim();
-            var narrow = Guid.NewGuid();
-            var complete = Guid.NewGuid();
-            const string profileColumns = "\"Id\",\"Name\",\"SshCaKeyId\",\"MaxValidityHours\",\"AllowUserCerts\",\"AllowHostCerts\",\"SourceAddressRestrictions\",\"DefaultExtensions\",\"CreatedAt\"";
-            await ExecAsync(app,
-                "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"SpaceId\",\"IsDeleted\") "
-                + $"VALUES ('{ca}','Ops SSH','ops-ssh',false,'SSH',true,'Software',true,NULL,false); "
-                + "INSERT INTO \"SshCaKeys\" (\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"PrivateKeyPath\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"IsEnabled\",\"CreatedAt\") "
-                + $"VALUES ('{key}','Ops SSH','ed25519','{publicKey}','config/ssh-ca-keys/{key}','{ca}',true,false,24,true,now()); "
-                + $"INSERT INTO \"SshSigningProfiles\" ({profileColumns}) VALUES "
-                + $"('{narrow}','Ops SSH - User Signing','{key}',24,true,false,'[]','[\"permit-pty\"]',now()), "
-                + $"('{complete}','Ops SSH - Everything','{key}',24,true,false,'[]','[\"permit-X11-forwarding\",\"permit-agent-forwarding\",\"permit-port-forwarding\",\"permit-pty\",\"permit-user-rc\"]',now());");
-
-            (exit, report) = await CheckAsync();
-            Assert.Equal(0, exit);
-            Assert.Contains("ok: 1 SSH CA key(s) will be imported into the signer at first start and their files deleted; "
-                + "archives made before this upgrade still contain them in plaintext", report);
-            Assert.Contains("SSH signing profiles", report);
-            Assert.Contains("note: 1 SSH signing profile(s) for user certificates relied on the extensions", report);
-            Assert.Contains($"'Ops SSH - User Signing' ({narrow}): names permit-pty; certificates from it will no longer carry "
-                + "permit-X11-forwarding, permit-agent-forwarding, permit-port-forwarding, permit-user-rc", report);
-            Assert.DoesNotContain("Ops SSH - Everything", report);
-            Assert.DoesNotContain("REFUSED", report);
-            Assert.Contains("UPGRADE CHECK: PASS", report);
-
-            // The key file is gone: the upgrade is refused, by name, row and path, and the note is still only a note.
-            var bytes = File.ReadAllBytes(keyFile);
-            File.Delete(keyFile);
-            (exit, report) = await CheckAsync();
-            Assert.Equal(3, exit);
-            Assert.Contains("REFUSED: 1 SSH CA key file(s) are missing or do not hold their SSH CA's key.", report);
-            Assert.Contains($"'Ops SSH' ({key}), expected at {keyFile}", report);
-            Assert.Contains("run this check on that host", report);
-            Assert.Contains("UPGRADE CHECK: REFUSED (SSH CA keys: 1 key file(s) missing or not matching). Nothing was changed.", report);
-
-            // Disabling the SSH CA is the other way out.
-            await ExecAsync(app, $"UPDATE \"SshCaKeys\" SET \"IsEnabled\" = false WHERE \"Id\" = '{key}'; UPDATE \"CertificateAuthorities\" SET \"IsEnabled\" = false WHERE \"Id\" = '{ca}';");
-            (exit, report) = await CheckAsync();
-            Assert.Equal(0, exit);
-            Assert.Contains("1 disabled SSH CA key(s) have no usable key file and stay as they are", report);
-
-            // Nothing was applied, and the check read the key file without changing it.
-            await ExecAsync(app, $"UPDATE \"SshCaKeys\" SET \"IsEnabled\" = true WHERE \"Id\" = '{key}'; UPDATE \"CertificateAuthorities\" SET \"IsEnabled\" = true WHERE \"Id\" = '{ca}';");
-            File.WriteAllBytes(keyFile, bytes);
-            (exit, _) = await CheckAsync();
-            Assert.Equal(0, exit);
-            Assert.Equal(bytes, File.ReadAllBytes(keyFile));
-            Assert.Equal(0, await ScalarAsync(app,
-                "SELECT count(*) FROM information_schema.columns WHERE table_name = 'SshCaKeys' AND column_name = 'KeyStorage'"));
-
-            // After the upgrade the same check still finds the key awaiting its import, and words the note for a change that has happened.
-            await MigrateToLatestAsync(app, "application");
-            (exit, report) = await CheckAsync();
-            Assert.Equal(0, exit);
-            Assert.Contains("ok: 1 SSH CA key(s) will be imported into the signer at first start", report);
-            Assert.Contains("name fewer permits than every user certificate carried by default", report);
-            Assert.DoesNotContain("will be narrower than before", report);
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-            try { Directory.Delete(install, true); } catch (IOException) { }
-        }
-    }
-
-    /// <summary>
-    /// The request profile part of <c>--upgrade-check</c>: the certificates a protocol issued are
-    /// found in the audit database, their requests in the application database, and the ones the
-    /// request profile that protocol uses now would refuse are noted, without refusing the
-    /// upgrade. Old audit rows and protocols switched off are left out.
-    /// </summary>
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task The_upgrade_check_notes_the_protocol_certificates_their_request_profile_would_now_refuse()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var suffix = Guid.NewGuid().ToString("N")[..12];
-        var appName = $"modularca_upgrade_app_{suffix}";
-        var auditName = $"modularca_upgrade_audit_{suffix}";
-        await CreateDatabaseAsync(server, appName);
-        await CreateDatabaseAsync(server, auditName);
-        try
-        {
-            var appConnection = WithDatabase(server, appName);
-            var auditConnection = WithDatabase(server, auditName);
-            await using var app = CreateApp(appConnection);
-            await using var audit = CreateAudit(auditConnection);
-            await MigrateToLatestAsync(app, "application");
-            await MigrateToLatestAsync(audit, "audit");
-
-            var ca = new CertificateAuthorityEntity { Name = "Issuing", Label = "issuing-ca", Type = "Root", KeyStorageType = "Software", IsEnabled = true };
-            var sanRules = JsonSerializer.Serialize(new
-            {
-                allowedTypes = new[] { "DNS", "IP" },
-                required = true,
-                rules = new Dictionary<string, object> { ["DNS"] = new { regex = (string?)null, maxCount = 10 } },
-            });
-            var profile = new RequestProfileEntity
-            {
-                Name = "Enterprise Server (EST)",
-                SubjectDnRules = """[{"Field":"CN","Requirement":"Required","MaxLength":64}]""",
-                SanRules = sanRules,
-            };
-            app.CertificateAuthorities.Add(ca);
-            app.RequestProfiles.Add(profile);
-            app.CaProtocolConfigs.Add(new CaProtocolConfigEntity { CaId = ca.Id, Protocol = "EST", IsEnabled = true, RequestProfileId = profile.Id });
-            app.CaProtocolConfigs.Add(new CaProtocolConfigEntity { CaId = ca.Id, Protocol = "CMP", IsEnabled = false, RequestProfileId = profile.Id });
-            CertificateEntity Certificate(string serial) => new()
-            {
-                SerialNumber = serial, SubjectDN = "CN=x", Issuer = "CN=Issuing", Pem = "", SubjectAlternativeNamesJson = "[]",
-                KeyUsagesJson = "[]", ExtendedKeyUsagesJson = "[]", NotBefore = DateTime.UtcNow.AddDays(-1), NotAfter = DateTime.UtcNow.AddDays(30),
-            };
-            var withSan = Certificate("0A1B");
-            var withoutSan = Certificate("0C2D");
-            var fromCmp = Certificate("0E3F");
-            var old = Certificate("0F40");
-            app.Certificates.AddRange(withSan, withoutSan, fromCmp, old);
-            CertRequestEntity Request(CertificateEntity certificate, string subject, params string[] sans) => new()
-            {
-                CSR = "", Subject = subject, SubjectAlternativeNames = JsonSerializer.Serialize(sans), Status = "Issued",
-                IssuedCertificateId = certificate.CertificateId,
-            };
-            app.CertificateRequests.AddRange(
-                Request(withSan, "CN=printer1", "DNS:printer1"),
-                Request(withoutSan, "CN=printer2"),
-                Request(fromCmp, "CN=printer3"),
-                Request(old, "CN=printer4"));
-            await app.SaveChangesAsync();
-
-            AuditEstEntity Est(string serial, int daysAgo) => new()
-            {
-                Timestamp = DateTime.UtcNow.AddDays(-daysAgo), Operation = "simpleenroll", CertificateSerial = serial, CaLabel = "issuing-ca", Success = true,
-            };
-            audit.AuditEst.AddRange(Est("0a1b", 3), Est("0c2d", 2), Est("0f40", 120));
-            audit.AuditCmp.Add(new AuditCmpEntity
-            {
-                Timestamp = DateTime.UtcNow.AddDays(-1), MessageType = "ir", CertificateSerial = "0E3F", CaLabel = "issuing-ca", Success = true,
-            });
-            await audit.SaveChangesAsync();
-
-            var targets = new[]
-            {
-                ("application", DatabaseKind.Application, Instance(appConnection)),
-                ("audit", DatabaseKind.Audit, Instance(auditConnection)),
-            };
-            var output = new StringWriter();
-            Assert.Equal(0, await SchemaStartupApi.UpgradeCheckAsync(targets, new SchemaConfig(), output));
-            var report = output.ToString();
-
-            Assert.Contains("Request profiles", report);
-            Assert.True(report.Contains("note: 2 certificate(s) issued through enrollment protocols in the last 90 days were checked", StringComparison.Ordinal), report);
-            Assert.Contains("1 would be refused if requested again:", report);
-            Assert.Contains("EST on 'issuing-ca', request profile 'Enterprise Server (EST)': 1 certificate(s)", report);
-            Assert.Contains("'CN=printer2':", report);
-            Assert.DoesNotContain("printer1", report);
-            Assert.DoesNotContain("printer3", report);
-            Assert.DoesNotContain("printer4", report);
-            Assert.Contains("UPGRADE CHECK: PASS", report);
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-            await DropDatabaseAsync(server, auditName);
-        }
-    }
-
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task A_fresh_database_migrates_and_the_fold_changes_nothing()
-    {
-        var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
-        await CreateDatabaseAsync(server, appName);
-        try
-        {
-            await using var app = CreateApp(WithDatabase(server, appName));
-            await MigrateThroughAsync(app, FoldSystemTenant);
-            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"Tenants\""));
-            // Bootstrap seeds the policy with the wizard's values; the fold must not pre-empt it.
-            Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"SecurityPolicy\""));
-            await MigrateToLatestAsync(app, "application");
-        }
-        finally
-        {
-            NpgsqlConnection.ClearAllPools();
-            await DropDatabaseAsync(server, appName);
-        }
-    }
-
-    [RequiresEnvironmentFact(ServerVariable)]
-    public async Task An_upgrade_without_a_security_policy_row_gets_one_with_the_system_tenants_values()
-    {
-        var failure = await FoldAsync(Seed030Sql, FoldSystemTenant, async app =>
-        {
-            var defaults = new ModularCA.Shared.Entities.SecurityPolicyEntity();
-            Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SecurityPolicy\""));
-            Assert.Equal(1, await ScalarAsync(app,
-                $"SELECT count(*) FROM \"SecurityPolicy\" WHERE \"MaxFailedLoginAttempts\" = {defaults.MaxFailedLoginAttempts} "
-                + $"AND \"KeystoreScryptN\" = {defaults.KeystoreScryptN} AND \"UserQuorum\" = {defaults.UserQuorum} "
-                + "AND \"RequireKeyCeremony\" AND \"CeremonyRequiredApprovals\" = 3 AND \"UserCeremonyRequiredApprovals\" = 2"));
-        });
-        Assert.Null(failure);
-    }
-
     public static TheoryData<string, string, string> RefusedFolds() => new()
     {
         { "P1", $"INSERT INTO \"Tenants\" (\"Id\",\"Name\",\"Slug\",\"IsEnabled\",\"IsSystemTenant\",\"CanBeDeleted\",\"CreatedAt\",\"MaxCertificateAuthorities\",\"MaxCertificatesTotal\",\"MaxUsers\",\"MaxValidityDays\",\"ValidityCeilingBehavior\",\"RequireKeyCeremony\",\"CeremonyRequiredApprovals\",\"IsDeleted\") VALUES (gen_random_uuid(),'System 2','system-2',true,true,false,now(),0,0,0,0,0,true,2,true);",
@@ -2349,27 +2566,6 @@ public class PostgresUpgradeHarnessTests
         { "P9", $"INSERT INTO \"CertProfiles\" (\"Id\",\"Name\",\"Description\",\"IsCaProfile\",\"KeyUsages\",\"ExtendedKeyUsages\",\"AllowedKeyAlgorithms\",\"AllowedKeySizes\",\"AllowedSignatureAlgorithms\",\"CreatedAt\",\"Revision\",\"UpdatedAt\",\"CanBeDeleted\",\"ProfileHash\",\"CtEnabled\",\"AllowWildcard\",\"InheritanceEnabled\",\"TenantId\") VALUES (gen_random_uuid(),'Loose System Profile','',false,'[]','[]','[]','[]','[]',now(),1,now(),true,'',false,false,false,'{SystemTenant}');",
             "certificate profile(s) on the system tenant that are bound to no CA (Loose System Profile)" },
     };
-
-    /// <summary>
-    /// Each precondition refuses its own shape, names it, and rolls back: the fold is not
-    /// recorded and the system tenant is still there.
-    /// </summary>
-    [RequiresEnvironmentTheory(ServerVariable)]
-    [MemberData(nameof(RefusedFolds))]
-    public async Task A_precondition_refuses_the_fold_and_nothing_is_applied(string precondition, string offendingSql, string expected)
-    {
-        var failure = await FoldAsync(Seed030Sql + SeedFoldSql + offendingSql, FoldSystemTenant, async app =>
-        {
-            Assert.DoesNotContain(await app.Database.GetAppliedMigrationsAsync(), m => m.EndsWith("_" + FoldSystemTenant, StringComparison.Ordinal));
-            Assert.Equal(1, await ScalarAsync(app, $"SELECT count(*) FROM \"Tenants\" WHERE \"Id\" = '{SystemTenant}'"));
-            Assert.Equal(4, await ScalarAsync(app, "SELECT count(*) FROM \"CaGroups\" WHERE \"Name\" LIKE 'org-system-%'"));
-        });
-
-        Assert.NotNull(failure);
-        Assert.EndsWith("_" + FoldSystemTenant, failure!.Migration, StringComparison.Ordinal);
-        var raised = Assert.IsType<PostgresException>(failure.Error.GetBaseException());
-        Assert.True(raised.MessageText.Contains(expected, StringComparison.Ordinal), $"{precondition}: {raised.MessageText}");
-    }
 
     /// <summary>
     /// Applies the baseline, runs <paramref name="seedSql"/>, applies the later migrations through
@@ -2398,39 +2594,6 @@ public class PostgresUpgradeHarnessTests
         {
             NpgsqlConnection.ClearAllPools();
             await DropDatabaseAsync(server, appName);
-        }
-    }
-
-    [RequiresEnvironmentFact(RehearsalVariable)]
-    public async Task A_restored_dump_migrates_to_latest_without_losing_rows()
-    {
-        await using var app = CreateApp(Environment.GetEnvironmentVariable(RehearsalVariable)!);
-        var ownership = await SchemaOwnership.ProbeAsync(app.Database.GetDbConnection(), DatabaseKind.Application);
-        Assert.True(ownership.IsSound,
-            "The rehearsal copy does not reproduce staging's ownership; restore it with pg_restore --role=<service role> "
-            + "and connect as the service role. " + SchemaOwnership.RefusalMessage(ownership, null));
-
-        var before = await CountsAsync(app);
-        await MigrateThroughAsync(app, InstanceUniqueCaNames);
-        var after = await CountsAsync(app);
-
-        // The fold removes the system tenant and its four org-system-* groups, and nothing else.
-        Assert.Equal(before with { Tenants = before.Tenants - 1, Groups = before.Groups - 4 }, after);
-        Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'Tenants' AND column_name = 'IsSystemTenant'"));
-        Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"CaGroups\" WHERE \"Name\" LIKE 'org-system-%'"));
-        Assert.Equal(0, await ScalarAsync(app,
-            "SELECT count(*) FROM information_schema.columns WHERE table_name = 'Tenants' AND column_name IN ('MaxCertificateAuthorities','MaxCertificatesTotal','MaxUsers')"));
-        Assert.Equal(2, await ScalarAsync(app,
-            "SELECT count(*) FROM pg_catalog.pg_indexes WHERE indexname IN ('IX_CertificateAuthorities_Label','IX_CertificateAuthorities_Name') AND indexdef LIKE 'CREATE UNIQUE INDEX%'"));
-        await MigrateToLatestAsync(app, "application");
-
-        var auditConnection = Environment.GetEnvironmentVariable(RehearsalAuditVariable);
-        if (!string.IsNullOrWhiteSpace(auditConnection))
-        {
-            await using var audit = CreateAudit(auditConnection);
-            var auditOwnership = await SchemaOwnership.ProbeAsync(audit.Database.GetDbConnection(), DatabaseKind.Audit);
-            Assert.True(auditOwnership.IsSound, SchemaOwnership.RefusalMessage(auditOwnership, null));
-            await MigrateToLatestAsync(audit, "audit");
         }
     }
 
@@ -2686,6 +2849,20 @@ public class PostgresUpgradeHarnessTests
         await using var command = new NpgsqlCommand($"DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)", connection);
         await command.ExecuteNonQueryAsync();
     }
+
+    /// <summary>
+    /// An enabled SSH CA in the seeded organisation, written against the baseline schema, with one
+    /// enabled key whose row names the key file <c>config/ssh-ca-keys/&lt;key id&gt;</c>. Run
+    /// after <see cref="Seed030Sql"/>.
+    /// </summary>
+    /// <param name="ca">The id the SSH CA gets.</param>
+    /// <param name="key">The id its key gets.</param>
+    /// <param name="publicKey">The key's public half, in OpenSSH form.</param>
+    internal static string SeedSshCaWithKeyFileSql(Guid ca, Guid key, string publicKey) =>
+        "INSERT INTO \"CertificateAuthorities\" (\"Id\",\"Name\",\"Label\",\"IsDefault\",\"Type\",\"IsEnabled\",\"KeyStorageType\",\"IsSshCa\",\"TenantId\",\"IsDeleted\") "
+        + $"VALUES ('{ca}','Ops SSH','ops-ssh',false,'SSH',true,'Software',true,'{OrgTenant}',false); "
+        + "INSERT INTO \"SshCaKeys\" (\"Id\",\"Name\",\"KeyType\",\"PublicKey\",\"PrivateKeyPath\",\"CertificateAuthorityId\",\"IsUserCa\",\"IsHostCa\",\"MaxValidityHours\",\"IsEnabled\",\"CreatedAt\") "
+        + $"VALUES ('{key}','Ops SSH','ed25519','{publicKey}','config/ssh-ca-keys/{key}','{ca}',true,false,24,true,now());";
 
     /// <summary>
     /// A 0.3.x instance as bootstrap leaves it, written against the baseline schema: the system

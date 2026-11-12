@@ -33,7 +33,7 @@ public class OcspResponderReadinessTests
         gen.SetIssuerDN(new X509Name(ca.SubjectDn));
         gen.SetSubjectDN(new X509Name("CN=Test OCSP Responder"));
         gen.SetNotBefore(notBefore ?? new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        gen.SetNotAfter(notAfter ?? new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        gen.SetNotAfter(notAfter ?? new DateTime(2049, 1, 1, 0, 0, 0, DateTimeKind.Utc));
         gen.SetPublicKey(ca.KeyPair.Public);
         if (ocspSigning)
             gen.AddExtension(X509Extensions.ExtendedKeyUsage, false, new ExtendedKeyUsage(KeyPurposeID.id_kp_OCSPSigning));
@@ -146,7 +146,7 @@ public class OcspResponderReadinessTests
         Assert.Equal(("delegated", null), (states[good].Mode, states[good].Problem));
         Assert.Equal("CN=Test OCSP Responder", states[good].ResponderSubject);
         Assert.False(string.IsNullOrEmpty(states[good].ResponderSerial));
-        Assert.Equal(new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc), states[good].ResponderNotAfter);
+        Assert.Equal(new DateTime(2049, 1, 1, 0, 0, 0, DateTimeKind.Utc), states[good].ResponderNotAfter);
         Assert.Null(states[none].ResponderSerial);
         Assert.Null(states[gone].ResponderSerial);
         Assert.Contains("OCSP signing extended key usage", states[noUsage].Problem);
@@ -209,7 +209,7 @@ public class OcspResponderReadinessTests
         gen.SetIssuerDN(new X509Name(ca.SubjectDn));
         gen.SetSubjectDN(new X509Name("CN=Test OCSP Responder"));
         gen.SetNotBefore(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        gen.SetNotAfter(new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        gen.SetNotAfter(new DateTime(2049, 1, 1, 0, 0, 0, DateTimeKind.Utc));
         gen.SetPublicKey(other.KeyPair.Public);
         gen.AddExtension(X509Extensions.ExtendedKeyUsage, false, new ExtendedKeyUsage(KeyPurposeID.id_kp_OCSPSigning));
         gen.AddExtension(NoCheck, false, DerNull.Instance);

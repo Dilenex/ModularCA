@@ -71,7 +71,10 @@ RestartSec=5s
 # connection. Status 75 means that went on for longer than Schema.WaitSeconds (900 s); systemd
 # retries it, and each such restart takes at least that long, so the start limit below is not
 # reached by a database that is merely slow to come back.
-RestartPreventExitStatus=3
+# Exit status 4 is status 3 after this start had already applied a migration: the databases are no
+# longer as the previous release left them, so going back needs a restore, and the journal says
+# so. Status 3 from the schema check means nothing was applied. Neither is retried.
+RestartPreventExitStatus=3 4
 
 # CRL/OCSP/AIA must be reachable over plain HTTP per RFC 5280, and operators commonly
 # move Http.Port/Https.Port to 80/443. Defaults are 8080/8443, which need no capability

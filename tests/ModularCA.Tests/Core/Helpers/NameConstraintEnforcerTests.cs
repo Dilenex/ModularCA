@@ -32,7 +32,7 @@ public sealed class NameConstraintEnforcerTests
         var p = NameConstraintRules.ParseJson(permitted);
         var x = NameConstraintRules.ParseJson(excluded);
         if (p != null || x != null)
-            gen.AddExtension(X509Extensions.NameConstraints, true, new NameConstraints(p, x));
+            gen.AddExtension(X509Extensions.NameConstraints, true, new NameConstraints(p == null ? null : new GeneralSubtrees(p), x == null ? null : new GeneralSubtrees(x)));
         return gen.Generate(new Asn1SignatureFactory("SHA256WITHECDSA", keys.Private, new SecureRandom()));
     }
 

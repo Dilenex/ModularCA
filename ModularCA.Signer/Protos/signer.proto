@@ -28,6 +28,12 @@ service Signer {
   // Added with the SSH keystore. A signer that predates it answers UNIMPLEMENTED, which the
   // client reports as a refusal saying the signer must be upgraded first.
   rpc SignSshCertificate (SignSshCertificateRequest) returns (SignSshCertificateResponse);
+  // Added in 0.4.4. Reads the signer's journal of keystore events (loaded, created, a key
+  // appended, a verification failure) so the node can write them into the audit trail. It reads
+  // and nothing else: no call removes, marks or changes an event, and the journal stays on the
+  // signer's disk whatever the node does. A signer that predates it answers UNIMPLEMENTED,
+  // which the client reads as "no events to hand over".
+  rpc ReadKeystoreEvents (ReadKeystoreEventsRequest) returns (ReadKeystoreEventsResponse);
 }
 
 // A reference to a stored key: the certificate id and the keystore name. An SSH CA key has no
@@ -231,4 +237,48 @@ message HealthResponse {
   bool unlocked = 1;
   int32 key_count = 2;
   string backend = 3;
+  // Added in 0.4.4: the HSM settings the signer loaded at start, for the console to show.
+  // Absent from a signer that predates it. There is no field for the PIN or a key id.
+  HsmStatus hsm = 4;
+}
+
+// What a signer says of its HSM settings. Read-only, and nothing here opens the token.
+message HsmStatus {
+  bool enabled = 1;
+  string module_path = 2;
+  uint64 slot_id = 3;
+  repeated HsmKeyLabel key_labels = 4;
+}
+
+// Which key label a CA uses on the token: the CA label and the key's CKA_LABEL.
+message HsmKeyLabel {
+  string ca_label = 1;
+  string key_label = 2;
+}
+
+// Where the node's reading of the journal stands: the file and line of the last event it took.
+// An empty after_file reads from the beginning. after_file is compared with the names of the
+// journal's files and is never opened, so it cannot name anything outside the journal.
+message ReadKeystoreEventsRequest {
+  string after_file = 1;
+  int32 after_line = 2;
+  int32 max_events = 3;       // the signer returns at most 500 whatever this says
+}
+
+// One keystore event. json is rebuilt by the signer from the journal line and holds only
+// timestamp, action, keystoreName, success, detail and instanceId: names, counts and the message
+// of a verification failure. It never carries a passphrase, a PIN or key material.
+message KeystoreEvent {
+  string file = 1;            // the journal file's name, not a path
+  int32 line = 2;             // the event's line in it, from 0
+  string json = 3;
+}
+
+message ReadKeystoreEventsResponse {
+  repeated KeystoreEvent events = 1;   // oldest first
+  bool more = 2;                       // the journal holds events after the last one here
+  // The event at exactly (after_file, after_line), empty when the journal has none there. The
+  // node compares it with what it remembers taking, and reads from the beginning when the
+  // journal is not the one it read before.
+  string anchor_json = 3;
 }

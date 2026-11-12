@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using ModularCA.Core.Helpers;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
+using ModularCA.Shared.Errors;
 using ModularCA.Shared.Models.RequestProfiles;
 using ModularCA.Shared.Utils;
 using YamlDotNet.Serialization;
@@ -99,6 +100,9 @@ public class PolicySyncService : IPolicySyncService
     /// with an error. When an updated profile's expiry warning settings change, the warning instants
     /// of its live certificates, and of those of the profiles inheriting from it, are re-computed in
     /// the same transaction as the save (<see cref="CertificateExpiry.SaveAndRecomputeAsync"/>).
+    /// An entry that would create or update a profile with a key usage or extended key usage the
+    /// OID catalog does not hold, or with <c>anyExtendedKeyUsage</c>, is skipped with an error
+    /// naming the usage (<see cref="UsageProblemAsync"/>); the other entries are synced.
     /// </summary>
     private async Task<PolicySyncResult> SyncCertProfilesAsync(string yamlContent)
     {
@@ -126,6 +130,8 @@ public class PolicySyncService : IPolicySyncService
             .Where(p => p.CertificateAuthorityId == null)
             .ToListAsync();
         var expiryChanged = new List<Guid>();
+        // The catalog may have gained rows since this service last synced.
+        _usageCatalog = null;
 
         foreach (var yamlProfile in root.Profiles)
         {
@@ -150,6 +156,11 @@ public class PolicySyncService : IPolicySyncService
 
                 if (existing == null)
                 {
+                    if (await UsageProblemAsync(yamlProfile, null) is string usageProblem)
+                    {
+                        result.Errors.Add($"Cert profile '{yamlProfile.Name}' was not synced: {usageProblem}");
+                        continue;
+                    }
                     var entity = new CertProfileEntity
                     {
                         Name = yamlProfile.Name,
@@ -193,6 +204,11 @@ public class PolicySyncService : IPolicySyncService
                         result.Errors.Add($"Cert profile '{existing.Name}' was not updated: {why}");
                         continue;
                     }
+                    if (await UsageProblemAsync(yamlProfile, existing) is string usageProblem)
+                    {
+                        result.Errors.Add($"Cert profile '{existing.Name}' was not updated: {usageProblem}");
+                        continue;
+                    }
 
                     existing.Description = yamlProfile.Description ?? string.Empty;
                     existing.IsCaProfile = yamlProfile.IsCaProfile;
@@ -225,6 +241,30 @@ public class PolicySyncService : IPolicySyncService
 
         result.ExpiryWarningsRecomputed += await CertificateExpiry.SaveAndRecomputeAsync(_db, expiryChanged, DateTime.UtcNow);
         return result;
+    }
+
+    /// <summary>The OID catalog's usage rows, read at most once per cert profile sync.</summary>
+    private CertProfileUsageCatalog? _usageCatalog;
+
+    /// <summary>
+    /// What is wrong with the usages <paramref name="yaml"/> would write, or null: the check the
+    /// console's create and update run (<see cref="CertProfileUsageCatalog"/>), with the
+    /// <c>MCA-PRF-002</c> code appended so the sync's error can be looked up like the API's.
+    /// As there, the entries <paramref name="existing"/> already stores are not checked again:
+    /// a profile written before the check keeps syncing its other fields, and only a usage the
+    /// file adds must be in the catalog. A new profile (<paramref name="existing"/> null) is
+    /// checked in full. The catalog is read only when an entry needs it.
+    /// </summary>
+    private async Task<string?> UsageProblemAsync(CertProfileYamlEntry yaml, CertProfileEntity? existing)
+    {
+        if (CertProfileUsageCatalog.NothingToResolve(
+                yaml.KeyUsages, yaml.ExtendedKeyUsages, existing?.KeyUsages, existing?.ExtendedKeyUsages))
+            return null;
+
+        _usageCatalog ??= await CertProfileUsageCatalog.LoadAsync(_db);
+        return _usageCatalog.Problem(yaml.KeyUsages, yaml.ExtendedKeyUsages, existing?.KeyUsages, existing?.ExtendedKeyUsages) is string problem
+            ? $"{problem} ({ErrorCodes.CertProfileUsageNotInCatalog})"
+            : null;
     }
 
     /// <summary>Every expiry warning setting of a certificate profile, windows blank as null.</summary>

@@ -41,8 +41,10 @@ public class AdminConfigController(
     Serilog.Core.LoggingLevelSwitch loggingLevelSwitch,
     EnvVarConfigOverlay envOverlay,
     ISecurityPolicyService securityPolicyService,
-    ILdapPublisherPolicyService ldapPublisherPolicyService) : ControllerBase
+    ILdapPublisherPolicyService ldapPublisherPolicyService,
+    ModularCA.Shared.Signing.ISigningService signer) : ControllerBase
 {
+    private readonly ModularCA.Shared.Signing.ISigningService _signer = signer;
     private readonly SystemConfig _config = config;
     private readonly IHostApplicationLifetime _appLifetime = appLifetime;
     private readonly IAuditService _audit = audit;
@@ -59,13 +61,18 @@ public class AdminConfigController(
     /// both yaml-backed <c>Security</c> (middleware knobs) and DB-backed
     /// <c>SecurityPolicy</c> (session/MFA/OCSP policy) + <c>LdapPublisherPolicy</c>
     /// so clients see the complete picture in one call. Needs a system administrator, like
-    /// <c>GET /api/v1/admin/security-policy</c>, whose row it carries.
+    /// <c>GET /api/v1/admin/security-policy</c>, whose row it carries. <c>Hsm</c> is a read-only
+    /// <see cref="HsmSettingsSummary"/>: what is in force when the signer runs in process; with a
+    /// remote signer, what the signer reports in its health answer (whether its HSM is on, the
+    /// module path, the slot, the key labels), or only that the signer holds the settings when it
+    /// did not answer or predates that report. Never the PIN or a key id.
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> GetConfig()
     {
         var securityPolicy = await _securityPolicyService.GetAsync();
         var ldapPublisherPolicy = await _ldapPublisherPolicyService.GetAsync();
+        var signerHsm = await RemoteSignerHsmAsync();
         return Ok(new
         {
             SecurityPolicy = securityPolicy,
@@ -148,7 +155,36 @@ public class AdminConfigController(
             PolicySync = _config.PolicySync,
             CertManager = new { _config.CertManager.Enabled, ApiKey = !string.IsNullOrEmpty(_config.CertManager.ApiKey) ? RedactSecret("CertManager.ApiKey") : "", _config.CertManager.DefaultCertProfileId, _config.CertManager.DefaultSigningProfileId },
             IntegrationApi = new { _config.IntegrationApi.Enabled, ApiKey = !string.IsNullOrEmpty(_config.IntegrationApi.ApiKey) ? RedactSecret("IntegrationApi.ApiKey") : "" },
+            // The Settings page's HSM card read config.hsm, which this response never carried, so
+            // it always said Disabled. Signer-local: a remote signer's settings are not in this
+            // node's file, and what is shown for one is what the signer itself reported.
+            Hsm = HsmSettingsSummary.From(_config, signerHsm),
         });
+    }
+
+    /// <summary>How long the Settings page waits for the signer's health answer before it shows the card without it.</summary>
+    private static readonly TimeSpan SignerHsmTimeout = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// What a remote signer says of its HSM settings, from its health answer; null with the
+    /// signer in process, and when the signer does not answer within
+    /// <see cref="SignerHsmTimeout"/> or says nothing of its HSM. Never throws: the page is
+    /// served either way.
+    /// </summary>
+    private async Task<ModularCA.Shared.Signing.SignerHsmStatus?> RemoteSignerHsmAsync()
+    {
+        if (!_config.Signer.IsRemote)
+            return null;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(HttpContext?.RequestAborted ?? CancellationToken.None);
+        timeout.CancelAfter(SignerHsmTimeout);
+        try
+        {
+            return (await _signer.HealthAsync(timeout.Token)).Hsm;
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or Grpc.Core.RpcException or ModularCA.Shared.Signing.SigningRefusedException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -1018,39 +1054,53 @@ public class MtlsUpdateRequest
 /// <summary>Request body for PUT /config/auto-renewal.</summary>
 public class AutoRenewalUpdateRequest
 {
+    /// <summary>Whether the automatic renewal job runs.</summary>
     public bool Enabled { get; set; }
+    /// <summary>Days before a certificate's expiry at which it is renewed; zero or less keeps the current value.</summary>
     public int RenewDaysBeforeExpiry { get; set; }
+    /// <summary>Whether renewal requests are issued without admin approval, unless their request profile requires approval.</summary>
     public bool AutoApprove { get; set; }
+    /// <summary>Cron expression for the renewal job, in UTC; null or empty keeps the current schedule.</summary>
     public string? Schedule { get; set; }
+    /// <summary>Whether a renewal generates a fresh key pair instead of reusing the original request's key.</summary>
     public bool RequireKeyRotation { get; set; }
 }
 
 /// <summary>Request body for PUT /config/compliance-scan.</summary>
 public class ComplianceScanUpdateRequest
 {
+    /// <summary>Whether the compliance scan job runs.</summary>
     public bool Enabled { get; set; }
+    /// <summary>RSA key length in bits below which a key is flagged as weak; values under 2048 keep the current setting.</summary>
     public int MinRsaKeySize { get; set; }
     /// <summary>
     /// Validity threshold in days above which the scanner emits an "OverLongValidity"
     /// finding. Warning threshold only — does not block issuance.
     /// </summary>
     public int WarnOverValidityDays { get; set; }
+    /// <summary>Cron expression for the scan, in UTC; null or empty keeps the current schedule.</summary>
     public string? Schedule { get; set; }
+    /// <summary>Signature algorithm names (e.g. <c>SHA1WithRSA</c>) whose certificates are flagged; null keeps the current list.</summary>
     public List<string>? DeprecatedAlgorithms { get; set; }
 }
 
 /// <summary>Request body for PUT /config/cert-expiry-notifications.</summary>
 public class CertExpiryNotificationUpdateRequest
 {
+    /// <summary>Whether expiry warning emails are sent.</summary>
     public bool Enabled { get; set; }
+    /// <summary>Days before expiry at which a warning is sent, each from 1 to <see cref="ConfigInputRules.MaxWarningDays"/>; null keeps the current list.</summary>
     public List<int>? WarningDays { get; set; }
+    /// <summary>Cron expression for the expiry check, in UTC; null or empty keeps the current schedule.</summary>
     public string? Schedule { get; set; }
 }
 
 /// <summary>Request body for PUT /config/acme-policies.</summary>
 public class AcmePoliciesUpdateRequest
 {
+    /// <summary>Whether new ACME accounts must carry an external account binding (RFC 8555 §7.3.4).</summary>
     public bool ExternalAccountRequired { get; set; }
+    /// <summary>Whether CAA DNS records are checked before an ACME certificate is issued.</summary>
     public bool EnforceCaa { get; set; }
 
     /// <summary>
@@ -1071,66 +1121,103 @@ public class TsaUpdateRequest
 /// <summary>Request body for PUT /config/alert.</summary>
 public class AlertUpdateRequest
 {
+    /// <summary>Whether security alerts are raised.</summary>
     public bool Enabled { get; set; }
+    /// <summary>Lowest severity that raises an alert: <c>Critical</c>, <c>Warning</c> or <c>Info</c>; null or empty keeps the current value.</summary>
     public string? MinimumSeverity { get; set; }
+    /// <summary>Minutes to suppress repeat alerts of the same event type; zero or less keeps the current value.</summary>
     public int CooldownMinutes { get; set; }
 }
 
 /// <summary>Request body for PUT /config/webhook.</summary>
 public class WebhookUpdateRequest
 {
+    /// <summary>Whether webhook events are delivered.</summary>
     public bool Enabled { get; set; }
+    /// <summary>Retry attempts for a failed delivery; zero or less keeps the current value.</summary>
     public int MaxRetries { get; set; }
+    /// <summary>Base delay in seconds between retries, grown by exponential backoff; zero or less keeps the current value.</summary>
     public int RetryDelaySeconds { get; set; }
 }
 
 /// <summary>Request body for PUT /config/network-audit.</summary>
 public class NetworkAuditUpdateRequest
 {
+    /// <summary>Whether HTTP requests are written to the network audit log.</summary>
     public bool Enabled { get; set; }
+    /// <summary>True logs every request; false logs only protocol and admin endpoints.</summary>
     public bool LogAllRequests { get; set; }
+    /// <summary>Request paths never logged (e.g. <c>/health</c>); null keeps the current list.</summary>
     public List<string>? ExcludePaths { get; set; }
 }
 
 /// <summary>Request body for PUT /config/policy-sync.</summary>
 public class PolicySyncUpdateRequest
 {
+    /// <summary>Whether policy sync from YAML files is enabled. Takes effect after a restart.</summary>
     public bool Enabled { get; set; }
+    /// <summary>Directory holding the YAML policy files, relative paths resolving from the application base directory; null or empty keeps the current one.</summary>
     public string? PolicyDirectory { get; set; }
+    /// <summary>Whether policies are synced from the directory when the application starts.</summary>
     public bool SyncOnStartup { get; set; }
 }
 
 /// <summary>Request body for PUT /config/cert-manager.</summary>
 public class CertManagerUpdateRequest
 {
+    /// <summary>Whether the cert-manager integration endpoints are enabled.</summary>
     public bool Enabled { get; set; }
+    /// <summary>Shared key cert-manager presents in the <c>X-API-Key</c> header. Null or the redaction placeholder (<c>***</c> or <c>(env)</c>) keeps the stored key.</summary>
     public string? ApiKey { get; set; }
+    /// <summary>Certificate profile used when a signing request names none; null keeps the current one.</summary>
     public Guid? DefaultCertProfileId { get; set; }
+    /// <summary>Signing profile, and so the signing CA, used when a request names none; null keeps the current one.</summary>
     public Guid? DefaultSigningProfileId { get; set; }
 }
 
 /// <summary>Request body for PUT /config/integration-api.</summary>
 public class IntegrationApiUpdateRequest
 {
+    /// <summary>Whether the infrastructure integration API endpoints are enabled.</summary>
     public bool Enabled { get; set; }
+    /// <summary>Shared key clients present in the <c>X-API-Key</c> header. Null or the redaction placeholder (<c>***</c> or <c>(env)</c>) keeps the stored key.</summary>
     public string? ApiKey { get; set; }
 }
 
+/// <summary>
+/// Request body for PUT /config/email. Secret fields left null, or sent back as the redaction
+/// placeholder (<c>***</c> or <c>(env)</c>), keep their stored value.
+/// </summary>
 public class EmailConfigUpdateRequest
 {
+    /// <summary>Whether outbound email is sent.</summary>
     public bool Enabled { get; set; }
+    /// <summary>SMTP server host name; null or empty keeps the current one.</summary>
     public string? SmtpHost { get; set; }
+    /// <summary>SMTP server port; zero or less keeps the current one.</summary>
     public int SmtpPort { get; set; }
+    /// <summary>True requires STARTTLS on the connection; false lets the client negotiate whatever the server offers.</summary>
     public bool UseTls { get; set; } = true;
+    /// <summary><c>Password</c>, <c>OAuth2Token</c> or <c>OAuth2ClientCredentials</c>; null or empty keeps the current method.</summary>
     public string? AuthMethod { get; set; }
+    /// <summary>SMTP login name; null keeps the current one.</summary>
     public string? Username { get; set; }
+    /// <summary>SMTP password for the <c>Password</c> method. Must be re-entered when the host or port changes or TLS is turned off.</summary>
     public string? Password { get; set; }
+    /// <summary>Pre-obtained OAuth2 access token for the <c>OAuth2Token</c> method.</summary>
     public string? OAuth2AccessToken { get; set; }
+    /// <summary>OAuth2 client id for the <c>OAuth2ClientCredentials</c> method; null keeps the current one.</summary>
     public string? OAuth2ClientId { get; set; }
+    /// <summary>OAuth2 client secret for the <c>OAuth2ClientCredentials</c> method. Must be re-entered when the token URL changes.</summary>
     public string? OAuth2ClientSecret { get; set; }
+    /// <summary>OAuth2 token endpoint URL; null keeps the current one.</summary>
     public string? OAuth2TokenUrl { get; set; }
+    /// <summary>Space-separated OAuth2 scopes; empty uses the Microsoft 365 SMTP scope. Null keeps the current value.</summary>
     public string? OAuth2Scopes { get; set; }
+    /// <summary>Sender address on outgoing mail; null or empty keeps the current one.</summary>
     public string? FromAddress { get; set; }
+    /// <summary>Sender display name on outgoing mail; null keeps the current one.</summary>
     public string? FromName { get; set; }
+    /// <summary>Comma-separated addresses that receive admin notifications, each a valid mail address (400 otherwise); null keeps the current list.</summary>
     public string? AdminRecipients { get; set; }
 }

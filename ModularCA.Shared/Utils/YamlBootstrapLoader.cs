@@ -45,7 +45,11 @@ namespace ModularCA.Shared.Utils
             public bool AllowPrivateAddressValidation { get; set; }
         }
 
-        /// <summary>Who will administer the instance, which decides whether key ceremonies start on.</summary>
+        /// <summary>
+        /// Who will administer the instance, which decides whether key ceremonies start on, and how
+        /// the first administrator gets in: by a claim token, or by a generated password left in an
+        /// owner-only file.
+        /// </summary>
         public class AdministrationConfig
         {
             /// <summary>
@@ -56,6 +60,26 @@ namespace ModularCA.Shared.Utils
             /// is absent) keeps the defaults: ceremonies on, self-approval off.
             /// </summary>
             public bool? MultipleAdministrators { get; set; }
+
+            /// <summary>
+            /// The lowercase hex SHA-256 of a one-time claim token, for handing over the first
+            /// administrator (<c>superadmin</c>) without the instance ever making its password. Given,
+            /// the bootstrap creates the account with no password and records the claim; whoever
+            /// holds the token sets the password once at the console's claim page
+            /// (<c>POST /api/v1/auth/claim</c>), and nothing secret is printed or written. The file
+            /// carries only the hash, never the token: generate both with
+            /// <c>ModularCA.API --new-claim-token</c>, or hash 32 random bytes encoded base64url
+            /// yourself (<c>printf %s "$token" | sha256sum</c>). Null (the key is absent) generates a
+            /// password instead and leaves it in the owner-only file <c>config/initial-admin-password</c>.
+            /// </summary>
+            public string? ClaimTokenSha256 { get; set; }
+
+            /// <summary>
+            /// How many hours after the bootstrap the claim of <see cref="ClaimTokenSha256"/> expires.
+            /// Null (the key is absent) is 168, seven days. At most 8760, a year. Ignored without
+            /// <see cref="ClaimTokenSha256"/>.
+            /// </summary>
+            public int? ClaimTokenLifetimeHours { get; set; }
         }
 
         /// <summary>

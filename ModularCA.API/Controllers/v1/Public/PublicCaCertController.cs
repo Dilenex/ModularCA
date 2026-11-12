@@ -8,6 +8,10 @@ using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Public;
 
+/// <summary>
+/// Anonymous CA information for the public portal and AIA clients: the list of enabled CAs with
+/// their public metadata, and each CA certificate as DER or PEM by serial.
+/// </summary>
 [ApiController]
 [Route("api/v1/public/ca")]
 [AllowAnonymous]

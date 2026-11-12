@@ -81,7 +81,7 @@ public class MisdirectedRequestMiddlewareTests
 #pragma warning disable SYSLIB0058
     private sealed class Handshake(string sni) : ITlsHandshakeFeature
     {
-        public string? HostName => sni;
+        public string HostName => sni;
         public SslProtocols Protocol => SslProtocols.Tls13;
         public CipherAlgorithmType CipherAlgorithm => CipherAlgorithmType.None;
         public int CipherStrength => 0;

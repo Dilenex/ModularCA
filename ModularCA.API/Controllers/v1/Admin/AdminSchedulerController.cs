@@ -59,7 +59,7 @@ public class AdminSchedulerController(
 
     /// <summary>
     /// Serializes the read-modify-write-persist sequence across the three PUT handlers
-    /// that mutate <c>SystemConfig</c> and call <see cref="PersistSystemConfig"/>. Without
+    /// that mutate <c>SystemConfig</c> and call <see cref="PersistSystemConfigAsync"/>. Without
     /// this lock, two concurrent operator edits can interleave the in-memory mutation and
     /// the YAML serialization, producing torn output where one writer's mutation is
     /// overwritten by the other's serialized snapshot. Static so the lock survives across

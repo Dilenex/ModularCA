@@ -95,11 +95,21 @@ Http:
   # populate CorsOrigins with explicit HTTPS origins to allow cross-origin
   # access from a separate SPA host. Never use "*" — startup will refuse.
   EnableCors: false
-  # Default trust is loopback only. If the CA lives
-  # behind a reverse proxy (nginx, Traefik, HAProxy, ALB, etc.), enumerate
+  # Default trust is loopback only. If the CA lives behind a reverse proxy that
+  # ENDS TLS (nginx, Traefik, HAProxy in http mode, ALB, etc.), enumerate
   # your trusted proxy subnets here. Comma-separated CIDRs, e.g.:
   # TrustedProxyCidrs: "10.0.1.0/24,10.0.2.0/24"
+  # Never list a proxy that passes TLS through: the X-Forwarded-For it cannot write
+  # would come from the client. Use the PROXY protocol below for that.
   TrustedProxyCidrs: ""
+  #
+  # PROXY protocol, for a proxy that passes connections through (HAProxy mode tcp
+  # with send-proxy-v2, nginx stream with proxy_protocol on). ProxyProtocol here is
+  # the plain-HTTP listener; Https.ProxyProtocol is the HTTPS one. A listener that
+  # takes it requires the header from ProxyProtocolTrustedCidrs and closes every
+  # other connection, so turn it on only when all clients come through the proxy.
+  # ProxyProtocol: false
+  # ProxyProtocolTrustedCidrs: "10.100.105.22/32"
   #
   # Hops to walk back through X-Forwarded-For. Default 1 — correct for a single proxy.
   # A CDN in FRONT of your proxy is two hops: the proxy appends the CDN's edge address,
@@ -229,7 +239,19 @@ Https:
   CertificatePath: "config/api-tls.pfx"
   CertificatePassword: "auto-generated-by-bootstrap"
   Port: 8443
+  # ProxyProtocol: false     # read a PROXY header before TLS; see Http.ProxyProtocolTrustedCidrs
   RenewalWindow: "P30D"      # ISO 8601 duration — renew 30 days before expiry
+
+# The loopback-only health listener, for this host's own health command
+# (ModularCA.API --role node --check-ready, a container's probes). Plain HTTP on 127.0.0.1
+# only, serving /health, /health/live and /health/ready and answering 404 for every other
+# path; it never takes the PROXY protocol, so the health command still works when both
+# listeners above take it from a proxy elsewhere. /health/ready still needs its token.
+# 0 (the default) opens none. Per host, applied at restart; it must not be Https.Port,
+# Http.Port or the signer's port. MODULARCA__HEALTH__LOOPBACKPORT overrides it (the pod sets it
+# that way) and is never written back here.
+# Health:
+#   LoopbackPort: 8081
 
 # Signer separation. By default the signer runs inside this process and nothing here is read.
 # To hold the keys in a separate process (the "modularca-signer" systemd unit, or a sidecar):

@@ -695,6 +695,7 @@ public sealed class SpaceIsolationMatrixTests(ITestOutputHelper output)
             options.FallbackPolicy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build();
         });
         services.AddSingleton<IAuthorizationHandler>(new CaGroupAuthorizationHandler(groupAuth, accessor, db, NullLogger<CaGroupAuthorizationHandler>.Instance));
+        services.AddSingleton<IAuthorizationHandler>(new AnyScopeCapabilityAuthorizationHandler(groupAuth));
         var sp = services.BuildServiceProvider();
         var provider = sp.GetRequiredService<IAuthorizationPolicyProvider>();
         var policy = await AuthorizationPolicy.CombineAsync(provider, attributes.OfType<IAuthorizeData>()) ?? await provider.GetFallbackPolicyAsync();

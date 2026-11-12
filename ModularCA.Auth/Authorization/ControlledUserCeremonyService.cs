@@ -569,6 +569,7 @@ public class ControlledUserCeremonyService(
         if (c.IsLocked != null) parts.Add(c.IsLocked.Value ? "lock" : "unlock");
         if (c.PasswordNeverExpires != null) parts.Add(c.PasswordNeverExpires.Value ? "password never expires" : "password expires");
         if (c.PasswordChangeOnNextLogon != null) parts.Add(c.PasswordChangeOnNextLogon.Value ? "force password change" : "no forced password change");
+        if (c.PasswordSource != null) parts.Add($"password source to {c.PasswordSource}");
         if (c.FirstName != null || c.LastName != null || c.DisplayName != null) parts.Add("name");
         return parts.Count == 0 ? "nothing" : string.Join(", ", parts);
     }
@@ -599,14 +600,17 @@ public class ControlledUserCeremonyService(
     /// password, MFA or identity changed since initiation, an identity change's account no longer
     /// matches the state it was opened against, a promotion or identity change carries no such
     /// state because it was opened before it was recorded (<see cref="PredatesCredentialCheck"/>),
-    /// that tier is higher than the approved one, or the
+    /// that tier is higher than the approved one, an account change opened below system scope
+    /// finds its account holding something outside the scopes recorded at initiation
+    /// (<see cref="ControlledUserChangeParameters.TargetScopes"/>), or the
     /// recorded approvals no longer hold enough active approvers dominating it (for a promotion, who
     /// did not reset the credentials of an account it promotes), the ceremony is marked Expired and a
     /// <see cref="ControlledUserChangeRefusedException"/> is thrown. A demotion, deletion, disable or
     /// lock that would leave its scope without a dominating user is refused the same way but stays
     /// Approved. Otherwise the ceremony is marked Executed in the same transaction as the change.
     /// A password reset generates the temporary password now and returns it only in
-    /// <see cref="ControlledUserChangeResult.TemporaryPassword"/>. A group membership removed here
+    /// <see cref="ControlledUserChangeResult.TemporaryPassword"/>. An identity change that sets the
+    /// password source returns the old and new source for the audit record. A group membership removed here
     /// revokes, in the same transaction, the SSH certificates that carried a login name the user
     /// held through that group.
     /// </summary>
@@ -634,6 +638,8 @@ public class ControlledUserCeremonyService(
             && await ControlledCredentials.AccountStateAsync(db, p.TargetUserId) is { } state
             && !ControlledCredentials.Unchanged(before, state, identity))
             stale = "the account changed after it was opened";
+        if (stale == null && p.TargetScopes is { } pinnedScopes && await UserAdministrationAccess.HoldsOutsideAsync(db, p.TargetUserId, pinnedScopes))
+            stale = "the account now holds a membership, grant or role in a scope it held none in when this was opened";
         if (stale == null && current is { } now && !approved.Dominates(now))
             stale = "it now confers a higher privilege tier than the one approved";
         if (stale == null && !await ApprovalsStillCoverAsync(ceremony, p, approved, current))
@@ -665,6 +671,7 @@ public class ControlledUserCeremonyService(
         await db.SaveChangesAsync();
 
         string? temporaryPassword = null;
+        PasswordSource? passwordSourceBefore = null;
         switch (p.ChangeType)
         {
             case "GrantCapability":
@@ -809,6 +816,9 @@ public class ControlledUserCeremonyService(
                 {
                     var c = p.Identity
                         ?? throw new InvalidOperationException($"Ceremony {ceremonyId} has no account fields to set.");
+                    if (c.PasswordSource != null)
+                        passwordSourceBefore = await db.Users.AsNoTracking()
+                            .Where(u => u.Id == p.TargetUserId).Select(u => (PasswordSource?)u.PasswordSource).FirstOrDefaultAsync();
                     await userService.UpdateUser(p.TargetUserId, new ModularCA.Shared.Models.Management.UpdateUserRequest
                     {
                         Username = c.Username,
@@ -820,6 +830,7 @@ public class ControlledUserCeremonyService(
                         IsLocked = c.IsLocked,
                         PasswordNeverExpires = c.PasswordNeverExpires,
                         PasswordChangeOnNextLogon = c.PasswordChangeOnNextLogon,
+                        PasswordSource = c.PasswordSource,
                     });
                     break;
                 }
@@ -836,6 +847,8 @@ public class ControlledUserCeremonyService(
         return new ControlledUserChangeResult(p.ChangeType, p.TargetUserId, p.Capability, p.SpaceId, p.CertificateAuthorityId)
         {
             TemporaryPassword = temporaryPassword,
+            PasswordSourceBefore = passwordSourceBefore,
+            PasswordSourceAfter = passwordSourceBefore == null ? null : p.Identity?.PasswordSource,
         };
     }
 
@@ -844,7 +857,8 @@ public class ControlledUserCeremonyService(
     /// target account's covering tier for an account change, against the current state, taking the
     /// row lock on every role involved first. Null when the change no longer touches a controlled
     /// tier (including a demotion whose record is already gone). <c>Stale</c> is set when a record
-    /// the change needs has disappeared, or an identity change's username or email was taken.
+    /// the change needs has disappeared, an identity change's username or email was taken, or a
+    /// password reset's account is now a Directory account, which would never use a local password.
     /// </summary>
     private async Task<(ControlledTier? Tier, string? Stale)> RecomputeTierAsync(ControlledUserChangeParameters p)
     {
@@ -914,6 +928,10 @@ public class ControlledUserCeremonyService(
                 {
                     if (!await db.Users.AnyAsync(u => u.Id == p.TargetUserId))
                         return (null, "the account no longer exists");
+                    // Learned or set as Directory since: a local password would never be used.
+                    if (p.ChangeType == "ResetPassword"
+                        && await db.Users.AnyAsync(u => u.Id == p.TargetUserId && u.PasswordSource == PasswordSource.Directory))
+                        return (null, "the account's password is now checked by the directory only, so a local password would never be used");
                     if (p.ChangeType == "UpdateIdentity" && p.Identity is { } c
                         && ((c.Username != null && await db.Users.AnyAsync(u => u.Id != p.TargetUserId && u.Username == c.Username))
                             || (c.Email != null && await db.Users.AnyAsync(u => u.Id != p.TargetUserId && u.Email == c.Email))))

@@ -6,6 +6,7 @@ import { useTheme } from '@shared/context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { useScope } from '../context/ScopeContext';
 import { PORTAL, PORTAL_LABEL } from '../portal';
+import { navItemActive } from '../navActive';
 import { scopeLabel } from '../scope';
 import LogPanel from './LogPanel';
 import TopBar from './TopBar';
@@ -114,8 +115,8 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                         {!collapsed[section.title] && (
                             <ul className="px-2 space-y-0.5">
                                 {section.items.map(item => {
-                                    const isActive = location.pathname === item.path ||
-                                        (PORTAL === 'user' && item.path !== '/dashboard' && location.pathname.startsWith(item.path));
+                                    const isActive = navItemActive(location.pathname, item.path,
+                                        PORTAL === 'user' && item.path !== '/dashboard');
                                     return (
                                         <li key={item.path}>
                                             <Link

@@ -50,14 +50,8 @@ namespace ModularCA.API.Controllers.v1.Account
             if (!_currentUser.IsAuthenticated || _currentUser.User == null)
                 return Unauthorized();
 
-            try
-            {
-                return Ok(await _userManager.GetUserById(_currentUser.User.Id));
-            }
-            catch (Exception)
-            {
-                return NotFound();
-            }
+            var self = await _userManager.GetUserById(_currentUser.User.Id);
+            return self == null ? NotFound() : Ok(self);
         }
 
         /// <summary>
@@ -91,7 +85,7 @@ namespace ModularCA.API.Controllers.v1.Account
             var newEmail = request.Email?.Trim();
             if (!string.IsNullOrEmpty(newEmail) && !string.Equals(newEmail, user.Email, StringComparison.OrdinalIgnoreCase))
             {
-                if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ChangeEmail, user.Id.ToString()))
+                if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.ChangeEmail, user.Id.ToString()))
                     return StatusCode(403, new { error = "MFA re-verification required to change your email address. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
                 if (!MailAddress.TryCreate(newEmail, out _))
@@ -156,7 +150,9 @@ namespace ModularCA.API.Controllers.v1.Account
         /// issued before it stops working at once rather than when the cache entry expires.
         /// Audit findings #32: emits <see cref="AuditActionType.UserPasswordChanged"/> with
         /// <c>success=false</c> when the underlying call returns false or throws — restoring the
-        /// credential-stuffing signal that previously only fired on successful changes.
+        /// credential-stuffing signal that previously only fired on successful changes. A Directory
+        /// account, whose password lives in the directory, is answered 409 with an explanation
+        /// before any step-up, and the refusal is audited the same way.
         /// </summary>
         [HttpPut("password")]
         public async Task<IActionResult> ChangePassword([FromBody] UpdatePasswordRequest request,
@@ -166,8 +162,28 @@ namespace ModularCA.API.Controllers.v1.Account
             if (!_currentUser.IsAuthenticated || _currentUser.User == null)
                 return Unauthorized();
 
+            // A Directory account's password lives in the directory; a local one would never be
+            // used. Answered before the step-up so the user is not asked for a second factor for a
+            // change that cannot happen. The caller already sees their source on their profile.
+            var ownSource = await _db.Users.AsNoTracking()
+                .Where(u => u.Id == _currentUser.User.Id).Select(u => u.PasswordSource).FirstOrDefaultAsync();
+            if (ownSource == PasswordSource.Directory)
+            {
+                await _audit.LogAsync(AuditActionType.UserPasswordChanged, _currentUser.User.Id, _currentUser.User.Username,
+                    "User", _currentUser.User.Id.ToString(),
+                    sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    success: false,
+                    errorMessage: "Password change refused: the account's password is checked by the directory.");
+                return Conflict(new
+                {
+                    error = "Your password is managed by your organisation's directory (LDAP). Change it there; "
+                            + "ModularCA does not keep a password for this account.",
+                    passwordSource = nameof(PasswordSource.Directory),
+                });
+            }
+
             // Require step-up MFA verification
-            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.ChangePassword))
+            if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.ChangePassword))
                 return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
             bool result;
@@ -225,8 +241,9 @@ namespace ModularCA.API.Controllers.v1.Account
         /// <summary>
         /// Returns the authenticated user's MFA enrollment status, including
         /// which methods are configured and their details. Only mTLS credentials that would
-        /// authenticate are listed (<see cref="MtlsCredentialStatus.Usable"/>): one that is expired,
-        /// or whose certificate is revoked, on hold or no longer on record, is left out.
+        /// authenticate are listed (<see cref="MtlsCredentialStatus.UsableAsync"/>): one that is expired,
+        /// whose certificate is revoked, on hold or no longer on record, or whose issuing CA or a CA
+        /// above it is revoked, on hold, disabled or deleted, is left out.
         /// </summary>
         [HttpGet("mfa")]
         public async Task<IActionResult> GetMfaStatus()
@@ -247,7 +264,7 @@ namespace ModularCA.API.Controllers.v1.Account
                 .ToListAsync();
 
             var mtlsCreds = await _db.MtlsCredentials
-                .Where(MtlsCredentialStatus.Usable(DateTime.UtcNow))
+                .Where(await MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow))
                 .Where(c => c.UserId == userId)
                 .Select(c => new { c.Id, c.DeviceName, c.SerialNumber, c.IssuedAt, c.ExpiresAt, c.SigningCaId })
                 .OrderByDescending(c => c.IssuedAt)
@@ -271,9 +288,13 @@ namespace ModularCA.API.Controllers.v1.Account
     /// </summary>
     public class UpdateAccountProfileRequest
     {
+        /// <summary>Name shown in the console, trimmed; empty clears it.</summary>
         public string? DisplayName { get; set; }
+        /// <summary>Given name, trimmed.</summary>
         public string? FirstName { get; set; }
+        /// <summary>Family name, trimmed.</summary>
         public string? LastName { get; set; }
+        /// <summary>New email address; must be valid and not used by another account, and needs step-up MFA. Empty leaves it unchanged.</summary>
         public string? Email { get; set; }
     }
 }

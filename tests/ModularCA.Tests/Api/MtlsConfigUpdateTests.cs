@@ -45,7 +45,7 @@ public sealed class MtlsConfigUpdateTests
         var controller = (ControllerBase)Activator.CreateInstance(ApiAssembly.TypeNamed(Ns + "AdminConfigController"),
             config, null, new RecordingAuditService(), new CurrentUserStub(Guid.NewGuid()),
             new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions())),
-            new RecordingAlertService(), null, null, null, null)!;
+            new RecordingAlertService(), null, null, null, null, null)!;
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() };
         return controller;
     }

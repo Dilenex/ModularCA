@@ -23,6 +23,7 @@ import { useAuth } from '../context/AuthContext';
 import { canUseSshTab } from '../authz';
 import { CERT_VIEW } from '../gates';
 import { SshCertificatesTab } from './SshCertificates';
+import { revocableSerials, selectionScopeKey } from './certSelection';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -232,12 +233,16 @@ const X509Certificates: React.FC = () => {
         setQ(next);
     };
 
-    // Reset selection whenever the matching set changes (filter change, not page change).
+    // Reset selection whenever the matching set changes (filter or scope change, not page change).
+    // The space scope reaches the list through the scope context rather than the URL, so it is
+    // part of the key too: switching spaces used to keep a selection made in the space just left.
+    const { spaceId: scopeSpaceId } = useScope();
+    const selectionKey = selectionScopeKey(currentView, caIdFilter, scopeCaId, scopeSpaceId);
     useEffect(() => {
         setSelectedKeys(new Set());
         setAllMatching(false);
         rowCache.current = new Map();
-    }, [currentView, caIdFilter]);
+    }, [selectionKey]);
 
     useEffect(() => {
         let cancelled = false;
@@ -260,8 +265,11 @@ const X509Certificates: React.FC = () => {
 
     // Bulk-revoke the explicitly-selected serials with one reason behind a single step-up prompt.
     // (Leaf certs only — the server skips CA certs, which need the RevokeCa op / a ceremony.)
+    // Only serials listed under the current scope and filters are sent: the row cache is cleared
+    // with the selection, so a key it does not hold was never shown in this scope.
+    const revokeSerials = revocableSerials(selectedKeys, rowCache.current);
     const runBulkRevoke = async () => {
-        const serials = Array.from(selectedKeys);
+        const serials = revocableSerials(selectedKeys, rowCache.current);
         if (serials.length === 0) return;
         setRevokeBusy(true);
         try {
@@ -510,11 +518,11 @@ const X509Certificates: React.FC = () => {
                 <div className="fixed inset-0 z-[60] flex items-center justify-center bg-scrim" onClick={() => !revokeBusy && setRevokeOpen(false)}>
                     <div className="bg-raised border border-line rounded-lg shadow-2xl w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
                         <div className="px-6 py-4 border-b border-line">
-                            <h3 className="text-sm font-semibold text-ink">Revoke {selectedKeys.size} certificate{selectedKeys.size === 1 ? '' : 's'}</h3>
+                            <h3 className="text-sm font-semibold text-ink">Revoke {revokeSerials.length} certificate{revokeSerials.length === 1 ? '' : 's'}</h3>
                         </div>
                         <div className="px-6 py-4 space-y-3">
                             <p className="text-xs text-ink-muted">Every selected certificate is revoked with the same reason. CA certificates are skipped — revoke those individually. Only Certificate Hold can be lifted afterwards; every other reason is permanent.</p>
-                            {allMatching && <p className="text-[11px] text-warn">Note: this revokes the {selectedKeys.size} explicitly selected on loaded pages, not every match across all pages.</p>}
+                            {allMatching && <p className="text-[11px] text-warn">Note: this revokes the {revokeSerials.length} explicitly selected on loaded pages, not every match across all pages.</p>}
                             <div className="space-y-1">
                                 <label htmlFor="bulk-revoke-reason" className="block text-xs text-ink-muted">Revocation reason</label>
                                 <select id="bulk-revoke-reason" value={revokeReason} onChange={(e) => setRevokeReason(e.target.value)} disabled={revokeBusy} className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent disabled:opacity-50">
@@ -525,7 +533,7 @@ const X509Certificates: React.FC = () => {
                         </div>
                         <div className="px-6 py-4 border-t border-line flex justify-end gap-3">
                             <button onClick={() => setRevokeOpen(false)} disabled={revokeBusy} className="px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover transition-colors disabled:opacity-50">Cancel</button>
-                            <button onClick={runBulkRevoke} disabled={revokeBusy || selectedKeys.size === 0} className="px-4 py-2 text-sm bg-crit text-on-accent rounded hover:bg-crit-hover transition-colors disabled:opacity-50">{revokeBusy ? 'Revoking…' : `Revoke ${selectedKeys.size}`}</button>
+                            <button onClick={runBulkRevoke} disabled={revokeBusy || revokeSerials.length === 0} className="px-4 py-2 text-sm bg-crit text-on-accent rounded hover:bg-crit-hover transition-colors disabled:opacity-50">{revokeBusy ? 'Revoking…' : `Revoke ${revokeSerials.length}`}</button>
                         </div>
                     </div>
                 </div>

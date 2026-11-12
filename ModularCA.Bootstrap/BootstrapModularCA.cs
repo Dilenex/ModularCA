@@ -361,7 +361,17 @@ public class BootstrapModularCA
         }
     }
 
-    /// <summary>The bootstrap procedure <see cref="Run"/> performs, with refusals propagating as exceptions.</summary>
+    /// <summary>
+    /// The bootstrap procedure <see cref="Run"/> performs, with refusals propagating as exceptions.
+    /// A bootstrap.yaml with an empty required section, or a claim token hash that is not a SHA-256,
+    /// is refused before anything is changed
+    /// (<see cref="BootstrapInputSections.EnsureBootstrapSectionsPresent"/>,
+    /// <see cref="BootstrapInputSections.EnsureClaimTokenUsable"/>). The first administrator's
+    /// password is never printed: it is claimed with a token, or left in an owner-only file
+    /// (<see cref="BootstrapProfileSeeder.CreateInitialUser"/>). A claim is recorded in the audit database once
+    /// the configuration is written (<see cref="InitialAdminClaimAudit.RecordAsync"/>), and the
+    /// records the earlier steps queued are written there after it (<see cref="BootstrapAuditDrain.RunAsync"/>).
+    /// </summary>
     private static int RunCore(bool wipeAuditDatabase)
     {
         var configDir = Path.Combine(AppContext.BaseDirectory, "config");
@@ -379,9 +389,11 @@ public class BootstrapModularCA
         }
         try
         {
+            BootstrapInputSections.EnsureBootstrapSectionsPresent(bootstrapConfig);
             BootstrapCertCreator.EnsureRootLabelUsable(bootstrapConfig.CA.Subject.CN ?? "ModularCA");
-            BootstrapCertCreator.EnsureWebTlsSansSupported(bootstrapConfig.HttpsApi?.SANs);
-            BootstrapServiceUrlBuilder.EnsurePublicDomainUsable(bootstrapConfig.HttpsApi?.PublicDomain);
+            BootstrapCertCreator.EnsureWebTlsSansSupported(bootstrapConfig.HttpsApi.SANs);
+            BootstrapServiceUrlBuilder.EnsurePublicDomainUsable(bootstrapConfig.HttpsApi.PublicDomain);
+            BootstrapInputSections.EnsureClaimTokenUsable(bootstrapConfig.Administration);
         }
         catch (ModularCA.Shared.Errors.RequestValidationException ex)
         {
@@ -751,7 +763,7 @@ public class BootstrapModularCA
         // via SshCaService, which also creates the linked CertificateAuthorityEntity (with
         // IsSshCa = true) and its 4 CA-scoped groups. No backfill is needed here.
         BootstrapProfileSeeder.SeedNotificationPreferences(dbContext);
-        BootstrapProfileSeeder.CreateInitialUser(dbContext);
+        var adminHandover = BootstrapProfileSeeder.CreateInitialUser(dbContext, configDir, bootstrapConfig.Administration);
 
         caCertEntity.CertificateAuthority = caCertCaEntity;
         sysCertEntity.CertificateAuthority = sysCertCaEntity;
@@ -818,13 +830,32 @@ public class BootstrapModularCA
         });
         Console.WriteLine($"✓ db.yaml written to {dbYamlPath}");
 
+        // === Record the first administrator's claim in the audit trail ===
+        // The audit schema has been there since ApplySchemasAsync, so the record goes through
+        // the hash chain now rather than waiting for the node. Last of the steps that can stop
+        // the bootstrap, so a record is only written for an install that was completed.
+        InitialAdminClaimAudit.RecordAsync(
+            () => new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+                .UseNpgsql(PostgresConnection.Build(databases.Audit)).Options),
+            adminHandover, Console.Out).GetAwaiter().GetResult();
+
+        // === Write the queued setup records into the audit trail ===
+        // Keystore writes and setup decisions were queued in logs/bootstrap-audit-*.jsonl, which
+        // an init container does not keep. The bootstrap writes them itself; the file is the
+        // fallback the node replays.
+        BootstrapAuditDrain.RunAsync(
+            () => new AuditDbContext(new DbContextOptionsBuilder<AuditDbContext>()
+                .UseNpgsql(PostgresConnection.Build(databases.Audit)).Options),
+            Console.Out, ModularCA.Core.Services.BootstrapAuditReplayService.PendingDirectory(AppContext.BaseDirectory)).GetAwaiter().GetResult();
+
         // === Copy baseline policy files from examples if none exist ===
         SeedPolicyFiles(configDir);
 
         Console.WriteLine("\n----------------------------------------------------------------");
-        Console.WriteLine("\nIMPORTANT: SUPERADMIN PASSWORD IS GENERATED ABOVE");
-        Console.WriteLine("REMEMBER TO RECORD IT AND STORE IT SECURELY!");
-        Console.WriteLine("THERE IS CURRENTLY NO WAY TO RECOVER IT IF LOST!");
+        // No secret in this banner: standard output is the journal under systemd and Podman.
+        Console.WriteLine();
+        foreach (var line in adminHandover.BannerLines())
+            Console.WriteLine(line);
         Console.WriteLine("\n----------------------------------------------------------------");
 
         // Delete setup-database.yaml — root credentials are no longer needed

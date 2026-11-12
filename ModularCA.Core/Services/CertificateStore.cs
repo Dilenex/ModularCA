@@ -264,19 +264,6 @@ public class CertificateStore(ModularCADbContext dbContext) : ICertificateStore
         }).ToList();
     }
 
-    public async Task RevokeCertificateAsync(string serialNumber, string reason)
-    {
-        var entity = await _dbContext.Certificates.ResolveBySerialOrNullAsync(serialNumber);
-
-        if (entity == null)
-            throw new InvalidOperationException("Certificate not found.");
-
-        entity.Revoked = true;
-        entity.RevocationReason = reason;
-
-        await _dbContext.SaveChangesAsync();
-    }
-
     public async Task<CertificateInfoModel?> GetCertificateByIdAsync(Guid id)
     {
         var entity = await _dbContext.Certificates.FindAsync(id);

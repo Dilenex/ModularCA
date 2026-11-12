@@ -10,8 +10,8 @@ using Xunit;
 namespace ModularCA.Tests.Api;
 
 /// <summary>
-/// A SCEP client at a CA SCEP cannot run on is answered 409 with the reason in words, on GetCACert
-/// and on PKIOperation by GET and by POST, instead of the generic "SCEP operation failed".
+/// A SCEP client at a CA SCEP cannot run on is answered 409 with the reason in words, on GetCACaps,
+/// on GetCACert and on PKIOperation by GET and by POST, instead of the generic "SCEP operation failed".
 /// </summary>
 public class ScepControllerRefusalTests
 {
@@ -25,7 +25,8 @@ public class ScepControllerRefusalTests
     {
         public Task<(byte[] data, bool isPkcs7)> GetCaCertAsync(string? caLabel = null, string? sourceIp = null)
             => throw new ProtocolIncompatibleException(Advisory);
-        public string GetCaCaps() => "POSTPKIOperation";
+        public Task<string> GetCaCapsAsync(string? caLabel = null, string? sourceIp = null)
+            => throw new ProtocolIncompatibleException(Advisory);
         public Task<byte[]> PkiOperationAsync(byte[] cmsRequest, string? caLabel = null, string? sourceIp = null)
             => throw new ProtocolIncompatibleException(Advisory);
     }
@@ -54,6 +55,7 @@ public class ScepControllerRefusalTests
     }
 
     [Theory]
+    [InlineData("GetCACaps", null)]
     [InlineData("GetCACert", null)]
     [InlineData("PKIOperation", "AAAA")]
     public async Task A_get_is_answered_409_with_the_reason(string operation, string? message)
@@ -73,15 +75,5 @@ public class ScepControllerRefusalTests
             .Invoke(controller, new object?[] { "ec-ca" })!;
 
         AssertRefusal(result);
-    }
-
-    [Fact]
-    public async Task Get_ca_caps_is_answered_as_before()
-    {
-        var controller = NewController();
-        var result = await (Task<IActionResult>)controller.GetType().GetMethod("Get")!
-            .Invoke(controller, new object?[] { "GetCACaps", null, "ec-ca" })!;
-
-        Assert.IsType<ContentResult>(result);
     }
 }

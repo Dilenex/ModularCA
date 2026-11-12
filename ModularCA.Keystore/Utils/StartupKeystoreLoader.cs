@@ -115,17 +115,20 @@ internal static class StartupKeystoreLoader
 
     /// <summary>
     /// Loads HSM-backed CA signers by matching CA entities whose <c>KeyStorageType</c>
-    /// is "Pkcs11" to private key objects found on the PKCS#11 token. Each matching CA
-    /// returns a certificate paired with a non-exporting <see cref="IPrivateKeyHandle"/>
-    /// that delegates signing to the HSM.
+    /// is "Pkcs11" to private key objects found on the PKCS#11 token. Each CA's key is bound by
+    /// <see cref="Pkcs11KeyBinder"/>: the label must name exactly one private key object, held
+    /// the way an HSM key must be, whose public key is the CA certificate's. A bound CA returns
+    /// its certificate paired with a non-exporting <see cref="IPrivateKeyHandle"/> that delegates
+    /// signing to the HSM; a CA whose key is refused is returned among the refusals and logged as
+    /// an error, and gets no handle. A label no object carries is logged and skipped, as before.
     /// </summary>
     /// <param name="hsm">An open PKCS#11 session manager connected to the HSM.</param>
-    /// <param name="dbConnStr">MySQL connection string for the ModularCA database.</param>
+    /// <param name="dbConnStr">PostgreSQL connection string for the ModularCA database.</param>
     /// <returns>
-    /// A list of (certificate, key handle) tuples for every enabled PKCS#11-backed CA
-    /// whose key was successfully located on the token.
+    /// The (certificate, key handle) pairs for every enabled PKCS#11-backed CA whose key was
+    /// found and bound, and the CAs whose key was found and refused.
     /// </returns>
-    public static List<(X509Certificate Cert, IPrivateKeyHandle KeyHandle)> LoadHsmSigners(
+    public static (List<(X509Certificate Cert, IPrivateKeyHandle KeyHandle)> Signers, List<HsmKeyRefusal> Refused) LoadHsmSigners(
         Pkcs11SessionManager hsm,
         string dbConnStr)
     {
@@ -141,6 +144,7 @@ internal static class StartupKeystoreLoader
             .ToList();
 
         var results = new List<(X509Certificate Cert, IPrivateKeyHandle KeyHandle)>();
+        var refused = new List<HsmKeyRefusal>();
 
         foreach (var ca in hsmCas)
         {
@@ -148,17 +152,25 @@ internal static class StartupKeystoreLoader
                 continue;
 
             var cert = new X509Certificate(ca.Certificate.RawCertificate);
-            var keyHandle = hsm.FindPrivateKey(ca.HsmKeyLabel);
-            if (keyHandle == null)
+            var binding = Pkcs11KeyBinder.Bind(hsm, ca.HsmKeyLabel, cert);
+            if (binding.NotFound)
             {
                 Console.WriteLine($"[HSM] WARNING: Key '{ca.HsmKeyLabel}' not found on token for CA '{ca.Name}' — skipping.");
                 continue;
             }
+            if (binding.Key == null)
+            {
+                Console.Error.WriteLine($"[HSM] ERROR: refusing the key labelled '{ca.HsmKeyLabel}' for CA '{ca.Name}': {binding.Refusal} " +
+                    "The CA signs nothing until the token or the CA's HsmKeyLabel is corrected and the signer restarted.");
+                refused.Add(new HsmKeyRefusal(cert, ca.HsmKeyLabel, ca.Name, binding.Refusal!));
+                continue;
+            }
 
-            var pkcs11Handle = new Pkcs11PrivateKeyHandle(hsm, keyHandle, ca.HsmKeyLabel);
+            var pkcs11Handle = new Pkcs11PrivateKeyHandle(hsm, binding.Key, ca.HsmKeyLabel,
+                EcdsaSignatureEncoding.ComponentLength(cert.GetPublicKey()));
             results.Add((cert, pkcs11Handle));
         }
 
-        return results;
+        return (results, refused);
     }
 }

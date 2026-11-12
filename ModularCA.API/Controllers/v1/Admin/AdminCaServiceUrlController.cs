@@ -77,6 +77,11 @@ public class AdminCaServiceUrlController(
         }));
     }
 
+    /// <summary>
+    /// The service URL configuration of one CA, keyed by the id of the CA's certificate. Answers 404
+    /// both when no configuration exists and when the CA lies outside the caller's
+    /// <see cref="SpaceFence"/>, so the reply does not reveal whether the CA exists.
+    /// </summary>
     [HttpGet("{caCertificateId:guid}")]
     public async Task<IActionResult> GetByCa(Guid caCertificateId)
     {
@@ -162,6 +167,7 @@ public class AdminCaServiceUrlController(
     }
 }
 
+/// <summary>Request body for setting a CA's public base URL.</summary>
 public class CaServiceUrlRequest
 {
     /// <summary>

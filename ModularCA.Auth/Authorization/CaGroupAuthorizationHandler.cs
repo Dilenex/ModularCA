@@ -153,8 +153,8 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
         // For a MUTATION it is not. A state-changing CA-scoped request whose target cannot be
         // pinned to a CA is precisely the escalation this handler exists to prevent: the operator
         // holds the capability on one small CA, the route carries no CA to check it against, and
-        // the target is then taken from the request body. POST /admin/users/{id}/reset-password is
-        // the concrete case — it is CaAdmin, its only route value is {id}, and it returns the new
+        // the target is then taken from the request body. POST /admin/users/{id}/reset-password was
+        // the concrete case — it was CaAdmin, its only route value is {id}, and it returns the new
         // plaintext password in the response. A single-CA operator could reset a system
         // administrator's password in a different space.
         //
@@ -162,7 +162,10 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
         // genuinely global should carry Policy = "SystemOperator"/"SystemAdmin"
         // (CaGroupRequirement.IsSystemOnly) rather than relying on a CA-scoped policy that cannot
         // resolve a CA. Denials here are logged at Warning with the route so those endpoints are
-        // easy to find and reclassify.
+        // easy to find and reclassify. An endpoint whose target belongs to no CA at all, as a user
+        // account does, takes neither: the user-administration routes carry a gate of their own
+        // (AnyScopeCapabilityRequirement, PolicyDefinitions.HeldAtSomeScope) and decide inside the
+        // action against the target account. This refusal stays as it is for every other route.
         var method = _httpContextAccessor.HttpContext?.Request.Method;
         var isMutation = !HttpMethods.IsGet(method ?? string.Empty)
                       && !HttpMethods.IsHead(method ?? string.Empty)

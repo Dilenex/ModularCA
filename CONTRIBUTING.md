@@ -62,9 +62,34 @@ Repeat for `modularca.publicui`, `modularca.docsui`, and
 
 ## Running Tests
 
+Build the solution first (the API tests load `ModularCA.API` from its build
+output), then run the test project:
+
 ```bash
-dotnet test ModularCA.sln
+dotnet build ModularCA.sln
+dotnet test tests/ModularCA.Tests --no-build                         # everything
+dotnet test tests/ModularCA.Tests --no-build --filter "Tier!=Slow"   # the fast tier
 ```
+
+- **Everything** is what CI runs and what a release needs. With a PostgreSQL
+  test server it takes about 13 minutes on a 12-core Windows workstation
+  (6,459 tests). The PostgreSQL tests are opt-in: set `MODULARCA_TEST_PG` to a
+  connection string for a server where the user may create roles and databases
+  (never one that holds data), otherwise they are reported as skipped.
+- **The fast tier** leaves out the tests tagged `[Trait("Tier", "Slow")]`: the
+  PostgreSQL tests, the restore drill and the shell-script tests. It takes about
+  4 minutes (6,304 tests) and is the one to run after each merge.
+
+How the run is ordered, for anyone adding a slow test:
+
+- The PostgreSQL test classes are spread over six collections, the lanes
+  (`TestUtils/PostgresLane.cs`); put a new class in the lane with the least in
+  it and tag it `Category=PostgreSQL` and `Tier=Slow`. The lanes start when the
+  rest of the suite has finished, and the two restore drills after the lanes
+  (`TestUtils/PhasedTestFramework.cs`).
+- A test that only needs the migrated schema takes a copy of a template
+  database (`PostgresTestDatabase.CreateMigratedAsync`) instead of running the
+  migrations; a test about migrating runs its own.
 
 Please add or update tests for any behavior you change, especially anything that
 touches issuance, validation, revocation, authentication, authorization, or

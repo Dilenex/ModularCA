@@ -8,6 +8,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using ModularCA.Ssh;
 using ModularCA.Tests.Ssh;
+using ModularCA.Tests.TestUtils;
 using Xunit;
 
 namespace ModularCA.Tests.Deploy;
@@ -36,6 +37,7 @@ public sealed class RequiresKrlFetchToolsTheoryAttribute : TheoryAttribute
 /// body, garbage, a lower version, an unreachable or untrusted server, an error status, a
 /// transfer cut short) leaves the installed file byte for byte as it was and exits non-zero.
 /// </summary>
+[Trait(TestTier.Name, TestTier.Slow)]
 public sealed class SshKrlFetchScriptTests : IDisposable
 {
     private const string FirstETag = "\"0123456789abcdef0123456789abcdef\"";

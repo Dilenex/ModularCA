@@ -55,11 +55,15 @@ public sealed class AdminCertificateChainEndpointTests
 
     private static Pki SeedPki(ModularCADbContext db, string name = "Chain", Guid? spaceId = null)
     {
-        var from = DateTimeOffset.UtcNow.AddDays(-1);
-        var to = DateTimeOffset.UtcNow.AddYears(1);
-
         using var root = CaCert($"CN={name} Root", null, [0]);
         using var intermediate = CaCert($"CN={name} Intermediate", root, [1, 2]);
+
+        // The leaf's validity is taken from its issuer's, not from the clock. A certificate keeps
+        // whole seconds, so a start time read before the issuer was made could fall one second
+        // before the issuer's own, and .NET refuses to sign a certificate that starts before its
+        // issuer does.
+        var from = new DateTimeOffset(intermediate.NotBefore);
+        var to = new DateTimeOffset(intermediate.NotAfter);
 
         using var leafKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var leafReq = new CertificateRequest($"CN={name.ToLowerInvariant()}-leaf.example", leafKey, HashAlgorithmName.SHA256);

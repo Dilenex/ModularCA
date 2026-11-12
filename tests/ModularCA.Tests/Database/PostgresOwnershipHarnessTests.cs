@@ -10,6 +10,7 @@ using ModularCA.Migrate;
 using ModularCA.Shared.Models.Config;
 using ModularCA.Shared.Utils;
 using ModularCA.Tests.Database.ProbeMigrations;
+using ModularCA.Tests.TestUtils;
 using Npgsql;
 using Serilog.Events;
 using Xunit;
@@ -99,602 +100,634 @@ namespace ModularCA.Tests.Database
     /// every stage of the schema has, run through <c>SchemaStartup.EnforceAllAsync</c> as the
     /// runtime roles.
     /// </summary>
-    [Trait("Category", "PostgreSQL")]
-    [Collection(SerilogCaptureCollection.Name)]
+    /// <remarks>
+    /// The tests are in nested classes, one per subject, so xUnit runs the groups beside each
+    /// other (a class is a collection, and the tests of one collection run one after another).
+    /// This class holds the helpers they share. A filter on
+    /// <c>PostgresOwnershipHarnessTests</c> still selects them all.
+    /// </remarks>
     public sealed class PostgresOwnershipHarnessTests
     {
         private const string ServerVariable = "MODULARCA_TEST_PG";
 
         private static string Server => Environment.GetEnvironmentVariable(ServerVariable)!;
 
-        [RequiresEnvironmentTheory(ServerVariable)]
-        [InlineData(OwnershipLayout.Migrated)]
-        [InlineData(OwnershipLayout.Fresh)]
-        public async Task A_migrated_or_fresh_layout_is_sound_and_every_role_starts(OwnershipLayout layout)
+        /// <summary>Each layout as built, and migrations run over it by the roles that own its tables.</summary>
+        [Trait("Category", "PostgreSQL")]
+        [Trait(TestTier.Name, TestTier.Slow)]
+        [Collection(PostgresLane.Two)]
+        public sealed class Layouts
         {
-            await using var f = await OwnershipFixture.CreateAsync(Server, layout);
-            using var log = new CapturedSerilog();
-
-            var app = await f.OwnershipAsync(DatabaseKind.Application);
-            var audit = await f.OwnershipAsync(DatabaseKind.Audit);
-            Assert.True(app.IsSound, SchemaOwnership.RefusalMessage(app, null));
-            Assert.True(audit.IsSound, SchemaOwnership.RefusalMessage(audit, null));
-            Assert.False(audit.CanBecomeDbOwner);
-            Assert.False(audit.CanCreateSchema);
-            Assert.Empty(SchemaOwnership.Warnings(app));
-            Assert.Empty(SchemaOwnership.Warnings(audit));
-
-            Assert.Null(await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 }));
-            Assert.Null(await SchemaStartupApi.EnforceAllAsync(f.Targets(), false, new SchemaConfig { WaitSeconds = 1 }));
-            Assert.True(log.Has(LogEventLevel.Information, "Schema check passed"), Dump(log));
-        }
-
-        /// <summary>
-        /// The migration tool's destination: rows written into the baselines as the app role, by the
-        /// baseline's names as the copier writes them, then every later migration applied by
-        /// <see cref="DestinationBuilder.ApplyUpgradeMigrationsAsync"/>. The copied system tenant is
-        /// folded and a copied space CA keeps its tenant; read through the current model, which the
-        /// schema now matches.
-        /// </summary>
-        [RequiresEnvironmentFact(ServerVariable)]
-        public async Task The_migration_tool_takes_rows_copied_into_the_baselines_through_every_later_migration()
-        {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Migrated, atBaseline: true);
-            Assert.Equal(1, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"__EFMigrationsHistory\""));
-            Assert.Equal(1, await f.CountAsync(f.AuditDatabase, "SELECT count(*) FROM public.\"__EFMigrationsHistory\""));
-            await f.ExecuteAsRuntimeAsync(f.App, PostgresUpgradeHarnessTests.Seed030Sql + PostgresUpgradeHarnessTests.SeedFoldSql);
-
-            await f.Builder!.ApplyUpgradeMigrationsAsync(CancellationToken.None);
-
-            Assert.Null(await SchemaStartupApi.EnforceAllAsync(f.Targets(), false, new SchemaConfig { WaitSeconds = 1 }));
-            await using var app = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>()
-                .UseNpgsql(f.RuntimeConnectionString(f.App, f.AppDatabase)).Options);
-            var cas = await app.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(c => c.Id);
-            Assert.Equal(PostgresUpgradeHarnessTests.OrgTenantId, cas[PostgresUpgradeHarnessTests.RootCaId].SpaceId);
-            Assert.Equal(2, cas.Values.Count(c => c.SpaceId is null));
-            Assert.Equal([PostgresUpgradeHarnessTests.OrgTenantId], await app.Spaces.IgnoreQueryFilters().Select(t => t.Id).ToListAsync());
-        }
-
-        /// <summary>
-        /// A precondition that refuses the copied data fails the migration tool with the
-        /// migration's own message, leaves the migrations before it committed, and the tool's
-        /// rollback then removes both databases and all three roles.
-        /// </summary>
-        [RequiresEnvironmentFact(ServerVariable)]
-        public async Task A_refusal_after_the_copy_fails_the_migration_tool_and_its_rollback_removes_the_destination()
-        {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Migrated, atBaseline: true);
-            await f.ExecuteAsRuntimeAsync(f.App, PostgresUpgradeHarnessTests.Seed030Sql + PostgresUpgradeHarnessTests.SeedFoldSql
-                + PostgresUpgradeHarnessTests.SeedSecurityPolicySql);
-
-            var refused = await Assert.ThrowsAsync<MigrationFailedException>(() => f.Builder!.ApplyUpgradeMigrationsAsync(CancellationToken.None));
-
-            Assert.Contains("_" + PostgresUpgradeHarnessTests.FoldSystemTenant, refused.Message);
-            Assert.Contains("This instance has 2 SecurityPolicy rows", refused.Message);
-            Assert.Equal(2, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"__EFMigrationsHistory\""));
-
-            await DestinationBuilder.RollbackAsync(f.MigrateOptions!, _ => { }, CancellationToken.None);
-            Assert.Equal(0, await f.CountAsync(null,
-                $"SELECT count(*) FROM pg_catalog.pg_database WHERE datname IN ('{f.AppDatabase}','{f.AuditDatabase}')"));
-            Assert.Equal(0, await f.CountAsync(null,
-                $"SELECT count(*) FROM pg_catalog.pg_roles WHERE rolname IN ('{f.App.Username}','{f.Audit.Username}','{f.AuditOwner}')"));
-        }
-
-        [RequiresEnvironmentFact(ServerVariable)]
-        public async Task A_legacy_layout_reports_every_object_is_refused_and_starts_after_one_idempotent_repair()
-        {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Legacy);
-            using var log = new CapturedSerilog();
-
-            var app = await f.OwnershipAsync(DatabaseKind.Application);
-            var audit = await f.OwnershipAsync(DatabaseKind.Audit);
-            var appTables = await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname = 'public'");
-            var auditTables = await f.CountAsync(f.AuditDatabase, "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname = 'public'");
-            Assert.Equal(appTables, app.NotOwned.Count(o => o.Kind == "r"));
-            Assert.True(app.Unusable);
-            Assert.All(app.NotOwned, o => Assert.False(o.Usable, $"{o.Object} is readable by the app role"));
-            Assert.Equal(auditTables, audit.NotOwned.Count(o => o.Kind == "r"));
-            Assert.False(audit.Unusable);
-
-            var appHistory = await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"__EFMigrationsHistory\"");
-            var auditHistory = await f.CountAsync(f.AuditDatabase, "SELECT count(*) FROM public.\"__EFMigrationsHistory\"");
-            Assert.Equal(3, await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 }));
-            Assert.True(log.Has(LogEventLevel.Fatal, "cannot even read"), Dump(log));
-            Assert.True(log.Has(LogEventLevel.Fatal, "adopt-ownership.sql"), Dump(log));
-            Assert.Equal(appHistory, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"__EFMigrationsHistory\""));
-            Assert.Equal(auditHistory, await f.CountAsync(f.AuditDatabase, "SELECT count(*) FROM public.\"__EFMigrationsHistory\""));
-
-            Assert.True(await f.RepairAsync(DatabaseKind.Application) > 0);
-            Assert.True(await f.RepairAsync(DatabaseKind.Audit) > 0);
-            Assert.True((await f.OwnershipAsync(DatabaseKind.Application)).IsSound);
-            Assert.True((await f.OwnershipAsync(DatabaseKind.Audit)).IsSound);
-            Assert.Null(await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 }));
-
-            Assert.Equal(0, await f.RepairAsync(DatabaseKind.Application));
-            Assert.Equal(0, await f.RepairAsync(DatabaseKind.Audit));
-        }
-
-        [RequiresEnvironmentTheory(ServerVariable)]
-        [InlineData(OwnershipLayout.Migrated)]
-        [InlineData(OwnershipLayout.Fresh)]
-        [InlineData(OwnershipLayout.Legacy)]
-        public async Task A_migration_that_alters_existing_tables_runs_as_the_runtime_roles_only_where_they_own_them(OwnershipLayout layout)
-        {
-            await using var f = await OwnershipFixture.CreateAsync(Server, layout);
-            using var log = new CapturedSerilog();
-            await f.SeedProbeHistoryAsync(f.AppDatabase, AppProbeContext.History, f.App.Username);
-            await f.SeedProbeHistoryAsync(f.AuditDatabase, AuditProbeContext.History, f.Audit.Username);
-            SchemaStartupApi.UseContextFactory((kind, cs, timeout) => kind == DatabaseKind.Application
-                ? new AppProbeContext(ProbeOptions.For<AppProbeContext>(cs, timeout, AppProbeContext.History))
-                : new AuditProbeContext(ProbeOptions.For<AuditProbeContext>(cs, timeout, AuditProbeContext.History)));
-
-            var exit = await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 });
-
-            if (layout == OwnershipLayout.Legacy)
+            [RequiresEnvironmentTheory(ServerVariable)]
+            [InlineData(OwnershipLayout.Migrated)]
+            [InlineData(OwnershipLayout.Fresh)]
+            public async Task A_migrated_or_fresh_layout_is_sound_and_every_role_starts(OwnershipLayout layout)
             {
-                Assert.Equal(3, exit);
-                Assert.True(log.Has(LogEventLevel.Fatal, "Nothing was applied to either database"), Dump(log));
-                Assert.Equal(1, await f.CountAsync(f.AppDatabase, $"SELECT count(*) FROM public.\"{AppProbeContext.History}\""));
-                Assert.Equal(1, await f.CountAsync(f.AuditDatabase, $"SELECT count(*) FROM public.\"{AuditProbeContext.History}\""));
-                Assert.Equal(0, await f.ColumnCountAsync(f.AppDatabase, "Users", "GateProbe"));
+                await using var f = await OwnershipFixture.CreateAsync(Server, layout);
+                using var log = new CapturedSerilog();
 
-                await f.RepairAsync(DatabaseKind.Application);
-                await f.RepairAsync(DatabaseKind.Audit);
-                exit = await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 });
+                var app = await f.OwnershipAsync(DatabaseKind.Application);
+                var audit = await f.OwnershipAsync(DatabaseKind.Audit);
+                Assert.True(app.IsSound, SchemaOwnership.RefusalMessage(app, null));
+                Assert.True(audit.IsSound, SchemaOwnership.RefusalMessage(audit, null));
+                Assert.False(audit.CanBecomeDbOwner);
+                Assert.False(audit.CanCreateSchema);
+                Assert.Empty(SchemaOwnership.Warnings(app));
+                Assert.Empty(SchemaOwnership.Warnings(audit));
+
+                Assert.Null(await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 }));
+                Assert.Null(await SchemaStartupApi.EnforceAllAsync(f.Targets(), false, new SchemaConfig { WaitSeconds = 1 }));
+                Assert.True(log.Has(LogEventLevel.Information, "Schema check passed"), Dump(log));
             }
 
-            Assert.True(exit is null, Dump(log));
-            Assert.Equal(1, await f.ColumnCountAsync(f.AppDatabase, "Users", "GateProbe"));
-            Assert.Equal(1, await f.ColumnCountAsync(f.AuditDatabase, "AuditLogs", "GateProbe"));
-            Assert.Equal(2, await f.CountAsync(f.AppDatabase, $"SELECT count(*) FROM public.\"{AppProbeContext.History}\""));
-            Assert.True((await f.OwnershipAsync(DatabaseKind.Application)).IsSound);
-            Assert.True((await f.OwnershipAsync(DatabaseKind.Audit)).IsSound);
-        }
-
-        [RequiresEnvironmentTheory(ServerVariable)]
-        [InlineData(OwnershipLayout.Migrated)]
-        [InlineData(OwnershipLayout.Fresh)]
-        [InlineData(OwnershipLayout.Legacy)]
-        public async Task The_tenant_hostname_retirement_refuses_while_a_row_remains_then_applies_as_the_runtime_role(OwnershipLayout layout)
-        {
-            await using var f = await OwnershipFixture.CreateAsync(Server, layout, atBaseline: true);
-            using var log = new CapturedSerilog();
-            const string retire = "RetireTenantHostnames";
-            var history = "SELECT count(*) FROM public.\"__EFMigrationsHistory\"";
-            var tableExists = "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'TenantHostnames' AND relnamespace = 'public'::regnamespace";
-
-            if (layout == OwnershipLayout.Legacy)
+            /// <summary>
+            /// The migration tool's destination: rows written into the baselines as the app role, by the
+            /// baseline's names as the copier writes them, then every later migration applied by
+            /// <see cref="DestinationBuilder.ApplyUpgradeMigrationsAsync"/>. The copied system tenant is
+            /// folded and a copied space CA keeps its tenant; read through the current model, which the
+            /// schema now matches.
+            /// </summary>
+            [RequiresEnvironmentFact(ServerVariable)]
+            public async Task The_migration_tool_takes_rows_copied_into_the_baselines_through_every_later_migration()
             {
-                await f.RepairAsync(DatabaseKind.Application);
-                await f.RepairAsync(DatabaseKind.Audit);
-            }
-            Assert.Equal(1, await f.CountAsync(f.AppDatabase, history));
-            Assert.Equal(1, await f.CountAsync(f.AppDatabase, tableExists));
-            Assert.True((await f.OwnershipAsync(DatabaseKind.Application)).IsSound);
+                await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Migrated, atBaseline: true);
+                Assert.Equal(1, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"__EFMigrationsHistory\""));
+                Assert.Equal(1, await f.CountAsync(f.AuditDatabase, "SELECT count(*) FROM public.\"__EFMigrationsHistory\""));
+                await f.ExecuteAsRuntimeAsync(f.App, PostgresUpgradeHarnessTests.Seed030Sql + PostgresUpgradeHarnessTests.SeedFoldSql);
 
-            await f.ExecuteAsRuntimeAsync(f.App, PostgresUpgradeHarnessTests.Seed030Sql + PostgresUpgradeHarnessTests.SeedTenantHostnameSql);
-            Assert.Equal(3, await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 }));
-            Assert.True(Logged(log, "This instance has 1 tenant hostname(s)"), Dump(log));
-            Assert.Equal(1, await f.CountAsync(f.AppDatabase, history));
-            Assert.Equal(1, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"TenantHostnames\""));
+                await f.Builder!.ApplyUpgradeMigrationsAsync(CancellationToken.None);
 
-            await f.ExecuteAsRuntimeAsync(f.App, "DELETE FROM \"TenantHostnames\"");
-            var exit = await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 });
-
-            Assert.True(exit is null, Dump(log));
-            Assert.Equal(0, await f.CountAsync(f.AppDatabase, tableExists));
-            Assert.Equal(1, await f.CountAsync(f.AppDatabase, $"{history} WHERE \"MigrationId\" LIKE '%\\_{retire}'"));
-            Assert.True((await f.OwnershipAsync(DatabaseKind.Application)).IsSound);
-            Assert.Equal(1, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"Users\""));
-            Assert.Equal(2, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"CaGroupMembers\""));
-        }
-
-        [RequiresEnvironmentFact(ServerVariable)]
-        public async Task The_repair_refuses_what_is_not_its_to_change()
-        {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
-            var admin = new NpgsqlConnectionStringBuilder(Server).Username!;
-
-            var stranger = f.ExtraDatabase("stranger");
-            await f.ExecuteAsync(null, $"CREATE DATABASE {Q(stranger)} OWNER {Q(f.App.Username)}");
-            await f.ExecuteAsync(stranger, "CREATE TABLE public.\"__EFMigrationsHistory\" (\"MigrationId\" varchar(150) PRIMARY KEY, \"ProductVersion\" varchar(32) NOT NULL)");
-            var noBaseline = await Assert.ThrowsAsync<PostgresException>(() => f.RepairAsync(stranger, "app", f.App.Username));
-            Assert.Contains("is not a ModularCA app database", noBaseline.MessageText);
-
-            var notOwner = await Assert.ThrowsAsync<PostgresException>(() => f.RepairAsync(f.AppDatabase, "app", f.Audit.Username));
-            Assert.Contains("does not own", notOwner.MessageText);
-
-            await f.ExecuteAsync(null, $"GRANT {Q(f.AuditOwner)} TO {Q(f.Audit.Username)}");
-            var couldDrop = await Assert.ThrowsAsync<PostgresException>(() => f.RepairAsync(f.AuditDatabase, "audit", f.Audit.Username));
-            Assert.Contains("could drop the audit database", couldDrop.MessageText);
-            await f.ExecuteAsync(null, $"REVOKE {Q(f.AuditOwner)} FROM {Q(f.Audit.Username)}");
-
-            var superuser = await Assert.ThrowsAsync<PostgresException>(() => f.RepairAsync(f.AppDatabase, "app", admin));
-            Assert.Contains("is not a plain login role", superuser.MessageText);
-
-            var wrongKind = await Assert.ThrowsAsync<PostgresException>(() => f.RepairAsync(f.AppDatabase, "other", f.App.Username));
-            Assert.Contains("kind must be app or audit", wrongKind.MessageText);
-        }
-
-        [RequiresEnvironmentTheory(ServerVariable)]
-        [InlineData(OwnershipLayout.Migrated)]
-        [InlineData(OwnershipLayout.Fresh)]
-        public async Task The_audit_role_cannot_drop_its_database_or_step_outside_its_tables(OwnershipLayout layout)
-        {
-            await using var f = await OwnershipFixture.CreateAsync(Server, layout);
-
-            await using (var maintenance = new NpgsqlConnection(f.RuntimeConnectionString(f.Audit, PostgresConnection.MaintenanceDatabase)))
-            {
-                await maintenance.OpenAsync();
-                var drop = await Assert.ThrowsAsync<PostgresException>(() =>
-                    new NpgsqlCommand($"DROP DATABASE {Q(f.AuditDatabase)}", maintenance).ExecuteNonQueryAsync());
-                Assert.Equal("42501", drop.SqlState);
+                Assert.Null(await SchemaStartupApi.EnforceAllAsync(f.Targets(), false, new SchemaConfig { WaitSeconds = 1 }));
+                await using var app = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>()
+                    .UseNpgsql(f.RuntimeConnectionString(f.App, f.AppDatabase)).Options);
+                var cas = await app.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(c => c.Id);
+                Assert.Equal(PostgresUpgradeHarnessTests.OrgTenantId, cas[PostgresUpgradeHarnessTests.RootCaId].SpaceId);
+                Assert.Equal(2, cas.Values.Count(c => c.SpaceId is null));
+                Assert.Equal([PostgresUpgradeHarnessTests.OrgTenantId], await app.Spaces.IgnoreQueryFilters().Select(t => t.Id).ToListAsync());
             }
 
-            foreach (var sql in new[]
-                     {
-                         $"SET ROLE {Q(f.AuditOwner)}",
-                         "CREATE EXTENSION IF NOT EXISTS citext",
-                         "CREATE SCHEMA gate_probe",
-                     })
+            /// <summary>
+            /// A precondition that refuses the copied data fails the migration tool with the
+            /// migration's own message, leaves the migrations before it committed, and the tool's
+            /// rollback then removes both databases and all three roles.
+            /// </summary>
+            [RequiresEnvironmentFact(ServerVariable)]
+            public async Task A_refusal_after_the_copy_fails_the_migration_tool_and_its_rollback_removes_the_destination()
             {
-                await using var conn = new NpgsqlConnection(f.RuntimeConnectionString(f.Audit, f.AuditDatabase));
-                await conn.OpenAsync();
-                var ex = await Assert.ThrowsAsync<PostgresException>(() => new NpgsqlCommand(sql, conn).ExecuteNonQueryAsync());
-                Assert.True(ex.SqlState == "42501", $"{sql}: {ex.SqlState} {ex.MessageText}");
+                await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Migrated, atBaseline: true);
+                await f.ExecuteAsRuntimeAsync(f.App, PostgresUpgradeHarnessTests.Seed030Sql + PostgresUpgradeHarnessTests.SeedFoldSql
+                    + PostgresUpgradeHarnessTests.SeedSecurityPolicySql);
+
+                var refused = await Assert.ThrowsAsync<MigrationFailedException>(() => f.Builder!.ApplyUpgradeMigrationsAsync(CancellationToken.None));
+
+                Assert.Contains("_" + PostgresUpgradeHarnessTests.FoldSystemTenant, refused.Message);
+                Assert.Contains("This instance has 2 SecurityPolicy rows", refused.Message);
+                Assert.Equal(2, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"__EFMigrationsHistory\""));
+
+                await DestinationBuilder.RollbackAsync(f.MigrateOptions!, _ => { }, CancellationToken.None);
+                Assert.Equal(0, await f.CountAsync(null,
+                    $"SELECT count(*) FROM pg_catalog.pg_database WHERE datname IN ('{f.AppDatabase}','{f.AuditDatabase}')"));
+                Assert.Equal(0, await f.CountAsync(null,
+                    $"SELECT count(*) FROM pg_catalog.pg_roles WHERE rolname IN ('{f.App.Username}','{f.Audit.Username}','{f.AuditOwner}')"));
+            }
+
+            [RequiresEnvironmentFact(ServerVariable)]
+            public async Task A_legacy_layout_reports_every_object_is_refused_and_starts_after_one_idempotent_repair()
+            {
+                await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Legacy);
+                using var log = new CapturedSerilog();
+
+                var app = await f.OwnershipAsync(DatabaseKind.Application);
+                var audit = await f.OwnershipAsync(DatabaseKind.Audit);
+                var appTables = await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname = 'public'");
+                var auditTables = await f.CountAsync(f.AuditDatabase, "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname = 'public'");
+                Assert.Equal(appTables, app.NotOwned.Count(o => o.Kind == "r"));
+                Assert.True(app.Unusable);
+                Assert.All(app.NotOwned, o => Assert.False(o.Usable, $"{o.Object} is readable by the app role"));
+                Assert.Equal(auditTables, audit.NotOwned.Count(o => o.Kind == "r"));
+                Assert.False(audit.Unusable);
+
+                var appHistory = await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"__EFMigrationsHistory\"");
+                var auditHistory = await f.CountAsync(f.AuditDatabase, "SELECT count(*) FROM public.\"__EFMigrationsHistory\"");
+                Assert.Equal(3, await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 }));
+                Assert.True(log.Has(LogEventLevel.Fatal, "cannot even read"), Dump(log));
+                Assert.True(log.Has(LogEventLevel.Fatal, "adopt-ownership.sql"), Dump(log));
+                Assert.Equal(appHistory, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"__EFMigrationsHistory\""));
+                Assert.Equal(auditHistory, await f.CountAsync(f.AuditDatabase, "SELECT count(*) FROM public.\"__EFMigrationsHistory\""));
+
+                Assert.True(await f.RepairAsync(DatabaseKind.Application) > 0);
+                Assert.True(await f.RepairAsync(DatabaseKind.Audit) > 0);
+                Assert.True((await f.OwnershipAsync(DatabaseKind.Application)).IsSound);
+                Assert.True((await f.OwnershipAsync(DatabaseKind.Audit)).IsSound);
+                Assert.Null(await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 }));
+
+                Assert.Equal(0, await f.RepairAsync(DatabaseKind.Application));
+                Assert.Equal(0, await f.RepairAsync(DatabaseKind.Audit));
+            }
+
+            [RequiresEnvironmentTheory(ServerVariable)]
+            [InlineData(OwnershipLayout.Migrated)]
+            [InlineData(OwnershipLayout.Fresh)]
+            [InlineData(OwnershipLayout.Legacy)]
+            public async Task A_migration_that_alters_existing_tables_runs_as_the_runtime_roles_only_where_they_own_them(OwnershipLayout layout)
+            {
+                await using var f = await OwnershipFixture.CreateAsync(Server, layout);
+                using var log = new CapturedSerilog();
+                await f.SeedProbeHistoryAsync(f.AppDatabase, AppProbeContext.History, f.App.Username);
+                await f.SeedProbeHistoryAsync(f.AuditDatabase, AuditProbeContext.History, f.Audit.Username);
+                SchemaStartupApi.UseContextFactory((kind, cs, timeout) => kind == DatabaseKind.Application
+                    ? new AppProbeContext(ProbeOptions.For<AppProbeContext>(cs, timeout, AppProbeContext.History))
+                    : new AuditProbeContext(ProbeOptions.For<AuditProbeContext>(cs, timeout, AuditProbeContext.History)));
+
+                var exit = await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 });
+
+                if (layout == OwnershipLayout.Legacy)
+                {
+                    Assert.Equal(3, exit);
+                    Assert.True(log.Has(LogEventLevel.Fatal, "Nothing was applied to either database"), Dump(log));
+                    Assert.Equal(1, await f.CountAsync(f.AppDatabase, $"SELECT count(*) FROM public.\"{AppProbeContext.History}\""));
+                    Assert.Equal(1, await f.CountAsync(f.AuditDatabase, $"SELECT count(*) FROM public.\"{AuditProbeContext.History}\""));
+                    Assert.Equal(0, await f.ColumnCountAsync(f.AppDatabase, "Users", "GateProbe"));
+
+                    await f.RepairAsync(DatabaseKind.Application);
+                    await f.RepairAsync(DatabaseKind.Audit);
+                    exit = await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 });
+                }
+
+                Assert.True(exit is null, Dump(log));
+                Assert.Equal(1, await f.ColumnCountAsync(f.AppDatabase, "Users", "GateProbe"));
+                Assert.Equal(1, await f.ColumnCountAsync(f.AuditDatabase, "AuditLogs", "GateProbe"));
+                Assert.Equal(2, await f.CountAsync(f.AppDatabase, $"SELECT count(*) FROM public.\"{AppProbeContext.History}\""));
+                Assert.True((await f.OwnershipAsync(DatabaseKind.Application)).IsSound);
+                Assert.True((await f.OwnershipAsync(DatabaseKind.Audit)).IsSound);
+            }
+
+            [RequiresEnvironmentTheory(ServerVariable)]
+            [InlineData(OwnershipLayout.Migrated)]
+            [InlineData(OwnershipLayout.Fresh)]
+            [InlineData(OwnershipLayout.Legacy)]
+            public async Task The_tenant_hostname_retirement_refuses_while_a_row_remains_then_applies_as_the_runtime_role(OwnershipLayout layout)
+            {
+                await using var f = await OwnershipFixture.CreateAsync(Server, layout, atBaseline: true);
+                using var log = new CapturedSerilog();
+                const string retire = "RetireTenantHostnames";
+                var history = "SELECT count(*) FROM public.\"__EFMigrationsHistory\"";
+                var tableExists = "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'TenantHostnames' AND relnamespace = 'public'::regnamespace";
+
+                if (layout == OwnershipLayout.Legacy)
+                {
+                    await f.RepairAsync(DatabaseKind.Application);
+                    await f.RepairAsync(DatabaseKind.Audit);
+                }
+                Assert.Equal(1, await f.CountAsync(f.AppDatabase, history));
+                Assert.Equal(1, await f.CountAsync(f.AppDatabase, tableExists));
+                Assert.True((await f.OwnershipAsync(DatabaseKind.Application)).IsSound);
+
+                await f.ExecuteAsRuntimeAsync(f.App, PostgresUpgradeHarnessTests.Seed030Sql + PostgresUpgradeHarnessTests.SeedTenantHostnameSql);
+                Assert.Equal(3, await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 }));
+                Assert.True(Logged(log, "This instance has 1 tenant hostname(s)"), Dump(log));
+                Assert.Equal(1, await f.CountAsync(f.AppDatabase, history));
+                Assert.Equal(1, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"TenantHostnames\""));
+
+                await f.ExecuteAsRuntimeAsync(f.App, "DELETE FROM \"TenantHostnames\"");
+                var exit = await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 });
+
+                Assert.True(exit is null, Dump(log));
+                Assert.Equal(0, await f.CountAsync(f.AppDatabase, tableExists));
+                Assert.Equal(1, await f.CountAsync(f.AppDatabase, $"{history} WHERE \"MigrationId\" LIKE '%\\_{retire}'"));
+                Assert.True((await f.OwnershipAsync(DatabaseKind.Application)).IsSound);
+                Assert.Equal(1, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"Users\""));
+                Assert.Equal(2, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM public.\"CaGroupMembers\""));
             }
         }
 
-        [RequiresEnvironmentFact(ServerVariable)]
-        public async Task A_missing_database_is_left_to_bootstrap_and_never_created()
+        /// <summary>What each role may and may not do, and what provisioning refuses or leaves alone.</summary>
+        [Trait("Category", "PostgreSQL")]
+        [Trait(TestTier.Name, TestTier.Slow)]
+        [Collection(PostgresLane.Three)]
+        public sealed class Roles
         {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
-            var missing = f.ExtraDatabase("missing");
-            var instance = f.Instance(missing, f.App.Username, f.App.Password);
-
-            var exit = await SchemaStartupApi.EnforceAllAsync([("application", DatabaseKind.Application, instance)], true, new SchemaConfig { WaitSeconds = 1 });
-
-            Assert.Null(exit);
-            Assert.Equal(0, await f.CountAsync(null, $"SELECT count(*) FROM pg_catalog.pg_database WHERE datname = '{missing}'"));
-        }
-
-        [RequiresEnvironmentFact(ServerVariable)]
-        public async Task An_empty_database_gets_no_table_from_the_runtime()
-        {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
-            var empty = f.ExtraDatabase("empty");
-            await f.ExecuteAsync(null, $"CREATE DATABASE {Q(empty)} OWNER {Q(f.App.Username)} ENCODING 'UTF8' TEMPLATE template0");
-            var instance = f.Instance(empty, f.App.Username, f.App.Password);
-
-            var exit = await SchemaStartupApi.EnforceAllAsync([("application", DatabaseKind.Application, instance)], true, new SchemaConfig { WaitSeconds = 1 });
-
-            Assert.Null(exit);
-            Assert.Equal(0, await f.CountAsync(empty, "SELECT count(*) FROM pg_catalog.pg_class WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r','p')"));
-        }
-
-        [RequiresEnvironmentFact(ServerVariable)]
-        public async Task A_read_behind_the_migration_lock_reports_a_migration_in_progress_then_current_once_released()
-        {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
-            using var log = new CapturedSerilog();
-
-            await using var holder = new NpgsqlConnection(f.AdminConnectionString(f.AppDatabase));
-            await holder.OpenAsync();
-            var tx = await holder.BeginTransactionAsync();
-            await new NpgsqlCommand("LOCK TABLE public.\"__EFMigrationsHistory\" IN ACCESS EXCLUSIVE MODE", holder, tx).ExecuteNonQueryAsync();
-
-            await using (var gate = GateReadContext(f.App))
+            [RequiresEnvironmentFact(ServerVariable)]
+            public async Task The_repair_refuses_what_is_not_its_to_change()
             {
-                var clock = Stopwatch.StartNew();
-                var error = await Record.ExceptionAsync(() => SchemaVersionGate.ReadAsync(gate));
-                Assert.NotNull(error);
-                Assert.Equal(SchemaFailureKind.MigrationInProgress, SchemaFailure.Classify(error!));
-                Assert.True(clock.Elapsed < TimeSpan.FromSeconds(10), $"took {clock.Elapsed}");
+                await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
+                var admin = new NpgsqlConnectionStringBuilder(Server).Username!;
+
+                var stranger = f.ExtraDatabase("stranger");
+                await f.ExecuteAsync(null, $"CREATE DATABASE {Q(stranger)} OWNER {Q(f.App.Username)}");
+                await f.ExecuteAsync(stranger, "CREATE TABLE public.\"__EFMigrationsHistory\" (\"MigrationId\" varchar(150) PRIMARY KEY, \"ProductVersion\" varchar(32) NOT NULL)");
+                var noBaseline = await Assert.ThrowsAsync<PostgresException>(() => f.RepairAsync(stranger, "app", f.App.Username));
+                Assert.Contains("is not a ModularCA app database", noBaseline.MessageText);
+
+                var notOwner = await Assert.ThrowsAsync<PostgresException>(() => f.RepairAsync(f.AppDatabase, "app", f.Audit.Username));
+                Assert.Contains("does not own", notOwner.MessageText);
+
+                await f.ExecuteAsync(null, $"GRANT {Q(f.AuditOwner)} TO {Q(f.Audit.Username)}");
+                var couldDrop = await Assert.ThrowsAsync<PostgresException>(() => f.RepairAsync(f.AuditDatabase, "audit", f.Audit.Username));
+                Assert.Contains("could drop the audit database", couldDrop.MessageText);
+                await f.ExecuteAsync(null, $"REVOKE {Q(f.AuditOwner)} FROM {Q(f.Audit.Username)}");
+
+                var superuser = await Assert.ThrowsAsync<PostgresException>(() => f.RepairAsync(f.AppDatabase, "app", admin));
+                Assert.Contains("is not a plain login role", superuser.MessageText);
+
+                var wrongKind = await Assert.ThrowsAsync<PostgresException>(() => f.RepairAsync(f.AppDatabase, "other", f.App.Username));
+                Assert.Contains("kind must be app or audit", wrongKind.MessageText);
             }
-            Assert.Equal(75, await SchemaStartupApi.EnforceAllAsync(
-                [("application", DatabaseKind.Application, f.App)], false, new SchemaConfig { WaitSeconds = 1 }));
-            Assert.True(Logged(log, "most likely by a migration in progress"), Dump(log));
 
-            await tx.RollbackAsync();
-            await using (var gate = GateReadContext(f.App))
+            [RequiresEnvironmentTheory(ServerVariable)]
+            [InlineData(OwnershipLayout.Migrated)]
+            [InlineData(OwnershipLayout.Fresh)]
+            public async Task The_audit_role_cannot_drop_its_database_or_step_outside_its_tables(OwnershipLayout layout)
             {
-                var state = await SchemaVersionGate.ReadAsync(gate);
-                Assert.Equal(SchemaVerdict.Current, SchemaVersionGate.Evaluate(state, appliesMigrations: false));
+                await using var f = await OwnershipFixture.CreateAsync(Server, layout);
+
+                await using (var maintenance = new NpgsqlConnection(f.RuntimeConnectionString(f.Audit, PostgresConnection.MaintenanceDatabase)))
+                {
+                    await maintenance.OpenAsync();
+                    var drop = await Assert.ThrowsAsync<PostgresException>(() =>
+                        new NpgsqlCommand($"DROP DATABASE {Q(f.AuditDatabase)}", maintenance).ExecuteNonQueryAsync());
+                    Assert.Equal("42501", drop.SqlState);
+                }
+
+                foreach (var sql in new[]
+                         {
+                             $"SET ROLE {Q(f.AuditOwner)}",
+                             "CREATE EXTENSION IF NOT EXISTS citext",
+                             "CREATE SCHEMA gate_probe",
+                         })
+                {
+                    await using var conn = new NpgsqlConnection(f.RuntimeConnectionString(f.Audit, f.AuditDatabase));
+                    await conn.OpenAsync();
+                    var ex = await Assert.ThrowsAsync<PostgresException>(() => new NpgsqlCommand(sql, conn).ExecuteNonQueryAsync());
+                    Assert.True(ex.SqlState == "42501", $"{sql}: {ex.SqlState} {ex.MessageText}");
+                }
             }
-        }
 
-        [RequiresEnvironmentFact(ServerVariable)]
-        public async Task A_migration_statement_longer_than_the_request_timeout_succeeds_on_the_migration_connection()
-        {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
-            using var log = new CapturedSerilog();
-            await f.SeedProbeHistoryAsync(f.AppDatabase, SlowProbeContext.History, f.App.Username);
-            SchemaStartupApi.UseContextFactory((_, cs, timeout) =>
-                new SlowProbeContext(ProbeOptions.For<SlowProbeContext>(cs, timeout, SlowProbeContext.History)));
-            var clock = Stopwatch.StartNew();
-
-            var exit = await SchemaStartupApi.EnforceAllAsync([("application", DatabaseKind.Application, f.App)], true, new SchemaConfig());
-
-            Assert.True(exit is null, Dump(log));
-            Assert.True(clock.Elapsed >= TimeSpan.FromSeconds(35), $"took {clock.Elapsed}");
-            Assert.Equal(2, await f.CountAsync(f.AppDatabase, $"SELECT count(*) FROM public.\"{SlowProbeContext.History}\""));
-        }
-
-        [RequiresEnvironmentFact(ServerVariable)]
-        public async Task A_migration_with_a_statement_outside_a_transaction_is_not_rehearsed_and_the_start_stops_with_3_having_applied_nothing()
-        {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
-            using var log = new CapturedSerilog();
-            await f.SeedProbeHistoryAsync(f.AppDatabase, NonTransactionalProbeContext.History, f.App.Username);
-            SchemaStartupApi.UseContextFactory((_, cs, timeout) =>
-                new NonTransactionalProbeContext(ProbeOptions.For<NonTransactionalProbeContext>(cs, timeout, NonTransactionalProbeContext.History)));
-
-            var exit = await SchemaStartupApi.EnforceAllAsync([("application", DatabaseKind.Application, f.App)], true, new SchemaConfig { WaitSeconds = 1 });
-
-            Assert.Equal(3, exit);
-            Assert.True(log.Has(LogEventLevel.Fatal, "cannot rehearse it"), Dump(log));
-            Assert.True(log.Has(LogEventLevel.Fatal, "defective"), Dump(log));
-            Assert.Equal(1, await f.CountAsync(f.AppDatabase, $"SELECT count(*) FROM public.\"{NonTransactionalProbeContext.History}\""));
-            Assert.Equal(0, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'gate_probe_nt'"));
-        }
-
-        [RequiresEnvironmentFact(ServerVariable)]
-        public async Task A_migration_blocked_on_a_table_lock_exits_75_to_be_retried()
-        {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
-            using var log = new CapturedSerilog();
-            await f.SeedProbeHistoryAsync(f.AppDatabase, AppProbeContext.History, f.App.Username);
-            SchemaStartupApi.UseContextFactory((_, cs, timeout) =>
-                new AppProbeContext(ProbeOptions.For<AppProbeContext>(cs, timeout, AppProbeContext.History)));
-
-            await using var holder = new NpgsqlConnection(f.AdminConnectionString(f.AppDatabase));
-            await holder.OpenAsync();
-            await using var tx = await holder.BeginTransactionAsync();
-            await new NpgsqlCommand("LOCK TABLE public.\"Users\" IN ACCESS EXCLUSIVE MODE", holder, tx).ExecuteNonQueryAsync();
-
-            var exit = await SchemaStartupApi.EnforceAllAsync([("application", DatabaseKind.Application, f.App)], true,
-                new SchemaConfig { WaitSeconds = 1, MigrationLockTimeoutSeconds = 1 });
-
-            Assert.Equal(75, exit);
-            Assert.True(log.Has(LogEventLevel.Fatal, "55P03"), Dump(log));
-            await tx.RollbackAsync();
-            Assert.Equal(0, await f.ColumnCountAsync(f.AppDatabase, "Users", "GateProbe"));
-        }
-
-        [RequiresEnvironmentFact(ServerVariable)]
-        public async Task A_role_that_does_not_apply_migrations_waits_for_pending_ones_then_exits_75()
-        {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
-            using var log = new CapturedSerilog();
-            await f.SeedProbeHistoryAsync(f.AppDatabase, AppProbeContext.History, f.App.Username);
-            SchemaStartupApi.UseContextFactory((_, cs, timeout) =>
-                new AppProbeContext(ProbeOptions.For<AppProbeContext>(cs, timeout, AppProbeContext.History)));
-
-            var exit = await SchemaStartupApi.EnforceAllAsync([("application", DatabaseKind.Application, f.App)], false, new SchemaConfig { WaitSeconds = 1 });
-
-            Assert.Equal(75, exit);
-            Assert.True(Logged(log, "Only the control role applies migrations"), Dump(log));
-            Assert.True(log.Has(LogEventLevel.Error, "Gave up after 1 s (Schema.WaitSeconds)"), Dump(log));
-            Assert.Equal(0, await f.ColumnCountAsync(f.AppDatabase, "Users", "GateProbe"));
-        }
-
-        [RequiresEnvironmentFact(ServerVariable)]
-        public async Task A_build_whose_model_differs_from_its_snapshot_stops_with_3_before_applying_anything()
-        {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
-            using var log = new CapturedSerilog();
-            await f.SeedProbeHistoryAsync(f.AppDatabase, DriftProbeContext.History, f.App.Username);
-            SchemaStartupApi.UseContextFactory((_, cs, timeout) =>
-                new DriftProbeContext(ProbeOptions.For<DriftProbeContext>(cs, timeout, DriftProbeContext.History)));
-
-            var exit = await SchemaStartupApi.EnforceAllAsync([("application", DatabaseKind.Application, f.App)], true, new SchemaConfig { WaitSeconds = 1 });
-
-            Assert.Equal(3, exit);
-            Assert.True(log.Has(LogEventLevel.Fatal, "differs from its latest migration"), Dump(log));
-            Assert.Equal(1, await f.CountAsync(f.AppDatabase, $"SELECT count(*) FROM public.\"{DriftProbeContext.History}\""));
-            Assert.Equal(0, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'gate_probe_drift'"));
-        }
-
-        [RequiresPostgresClientToolsTheory(ServerVariable)]
-        [InlineData(OwnershipLayout.Migrated)]
-        [InlineData(OwnershipLayout.Legacy)]
-        public async Task A_backup_restores_as_the_runtime_roles(OwnershipLayout layout)
-        {
-            PostgresClientTools.EnsureOnPath();
-            await using var f = await OwnershipFixture.CreateAsync(Server, layout, atBaseline: true);
-            if (layout == OwnershipLayout.Legacy)
+            [RequiresEnvironmentFact(ServerVariable)]
+            public async Task A_missing_database_is_left_to_bootstrap_and_never_created()
             {
-                await f.ExecuteAsync(f.AppDatabase, PostgresUpgradeHarnessTests.Seed030Sql);
-                await f.RepairAsync(DatabaseKind.Application);
-                await f.RepairAsync(DatabaseKind.Audit);
+                await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
+                var missing = f.ExtraDatabase("missing");
+                var instance = f.Instance(missing, f.App.Username, f.App.Password);
+
+                var exit = await SchemaStartupApi.EnforceAllAsync([("application", DatabaseKind.Application, instance)], true, new SchemaConfig { WaitSeconds = 1 });
+
+                Assert.Null(exit);
+                Assert.Equal(0, await f.CountAsync(null, $"SELECT count(*) FROM pg_catalog.pg_database WHERE datname = '{missing}'"));
             }
-            else
+
+            [RequiresEnvironmentFact(ServerVariable)]
+            public async Task An_empty_database_gets_no_table_from_the_runtime()
             {
+                await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
+                var empty = f.ExtraDatabase("empty");
+                await f.ExecuteAsync(null, $"CREATE DATABASE {Q(empty)} OWNER {Q(f.App.Username)} ENCODING 'UTF8' TEMPLATE template0");
+                var instance = f.Instance(empty, f.App.Username, f.App.Password);
+
+                var exit = await SchemaStartupApi.EnforceAllAsync([("application", DatabaseKind.Application, instance)], true, new SchemaConfig { WaitSeconds = 1 });
+
+                Assert.Null(exit);
+                Assert.Equal(0, await f.CountAsync(empty, "SELECT count(*) FROM pg_catalog.pg_class WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r','p')"));
+            }
+
+            [RequiresEnvironmentFact(ServerVariable)]
+            public async Task A_reset_whose_drop_fails_leaves_the_old_database_and_its_rows_in_place()
+            {
+                await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh, atBaseline: true);
                 await f.ExecuteAsRuntimeAsync(f.App, PostgresUpgradeHarnessTests.Seed030Sql);
-            }
-
-            foreach (var (kind, instance) in new[] { (DatabaseKind.Application, f.App), (DatabaseKind.Audit, f.Audit) })
-            {
-                var dump = Path.Combine(Path.GetTempPath(), $"modularca-harness-{Guid.NewGuid():N}.dump");
-                var pgpass = BackupRestore.WritePgPassFile(instance.Host, instance.Port, instance.Database, instance.Username, instance.Password);
+                await f.ExecuteAsync(null, $"ALTER DATABASE {Q(f.AppDatabase)} IS_TEMPLATE true");
                 try
                 {
-                    var (dumpExit, dumpErr) = await PgDumpAsync(instance, dump, pgpass);
-                    Assert.True(dumpExit == 0, $"pg_dump exited {dumpExit}: {dumpErr}");
-                    if (kind == DatabaseKind.Application)
-                        await f.ExecuteAsRuntimeAsync(instance, "DELETE FROM \"CaGroupMembers\"");
+                    await Assert.ThrowsAsync<PostgresException>(() =>
+                        PostgresRoleLayout.ProvisionAsync(Server, f.Names, new ProvisioningMode(ResetApp: true, WipeAudit: false)));
 
-                    var (exit, stderr) = await RestoreDumpFileAsync(pgpass, instance, dump, ensureCitext: kind == DatabaseKind.Application);
-
-                    Assert.True(exit == 0, $"{kind} restore exited {exit}: {stderr}");
-                    var report = await f.OwnershipAsync(kind);
-                    Assert.True(report.IsSound, SchemaOwnership.RefusalMessage(report, null));
-                    if (kind == DatabaseKind.Application)
-                        Assert.Equal(2, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM \"CaGroupMembers\""));
+                    Assert.Equal(1, await f.CountAsync(null, $"SELECT count(*) FROM pg_catalog.pg_database WHERE datname = '{f.AppDatabase}'"));
+                    Assert.Equal(2, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM \"Tenants\""));
+                    await f.ExecuteAsRuntimeAsync(f.App, "SELECT 1");
+                    await f.ExecuteAsRuntimeAsync(f.Audit, "SELECT 1");
                 }
                 finally
                 {
-                    foreach (var file in new[] { dump, dump + ".list", pgpass })
-                        try { File.Delete(file); } catch (IOException) { }
+                    await f.ExecuteAsync(null, $"ALTER DATABASE {Q(f.AppDatabase)} IS_TEMPLATE false");
                 }
             }
-            Assert.Null(await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 }));
+
+            [RequiresEnvironmentFact(ServerVariable)]
+            public async Task A_preserved_audit_database_whose_schema_public_the_superuser_still_owns_is_handed_to_its_owner_whatever_the_version()
+            {
+                await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
+                var admin = new NpgsqlConnectionStringBuilder(Server).Username!;
+                await f.ExecuteAsync(f.AuditDatabase, $"ALTER SCHEMA public OWNER TO {Q(admin)}; GRANT CREATE ON SCHEMA public TO PUBLIC;");
+
+                await PostgresRoleLayout.ProvisionAsync(Server, f.Names, new ProvisioningMode(ResetApp: true, WipeAudit: false));
+
+                Assert.Equal(1, await f.CountAsync(f.AuditDatabase,
+                    $"SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname = 'public' AND nspowner = to_regrole('{Q(f.AuditOwner)}')"));
+                Assert.Equal(0, await f.CountAsync(f.AuditDatabase,
+                    "SELECT count(*) FROM pg_catalog.pg_namespace n, aclexplode(n.nspacl) a WHERE n.nspname = 'public' AND a.grantee = 0 AND a.privilege_type = 'CREATE'"));
+                Assert.Equal(0, await f.CountAsync(f.AppDatabase,
+                    "SELECT count(*) FROM pg_catalog.pg_namespace n, aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) a "
+                    + "WHERE n.nspname = 'public' AND a.grantee = 0 AND a.privilege_type = 'CREATE'"));
+            }
+
+            [RequiresEnvironmentFact(ServerVariable)]
+            public async Task A_sqlroot_that_is_not_a_superuser_or_whose_password_is_wrong_is_refused_cleanly_before_any_read_of_the_audit_database()
+            {
+                await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
+                var role = f.Names.AppRole + "_nosu";
+                var password = PostgresRoleLayout.GeneratePassword();
+                await f.ExecuteAsync(null, $"CREATE ROLE {Q(role)} WITH LOGIN CREATEDB CREATEROLE PASSWORD '{password}'");
+                try
+                {
+                    var asRole = new NpgsqlConnectionStringBuilder(Server) { Username = role, Password = password }.ConnectionString;
+                    var refused = await Assert.ThrowsAsync<PostgresLayoutRefusedException>(() =>
+                        PostgresRoleLayout.ProvisionAsync(asRole, f.Names with { AdminRole = role }, new ProvisioningMode(ResetApp: true, WipeAudit: false)));
+                    Assert.Contains($"SqlRoot '{role}' is not a PostgreSQL superuser", refused.Message);
+
+                    var wrong = new NpgsqlConnectionStringBuilder(Server) { Username = role, Password = password + "x", Pooling = false }.ConnectionString;
+                    var login = await Record.ExceptionAsync(async () =>
+                    {
+                        await using var probe = new NpgsqlConnection(wrong);
+                        await probe.OpenAsync();
+                    });
+                    if (login is PostgresException { SqlState: "28P01" })
+                    {
+                        var badPassword = await Assert.ThrowsAsync<PostgresLayoutRefusedException>(() =>
+                            PostgresRoleLayout.ProbeAsync(wrong, f.Names with { AdminRole = role }));
+                        Assert.Contains("rejected the password", badPassword.Message);
+                    }
+                    await f.ExecuteAsRuntimeAsync(f.App, "SELECT 1");
+                }
+                finally
+                {
+                    NpgsqlConnection.ClearAllPools();
+                    await f.ExecuteAsync(null, $"DROP ROLE IF EXISTS {Q(role)}");
+                }
+            }
+
+            [RequiresEnvironmentFact(ServerVariable)]
+            public async Task A_preserved_audit_database_the_takeover_cannot_complete_is_refused_before_any_ddl()
+            {
+                await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
+                var stranger = f.Names.AuditRole + "_stray";
+                await f.ExecuteAsync(null, $"CREATE ROLE {Q(stranger)} NOLOGIN");
+                try
+                {
+                    await f.ExecuteAsync(f.AuditDatabase, $"CREATE TABLE public.gate_stray (id int); ALTER TABLE public.gate_stray OWNER TO {Q(stranger)};");
+                    var stray = await Assert.ThrowsAsync<PostgresLayoutRefusedException>(() =>
+                        PostgresRoleLayout.ProvisionAsync(Server, f.Names, new ProvisioningMode(ResetApp: true, WipeAudit: false)));
+                    Assert.Contains("gate_stray", stray.Message);
+                    Assert.Contains(stranger, stray.Message);
+                    await f.ExecuteAsRuntimeAsync(f.App, "SELECT 1");
+                    await f.ExecuteAsync(f.AuditDatabase, "DROP TABLE public.gate_stray");
+
+                    await f.ExecuteAsync(f.AuditDatabase,
+                        "UPDATE public.\"__EFMigrationsHistory\" SET \"MigrationId\" = '20260919181509_NotTheBaseline' "
+                        + $"WHERE \"MigrationId\" = '{PostgresUpgradeHarnessTests.AuditBaseline}'");
+                    var noBaseline = await Assert.ThrowsAsync<PostgresLayoutRefusedException>(() =>
+                        PostgresRoleLayout.ProvisionAsync(Server, f.Names, new ProvisioningMode(ResetApp: true, WipeAudit: false)));
+                    Assert.Contains(PostgresUpgradeHarnessTests.AuditBaseline, noBaseline.Message);
+                    await f.ExecuteAsRuntimeAsync(f.App, "SELECT 1");
+                }
+                finally
+                {
+                    await f.ExecuteAsync(null, $"DROP ROLE IF EXISTS {Q(stranger)}");
+                }
+            }
+
+            [RequiresEnvironmentFact(ServerVariable)]
+            public async Task A_leftover_member_of_any_runtime_or_owner_role_is_warned_with_the_exact_revoke()
+            {
+                await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
+                var leftover = f.Names.AppRole + "_migrate";
+                await f.ExecuteAsync(null, $"CREATE ROLE {Q(leftover)} LOGIN CREATEROLE; "
+                    + $"GRANT {Q(f.App.Username)}, {Q(f.Audit.Username)}, {Q(f.AuditOwner)} TO {Q(leftover)};");
+                try
+                {
+                    var app = SchemaOwnership.Warnings(await f.OwnershipAsync(DatabaseKind.Application));
+                    var audit = SchemaOwnership.Warnings(await f.OwnershipAsync(DatabaseKind.Audit));
+
+                    Assert.Contains(app, w => w.Contains($"REVOKE {Q(f.App.Username)} FROM {Q(leftover)};"));
+                    Assert.Contains(audit, w => w.Contains($"REVOKE {Q(f.Audit.Username)} FROM {Q(leftover)};"));
+                    Assert.Contains(audit, w => w.Contains($"REVOKE {Q(f.AuditOwner)} FROM {Q(leftover)};") && w.Contains("could drop it"));
+                    Assert.All(app.Concat(audit), w => Assert.Contains("NOLOGIN", w));
+                }
+                finally
+                {
+                    await f.ExecuteAsync(null, $"DROP ROLE IF EXISTS {Q(leftover)}");
+                }
+            }
         }
 
-        [RequiresEnvironmentFact(ServerVariable)]
-        public async Task A_reset_whose_drop_fails_leaves_the_old_database_and_its_rows_in_place()
+        /// <summary>The startup gate around a migration: locks, waits, retries and the builds it refuses.</summary>
+        [Trait("Category", "PostgreSQL")]
+        [Trait(TestTier.Name, TestTier.Slow)]
+        [Collection(PostgresLane.One)]
+        public sealed class Gate
         {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh, atBaseline: true);
-            await f.ExecuteAsRuntimeAsync(f.App, PostgresUpgradeHarnessTests.Seed030Sql);
-            await f.ExecuteAsync(null, $"ALTER DATABASE {Q(f.AppDatabase)} IS_TEMPLATE true");
-            try
+            [RequiresEnvironmentFact(ServerVariable)]
+            public async Task A_read_behind_the_migration_lock_reports_a_migration_in_progress_then_current_once_released()
             {
-                await Assert.ThrowsAsync<PostgresException>(() =>
-                    PostgresRoleLayout.ProvisionAsync(Server, f.Names, new ProvisioningMode(ResetApp: true, WipeAudit: false)));
+                await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
+                using var log = new CapturedSerilog();
 
-                Assert.Equal(1, await f.CountAsync(null, $"SELECT count(*) FROM pg_catalog.pg_database WHERE datname = '{f.AppDatabase}'"));
-                Assert.Equal(2, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM \"Tenants\""));
-                await f.ExecuteAsRuntimeAsync(f.App, "SELECT 1");
-                await f.ExecuteAsRuntimeAsync(f.Audit, "SELECT 1");
-            }
-            finally
-            {
-                await f.ExecuteAsync(null, $"ALTER DATABASE {Q(f.AppDatabase)} IS_TEMPLATE false");
-            }
-        }
+                await using var holder = new NpgsqlConnection(f.AdminConnectionString(f.AppDatabase));
+                await holder.OpenAsync();
+                var tx = await holder.BeginTransactionAsync();
+                await new NpgsqlCommand("LOCK TABLE public.\"__EFMigrationsHistory\" IN ACCESS EXCLUSIVE MODE", holder, tx).ExecuteNonQueryAsync();
 
-        [RequiresEnvironmentFact(ServerVariable)]
-        public async Task A_migration_blocked_on_a_table_lock_is_retried_in_process_and_applied_once_the_lock_is_released()
-        {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
-            using var log = new CapturedSerilog();
-            await f.SeedProbeHistoryAsync(f.AppDatabase, AppProbeContext.History, f.App.Username);
-            SchemaStartupApi.UseContextFactory((_, cs, timeout) =>
-                new AppProbeContext(ProbeOptions.For<AppProbeContext>(cs, timeout, AppProbeContext.History)));
+                await using (var gate = GateReadContext(f.App))
+                {
+                    var clock = Stopwatch.StartNew();
+                    var error = await Record.ExceptionAsync(() => SchemaVersionGate.ReadAsync(gate));
+                    Assert.NotNull(error);
+                    Assert.Equal(SchemaFailureKind.MigrationInProgress, SchemaFailure.Classify(error!));
+                    Assert.True(clock.Elapsed < TimeSpan.FromSeconds(10), $"took {clock.Elapsed}");
+                }
+                Assert.Equal(75, await SchemaStartupApi.EnforceAllAsync(
+                    [("application", DatabaseKind.Application, f.App)], false, new SchemaConfig { WaitSeconds = 1 }));
+                Assert.True(Logged(log, "most likely by a migration in progress"), Dump(log));
 
-            await using var holder = new NpgsqlConnection(f.AdminConnectionString(f.AppDatabase));
-            await holder.OpenAsync();
-            var tx = await holder.BeginTransactionAsync();
-            await new NpgsqlCommand("LOCK TABLE public.\"Users\" IN ACCESS EXCLUSIVE MODE", holder, tx).ExecuteNonQueryAsync();
-            var release = Task.Run(async () =>
-            {
-                await Task.Delay(TimeSpan.FromSeconds(3));
                 await tx.RollbackAsync();
-            });
-
-            var exit = await SchemaStartupApi.EnforceAllAsync([("application", DatabaseKind.Application, f.App)], true,
-                new SchemaConfig { WaitSeconds = 60, MigrationLockTimeoutSeconds = 1 });
-            await release;
-
-            Assert.True(exit is null, Dump(log));
-            Assert.True(log.Has(LogEventLevel.Warning, "55P03"), Dump(log));
-            Assert.True(Logged(log, "retrying in"), Dump(log));
-            Assert.Equal(1, await f.ColumnCountAsync(f.AppDatabase, "Users", "GateProbe"));
-        }
-
-        [RequiresEnvironmentFact(ServerVariable)]
-        public async Task A_preserved_audit_database_whose_schema_public_the_superuser_still_owns_is_handed_to_its_owner_whatever_the_version()
-        {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
-            var admin = new NpgsqlConnectionStringBuilder(Server).Username!;
-            await f.ExecuteAsync(f.AuditDatabase, $"ALTER SCHEMA public OWNER TO {Q(admin)}; GRANT CREATE ON SCHEMA public TO PUBLIC;");
-
-            await PostgresRoleLayout.ProvisionAsync(Server, f.Names, new ProvisioningMode(ResetApp: true, WipeAudit: false));
-
-            Assert.Equal(1, await f.CountAsync(f.AuditDatabase,
-                $"SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname = 'public' AND nspowner = to_regrole('{Q(f.AuditOwner)}')"));
-            Assert.Equal(0, await f.CountAsync(f.AuditDatabase,
-                "SELECT count(*) FROM pg_catalog.pg_namespace n, aclexplode(n.nspacl) a WHERE n.nspname = 'public' AND a.grantee = 0 AND a.privilege_type = 'CREATE'"));
-            Assert.Equal(0, await f.CountAsync(f.AppDatabase,
-                "SELECT count(*) FROM pg_catalog.pg_namespace n, aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) a "
-                + "WHERE n.nspname = 'public' AND a.grantee = 0 AND a.privilege_type = 'CREATE'"));
-        }
-
-        [RequiresEnvironmentFact(ServerVariable)]
-        public async Task A_sqlroot_that_is_not_a_superuser_or_whose_password_is_wrong_is_refused_cleanly_before_any_read_of_the_audit_database()
-        {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
-            var role = f.Names.AppRole + "_nosu";
-            var password = PostgresRoleLayout.GeneratePassword();
-            await f.ExecuteAsync(null, $"CREATE ROLE {Q(role)} WITH LOGIN CREATEDB CREATEROLE PASSWORD '{password}'");
-            try
-            {
-                var asRole = new NpgsqlConnectionStringBuilder(Server) { Username = role, Password = password }.ConnectionString;
-                var refused = await Assert.ThrowsAsync<PostgresLayoutRefusedException>(() =>
-                    PostgresRoleLayout.ProvisionAsync(asRole, f.Names with { AdminRole = role }, new ProvisioningMode(ResetApp: true, WipeAudit: false)));
-                Assert.Contains($"SqlRoot '{role}' is not a PostgreSQL superuser", refused.Message);
-
-                var wrong = new NpgsqlConnectionStringBuilder(Server) { Username = role, Password = password + "x", Pooling = false }.ConnectionString;
-                var login = await Record.ExceptionAsync(async () =>
+                await using (var gate = GateReadContext(f.App))
                 {
-                    await using var probe = new NpgsqlConnection(wrong);
-                    await probe.OpenAsync();
-                });
-                if (login is PostgresException { SqlState: "28P01" })
-                {
-                    var badPassword = await Assert.ThrowsAsync<PostgresLayoutRefusedException>(() =>
-                        PostgresRoleLayout.ProbeAsync(wrong, f.Names with { AdminRole = role }));
-                    Assert.Contains("rejected the password", badPassword.Message);
+                    var state = await SchemaVersionGate.ReadAsync(gate);
+                    Assert.Equal(SchemaVerdict.Current, SchemaVersionGate.Evaluate(state, appliesMigrations: false));
                 }
-                await f.ExecuteAsRuntimeAsync(f.App, "SELECT 1");
             }
-            finally
+
+            [RequiresEnvironmentFact(ServerVariable)]
+            public async Task A_migration_with_a_statement_outside_a_transaction_is_not_rehearsed_and_the_start_stops_with_3_having_applied_nothing()
             {
-                NpgsqlConnection.ClearAllPools();
-                await f.ExecuteAsync(null, $"DROP ROLE IF EXISTS {Q(role)}");
+                await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
+                using var log = new CapturedSerilog();
+                await f.SeedProbeHistoryAsync(f.AppDatabase, NonTransactionalProbeContext.History, f.App.Username);
+                SchemaStartupApi.UseContextFactory((_, cs, timeout) =>
+                    new NonTransactionalProbeContext(ProbeOptions.For<NonTransactionalProbeContext>(cs, timeout, NonTransactionalProbeContext.History)));
+
+                var exit = await SchemaStartupApi.EnforceAllAsync([("application", DatabaseKind.Application, f.App)], true, new SchemaConfig { WaitSeconds = 1 });
+
+                Assert.Equal(3, exit);
+                Assert.True(log.Has(LogEventLevel.Fatal, "cannot rehearse it"), Dump(log));
+                Assert.True(log.Has(LogEventLevel.Fatal, "defective"), Dump(log));
+                Assert.Equal(1, await f.CountAsync(f.AppDatabase, $"SELECT count(*) FROM public.\"{NonTransactionalProbeContext.History}\""));
+                Assert.Equal(0, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'gate_probe_nt'"));
+            }
+
+            [RequiresEnvironmentFact(ServerVariable)]
+            public async Task A_migration_blocked_on_a_table_lock_exits_75_to_be_retried()
+            {
+                await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
+                using var log = new CapturedSerilog();
+                await f.SeedProbeHistoryAsync(f.AppDatabase, AppProbeContext.History, f.App.Username);
+                SchemaStartupApi.UseContextFactory((_, cs, timeout) =>
+                    new AppProbeContext(ProbeOptions.For<AppProbeContext>(cs, timeout, AppProbeContext.History)));
+
+                await using var holder = new NpgsqlConnection(f.AdminConnectionString(f.AppDatabase));
+                await holder.OpenAsync();
+                await using var tx = await holder.BeginTransactionAsync();
+                await new NpgsqlCommand("LOCK TABLE public.\"Users\" IN ACCESS EXCLUSIVE MODE", holder, tx).ExecuteNonQueryAsync();
+
+                var exit = await SchemaStartupApi.EnforceAllAsync([("application", DatabaseKind.Application, f.App)], true,
+                    new SchemaConfig { WaitSeconds = 1, MigrationLockTimeoutSeconds = 1 });
+
+                Assert.Equal(75, exit);
+                Assert.True(log.Has(LogEventLevel.Fatal, "55P03"), Dump(log));
+                await tx.RollbackAsync();
+                Assert.Equal(0, await f.ColumnCountAsync(f.AppDatabase, "Users", "GateProbe"));
+            }
+
+            [RequiresEnvironmentFact(ServerVariable)]
+            public async Task A_role_that_does_not_apply_migrations_waits_for_pending_ones_then_exits_75()
+            {
+                await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
+                using var log = new CapturedSerilog();
+                await f.SeedProbeHistoryAsync(f.AppDatabase, AppProbeContext.History, f.App.Username);
+                SchemaStartupApi.UseContextFactory((_, cs, timeout) =>
+                    new AppProbeContext(ProbeOptions.For<AppProbeContext>(cs, timeout, AppProbeContext.History)));
+
+                var exit = await SchemaStartupApi.EnforceAllAsync([("application", DatabaseKind.Application, f.App)], false, new SchemaConfig { WaitSeconds = 1 });
+
+                Assert.Equal(75, exit);
+                Assert.True(Logged(log, "Only the control role applies migrations"), Dump(log));
+                Assert.True(log.Has(LogEventLevel.Error, "Gave up after 1 s (Schema.WaitSeconds)"), Dump(log));
+                Assert.Equal(0, await f.ColumnCountAsync(f.AppDatabase, "Users", "GateProbe"));
+            }
+
+            [RequiresEnvironmentFact(ServerVariable)]
+            public async Task A_build_whose_model_differs_from_its_snapshot_stops_with_3_before_applying_anything()
+            {
+                await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
+                using var log = new CapturedSerilog();
+                await f.SeedProbeHistoryAsync(f.AppDatabase, DriftProbeContext.History, f.App.Username);
+                SchemaStartupApi.UseContextFactory((_, cs, timeout) =>
+                    new DriftProbeContext(ProbeOptions.For<DriftProbeContext>(cs, timeout, DriftProbeContext.History)));
+
+                var exit = await SchemaStartupApi.EnforceAllAsync([("application", DatabaseKind.Application, f.App)], true, new SchemaConfig { WaitSeconds = 1 });
+
+                Assert.Equal(3, exit);
+                Assert.True(log.Has(LogEventLevel.Fatal, "differs from its latest migration"), Dump(log));
+                Assert.Equal(1, await f.CountAsync(f.AppDatabase, $"SELECT count(*) FROM public.\"{DriftProbeContext.History}\""));
+                Assert.Equal(0, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'gate_probe_drift'"));
+            }
+
+            [RequiresEnvironmentFact(ServerVariable)]
+            public async Task A_migration_blocked_on_a_table_lock_is_retried_in_process_and_applied_once_the_lock_is_released()
+            {
+                await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
+                using var log = new CapturedSerilog();
+                await f.SeedProbeHistoryAsync(f.AppDatabase, AppProbeContext.History, f.App.Username);
+                SchemaStartupApi.UseContextFactory((_, cs, timeout) =>
+                    new AppProbeContext(ProbeOptions.For<AppProbeContext>(cs, timeout, AppProbeContext.History)));
+
+                await using var holder = new NpgsqlConnection(f.AdminConnectionString(f.AppDatabase));
+                await holder.OpenAsync();
+                var tx = await holder.BeginTransactionAsync();
+                await new NpgsqlCommand("LOCK TABLE public.\"Users\" IN ACCESS EXCLUSIVE MODE", holder, tx).ExecuteNonQueryAsync();
+                var release = Task.Run(async () =>
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(3));
+                    await tx.RollbackAsync();
+                });
+
+                var exit = await SchemaStartupApi.EnforceAllAsync([("application", DatabaseKind.Application, f.App)], true,
+                    new SchemaConfig { WaitSeconds = 60, MigrationLockTimeoutSeconds = 1 });
+                await release;
+
+                Assert.True(exit is null, Dump(log));
+                Assert.True(log.Has(LogEventLevel.Warning, "55P03"), Dump(log));
+                Assert.True(Logged(log, "retrying in"), Dump(log));
+                Assert.Equal(1, await f.ColumnCountAsync(f.AppDatabase, "Users", "GateProbe"));
             }
         }
 
-        [RequiresEnvironmentFact(ServerVariable)]
-        public async Task A_preserved_audit_database_the_takeover_cannot_complete_is_refused_before_any_ddl()
+        /// <summary>The two slowest: a migration statement that outlasts the request timeout, and a backup restored as the runtime roles.</summary>
+        [Trait("Category", "PostgreSQL")]
+        [Trait(TestTier.Name, TestTier.Slow)]
+        [Collection(PostgresLane.One)]
+        public sealed class LongRunning
         {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
-            var stranger = f.Names.AuditRole + "_stray";
-            await f.ExecuteAsync(null, $"CREATE ROLE {Q(stranger)} NOLOGIN");
-            try
+            [RequiresEnvironmentFact(ServerVariable)]
+            public async Task A_migration_statement_longer_than_the_request_timeout_succeeds_on_the_migration_connection()
             {
-                await f.ExecuteAsync(f.AuditDatabase, $"CREATE TABLE public.gate_stray (id int); ALTER TABLE public.gate_stray OWNER TO {Q(stranger)};");
-                var stray = await Assert.ThrowsAsync<PostgresLayoutRefusedException>(() =>
-                    PostgresRoleLayout.ProvisionAsync(Server, f.Names, new ProvisioningMode(ResetApp: true, WipeAudit: false)));
-                Assert.Contains("gate_stray", stray.Message);
-                Assert.Contains(stranger, stray.Message);
-                await f.ExecuteAsRuntimeAsync(f.App, "SELECT 1");
-                await f.ExecuteAsync(f.AuditDatabase, "DROP TABLE public.gate_stray");
+                await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
+                using var log = new CapturedSerilog();
+                await f.SeedProbeHistoryAsync(f.AppDatabase, SlowProbeContext.History, f.App.Username);
+                SchemaStartupApi.UseContextFactory((_, cs, timeout) =>
+                    new SlowProbeContext(ProbeOptions.For<SlowProbeContext>(cs, timeout, SlowProbeContext.History)));
+                var clock = Stopwatch.StartNew();
 
-                await f.ExecuteAsync(f.AuditDatabase,
-                    "UPDATE public.\"__EFMigrationsHistory\" SET \"MigrationId\" = '20260919181509_NotTheBaseline' "
-                    + $"WHERE \"MigrationId\" = '{PostgresUpgradeHarnessTests.AuditBaseline}'");
-                var noBaseline = await Assert.ThrowsAsync<PostgresLayoutRefusedException>(() =>
-                    PostgresRoleLayout.ProvisionAsync(Server, f.Names, new ProvisioningMode(ResetApp: true, WipeAudit: false)));
-                Assert.Contains(PostgresUpgradeHarnessTests.AuditBaseline, noBaseline.Message);
-                await f.ExecuteAsRuntimeAsync(f.App, "SELECT 1");
-            }
-            finally
-            {
-                await f.ExecuteAsync(null, $"DROP ROLE IF EXISTS {Q(stranger)}");
-            }
-        }
+                var exit = await SchemaStartupApi.EnforceAllAsync([("application", DatabaseKind.Application, f.App)], true, new SchemaConfig());
 
-        [RequiresEnvironmentFact(ServerVariable)]
-        public async Task A_leftover_member_of_any_runtime_or_owner_role_is_warned_with_the_exact_revoke()
-        {
-            await using var f = await OwnershipFixture.CreateAsync(Server, OwnershipLayout.Fresh);
-            var leftover = f.Names.AppRole + "_migrate";
-            await f.ExecuteAsync(null, $"CREATE ROLE {Q(leftover)} LOGIN CREATEROLE; "
-                + $"GRANT {Q(f.App.Username)}, {Q(f.Audit.Username)}, {Q(f.AuditOwner)} TO {Q(leftover)};");
-            try
-            {
-                var app = SchemaOwnership.Warnings(await f.OwnershipAsync(DatabaseKind.Application));
-                var audit = SchemaOwnership.Warnings(await f.OwnershipAsync(DatabaseKind.Audit));
-
-                Assert.Contains(app, w => w.Contains($"REVOKE {Q(f.App.Username)} FROM {Q(leftover)};"));
-                Assert.Contains(audit, w => w.Contains($"REVOKE {Q(f.Audit.Username)} FROM {Q(leftover)};"));
-                Assert.Contains(audit, w => w.Contains($"REVOKE {Q(f.AuditOwner)} FROM {Q(leftover)};") && w.Contains("could drop it"));
-                Assert.All(app.Concat(audit), w => Assert.Contains("NOLOGIN", w));
+                Assert.True(exit is null, Dump(log));
+                Assert.True(clock.Elapsed >= TimeSpan.FromSeconds(35), $"took {clock.Elapsed}");
+                Assert.Equal(2, await f.CountAsync(f.AppDatabase, $"SELECT count(*) FROM public.\"{SlowProbeContext.History}\""));
             }
-            finally
+
+            [RequiresPostgresClientToolsTheory(ServerVariable)]
+            [InlineData(OwnershipLayout.Migrated)]
+            [InlineData(OwnershipLayout.Legacy)]
+            public async Task A_backup_restores_as_the_runtime_roles(OwnershipLayout layout)
             {
-                await f.ExecuteAsync(null, $"DROP ROLE IF EXISTS {Q(leftover)}");
+                PostgresClientTools.EnsureOnPath();
+                await using var f = await OwnershipFixture.CreateAsync(Server, layout, atBaseline: true);
+                if (layout == OwnershipLayout.Legacy)
+                {
+                    await f.ExecuteAsync(f.AppDatabase, PostgresUpgradeHarnessTests.Seed030Sql);
+                    await f.RepairAsync(DatabaseKind.Application);
+                    await f.RepairAsync(DatabaseKind.Audit);
+                }
+                else
+                {
+                    await f.ExecuteAsRuntimeAsync(f.App, PostgresUpgradeHarnessTests.Seed030Sql);
+                }
+
+                foreach (var (kind, instance) in new[] { (DatabaseKind.Application, f.App), (DatabaseKind.Audit, f.Audit) })
+                {
+                    var dump = Path.Combine(Path.GetTempPath(), $"modularca-harness-{Guid.NewGuid():N}.dump");
+                    var pgpass = BackupRestore.WritePgPassFile(instance.Host, instance.Port, instance.Database, instance.Username, instance.Password);
+                    try
+                    {
+                        var (dumpExit, dumpErr) = await PgDumpAsync(instance, dump, pgpass);
+                        Assert.True(dumpExit == 0, $"pg_dump exited {dumpExit}: {dumpErr}");
+                        if (kind == DatabaseKind.Application)
+                            await f.ExecuteAsRuntimeAsync(instance, "DELETE FROM \"CaGroupMembers\"");
+
+                        var (exit, stderr) = await RestoreDumpFileAsync(pgpass, instance, dump, ensureCitext: kind == DatabaseKind.Application);
+
+                        Assert.True(exit == 0, $"{kind} restore exited {exit}: {stderr}");
+                        var report = await f.OwnershipAsync(kind);
+                        Assert.True(report.IsSound, SchemaOwnership.RefusalMessage(report, null));
+                        if (kind == DatabaseKind.Application)
+                            Assert.Equal(2, await f.CountAsync(f.AppDatabase, "SELECT count(*) FROM \"CaGroupMembers\""));
+                    }
+                    finally
+                    {
+                        foreach (var file in new[] { dump, dump + ".list", pgpass })
+                            try { File.Delete(file); } catch (IOException) { }
+                    }
+                }
+                Assert.Null(await SchemaStartupApi.EnforceAllAsync(f.Targets(), true, new SchemaConfig { WaitSeconds = 1 }));
             }
         }
 

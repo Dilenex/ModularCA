@@ -620,7 +620,7 @@ public class AdminCertSignRequestController(
 
         var approvedBy = csr.Approvals.Where(a => a.Decision == "Approved").Select(a => a.ApproverId).Distinct().ToList();
         var outlook = await RequestApprovers.OutlookAsync(
-            _db, _authService, await _securityPolicy.GetAsync(), await RequestApprovals.RequiredCountAsync(_db, profiles, csr),
+            _db, await _securityPolicy.GetAsync(), await RequestApprovals.RequiredCountAsync(_db, profiles, csr),
             csr.SigningProfileId, csr.CertProfileId, csr.RequestorUserId, approvedBy);
         return Ok(new
         {
@@ -656,7 +656,7 @@ public class AdminCertSignRequestController(
         if (!requiresApproval)
             return Ok(new { requiresApproval, requiredCount = 0, othersWhoCanApprove = 0, requesterMaySelfApprove = false, canComplete = true });
         var outlook = await RequestApprovers.OutlookAsync(
-            _db, _authService, await _securityPolicy.GetAsync(), await RequestApprovals.RequiredCountAsync(_db, profiles, draft),
+            _db, await _securityPolicy.GetAsync(), await RequestApprovals.RequiredCountAsync(_db, profiles, draft),
             signingProfileId, certProfileId, _currentUser.User.Id, []);
         return Ok(new
         {

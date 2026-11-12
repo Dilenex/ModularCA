@@ -109,7 +109,7 @@ public class XcepPolicyServiceTests
         var authorizer = new RecordingAuthorizer(member);
         var profiles = new ProfileResolutionService(db, NullLogger<ProfileResolutionService>.Instance);
         var service = new XcepPolicyService(db, new CaResolverService(db), authorizer, profiles,
-            new IssuanceValidationService(db, NullLogger<IssuanceValidationService>.Instance), config,
+            new IssuanceValidationService(db, NullLogger<IssuanceValidationService>.Instance),
             new PublicNameResolver(config), NullLogger<XcepPolicyService>.Instance);
 
         return new Harness { Db = db, CaCert = caCert, Ca = ca, Signing = signing, DeviceProfile = device, Authorizer = authorizer, Service = service };
@@ -147,6 +147,30 @@ public class XcepPolicyServiceTests
         h.AddTemplate("RsaDevice", h.DeviceProfile, "2.25.61");
 
         var policy = await h.Service.GetPoliciesAsync("lab", "svc-enroll");
+        Assert.Equal(["RsaDevice"], policy.Templates.Select(t => t.Name));
+    }
+
+    /// <summary>
+    /// A template whose certificate profile lists no EKUs, under a signing profile that restricts
+    /// them, cannot be issued (the issuance check refuses it), so it is left out of the policy with
+    /// a warning; the other templates are still offered rather than the whole listing failing.
+    /// </summary>
+    [Fact]
+    public async Task A_template_that_could_not_be_issued_for_its_ekus_is_skipped_not_advertised()
+    {
+        var h = Build();
+        h.Signing.AllowedEKUs = """["clientAuth","serverAuth"]""";
+        var noEku = new CertProfileEntity
+        {
+            Id = Guid.NewGuid(), Name = "No EKU", AllowedKeyAlgorithms = """["RSA"]""", KeyUsages = "[]", ExtendedKeyUsages = "[]",
+        };
+        h.Db.CertProfiles.Add(noEku);
+        h.Db.SaveChanges();
+        h.AddTemplate("NoEku", noEku, "2.25.70");
+        h.AddTemplate("RsaDevice", h.DeviceProfile, "2.25.71");
+
+        var policy = await h.Service.GetPoliciesAsync("lab", "svc-enroll");
+
         Assert.Equal(["RsaDevice"], policy.Templates.Select(t => t.Name));
     }
 

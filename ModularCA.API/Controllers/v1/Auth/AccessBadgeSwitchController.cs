@@ -74,7 +74,7 @@ public class AccessBadgeSwitchController(
         if (AccessBadgePolicy.IsBroadening(currentKeys, targetKeys))
         {
             var mfaToken = Request.Headers.TryGetValue("X-MFA-Token", out var h) ? h.ToString() : null;
-            var ok = await MfaStepUpController.ValidateStepUpTokenAsync(cache, User, mfaToken, StepUpOps.SwitchBadge);
+            var ok = await MfaStepUpController.ValidateStepUpTokenAsync(cache, HttpContext, mfaToken, StepUpOps.SwitchBadge);
             if (!ok)
             {
                 return StatusCode(403, new

@@ -146,7 +146,7 @@ const CertificateDetail: React.FC = () => {
 
     useEffect(() => {
         loadAcl();
-        apiGet<any>('/api/v1/admin/users').then((d) => setAllUsers(Array.isArray(d) ? d : (d.items || d.users || []))).catch(() => {});
+        apiGet<any>('/api/v1/admin/users', { toast: false }).then((d) => setAllUsers(Array.isArray(d) ? d : (d.items || d.users || []))).catch(() => {});
     }, [loadAcl]);
 
     // ACL changes are step-up gated (granting Manage confers revoke/reissue rights).
@@ -308,7 +308,8 @@ const CertificateDetail: React.FC = () => {
                     {(status === 'active' || status === 'expired' || isOnHold) && !cert.retiredAt && <button onClick={() => setReissueOpen(true)} title={status === 'expired' ? 'Request a replacement with the same subject and names' : undefined} className={actionButton}>Reissue</button>}
                     {status !== 'revoked' && !cert.isCA && !cert.retiredAt && <button onClick={() => { setRetireReason(''); setHandlingError(null); setRetireOpen(true); }}
                         title="Stop renewals from this certificate and its expiry warning; it stays valid until it expires" className={actionButton}>Retire</button>}
-                    {status === 'active' && <button onClick={() => { setRevokeReason('Unspecified'); setRevokeError(null); setRevokeOpen(true); }} className={actionButtonDanger}>Revoke</button>}
+                    {/* A held certificate can be revoked permanently in place (RFC 5280 5.3.1), without lifting the hold first. */}
+                    {(status === 'active' || isOnHold) && <button onClick={() => { setRevokeReason('Unspecified'); setRevokeError(null); setRevokeOpen(true); }} className={actionButtonDanger}>{isOnHold ? 'Revoke permanently' : 'Revoke'}</button>}
                 </div>
             }
         >
@@ -363,7 +364,7 @@ const CertificateDetail: React.FC = () => {
                 )}
                 {handlingError && !retireOpen && <InlineNotice notice={handlingError} variant="line" />}
                 {isOnHold && (
-                    <p className="text-xs text-ink-muted -mt-1">Certificate Hold is the one revocation reason that can be reversed. Lifting it returns the certificate to good standing on the next CRL and OCSP answer.</p>
+                    <p className="text-xs text-ink-muted -mt-1">Certificate Hold is the one revocation reason that can be reversed. Lifting it returns the certificate to good standing on the next CRL and OCSP answer; Revoke permanently replaces the hold with a permanent reason.</p>
                 )}
 
                 <DetailSection title="Certificate">
@@ -486,7 +487,7 @@ const CertificateDetail: React.FC = () => {
                                 <div className="space-y-1">
                                     <label htmlFor="revoke-reason" className="block text-xs text-ink-muted">Revocation Reason</label>
                                     <select id="revoke-reason" value={revokeReason} onChange={(e) => setRevokeReason(e.target.value)} disabled={revokeLoading} className="w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent disabled:opacity-50">
-                                        {REVOCATION_REASONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+                                        {REVOCATION_REASONS.filter((r) => !isOnHold || r.value !== 'CertificateHold').map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
                                     </select>
                                     <RevocationReasonHint reason={revokeReason} />
                                 </div>

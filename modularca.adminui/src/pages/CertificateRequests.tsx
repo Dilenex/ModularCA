@@ -5,6 +5,7 @@ import { apiGet, apiPost } from '../api/client';
 import { recordTableProps } from '../components/RecordDrawer';
 import type { RecordDescriptor } from '@shared/records';
 import { useScope } from '../context/ScopeContext';
+import { useLatestRequest } from '@shared/hooks/useLatestRequest';
 import { useToast } from '@shared/context/ToastContext';
 import { StatusBadge } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
@@ -12,24 +13,12 @@ import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { StepUpOps } from '@shared/generated';
 import { runWithOneStepUp } from '@shared-auth/api/stepUpBatch';
 import { useStepUp } from '../components/StepUpMfaContext';
+import type { ValidityCeilingPreflight } from '@shared/generated';
+import { describeValidUntilLimit, toDateInputValue, validityCeilingUrl, validUntilLimit, validUntilNotAfter } from './validUntil';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
     return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
-
-/** Converts an ISO-8601 period (e.g. "P1Y", "P90D") to a yyyy-MM-dd "max date" from today — the upper
- *  bound for the per-cert validity picker. Time components are ignored. Undefined if absent/unparseable. */
-export function isoPeriodToMaxDate(iso?: string | null): string | undefined {
-    if (!iso) return undefined;
-    const m = /^P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)W)?(?:(\d+)D)?/.exec(iso);
-    if (!m || (!m[1] && !m[2] && !m[3] && !m[4])) return undefined;
-    const dt = new Date();
-    if (m[1]) dt.setFullYear(dt.getFullYear() + parseInt(m[1], 10));
-    if (m[2]) dt.setMonth(dt.getMonth() + parseInt(m[2], 10));
-    if (m[3]) dt.setDate(dt.getDate() + parseInt(m[3], 10) * 7);
-    if (m[4]) dt.setDate(dt.getDate() + parseInt(m[4], 10));
-    return dt.toISOString().slice(0, 10);
 }
 
 export const csrId = (csr: any): string => csr.id || csr.requestId;
@@ -101,38 +90,53 @@ const CertificateRequests: React.FC = () => {
     const [error, setError] = useState<NoticeInput | null>(null);
 
     // Bulk approve/deny/issue — approve & deny carry one shared message; issue takes an optional
-    // per-certificate "valid until" (within each cert's profile range).
+    // per-certificate "valid until" (within the ceiling the server reports for each request).
     const [bulk, setBulk] = useState<{ type: 'approve' | 'deny' | 'issue'; rows: any[] } | null>(null);
     const [bulkMessage, setBulkMessage] = useState('');
     const [bulkBusy, setBulkBusy] = useState(false);
-    const [certProfiles, setCertProfiles] = useState<any[]>([]);
-    const [issueValidity, setIssueValidity] = useState<Record<string, string>>({}); // csrId → yyyy-MM-dd
+    const [issueValidity, setIssueValidity] = useState<Record<string, string>>({}); // csrId → local yyyy-MM-dd
+    // The server's validity pre-flight for each request in the bulk issue dialog, by pre-flight URL
+    // (requests under the same profiles and start share one). Missing or null means unknown: that
+    // row's picker is unbounded and the server decides.
+    const [issueCeilings, setIssueCeilings] = useState<Record<string, ValidityCeilingPreflight | null>>({});
 
     const { caId: scopeCaId, spaceId: scopeSpaceId, caQuery } = useScope();
 
+    // Only the newest load writes: a slow answer for a scope already left is dropped.
+    const requestLoads = useLatestRequest();
     const loadRequests = () => {
+        const current = requestLoads.begin();
         setLoading(true);
         setError(null);
         apiGet<any[]>(`/api/v1/admin/requests${caQuery()}`)
-            .then((data) => { setRequests(Array.isArray(data) ? data : []); setLoading(false); })
-            .catch((err) => { setError(errorNotice(err, 'Failed to load requests')); setLoading(false); });
+            .then((data) => { if (current()) { setRequests(Array.isArray(data) ? data : []); setLoading(false); } })
+            .catch((err) => { if (current()) { setError(errorNotice(err, 'Failed to load requests')); setLoading(false); } });
     };
 
     useEffect(() => {
         loadRequests();
-        // Cert profiles give each request's validity ceiling for the per-cert issue picker.
-        apiGet<any>('/api/v1/admin/cert-profiles')
-            .then((d) => setCertProfiles(Array.isArray(d) ? d : (d.items || d.profiles || [])))
-            .catch(() => { /* picker just falls back to unbounded + backend enforcement */ });
     }, [scopeCaId, scopeSpaceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    const today = new Date().toISOString().slice(0, 10);
-    const csrProfileMaxDate = (c: any): string | undefined => {
-        const cpId = c.certificateProfileId || c.certProfileId;
-        if (!cpId) return undefined;
-        const cp = certProfiles.find((p) => (p.id || p.certProfileId) === cpId);
-        return isoPeriodToMaxDate(cp?.validityPeriodMax);
+    // Ask the pre-flight once per distinct (signing profile, cert profile, start) when the bulk issue
+    // dialog opens, so each row's picker stops at the ceiling issuance will apply to it.
+    const issueRows = bulk?.type === 'issue' ? bulk.rows : null;
+    useEffect(() => {
+        setIssueCeilings({});
+        if (!issueRows) return;
+        const urls = Array.from(new Set(issueRows.map(validityCeilingUrl).filter((u): u is string => !!u)));
+        let cancelled = false;
+        Promise.all(urls.map((u) => apiGet<ValidityCeilingPreflight>(u, { toast: false })
+            .then((p) => [u, p] as const)
+            .catch(() => [u, null] as const)))
+            .then((pairs) => { if (!cancelled) setIssueCeilings(Object.fromEntries(pairs)); });
+        return () => { cancelled = true; };
+    }, [issueRows]);
+    const ceilingFor = (c: any): ValidityCeilingPreflight | null => {
+        const u = validityCeilingUrl(c);
+        return u ? issueCeilings[u] ?? null : null;
     };
+
+    const today = toDateInputValue(new Date());
 
     // Bucket each request into a filter tab. "Pending" must include the approval-workflow states
     // (PendingApproval / PartiallyApproved / null) — not just exact "Pending" — otherwise requests
@@ -189,11 +193,13 @@ const CertificateRequests: React.FC = () => {
         else for (const c of rows) {
             const cid = csrId(c);
             try {
-                // Optional per-cert "valid until" (end of the chosen day); blank → omit so the backend
-                // coalesces validity from the effective cert profile (clamped to the issuing CA).
+                // Optional per-cert "valid until": the end of the chosen local day, or the ceiling
+                // when that falls earlier on it. Blank → omit so the backend coalesces validity
+                // from the effective cert profile (clamped to the issuing CA).
+                const notAfter = validUntilNotAfter(issueValidity[cid] || '', ceilingFor(c));
                 await apiPost('/api/v1/admin/certificates/issue', {
                     csrId: cid,
-                    ...(issueValidity[cid] ? { notAfter: new Date(`${issueValidity[cid]}T23:59:59Z`).toISOString() } : {}),
+                    ...(notAfter ? { notAfter } : {}),
                 }, { toast: false });
                 ok++;
             } catch (err: any) {
@@ -316,18 +322,26 @@ const CertificateRequests: React.FC = () => {
                                     <div className="max-h-60 overflow-y-auto border border-line rounded divide-y divide-line">
                                         {bulk.rows.map((c) => {
                                             const cid = csrId(c);
-                                            const max = csrProfileMaxDate(c);
+                                            const limit = validUntilLimit(ceilingFor(c));
                                             return (
                                                 <div key={cid} className="flex items-center gap-2 px-3 py-2">
-                                                    <span className="flex-1 min-w-0 truncate text-xs text-ink" title={c.subjectName || c.subject}>{c.subjectName || c.subject}</span>
-                                                    <input type="date" value={issueValidity[cid] || ''} min={today} max={max}
+                                                    <div className="flex-1 min-w-0">
+                                                        <span className="block truncate text-xs text-ink" title={c.subjectName || c.subject}>{c.subjectName || c.subject}</span>
+                                                        {limit && (
+                                                            <span className="block truncate text-[10px] text-ink-muted" title={describeValidUntilLimit(limit)}>
+                                                                latest {limit.latest.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <input type="date" value={issueValidity[cid] || ''} min={today} max={limit?.maxDate}
+                                                        title={limit ? describeValidUntilLimit(limit) : undefined}
                                                         onChange={(e) => setIssueValidity((prev) => ({ ...prev, [cid]: e.target.value }))}
                                                         className="px-2 py-1 text-xs bg-raised border border-line-strong rounded text-ink focus:outline-none focus:border-accent" />
                                                 </div>
                                             );
                                         })}
                                     </div>
-                                    <p className="text-[10px] text-ink-muted px-1">Capped at each certificate's profile maximum; the server also clamps to the issuing CA and rejects anything below the profile minimum.</p>
+                                    <p className="text-[10px] text-ink-muted px-1">Each date stops at the ceiling the server reports for that request (profile, space and issuing CA), in your local time; on the last day the certificate ends at that ceiling. The server checks again at issuance and rejects anything below the profile minimum.</p>
                                 </div>
                             )}
                         </div>

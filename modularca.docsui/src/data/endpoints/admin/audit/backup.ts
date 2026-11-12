@@ -48,6 +48,7 @@ export const adminBackup: ApiEndpoint[] = [
         requestBody: [
             { name: 'fileName', type: 'string', required: true, description: 'Filename of the backup archive to restore. Must match the token.' },
             { name: 'confirmationToken', type: 'string', required: true, description: 'Single-use token from /preview-restore, bound to (user, fileName).' },
+            { name: 'restoreAudit', type: 'boolean', required: false, description: "Replace this instance's audit database with the archive's audit trail. Default false: the live audit history is kept and the restore is recorded in it." },
             { name: 'password', type: 'string', required: false, description: 'Optional DR password for StoredPassword-mode archives when the on-disk key file is missing or rotated.' },
         ],
         headers: [

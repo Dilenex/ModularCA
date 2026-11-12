@@ -130,6 +130,9 @@ Http:
   CorsOrigins: ""               # Comma-separated HTTPS origin allow-list
   SwaggerEnabled: false
   TrustedProxyCidrs: ""         # address/prefix list; empty = loopback only. A bad entry stops the start
+                                # Only proxies that end TLS: never a passthrough proxy
+  ProxyProtocol: false          # plain-HTTP listener requires a PROXY header (passthrough proxy, the hub)
+  ProxyProtocolTrustedCidrs: "" # who may send it; required when either listener takes it
   Hsts:
     MaxAgeSeconds: 31536000
     IncludeSubDomains: true
@@ -141,7 +144,11 @@ Https:
   PublicPort: 443
   Port: 8443
   ListenAddress: "0.0.0.0"
+  ProxyProtocol: false          # HTTPS listener requires a PROXY header, read before TLS
   RenewalWindow: "P30D"
+
+Health:
+  LoopbackPort: 0               # loopback-only health listener for --check-ready: /health* only, never PROXY; 0 = off
 
 Security:
   # Middleware-wired knobs only — read before the DB is available.
@@ -244,7 +251,7 @@ CertPolicy:
                     <li><span className="font-semibold">MFA / step-up:</span> <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">MfaSessionTtlSeconds</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">StepUpTokenTtlSeconds</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">StepUpFailureThreshold</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">StepUpFailureWindowSeconds</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">WebAuthnChallengeTtlSeconds</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">RequireWebAuthnUserVerification</code></li>
                     <li><span className="font-semibold">OCSP responder:</span> <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">AllowCaDirectSigning</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">RequireNoCheckExtension</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">RequireSignedRequests</code>, default <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">nextUpdate</code> TTLs</li>
                     <li><span className="font-semibold">Approval / mTLS:</span> <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">AllowSystemSuperSelfApproval</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">RequireMtlsOcspCheck</code></li>
-                    <li><span className="font-semibold">Keystore KDF:</span> <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">KeystoreScryptN / R / P</code> — cost is upgraded in-place on next write</li>
+                    <li><span className="font-semibold">Keystore KDF:</span> <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">KeystoreScryptN / R / P</code> — cost is upgraded in-place on next write; N must be a power of two from 2^14 to 2^20, r 1–32, p 1–16, and one derivation may need at most 1 GiB (128 × N × r bytes), or the save is refused</li>
                 </ul>
                 <div className="border-l-4 border-info bg-info-soft p-4 rounded-r mt-3">
                     <p className="text-ink text-sm">
@@ -491,6 +498,14 @@ LdapAuth:
                     <li>The service account bind DN is used for search operations only</li>
                     <li>Bind password should be provided via the <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">MODULARCA__LDAPAUTH__BINDPASSWORD</code> environment variable</li>
                     <li>Set <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">RequireTls: true</code> to reject binds that don't negotiate TLS</li>
+                    <li>
+                        <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">Enabled</code> is the instance setting; each account&apos;s
+                        password source can override it: <strong>Inherit</strong> (the default) follows it, <strong>Local</strong> checks the
+                        local password only and never asks the directory, <strong>Directory</strong> checks LDAP only and never the local
+                        password. An Inherit account becomes Directory the first time the directory accepts its password. The administrator
+                        created at setup is Local, so break-glass sign-in works through an LDAP outage. See Authentication Flow for the full rule.
+                    </li>
+                    <li>Turning LDAP off refuses password sign-in for Directory accounts (nothing is counted); set them to Local or Inherit first if they should keep signing in with a local password</li>
                 </ul>
             </section>
 
@@ -765,8 +780,8 @@ PUT  /api/v1/admin/config/ldap-auth
                             <td className="py-2">Restore from an encrypted backup into the databases this host&rsquo;s own db.yaml names, with its credentials; a host without db.yaml is refused. Interactive password prompt for StoredPassword archives when key file is missing. The live config/ and keystores are first saved to backups/pre-restore-&lt;timestamp&gt;.zip. CRL numbers are raised past anything published since the backup, and the wrapped key ring is unwrapped at the next start, once the restored keystore is unlocked. An archive made before 0.4.2 brings back its SSH CA key files instead of an SSH keystore; the next start imports them into the signer (see Upgrading to 0.4.2).</td>
                         </tr>
                         <tr className="border-b border-line">
-                            <td className="py-2 pr-4 data-mono">--upgrade-check [--config-dir {'{dir}'}]</td>
-                            <td className="py-2">Report whether this build can upgrade the installed databases, and change nothing. Run it as the service account, never as root; install.sh runs it before it replaces anything. From 0.4.2 it also reports the SSH CA keys that are still files on the node, and the SSH signing profiles whose certificates become narrower (see Upgrading to 0.4.2).</td>
+                            <td className="py-2 pr-4 data-mono">--upgrade-check [--read-only] [--config-dir {'{dir}'}]</td>
+                            <td className="py-2">Report whether this build can upgrade the installed databases, and change nothing. Run it as the service account, never as root; install.sh runs it before it replaces anything. From 0.4.2 it also reports the SSH CA keys that are still files on the node, and the SSH signing profiles whose certificates become narrower (see Upgrading to 0.4.2). It exits 0 on a pass, 3 when the upgrade is refused and 75 when a database could not be reached. Its dry run holds the migrations&rsquo; locks, so run it with the service stopped. With --read-only it rehearses nothing and takes no migration lock, so it can run beside a serving node: it then exits 5, with a last line starting &ldquo;UPGRADE PENDING, NOT REHEARSED&rdquo; that lists the pending migrations, when the check must still be run without --read-only, with the service stopped.</td>
                         </tr>
                         <tr className="border-b border-line">
                             <td className="py-2 pr-4 data-mono">--setup-local</td>

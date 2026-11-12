@@ -401,6 +401,9 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
     const [status, setStatus] = useState<string | null>(null);
     const [error, setError] = useState<NoticeInput | null>(null);
     const [recoveryPassword, setRecoveryPassword] = useState('');
+    // Off by default: a restore keeps this instance's audit history unless the operator asks
+    // for the archive's audit trail instead (the API's restoreAudit, the CLI's --restore-audit).
+    const [restoreAudit, setRestoreAudit] = useState(false);
     // Set once a restore has completed, so the "restart the application" instruction is a link
     // to the restart control rather than a sentence with nowhere to go.
     const [restored, setRestored] = useState(false);
@@ -416,6 +419,7 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
                 {
                     fileName: selectedFile,
                     password: recoveryPassword ? recoveryPassword : undefined,
+                    restoreAudit,
                 },
                 requireStepUp,
                 StepUpOps.RestoreBackup,
@@ -425,6 +429,7 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
             setRestored(true);
             setConfirmRestore(false);
             setRecoveryPassword('');
+            setRestoreAudit(false);
         } catch (err: any) {
             if (err.message === 'Step-up MFA cancelled') {
                 setStatus(null);
@@ -443,8 +448,8 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
         <div className="bg-raised border border-line rounded-lg p-6 space-y-4">
             <h3 className="text-ink font-semibold">Restore from Backup</h3>
             <p className="text-ink-muted text-sm">
-                Restores the CA from a backup archive. This will overwrite the current database,
-                keystores, and configuration.
+                Restores the CA from a backup archive. This will overwrite the application database,
+                keystores, and configuration. The audit history is kept unless you choose to replace it.
             </p>
 
             <div className="bg-crit-soft border border-crit/40 rounded p-3 text-sm text-crit">
@@ -493,6 +498,29 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
                         </div>
                     )}
 
+                    {selectedFile && (
+                        <div>
+                            <label className="flex items-start gap-2 text-sm text-ink">
+                                <input
+                                    type="checkbox"
+                                    checked={restoreAudit}
+                                    onChange={(e) => { setRestoreAudit(e.target.checked); setConfirmRestore(false); }}
+                                    className="mt-0.5"
+                                />
+                                <span>Also replace the audit history with the backup's</span>
+                            </label>
+                            <p className="mt-1 text-xs text-ink-muted">
+                                Leave this off to keep this instance's audit history; the restore is recorded in it.
+                                Turn it on only when rebuilding an instance whose own audit history is empty or lost.
+                            </p>
+                            {restoreAudit && (
+                                <div className="mt-2 bg-warn-soft border border-warn/40 rounded p-2 text-xs text-warn">
+                                    Every audit record made since this backup was taken will be lost.
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     {selectedFile && !confirmRestore && (
                         <button
                             onClick={() => setConfirmRestore(true)}
@@ -508,8 +536,9 @@ const RestoreSection: React.FC<{ backups: BackupEntry[] }> = ({ backups }) => {
                                 Are you sure you want to restore from "{selectedFile}"?
                             </p>
                             <p className="text-crit text-xs">
-                                This will overwrite the current database, keystores, and configuration.
-                                All current data will be permanently replaced. A restart is required afterward
+                                This will overwrite the application database, keystores, and configuration
+                                {restoreAudit ? ", and replace the audit history with the backup's" : '; the audit history is kept'}.
+                                Current data will be permanently replaced. A restart is required afterward
                                 (<RestartLink>Settings → General → Restart Application</RestartLink>).
                             </p>
                             <div className="flex gap-2">
@@ -597,7 +626,7 @@ const BackupRestore: React.FC = () => {
                         dotnet run --backup [output-path.zip]
                     </code>
                     <code className="block mt-1 bg-sunken p-2 rounded data-mono">
-                        dotnet run --restore backup-archive.zip
+                        dotnet run --restore backup-archive.zip [--restore-audit]
                     </code>
                 </div>
             </div>

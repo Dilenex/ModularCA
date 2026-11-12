@@ -90,7 +90,7 @@ namespace ModularCA.API.Controllers.v1.Account
             var hasWebAuthn = await _db.Fido2Credentials
                 .AnyAsync(c => c.UserId == user.Id);
             var hasMtls = await _db.MtlsCredentials
-                .Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow))
+                .Where(await ModularCA.Core.Helpers.MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow))
                 .AnyAsync(c => c.UserId == user.Id);
 
             var mfaConfigured = hasTotp || hasWebAuthn || hasMtls;

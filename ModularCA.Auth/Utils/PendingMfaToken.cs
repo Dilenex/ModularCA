@@ -1,5 +1,5 @@
-using System.Collections.Concurrent;
 using Microsoft.Extensions.Caching.Distributed;
+using ModularCA.Auth.Services;
 
 namespace ModularCA.Auth.Utils;
 
@@ -17,7 +17,12 @@ public static class PendingMfaToken
     /// <summary>First factor was a client certificate (<c>/auth/cert-login</c>, <c>/auth/mtls/login-redirect</c>).</summary>
     public const string Certificate = "certificate";
 
-    private static readonly ConcurrentDictionary<string, byte> Consuming = new(StringComparer.Ordinal);
+    /// <summary>
+    /// The longest a pending-MFA token lives. The sign-in paths clamp the policy's
+    /// <c>MfaSessionTtlSeconds</c> to 900 seconds; <see cref="StoreAsync"/> holds every token to
+    /// this ceiling as well, so a consume claim of this lifetime outlives any token it guards.
+    /// </summary>
+    public static readonly TimeSpan MaxLifetime = TimeSpan.FromMinutes(15);
 
     /// <summary>A pending-MFA token's owner and the factor that minted it.</summary>
     public readonly record struct Entry(Guid UserId, string FirstFactor)
@@ -29,13 +34,20 @@ public static class PendingMfaToken
     /// <summary>The cache key for a pending-MFA token.</summary>
     public static string Key(string token) => $"mfa:{token}";
 
+    /// <summary>The <see cref="IReplayGuard"/> key that marks a pending-MFA token as consumed.</summary>
+    public static string ConsumedKey(string token) => $"mfa:consumed:{token}";
+
     /// <summary>Encodes a cache value recording the user and the first factor.</summary>
     public static string Encode(Guid userId, string firstFactor) => $"{firstFactor}:{userId}";
 
-    /// <summary>Stores a pending-MFA token for <paramref name="userId"/> minted by <paramref name="firstFactor"/>.</summary>
+    /// <summary>
+    /// Stores a pending-MFA token for <paramref name="userId"/> minted by
+    /// <paramref name="firstFactor"/>, for <paramref name="ttl"/> but never longer than
+    /// <see cref="MaxLifetime"/>.
+    /// </summary>
     public static Task StoreAsync(IDistributedCache cache, string token, Guid userId, string firstFactor, TimeSpan ttl) =>
         cache.SetStringAsync(Key(token), Encode(userId, firstFactor),
-            new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = ttl });
+            new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = ttl < MaxLifetime ? ttl : MaxLifetime });
 
     /// <summary>
     /// Parses a cached value. A bare user id is a legacy entry and means <see cref="Password"/>; an
@@ -64,22 +76,28 @@ public static class PendingMfaToken
         TryParse(await cache.GetStringAsync(Key(token)), out var entry) ? entry : null;
 
     /// <summary>
-    /// Reads and removes a pending-MFA token. A concurrent consume of the same token in this process
-    /// returns null; across nodes sharing a distributed cache the read and remove are not atomic.
+    /// Reads and removes a pending-MFA token. Of any number of concurrent consumes of one token, on
+    /// one node or across nodes sharing the cache, exactly one returns the entry: the consume is
+    /// decided by an atomic claim through <paramref name="replayGuard"/> (Redis <c>SET NX</c> when
+    /// Redis is configured), not by the cache read, which every concurrent caller can pass.
     /// </summary>
-    public static async Task<Entry?> ConsumeAsync(IDistributedCache cache, string token)
+    /// <remarks>
+    /// The cache is read first so a token that does not exist makes no claim; an unauthenticated
+    /// caller cannot fill the guard with made-up tokens. The claim lives for
+    /// <see cref="MaxLifetime"/>, as long as any token can, so a consumed token can never be
+    /// consumed again even if its removal from the cache were lost.
+    /// </remarks>
+    /// <param name="cache">The cache holding the token.</param>
+    /// <param name="replayGuard">The atomic single-use claim.</param>
+    /// <param name="token">The pending-MFA token the client presented.</param>
+    /// <param name="ct">Cancellation.</param>
+    /// <returns>The token's entry for the one caller that consumed it; null otherwise, or when it is unknown or malformed.</returns>
+    public static async Task<Entry?> ConsumeAsync(IDistributedCache cache, IReplayGuard replayGuard, string token, CancellationToken ct = default)
     {
-        if (!Consuming.TryAdd(token, 0)) return null;
-        try
-        {
-            var value = await cache.GetStringAsync(Key(token));
-            if (value == null) return null;
-            await cache.RemoveAsync(Key(token));
-            return TryParse(value, out var entry) ? entry : null;
-        }
-        finally
-        {
-            Consuming.TryRemove(token, out _);
-        }
+        var value = await cache.GetStringAsync(Key(token), ct);
+        if (value == null) return null;
+        if (!await replayGuard.TryClaimAsync(ConsumedKey(token), MaxLifetime, ct)) return null;
+        await cache.RemoveAsync(Key(token), ct);
+        return TryParse(value, out var entry) ? entry : null;
     }
 }

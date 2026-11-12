@@ -56,7 +56,7 @@ public class RequestedExtensionTests
 
     private static RequestedExtension TemplateInfo(string templateOid, int major, int minor, bool critical = false)
         => new(TemplateInfoOid, critical,
-            Convert.ToBase64String(new DerSequence(new DerObjectIdentifier(templateOid), new DerInteger(major), new DerInteger(minor)).GetDerEncoded()));
+            Convert.ToBase64String(new DerSequence(new DerObjectIdentifier(templateOid), DerInteger.ValueOf(major), DerInteger.ValueOf(minor)).GetDerEncoded()));
 
     [Fact]
     public async Task A_requested_extension_is_stamped_with_its_oid_criticality_and_value()
@@ -114,7 +114,7 @@ public class RequestedExtensionTests
         var json = RequestedExtension.ToJson([one]);
         Assert.NotNull(json);
         Assert.Equal([one], RequestedExtension.FromJson(json));
-        Assert.Equal(new DerSequence(new DerObjectIdentifier("2.25.9"), new DerInteger(7), new DerInteger(3)).GetDerEncoded(), one.Value);
+        Assert.Equal(new DerSequence(new DerObjectIdentifier("2.25.9"), DerInteger.ValueOf(7), DerInteger.ValueOf(3)).GetDerEncoded(), one.Value);
 
         Assert.Null(RequestedExtension.ToJson(null));
         Assert.Null(RequestedExtension.ToJson([]));

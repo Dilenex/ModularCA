@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-    formatSort, parseSort, readTableQuery, removeView, upsertView, viewQuery, writeTableQuery,
+    formatSort, parseSort, readTableQuery, removeView, tableQueryWriter, upsertView, viewQuery, writeTableQuery,
 } from '@shared/tableQuery';
 
 /**
@@ -58,5 +58,55 @@ describe('saved views', () => {
         expect(views).toEqual([{ name: 'Expiring', query: 'notAfterTo=x' }, { name: 'revoked', query: 'status=revoked&sort=subject' }]);
         expect(upsertView(views, { name: '  ', query: 'x' })).toBe(views);
         expect(removeView(views, 'Expiring')).toEqual([{ name: 'revoked', query: 'status=revoked&sort=subject' }]);
+    });
+});
+
+/**
+ * A stand-in for the router: the query string as it is now, and the writer bound to it. The
+ * writer reads `url` at the moment it is called, as useTableQuery does through its ref.
+ */
+function fakeRouter(initial: string) {
+    const router = { url: new URLSearchParams(initial) };
+    const writer = tableQueryWriter(() => router.url, (next) => { router.url = next; }, defaults);
+    return { router, writer };
+}
+
+describe('tableQueryWriter', () => {
+    it('merges a patch into the query string as it is when called, not when the setter was made', () => {
+        // The typed filter's timer holds the setter from the render where typing started. The
+        // user then sorts, pages and switches space before the timer fires.
+        const { router, writer } = fakeRouter('space=alpha&page=3');
+        const heldByTimer = writer.set;
+        router.url = new URLSearchParams('space=beta&page=2&sort=subject');
+        heldByTimer({ search: 'acme' });
+        // The sort and the new space survive; the page resets because a filter changed.
+        expect(router.url.toString()).toBe('space=beta&sort=subject&search=acme');
+    });
+
+    it('keeps the page when the patch changes nothing but the page', () => {
+        const { router, writer } = fakeRouter('status=revoked');
+        writer.set({ page: '4' });
+        expect(router.url.toString()).toBe('status=revoked&page=4');
+    });
+
+    it('compares a re-sent value against the current URL, so it does not reset the page', () => {
+        // The timer re-sends the typed text it saw; the URL already has it and is on page 3.
+        const { router, writer } = fakeRouter('search=acme&page=3');
+        writer.set({ search: 'acme' });
+        expect(router.url.toString()).toBe('search=acme&page=3');
+    });
+
+    it('applies two patches made in one tick on top of each other', () => {
+        const { router, writer } = fakeRouter('');
+        writer.set({ status: 'revoked' });
+        writer.set({ sort: 'subject' });
+        expect(router.url.toString()).toBe('status=revoked&sort=subject');
+    });
+
+    it('reset clears the table keys of the current URL and keeps the scope and other keys', () => {
+        const { router, writer } = fakeRouter('ca=staging');
+        router.url = new URLSearchParams('ca=prod&status=revoked&page=2&tab=x');
+        writer.reset();
+        expect(router.url.toString()).toBe('ca=prod&tab=x');
     });
 });

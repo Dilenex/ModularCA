@@ -33,6 +33,13 @@ public sealed class StaleTenantQueryTests
         { Admin + "AdminCertificateTemplateController", "GetAll", "spaceId" },
         { Admin + "AdminCertProfileController", "GetAll", "spaceId" },
         { Admin + "AdminCertSignRequestController", "RetrievePendingRequests", "spaceId" },
+        // Took spaceId only in 0.4.4, never tenantId; refused all the same so every spaceId binder answers alike.
+        { Admin + "AdminEnrollmentTokenController", "GetActiveTokens", "spaceId" },
+        { Admin + "AdminRequestProfileController", "GetAll", "spaceId" },
+        { Admin + "AdminSigningProfileController", "GetAll", "spaceId" },
+        { Admin + "AdminSshProfileController", "GetSigningProfiles", "spaceId" },
+        { Admin + "AdminSshProfileController", "GetCertProfiles", "spaceId" },
+        { Admin + "AdminSshProfileController", "GetRequestProfiles", "spaceId" },
     };
 
     private static MethodInfo Action(string controller, string action)
@@ -57,7 +64,7 @@ public sealed class StaleTenantQueryTests
     {
         var method = Action(controller, action);
         Assert.Contains(method.GetParameters(), p => p.Name == replacement && p.GetCustomAttribute<FromQueryAttribute>() != null);
-        var refusal = Assert.Single(method.GetCustomAttributes().Where(a => a.GetType().FullName == Attribute));
+        var refusal = Assert.Single(method.GetCustomAttributes(), a => a.GetType().FullName == Attribute);
         Assert.Equal("tenantId", Prop(refusal, "Key"));
         Assert.Equal(replacement, Prop(refusal, "Replacement"));
 

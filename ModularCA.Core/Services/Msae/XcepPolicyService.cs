@@ -63,7 +63,6 @@ public class XcepPolicyService(
     IEnrollmentPrincipalAuthorizer principalAuthorizer,
     IProfileResolutionService profileResolution,
     IssuanceValidationService validation,
-    SystemConfig config,
     IPublicNameResolver names,
     ILogger<XcepPolicyService> logger) : IXcepPolicyService
 {
@@ -130,6 +129,13 @@ public class XcepPolicyService(
         return new XcepMessages.PolicySet(ca.Id, $"{ca.Name} (ModularCA)", NextUpdateHours, cas, templates);
     }
 
+    /// <summary>
+    /// The template as Windows sees it in the policy, or null when it cannot be offered: its
+    /// certificate profile permits no RSA key, or its extended key usages could not be issued
+    /// under its signing profile (an empty list under one that restricts them, or
+    /// anyExtendedKeyUsage). Each skip is logged with the reason, and the other templates are
+    /// still offered.
+    /// </summary>
     private async Task<XcepMessages.PolicyTemplate?> ProjectAsync(CertificateTemplateEntity template, bool mayEnroll, int caReference, bool identityBuilt)
     {
         var profile = await profileResolution.ResolveCertProfileAsync(template.CertProfileId);
@@ -157,7 +163,19 @@ public class XcepPolicyService(
                 extensions.Add(new XcepMessages.PolicyExtension(KeyUsageOid, "Key Usage", true, new KeyUsage(bits).GetDerEncoded()));
         }
 
-        var ekuOids = validation.SetupAllowedExtendedOids(profile.ExtendedKeyUsages, template.SigningProfile.AllowedEKUs);
+        List<string> ekuOids;
+        try
+        {
+            ekuOids = validation.SetupAllowedExtendedOids(profile.ExtendedKeyUsages, template.SigningProfile.AllowedEKUs);
+        }
+        catch (Exception ex) when (ex is ModularCA.Shared.Errors.CertificatePolicyViolationException or InvalidOperationException)
+        {
+            // Issuance would refuse this template, so advertising it would only fail at enrolment.
+            logger.LogWarning(
+                "Template {Template} is offered to Windows but cannot be issued for its extended key usages; skipped. {Reason}",
+                template.Name, ex.Message);
+            return null;
+        }
         if (ekuOids.Count > 0)
         {
             var oids = ekuOids.Select(o => new DerObjectIdentifier(o)).ToArray<Asn1Encodable>();

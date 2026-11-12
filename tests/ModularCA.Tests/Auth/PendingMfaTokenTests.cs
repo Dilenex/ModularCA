@@ -66,11 +66,72 @@ public sealed class PendingMfaTokenTests
         var id = Guid.NewGuid();
         await PendingMfaToken.StoreAsync(cache, "t1", id, PendingMfaToken.Password, TimeSpan.FromMinutes(5));
 
-        var first = await PendingMfaToken.ConsumeAsync(cache, "t1");
-        var second = await PendingMfaToken.ConsumeAsync(cache, "t1");
+        var guard = new InProcessReplayGuard();
+        var first = await PendingMfaToken.ConsumeAsync(cache, guard, "t1");
+        var second = await PendingMfaToken.ConsumeAsync(cache, guard, "t1");
 
         Assert.Equal(id, first?.UserId);
         Assert.Null(second);
+    }
+
+    /// <summary>A guard that records each claim and the lifetime it asked for.</summary>
+    private sealed class RecordingGuard : IReplayGuard
+    {
+        private readonly InProcessReplayGuard _inner = new();
+        public List<(string Key, TimeSpan Lifetime)> Claims { get; } = [];
+        public Task<bool> TryClaimAsync(string key, TimeSpan lifetime, CancellationToken ct = default)
+        {
+            lock (Claims) Claims.Add((key, lifetime));
+            return _inner.TryClaimAsync(key, lifetime, ct);
+        }
+    }
+
+    /// <summary>
+    /// The cross-node case: another node sharing the cache has claimed the token and not yet
+    /// removed it. The cache still holds the token, and the old read-then-remove (whose only
+    /// guard was a lock inside one process) handed it out a second time. The shared claim
+    /// refuses it.
+    /// </summary>
+    [Fact]
+    public async Task A_token_another_node_has_claimed_is_refused_while_the_cache_still_holds_it()
+    {
+        var cache = NewCache();
+        var guard = new InProcessReplayGuard();
+        await PendingMfaToken.StoreAsync(cache, "t3", Guid.NewGuid(), PendingMfaToken.Password, TimeSpan.FromMinutes(5));
+        Assert.True(await guard.TryClaimAsync(PendingMfaToken.ConsumedKey("t3"), PendingMfaToken.MaxLifetime));
+
+        Assert.Null(await PendingMfaToken.ConsumeAsync(cache, guard, "t3"));
+        Assert.NotNull(await cache.GetStringAsync(PendingMfaToken.Key("t3")));
+    }
+
+    /// <summary>
+    /// The consume claim outlives any token it guards: tokens are stored for at most
+    /// <see cref="PendingMfaToken.MaxLifetime"/>, which covers the 900-second policy ceiling, and
+    /// the claim is made for that long.
+    /// </summary>
+    [Fact]
+    public async Task The_consume_claim_lives_at_least_as_long_as_any_token()
+    {
+        var cache = NewCache();
+        var guard = new RecordingGuard();
+        await PendingMfaToken.StoreAsync(cache, "t4", Guid.NewGuid(), PendingMfaToken.Password, TimeSpan.FromSeconds(900));
+
+        Assert.NotNull(await PendingMfaToken.ConsumeAsync(cache, guard, "t4"));
+
+        var (key, lifetime) = Assert.Single(guard.Claims);
+        Assert.Equal(PendingMfaToken.ConsumedKey("t4"), key);
+        Assert.True(lifetime >= TimeSpan.FromSeconds(900));
+        Assert.Equal(PendingMfaToken.MaxLifetime, lifetime);
+    }
+
+    /// <summary>A token that does not exist makes no claim, so made-up tokens cannot fill the guard.</summary>
+    [Fact]
+    public async Task An_unknown_token_makes_no_claim()
+    {
+        var guard = new RecordingGuard();
+
+        Assert.Null(await PendingMfaToken.ConsumeAsync(NewCache(), guard, "no-such-token"));
+        Assert.Empty(guard.Claims);
     }
 
     /// <summary>A cache whose read blocks until released, so two consumers overlap.</summary>
@@ -94,19 +155,24 @@ public sealed class PendingMfaTokenTests
         public Task SetAsync(string key, byte[] value, DistributedCacheEntryOptions options, CancellationToken token = default) => _inner.SetAsync(key, value, options, token);
     }
 
+    /// <summary>
+    /// Every consumer passes the cache read (the gate holds them all inside it); the shared claim
+    /// decides, and exactly one gets the entry.
+    /// </summary>
     [Fact]
-    public async Task Concurrent_consume_of_one_token_succeeds_at_most_once()
+    public async Task Concurrent_consume_of_one_token_succeeds_exactly_once()
     {
         var cache = new GatedCache();
+        var guard = new InProcessReplayGuard();
         await PendingMfaToken.StoreAsync(cache, "t2", Guid.NewGuid(), PendingMfaToken.Password, TimeSpan.FromMinutes(5));
 
-        var a = PendingMfaToken.ConsumeAsync(cache, "t2");
-        var b = PendingMfaToken.ConsumeAsync(cache, "t2");
+        var consumers = Enumerable.Range(0, 32).Select(_ => Task.Run(() => PendingMfaToken.ConsumeAsync(cache, guard, "t2"))).ToArray();
+        while (Volatile.Read(ref cache.Reads) < consumers.Length)
+            await Task.Yield();
         cache.Gate.SetResult();
-        var results = await Task.WhenAll(a, b);
+        var results = await Task.WhenAll(consumers);
 
         Assert.Single(results, r => r != null);
-        Assert.Equal(1, cache.Reads);
     }
 
     // ---- Controller behaviour ----
@@ -149,7 +215,7 @@ public sealed class PendingMfaTokenTests
             using var db = Db();
             var type = ApiAssembly.TypeNamed(controller);
             var ctor = type.GetConstructors().OrderByDescending(c => c.GetParameters().Length).First();
-            var available = new object[] { db, Cache, new JwtTokenService(Config), Audit, Config, new FixedPolicy(), new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider() };
+            var available = new object[] { db, Cache, new JwtTokenService(Config), Audit, Config, new FixedPolicy(), new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider(), new InProcessReplayGuard() };
             var instance = ctor.Invoke(ctor.GetParameters()
                 .Select(p => available.FirstOrDefault(a => p.ParameterType.IsInstanceOfType(a)))
                 .ToArray());

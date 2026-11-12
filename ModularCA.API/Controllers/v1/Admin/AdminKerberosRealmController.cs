@@ -254,13 +254,21 @@ public class AdminKerberosRealmController(
 /// <summary>Body for creating or updating a realm binding.</summary>
 public class KerberosRealmRequest
 {
+    /// <summary>Kerberos realm, a DNS-style name such as <c>CORP.EXAMPLE.LOCAL</c>; stored upper-case. Unique across spaces, and fixed once the binding has keys.</summary>
     public string Realm { get; set; } = string.Empty;
+    /// <summary>DNS domain used to build machine names and UPNs, stored lower-case; null or blank uses the realm name.</summary>
     public string? DnsDomain { get; set; }
+    /// <summary>SPN registered on the forest's service account, <c>service/host</c> with no realm, e.g. <c>HTTP/ca.example.net</c>.</summary>
     public string ServicePrincipal { get; set; } = string.Empty;
+    /// <summary>The ModularCA user, a service identity of the realm's scope, whose capabilities the forest's principals act with.</summary>
     public Guid EnrollmentUserId { get; set; }
+    /// <summary>Whether computer accounts (<c>name$</c>) may enroll.</summary>
     public bool AllowMachines { get; set; } = true;
+    /// <summary>Whether user accounts may enroll.</summary>
     public bool AllowUsers { get; set; } = true;
+    /// <summary>Whether tickets from this realm are accepted.</summary>
     public bool IsEnabled { get; set; } = true;
+    /// <summary>Free-text operator notes, at most 1000 characters.</summary>
     public string? Notes { get; set; }
 
     internal KerberosRealmSpec ToSpec() => new(Realm, DnsDomain, ServicePrincipal, EnrollmentUserId, AllowMachines, AllowUsers, IsEnabled, Notes);
@@ -269,11 +277,13 @@ public class KerberosRealmRequest
 /// <summary>Body for adding key material. Exactly one path is used, chosen by <see cref="Source"/>.</summary>
 public class KerberosKeyRequest
 {
+    /// <summary>How the key is supplied: an uploaded keytab, the service account's password, or a password ModularCA generates and shows once.</summary>
     public KerberosKeySource Source { get; set; }
     /// <summary>Base64 keytab file, for <see cref="KerberosKeySource.Keytab"/>.</summary>
     public string? Keytab { get; set; }
     /// <summary>The account holding the SPN, for password and generated keys.</summary>
     public string? AccountName { get; set; }
+    /// <summary>Whether the account holding the SPN is a user or a computer account; decides the salt for password-derived keys.</summary>
     public KerberosAccountKind AccountKind { get; set; } = KerberosAccountKind.User;
     /// <summary>The account's password, for <see cref="KerberosKeySource.Password"/>. Used once.</summary>
     public string? Password { get; set; }

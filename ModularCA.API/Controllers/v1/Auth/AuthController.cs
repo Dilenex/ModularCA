@@ -21,13 +21,15 @@ using ModularCA.Database;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models.Config;
+using ModularCA.Shared.Utils;
 using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Auth
 {
     /// <summary>
     /// Authentication endpoints for JWT login, token refresh, certificate-based authentication,
-    /// and pre-JWT password change for forced password reset on first login.
+    /// pre-JWT password change for forced password reset on first login, and claiming an account
+    /// with a one-time claim token.
     /// Exposed at both <c>/auth/*</c> (canonical public short URL) and <c>/api/v1/auth/*</c>
     /// (legacy path, kept active during the frontend migration).
     /// </summary>
@@ -114,8 +116,18 @@ namespace ModularCA.API.Controllers.v1.Auth
 
         /// <summary>
         /// Password login. With a second factor enrolled, returns a pending-MFA token recorded as
-        /// password-first; otherwise issues the session.
+        /// password-first; otherwise issues the session, wearing the user's default access badge
+        /// when they have one. The password is checked by <see cref="PasswordCredentialCheck"/>
+        /// according to the account's password source: a Local account against the local hash
+        /// only, a Directory account against the directory only, and an Inherit account by the
+        /// instance LDAP rule, where a refused directory bind never falls back to the local hash and
+        /// an unreachable directory refuses the sign-in without counting a failed attempt. An
+        /// Inherit account the directory accepts becomes a Directory account
+        /// (<see cref="PasswordCredentialCheck.LearnDirectorySourceAsync"/>). The forced password
+        /// change and password expiry gates concern the local password and apply only when the
+        /// local hash answered.
         /// </summary>
+        /// <param name="request">The username and password.</param>
         [AllowAnonymous]
         [HttpPost("login")]
         public async Task<IActionResult> Login([FromBody] ModularCA.Auth.Models.LoginRequest request)
@@ -172,22 +184,35 @@ namespace ModularCA.API.Controllers.v1.Auth
             bool isHardLocked = user.IsLocked;
             bool isTempLocked = user.LockoutEndUtc.HasValue && user.LockoutEndUtc > DateTime.UtcNow;
 
-            // Password verification — try LDAP first if enabled, then fall back to local
-            var passwordValid = false;
-            var ldapAuthenticated = false;
-            if (_config.LdapAuth.Enabled)
-            {
-                var (ldapSuccess, _) = await _ldapAuth.AuthenticateAsync(request.Username, request.Password);
-                passwordValid = ldapSuccess;
-                ldapAuthenticated = ldapSuccess;
-            }
-            if (!passwordValid)
-                passwordValid = PasswordUtil.VerifyPassword(request.Password, user.PasswordHash);
+            // Password verification by the account's password source (see PasswordCredentialCheck):
+            // a Local account checks the local hash only, a Directory account the directory only,
+            // and an Inherit account asks the directory first when LDAP is on, where a refused bind
+            // is final and an unreachable directory refuses the sign-in.
+            var passwordCheck = await PasswordCredentialCheck.VerifyAsync(
+                _config, _ldapAuth, request.Username, request.Password, user.PasswordHash, user.PasswordSource);
+            var ldapAuthenticated = passwordCheck == PasswordCheckResult.ValidViaLdap;
 
-            if (!passwordValid)
+            if (passwordCheck == PasswordCheckResult.DirectoryUnavailable)
             {
+                // The password was never checked, so no failed attempt is counted: an outage must
+                // not lock accounts. The answer is the same generic 401 as a wrong password.
+                MetricsService.AuthLoginTotal.WithLabels("ldap", "false").Inc();
+                MetricsService.AuthLoginFailures.WithLabels("directory_unavailable").Inc();
+                await _audit.LogAsync(AuditActionType.UserLoginFailed, user.Id, user.Username,
+                    sourceIp: sourceIp, success: false,
+                    details: new { reason = "directory_unavailable" },
+                    errorMessage: "LoginFailed");
+                await DelayToBudgetAsync(sw);
+                return Unauthorized(new { error = "Invalid username or password" });
+            }
+
+            if (passwordCheck is PasswordCheckResult.Invalid or PasswordCheckResult.NotInDirectory)
+            {
+                // A Directory account the directory has no entry for is a wrong password, counted
+                // like one, under its own reason so an operator can tell a deleted entry apart.
+                var failureReason = passwordCheck == PasswordCheckResult.NotInDirectory ? "not_in_directory" : "invalid_password";
                 MetricsService.AuthLoginTotal.WithLabels(ldapAuthenticated ? "ldap" : "password", "false").Inc();
-                MetricsService.AuthLoginFailures.WithLabels("invalid_password").Inc();
+                MetricsService.AuthLoginFailures.WithLabels(failureReason).Inc();
 
                 // Atomic increment via provider-agnostic ExecuteUpdateAsync.
                 // Replaces an earlier raw-SQL UPDATE that used PostgreSQL-style double-quoted
@@ -231,7 +256,7 @@ namespace ModularCA.API.Controllers.v1.Auth
                 {
                     await _audit.LogAsync(AuditActionType.UserLoginFailed, user.Id, user.Username,
                         sourceIp: sourceIp, success: false,
-                        details: new { reason = "invalid_password" },
+                        details: new { reason = failureReason },
                         errorMessage: "LoginFailed");
                 }
 
@@ -240,6 +265,11 @@ namespace ModularCA.API.Controllers.v1.Auth
                 await DelayToBudgetAsync(sw);
                 return Unauthorized(new { error = "Invalid username or password" });
             }
+
+            // An Inherit account the directory just accepted is a directory account from now on, so
+            // deleting its entry or turning LDAP off cannot bring a stale local password back.
+            if (ldapAuthenticated)
+                await PasswordCredentialCheck.LearnDirectorySourceAsync(_db, _audit, user, sourceIp, "login");
 
             // --- Password verified. Now apply the gates that were deferred above so an
             // attacker cannot enumerate account state without a correct password. ---
@@ -287,8 +317,11 @@ namespace ModularCA.API.Controllers.v1.Auth
                 user.PasswordHash = PasswordUtil.HashPassword(request.Password);
             }
 
-            // Password policy checks (after successful password verification)
-            if (user.PasswordChangeOnNextLogon)
+            // Password policy checks (after successful password verification). They concern the
+            // local password, so they apply only when the local hash answered: a password the
+            // directory accepted is the directory's to rotate and expire, and a Directory account
+            // cannot set a local one, so holding it to these would lock it out for good.
+            if (!ldapAuthenticated && user.PasswordChangeOnNextLogon)
             {
                 MetricsService.AuthLoginFailures.WithLabels("password_change_required").Inc();
                 // Reset failed attempts on correct password even if forced to change
@@ -299,7 +332,7 @@ namespace ModularCA.API.Controllers.v1.Auth
                 return StatusCode(403, new { error = "Password change required", requirePasswordChange = true });
             }
 
-            if (!user.PasswordNeverExpires && user.PasswordExpirationDate.HasValue && user.PasswordExpirationDate < DateTime.UtcNow)
+            if (!ldapAuthenticated && !user.PasswordNeverExpires && user.PasswordExpirationDate.HasValue && user.PasswordExpirationDate < DateTime.UtcNow)
             {
                 MetricsService.AuthLoginFailures.WithLabels("password_expired").Inc();
                 user.FailedLoginAttempts = 0;
@@ -333,7 +366,7 @@ namespace ModularCA.API.Controllers.v1.Auth
             }
 
             // Check mTLS credentials
-            var hasMtls = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == user.Id);
+            var hasMtls = await _db.MtlsCredentials.Where(await ModularCA.Core.Helpers.MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow)).AnyAsync(c => c.UserId == user.Id);
             if (hasMtls) availableMfaMethods.Add("mtls");
 
             // Check if MFA is enforced for any of the user's groups
@@ -452,9 +485,8 @@ namespace ModularCA.API.Controllers.v1.Auth
             // Reuse userGroups (already queried above) instead of a duplicate DB round-trip
             var groups = userGroups;
             // A default access badge starts the session narrowed; badgeless otherwise.
-            var defaultBadge = await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeService>().GetDefaultAsync(user.Id);
-            var badgeClaim = defaultBadge == null ? null : new ModularCA.Auth.Interfaces.AccessBadgeClaim(defaultBadge.Id, defaultBadge.Name);
-            var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired, badge: badgeClaim);
+            var defaultBadge = await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeService>().GetDefaultClaimAsync(user.Id);
+            var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired, badge: defaultBadge);
             var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
             var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash,
                 await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Services.IDpopProofService>().GetValidatedJktAsync(HttpContext));
@@ -524,10 +556,30 @@ namespace ModularCA.API.Controllers.v1.Auth
         }
 
         /// <summary>
+        /// Ends every session of <paramref name="userId"/> after a rotated refresh token was
+        /// presented again: the stamp rotates and every live refresh token is revoked, saved here,
+        /// and the cached stamp is dropped so access tokens already issued are refused at once.
+        /// </summary>
+        private async Task EndSessionsAfterReuseAsync(Guid userId)
+        {
+            await ModularCA.Core.Helpers.UserSessionTermination.EndAllSessionsAsync(_db, [userId], DateTime.UtcNow);
+            await _db.SaveChangesAsync();
+            await ModularCA.Core.Helpers.UserSessionTermination.InvalidateStampCacheAsync(_cache, [userId]);
+        }
+
+        /// <summary>
         /// Rotates a refresh token. The DPoP proof is validated once, up front. Presenting a token
-        /// that is already revoked (a replay of a rotated token) revokes the whole family and returns 401.
+        /// that is already revoked revokes the whole family and returns 401.
         /// The presented token is revoked by a conditional update in the same transaction that
         /// inserts its successor, so a concurrent request that loses the race is treated as reuse.
+        /// <para>
+        /// A token that was rotated and is presented again (a replay, or the lost race) is the one
+        /// sign that a refresh token was copied, so it ends every session of the account
+        /// (<see cref="EndSessionsAfterReuseAsync"/>): the access token the other holder already
+        /// has stops on its next request instead of running until it expires. A token revoked
+        /// because its sessions were already ended (a logout, a credential change) was not
+        /// rotated; presenting it is a stale device, and ends nothing more.
+        /// </para>
         /// </summary>
         [AllowAnonymous]
         [HttpPost("refresh")]
@@ -566,9 +618,16 @@ namespace ModularCA.API.Controllers.v1.Auth
                         t.RevokedAt = DateTime.UtcNow;
                     }
                     await _db.SaveChangesAsync();
+                    // ReplacedByToken is set only by rotation: this token was exchanged for a
+                    // successor and is being presented again.
+                    var rotatedReplay = stored.ReplacedByToken != null;
+                    if (rotatedReplay)
+                        await EndSessionsAfterReuseAsync(stored.UserId);
                     await _audit.LogAsync(AuditActionType.UserLoginFailed, stored.UserId, stored.User?.Username,
                         sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString(), success: false,
-                        errorMessage: $"Refresh token reuse detected in family {stored.FamilyId} — all tokens revoked");
+                        errorMessage: rotatedReplay
+                            ? $"Refresh token reuse detected in family {stored.FamilyId} — every session of the account ended"
+                            : $"Refresh token reuse detected in family {stored.FamilyId} — all tokens revoked");
                     return Unauthorized(new { error = "Token family compromised. Please log in again." });
                 }
                 return Unauthorized(new { error = "Invalid or expired refresh token" });
@@ -684,7 +743,7 @@ namespace ModularCA.API.Controllers.v1.Auth
             // Preserve MFA setup requirement on refreshed tokens
             var hasTotp = await _db.TotpSecrets.AnyAsync(t => t.UserId == user.Id && t.IsVerified);
             var hasWebAuthn = await _db.Fido2Credentials.AnyAsync(c => c.UserId == user.Id);
-            var hasMtlsCreds = await _db.MtlsCredentials.Where(ModularCA.Core.Helpers.MtlsCredentialStatus.Usable(DateTime.UtcNow)).AnyAsync(c => c.UserId == user.Id);
+            var hasMtlsCreds = await _db.MtlsCredentials.Where(await ModularCA.Core.Helpers.MtlsCredentialStatus.UsableAsync(_db, DateTime.UtcNow)).AnyAsync(c => c.UserId == user.Id);
 
             // All system group members must have TOTP or WebAuthn — mTLS alone is insufficient
             var isAdminOnRefresh = groups.Any(g => g.IsSystemGroup);
@@ -720,9 +779,10 @@ namespace ModularCA.API.Controllers.v1.Auth
             if (!await ModularCA.Auth.Services.RefreshTokenRotation.RotateAsync(
                     _db, stored.Id, stored.FamilyId, newRefreshToken, DateTime.UtcNow, HttpContext.RequestAborted))
             {
+                await EndSessionsAfterReuseAsync(stored.UserId);
                 await _audit.LogAsync(AuditActionType.UserLoginFailed, stored.UserId, user.Username,
                     sourceIp: currentIpStr, success: false,
-                    errorMessage: $"Refresh token reuse detected in family {stored.FamilyId} (concurrent rotation) — all tokens revoked");
+                    errorMessage: $"Refresh token reuse detected in family {stored.FamilyId} (concurrent rotation) — every session of the account ended");
                 return Unauthorized(new { error = "Token family compromised. Please log in again." });
             }
 
@@ -741,7 +801,11 @@ namespace ModularCA.API.Controllers.v1.Auth
         /// because the user has not yet been issued one. Verifies the old password, validates
         /// the new password against the configured password policy, updates the hash, clears
         /// the <see cref="Shared.Entities.UserEntity.PasswordChangeOnNextLogon"/> flag, and
-        /// requires the user to re-login with the new password.
+        /// requires the user to re-login with the new password. A Directory account keeps no local
+        /// password, so it is refused with the generic 401 without consulting the local hash or
+        /// counting a failed attempt. When the replaced password is the one the headless bootstrap
+        /// left in <c>config/initial-admin-password</c>, the file is deleted (best-effort; a
+        /// failure is logged as a warning).
         /// </summary>
         [AllowAnonymous]
         [HttpPost("change-password")]
@@ -772,6 +836,22 @@ namespace ModularCA.API.Controllers.v1.Auth
             {
                 // Dummy verify so timing is constant, plus generic 401.
                 PasswordUtil.DummyVerify(request.OldPassword ?? string.Empty);
+                await DelayToBudgetAsync(sw);
+                return Unauthorized(new { error = "Invalid username or password" });
+            }
+
+            // A Directory account's password lives in the directory: its local hash is not its
+            // password and a new one would never be used. Login never sends such an account here
+            // (it skips the local-password gates when the directory answered), so only a caller
+            // probing with a stale local password arrives. The local hash is not consulted, no
+            // failed attempt is counted, and the answer is the generic one.
+            if (user.PasswordSource == PasswordSource.Directory)
+            {
+                PasswordUtil.DummyVerify(request.OldPassword ?? string.Empty);
+                await _audit.LogAsync(AuditActionType.UserLoginFailed, user.Id, user.Username,
+                    sourceIp: sourceIp, success: false,
+                    details: new { reason = "directory_account", source = "pre_jwt_change_password" },
+                    errorMessage: "LoginFailed");
                 await DelayToBudgetAsync(sw);
                 return Unauthorized(new { error = "Invalid username or password" });
             }
@@ -886,9 +966,6 @@ namespace ModularCA.API.Controllers.v1.Auth
             // reject reuse. No-op when HistoryCount <= 0.
             await _passwordPolicy.RecordPasswordHistoryAsync(user.Id, newHash);
             user.PasswordChangeOnNextLogon = false;
-            // Rotate the security stamp so outstanding JWTs (if any)
-            // invalidate immediately and all refresh tokens get revoked below.
-            user.SecurityStamp = Guid.NewGuid().ToString();
 
             // Reset password expiration based on policy
             var policy = await _passwordPolicy.GetPolicyAsync();
@@ -896,42 +973,131 @@ namespace ModularCA.API.Controllers.v1.Auth
                 user.PasswordExpirationDate = DateTime.UtcNow.AddDays(policy.MaxAgeDays);
 
             _db.Users.Update(user);
-            await _db.SaveChangesAsync();
+
+            // The account's sessions end with the change: the stamp rotates, so outstanding JWTs
+            // (if any) stop at once, and every refresh token is revoked, because refresh checks
+            // account state, not credentials, and a token stolen before the change would otherwise
+            // re-mint a session carrying the new stamp. One transaction with the new password.
+            await ModularCA.Core.Helpers.UserSessionTermination.EndAllSessionsSetBasedAsync(_db, user, DateTime.UtcNow);
 
             // Blow the per-user stamp cache so admin or user-forced
             // changes take effect on the next request, not 30 s later.
             // _cache is guaranteed non-null — registered unconditionally in StartModularCA.cs.
             await TokenRevocationMiddleware.InvalidateUserStampCacheAsync(_cache, user.Id);
 
-            // The comment on the stamp rotation above has promised this since it was written;
-            // nothing performed it. A refresh token stolen before the change re-minted a session
-            // carrying the new stamp, because refresh checks account state, not credentials.
-            await RevokeAllRefreshTokensAsync(user.Id);
-
             await _audit.LogAsync(AuditActionType.UserPasswordChanged, user.Id, user.Username,
                 sourceIp: sourceIp, details: new { reason = "Forced password change on login" });
+
+            // The headless bootstrap left the first administrator's generated password in an
+            // owner-only file. Once that password is replaced the file is only a stale secret, so
+            // it goes; a file holding some other password is left alone.
+            DeleteInitialPasswordFile(user.Username,
+                held => System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                    System.Text.Encoding.UTF8.GetBytes(held), System.Text.Encoding.UTF8.GetBytes(request.OldPassword)));
 
             return Ok(new { message = "Password changed successfully. Please log in again." });
         }
 
         /// <summary>
-        /// Revokes every live refresh token an account holds. Called wherever a credential
-        /// changes, so a session that predates the change cannot outlive it.
+        /// The one answer <see cref="Claim"/> gives for every refused claim, so a caller cannot tell a
+        /// wrong token from an expired, used or unusable one, or learn whether any claim exists.
         /// </summary>
-        private async Task RevokeAllRefreshTokensAsync(Guid userId)
+        internal const string ClaimRefusedMessage = "The claim token is not valid. It may be mistyped, expired or already used.";
+
+        /// <summary>
+        /// The config directory, where the headless bootstrap leaves <c>initial-admin-password</c>.
+        /// The application directory's <c>config</c>; tests point it elsewhere.
+        /// </summary>
+        internal string ConfigDirectory { get; set; } = Path.Combine(AppContext.BaseDirectory, "config");
+
+        /// <summary>
+        /// Claims an account with a one-time claim token: sets its password, once, without a session
+        /// or an old password. This is how the first administrator of a headless bootstrap given
+        /// <c>Administration.ClaimTokenSha256</c> gets in, and how an account given a token on the
+        /// host with <c>--issue-claim-token</c> does. The new password must meet the password policy
+        /// and is checked before the token, so a weak one is answered with the policy's objections
+        /// whatever the token. Every refusal of the token itself (no such claim, expired, already
+        /// used, or an account that is disabled, a service identity or a Directory account) gets the
+        /// same 400 answer, <see cref="ClaimRefusedMessage"/>, after the same login response delay,
+        /// and is audited as <see cref="AuditActionType.UserLoginFailed"/> with source <c>claim</c>.
+        /// A claim used up is audited as <see cref="AuditActionType.UserAccountClaimed"/>; the
+        /// account's sessions are ended, any lockout from failed sign-ins and the forced change at
+        /// next sign-in are cleared, and its password source is left as it is (Local for the
+        /// bootstrap administrator). Rate limited per IP like
+        /// the other anonymous credential endpoints. When the replaced password was the one the
+        /// bootstrap left in <c>initial-admin-password</c>, that file is deleted.
+        /// </summary>
+        /// <param name="request">The token, the new password and its confirmation.</param>
+        [AllowAnonymous]
+        [HttpPost("claim")]
+        public async Task<IActionResult> Claim([FromBody] ClaimAccountRequest request)
         {
-            await _db.RefreshTokens
-                .Where(t => t.UserId == userId && !t.IsRevoked)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(t => t.IsRevoked, true)
-                    .SetProperty(t => t.RevokedAt, DateTime.UtcNow));
+            var sw = Stopwatch.StartNew();
+            var sourceIp = HttpContext.Connection.RemoteIpAddress?.ToString();
+
+            if (request == null || string.IsNullOrWhiteSpace(request.Token) || request.Token.Length > 256
+                || string.IsNullOrEmpty(request.NewPassword) || request.NewPassword.Length > 1024)
+            {
+                await DelayToBudgetAsync(sw);
+                return BadRequest(new { error = "A claim token and a new password are required." });
+            }
+            if (request.NewPassword != request.ConfirmNewPassword)
+                return BadRequest(new { error = "New password and confirmation do not match" });
+
+            var result = await AccountClaims.RedeemAsync(_db, request.Token, request.NewPassword, DateTime.UtcNow, HttpContext.RequestAborted);
+            switch (result.Outcome)
+            {
+                case ClaimOutcome.WeakPassword:
+                    return BadRequest(new { error = "Password does not meet policy requirements", details = result.PolicyErrors });
+
+                case ClaimOutcome.Refused:
+                    await _audit.LogAsync(AuditActionType.UserLoginFailed, result.User?.Id, result.User?.Username,
+                        targetEntityType: result.Claim == null ? null : "User",
+                        targetEntityId: result.Claim?.UserId.ToString(),
+                        sourceIp: sourceIp, success: false,
+                        details: new { reason = result.Reason, source = "claim" },
+                        errorMessage: "ClaimRefused");
+                    await DelayToBudgetAsync(sw);
+                    return BadRequest(new { error = ClaimRefusedMessage });
+            }
+
+            var user = result.User!;
+            await TokenRevocationMiddleware.InvalidateUserStampCacheAsync(_cache, user.Id);
+            await _audit.LogAsync(AuditActionType.UserAccountClaimed, user.Id, user.Username,
+                targetEntityType: "User", targetEntityId: user.Id.ToString(), sourceIp: sourceIp,
+                details: new { issuedBy = result.Claim?.IssuedBy, claimCreatedAt = result.Claim?.CreatedAt });
+
+            if (!string.IsNullOrEmpty(result.ReplacedPasswordHash))
+                DeleteInitialPasswordFile(user.Username, held => PasswordUtil.VerifyPassword(held, result.ReplacedPasswordHash));
+
+            return Ok(new { message = "Account claimed. Sign in with the new password.", username = user.Username });
         }
 
         /// <summary>
-        /// Logs out the current user by revoking their JWT and all active refresh tokens.
-        /// The JWT's <c>jti</c> claim is stored in the distributed cache so the
-        /// <see cref="Middleware.TokenRevocationMiddleware"/> rejects subsequent requests
-        /// using the same token.
+        /// Deletes the bootstrap's <c>initial-admin-password</c> file from <see cref="ConfigDirectory"/>
+        /// when <paramref name="holdsReplacedPassword"/> says it holds the password just replaced.
+        /// Best-effort: a failure is logged as a warning and the password change stands.
+        /// </summary>
+        /// <param name="username">The account whose password changed, for the log.</param>
+        /// <param name="holdsReplacedPassword">Given the file's password, whether it is the one replaced.</param>
+        private void DeleteInitialPasswordFile(string username, Func<string, bool> holdsReplacedPassword)
+        {
+            if (InitialAdminPasswordFile.TryDeleteIfHolds(ConfigDirectory, holdsReplacedPassword, out var error))
+                Serilog.Log.Information("Deleted {File}: the password it held for {Username} has been replaced",
+                    InitialAdminPasswordFile.PathIn(ConfigDirectory), username);
+            else if (error != null)
+                Serilog.Log.Warning("Could not delete {File} after {Username} replaced the password it holds ({Error}). Delete it by hand",
+                    InitialAdminPasswordFile.PathIn(ConfigDirectory), username, error);
+        }
+
+        /// <summary>
+        /// Logs the current user out of every session of the account, on this device and every
+        /// other: there is no per-device sign-out. Every refresh token is revoked and the security
+        /// stamp rotates (<see cref="ModularCA.Core.Helpers.UserSessionTermination"/>), so access
+        /// tokens held elsewhere are refused on their next request. The presented JWT's <c>jti</c>
+        /// is also stored in the distributed cache so the
+        /// <see cref="Middleware.TokenRevocationMiddleware"/> rejects it by itself. Audited as
+        /// <see cref="AuditActionType.UserLogout"/> with the number of refresh tokens revoked.
         /// </summary>
         [Authorize]
         [HttpPost("logout")]
@@ -974,21 +1140,16 @@ namespace ModularCA.API.Controllers.v1.Auth
                 });
             }
 
-            // Revoke all active refresh tokens for this user
-            var activeTokens = await _db.RefreshTokens
-                .Where(t => t.UserId == userId && !t.IsRevoked)
-                .ToListAsync();
-
-            foreach (var token in activeTokens)
-            {
-                token.IsRevoked = true;
-                token.RevokedAt = DateTime.UtcNow;
-            }
-
+            // There is no per-device sign-out, so logging out ends every session of the account:
+            // every refresh token is revoked and the stamp rotates, which stops the access tokens
+            // other devices still hold instead of leaving them to run out.
+            var ended = await ModularCA.Core.Helpers.UserSessionTermination.EndAllSessionsAsync(_db, [userId], DateTime.UtcNow);
             await _db.SaveChangesAsync();
+            await ModularCA.Core.Helpers.UserSessionTermination.InvalidateStampCacheAsync(_cache, [userId]);
 
             var username = User.FindFirst("username")?.Value ?? userIdClaim;
-            await _audit.LogAsync(AuditActionType.UserLogout, userId, username, sourceIp: sourceIp);
+            await _audit.LogAsync(AuditActionType.UserLogout, userId, username, sourceIp: sourceIp,
+                details: new { allSessions = true, refreshTokensRevoked = ended.Sum(e => e.RefreshTokensRevoked) });
             MetricsService.AuthTokenRevocationsTotal.Inc();
 
             return Ok(new { message = "Logged out successfully" });
@@ -997,7 +1158,8 @@ namespace ModularCA.API.Controllers.v1.Auth
         /// <summary>
         /// Client-certificate login. With TOTP or WebAuthn enrolled, returns a pending-MFA token
         /// recorded as certificate-first, which certificate completion refuses. A credential whose
-        /// certificate is revoked, on hold or no longer on record is refused and audited.
+        /// certificate is revoked, on hold or no longer on record is refused and audited. A session
+        /// issued here starts wearing the user's default access badge.
         /// </summary>
         [AllowAnonymous]
         [HttpPost("cert-login")]
@@ -1137,10 +1299,13 @@ namespace ModularCA.API.Controllers.v1.Auth
                     requiresMfaEnrollment = true
                 });
             }
-            var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired);
+            // A default access badge starts the session narrowed, as on every sign-in path.
+            var defaultBadge = await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeService>().GetDefaultClaimAsync(user.Id);
+            var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired, badge: defaultBadge);
             var certUserAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
             var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, certUserAgentHash,
                 await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Services.IDpopProofService>().GetValidatedJktAsync(HttpContext));
+            refreshToken.AccessBadgeId = defaultBadge?.Id;
             var certRefreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
 
             user.LastLoginAt = DateTime.UtcNow;

@@ -61,7 +61,7 @@ public static class MsaeCsrTemplate
 
     /// <summary>The DER value of <see cref="TemplateInfoExtension"/>.</summary>
     public static byte[] TemplateInfoValue(string templateOid, int majorVersion, int minorVersion)
-        => new DerSequence(new DerObjectIdentifier(templateOid), new DerInteger(majorVersion), new DerInteger(minorVersion)).GetDerEncoded();
+        => new DerSequence(new DerObjectIdentifier(templateOid), DerInteger.ValueOf(majorVersion), DerInteger.ValueOf(minorVersion)).GetDerEncoded();
 
     /// <summary>The template a request named, by name and/or OID. Either field may be null.</summary>
     public sealed record TemplateReference(string? Name, string? Oid);

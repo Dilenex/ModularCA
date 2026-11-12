@@ -541,6 +541,7 @@ export interface ControlledAccountState {
     isLocked: boolean;
     passwordNeverExpires: boolean;
     passwordChangeOnNextLogon: boolean;
+    passwordSource: E.PasswordSource;
 }
 
 /** From `ModularCA.Shared/Models/ControlledUserChangeParameters.cs`. */
@@ -571,6 +572,7 @@ export interface ControlledIdentityChange {
     isLocked?: boolean | null;
     passwordNeverExpires?: boolean | null;
     passwordChangeOnNextLogon?: boolean | null;
+    passwordSource?: E.PasswordSource | null;
     before?: ControlledAccountState | null;
 }
 
@@ -591,6 +593,7 @@ export interface ControlledUserChangeParameters {
     credentialSnapshots?: ControlledCredentialSnapshot[] | null;
     recentCredentialResets?: ControlledCredentialReset[] | null;
     recentResetsUnchecked: boolean;
+    targetScopes?: string[] | null;
     mintedTierLevel: number;
     mintedTierCaId?: string | null;
     mintedTierSpaceId?: string | null;
@@ -604,6 +607,8 @@ export interface ControlledUserChangeResult {
     spaceId?: string | null;
     certificateAuthorityId?: string | null;
     temporaryPassword?: string | null;
+    passwordSourceBefore?: E.PasswordSource | null;
+    passwordSourceAfter?: E.PasswordSource | null;
 }
 
 /** From `ModularCA.Shared/Models/Acme/CreateAcmeAccountRequest.cs`. */
@@ -841,6 +846,11 @@ export interface GroupMembershipDto {
     isSystemGroup: boolean;
 }
 
+/** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
+export interface HealthConfig {
+    loopbackPort: number;
+}
+
 /** From `ModularCA.Shared/Models/Csr/HeldKeyPkcs12Request.cs`. */
 export interface HeldKeyPkcs12Request {
     password: string;
@@ -872,6 +882,22 @@ export interface HsmKeyMapping {
     keyId?: string | null;
 }
 
+/** From `ModularCA.Shared/Models/Config/HsmSettingsSummary.cs`. */
+export interface HsmKeyMappingSummary {
+    caLabel: string;
+    keyLabel: string;
+}
+
+/** From `ModularCA.Shared/Models/Config/HsmSettingsSummary.cs`. */
+export interface HsmSettingsSummary {
+    heldBy: string;
+    signerEndpoint?: string | null;
+    enabled?: boolean | null;
+    modulePath?: string | null;
+    slotId?: string | null;
+    keyMappings?: HsmKeyMappingSummary[] | null;
+}
+
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
 export interface HstsConfig {
     maxAgeSeconds: number;
@@ -888,6 +914,8 @@ export interface HttpConfig {
     enableCors: boolean;
     trustedProxyCidrs: string;
     forwardedHeaderHopLimit: number;
+    proxyProtocol: boolean;
+    proxyProtocolTrustedCidrs: string;
     hsts: HstsConfig;
 }
 
@@ -898,6 +926,7 @@ export interface HttpsConfig {
     certificatePath: string;
     certificatePassword: string;
     port: number;
+    proxyProtocol: boolean;
     renewalWindow: string;
     renewalCheckSchedule: string;
     pendingSubjectDn?: string | null;
@@ -1240,6 +1269,16 @@ export interface ResolvedCaServiceUrls {
     caIssuerUrls: string[];
 }
 
+/** From `ModularCA.Shared/Models/Management/RetainedAccountDto.cs`. */
+export interface RetainedAccountDto {
+    id: string;
+    username: string;
+    displayName?: string | null;
+    deletedAt?: string | null;
+    requests: number;
+    approvals: number;
+}
+
 /** From `ModularCA.Shared/Models/RevokeCaCeremonyParameters.cs`. */
 export interface RevokeCaCeremonyParameters {
     certificateId: string;
@@ -1530,6 +1569,9 @@ export interface SigningProfileDto {
     policyQualifiersJson?: string | null;
     isDefault: boolean;
     issuerId?: string | null;
+    caId?: string | null;
+    caName?: string | null;
+    caSpaceId?: string | null;
     maxPathLength?: number | null;
     nameConstraintsPermitted?: string | null;
     nameConstraintsExcluded?: string | null;
@@ -1587,12 +1629,6 @@ export interface SubjectDnFieldRule {
     defaultValue?: string | null;
 }
 
-/** From `ModularCA.Shared/Models/Issuance/SubmitCertificateRequest.cs`. */
-export interface SubmitCertificateRequest {
-    csrPem: string;
-    signingProfileId: string;
-}
-
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
 export interface SyslogConfig {
     host: string;
@@ -1642,6 +1678,7 @@ export interface SystemConfig {
     redis: RedisConfig;
     audit: AuditConfig;
     schema: SchemaConfig;
+    health: HealthConfig;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
@@ -1717,6 +1754,7 @@ export interface UpdateUserRequest {
     firstName?: string | null;
     passwordNeverExpires?: boolean | null;
     passwordChangeOnNextLogon?: boolean | null;
+    passwordSource?: E.PasswordSource | null;
     lastName?: string | null;
     displayName?: string | null;
     isActive?: boolean | null;
@@ -1752,6 +1790,7 @@ export interface UserEntityDto {
     isLocked: boolean;
     passwordNeverExpires: boolean;
     passwordChangeOnNextLogon: boolean;
+    passwordSource: E.PasswordSource;
     passwordExpiration?: string | null;
     createdAt: string;
     lastLoginAt?: string | null;

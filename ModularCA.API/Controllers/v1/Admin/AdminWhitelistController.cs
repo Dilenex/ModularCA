@@ -126,7 +126,7 @@ public class AdminWhitelistController(
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null) return Unauthorized();
 
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.CreateWhitelist, null))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.CreateWhitelist, null))
             return StatusCode(403, new { error = "MFA re-verification required. Call /auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         if (request == null)
@@ -218,7 +218,7 @@ public class AdminWhitelistController(
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null) return Unauthorized();
 
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.UpdateWhitelist, id.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.UpdateWhitelist, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         if (request == null)
@@ -292,7 +292,7 @@ public class AdminWhitelistController(
         await _currentUser.EnsureLoadedAsync();
         if (_currentUser.User == null) return Unauthorized();
 
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.DeleteWhitelist, id.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.DeleteWhitelist, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         // Peek at the row first so we can distinguish "system default" from "not found"
@@ -348,7 +348,7 @@ public class AdminWhitelistController(
         if (_currentUser.User == null) return Unauthorized();
 
         // One token covers the batch — validated for the operation with a null target.
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.DeleteWhitelist, null))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.DeleteWhitelist, null))
             return StatusCode(403, new { error = "MFA re-verification required. Call /auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         if (request?.Ids == null || request.Ids.Count == 0)
@@ -399,7 +399,7 @@ public class AdminWhitelistController(
         if (_currentUser.User == null) return Unauthorized();
 
         // One token covers the batch — validated for the operation with a null target.
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.UpdateWhitelist, null))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.UpdateWhitelist, null))
             return StatusCode(403, new { error = "MFA re-verification required. Call /auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         if (request?.Ids == null || request.Ids.Count == 0)

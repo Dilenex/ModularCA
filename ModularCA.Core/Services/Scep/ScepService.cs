@@ -167,8 +167,7 @@ public class ScepService : IScepService, IEnrollmentProtocol
     /// </summary>
     public async Task<(byte[] data, bool isPkcs7)> GetCaCertAsync(string? caLabel = null, string? sourceIp = null)
     {
-        var context = await _caResolver.ResolveAsync(caLabel, "SCEP");
-        await EnsureScepCanRunAsync(context, GetCaCertOperation, sourceIp);
+        var context = await ResolveForScepAsync(caLabel, GetCaCertOperation, sourceIp);
 
         // If a CA entity is resolved, return its certificate chain
         if (context.Ca != null)
@@ -218,8 +217,17 @@ public class ScepService : IScepService, IEnrollmentProtocol
         return (BuildCertsOnlyPkcs7(allCerts), true);
     }
 
-    public string GetCaCaps()
+    /// <summary>
+    /// Answers GetCACaps for the addressed CA. The capabilities are the same for every CA SCEP
+    /// runs on, but they are a statement about one CA: it used to be answered without looking at
+    /// the CA at all, so a client was told "POSTPKIOperation, SHA-256, ..." by a CA whose key is
+    /// not RSA, by one with SCEP switched off, and under a label that names no CA. It is now
+    /// refused as GetCACert is; see <see cref="ResolveForScepAsync"/>.
+    /// </summary>
+    public async Task<string> GetCaCapsAsync(string? caLabel = null, string? sourceIp = null)
     {
+        await ResolveForScepAsync(caLabel, GetCaCapsOperation, sourceIp);
+
         // Return capabilities one per line (RFC 8894 §3.5.2)
         return string.Join("\n",
         [
@@ -240,8 +248,7 @@ public class ScepService : IScepService, IEnrollmentProtocol
     /// </summary>
     public async Task<byte[]> PkiOperationAsync(byte[] cmsRequest, string? caLabel = null, string? sourceIp = null)
     {
-        var context = await _caResolver.ResolveAsync(caLabel, "SCEP");
-        await EnsureScepCanRunAsync(context, PkiOperationOperation, sourceIp);
+        var context = await ResolveForScepAsync(caLabel, PkiOperationOperation, sourceIp);
 
         // Resolve the CA signer that will sign SCEP responses
         var (caCert, caKey) = await ResolveSignerForCaAsync(context)
@@ -894,19 +901,50 @@ public class ScepService : IScepService, IEnrollmentProtocol
     }
 
     /// <summary>
+    /// Resolves the CA a SCEP request addresses and refuses it when SCEP cannot run there.
+    /// A CA whose key is not RSA normally has SCEP switched off, because enabling it is refused, so
+    /// the configuration does not resolve and the client would get only the generic failure. For
+    /// such a CA the lasting reason is given instead (no audit row: the protocol is off, and the
+    /// request is anonymous). Every other unresolved case is rethrown as it was.
+    /// </summary>
+    /// <param name="caLabel">The CA label from the route, or null for the default CA.</param>
+    /// <param name="operation">The SCEP operation, as the audit row records it.</param>
+    /// <param name="sourceIp">Caller address, for the audit row.</param>
+    /// <exception cref="ProtocolIncompatibleException">SCEP cannot run on this CA.</exception>
+    /// <exception cref="InvalidOperationException">The CA is unknown, or SCEP is off or not configured on it.</exception>
+    private async Task<ResolvedCaContext> ResolveForScepAsync(string? caLabel, string operation, string? sourceIp)
+    {
+        ResolvedCaContext context;
+        try
+        {
+            context = await _caResolver.ResolveAsync(caLabel, "SCEP");
+        }
+        catch (InvalidOperationException)
+        {
+            var addressed = await _caResolver.ResolveCaEntityAsync(caLabel);
+            if (addressed != null && !addressed.IsSshCa)
+                await EnsureScepCanRunAsync(addressed, operation, sourceIp, audit: false);
+            throw;
+        }
+
+        await EnsureScepCanRunAsync(context.Ca, operation, sourceIp, audit: true);
+        return context;
+    }
+
+    /// <summary>
     /// Refuses the exchange when SCEP cannot run on the addressed CA at all, as
     /// <see cref="ProtocolCompatibility"/> judges it from the CA's certificate: today, a key that is
     /// not RSA, which no SCEP client can envelope a request to. Writes an unsuccessful audit row
     /// carrying the reason first. Checked on every request because a configuration enabled before
     /// enabling was refused still resolves; the row itself is left as it is.
     /// </summary>
-    /// <param name="context">The CA the exchange addresses.</param>
+    /// <param name="ca">The CA the exchange addresses.</param>
     /// <param name="operation">The SCEP operation, as the audit row records it.</param>
     /// <param name="sourceIp">Caller address, for the audit row.</param>
+    /// <param name="audit">False where SCEP is switched off on the CA: the refusal is then only logged.</param>
     /// <exception cref="ProtocolIncompatibleException">SCEP cannot run on this CA.</exception>
-    private async Task EnsureScepCanRunAsync(ResolvedCaContext context, string operation, string? sourceIp)
+    private async Task EnsureScepCanRunAsync(CertificateAuthorityEntity? ca, string operation, string? sourceIp, bool audit)
     {
-        var ca = context.Ca;
         if (ca?.CertificateId == null)
             return;
 
@@ -917,15 +955,19 @@ public class ScepService : IScepService, IEnrollmentProtocol
             return;
 
         _logger.LogWarning("SCEP {Operation} at CA {CaLabel} refused: {Reason}", operation, ca.Label, advisory.Message);
-        await _protocolAudit.LogScepAsync(operation, subjectDN: null, certSerial: null,
-            keyAlgorithm: null, keySize: null, caLabel: ca.Label, transactionId: null, sourceIp: sourceIp,
-            success: false, errorMessage: advisory.Message,
-            certificateAuthorityId: ca.Id, spaceId: ca.SpaceId);
+        if (audit)
+            await _protocolAudit.LogScepAsync(operation, subjectDN: null, certSerial: null,
+                keyAlgorithm: null, keySize: null, caLabel: ca.Label, transactionId: null, sourceIp: sourceIp,
+                success: false, errorMessage: advisory.Message,
+                certificateAuthorityId: ca.Id, spaceId: ca.SpaceId);
         throw new ProtocolIncompatibleException(advisory);
     }
 
     /// <summary>Audit operation recorded for a GetCACert refused because SCEP cannot run on the CA.</summary>
     private const string GetCaCertOperation = "GetCACert";
+
+    /// <summary>Audit operation recorded for a GetCACaps refused because SCEP cannot run on the CA.</summary>
+    private const string GetCaCapsOperation = "GetCACaps";
 
     /// <summary>
     /// Audit operation recorded for a PKIOperation refused before its message is read, because SCEP

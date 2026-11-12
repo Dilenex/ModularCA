@@ -23,10 +23,12 @@ namespace ModularCA.Tests.Database;
 /// The CRL service signing through the typed signer, on a real PostgreSQL database. CRL
 /// generation locks its counter row with raw SQL, so it never runs on the in-memory provider;
 /// this is the one place the full and delta TBSCertList the service really builds meet the
-/// signer's parser. Each test creates a throwaway database, applies every migration and drops
+/// signer's parser. Each test takes a throwaway copy of the migrated template database and drops
 /// it. Opt-in through <c>MODULARCA_TEST_PG</c>, as <see cref="PostgresLifecycleQueryTests"/>.
 /// </summary>
 [Trait("Category", "PostgreSQL")]
+[Trait(TestTier.Name, TestTier.Slow)]
+[Collection(PostgresLane.Four)]
 public class PostgresTypedCrlTests
 {
     private const string ServerVariable = "MODULARCA_TEST_PG";
@@ -35,13 +37,11 @@ public class PostgresTypedCrlTests
     public async Task The_crl_service_signs_a_full_and_a_delta_crl_through_the_typed_signer()
     {
         var server = Environment.GetEnvironmentVariable(ServerVariable)!;
-        var name = $"modularca_typedcrl_{Guid.NewGuid():N}"[..32];
-        await ExecAsync(server, $"CREATE DATABASE \"{name}\"");
+        var name = await PostgresTestDatabase.CreateMigratedAsync(server, "modularca_typedcrl");
         try
         {
             var connection = new NpgsqlConnectionStringBuilder(server) { Database = name, Pooling = false }.ConnectionString;
             await using var db = new ModularCADbContext(new DbContextOptionsBuilder<ModularCADbContext>().UseNpgsql(connection).Options);
-            await db.Database.MigrateAsync();
 
             var ca = TestCaMaterial.CreateCa("CN=Typed CRL CA, O=ModularCA");
             var spaceId = Guid.NewGuid();

@@ -8,21 +8,28 @@ namespace ModularCA.Keystore.Hsm;
 /// </summary>
 public sealed class Pkcs11PrivateKeyHandle : IPrivateKeyHandle
 {
-    private readonly Pkcs11SessionManager _sessionManager;
+    private readonly IPkcs11Token _token;
     private readonly IObjectHandle _keyHandle;
     private readonly string _keyLabel;
+    private readonly int? _ecdsaComponentLength;
 
     /// <summary>
     /// Initializes a new instance of <see cref="Pkcs11PrivateKeyHandle"/> bound to a specific HSM key.
     /// </summary>
-    /// <param name="sessionManager">The PKCS#11 session manager that owns the HSM session.</param>
+    /// <param name="token">The PKCS#11 token (in production the <see cref="Pkcs11SessionManager"/> that owns the session).</param>
     /// <param name="keyHandle">The PKCS#11 object handle referencing the private key on the HSM.</param>
     /// <param name="keyLabel">A human-readable label identifying the key (CKA_LABEL).</param>
-    public Pkcs11PrivateKeyHandle(Pkcs11SessionManager sessionManager, IObjectHandle keyHandle, string keyLabel)
+    /// <param name="ecdsaComponentLength">
+    /// For an EC key, the byte length of each half of the raw <c>r || s</c> the token returns
+    /// (<see cref="EcdsaSignatureEncoding.ComponentLength"/> of the certificate's key); null for
+    /// other keys.
+    /// </param>
+    public Pkcs11PrivateKeyHandle(IPkcs11Token token, IObjectHandle keyHandle, string keyLabel, int? ecdsaComponentLength = null)
     {
-        _sessionManager = sessionManager ?? throw new ArgumentNullException(nameof(sessionManager));
+        _token = token ?? throw new ArgumentNullException(nameof(token));
         _keyHandle = keyHandle ?? throw new ArgumentNullException(nameof(keyHandle));
         _keyLabel = keyLabel;
+        _ecdsaComponentLength = ecdsaComponentLength;
     }
 
     /// <summary>
@@ -39,14 +46,27 @@ public sealed class Pkcs11PrivateKeyHandle : IPrivateKeyHandle
 
     /// <summary>
     /// Signs the provided data using the HSM. The signing operation is performed entirely on-device.
+    /// An ECDSA signature comes back from the token as raw <c>r || s</c> and is returned as the
+    /// DER <c>SEQUENCE { INTEGER r, INTEGER s }</c> that certificates, CRLs, OCSP responses and
+    /// CMS carry, the same shape a software key returns; RSA and EdDSA signatures are returned
+    /// as the token produced them. The mechanism carries the RSA-PSS or Ed448 parameters the
+    /// algorithm's AlgorithmIdentifier implies (<see cref="Pkcs11AlgorithmMapper.GetSignMechanism"/>).
     /// </summary>
     /// <param name="data">The data to sign.</param>
     /// <param name="algorithm">The signing algorithm identifier (e.g. "SHA256withRSA", "SHA256withECDSA").</param>
-    /// <returns>The signature bytes produced by the HSM.</returns>
+    /// <returns>The signature value, ready for an X.509 signature field.</returns>
+    /// <exception cref="System.Security.Cryptography.CryptographicException">An ECDSA signature from the token is not the length the key's curve gives.</exception>
     public byte[] Sign(byte[] data, string algorithm)
     {
         var mechanism = Pkcs11AlgorithmMapper.GetSignMechanism(algorithm);
-        return _sessionManager.Sign(_keyHandle, data, mechanism);
+        var signature = _token.Sign(_keyHandle, data, mechanism);
+        if (!Pkcs11AlgorithmMapper.IsEcdsa(mechanism.Mechanism))
+            return signature;
+
+        // Without the curve (a handle made without the certificate's key) the halves are
+        // taken as equal; with it, a signature of any other length is refused.
+        var componentLength = _ecdsaComponentLength ?? Math.Max(1, signature.Length / 2);
+        return EcdsaSignatureEncoding.RawToDer(signature, componentLength);
     }
 
     /// <summary>

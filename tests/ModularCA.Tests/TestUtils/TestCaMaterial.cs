@@ -49,7 +49,7 @@ internal sealed class TestCaMaterial
     }
 
     private static readonly DateTime NotBefore = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-    private static readonly DateTime NotAfter = new(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime NotAfter = new(2049, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
     private static AsymmetricCipherKeyPair GenerateRsa()
     {

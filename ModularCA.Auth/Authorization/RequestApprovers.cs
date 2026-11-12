@@ -29,8 +29,15 @@ public static class RequestApprovers
     /// The outlook of a request routed through <paramref name="signingProfileId"/> under
     /// <paramref name="certProfileId"/>, made by <paramref name="requesterId"/>.
     /// </summary>
+    /// <remarks>
+    /// Each candidate is evaluated on their own grants, with the capability checks the Approve
+    /// endpoint makes, through <see cref="CaGroupAuthorizationService.ForAnotherAccount"/> and never
+    /// through the request's resolver: the caller's worn badge would filter other accounts down to
+    /// nothing and lower the count, and the request's audit context would record a
+    /// <c>SystemAdminElevatedAccess</c> row for each administrator merely considered. The requester
+    /// is evaluated the same way, on what they hold rather than on the badge of the session asking.
+    /// </remarks>
     /// <param name="db">The application database.</param>
-    /// <param name="auth">The capability checks the Approve endpoint makes.</param>
     /// <param name="policy">The security policy, for self-approval.</param>
     /// <param name="requiredCount">The approvals the request needs.</param>
     /// <param name="signingProfileId">The signing profile the request names.</param>
@@ -38,9 +45,10 @@ public static class RequestApprovers
     /// <param name="requesterId">The requester, or null for a request no account made.</param>
     /// <param name="approvedBy">The accounts that have approved it already.</param>
     public static async Task<ApprovalOutlook> OutlookAsync(
-        ModularCADbContext db, ICaGroupAuthorizationService auth, SecurityPolicyEntity policy, int requiredCount,
+        ModularCADbContext db, SecurityPolicyEntity policy, int requiredCount,
         Guid? signingProfileId, Guid? certProfileId, Guid? requesterId, IReadOnlyCollection<Guid> approvedBy)
     {
+        var auth = CaGroupAuthorizationService.ForAnotherAccount(db);
         var caId = await CaOfAsync(db, signingProfileId);
         var others = 0;
         var requesterCanAct = false;

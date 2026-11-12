@@ -17,6 +17,11 @@ public class CtLogEntity
     [MaxLength(500)]
     public string Url { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The log's public key, the base64 of its DER SubjectPublicKeyInfo. Every SCT the log returns
+    /// is verified against it (<c>CtSctVerifier</c>, RFC 6962 section 3.2), and an SCT that does not
+    /// verify is discarded. Empty means no key: the log's SCTs cannot be verified and are discarded.
+    /// </summary>
     public string PublicKeyBase64 { get; set; } = string.Empty;
 
     public bool IsEnabled { get; set; } = true;

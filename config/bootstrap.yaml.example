@@ -48,6 +48,21 @@ Administration:
   # Leave the key out and key ceremonies start on.
   MultipleAdministrators: true
 
+  # How the first administrator, superadmin, gets in. Nothing secret is printed either way.
+  #   Without a claim token (the default): the bootstrap generates a password and leaves it in
+  #     config/initial-admin-password, readable by the service account only. Read it, sign in,
+  #     and change the password when asked; the file is deleted when you do.
+  #   With a claim token: superadmin is created with no password, and whoever holds the token
+  #     sets one at the console's sign-in page, under "Have a claim token?" (/claim). This file
+  #     carries only the token's SHA-256 (lowercase hex), never the token. To make a pair:
+  #       ModularCA.API --new-claim-token
+  #     or hash 32 random bytes in base64url yourself: printf %s "$token" | sha256sum
+  #     The claim works once, and expires after ClaimTokenLifetimeHours (168, seven days, when
+  #     left out; at most 8760). After that, issue a new one on the host:
+  #       ModularCA.API --issue-claim-token superadmin
+  # ClaimTokenSha256: "<64 hex digits>"
+  # ClaimTokenLifetimeHours: 168
+
 Acme:
   # Will ACME clients be on a private network? Only read when Features.ACME is true.
   #   true  - the first CA's http-01 validation may fetch challenges from private, loopback and

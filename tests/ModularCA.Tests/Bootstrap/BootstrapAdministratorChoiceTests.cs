@@ -148,7 +148,7 @@ public class BootstrapAdministratorChoiceTests : IDisposable
     /// <summary>Both bootstrap paths apply the answer, after they seed the security policy.</summary>
     [Theory]
     [InlineData("BootstrapModularCA.cs", "bootstrapConfig.Administration?.MultipleAdministrators")]
-    [InlineData("BootstrapService.cs", "request.Admin?.MultipleAdministrators")]
+    [InlineData("BootstrapService.cs", "request.Admin.MultipleAdministrators")]
     public void Both_bootstrap_paths_apply_the_answer(string file, string source)
     {
         var text = File.ReadAllText(Path.Combine(RepoRoot(), "ModularCA.Bootstrap", file));

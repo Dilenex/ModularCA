@@ -369,7 +369,7 @@ public sealed class ControlledUserBypassEndpointTests
 
     private static object Config(ControlledUserWorld w, Guid actor, ModularCA.Shared.Models.Config.SystemConfig config)
         => New(Ns + "AdminConfigController", actor, config, null, new RecordingAuditService(), new CurrentUserStub(actor), NewCache(),
-            new RecordingAlertService(), null, null, null, null);
+            new RecordingAlertService(), null, null, null, null, null);
 
     [Fact]
     public async Task An_email_server_change_needs_the_stored_secret_re_entered()
@@ -435,6 +435,25 @@ public sealed class ControlledUserBypassEndpointTests
         };
         edit(update);
         return update;
+    }
+
+    /// <summary>
+    /// A deleted account retained for its history keeps its username. The directory still knowing
+    /// that name does not bring the account back: a directory sign-in under it provisions nothing.
+    /// </summary>
+    [Fact]
+    public async Task A_directory_sign_in_does_not_provision_a_deleted_accounts_name_again()
+    {
+        var w = new ControlledUserWorld();
+        var config = LdapConfig();
+        config.LdapAuth.AutoProvisionUsers = true;
+        var sync = new LdapGroupSyncService(w.Db, config, null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<LdapGroupSyncService>.Instance);
+        w.Db.Users.Add(new UserEntity { Username = "left-the-company", Email = "left@x", IsDeleted = true, IsActive = false });
+        w.Db.SaveChanges();
+
+        Assert.Null(await sync.AutoProvisionUserAsync("left-the-company", null));
+        Assert.Equal(1, Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.IgnoreQueryFilters(w.Db.Users).Count(u => u.Username == "left-the-company"));
+        Assert.NotNull(await sync.AutoProvisionUserAsync("a-newcomer", null));
     }
 
     [Fact]

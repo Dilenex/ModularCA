@@ -100,4 +100,20 @@
     <WarningsAsErrors>$(WarningsAsErrors);NU1903;NU1904</WarningsAsErrors>
   </PropertyGroup>
 
+  <!--
+    Warnings are errors, in every project.
+
+    Every .NET project built with no warnings in 0.4.4, so a change that adds one fails the build
+    instead of joining the noise. Fix the warning; where it is deliberate, suppress that one
+    diagnostic at the line with a pragma and say why, never for a whole project.
+
+    TreatWarningsAsErrors covers NuGet's restore warnings too. The audit codes below the failure
+    threshold above stay warnings: NU1900 (advisory source unreachable) is an availability problem,
+    and NU1901 and NU1902 (low and moderate advisories) are triaged on their own schedule.
+  -->
+  <PropertyGroup>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1900;NU1901;NU1902</WarningsNotAsErrors>
+  </PropertyGroup>
+
 </Project>

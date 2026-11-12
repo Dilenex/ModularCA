@@ -37,6 +37,8 @@ public sealed class SignerPathsTests : IDisposable
         Assert.Equal(Path.Combine(_base, "config", "keystore.yaml"), paths.KeystoreYamlPath);
         Assert.Equal(Path.Combine(_base, "keystores"), paths.KeystoresDirectory);
         Assert.Equal(Path.Combine(_base, "logs"), paths.LogsDirectory);
+        // No journal: the keystore events stay in logs/, which the node replays.
+        Assert.Null(paths.AuditJournalDirectory);
         Assert.Equal(SignerConfig.ResolvePath(defaults.ServerCertificate, _base), paths.ResolveFile(defaults.ServerCertificate));
         Assert.Equal(SignerConfig.ResolvePath(defaults.IdentityCa, _base), paths.ResolveFile(defaults.IdentityCa));
     }
@@ -64,6 +66,8 @@ public sealed class SignerPathsTests : IDisposable
         Assert.Equal(Path.Combine(dir, "db.yaml"), paths.DbYamlPath);
         Assert.Equal(Path.Combine(dir, "keystore.yaml"), paths.KeystoreYamlPath);
         Assert.Equal(Path.Combine(dir, "logs"), paths.LogsDirectory);
+        // The journal of keystore events waits for the node, so it is not under logs/, which may not be kept.
+        Assert.Equal(Path.Combine(dir, "audit-journal"), paths.AuditJournalDirectory);
         Assert.Equal(Path.Combine(_base, "keystores"), paths.KeystoresDirectory);
         Assert.Equal(Path.Combine(dir, "signer-server.pfx"), paths.ResolveFile(new SignerConfig().ServerCertificate));
         Assert.Equal(Path.Combine(dir, "signer-identity-ca.pfx"), paths.ResolveFile(new SignerConfig().IdentityCa));

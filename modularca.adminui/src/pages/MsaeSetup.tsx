@@ -1,7 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useParams, useNavigate } from 'react-router-dom';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useLocation, useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiBlob } from '../api/client';
 import { useScope } from '../context/ScopeContext';
+import { scopeKey } from '../scope';
+import { msaeScopeFollow, msaeSelectedCa, msaeSetupPath } from './msaeScope';
+import { useLatestRequest } from '@shared/hooks/useLatestRequest';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import type { NoticeInput } from '@shared/notifications/notice';
@@ -16,6 +19,9 @@ import { inputClass, labelClass } from '@shared/components/forms';
  * page asks the server for all of them at once (`/api/v1/admin/msae/{caId}/readiness`) and
  * shows each with its state and a link to the page that fixes it, scope preset. It changes
  * nothing itself. The readiness endpoint is the source of truth; the page only renders it.
+ *
+ * The CA is named in the URL, so a link opens the CA it names. Picking a CA in the scope
+ * switcher moves the page to that CA (see msaeScope.ts).
  */
 
 type State = MsaeReadinessStep['state'];
@@ -87,6 +93,7 @@ const StepCard: React.FC<{ step: MsaeReadinessStep; index: number }> = ({ step, 
 const MsaeSetup: React.FC = () => {
     const { id } = useParams<{ id?: string }>();
     const navigate = useNavigate();
+    const { search } = useLocation();
     const { scope } = useScope();
     const [authorities, setAuthorities] = useState<any[]>([]);
     const [loadError, setLoadError] = useState<NoticeInput | null>(null);
@@ -101,27 +108,47 @@ const MsaeSetup: React.FC = () => {
     }, []);
 
     // Pick the CA: the route's, else the scoped one, else the first the operator can see.
-    const selectedId = useMemo(() => {
-        if (id) return id;
-        if (scope.kind === 'ca' && scope.caId) return scope.caId;
-        const inSpace = scope.kind === 'space' ? authorities.find((c) => c.spaceId === scope.spaceId) : null;
-        return (inSpace ?? authorities[0])?.id ?? '';
-    }, [id, scope, authorities]);
+    const selectedId = useMemo(() => msaeSelectedCa(id, scope, authorities), [id, scope, authorities]);
+
+    // Every move between CAs keeps the query string, which is where the scope lives: dropping it
+    // would return a scope set by a link to the usual one, and the page would then follow that.
+    const goToCa = useCallback((caId: string, replace: boolean) => {
+        navigate({ pathname: msaeSetupPath(caId), search }, { replace });
+    }, [navigate, search]);
 
     useEffect(() => {
-        if (!id && selectedId) navigate(`/authorities/windows/${selectedId}`, { replace: true });
-    }, [id, selectedId, navigate]);
+        if (!id && selectedId) goToCa(selectedId, true);
+    }, [id, selectedId, goToCa]);
 
+    // Follow the scope switcher: picking a CA there moves this page to that CA. Only a change of
+    // scope does it, so a link naming another CA, and the picker below, are left alone.
+    const currentScope = scopeKey(scope);
+    const followedScope = useRef(currentScope);
+    useEffect(() => {
+        const target = msaeScopeFollow(followedScope.current, scope, id);
+        followedScope.current = currentScope;
+        if (target) goToCa(target, true);
+    }, [currentScope]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Only the newest readiness load writes: a slow answer for a CA already left (or an earlier
+    // "Check again") is dropped, so the steps shown are always the selected CA's.
+    const readinessLoads = useLatestRequest();
     const check = useCallback(() => {
-        if (!selectedId) return;
+        const current = readinessLoads.begin();
+        if (!selectedId) { setChecking(false); return; }
         setChecking(true);
         apiGet<MsaeReadiness>(`/api/v1/admin/msae/${selectedId}/readiness`)
-            .then((r) => { setReadiness(r); setCheckError(null); })
-            .catch((err) => { setReadiness(null); setCheckError(errorNotice(err, 'Could not evaluate this CA')); })
-            .finally(() => setChecking(false));
-    }, [selectedId]);
+            .then((r) => { if (current()) { setReadiness(r); setCheckError(null); } })
+            .catch((err) => { if (current()) { setReadiness(null); setCheckError(errorNotice(err, 'Could not evaluate this CA')); } })
+            .finally(() => { if (current()) setChecking(false); });
+    }, [selectedId, readinessLoads]);
 
-    useEffect(() => { check(); }, [check]);
+    // A different CA drops the previous one's readiness at once, then evaluates the new one.
+    useEffect(() => {
+        setReadiness(null);
+        setCheckError(null);
+        check();
+    }, [check]);
 
     const [kitBusy, setKitBusy] = useState<string | null>(null);
     const downloadKit = async (realmId: string, realmName: string) => {
@@ -158,7 +185,7 @@ const MsaeSetup: React.FC = () => {
             <div className="flex items-end gap-3 flex-wrap">
                 <div className="min-w-[16rem]">
                     <label className={labelClass} htmlFor="msae-setup-ca">Certificate authority</label>
-                    <select id="msae-setup-ca" className={inputClass} value={selectedId} onChange={(e) => navigate(`/authorities/windows/${e.target.value}`)}>
+                    <select id="msae-setup-ca" className={inputClass} value={selectedId} onChange={(e) => goToCa(e.target.value, false)}>
                         {authorities.map((ca) => <option key={ca.id} value={ca.id}>{ca.name} ({ca.label})</option>)}
                     </select>
                 </div>

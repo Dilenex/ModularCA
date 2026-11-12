@@ -97,7 +97,7 @@ public class AdminKeyCeremonyController : ControllerBase
         if (_currentUser.User == null) return Unauthorized();
 
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(
-                _cache, User, mfaToken, StepUpOps.InitiateCeremony))
+                _cache, HttpContext, mfaToken, StepUpOps.InitiateCeremony))
             return StatusCode(403, new
             {
                 error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.",
@@ -456,7 +456,7 @@ public class AdminKeyCeremonyController : ControllerBase
             return StatusCode(403, new { error = policyRefusal });
 
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(
-                _cache, User, mfaToken, StepUpOps.ApproveCeremony, id.ToString()))
+                _cache, HttpContext, mfaToken, StepUpOps.ApproveCeremony, id.ToString()))
             return StatusCode(403, new
             {
                 error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.",
@@ -524,7 +524,7 @@ public class AdminKeyCeremonyController : ControllerBase
         }
 
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(
-                _cache, User, mfaToken, StepUpOps.RejectCeremony, id.ToString()))
+                _cache, HttpContext, mfaToken, StepUpOps.RejectCeremony, id.ToString()))
             return StatusCode(403, new
             {
                 error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.",
@@ -568,7 +568,7 @@ public class AdminKeyCeremonyController : ControllerBase
             return StatusCode(403, new { error = "You do not have access to this ceremony." });
 
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(
-                _cache, User, mfaToken, StepUpOps.CancelCeremony, id.ToString()))
+                _cache, HttpContext, mfaToken, StepUpOps.CancelCeremony, id.ToString()))
             return StatusCode(403, new
             {
                 error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.",
@@ -622,7 +622,7 @@ public class AdminKeyCeremonyController : ControllerBase
             return StatusCode(403, new { error = "You no longer hold a role that covers the affected privilege tier." });
 
         if (!await MfaStepUpController.ValidateStepUpTokenAsync(
-                _cache, User, mfaToken, StepUpOps.ExecuteCeremony, id.ToString()))
+                _cache, HttpContext, mfaToken, StepUpOps.ExecuteCeremony, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required.", requiresStepUp = true });
 
         if (ceremony.Status != "Approved")
@@ -1023,8 +1023,10 @@ public class AdminKeyCeremonyController : ControllerBase
 
     /// <summary>
     /// Writes the audit rows and raises the alerts the direct account endpoints do, for an account
-    /// change (password reset, MFA reset, identity update) applied by a controlled-user ceremony.
-    /// Nothing written carries the temporary password.
+    /// change (password reset, MFA reset, identity update) applied by a controlled-user ceremony,
+    /// including <see cref="AuditActionType.UserPasswordSourceChanged"/> with the old and new value
+    /// when an identity update changed the password source. Nothing written carries the temporary
+    /// password.
     /// </summary>
     private async Task AuditAccountChangeAsync(ControlledUserChangeResult result, Guid ceremonyId)
     {
@@ -1048,6 +1050,9 @@ public class AdminKeyCeremonyController : ControllerBase
             case "UpdateIdentity":
                 await _audit.LogAsync(AuditActionType.UserUpdated, user.Id, user.Username, "User", target.ToString(),
                     new { Action = "UpdateIdentity", CeremonyId = ceremonyId }, ip);
+                if (result is { PasswordSourceBefore: { } before, PasswordSourceAfter: { } after } && before != after)
+                    await _audit.LogAsync(AuditActionType.UserPasswordSourceChanged, user.Id, user.Username, "User", target.ToString(),
+                        new { Old = before.ToString(), New = after.ToString(), CeremonyId = ceremonyId }, ip);
                 break;
         }
     }

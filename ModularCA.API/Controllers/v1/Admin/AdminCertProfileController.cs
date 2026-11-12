@@ -108,7 +108,9 @@ public class AdminCertProfileController(
     /// CA (when supplied) is inside the caller's <see cref="SpaceFence"/> and
     /// populates <c>CertProfileEntity.SpaceId</c> from it (null for an instance CA). An
     /// inheritance parent outside the fence is not found. <c>CtLogIds</c> that are not a JSON array
-    /// of existing CT log ids are refused with 400 (<see cref="CtLogIdsErrorAsync"/>).
+    /// of existing CT log ids are refused with 400 (<see cref="CtLogIdsErrorAsync"/>). A key usage
+    /// or extended key usage the OID catalog does not hold is refused with 400
+    /// (<c>MCA-PRF-002</c>, naming it), whether the field is a JSON array or a comma-separated list.
     /// </summary>
     [HttpPost]
     [Authorize]
@@ -147,7 +149,9 @@ public class AdminCertProfileController(
     /// own scope (<see cref="CaBindingAccess"/>). <c>CtLogIds</c> that are not a JSON array of
     /// existing CT log ids are refused with 400 (<see cref="CtLogIdsErrorAsync"/>). An instance-wide
     /// profile needs cert.revoke at system scope (403, <see cref="InstanceWideRefusalAsync"/>).
-    /// Invalid expiry warning settings are refused (400, <c>MCA-PRF-001</c>). When the expiry
+    /// Invalid expiry warning settings are refused (400, <c>MCA-PRF-001</c>), and so is a key
+    /// usage or extended key usage the update adds that the OID catalog does not hold (400,
+    /// <c>MCA-PRF-002</c>). When the expiry
     /// warning settings or the inheritance change, the live certificates of the profile and of the
     /// profiles inheriting from it get their warning instants re-computed; the audit entry records
     /// how many (<c>ExpiryWarningsRecomputed</c>).
@@ -160,7 +164,7 @@ public class AdminCertProfileController(
         await currentUser.EnsureLoadedAsync();
         if (currentUser.User == null)
             return Unauthorized();
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.UpdateCertProfile, id.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.UpdateCertProfile, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var current = await db.CertProfiles.AsNoTracking()
@@ -200,7 +204,7 @@ public class AdminCertProfileController(
         await currentUser.EnsureLoadedAsync();
         if (currentUser.User == null)
             return Unauthorized();
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, User, mfaToken, StepUpOps.DeleteCertProfile, id.ToString()))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(_cache, HttpContext, mfaToken, StepUpOps.DeleteCertProfile, id.ToString()))
             return StatusCode(403, new { error = "MFA re-verification required. Call /api/v1/auth/mfa/verify-stepup first.", requiresStepUp = true });
 
         var current = await db.CertProfiles.AsNoTracking()

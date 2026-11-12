@@ -100,7 +100,21 @@ public sealed record MigrationFailure(
     string Migration,
     Exception Error,
     IReadOnlyList<string> CommittedInThisRun,
-    bool LeavesNonTransactionalStatements);
+    bool LeavesNonTransactionalStatements)
+{
+    /// <summary>
+    /// False when the history could not be read back after the failure, so
+    /// <see cref="CommittedInThisRun"/> may be missing migrations of the failed batch.
+    /// </summary>
+    public bool HistoryReadBack { get; init; } = true;
+
+    /// <summary>
+    /// Whether this call may have left the database changed: it committed a migration, the failed
+    /// one runs statements a failure does not roll back, or the history could not be read back
+    /// to tell. False is a promise that the database is as it was before the call.
+    /// </summary>
+    public bool MayHaveChangedDatabase => CommittedInThisRun.Count > 0 || LeavesNonTransactionalStatements || !HistoryReadBack;
+}
 
 /// <summary>
 /// How <see cref="SchemaVersionGate.DryRunPendingAsync"/> ended. Whatever the outcome, it was
@@ -799,7 +813,7 @@ public static class SchemaVersionGate
         catch (Exception)
         {
             return new MigrationFailure(string.Join(" or ", batch), error, committed,
-                batch.Any(id => LeavesNonTransactionalStatements(db, id)));
+                batch.Any(id => LeavesNonTransactionalStatements(db, id))) { HistoryReadBack = false };
         }
     }
 

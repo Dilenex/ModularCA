@@ -91,6 +91,31 @@ namespace ModularCA.Shared.Models.Config
         /// run. Read before the host starts.
         /// </summary>
         public SchemaConfig Schema { get; set; } = new();
+
+        /// <summary>
+        /// The loopback-only health listener, for this host's own health command
+        /// (<c>--check-ready</c>); off by default.
+        /// </summary>
+        public HealthConfig Health { get; set; } = new();
+    }
+
+    /// <summary>
+    /// The loopback-only health listener: a plain-HTTP port on <c>127.0.0.1</c> that serves
+    /// <c>/health</c>, <c>/health/live</c> and <c>/health/ready</c> and nothing else, and never
+    /// takes the PROXY protocol, so the node's own health command can reach it when both main
+    /// listeners take the protocol from a proxy elsewhere.
+    /// </summary>
+    public class HealthConfig
+    {
+        /// <summary>
+        /// The port of the loopback-only health listener; 0, the default, opens none. When set it
+        /// must be a port (1 to 65535) other than <c>Https.Port</c>, <c>Http.Port</c> and the
+        /// signer's (<c>Signer.Listen</c>, and <c>Signer.Endpoint</c> when that is loopback), or
+        /// the start is refused. The environment variable <c>MODULARCA__HEALTH__LOOPBACKPORT</c>
+        /// overrides it without being written to <c>config.yaml</c>, which is how the pod sets it.
+        /// </summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
+        public int LoopbackPort { get; set; } = 0;
     }
 
     /// <summary>
@@ -509,6 +534,35 @@ namespace ModularCA.Shared.Models.Config
         public int ForwardedHeaderHopLimit { get; set; } = 1;
 
         /// <summary>
+        /// Whether the plain-HTTP listener (<see cref="Port"/>) takes the PROXY protocol: every
+        /// connection must come from <see cref="ProxyProtocolTrustedCidrs"/> and start with a PROXY
+        /// header (v2, or v1 for nginx), whose client address becomes the connection's remote
+        /// address. A connection from anywhere else, or without a valid header, is closed. Default
+        /// <c>false</c>. For a proxy that passes connections through without reading them, such as
+        /// HAProxy in TCP mode in front of a hub's instances; see <see cref="HttpsConfig.ProxyProtocol"/>.
+        /// </summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
+        public bool ProxyProtocol { get; set; } = false;
+
+        /// <summary>
+        /// The proxies allowed to send the PROXY protocol header to a listener that takes it
+        /// (<see cref="HttpsConfig.ProxyProtocol"/>, <see cref="ProxyProtocol"/>): comma-separated
+        /// <c>address/prefix</c> entries with no bits after the prefix, e.g. <c>10.100.105.22/32</c>.
+        /// </summary>
+        /// <remarks>
+        /// Separate from <see cref="TrustedProxyCidrs"/> on purpose, and neither implies the other.
+        /// <see cref="TrustedProxyCidrs"/> trusts the <c>X-Forwarded-For</c> header, which only a
+        /// proxy that ends TLS can write; a passthrough proxy must never be listed there, because
+        /// the header the node reads then arrives inside the client's own TLS and the client
+        /// chooses it. This list trusts the PROXY header, which the proxy writes from the TCP
+        /// connection before the client's first byte. A listener taking the PROXY protocol with
+        /// this list empty, an entry that does not parse, or an entry that trusts every address
+        /// (<c>/0</c>), stops the start.
+        /// </remarks>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
+        public string ProxyProtocolTrustedCidrs { get; set; } = string.Empty;
+
+        /// <summary>
         /// HSTS header tuning for the HTTPS listener. The
         /// <see cref="SecurityHeadersMiddleware"/> emits HSTS only on HTTPS
         /// responses using the values below. Defaults follow the 1-year /
@@ -810,6 +864,19 @@ namespace ModularCA.Shared.Models.Config
         public string CertificatePassword { get; set; } = string.Empty;
         [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public int Port { get; set; } = 8443;
+
+        /// <summary>
+        /// Whether the HTTPS listener (<see cref="Port"/> on every <see cref="ListenAddress"/>,
+        /// and the setup wizard's listener) takes the PROXY protocol: every connection must come
+        /// from <see cref="HttpConfig.ProxyProtocolTrustedCidrs"/> and start with a PROXY header,
+        /// read before TLS, whose client address becomes the connection's remote address for the
+        /// audit, the IP allow-list, the rate limits and JWT IP binding. A connection from
+        /// anywhere else, or without a valid header, is closed. Default <c>false</c>. Turn it on
+        /// only when every client reaches the listener through a proxy that sends the header,
+        /// such as HAProxy passing TLS through with <c>send-proxy-v2</c>.
+        /// </summary>
+        [Setting(SettingClass.HostLocal, SettingReload.Restart)]
+        public bool ProxyProtocol { get; set; } = false;
         [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public string RenewalWindow { get; set; } = "P30D";
 
@@ -851,34 +918,53 @@ namespace ModularCA.Shared.Models.Config
         public string PublicDomain { get; set; } = string.Empty;
 
         /// <summary>
-        /// Public HTTPS port. When null or 443 the port is omitted from built URLs.
+        /// Public HTTPS port: the port clients reach, which differs from <see cref="Port"/> behind
+        /// a port-mapping proxy or load balancer. When null, <see cref="Port"/> is used. The port
+        /// is omitted from built URLs when it is 443. See <see cref="GetPublicHttpsPort"/>.
         /// </summary>
         [Setting(SettingClass.InstanceWide, SettingReload.Restart)]
         public int? PublicPort { get; set; }
 
         /// <summary>
-        /// Builds the canonical public HTTPS base URL (no trailing slash).
-        /// Returns <c>https://PublicDomain</c> when <see cref="PublicPort"/> is null or 443,
-        /// otherwise <c>https://PublicDomain:PublicPort</c>.
+        /// The HTTPS port clients reach: <see cref="PublicPort"/> when set, otherwise the listener
+        /// <see cref="Port"/>, and 443 when that is not a usable port. The one rule for every HTTPS
+        /// URL this instance hands out: AIA/CDP bases, the ACME directory, portal and redirect
+        /// links, and the HTTP to HTTPS redirect.
+        /// </summary>
+        public int GetPublicHttpsPort()
+        {
+            // PublicPort is the operator-facing port (may differ from Kestrel's bind port
+            // when behind a port-mapping LB). When unset, fall back to the Kestrel HTTPS
+            // port so non-443 deployments work without explicit PublicPort configuration.
+            var port = PublicPort ?? Port;
+            return port > 0 ? port : 443;
+        }
+
+        /// <summary>
+        /// The HTTPS authority for <paramref name="host"/>: the host alone when
+        /// <see cref="GetPublicHttpsPort"/> is 443, otherwise <c>host:port</c>.
+        /// </summary>
+        /// <param name="host">A bare host name or address, without scheme or port.</param>
+        public string GetHttpsAuthorityFor(string host)
+        {
+            var port = GetPublicHttpsPort();
+            return port == 443 ? host : $"{host}:{port}";
+        }
+
+        /// <summary>
+        /// Builds the canonical public HTTPS base URL (no trailing slash):
+        /// <c>https://PublicDomain</c>, with <c>:port</c> when <see cref="GetPublicHttpsPort"/> is
+        /// not 443.
         /// </summary>
         public string GetPublicHttpsBaseUrl() => GetHttpsBaseUrlFor(PublicDomain);
 
         /// <summary>
         /// Builds the HTTPS base URL (no trailing slash) for <paramref name="host"/>, a name this
         /// process serves on the same listener as <see cref="PublicDomain"/>. The port rule is
-        /// the public one, since every name shares the listener.
+        /// the public one (<see cref="GetPublicHttpsPort"/>), since every name shares the listener.
         /// </summary>
-        public string GetHttpsBaseUrlFor(string host)
-        {
-            // PublicPort is the operator-facing port (may differ from Kestrel's bind port
-            // when behind a port-mapping LB). When unset, fall back to the Kestrel HTTPS
-            // port so non-443 deployments work without explicit PublicPort configuration.
-            var port = PublicPort ?? Port;
-            if (port <= 0) port = 443;
-            return port == 443
-                ? $"https://{host}"
-                : $"https://{host}:{port}";
-        }
+        /// <param name="host">A bare host name or address, without scheme or port.</param>
+        public string GetHttpsBaseUrlFor(string host) => $"https://{GetHttpsAuthorityFor(host)}";
 
         /// <summary>
         /// Builds a public HTTP base URL using the <see cref="HttpConfig.Port"/> from a

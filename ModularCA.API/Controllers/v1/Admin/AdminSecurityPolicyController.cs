@@ -9,6 +9,7 @@ using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
+using ModularCA.Shared.Utils;
 using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
@@ -76,7 +77,11 @@ public class AdminSecurityPolicyController(
     /// Applies a partial update to the security policy. Needs a system administrator; a change to
     /// <c>UserQuorum</c> or <c>AllowSystemSuperSelfApproval</c> needs a system-super (403 otherwise,
     /// nothing saved). Null fields are left untouched.
-    /// TTL knobs are clamped to their documented ranges. The instance CA policy fields
+    /// TTL knobs are clamped to their documented ranges. The keystore scrypt cost
+    /// (<c>KeystoreScryptN</c>, <c>KeystoreScryptR</c>, <c>KeystoreScryptP</c>) is not clamped:
+    /// when any of the three changes, the resulting triple must pass
+    /// <see cref="KeystoreScryptPolicy.CheckNewSetting"/>, or the answer is 400 and nothing is
+    /// saved. Values sent back unchanged are not checked. The instance CA policy fields
     /// (<c>RequireKeyCeremony</c>, <c>CeremonyRequiredApprovals</c>, <c>MaxValidityDays</c>,
     /// <c>ValidityCeilingBehavior</c>) need a system admin; a change to the first two by anyone
     /// but a system-super opens an InstancePolicyChange ceremony and returns 202. Every refusal,
@@ -104,7 +109,7 @@ public class AdminSecurityPolicyController(
         var disablesCeremonyDirectly = request.RequireKeyCeremony == false && policy.RequireKeyCeremony
             && currentUser.User != null && await controlledUserSvc.IsSuperAsync(currentUser.User.Id);
         var stepUpOp = disablesCeremonyDirectly ? StepUpOps.DisableCeremonyRequirement : StepUpOps.UpdateConfig;
-        if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, User, mfaToken, stepUpOp))
+        if (!await MfaStepUpController.ValidateStepUpTokenAsync(cache, HttpContext, mfaToken, stepUpOp))
             return StatusCode(403, new
             {
                 error = disablesCeremonyDirectly
@@ -137,6 +142,16 @@ public class AdminSecurityPolicyController(
             instanceCeremonyGate = (proposedRequire.HasValue || proposedApprovals.HasValue)
                 && !await controlledUserSvc.IsSuperAsync(currentUser.User.Id);
         }
+
+        // The keystore scrypt cost is checked as a whole, and only when one of its values
+        // changes: the console sends the stored values back on every save, and a value stored
+        // before these checks must not block the fields that did change.
+        var scryptN = request.KeystoreScryptN ?? policy.KeystoreScryptN;
+        var scryptR = request.KeystoreScryptR ?? policy.KeystoreScryptR;
+        var scryptP = request.KeystoreScryptP ?? policy.KeystoreScryptP;
+        var scryptChanged = scryptN != policy.KeystoreScryptN || scryptR != policy.KeystoreScryptR || scryptP != policy.KeystoreScryptP;
+        if (scryptChanged && KeystoreScryptPolicy.CheckNewSetting(scryptN, scryptR, scryptP) is { } scryptError)
+            return BadRequest(new { error = scryptError });
 
         Guid? ceremonyId = null;
         if (instanceCeremonyGate)
@@ -225,13 +240,13 @@ public class AdminSecurityPolicyController(
             if (proposedApprovals.HasValue) policy.CeremonyRequiredApprovals = proposedApprovals.Value;
         }
 
-        // Keystore scrypt cost — clamp at write time so the DB never holds an unreasonable value.
-        if (request.KeystoreScryptN is int ksn)
-            policy.KeystoreScryptN = Math.Clamp(ksn, 1 << 14, 1 << 20);
-        if (request.KeystoreScryptR is int ksr)
-            policy.KeystoreScryptR = Math.Clamp(ksr, 1, 32);
-        if (request.KeystoreScryptP is int ksp)
-            policy.KeystoreScryptP = Math.Clamp(ksp, 1, 16);
+        // Keystore scrypt cost: checked with the other refusals above, before anything was saved.
+        if (scryptChanged)
+        {
+            policy.KeystoreScryptN = scryptN;
+            policy.KeystoreScryptR = scryptR;
+            policy.KeystoreScryptP = scryptP;
+        }
 
         policy.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
@@ -276,33 +291,58 @@ public class AdminSecurityPolicyController(
 /// </summary>
 public class SecurityPolicyUpdateRequest
 {
+    /// <summary>Failed logins, across every login method, before the account is locked; values under 1 are ignored.</summary>
     public int? MaxFailedLoginAttempts { get; set; }
+    /// <summary>Lockout duration in minutes; 0 locks until an admin unlocks. Negative values are ignored.</summary>
     public int? LockoutMinutes { get; set; }
+    /// <summary>Minutes of inactivity before a session counts as idle; 0 disables the idle timeout. Negative values are ignored.</summary>
     public int? SessionIdleTimeoutMinutes { get; set; }
+    /// <summary>Most active refresh tokens one user may hold; 0 means unlimited. Negative values are ignored.</summary>
     public int? MaxConcurrentSessions { get; set; }
+    /// <summary>Absolute session lifetime in days from the first token of the family; 0 disables the cap. Negative values are ignored.</summary>
     public int? MaxSessionLifetimeDays { get; set; }
+    /// <summary>Constant wall-clock budget in milliseconds for the pre-authentication login path, against timing side channels; 0 disables it. Negative values are ignored.</summary>
     public int? LoginResponseDelayMs { get; set; }
+    /// <summary>System-use notice users must acknowledge on the login pages before signing in; empty removes it.</summary>
     public string? LoginBanner { get; set; }
+    /// <summary>Heading above <see cref="LoginBanner"/>; empty restores the default "System Use Notification".</summary>
     public string? LoginBannerTitle { get; set; }
+    /// <summary>Whether system super-administrators may approve their own requests. Changing it needs a system-super.</summary>
     public bool? AllowSystemSuperSelfApproval { get; set; }
+    /// <summary>Whether mTLS client certificates must pass a revocation check; false fails open.</summary>
     public bool? RequireMtlsOcspCheck { get; set; }
+    /// <summary>Lifetime of a step-up MFA token in seconds, clamped to 30–300.</summary>
     public int? StepUpTokenTtlSeconds { get; set; }
+    /// <summary>Lifetime in seconds of the MFA token issued after password verification during login, clamped to 60–900.</summary>
     public int? MfaSessionTtlSeconds { get; set; }
+    /// <summary>How long a WebAuthn challenge stays valid, in seconds, clamped to 30–600.</summary>
     public int? WebAuthnChallengeTtlSeconds { get; set; }
+    /// <summary>Whether WebAuthn ceremonies require user verification (PIN or biometric) on the authenticator.</summary>
     public bool? RequireWebAuthnUserVerification { get; set; }
+    /// <summary>Step-up failures by one user within the window before step-up is locked; values under 1 are ignored.</summary>
     public int? StepUpFailureThreshold { get; set; }
+    /// <summary>Sliding window in seconds for <see cref="StepUpFailureThreshold"/>; values under 30 are ignored.</summary>
     public int? StepUpFailureWindowSeconds { get; set; }
+    /// <summary>Whether a CA without a delegated OCSP responder certificate may sign responses with its own key; when false the responder answers <c>unauthorized</c>.</summary>
     public bool? AllowCaDirectSigning { get; set; }
+    /// <summary>Whether the OCSP responder refuses a delegated responder certificate lacking <c>id-pkix-ocsp-nocheck</c>; when false it only warns.</summary>
     public bool? RequireNoCheckExtension { get; set; }
+    /// <summary>Whether unsigned OCSP requests are refused with <c>sigRequired</c>.</summary>
     public bool? RequireSignedRequests { get; set; }
+    /// <summary>Default <c>nextUpdate</c> distance in minutes on <c>good</c> OCSP responses; values under 1 are ignored.</summary>
     public int? DefaultGoodResponseTtlMinutes { get; set; }
+    /// <summary>Default <c>nextUpdate</c> distance in minutes on <c>revoked</c> OCSP responses; values under 1 are ignored.</summary>
     public int? DefaultRevokedResponseTtlMinutes { get; set; }
+    /// <summary>Most certificate status requests one OCSP request may carry; values under 1 are ignored.</summary>
     public int? MaxSingleRequestsPerRequest { get; set; }
     /// <summary>User quorum for controlled-user ceremonies (promote/demote/delete). Min 1.</summary>
     public int? UserQuorum { get; set; }
     // Keystore KDF cost — raise as hardware improves; existing files re-stamp on append.
+    /// <summary>scrypt cost parameter N used when a keystore file is written: a power of two from 2^14 to 2^20, with 128 · N · r at most 1 GiB, or 400.</summary>
     public int? KeystoreScryptN { get; set; }
+    /// <summary>scrypt block size r used when a keystore file is written: 1 to 32, with 128 · N · r at most 1 GiB, or 400.</summary>
     public int? KeystoreScryptR { get; set; }
+    /// <summary>scrypt parallelism p used when a keystore file is written: 1 to 16, or 400.</summary>
     public int? KeystoreScryptP { get; set; }
     /// <summary>Whether instance CAs need a key ceremony. Ceremony-gated unless the caller is a system-super.</summary>
     public bool? RequireKeyCeremony { get; set; }

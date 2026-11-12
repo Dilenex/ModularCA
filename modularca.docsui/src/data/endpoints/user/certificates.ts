@@ -4,7 +4,7 @@ export const userCertificates: ApiEndpoint[] = [
     {
         method: 'GET',
         path: '/api/v1/user/certificates',
-        summary: 'List all non-CA certificates the user has view access to.',
+        summary: 'List the non-CA certificates the user has view access to. With ?mine=true, only the caller\'s own: those issued from a request the caller made, and those an access entry names the caller on.',
         auth: 'Authorize (CaUser)',
         category: 'User Certificates',
         headers: [

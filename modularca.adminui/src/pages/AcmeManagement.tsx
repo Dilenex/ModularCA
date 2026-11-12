@@ -264,9 +264,16 @@ const AcmeEndpointsSection: React.FC = () => {
     const [dirLoading, setDirLoading] = useState(false);
     const [error, setError] = useState<NoticeInput | null>(null);
 
+    // A response for a scope already left is dropped, so a slow one cannot replace the current list.
     useEffect(() => {
+        let cancelled = false;
+        setLoading(true);
+        setError(null);
+        setCas([]);
+        setSelectedCa('');
         apiGet<any>('/api/v1/admin/authorities/hierarchy')
             .then((data) => {
+                if (cancelled) return;
                 const flat: any[] = [];
                 const flatten = (items: any[]) => {
                     for (const ca of items) {
@@ -284,18 +291,21 @@ const AcmeEndpointsSection: React.FC = () => {
                 if (visible.length > 0) setSelectedCa(visible[0].label || '');
                 else setSelectedCa('');
             })
-            .catch((err) => setError(errorNotice(err, 'The request failed.')))
-            .finally(() => setLoading(false));
+            .catch((err) => { if (!cancelled) setError(errorNotice(err, 'The request failed.')); })
+            .finally(() => { if (!cancelled) setLoading(false); });
+        return () => { cancelled = true; };
     }, [scopeCaId, scopeSpaceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
-        if (!selectedCa) return;
-        setDirLoading(true);
         setDirectory(null);
+        if (!selectedCa) { setDirLoading(false); return; }
+        let cancelled = false;
+        setDirLoading(true);
         apiGet<any>(`/api/v1/acme/${selectedCa}/directory`)
-            .then(setDirectory)
-            .catch(() => setDirectory(null))
-            .finally(() => setDirLoading(false));
+            .then((d) => { if (!cancelled) setDirectory(d); })
+            .catch(() => { if (!cancelled) setDirectory(null); })
+            .finally(() => { if (!cancelled) setDirLoading(false); });
+        return () => { cancelled = true; };
     }, [selectedCa]);
 
     const directoryUrl = selectedCa

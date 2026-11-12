@@ -753,7 +753,7 @@ public static class CertificateUtil
         if (akiExt != null)
         {
             var aki = AuthorityKeyIdentifier.GetInstance(X509ExtensionUtilities.FromExtensionValue(akiExt));
-            var keyId = aki.GetKeyIdentifier();
+            var keyId = aki.KeyIdentifier?.GetOctets();
             if (keyId != null)
                 result.AuthorityKeyIdentifier = FormatHexBytes(keyId);
         }

@@ -44,7 +44,7 @@ public sealed class SshLoginNameEndpointTests
     private sealed class CurrentUserStub(UserEntity user) : ICurrentUserService
     {
         public Guid? UserId => user.Id;
-        public UserEntity? User { get; } = user;
+        public UserEntity? User => user;
         public bool IsAuthenticated => true;
         public Task EnsureLoadedAsync() => Task.CompletedTask;
     }
@@ -790,7 +790,7 @@ public sealed class SshLoginNameEndpointTests
         Assert.Equal(refusal, Error(await Call(profiles, $"Create{kind}Profile", Create("typed wrongly", "both"))));
         Assert.Equal(refusal, Error(await Call(profiles, $"Create{kind}Profile", Create("typed in capitals", "User"))));
 
-        var listed = Json(await Call(profiles, $"Get{kind}Profiles")).EnumerateArray().ToDictionary(p => p.GetProperty("name").GetString()!, p => p.GetProperty("certificateType").GetString());
+        var listed = Json(await Call(profiles, $"Get{kind}Profiles", null, null)).EnumerateArray().ToDictionary(p => p.GetProperty("name").GetString()!, p => p.GetProperty("certificateType").GetString());
         Assert.Equal("host", listed["typed host"]);
         Assert.Equal("user", listed["typed user"]);
         Assert.Null(listed["typed either"]);

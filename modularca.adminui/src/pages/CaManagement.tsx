@@ -6,6 +6,7 @@ import { isApiError } from '@shared-auth/api/problem';
 import { actionButton } from '@shared/components/actionButtons';
 import { apiGet, apiPostWithMfa } from '../api/client';
 import { useScope } from '../context/ScopeContext';
+import { useLatestRequest } from '@shared/hooks/useLatestRequest';
 import { scopeLabel } from '../scope';
 import { useAuth } from '../context/AuthContext';
 import { can, canAtSpace, canUseSshTab, consoleCas, spacesOf } from '../authz';
@@ -147,11 +148,16 @@ const X509Authorities: React.FC = () => {
         return null;
     };
 
+    // Only the newest load writes: a slow answer for a scope already left is dropped.
+    const authorityLoads = useLatestRequest();
+    const caProfileLoads = useLatestRequest();
     const loadAuthorities = () => {
+        const current = authorityLoads.begin();
         setLoading(true);
         setError(null);
         apiGet<any>('/api/v1/admin/authorities/hierarchy')
             .then((data) => {
+                if (!current()) return;
                 const all = Array.isArray(data) ? data : (data.items || data.authorities || []);
                 const scoped = scopeCaId ? subtreeOf(all, scopeCaId) : null;
                 const items = scopeCaId
@@ -165,6 +171,7 @@ const X509Authorities: React.FC = () => {
                 setLoading(false);
             })
             .catch((err) => {
+                if (!current()) return;
                 // A space administrator whose space has no CA yet is refused the list (it needs a
                 // CA to be scoped to); there is nothing to list, and the create panel still works.
                 if (isApiError(err) && err.status === 403 && consoleCas(capabilities).length === 0) setAuthorities([]);
@@ -198,8 +205,10 @@ const X509Authorities: React.FC = () => {
 
     useEffect(() => {
         loadAuthorities();
+        const current = caProfileLoads.begin();
         apiGet<any>('/api/v1/admin/cert-profiles?isCaProfile=true')
             .then(data => {
+                if (!current()) return;
                 const items = Array.isArray(data) ? data : (data.items || []);
                 setCaCertProfiles(items);
                 if (items.length > 0 && !formCertProfile) setFormCertProfile(items[0].id);

@@ -69,6 +69,9 @@ public class RequestAuditMiddleware
         "account", "ca", "delta", "ces"
     };
 
+    /// <summary>Initializes a new <see cref="RequestAuditMiddleware"/>.</summary>
+    /// <param name="next">The next delegate in the pipeline.</param>
+    /// <param name="config">System configuration holding the network audit settings.</param>
     public RequestAuditMiddleware(RequestDelegate next, SystemConfig config)
     {
         _next = next;

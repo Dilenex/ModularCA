@@ -30,7 +30,7 @@ namespace ModularCA.Core.Services.SchedulerJobs;
 /// <see cref="SingletonCronJob.TickAsync"/> evaluates so the work fires immediately
 /// regardless of schedule.
 /// </summary>
-public class AutoRenewalJob : SingletonCronJob
+public class AutoRenewalJob : SingletonCronJob, ISignerDependentJob
 {
     private readonly ModularCADbContext _db;
     private readonly ICertificateIssuanceService _issuance;

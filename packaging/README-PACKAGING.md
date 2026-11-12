@@ -119,7 +119,7 @@ never runs migrations.
 
 The consequence is worth knowing: `apt upgrade` reports success, then the schema changes when the
 service starts. A migration failure or a refusal appears in `journalctl -u modularca`, not in apt's
-output. A refusal exits with status 3 and is not retried (`RestartPreventExitStatus=3`); status 75
+output. A refusal exits with status 3 and is not retried (`RestartPreventExitStatus=3 4`); status 4 is the same after a migration had already been applied, so going back needs a restore; status 75
 is a wait, or in-process retries of a migration that failed on a transient error, that ran out
 after `Schema.WaitSeconds`, and systemd retries it. `preinst` warns about this on upgrade and tells you
 to back up first.
