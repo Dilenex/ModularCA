@@ -700,6 +700,11 @@ The first test build of 0.4.4. It carries everything below.
 
 **Fixed**
 
+- **`--upgrade-check` says when it may not read the configuration.** Run as an account other
+  than the service's, it reported `db.yaml` as not found and suggested another `--config-dir`,
+  though the file was there and only unreadable. It now says the account cannot read it and
+  names the command to run as the service account. The exit status is 1 as before.
+
 - **SCEP's GetCACaps is answered for the CA it is asked of.** It was answered without looking at
   the CA, so a client was told `POSTPKIOperation`, `SHA-256` and the rest by a CA whose key is
   not RSA, by a CA with SCEP switched off, and under a label that names no CA. It is now refused
