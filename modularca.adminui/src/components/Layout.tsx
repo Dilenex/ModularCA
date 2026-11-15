@@ -15,6 +15,10 @@ import { switchBadge } from './BadgeSwitcher';
 import { useStepUp } from './StepUpMfaContext';
 import { APP_VERSION, fetchServerVersion, isVersionDrift, type ServerVersion } from '../version';
 import { SourceNotice } from '@shared/components/SourceNotice';
+import type { InstanceModeStatus } from '@shared/generated';
+import { apiGet } from '../api/client';
+import { SYSTEM_ADMIN } from '../gates';
+import { INSTANCE_MODE_CHANGED_EVENT, instanceModeBanner } from '../pages/instanceMode';
 
 import { navSections } from '../nav';
 
@@ -52,6 +56,28 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     }, []);
 
     const showDrift = isVersionDrift(serverVersion) && !driftDismissed;
+
+    // The instance mode: a standing banner whenever it is not full. It cannot be dismissed; it
+    // goes when the mode is full again. Read at load, again every minute (the hub can change the
+    // mode at any time), and at once when the settings card changes it.
+    const [instanceMode, setInstanceMode] = useState<InstanceModeStatus | null>(null);
+    useEffect(() => {
+        let cancelled = false;
+        const load = () => {
+            apiGet<InstanceModeStatus>('/api/v1/admin/instance-mode', { toast: false })
+                .then((s) => { if (!cancelled) setInstanceMode(s); })
+                .catch(() => { /* an older server, or signed out: no banner */ });
+        };
+        load();
+        const timer = window.setInterval(load, 60_000);
+        window.addEventListener(INSTANCE_MODE_CHANGED_EVENT, load);
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+            window.removeEventListener(INSTANCE_MODE_CHANGED_EVENT, load);
+        };
+    }, []);
+    const modeBanner = instanceModeBanner(instanceMode);
 
     const dismissDrift = () => {
         setDriftDismissed(true);
@@ -189,9 +215,26 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
             <div className="flex-1 flex flex-col overflow-hidden min-w-0">
                 <TopBar onOpenSidebar={() => setSidebarOpen(true)} />
+                {/* Instance mode banner: stands for as long as the instance is restricted, in maintenance or in DR mode. */}
+                {modeBanner && (
+                    <div
+                        role="alert"
+                        className={`flex items-center justify-between gap-3 px-4 py-1.5 flex-shrink-0 border-b text-xs ${
+                            modeBanner.tone === 'crit' ? 'bg-crit-soft border-crit/40 text-crit' : 'bg-warn-soft border-warn/40 text-warn'}`}
+                    >
+                        <span>
+                            <span className="font-semibold">{modeBanner.title}</span>{' '}{modeBanner.text}
+                        </span>
+                        {PORTAL === 'admin' && allows(SYSTEM_ADMIN) && (
+                            <Link to="/settings" className="font-semibold underline hover:no-underline flex-shrink-0">
+                                Instance mode
+                            </Link>
+                        )}
+                    </div>
+                )}
                 {/* Rollback notice: the instance found at start that it runs from an earlier or
-                    copied state. First of the banners, and the only one that cannot be dismissed:
-                    it stands until a system administrator acknowledges it with step-up. */}
+                    copied state. It cannot be dismissed: it stands until a system administrator
+                    acknowledges it with step-up. */}
                 {PORTAL === 'admin' && <ContinuityNoticeBanner />}
                 {/* Deploy-drift banner: UI bundle and API report different versions. */}
                 {showDrift && serverVersion && (

@@ -180,6 +180,7 @@ public class AdminEnrollmentTokenController(
     /// the token. Replaces the per-CA <c>CmpSharedSecret</c> single-secret-for-everyone
     /// model.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("cmp-secret")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SigningProfile, "request.SigningProfileId")]
@@ -240,6 +241,7 @@ public class AdminEnrollmentTokenController(
     /// or SAN restriction <see cref="ModularCA.Shared.Utils.EnrollmentNameRestriction.RestrictionError"/>
     /// refuses is a 400.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [Authorize]
     [RequireStepUp(StepUpOps.CreateEnrollmentSecret)]
@@ -313,6 +315,7 @@ public class AdminEnrollmentTokenController(
     /// <c>CaOperator</c> policy; a token outside the caller's <see cref="SpaceFence"/>, or a
     /// system-wide token for a caller who is not instance-wide, answers 404 like a missing one.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpDelete("{id:guid}")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> RevokeToken(Guid id)

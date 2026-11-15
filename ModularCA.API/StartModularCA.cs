@@ -606,14 +606,22 @@ if (args.Contains(ModularCA.API.Startup.ClaimTokenCommand.IssueFlag, StringCompa
 // Host-local access to the stored settings, with the db.yaml credentials: the way to read and
 // change an instance-wide setting without the console, above all one that has locked the
 // administrators out of it. See SettingsCommand.
-if (args.Contains(ModularCA.Core.Services.Settings.SettingsCommand.Flag, StringComparer.OrdinalIgnoreCase))
+// --new-hub-token prints an affiliation token with its hash and touches nothing.
+// --set-hub-token-hash sets the hash an existing instance holds, through the same store as
+// --settings below. See HubTokenCommand.
+if (args.Contains(ModularCA.API.Startup.HubTokenCommand.NewFlag, StringComparer.OrdinalIgnoreCase))
+{
+    Environment.Exit(ModularCA.API.Startup.HubTokenCommand.RunNew(Console.Out));
+}
+var hubTokenHashCommand = args.Contains(ModularCA.API.Startup.HubTokenCommand.SetFlag, StringComparer.OrdinalIgnoreCase);
+if (hubTokenHashCommand || args.Contains(ModularCA.Core.Services.Settings.SettingsCommand.Flag, StringComparer.OrdinalIgnoreCase))
 {
     var settingsArgs = args.SkipWhile(a => !a.Equals(ModularCA.Core.Services.Settings.SettingsCommand.Flag, StringComparison.OrdinalIgnoreCase)).Skip(1).ToList();
     var settingsDbYaml = YamlDbConfigLoader.Load(Path.Combine(AppContext.BaseDirectory, "config", "db.yaml"));
     if (settingsDbYaml == null)
     {
-        Console.Error.WriteLine("config/db.yaml was not found: --settings runs on an installed node, as the service user.");
-        Console.Error.WriteLine(ModularCA.Core.Services.Settings.SettingsCommand.Usage);
+        Console.Error.WriteLine("config/db.yaml was not found: --settings and --set-hub-token-hash run on an installed node, as the service user.");
+        Console.Error.WriteLine(hubTokenHashCommand ? ModularCA.API.Startup.HubTokenCommand.Usage : ModularCA.Core.Services.Settings.SettingsCommand.Usage);
         Environment.Exit(1);
     }
     var settingsDbConfig = new SystemConfig();
@@ -644,9 +652,21 @@ if (args.Contains(ModularCA.Core.Services.Settings.SettingsCommand.Flag, StringC
             new ModularCA.Core.Services.Settings.HostAuditService(settingsAuditDb),
             new ModularCA.Core.Services.Settings.NoSecretsSigner(),
             Microsoft.Extensions.Logging.Abstractions.NullLogger<ModularCA.Core.Services.Settings.SettingsStore>.Instance);
-        // The verb and the key are logged; a value is not.
-        Log.Warning("Operator triggered --settings {Verb} {Key}", settingsArgs.ElementAtOrDefault(0) ?? "", settingsArgs.ElementAtOrDefault(1) ?? "");
-        settingsExit = await ModularCA.Core.Services.Settings.SettingsCommand.RunAsync(settingsStore, settingsArgs, Console.Out, Console.Error);
+        if (hubTokenHashCommand)
+        {
+            Log.Warning("Operator triggered --set-hub-token-hash");
+            settingsExit = await ModularCA.API.Startup.HubTokenCommand.RunSetAsync(
+                settingsStore,
+                new ModularCA.Core.Services.Settings.HostAuditService(settingsAuditDb),
+                args.SkipWhile(a => !a.Equals(ModularCA.API.Startup.HubTokenCommand.SetFlag, StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault(),
+                Console.Out, Console.Error);
+        }
+        else
+        {
+            // The verb and the key are logged; a value is not.
+            Log.Warning("Operator triggered --settings {Verb} {Key}", settingsArgs.ElementAtOrDefault(0) ?? "", settingsArgs.ElementAtOrDefault(1) ?? "");
+            settingsExit = await ModularCA.Core.Services.Settings.SettingsCommand.RunAsync(settingsStore, settingsArgs, Console.Out, Console.Error);
+        }
     }
     catch (Exception ex)
     {
@@ -1038,6 +1058,39 @@ builder.Services.AddSingleton(activeRoles);
 // The control role gates the most: the console and wizard surface, every startup write, and
 // the scheduled jobs that mutate. Named once so the gates below read the same.
 var controlActive = activeRoles.Has(ModularCA.API.Startup.ProcessRole.Control);
+// The instance's mode: what it may do right now. Kept in a small file on this host, beside the
+// hub's socket when MODULARCA__HUB__SOCKET names one and in config/ otherwise, never in the
+// database. With no hub socket and no file it is full, as an install with no hub always was.
+// The setup wizard runs before there is an instance, so it is always full.
+var hubSocketPath = Environment.GetEnvironmentVariable(ModularCA.Shared.Modes.InstanceModeStore.HubSocketVariable);
+if (string.IsNullOrWhiteSpace(hubSocketPath)) hubSocketPath = null;
+ModularCA.Shared.Modes.InstanceModeStore? instanceModeStore = null;
+if (!isSetupMode)
+{
+    try
+    {
+        instanceModeStore = ModularCA.Shared.Modes.InstanceModeStore.Open(
+            hubSocketPath,
+            Environment.GetEnvironmentVariable(ModularCA.Shared.Modes.InstanceModeStore.HubStartModeVariable),
+            Path.Combine(AppContext.BaseDirectory, "config"));
+    }
+    catch (ArgumentException ex)
+    {
+        Console.Error.WriteLine($"[FATAL] {ex.Message}");
+        Environment.Exit(1);
+        throw;
+    }
+    builder.Services.AddSingleton(instanceModeStore);
+    var modeAtStart = instanceModeStore.Current;
+    if (modeAtStart.Mode != ModularCA.Shared.Modes.InstanceMode.Full)
+        Log.Warning("This instance starts in {Mode} (set by {Source}{SetBy}); record at {Path}",
+            ModularCA.Shared.Modes.InstanceModeGate.DisplayName(modeAtStart.Mode),
+            ModularCA.Shared.Modes.InstanceModeStore.SourceName(modeAtStart.Source),
+            modeAtStart.SetBy == null ? "" : " " + modeAtStart.SetBy,
+            instanceModeStore.FilePath);
+}
+builder.Services.AddSingleton<ModularCA.Shared.Modes.IInstanceModeGate>(
+    instanceModeStore ?? (ModularCA.Shared.Modes.IInstanceModeGate)ModularCA.Shared.Modes.FullInstanceModeGate.Instance);
 // A process with the ingress role and nothing else terminates TLS and forwards; it holds no
 // key, hosts no controller, no scheduler and no console, and needs no signer at all.
 var ingressOnly = !activeRoles.HasAnyNodeRole && !activeRoles.Has(ModularCA.API.Startup.ProcessRole.Signer);
@@ -1337,7 +1390,9 @@ if (!isSetupMode && ModularCA.API.Startup.SchedulerJobRoles.RunsScheduler(active
         sp.GetRequiredService<ILogger<SchedulerService>>(),
         sp.GetRequiredService<SystemConfig>(),
         sp.GetService<TimeProvider>(),
-        schedulerLeaseName));
+        schedulerLeaseName,
+        sp.GetRequiredService<ModularCA.Shared.Modes.IInstanceModeGate>(),
+        ModularCA.API.Startup.SchedulerJobRoles.ModeOperationOf));
 }
 else if (!isSetupMode)
 {
@@ -1909,6 +1964,8 @@ builder.Services.AddScoped<ICsrService, CsrService>();
 builder.Services.AddControllers(options =>
 {
     options.Conventions.Add(new ModularCA.API.Startup.NodeRoleConvention(processRoles));
+    // The instance's mode, asked once for every endpoint that declares a class: see ModeGateFilter.
+    options.Filters.Add(new ModularCA.Auth.Authorization.ModeGateFilter());
 }).AddJsonOptions(opts => ModularCA.API.Json.ApiJsonOptions.Apply(opts.JsonSerializerOptions));
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
@@ -2017,6 +2074,7 @@ var healthChecks = builder.Services.AddHealthChecks()
     // The active roles and, per role, whether what it needs is there (validation: the signer
     // reachable; enrollment: the signer unlocked; control: the database).
     .AddCheck<ModularCA.API.HealthChecks.NodeRoleHealthCheck>("roles")
+    .AddCheck<ModularCA.API.HealthChecks.InstanceModeHealthCheck>("instance-mode")
     // Whether the secrets the signer wraps have been read: not while a node that started before
     // its signer answered waits for it.
     .AddCheck<ModularCA.API.HealthChecks.SignerSecretsHealthCheck>("signer-secrets")
@@ -3897,6 +3955,24 @@ if (!isSetupMode && controlActive)
     {
         var replayLogger = app.Services.GetRequiredService<ILogger<Program>>();
         replayLogger.LogWarning(ex, "Bootstrap audit replay failed at startup; will retry on next boot");
+    }
+}
+
+// The hub's local connection: a listener of its own, on the Unix socket MODULARCA__HUB__SOCKET
+// names, for health, mode, backup and token replacement only. With the variable unset nothing is
+// opened. See HubLocalConnection.
+if (ModularCA.API.Startup.HubLocalConnection.Hosts(hubSocketPath, activeRoles, isSetupMode))
+{
+    try
+    {
+        await ModularCA.API.Startup.HubLocalConnection.StartAsync(app, hubSocketPath!, instanceModeStore!, config, settingsPersistence);
+    }
+    catch (Exception ex)
+    {
+        Log.Fatal(ex, "The hub's local connection could not be opened on {Socket}", hubSocketPath);
+        Console.Error.WriteLine($"[FATAL] The hub's local connection could not be opened on {hubSocketPath}: {ex.Message}");
+        await Log.CloseAndFlushAsync();
+        Environment.Exit(1);
     }
 }
 

@@ -140,6 +140,7 @@ public class EstController(IEstService estService, ModularCADbContext db) : Cont
     /// and returns it wrapped in a PKCS#7 certs-only message (base64).
     /// Enforces request size limits and returns protocol-appropriate errors.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("simpleenroll")]
     [Consumes("application/pkcs10")]
     [RequestSizeLimit(MaxCsrBodySize)]
@@ -216,6 +217,7 @@ public class EstController(IEstService estService, ModularCADbContext db) : Cont
     /// was issued by the target CA, is within its renewal window, and that the CSR
     /// subject matches the original certificate subject before re-issuing.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("simplereenroll")]
     [Consumes("application/pkcs10")]
     [RequestSizeLimit(MaxCsrBodySize)]

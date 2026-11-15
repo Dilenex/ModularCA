@@ -60,6 +60,9 @@ public class ModuleBoundaryTests
         // It references Shared alone, so the node's client holds no keystore type; the API
         // composes it with the keystore project, which is why it sits below Keystore.
         "ModularCA.Signer",
+        // The hub's local connection: its contract, the hub's client and the node's listener.
+        // It references no project at all, so a hub can reference it and take nothing else.
+        "ModularCA.HubConnection",
         "ModularCA.Database",
         "ModularCA.Keystore",
         "ModularCA.Core",

@@ -678,6 +678,7 @@ public class AdminAuditController : ControllerBase
     /// make something disappear. Records before it keep their link checks.
     /// </para>
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("verify/restart")]
     [Authorize(Policy = "SystemAdmin")]
     [RefuseQueryKey("tenantId", "chainId")]

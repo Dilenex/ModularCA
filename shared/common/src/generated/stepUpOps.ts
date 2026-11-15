@@ -133,6 +133,7 @@ export const StepUpOps = {
     CreateApiKey: 'create-api-key',
     RevokeApiKey: 'revoke-api-key',
     RotateJwtSecret: 'rotate-jwt-secret',
+    SetInstanceMode: 'set-instance-mode',
     ManageSshLoginNames: 'manage-ssh-login-names',
     SignSshCert: 'sign-ssh-cert',
     RetireCert: 'retire-cert',

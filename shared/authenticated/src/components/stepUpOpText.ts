@@ -76,6 +76,7 @@ const TEXT: Record<string, string> = {
     'policy-import': 'Import policy',
     'update-protocol-config': "Change a CA's enrollment protocol settings",
     'update-config': 'Change system settings',
+    'set-instance-mode': 'Change the instance mode',
     'restart': 'Restart the service',
     'create-ssh-ca': 'Create an SSH certificate authority key',
     'disable-ssh-ca': 'Disable an SSH certificate authority key',

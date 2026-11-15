@@ -437,6 +437,13 @@ public static class BootstrapDatabaseSetup
                 Schedule = security?.BackupSchedule ?? "0 2 * * *",
                 OutputPath = network?.BackupOutputPath ?? "backups",
                 RetentionCount = network?.BackupRetentionCount ?? 10
+            },
+            // The hash of the hub's affiliation token, when bootstrap.yaml gives one. It is an
+            // instance-wide setting: the first start of the control role moves it, with the rest,
+            // into the settings store, so it is kept with the instance's data and its backups.
+            Hub = new
+            {
+                AffiliationTokenSha256 = BootstrapInputSections.HubTokenHash(bootstrapConfig?.Hub)
             }
         };
 

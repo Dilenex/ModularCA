@@ -118,6 +118,7 @@ public sealed class SpaceFenceGuardTests
         ["AdminEnrollmentTokenController.GetActiveTokens"] = "MayManageToken: SpaceFence.Allows; unbound tokens need instance-wide",
         ["AdminGroupController.GetAll"] = "SpaceFence.Predicate",
         ["AdminGroupController.GetById"] = "SpaceFence.Allows",
+        ["AdminInstanceModeController.Get"] = "the instance's mode, the same for every signed-in user: no space, CA or user data",
         ["AdminIssuanceController.GetKeyOptions"] = "EnforceSpaceFence on the signing profile's CA, then profile.use",
         ["AdminIssuanceController.GetValidityCeiling"] = "EnforceSpaceFence on the signing profile's CA, then profile.use",
         ["AdminRequestProfileController.GetAll"] = "SpaceFence.Allows on the bound CA; unbound are instance-wide",

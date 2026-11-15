@@ -6,6 +6,94 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+**Upgrade notes**
+
+- **Two migrations, both additive:** `RevokedSerialTombstones` and `InstanceIncarnation`. They add
+  tables and three nullable columns on certificates. A backup taken before the upgrade is still
+  the way back to 0.4.4.
+- **Nothing new is on until it is asked for.** With no `MODULARCA__INSTANCE__INCARNATION` the
+  instance compares nothing at start. With no `MODULARCA__HUB__SOCKET` nothing listens for a hub.
+  With nobody having set a mode, the instance is in full mode and refuses nothing.
+- **`/health/ready` has two new entries**, `checks.continuity` and `checks.instanceMode`. Neither
+  turns the node unhealthy: a rollback notice and a mode other than full are reported there with
+  the status still 200. Monitoring that reads every check sees them.
+- **Setting `MODULARCA__HUB__SOCKET` on an existing instance makes it start restricted** until its
+  hub or an administrator sets a mode, unless `MODULARCA__HUB__STARTMODE=full` is set with it.
+- **An existing instance holds no affiliation token hash**, so the token check on the hub's
+  socket is off until `--set-hub-token-hash` is run and the node restarted, or the hub gives a
+  hash over the connection. The hub's health read says whether the check is on.
+- **A request refused because of the mode answers 503** with `Retry-After: 60` and the code
+  `MCA-MOD-001` (restricted), `MCA-MOD-003` (maintenance) or `MCA-MOD-002` (DR mode). Enrolment
+  clients will retry.
+- **New audit actions:** `RevokedSerialRecorded`, `CertificateAdopted`,
+  `InstanceIncarnationChanged`, `InstanceIncarnationSourceLost`,
+  `InstanceContinuityAcknowledged`, `InstanceModeChanged`, `InstanceModeRefused`,
+  `HubRequestServed`, `HubRequestRefused`, `HubAffiliationTokenReplaced`.
+
+**Added**
+
+- **Revoking a certificate the CA has no record of.** After a database has gone back in time, a
+  certificate issued in the lost time is valid and unknown, and could not be revoked. On a CA's
+  page, an administrator with `cert.revoke` on that CA can now do one of two things, each with
+  step-up and each audited:
+  - **Revoke a serial number alone.** It goes on the CRL, and OCSP answers with its date and
+    reason. It is refused when the CA holds a certificate with that serial (revoke the
+    certificate). It stays on the CRL for the longest validity the CA's profiles allow, and
+    cannot be deleted.
+  - **Adopt a supplied certificate.** It is accepted only when this CA's current key signed it.
+    It then behaves like any other certificate and can be revoked, at adoption or later. A CA
+    certificate, and a certificate signed by a key the CA no longer uses, are refused: revoke
+    their serial instead.
+  `GET` and `POST /api/v1/admin/authorities/{caId}/revoked-serials`,
+  `POST /api/v1/admin/authorities/{caId}/adopted-certificates`.
+- **An instance notices that it is running from an earlier or copied state.** When
+  `MODULARCA__INSTANCE__INCARNATION` is set and its value differs from the one the database last
+  saw, the instance starts as usual, raises every CRL number past the floor a restore uses,
+  writes an `InstanceIncarnationChanged` audit record, and shows a notice in the admin console
+  and under `checks.continuity` in `/health/ready` until a system administrator acknowledges it
+  with step-up. The notice names the time after which the earlier timeline's certificates and
+  revocations are unknown here. Nothing is recovered: that needs the signer's journal, which is
+  not built. An orchestrator sets the variable to a new value whenever it puts an instance's
+  volumes back; a snapshot rollback of a machine is not detected by itself yet. `--restore`
+  records the host's value, so a restore is not reported as a rollback.
+- **A published CRL ahead of the database is treated the same way.** Where an LDAP publisher
+  publishes a CA's CRL, the instance reads it back at start; a higher CRL number there than the
+  database holds raises the numbers past it and the same notice. This has not yet been run
+  against a directory.
+- **Instance mode: full, restricted, maintenance and DR mode.** Restricted keeps issuing, revoking, disabling
+  a CA and locking an account, and freezes users, groups, roles, grants, profiles, policy,
+  settings, new CAs, key operations, ceremonies, releasing a hold and un-revoking. DR mode also
+  stops issuing, revoking, enrolment over every protocol, every scheduled job but backups, and
+  signing new CRLs; OCSP answers `tryLater`, and a CRL already signed is still served. What the
+  enrolment protocols only read stays up in DR mode (the ACME directory and an order or
+  certificate read back, SCEP GetCACert and GetCACaps, EST `cacerts`, the MSAE policy), so a
+  client still finds the CA and is told to try again when it asks for a certificate. Signing in,
+  the caller's own credentials, backups, a restore and setting the mode work in every mode.
+  **Maintenance** is for an instance that is being updated or audited: it freezes what restricted
+  freezes and also issues nothing (no issuing, renewing, approving, enrolment over any protocol,
+  SSH certificates or scheduled renewal), and it still revokes, including a certificate the CA
+  does not hold, still signs CRLs and still answers OCSP. Over CMP a revocation request is served
+  and an enrolment refused. Every endpoint that
+  changes something declares which of these it is, and a test fails one that does not.
+- **Settings, General, Instance mode** shows the mode, who set it and when, and sets it by hand
+  with a reason (`system.manage` at system scope, with step-up). A banner stands on every page
+  while the mode is not full. `GET` and `PUT /api/v1/admin/instance-mode`. The mode is kept in a
+  file on the host, not in the database, so it does not follow the data to another copy.
+- **The hub's local connection.** With `MODULARCA__HUB__SOCKET` set, the control role listens on
+  a Unix socket for its ModularCA Hub, for six requests only: hello, read health, read the mode,
+  set the mode, make a backup, and replace the affiliation token. Anything else is refused and
+  audited; every changing or refused request is audited under `hub`, and served reads are
+  counted into one audit record per five minutes; a changing request repeated with the same
+  identifier is done once. The socket's file mode is `MODULARCA__HUB__SOCKETMODE` (default
+  0660). `docs/architecture/hub-local-connection.md` has the contract, and
+  `ModularCA.HubConnection` is a project a hub can reference by itself.
+- **The affiliation token.** The hub keeps a random token and gives the instance its SHA-256:
+  `Hub.AffiliationTokenSha256` in `bootstrap.yaml`, or `--new-hub-token` and
+  `--set-hub-token-hash` on a host. With a hash held, every request on the hub's socket must
+  carry the token, and is refused before its body is read when it does not match. With none
+  held, reaching the socket is the only proof, and the instance says so at start and in the
+  hub's health read.
+
 **Fixed**
 
 - **With "Require mTLS OCSP Check" on, a client certificate issued by an intermediate CA can sign

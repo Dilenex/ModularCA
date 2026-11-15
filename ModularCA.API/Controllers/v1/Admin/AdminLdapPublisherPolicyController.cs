@@ -39,6 +39,7 @@ public class AdminLdapPublisherPolicyController(
     /// <summary>
     /// Applies a partial update to the policy. Null fields are left untouched.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> Update([FromBody] LdapPublisherPolicyUpdateRequest request)

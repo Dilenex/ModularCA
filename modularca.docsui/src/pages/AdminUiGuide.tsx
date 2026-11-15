@@ -1167,10 +1167,18 @@ sshd -t && systemctl reload ssh`}</pre>
                     <li>Logging level configuration</li>
                     <li>Rate limiting settings</li>
                     <li>OCSP responder configuration</li>
+                    <li>
+                        Instance mode (General tab): shows whether the instance is in full, restricted or DR mode, who set
+                        it and when, and sets it by hand with a reason. Restricted mode keeps issuing and revoking and
+                        freezes everything that changes how the instance is run. DR mode stops everything except signing
+                        in, backups and changing the mode. A banner stands on every page while the mode is not full.
+                    </li>
                 </ul>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/admin/config<br />
-                    PUT /api/v1/admin/config/security
+                    PUT /api/v1/admin/config/security<br />
+                    GET /api/v1/admin/instance-mode<br />
+                    PUT /api/v1/admin/instance-mode
                 </div>
             </section>
 

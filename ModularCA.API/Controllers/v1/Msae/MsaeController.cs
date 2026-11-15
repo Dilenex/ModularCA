@@ -74,6 +74,8 @@ public class MsaeController(
     private const int MaxBodyBytes = 256 * 1024;
 
     /// <summary>Answers an MS-XCEP <c>GetPolicies</c> request with the templates this CA offers.</summary>
+    // The enrolment policy is a read: answered in every mode. Enrolment itself (CES) is not.
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("cep")]
     [RequestSizeLimit(MaxBodyBytes)]
     public async Task<IActionResult> Cep(string? caLabel = null)
@@ -115,6 +117,7 @@ public class MsaeController(
     }
 
     /// <summary>Answers an MS-WSTEP <c>Issue</c> request with the issued certificate.</summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("ces")]
     [RequestSizeLimit(MaxBodyBytes)]
     public async Task<IActionResult> Ces(string? caLabel = null)

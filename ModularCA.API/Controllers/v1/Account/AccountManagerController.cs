@@ -62,6 +62,7 @@ namespace ModularCA.API.Controllers.v1.Account
         /// field is left unchanged; only fields that actually differ are written. A field holding a
         /// control character is refused with 400.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPut]
         public async Task<IActionResult> UpdateProfile([FromBody] UpdateAccountProfileRequest request,
             [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -154,6 +155,7 @@ namespace ModularCA.API.Controllers.v1.Account
         /// account, whose password lives in the directory, is answered 409 with an explanation
         /// before any step-up, and the refusal is audited the same way.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
         [HttpPut("password")]
         public async Task<IActionResult> ChangePassword([FromBody] UpdatePasswordRequest request,
             [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)

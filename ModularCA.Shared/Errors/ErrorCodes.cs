@@ -22,6 +22,7 @@ namespace ModularCA.Shared.Errors;
 ///   <item><description><c>RES</c> — a named resource is missing, or collides with existing state.</description></item>
 ///   <item><description><c>POL</c> — a deliberate certificate-policy limit was exceeded.</description></item>
 ///   <item><description><c>PRF</c> — the chosen profile does not permit the key parameters.</description></item>
+///   <item><description><c>MOD</c> — the instance's mode (restricted, DR mode) holds the operation back.</description></item>
 /// </list>
 /// <para>
 /// <b>Codes are append-only.</b> Never renumber one, and never reuse a retired number for a
@@ -283,6 +284,23 @@ public static class ErrorCodes
     /// makes the renewal path worse for a customer who has already paid.
     /// </summary>
     public const string MaintenanceLapsed = "MCA-LIC-003";
+
+    // ---- MOD: the instance's mode does not allow what was asked ------------------------------
+    //
+    // Nothing is wrong with the request or the configuration: the hub, or an administrator, put
+    // the instance in a mode that holds this class of operation back. See InstanceModeGate.
+
+    /// <summary>The instance's mode refused the operation; no narrower classification.</summary>
+    public const string InstanceModeRefused = "MCA-MOD-000";
+
+    /// <summary>The instance is restricted, and the operation is one that waits for full mode.</summary>
+    public const string InstanceRestricted = "MCA-MOD-001";
+
+    /// <summary>The instance is in DR mode, which allows signing in to manage and repair it and nothing else.</summary>
+    public const string InstanceInDisasterRecovery = "MCA-MOD-002";
+
+    /// <summary>The instance is in maintenance mode, which issues nothing and changes nothing about how it is run, and still revokes.</summary>
+    public const string InstanceInMaintenance = "MCA-MOD-003";
 
     // ---- PRF: profile key-parameter refusals ------------------------------------------------
 

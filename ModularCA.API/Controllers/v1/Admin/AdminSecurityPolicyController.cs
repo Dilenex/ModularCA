@@ -93,6 +93,7 @@ public class AdminSecurityPolicyController(
     /// <see cref="StepUpOps.DisableCeremonyRequirement"/>; that change is audited with a
     /// <c>CeremonyRequirementDisabled</c> marker.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut]
     public async Task<IActionResult> Update(
         [FromBody] SecurityPolicyUpdateRequest request,

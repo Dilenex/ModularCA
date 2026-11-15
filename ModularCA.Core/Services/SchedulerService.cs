@@ -49,6 +49,11 @@ namespace ModularCA.Core.Services
         private readonly TimeProvider _timeProvider;
         private readonly TimeSpan _pollInterval;
 
+        private readonly ModularCA.Shared.Modes.IInstanceModeGate? _modeGate;
+        private readonly Func<Type, ModularCA.Shared.Modes.ModeOperation>? _modeOperationOf;
+        // The mode whose held jobs were last logged, so a hold is logged once per mode and not on every poll.
+        private ModularCA.Shared.Modes.InstanceMode? _modeHoldLogged;
+
         private bool _firstRun = true;
 
         /// <summary>
@@ -84,14 +89,22 @@ namespace ModularCA.Core.Services
         /// <paramref name="leaseName"/> names the lease this instance contends for; the default
         /// is the one every install has used, and a process whose job set is not the control
         /// plane's passes its own so the two sets do not starve each other.
+        /// <paramref name="modeGate"/> and <paramref name="modeOperationOf"/> are the instance's
+        /// mode and the class of each job type: before each job the scheduler asks whether the
+        /// mode allows its class, and holds the job when it does not. With either null no job is
+        /// ever held for the mode.
         /// </summary>
         public SchedulerService(
             IServiceProvider serviceProvider,
             ILogger<SchedulerService> logger,
             ModularCA.Shared.Models.Config.SystemConfig config,
             TimeProvider? timeProvider = null,
-            string? leaseName = null)
+            string? leaseName = null,
+            ModularCA.Shared.Modes.IInstanceModeGate? modeGate = null,
+            Func<Type, ModularCA.Shared.Modes.ModeOperation>? modeOperationOf = null)
         {
+            _modeGate = modeGate;
+            _modeOperationOf = modeOperationOf;
             _serviceProvider = serviceProvider;
             _logger = logger;
             _config = config;
@@ -237,11 +250,17 @@ namespace ModularCA.Core.Services
 
             var holdSignerJobs = await HoldSignerJobsAsync(leaseScope.ServiceProvider, stoppingToken);
 
+            var heldForMode = HeldForMode(_jobTypes);
+
             foreach (var jobType in _jobTypes)
             {
                 if (stoppingToken.IsCancellationRequested) break;
 
                 if (holdSignerJobs && typeof(ISignerDependentJob).IsAssignableFrom(jobType))
+                    continue;
+
+                // Held jobs are not marked as run, so they run in the first cycle after the mode allows them.
+                if (heldForMode.Contains(jobType))
                     continue;
 
                 await using var perJobScope = _serviceProvider.CreateAsyncScope();
@@ -269,6 +288,36 @@ namespace ModularCA.Core.Services
                         job.Name);
                 }
             }
+        }
+
+        /// <summary>
+        /// The jobs the instance's mode holds this cycle: those whose class the mode does not
+        /// allow. Empty while the instance is full, and always when no gate was given. The set
+        /// is logged once each time the mode changes.
+        /// </summary>
+        private HashSet<Type> HeldForMode(IReadOnlyList<Type> jobTypes)
+        {
+            var held = new HashSet<Type>();
+            if (_modeGate == null || _modeOperationOf == null)
+                return held;
+            var mode = _modeGate.Current.Mode;
+            foreach (var type in jobTypes)
+            {
+                if (!ModularCA.Shared.Modes.InstanceModeGate.Allows(mode, _modeOperationOf(type)))
+                    held.Add(type);
+            }
+            if (_modeHoldLogged != mode)
+            {
+                _modeHoldLogged = mode;
+                if (held.Count > 0)
+                    _logger.LogWarning(
+                        "SchedulerService: the instance is in {Mode}; holding the jobs it does not allow ({Jobs}) until the mode changes",
+                        ModularCA.Shared.Modes.InstanceModeGate.DisplayName(mode), string.Join(", ", held.Select(t => t.Name)));
+                else
+                    _logger.LogInformation("SchedulerService: the instance is in {Mode}; no job is held for it",
+                        ModularCA.Shared.Modes.InstanceModeGate.DisplayName(mode));
+            }
+            return held;
         }
 
         /// <summary>

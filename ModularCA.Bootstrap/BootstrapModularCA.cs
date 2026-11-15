@@ -394,6 +394,7 @@ public class BootstrapModularCA
             BootstrapCertCreator.EnsureWebTlsSansSupported(bootstrapConfig.HttpsApi.SANs);
             BootstrapServiceUrlBuilder.EnsurePublicDomainUsable(bootstrapConfig.HttpsApi.PublicDomain);
             BootstrapInputSections.EnsureClaimTokenUsable(bootstrapConfig.Administration);
+            BootstrapInputSections.EnsureHubTokenUsable(bootstrapConfig.Hub);
         }
         catch (ModularCA.Shared.Errors.RequestValidationException ex)
         {

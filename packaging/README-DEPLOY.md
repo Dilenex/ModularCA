@@ -1911,6 +1911,88 @@ bytes in all, which it skips) and version 1 (`TCP4`, `TCP6`, `UNKNOWN`). A versi
 UDP or a UNIX socket is refused rather than treated as UNSPEC, since on a TCP listener it means
 the proxy is misconfigured and the client's address would be lost without a trace.
 
+## Under a ModularCA Hub: the local connection and the instance mode
+
+An instance with no hub needs none of this section. With none of the variables below set, the
+node opens nothing for a hub and its mode is full, as before.
+
+The full contract is in `docs/architecture/hub-local-connection.md`. This section is what to put
+in a unit or a pod.
+
+### The variables
+
+| Variable | Value | Default |
+|---|---|---|
+| `MODULARCA__HUB__SOCKET` | Path of a Unix domain socket the node's control role listens on for its hub. At most 100 bytes. | unset: no listener, no socket file |
+| `MODULARCA__HUB__SOCKETMODE` | The socket file's mode in octal, read and write bits only: `0660`, `0600`, `0666`. | `0660` |
+| `MODULARCA__HUB__STARTMODE` | `full`, `restricted` or `dr`: the mode of a node that has a hub socket and no recorded mode yet. | `restricted` |
+
+    Environment=MODULARCA__HUB__SOCKET=/run/modularca-hub/hub.sock
+    Environment=MODULARCA__HUB__STARTMODE=restricted
+
+- **Give the socket a directory of its own**, mounted into the node and nowhere else in the pod.
+  The node also keeps two small files there: `instance-mode.json` (the mode) and
+  `hub-requests.json` (the request identifiers already carried out). The directory must be
+  writable by the node's user and must not be shared between copies of an instance: a copy that a
+  failover starts is meant to find no mode there and begin in its start mode.
+- **Who may connect** is the socket file's owner and mode. The node creates it as its own user.
+  A process that connects needs write permission on the file and search permission on the
+  directory. A runner that connects from outside the pod's user namespace needs a user or group
+  that maps to one the mode admits; that mapping is the deployment's and has not been tested by
+  this project.
+- **A value that is not a mode, or a mode with other than read and write bits, stops the start**
+  with a message naming the variable. So does a socket that cannot be bound.
+- **Only the control role listens.** A process started with `--role validation` or
+  `--role enrollment` ignores `MODULARCA__HUB__SOCKET` for listening. It still reads the mode from
+  the file beside that socket, so give every process of one instance the same directory.
+
+### The affiliation token
+
+The hub proves itself with a token it makes and keeps. The instance holds only the token's
+SHA-256.
+
+    ModularCA.API --new-hub-token
+
+prints a token, its hash and these lines for `bootstrap.yaml`:
+
+    Hub:
+      AffiliationTokenSha256: "<64 hex digits>"
+
+For an instance that already exists, as the service user:
+
+    ModularCA.API --set-hub-token-hash <64 hex digits>
+    ModularCA.API --set-hub-token-hash none
+
+The second removes it. Restart the node afterwards: it reads the hash when it starts. The hub can
+also replace the token itself over the connection, which takes effect at once.
+
+While an instance holds no hash, the token check is off and anything that can reach the socket
+is taken for the hub. The node says so in its log at every start
+(`the token check on the hub's local connection is OFF`) and in the health answer it gives the
+hub.
+
+### The mode
+
+| Mode | What stops |
+|---|---|
+| `full` | Nothing. |
+| `restricted` | Users, groups, roles, grants, profiles, policy, settings, new CAs, key operations, ceremonies, releasing a hold and un-revoking. Issuing and revoking go on. |
+| `maintenance` | For an instance being updated or audited. Everything `restricted` stops, and issuing, renewing, approving requests, enrolment over every protocol and scheduled renewal. Revoking (a serial with no certificate included), signing CRLs and OCSP go on. |
+| `dr` | Everything `restricted` stops, and issuing, revoking, enrolment over every protocol, signing new CRLs and OCSP, which answers `tryLater`. Signing in, backups, a restore and changing the mode still work; CRLs already signed are still served, and so is what the enrolment protocols only read (the ACME directory, SCEP GetCACert and GetCACaps, EST `cacerts`, the MSAE policy), so a client still finds the CA and is told to try again when it asks for a certificate. |
+
+- The hub sets the mode over the connection. An administrator sets it in the console under
+  Settings, General, Instance mode. Whoever sets it last wins, and the console shows who that was.
+- **An instance whose hub has gone silent** stays in the mode it was last given. An administrator
+  with `system.manage` signs in and sets the mode by hand; that is allowed in every mode.
+- **A node with a hub socket and no recorded mode starts restricted** unless
+  `MODULARCA__HUB__STARTMODE` says otherwise. If you set `MODULARCA__HUB__SOCKET` on an instance by
+  hand to try the connection, expect the console to show "Restricted mode" until a mode is set.
+- **Without a hub** the mode can still be set by hand, for a maintenance window. It is then kept
+  in `config/instance-mode.json` and survives a restart. Deleting that file while the node is
+  stopped returns the instance to full mode.
+- `/health/ready` reports the mode under `checks.instanceMode`. It does not turn readiness
+  to 503: restricted and DR mode are states somebody chose.
+
 ## SSH servers: fetching the revocation list
 
 A certificate revoked at the CA is refused by an SSH server only once that server has the SSH CA

@@ -54,6 +54,7 @@ public class AdminBackupController(
     /// beyond the retention count are pruned.
     /// </summary>
     /// <returns>The filename of the created backup archive.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost]
     [RequireStepUp(StepUpOps.CreateBackup)]
     public async Task<IActionResult> CreateBackup()
@@ -151,6 +152,7 @@ public class AdminBackupController(
     /// </summary>
     /// <param name="request">Restore request containing the target archive filename.</param>
     /// <returns>A one-time confirmation token plus a manifest summary.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("preview-restore")]
     [RequireStepUp(StepUpOps.RestoreBackup)]
     public async Task<IActionResult> PreviewRestore(
@@ -246,6 +248,8 @@ public class AdminBackupController(
     /// </summary>
     /// <param name="request">The request body containing the backup filename and confirmation token.</param>
     /// <returns>A success message or error details.</returns>
+    // A restore is how an instance in DR mode is repaired, so it is not held to full mode.
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("restore")]
     [RequireStepUp(StepUpOps.RestoreBackup)]
     public async Task<IActionResult> RestoreBackup(
@@ -483,6 +487,7 @@ public class AdminBackupController(
     /// </summary>
     /// <param name="request">Request body containing the new password.</param>
     /// <returns>Success message with the new mode, or an error response.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("encryption/set-password")]
     [RequireStepUp(StepUpOps.SetBackupPassword)]
     public async Task<IActionResult> SetBackupPassword(
@@ -539,6 +544,7 @@ public class AdminBackupController(
     /// Requires step-up MFA verification with operation token <c>change-backup-encryption-mode</c>.
     /// </summary>
     /// <returns>Success message with the new mode, or an error response.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("encryption/revert-to-random-key")]
     [RequireStepUp(StepUpOps.ChangeBackupEncryptionMode)]
     public async Task<IActionResult> RevertToRandomKey()

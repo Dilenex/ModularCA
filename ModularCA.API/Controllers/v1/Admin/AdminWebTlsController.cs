@@ -158,6 +158,7 @@ public class AdminWebTlsController(
     /// <returns>200 OK with the new serial number and validity window, 400 on validation
     /// failure, 403 if step-up MFA is missing or invalid, 404 if no Web TLS cert is loaded,
     /// or 500 if the running cert has no database record (cannot be reissued).</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("reissue")]
     public async Task<IActionResult> ReissueWebTls(
         [FromBody] ReissueWebTlsRequest request,

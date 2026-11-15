@@ -42,6 +42,7 @@ public class AdminPasswordPolicyController(
     /// names a file in <see cref="PasswordPolicyBounds.DictionaryDirectory"/> by its file name;
     /// an empty string clears it, and the stored value sent back unchanged keeps it.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> Update([FromBody] PasswordPolicyUpdateRequest request)

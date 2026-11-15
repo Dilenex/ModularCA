@@ -140,6 +140,7 @@ public class AdminRequestProfileController(
     /// vocabulary is refused with 400 naming it and the allowed values; the rest are stored in
     /// their canonical spelling (<see cref="RequestProfileRules.Normalize"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Ca, "request.CertificateAuthorityId")]
@@ -167,6 +168,7 @@ public class AdminRequestProfileController(
     /// An unbound profile needs cert.revoke at system scope (403, <see cref="UnboundRefusalAsync"/>).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{id}")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateRequestProfileRequest request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -209,6 +211,7 @@ public class AdminRequestProfileController(
     /// cert.revoke at system scope (403, <see cref="UnboundRefusalAsync"/>).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id}")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> Delete(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -255,6 +258,7 @@ public class AdminRequestProfileController(
     /// the parent profile's constraints. Returns a list of validation errors (empty if valid).
     /// </summary>
     /// <param name="id">The GUID of the child request profile to validate.</param>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("{id}/validate-inheritance")]
     [Authorize(Policy = "CaAuditor")]
     public async Task<IActionResult> ValidateInheritance(Guid id)

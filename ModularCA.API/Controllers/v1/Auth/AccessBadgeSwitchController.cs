@@ -36,6 +36,7 @@ public class AccessBadgeSwitchController(
     IAuditService audit) : ControllerBase
 {
     /// <summary>Switches the session's badge. <c>BadgeId</c> null takes the worn badge off.</summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost]
     public async Task<IActionResult> Switch([FromBody] AccessBadgeSwitchRequest request)
     {

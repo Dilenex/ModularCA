@@ -54,6 +54,7 @@ public class AdminFeatureFlagController(
     /// Step-up MFA is required because flipping a flag can disable Syslog, EventLog, or metrics
     /// emission — silently turning off security gates without code review.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{name}")]
     [RequireStepUp(StepUpOps.UpdateFeatureFlag, "name")]
     public async Task<IActionResult> Update(string name, [FromBody] FeatureFlagUpdateRequest request)

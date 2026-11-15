@@ -97,6 +97,9 @@ namespace ModularCA.Shared.Models.Config
         /// (<c>--check-ready</c>); off by default.
         /// </summary>
         public HealthConfig Health { get; set; } = new();
+
+        /// <summary>What the instance holds about its ModularCA Hub. See <see cref="HubConfig"/>.</summary>
+        public HubConfig Hub { get; set; } = new();
     }
 
     /// <summary>
@@ -116,6 +119,26 @@ namespace ModularCA.Shared.Models.Config
         /// </summary>
         [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public int LoopbackPort { get; set; } = 0;
+    }
+
+    /// <summary>
+    /// What the instance holds about the ModularCA Hub that made it. The hub's socket itself is
+    /// not here: it is per host, named by the environment variable <c>MODULARCA__HUB__SOCKET</c>.
+    /// </summary>
+    public class HubConfig
+    {
+        /// <summary>
+        /// The SHA-256 of the hub's affiliation token, as 64 hex digits; empty when the instance
+        /// has been given none. The hub makes the token and keeps it; the instance holds only
+        /// this hash, with its data, so it follows the instance to every hub in its placement and
+        /// into its backups. Every request on the hub's local connection must carry the token
+        /// this is the hash of. While it is empty that check is off and reaching the socket is
+        /// the only proof. It comes from <c>Hub.AffiliationTokenSha256</c> in bootstrap.yaml, the
+        /// host command <c>--set-hub-token-hash</c>, or the hub replacing it over the connection.
+        /// It is a hash of a random token, not a secret: reading it lets nobody act as the hub.
+        /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        public string AffiliationTokenSha256 { get; set; } = "";
     }
 
     /// <summary>

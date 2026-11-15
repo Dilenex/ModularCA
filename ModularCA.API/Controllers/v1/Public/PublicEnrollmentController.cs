@@ -112,6 +112,7 @@ public class PublicEnrollmentController(
     /// and 500 on unknown server-side issuance failures. Every refusal is audited; see
     /// <see cref="AuditRejectionAsync"/>.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("{token}")]
     public async Task<IActionResult> SubmitEnrollment(string token, [FromBody] QrEnrollmentRequest request)
     {

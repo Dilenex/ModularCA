@@ -26,6 +26,33 @@ export const adminSettings: ApiEndpoint[] = [
         responseDescription: '{ message, version, waitingForRestart }. 409 when an environment variable supplies the secret on that node, or its settings have not been moved to the database. 503 when the signer is locked or out of reach; nothing is stored.',
         notes: 'The node keeps signing and accepting sessions with the secret it started with. Each node uses the new one from its next start: from then on it refuses access tokens signed with the old secret, so every client signs in again. Until every node has restarted, a node on the old secret and one on the new do not accept each other\'s tokens. GET /api/v1/admin/settings lists JWT_Secret under waitingForRestart until the node restarts. The change is audited as ConfigUpdated.',
     },
+    {
+        method: 'GET',
+        path: '/api/v1/admin/instance-mode',
+        summary: 'Read the instance mode: full, restricted, maintenance or DR mode, who set it and when.',
+        auth: 'Authorize (any signed-in user)',
+        category: 'Admin Configuration',
+        headers: [bearer],
+        responseDescription: '{ mode, source, setBy, reason, setAtUtc, hubConnection, stillWorks }. mode is "full", "restricted", "maintenance" or "dr". source is who set it: "default" (nobody; an instance with no hub and nothing set is full), "start" (the start rule of an instance with a hub connection), "hub", "administrator", or "unreadable" (the record on the host could not be read, so the instance holds itself restricted). setBy is the administrator\'s username or the operator name the hub gave. hubConnection says whether a hub may set the mode too. stillWorks says in plain sentences what the mode allows.',
+        notes: 'Open to every signed-in user because the console shows a standing banner while the mode is not full. Restricted mode keeps issuing and revoking and freezes users, groups, roles, grants, profiles, policy, settings, new CAs, key operations, ceremonies, releasing a hold and un-revoking. Maintenance mode freezes the same and issues nothing, while revoking, CRLs and OCSP go on. DR mode also stops issuing, revoking, the enrolment protocols and signing new CRLs, and OCSP answers tryLater; signing in, backups and changing the mode still work, and CRLs already signed are still served. A request the mode does not allow is answered 503 with Retry-After: 60, code MCA-MOD-001 (restricted) or MCA-MOD-002 (DR mode), and a detail saying what still works. The mode is kept in a file on the host, not in the database. /health/ready reports it under checks.instanceMode.',
+    },
+    {
+        method: 'PUT',
+        path: '/api/v1/admin/instance-mode',
+        summary: 'Set the instance mode by hand. Requires step-up MFA. Allowed in every mode, so it is also the way out of DR mode.',
+        auth: 'Authorize (SystemAdmin)',
+        category: 'Admin Configuration',
+        headers: [
+            bearer,
+            { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token scoped to set-instance-mode.' },
+        ],
+        requestBody: [
+            { name: 'mode', type: 'string', required: true, description: '"full", "restricted", "maintenance" or "dr".' },
+            { name: 'reason', type: 'string', required: true, description: 'Why, at most 500 characters. Recorded with the change and shown beside the mode.' },
+        ],
+        responseDescription: 'The mode as GET returns it, with source "administrator" and setBy the caller. 400 when mode is not one of the three or reason is empty. 409 during the setup wizard.',
+        notes: 'The change is audited as InstanceModeChanged with the old and new mode, the reason and who set the previous one. An instance with a hub takes its mode from the hub as well: whoever sets it last wins, and the hub can set it again at any time.',
+    },
 ];
 
 export const adminApiKeys: ApiEndpoint[] = [

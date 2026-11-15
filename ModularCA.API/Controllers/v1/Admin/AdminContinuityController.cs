@@ -71,6 +71,7 @@ public class AdminContinuityController(
     /// already acknowledged is returned unchanged.
     /// </summary>
     [HttpPost("events/{id:guid}/acknowledge")]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [Authorize(Policy = "SystemAdmin")]
     [RequireStepUp(StepUpOps.AcknowledgeContinuityEvent, "id")]
     public async Task<IActionResult> Acknowledge(Guid id)

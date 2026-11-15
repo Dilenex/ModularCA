@@ -84,6 +84,7 @@ public class WebAuthnController : ControllerBase
     /// registering a new FIDO2 security key. Requires an authenticated session.
     /// </summary>
     [Authorize]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("register-options")]
     public async Task<IActionResult> RegisterOptions()
     {
@@ -149,6 +150,7 @@ public class WebAuthnController : ControllerBase
     /// and storing the credential in the database.
     /// </summary>
     [Authorize]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("register")]
     public async Task<IActionResult> Register([FromQuery] string? deviceName = null, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
@@ -259,6 +261,7 @@ public class WebAuthnController : ControllerBase
     /// Requires a valid MFA token issued after a password or client-certificate first factor.
     /// </summary>
     [AllowAnonymous]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("assertion-options")]
     public async Task<IActionResult> GetAssertionOptionsForUser([FromBody] WebAuthnAssertionOptionsRequest request)
     {
@@ -328,6 +331,7 @@ public class WebAuthnController : ControllerBase
     /// </para>
     /// </summary>
     [AllowAnonymous]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("assertion")]
     public async Task<IActionResult> VerifyAssertion()
     {
@@ -613,6 +617,7 @@ public class WebAuthnController : ControllerBase
     /// <param name="id">The credential to remove; it must belong to the caller.</param>
     /// <param name="mfaToken">The step-up token for <see cref="StepUpOps.WebAuthnDelete"/> on this credential.</param>
     [Authorize]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpDelete("credentials/{id:guid}")]
     public async Task<IActionResult> DeleteCredential(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {

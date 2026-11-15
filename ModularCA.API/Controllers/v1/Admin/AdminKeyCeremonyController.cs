@@ -87,6 +87,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// few other accounts could approve is refused with 409 and nothing is opened
     /// (<see cref="ModularCA.API.Services.CeremonyRefusalResponse"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [Authorize]
     public async Task<IActionResult> Initiate(
@@ -435,6 +436,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// policy-change ceremony needs admin rank at its scope (403 for an operator of that scope).
     /// When approvals reach the quorum threshold, the ceremony transitions to Approved status.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("{id:guid}/approve")]
     public async Task<IActionResult> Approve(
         Guid id,
@@ -501,6 +503,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// approval rule, <see cref="PolicyApprovalRefusalAsync"/> (403 for an operator of its scope),
     /// except by its initiator, who may withdraw it.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("{id:guid}/reject")]
     public async Task<IActionResult> Reject(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
@@ -556,6 +559,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// Step-up gated to block session-hijack cancellations of
     /// in-progress ceremonies.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Cancel(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
@@ -607,6 +611,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// is expired, audited and refused with 409 (<c>ceremonyExpired: true</c>).
     /// Requires step-up MFA verification.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("{id:guid}/execute")]
     public async Task<IActionResult> Execute(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {

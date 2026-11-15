@@ -66,6 +66,7 @@ public class AdminCertificateTemplateController(
     /// Creates a new certificate template linking a CA, signing profile, cert profile,
     /// and optional request profile under a unique name.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [RequireStepUp(StepUpOps.CreateCertificateTemplate)]
     public async Task<IActionResult> Create([FromBody] CreateCertificateTemplateRequest request)
@@ -89,6 +90,7 @@ public class AdminCertificateTemplateController(
     /// <summary>
     /// Updates an existing certificate template by ID with new profile assignments and settings.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{id}")]
     [RequireStepUp(StepUpOps.UpdateCertificateTemplate, "id")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateCertificateTemplateRequest request)
@@ -112,6 +114,7 @@ public class AdminCertificateTemplateController(
     /// <summary>
     /// Deletes a certificate template by its GUID.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id}")]
     [RequireStepUp(StepUpOps.DeleteCertificateTemplate, "id")]
     public async Task<IActionResult> Delete(Guid id)

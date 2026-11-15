@@ -154,6 +154,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// "Manage" grants revoke/reissue rights; "View" (default) grants read-only. Granting View when
         /// the user currently has Manage is a downgrade; granting Manage is an upgrade.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("serial/{serial}/set")]
         [Authorize(Policy = "CaOperator")]
         [RequireStepUp(StepUpOps.UpdateCertAcl, "serial")]
@@ -184,6 +185,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
         /// <summary>Removes a user's ACL entry on a certificate (by serial). Implicit access via RBAC or
         /// being the original requestor is unaffected.</summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("serial/{serial}/revoke-user")]
         [Authorize(Policy = "CaOperator")]
         [RequireStepUp(StepUpOps.UpdateCertAcl, "serial")]
@@ -214,6 +216,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// existing Manage entry to View. Needs cert.revoke on the certificate's CA and step-up MFA. A
         /// certId or userId that is not a GUID is 400, as is an unknown user.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("allow/view")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
@@ -259,6 +262,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// existing View entry. Needs cert.revoke on the certificate's CA and step-up MFA. A certId or
         /// userId that is not a GUID is 400, as is an unknown user.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("allow/manage")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
@@ -300,6 +304,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// as it is. Needs cert.revoke on the certificate's CA and step-up MFA. 400 when either id is not a
         /// GUID or the user has no entry.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("downgrade")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
@@ -341,6 +346,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// CA-scoped capabilities, or as the requester, is unaffected. Needs cert.revoke on the
         /// certificate's CA and step-up MFA. 400 when either id is not a GUID or the user has no entry.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("revoke")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]

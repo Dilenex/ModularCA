@@ -129,6 +129,7 @@ namespace ModularCA.API.Controllers.v1.Auth
         /// </summary>
         /// <param name="request">The username and password.</param>
         [AllowAnonymous]
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
         [HttpPost("login")]
         public async Task<IActionResult> Login([FromBody] ModularCA.Auth.Models.LoginRequest request)
         {
@@ -582,6 +583,7 @@ namespace ModularCA.API.Controllers.v1.Auth
         /// </para>
         /// </summary>
         [AllowAnonymous]
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
         [HttpPost("refresh")]
         public async Task<IActionResult> Refresh([FromBody] RefreshRequest request)
         {
@@ -808,6 +810,7 @@ namespace ModularCA.API.Controllers.v1.Auth
         /// failure is logged as a warning).
         /// </summary>
         [AllowAnonymous]
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
         [HttpPost("change-password")]
         public async Task<IActionResult> ChangePassword([FromBody] PreJwtChangePasswordRequest request)
         {
@@ -1029,6 +1032,7 @@ namespace ModularCA.API.Controllers.v1.Auth
         /// </summary>
         /// <param name="request">The token, the new password and its confirmation.</param>
         [AllowAnonymous]
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
         [HttpPost("claim")]
         public async Task<IActionResult> Claim([FromBody] ClaimAccountRequest request)
         {
@@ -1100,6 +1104,7 @@ namespace ModularCA.API.Controllers.v1.Auth
         /// <see cref="AuditActionType.UserLogout"/> with the number of refresh tokens revoked.
         /// </summary>
         [Authorize]
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
         [HttpPost("logout")]
         public async Task<IActionResult> Logout()
         {
@@ -1162,6 +1167,7 @@ namespace ModularCA.API.Controllers.v1.Auth
         /// issued here starts wearing the user's default access badge.
         /// </summary>
         [AllowAnonymous]
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
         [HttpPost("cert-login")]
         public async Task<IActionResult> CertLogin()
         {

@@ -38,6 +38,9 @@ public class CmpController(ICmpService cmpService) : ControllerBase
     /// Validates content type and request size before processing.
     /// Returns CMP-formatted error responses wherever possible rather than generic HTTP errors.
     /// </summary>
+    // One route carries enrolment, revocation and general messages, so the action asks the
+    // gate itself once it has read which this is (ModeOperationOf).
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue, AnsweredByAction = true)]
     [HttpPost]
     [Consumes(CmpContentType)]
     [RequestSizeLimit(MaxCmpBodySize)]
@@ -62,6 +65,10 @@ public class CmpController(ICmpService cmpService) : ControllerBase
             MetricsService.ProtocolRequestsTotal.WithLabels("CMP", "error").Inc();
             return StatusCode(413, "CMP request body exceeds maximum allowed size.");
         }
+
+        if (await ModularCA.Auth.Authorization.ModeGateFilter.RequireAsync(
+                HttpContext, ModeOperationOf(derRequest), "This CMP request") is { } modeRefusal)
+            return modeRefusal;
 
         try
         {
@@ -91,6 +98,30 @@ public class CmpController(ICmpService cmpService) : ControllerBase
             MetricsService.ProtocolRequestsTotal.WithLabels("CMP", "error").Inc();
             MetricsService.ProtocolErrorsTotal.WithLabels("CMP", "invalid_message").Inc();
             return BadRequest(new { error = "CMP processing failed. Contact administrator if the problem persists." });
+        }
+    }
+
+    /// <summary>
+    /// The mode class of a CMP message: a revocation request is a restriction (it goes on in
+    /// maintenance mode), a general message is a fact (it only asks about the CA), and everything
+    /// else is part of an enrolment. A message that cannot be read is treated as an enrolment,
+    /// the stricter answer.
+    /// </summary>
+    /// <param name="derRequest">The request body, a DER PKIMessage.</param>
+    internal static ModularCA.Shared.Modes.ModeOperation ModeOperationOf(byte[] derRequest)
+    {
+        try
+        {
+            return Org.BouncyCastle.Asn1.Cmp.PkiMessage.GetInstance(derRequest).Body.Type switch
+            {
+                Org.BouncyCastle.Asn1.Cmp.PkiBody.TYPE_REVOCATION_REQ => ModularCA.Shared.Modes.ModeOperation.Restriction,
+                Org.BouncyCastle.Asn1.Cmp.PkiBody.TYPE_GEN_MSG => ModularCA.Shared.Modes.ModeOperation.Fact,
+                _ => ModularCA.Shared.Modes.ModeOperation.Issue,
+            };
+        }
+        catch (Exception)
+        {
+            return ModularCA.Shared.Modes.ModeOperation.Issue;
         }
     }
 }

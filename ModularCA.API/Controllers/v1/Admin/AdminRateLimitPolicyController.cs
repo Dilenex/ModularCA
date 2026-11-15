@@ -41,6 +41,7 @@ public class AdminRateLimitPolicyController(
     /// Bulk upsert — each entry in the body is created or updated by protocol name.
     /// Protocols not present in the body are left alone (use DELETE for removal).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> Update([FromBody] Dictionary<string, RateLimitUpdateRequest> request)
@@ -88,6 +89,7 @@ public class AdminRateLimitPolicyController(
     /// <summary>
     /// Removes the custom limit for a protocol, reverting to the middleware's built-in default.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{protocol}")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> Delete(string protocol)

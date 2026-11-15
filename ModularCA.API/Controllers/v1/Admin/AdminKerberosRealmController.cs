@@ -64,6 +64,7 @@ public class AdminKerberosRealmController(
     /// Creates a binding. Keys are added separately. 400 unless the enrollment identity is a service
     /// identity scoped to the binding's space (any service identity for the instance).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [RequireStepUp(StepUpOps.ManageKerberosRealm)]
     public async Task<IActionResult> Create([FromRoute] Guid? spaceId, [FromBody] KerberosRealmRequest request)
@@ -86,6 +87,7 @@ public class AdminKerberosRealmController(
     /// enrollment identity or re-enabling the binding needs an identity that passes the rule of
     /// <see cref="Create"/> (400 otherwise).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{id:guid}")]
     [RequireStepUp(StepUpOps.ManageKerberosRealm, "id")]
     public async Task<IActionResult> Update([FromRoute] Guid? spaceId, Guid id, [FromBody] KerberosRealmRequest request)
@@ -106,6 +108,7 @@ public class AdminKerberosRealmController(
     }
 
     /// <summary>Deletes a binding and its keys.</summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.ManageKerberosRealm, "id")]
     public async Task<IActionResult> Delete([FromRoute] Guid? spaceId, Guid id)
@@ -128,6 +131,7 @@ public class AdminKerberosRealmController(
     /// Adds key material: a keytab (base64), a password to derive from, or a request to generate
     /// one. Returns what was accepted, and the generated password once.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("{id:guid}/keys")]
     [RequireStepUp(StepUpOps.ManageKerberosRealm, "id")]
     public async Task<IActionResult> AddKey([FromRoute] Guid? spaceId, Guid id, [FromBody] KerberosKeyRequest request)
@@ -170,6 +174,7 @@ public class AdminKerberosRealmController(
     }
 
     /// <summary>Refuses a key version from now on.</summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("{id:guid}/keys/{kvno:int}/retire")]
     [RequireStepUp(StepUpOps.ManageKerberosRealm, "id")]
     public async Task<IActionResult> RetireKey([FromRoute] Guid? spaceId, Guid id, int kvno)

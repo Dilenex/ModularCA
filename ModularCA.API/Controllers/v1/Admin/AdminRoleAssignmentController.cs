@@ -90,6 +90,7 @@ public class AdminRoleAssignmentController(
     /// controlled assignment by a non-super opens a ceremony (202); 409 when the caller reset the
     /// password or MFA of an account it promotes in the last 30 days.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [RequireStepUp(StepUpOps.AssignRole)]
     [ProducesResponseType(201)]
@@ -270,6 +271,7 @@ public class AdminRoleAssignmentController(
     /// A removal made here revokes the SSH certificates of the user, or of the group's members,
     /// on an SSH CA they could request from only through the role.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.UnassignRole, "id")]
     [ProducesResponseType(200)]

@@ -292,6 +292,7 @@ namespace ModularCA.API.Controllers.v1.Account
         /// </summary>
         /// <param name="key">App-defined preference key, e.g. "table:certificates" (max 200 chars).</param>
         /// <param name="value">The JSON value to store for this key.</param>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
         [HttpPut("preferences/{key}")]
         public async Task<IActionResult> PutPreference(string key, [FromBody] JsonElement value)
         {

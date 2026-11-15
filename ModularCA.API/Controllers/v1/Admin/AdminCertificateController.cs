@@ -801,6 +801,7 @@ public class AdminCertificateController(
     /// <param name="request">The format, and whether to include the issuer chain.</param>
     /// <param name="mfaToken">Step-up MFA token from the X-MFA-Token header.</param>
     /// <returns>The exported certificate file, or 400 naming why the format is refused.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact)]
     [HttpPost("{serial}/export")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> ExportCertificate(string serial, [FromBody] CertExportRequest request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -883,6 +884,7 @@ public class AdminCertificateController(
     /// </summary>
     /// <param name="serial">The serial number of the certificate to renew.</param>
     /// <returns>The new request ID for tracking the renewal.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("{serial}/renew")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> RenewCertificate(string serial)
@@ -987,6 +989,7 @@ public class AdminCertificateController(
     /// </summary>
     /// <param name="serial">The certificate's serial number.</param>
     /// <param name="request">An optional reason, kept with the certificate and in the audit row.</param>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpPost("{serial}/retire")]
     [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.RetireCert, "serial")]
@@ -1009,6 +1012,7 @@ public class AdminCertificateController(
     /// it expires. Requires step-up MFA (<see cref="StepUpOps.UndoRetireCert"/>, for the serial).
     /// </summary>
     /// <param name="serial">The certificate's serial number.</param>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{serial}/retire")]
     [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.UndoRetireCert, "serial")]
@@ -1025,6 +1029,7 @@ public class AdminCertificateController(
     /// notifications, and can still be renewed, by hand, by auto-renewal or by its client.
     /// </summary>
     /// <param name="serial">The certificate's serial number.</param>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact)]
     [HttpPost("{serial}/expiry-warning/dismiss")]
     [Authorize(Policy = "CaOperator")]
     public Task<IActionResult> DismissExpiryWarning(string serial)
@@ -1037,6 +1042,7 @@ public class AdminCertificateController(
 
     /// <summary>Undoes <see cref="DismissExpiryWarning"/>.</summary>
     /// <param name="serial">The certificate's serial number.</param>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{serial}/expiry-warning/dismiss")]
     [Authorize(Policy = "CaOperator")]
     public Task<IActionResult> RestoreExpiryWarning(string serial)
@@ -1132,6 +1138,7 @@ public class AdminCertificateController(
     /// <param name="serial">The serial number of the certificate.</param>
     /// <param name="request">The tag key and value to add.</param>
     /// <returns>The created tag.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact)]
     [HttpPost("{serial}/tags")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> AddCertificateTag(string serial, [FromBody] CertificateTagRequest request)
@@ -1188,6 +1195,7 @@ public class AdminCertificateController(
     /// <param name="serial">The serial number of the certificate.</param>
     /// <param name="tagId">The unique identifier of the tag to remove.</param>
     /// <returns>No content on success.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{serial}/tags/{tagId}")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> RemoveCertificateTag(string serial, Guid tagId)

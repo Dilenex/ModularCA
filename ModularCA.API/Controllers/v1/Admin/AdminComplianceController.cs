@@ -52,6 +52,7 @@ public class AdminComplianceController : ControllerBase
     /// </summary>
     /// <param name="request">Report parameters including date range and optional CA filter.</param>
     /// <returns>A JSON compliance report.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact)]
     [HttpPost("report")]
     public async Task<IActionResult> GenerateReport([FromBody] ComplianceReportRequest request)
     {
@@ -73,6 +74,7 @@ public class AdminComplianceController : ControllerBase
     /// </summary>
     /// <param name="request">Report parameters including date range and optional CA filter.</param>
     /// <returns>A CSV file download containing the certificate inventory.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact)]
     [HttpPost("export/csv")]
     public async Task<IActionResult> ExportCsv([FromBody] ComplianceReportRequest request)
     {
@@ -208,6 +210,7 @@ public class AdminComplianceController : ControllerBase
     // Critical findings and clear every one of them. Nothing recorded it either: the controller
     // did not take IAuditService at all. Clearing a compliance finding is an operator action.
     [Authorize(Policy = "SystemOperator")]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact)]
     [HttpPost("{id}/resolve")]
     public async Task<IActionResult> Resolve(Guid id)
     {

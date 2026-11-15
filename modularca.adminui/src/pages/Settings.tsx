@@ -28,6 +28,7 @@ import { ApiKeysPanel } from '../components/ApiKeysPanel';
 import { CARD_FIELDS, type SettingsIndex, describeField, fieldBadges, fieldLocked, fieldsApply, indexSettings, secretState } from './settingsMeta';
 import { actionButton } from '@shared/components/actionButtons';
 import { hsmCardView } from './settingsHsm';
+import { InstanceModeCard } from '../components/InstanceModeCard';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -694,6 +695,9 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
             {/* ================================================================ */}
             {tab === 'General' && (
                 <>
+                    {/* Instance mode: full, restricted or DR mode. Set by the hub, or here by hand. */}
+                    <InstanceModeCard />
+
                     {/* Public Domain */}
                     <div className={cardClass}>
                         <SectionHeader fields={CARD_FIELDS.baseurl} title="Public Domain" expanded={expanded === 'baseurl'} onToggle={() => toggle('baseurl')}

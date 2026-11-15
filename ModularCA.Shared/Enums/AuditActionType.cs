@@ -260,6 +260,18 @@ public static class AuditActionType
     public const string TrustAnchorDeleted = "TrustAnchorDeleted";
     public const string TrustAnchorToggled = "TrustAnchorToggled";
 
+    // The instance's mode and the hub's local connection
+    /// <summary>The instance's mode was set, by the hub or by an administrator; the record names who, the old and new mode, and the reason.</summary>
+    public const string InstanceModeChanged = "InstanceModeChanged";
+    /// <summary>An operation was refused because the instance's mode does not allow its class.</summary>
+    public const string InstanceModeRefused = "InstanceModeRefused";
+    /// <summary>A request on the hub's local connection was served. The actor is the hub; the operator name it claimed is in the details.</summary>
+    public const string HubRequestServed = "HubRequestServed";
+    /// <summary>A request on the hub's local connection was refused: a wrong or missing token, an operation outside the list, a version this instance does not speak, or a request that was not valid.</summary>
+    public const string HubRequestRefused = "HubRequestRefused";
+    /// <summary>The hash of the hub's affiliation token was set or replaced, over the local connection or on the host.</summary>
+    public const string HubAffiliationTokenReplaced = "HubAffiliationTokenReplaced";
+
     // Backup and restore
     public const string BackupCreated = "BackupCreated";
     public const string BackupRestored = "BackupRestored";

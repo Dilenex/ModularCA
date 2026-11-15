@@ -33,6 +33,7 @@ public class AdminLdapController(
     /// <summary>
     /// Triggers a full LDAP group sync for all active users.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("sync")]
     public async Task<IActionResult> SyncAll()
     {
@@ -54,6 +55,7 @@ public class AdminLdapController(
     /// Triggers an LDAP group sync for a single user by ID. Returns 502 without touching memberships
     /// when the directory lookup fails or does not find the user.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("sync/{userId:guid}")]
     public async Task<IActionResult> SyncUser(Guid userId, [FromServices] ILdapGroupProvider groupProvider)
     {
@@ -105,6 +107,7 @@ public class AdminLdapController(
     /// LDAP config save; others may toggle GroupSyncEnabled and AutoProvisionUsers. A save by a super
     /// rewrites mapping targets still naming a space group by its pre-0.4.0 <c>org-</c> name.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("group-mappings")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateGroupMappings([FromBody] UpdateGroupMappingsRequest request,

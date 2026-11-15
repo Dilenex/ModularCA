@@ -115,6 +115,7 @@ public class AdminWhitelistController(
     /// <param name="ct">Cancellation token propagated from the HTTP request.</param>
     /// <returns>201 Created with the new row, 400 on validation failure, 403 when
     /// step-up is required, 409 on uniqueness conflict.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Ca, "request.CertificateAuthorityId")]
@@ -207,6 +208,7 @@ public class AdminWhitelistController(
     /// <param name="ct">Cancellation token propagated from the HTTP request.</param>
     /// <returns>200 OK with the updated row, 400 on validation failure, 403 when
     /// step-up is required, 404 if the rule does not exist.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{id:guid}")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> Update(
@@ -282,6 +284,7 @@ public class AdminWhitelistController(
     /// <param name="ct">Cancellation token propagated from the HTTP request.</param>
     /// <returns>204 No Content on success, 403 when step-up is required, 404 if
     /// the rule does not exist, 409 if the rule is a system default.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id:guid}")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> Delete(
@@ -336,6 +339,7 @@ public class AdminWhitelistController(
     /// <param name="mfaToken">Step-up MFA token from the <c>X-MFA-Token</c> header.</param>
     /// <param name="ct">Cancellation token propagated from the HTTP request.</param>
     /// <returns>200 OK with a per-outcome summary, 400 on empty list, 403 when step-up is required.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("bulk-delete")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Whitelists, "request.Ids")]
@@ -387,6 +391,7 @@ public class AdminWhitelistController(
     /// <param name="mfaToken">Step-up MFA token from the <c>X-MFA-Token</c> header.</param>
     /// <param name="ct">Cancellation token propagated from the HTTP request.</param>
     /// <returns>200 OK with a per-outcome summary, 400 on empty list, 403 when step-up is required.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("bulk-set-enabled")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Whitelists, "request.Ids")]

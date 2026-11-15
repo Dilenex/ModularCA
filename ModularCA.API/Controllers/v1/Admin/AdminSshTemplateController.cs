@@ -104,6 +104,7 @@ public class AdminSshTemplateController(ModularCADbContext db, IAuditService aud
     /// <summary>
     /// Creates a new SSH certificate template.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SshCaKey, "request.SshCaKeyId")]
@@ -138,6 +139,7 @@ public class AdminSshTemplateController(ModularCADbContext db, IAuditService aud
     /// key needs cert.revoke on that key's CA, inside the caller's fence and of the template's
     /// current scope (<see cref="CaBindingAccess"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{id:guid}")]
     [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.ManageSshTemplate, "id")]
@@ -181,6 +183,7 @@ public class AdminSshTemplateController(ModularCADbContext db, IAuditService aud
     /// <summary>
     /// Deletes an SSH certificate template by its identifier.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id:guid}")]
     [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.ManageSshTemplate, "id")]

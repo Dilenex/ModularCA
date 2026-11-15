@@ -49,6 +49,8 @@ public class AcmeChallengeController(
     /// <summary>
     /// Get authorization details (RFC 8555 §7.5 POST-as-GET). Verifies account ownership.
     /// </summary>
+    // Reads only (POST-as-GET): answered in every mode.
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("authz/{id:guid}")]
     public async Task<IActionResult> GetAuthorization(Guid id)
     {
@@ -76,6 +78,7 @@ public class AcmeChallengeController(
     /// internal-state oracle. Underlying messages are logged at warn level, and written as an
     /// unsuccessful <c>ChallengeRefused</c> row on the ACME tab, which only reached the log file.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("challenge/{id:guid}")]
     public async Task<IActionResult> RespondToChallenge(Guid id)
     {

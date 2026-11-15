@@ -70,6 +70,13 @@ public class CrlService : ICrlService
     private readonly ILdapSecretProtector _ldapSecretProtector;
 
     /// <summary>
+    /// The instance's mode. In DR mode no new CRL is signed: both generators throw
+    /// <see cref="ModularCA.Shared.Modes.InstanceModeException"/> before anything is read or
+    /// signed, and the CRLs already signed go on being served. Null allows everything.
+    /// </summary>
+    private readonly ModularCA.Shared.Modes.IInstanceModeGate? _modeGate;
+
+    /// <summary>
     /// Constructs the CRL service. The unused <c>IFeatureFlagService</c> dependency
     /// that was wired in but never referenced has been removed.
     /// Added <see cref="IAuditService"/> so each
@@ -78,8 +85,10 @@ public class CrlService : ICrlService
     /// scheduler's <c>CrlExported</c> dispatch event).
     /// </summary>
     public CrlService(ModularCADbContext dbContext, IKeystoreCertificates keystore, ILogger<CrlService> logger, IAuditService audit,
-        ICaServiceUrlService caServiceUrls, ILdapSecretProtector ldapSecretProtector, ISigningService signer)
+        ICaServiceUrlService caServiceUrls, ILdapSecretProtector ldapSecretProtector, ISigningService signer,
+        ModularCA.Shared.Modes.IInstanceModeGate? modeGate = null)
     {
+        _modeGate = modeGate;
         _dbContext = dbContext;
         _keystore = keystore;
         _logger = logger;
@@ -103,6 +112,7 @@ public class CrlService : ICrlService
     /// </summary>
     public async Task<string> GenerateCrlAsync(Guid caCertificateId, CancellationToken cancellationToken = default)
     {
+        ModularCA.Shared.Modes.InstanceModeGate.ThrowIfRefused(_modeGate, ModularCA.Shared.Modes.ModeOperation.Fact, "Signing a new CRL");
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         // Override the default 30s command timeout — CRLs for CAs with
@@ -345,6 +355,7 @@ public class CrlService : ICrlService
     /// </summary>
     public async Task<string> GenerateDeltaCrlAsync(Guid caCertificateId, CancellationToken cancellationToken = default)
     {
+        ModularCA.Shared.Modes.InstanceModeGate.ThrowIfRefused(_modeGate, ModularCA.Shared.Modes.ModeOperation.Fact, "Signing a new delta CRL");
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         _dbContext.Database.SetCommandTimeout(TimeSpan.FromMinutes(5));
 

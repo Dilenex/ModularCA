@@ -71,14 +71,19 @@ public class SshCaService : ISshCaService
     private readonly ILogger<SshCaService> _logger;
     private readonly ISshLoginNameService _loginNames;
 
+    /// <summary>Asked before the signer generates an SSH CA key; null is an instance nobody set a mode on.</summary>
+    private readonly ModularCA.Shared.Modes.IInstanceModeGate? _modeGate;
+
     /// <summary>
     /// Creates the service over the application database, the signer and the audit.
     /// <paramref name="loginNames"/> decides whether a user may request from an SSH CA and
-    /// which login names they hold.
+    /// which login names they hold. <paramref name="modeGate"/> is the instance's mode, asked
+    /// before a key is generated; null allows everything.
     /// </summary>
     public SshCaService(ModularCADbContext db, ISigningService signer, IAuditService audit, ILogger<SshCaService> logger,
-        ISshLoginNameService loginNames)
+        ISshLoginNameService loginNames, ModularCA.Shared.Modes.IInstanceModeGate? modeGate = null)
     {
+        _modeGate = modeGate;
         ArgumentNullException.ThrowIfNull(loginNames);
         _db = db;
         _signer = signer;
@@ -158,6 +163,8 @@ public class SshCaService : ISshCaService
         bool isUserCa, bool isHostCa, int maxValidityHours, Guid? ceremonyId)
     {
         var generation = SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, spaceId: null, ceremonyId: ceremonyId);
+        // A key operation waits for full mode; asked here, at the node, before the signer is.
+        ModularCA.Shared.Modes.InstanceModeGate.ThrowIfRefused(_modeGate, ModularCA.Shared.Modes.ModeOperation.Frozen, "Generating an SSH CA key");
         GeneratedKey generated;
         try
         {

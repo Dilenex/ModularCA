@@ -259,6 +259,8 @@ public static class StepUpOps
     public const string RevokeApiKey = "revoke-api-key";
     /// <summary>Replacing the JWT secret with a newly generated one.</summary>
     public const string RotateJwtSecret = "rotate-jwt-secret";
+    /// <summary>Setting the instance's mode by hand: full, restricted or DR mode.</summary>
+    public const string SetInstanceMode = "set-instance-mode";
 
     /// <summary>Granting, changing or removing SSH login names on an SSH CA key, or switching its own-username rule.</summary>
     public const string ManageSshLoginNames = "manage-ssh-login-names";
@@ -314,7 +316,7 @@ public static class StepUpOps
         UpdateCaServiceUrl, DeleteCaServiceUrl,
         UpdateFeatureFlag,
         DeleteEabKey,
-        CreateApiKey, RevokeApiKey, RotateJwtSecret,
+        CreateApiKey, RevokeApiKey, RotateJwtSecret, SetInstanceMode,
         CreateSshProfile, UpdateSshProfile, DeleteSshProfile,
         TotpSetup, TotpVerifySetup, TotpRemove,
         WebAuthnRegister, WebAuthnDelete,

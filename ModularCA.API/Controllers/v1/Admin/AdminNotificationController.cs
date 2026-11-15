@@ -58,6 +58,7 @@ public class AdminNotificationController(ModularCADbContext db, IEmailService em
     /// Recipients, when sent, is a comma-separated list whose entries must each parse as a mail
     /// address (400); empty falls back to the admin recipients.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{eventType}")]
     public async Task<IActionResult> UpdatePreference(string eventType, [FromBody] UpdateNotificationRequest request)
     {
@@ -78,6 +79,7 @@ public class AdminNotificationController(ModularCADbContext db, IEmailService em
     /// Sends a test email to the admin recipients through the configured SMTP settings. Answers 500
     /// with a generic message when sending fails; the cause goes to the log only.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("test")]
     public async Task<IActionResult> SendTestEmail()
     {
@@ -100,6 +102,7 @@ public class AdminNotificationController(ModularCADbContext db, IEmailService em
     /// Returns the delivery results for each endpoint (success or failure).
     /// This is a test-only event and should not be confused with real alerts.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("test-webhook")]
     public async Task<IActionResult> TestWebhook()
     {

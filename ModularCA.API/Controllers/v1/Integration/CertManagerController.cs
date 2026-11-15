@@ -63,6 +63,7 @@ public class CertManagerController : ControllerBase
     /// </summary>
     /// <param name="request">The signing request containing the CSR and metadata.</param>
     /// <returns>The signed certificate and CA certificate in base64 PEM format.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("sign")]
     public async Task<IActionResult> Sign([FromBody] CertManagerSignRequest request)
     {

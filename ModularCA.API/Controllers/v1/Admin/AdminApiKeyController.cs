@@ -40,6 +40,7 @@ public class AdminApiKeyController(IApiKeyService keys, ICurrentUserService curr
     /// Creates a key. The response carries the key itself in <c>key</c>, and this is the only
     /// time it is shown. Requires step-up MFA (<see cref="StepUpOps.CreateApiKey"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [RequireStepUp(StepUpOps.CreateApiKey)]
     [ProducesResponseType(201)]
@@ -74,6 +75,7 @@ public class AdminApiKeyController(IApiKeyService keys, ICurrentUserService curr
     /// Revokes a key. It stops working at once and stays in the list. Requires step-up MFA
     /// (<see cref="StepUpOps.RevokeApiKey"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.RevokeApiKey, "id")]
     [ProducesResponseType(200)]

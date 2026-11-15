@@ -88,6 +88,7 @@ public class UserCertSignRequestController(
     /// certificate export. Answers 409 with the reason when the certificate is not issued yet,
     /// the key was already delivered, or no key was ever held.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact)]
     [HttpPost("{id:guid}/pkcs12")]
     [Authorize(Policy = "CaUser")]
     [RequireStepUp(StepUpOps.ExportCert, "id")]
@@ -108,6 +109,7 @@ public class UserCertSignRequestController(
     /// PKCS#12 from <c>{id}/pkcs12</c>; it is not in this response. The request names its
     /// request profile (400 without one) and is held to it (<see cref="RequestProfileEnforcement"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRequest, CaTarget.SigningProfile, "request.SigningProfileId")]
@@ -132,6 +134,7 @@ public class UserCertSignRequestController(
     /// one); the CSR's names, with the overrides applied, are held to it, and the fields it
     /// fixes or gives a default for are added to the overrides.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("upload")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRequest, CaTarget.SigningProfile, "request.SigningProfileId")]
@@ -159,6 +162,7 @@ public class UserCertSignRequestController(
     /// under Data Protection until then, and delivered once as PKCS#12 with the certificate
     /// from <c>{id}/pkcs12</c>; it is not in this response.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("request-with-key")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRequest, CaTarget.SigningProfile, "req.SigningProfileId")]
@@ -316,6 +320,7 @@ public class UserCertSignRequestController(
     /// <summary>
     /// Parses a PEM-encoded CSR and returns subject, SANs, key info, and signature validation.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("parse-csr")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRequest, CaTarget.AnyCa)]
@@ -346,6 +351,7 @@ public class UserCertSignRequestController(
     /// never as "valid" — so a broken profile is visible here instead of previewing as a pass.
     /// Requirements and per-type SAN rules are compared ignoring case (<see cref="RequestProfileRules"/>), as issuance compares them.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("validate-against-profile")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRequest, CaTarget.AnyCa)]

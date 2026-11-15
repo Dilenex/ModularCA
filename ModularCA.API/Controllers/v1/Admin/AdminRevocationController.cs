@@ -56,6 +56,7 @@ public class AdminRevocationController(
     /// Audit findings #32: emits the success-path action type with <c>success=false</c> when
     /// the underlying revocation service throws, so SIEM can correlate failed attempts.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpPost("{certId:guid}/revoke")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> RevokeByCertId(Guid certId, [FromBody] RevokeCertificateRequestByCertId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -138,6 +139,7 @@ public class AdminRevocationController(
     /// <c>success=false</c> when the revocation service throws so SIEM can correlate
     /// failed revocation attempts.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpPost("serial/{serial}/revoke")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> RevokeByCertSerial(string serial, [FromBody] RevokeCertificateRequestByCertSerial request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -225,6 +227,7 @@ public class AdminRevocationController(
     /// a certificate deleted between the lookup and the revoke is skipped as <c>not_found</c>.
     /// Never aborts the batch on one failure; returns a per-serial summary.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpPost("bulk-revoke")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Serials, "request.SerialNumbers")]
@@ -309,6 +312,7 @@ public class AdminRevocationController(
     /// Audit findings #32: emits <see cref="AuditActionType.CertificateHeld"/> with
     /// <c>success=false</c> when the hold service call throws.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpPost("{certId:guid}/hold")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> HoldByCertId(Guid certId, [FromBody] HoldCertificateRequestByCertId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -365,6 +369,7 @@ public class AdminRevocationController(
     /// Audit findings #32: emits <see cref="AuditActionType.CertificateHeld"/> with
     /// <c>success=false</c> when the hold service call throws.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpPost("serial/{serial}/hold")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> HoldByCertSerial(string serial, [FromBody] HoldCertificateRequestByCertSerial request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -419,6 +424,7 @@ public class AdminRevocationController(
     /// Audit findings #32: emits <see cref="AuditActionType.CertificateUnheld"/> with
     /// <c>success=false</c> when the unhold service call throws.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("{certId:guid}/unhold")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> UnholdByCertId(Guid certId, [FromBody] HoldCertificateRequestByCertId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -474,6 +480,7 @@ public class AdminRevocationController(
     /// Audit findings #32: emits <see cref="AuditActionType.CertificateUnheld"/> with
     /// <c>success=false</c> when the unhold service call throws.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("serial/{serial}/unhold")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> UnholdByCertSerial(string serial, [FromBody] HoldCertificateRequestByCertSerial request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)

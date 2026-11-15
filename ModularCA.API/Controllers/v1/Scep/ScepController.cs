@@ -43,6 +43,9 @@ public class ScepController(IScepService scepService) : ControllerBase
     /// for the addressed CA like the other two: 409 for such a CA, 400 for an unknown CA or one
     /// with SCEP switched off.
     /// </summary>
+    // GetCACert and GetCACaps only read, and are answered in every mode. PKIOperation by GET
+    // is an enrolment, and asks the gate itself.
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue, AnsweredByAction = true)]
     [HttpGet]
     public async Task<IActionResult> Get([FromQuery] string operation, [FromQuery] string? message, string? caLabel = null)
     {
@@ -112,6 +115,7 @@ public class ScepController(IScepService scepService) : ControllerBase
     /// Enforces request size limits and validates content type before processing; 409 with the
     /// reason when SCEP cannot run on the addressed CA (its key is not RSA).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost]
     [RequestSizeLimit(MaxScepBodySize)]
     public async Task<IActionResult> Post(string? caLabel = null)
@@ -218,6 +222,10 @@ public class ScepController(IScepService scepService) : ControllerBase
     /// </summary>
     private async Task<IActionResult> HandlePkiOperationGet(string? message, string? caLabel)
     {
+        if (await ModularCA.Auth.Authorization.ModeGateFilter.RequireAsync(
+                HttpContext, ModularCA.Shared.Modes.ModeOperation.Issue, "SCEP enrolment") is { } modeRefusal)
+            return modeRefusal;
+
         if (string.IsNullOrWhiteSpace(message))
             return BadRequest("Missing 'message' parameter for PKIOperation.");
 

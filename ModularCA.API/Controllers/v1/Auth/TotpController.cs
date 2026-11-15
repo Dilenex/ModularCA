@@ -79,6 +79,7 @@ public class TotpController : ControllerBase
     /// If the user already has an unverified secret, it is replaced.
     /// </summary>
     [Authorize]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("setup")]
     public async Task<IActionResult> Setup([FromBody] TotpSetupRequest? request = null, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
@@ -150,6 +151,7 @@ public class TotpController : ControllerBase
     /// one code cannot complete two concurrent enrolments.
     /// </summary>
     [Authorize]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("verify-setup")]
     public async Task<IActionResult> VerifySetup([FromBody] TotpCodeRequest request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
@@ -248,6 +250,7 @@ public class TotpController : ControllerBase
     /// wrong code, so the response time does not tell them apart.
     /// </summary>
     [AllowAnonymous]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("recovery")]
     public async Task<IActionResult> TotpRecovery([FromBody] TotpRecoveryRequest request)
     {
@@ -399,6 +402,7 @@ public class TotpController : ControllerBase
     /// </summary>
     /// <param name="request">The pending-MFA token and the TOTP code.</param>
     [AllowAnonymous]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("verify")]
     public async Task<IActionResult> Verify([FromBody] TotpMfaVerifyRequest request)
     {
@@ -594,6 +598,7 @@ public class TotpController : ControllerBase
     /// is audited as <see cref="AuditActionType.UserSessionsEnded"/>.
     /// </summary>
     [Authorize]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpDelete]
     [RequireStepUp(StepUpOps.TotpRemove)]
     public async Task<IActionResult> Remove()

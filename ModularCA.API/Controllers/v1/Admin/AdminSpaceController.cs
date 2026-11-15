@@ -144,6 +144,7 @@ public partial class AdminSpaceController(
     /// the response's <c>recommendation</c> says a licence is recommended
     /// (<see cref="SpaceCreationGate"/>). The slug <c>system</c> is reserved for instance CAs' groups.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [RequireStepUp(StepUpOps.CreateSpace)]
     public async Task<IActionResult> Create([FromBody] CreateSpaceRequest request)
@@ -244,6 +245,7 @@ public partial class AdminSpaceController(
     /// to prevent accidental or malicious removal of ceremony protections. A change that needs a
     /// policy-change ceremony nobody else could approve is refused with 409 before anything is saved.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(
         Guid id,
@@ -454,6 +456,7 @@ public partial class AdminSpaceController(
     /// <see cref="Update"/>, and refused with 409 before anything is saved when nobody else could
     /// approve that ceremony. PUT replaces the settings representation with the supplied desired state.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{id:guid}/settings")]
     [RequireStepUp(StepUpOps.UpdateSpaceSettings, "id")]
     public async Task<IActionResult> UpdateSettings(Guid id, [FromBody] UpdateSpaceSettingsRequest request)
@@ -658,6 +661,7 @@ public partial class AdminSpaceController(
     /// Disables a space (soft delete). The space and its CAs remain in the database
     /// but are marked as disabled. Does not delete any data. Requires step-up MFA.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Disable(
         Guid id,

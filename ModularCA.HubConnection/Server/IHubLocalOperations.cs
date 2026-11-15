@@ -1,0 +1,83 @@
+using System.Text.Json;
+using ModularCA.HubConnection.Contract;
+
+namespace ModularCA.HubConnection.Server;
+
+/// <summary>
+/// What the node does for each request on the hub's local connection. The listener
+/// (<see cref="HubLocalHost"/>) owns the wire: the token check, the list of operations, the
+/// version, the request identifier and the per-request audit record. This is everything behind it.
+/// </summary>
+public interface IHubLocalOperations
+{
+    /// <summary>
+    /// The SHA-256 of the affiliation token, 32 bytes, or null while the instance holds none and
+    /// the check is off. Read on every request and never cached by the listener, so a replaced
+    /// hash is in force for the next request.
+    /// </summary>
+    byte[]? AffiliationTokenHash { get; }
+
+    /// <summary>The instance's product version.</summary>
+    string InstanceVersion { get; }
+
+    /// <summary>Runs the instance's readiness checks.</summary>
+    /// <param name="cancellationToken">Cancels the read.</param>
+    Task<HubHealthReport> ReadHealthAsync(CancellationToken cancellationToken);
+
+    /// <summary>The mode now and who set it.</summary>
+    HubMode ReadMode();
+
+    /// <summary>
+    /// Sets the mode as the hub, recording it in the audit trail with the operator name the hub
+    /// claimed. Throws <see cref="ArgumentException"/> when <paramref name="mode"/> is not a mode.
+    /// </summary>
+    /// <param name="mode"><c>full</c>, <c>restricted</c> or <c>dr</c>.</param>
+    /// <param name="reason">The reason the hub gave, if any.</param>
+    /// <param name="operatorName">The operator name the hub claimed, if any.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    Task<HubMode> SetModeAsync(string mode, string? reason, string? operatorName, CancellationToken cancellationToken);
+
+    /// <summary>Writes a backup now. Throws when the backup does not complete.</summary>
+    /// <param name="operatorName">The operator name the hub claimed, if any.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    Task<HubBackupResult> CreateBackupAsync(string? operatorName, CancellationToken cancellationToken);
+
+    /// <summary>Replaces the hash of the affiliation token and keeps it with the instance's data.</summary>
+    /// <param name="newTokenSha256">The new hash, 32 bytes.</param>
+    /// <param name="operatorName">The operator name the hub claimed, if any.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    Task ReplaceAffiliationTokenAsync(byte[] newTokenSha256, string? operatorName, CancellationToken cancellationToken);
+
+    /// <summary>Records one request in the audit trail, under the hub.</summary>
+    /// <param name="record">The request and its outcome.</param>
+    /// <param name="cancellationToken">Cancels the write.</param>
+    Task AuditAsync(HubRequestRecord record, CancellationToken cancellationToken);
+}
+
+/// <summary>The instance's readiness as its own checks report it.</summary>
+/// <param name="Status"><c>healthy</c>, <c>degraded</c> or <c>unhealthy</c>.</param>
+/// <param name="Checks">The checks' data, as <c>/health/ready</c> reports it.</param>
+public sealed record HubHealthReport(string Status, JsonElement? Checks = null);
+
+/// <summary>One request on the local connection and what became of it, for the audit trail.</summary>
+/// <param name="Operation">The operation's name, or null for a request outside the list.</param>
+/// <param name="Method">The HTTP method.</param>
+/// <param name="Path">The request path.</param>
+/// <param name="Status">The HTTP status answered.</param>
+/// <param name="Refusal">The error code when the request was refused or failed; null when it was served.</param>
+/// <param name="RequestId">The request identifier, when one was given.</param>
+/// <param name="OperatorName">The operator name the hub claimed. A claim: the instance cannot check it.</param>
+/// <param name="ContractVersion">The contract version the hub stated.</param>
+/// <param name="Replayed">True when the answer repeats an earlier one and nothing was done again.</param>
+/// <param name="TokenCheck"><c>enforced</c> or <c>off</c> at the time of the request.</param>
+public sealed record HubRequestRecord(
+    string? Operation,
+    string Method,
+    string Path,
+    int Status,
+    string? Refusal,
+    string? RequestId,
+    string? OperatorName,
+    string? ContractVersion,
+    bool Replayed,
+    string TokenCheck);

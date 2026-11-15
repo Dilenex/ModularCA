@@ -140,6 +140,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// <c>maxValidityHours</c> is omitted it is 24 for a key that signs user certificates and
     /// 8760 for a host-only key (<see cref="SshCaKeyDefaults"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("ca-keys")]
     [Authorize(Policy = "SystemOperator")]
     public async Task<IActionResult> GenerateCaKey(
@@ -242,6 +243,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// signed, refused or revoked because of it, and no limit of the key changes
     /// (<c>StepUpGuardTests</c> names this route with that reason).
     /// </remarks>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("ca-keys/{caKeyId:guid}/review-by")]
     [Authorize(Policy = "CaAdmin")]
     public async Task<IActionResult> SetReviewBy(Guid caKeyId, [FromBody] SetSshCaKeyReviewByRequest request)
@@ -299,6 +301,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// locked signer, a key the signer cannot serve and a key awaiting its import into the signer
     /// are 503 with the reason; a certificate the signer's rules refuse is 400 with its reason.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("ca-keys/{caKeyId:guid}/certificates/sign-user")]
     [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.SignSshCert, "caKeyId")]
@@ -399,6 +402,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// A locked signer, a key the signer cannot serve and a key awaiting its import into the
     /// signer are 503 with the reason; a certificate the signer's rules refuse is 400 with its reason.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("ca-keys/{caKeyId:guid}/certificates/sign-host")]
     [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.SignSshCert, "caKeyId")]
@@ -579,6 +583,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// <summary>
     /// Revokes an SSH certificate by its identifier, scoped to a specific CA key.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpPost("ca-keys/{caKeyId:guid}/certificates/{id:guid}/revoke")]
     [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.RevokeSshCert, "id")]
@@ -598,6 +603,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// If the CA's scope (the instance, for an SSH CA) requires key ceremonies, initiates a
     /// ceremony instead.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpDelete("ca-keys/{id:guid}")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> DisableSshCaKey(
@@ -619,6 +625,10 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
             var policy = await new EffectivePolicyResolver(db).ResolveAsync(key.CertificateAuthority?.SpaceId);
             if (policy.RequireKeyCeremony)
             {
+                // Disabling is a restriction, but here it needs a ceremony, and ceremonies wait for full mode.
+                if (await ModularCA.Auth.Authorization.ModeGateFilter.RequireAsync(
+                        HttpContext, ModularCA.Shared.Modes.ModeOperation.Frozen, "Starting the key ceremony this SSH CA needs to be disabled") is { } modeRefusal)
+                    return modeRefusal;
                 var sshParams = new SshKeyCeremonyParameters
                 {
                     SshCaKeyId = id,

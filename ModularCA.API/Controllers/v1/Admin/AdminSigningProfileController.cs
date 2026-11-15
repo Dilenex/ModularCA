@@ -238,6 +238,7 @@ public class AdminSigningProfileController(
     /// (<see cref="CertificatePoliciesError"/>) are refused with 400, as are allowed cert profiles
     /// the caller cannot see or the issuing CA could not issue under (<see cref="CertProfileLinksErrorAsync"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CaManage, CaTarget.CaCertificate, "r.IssuerId")]
@@ -274,6 +275,7 @@ public class AdminSigningProfileController(
     /// (403, <see cref="UnboundRefusalAsync"/>).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{id}")]
     [Authorize(Policy = "CaAdmin")]
     [RequireStepUp(StepUpOps.UpdateSigningProfile, "id")]
@@ -313,6 +315,7 @@ public class AdminSigningProfileController(
     /// one needs ca.manage at system scope (403, <see cref="UnboundRefusalAsync"/>).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id}")]
     [Authorize(Policy = "CaAdmin")]
     [RequireStepUp(StepUpOps.DeleteSigningProfile, "id")]
@@ -357,6 +360,7 @@ public class AdminSigningProfileController(
     /// needs ca.manage at system scope (403, <see cref="UnboundRefusalAsync"/>).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{id}/allowed-cert-profiles")]
     [Authorize(Policy = "CaAdmin")]
     [RequireStepUp(StepUpOps.UpdateSigningProfile, "id")]

@@ -66,6 +66,7 @@ public class AdminRevokedSerialController(
     /// missing note. A refusal is audited with <c>success=false</c>.
     /// </summary>
     [HttpPost("revoked-serials")]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Ca, "caId")]
     [RequireStepUp(StepUpOps.RevokeSerial, "caId")]
     public async Task<IActionResult> Record(Guid caId, [FromBody] RecordRevokedSerialRequest request)
@@ -118,6 +119,7 @@ public class AdminRevokedSerialController(
     /// already holds that serial. A refusal is audited with <c>success=false</c>.
     /// </summary>
     [HttpPost("adopted-certificates")]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact)]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Ca, "caId")]
     [RequireStepUp(StepUpOps.AdoptCertificate, "caId")]
     public async Task<IActionResult> Adopt(Guid caId, [FromBody] AdoptCertificateRequest request)

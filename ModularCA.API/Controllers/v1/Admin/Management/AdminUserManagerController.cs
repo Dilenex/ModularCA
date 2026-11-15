@@ -241,6 +241,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// scope, and nobody below system scope could administer it afterwards, its creator included.
         /// A system administrator may create one with no groups.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost]
         [Authorize(Policy = "UserAdministrator")]
         public async Task<IActionResult> CreateUser([FromBody] CreateUserRequest request,
@@ -324,6 +325,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// source (400). A password source change that applies is audited as
         /// <see cref="AuditActionType.UserPasswordSourceChanged"/> with the old and new value.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
         [HttpPut("{id:guid}")]
         [Authorize(Policy = "UserAdministrator")]
         public async Task<IActionResult> UpdateUser(Guid id, [FromBody] UpdateUserRequest request,
@@ -378,6 +380,17 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             change.LastName = request.LastName;
             change.DisplayName = request.DisplayName;
 
+            // The instance's mode: locking or deactivating an account is a restriction, which a
+            // restricted instance still accepts. Any other change to a user waits for full mode.
+            // (DR mode has already refused the request at the filter.)
+            var onlyRestricts = change.Username == null && change.Email == null && change.PasswordNeverExpires == null
+                && change.PasswordChangeOnNextLogon == null && change.PasswordSource == null
+                && change.IsActive != true && change.IsLocked != false
+                && request.FirstName == null && request.LastName == null && request.DisplayName == null;
+            if (!onlyRestricts && await ModularCA.Auth.Authorization.ModeGateFilter.RequireAsync(
+                    HttpContext, ModularCA.Shared.Modes.ModeOperation.Frozen, "Changing a user, other than locking or deactivating the account,") is { } modeRefusal)
+                return modeRefusal;
+
             if (altersIdentity)
             {
                 if (await AuthorizeAccountTierAsync(id) is { } denied)
@@ -429,6 +442,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// username so that history keeps naming it, and its memberships, grants, sessions and
         /// credentials are removed. The enrolment account of a Kerberos realm is refused (409).
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpDelete("{id:guid}")]
         [Authorize(Policy = "UserAdministrator")]
         public async Task<IActionResult> DeleteUser(Guid id,
@@ -516,6 +530,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// account with a pending promotion unless the caller is system-super, and (409) for a
         /// Directory account, which would never use a local password.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("{id:guid}/reset-password")]
         [Authorize(Policy = "UserAdministrator")]
         public async Task<IActionResult> ResetUserPassword(Guid id,
@@ -576,6 +591,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// instead (202 with the ceremony id). Refused (409) for another account with a pending
         /// promotion unless the caller is system-super. A reset ends the account's sessions.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("{id:guid}/reset-mfa")]
         [Authorize(Policy = "SystemUserAdministrator")]
         public async Task<IActionResult> ResetUserMfa(Guid id,
@@ -795,6 +811,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// A controlled membership added by a non-super opens a ceremony (202); 409 when the caller
         /// reset the user's password or MFA in the last 30 days.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("{id:guid}/groups/{groupId:guid}")]
         [Authorize(Policy = "GroupMembershipAdministrator")]
         public async Task<IActionResult> AddUserToGroup(Guid id, Guid groupId,
@@ -862,6 +879,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// below system scope may not remove an account's last holding (409,
         /// <see cref="RefuseToStrandAsync"/>).
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpDelete("{id:guid}/groups/{groupId:guid}")]
         [Authorize(Policy = "GroupMembershipAdministrator")]
         public async Task<IActionResult> RemoveUserFromGroup(Guid id, Guid groupId,
@@ -929,6 +947,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// <c>GroupMembershipAdministrator</c> gate); an account the caller cannot see answers 404,
         /// as a missing one does, and each group still needs the right on its own scope.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("{id:guid}/groups/bulk")]
         [Authorize(Policy = "GroupMembershipAdministrator")]
         public async Task<IActionResult> BulkUpdateUserGroups(Guid id, [FromBody] BulkUserGroupsRequest request,

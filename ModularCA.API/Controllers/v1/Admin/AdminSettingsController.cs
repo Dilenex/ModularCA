@@ -54,6 +54,7 @@ public class AdminSettingsController(
     /// tokens signed with the old one are refused. Requires step-up MFA
     /// (<see cref="StepUpOps.RotateJwtSecret"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("jwt-secret/rotate")]
     [RequireStepUp(StepUpOps.RotateJwtSecret)]
     [ProducesResponseType(200)]

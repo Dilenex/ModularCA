@@ -51,6 +51,7 @@ public class AdminTrustAnchorController(
     /// The certificate must have BasicConstraints CA=true.
     /// </summary>
     /// <param name="request">The import request containing the certificate and optional metadata.</param>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [RequireStepUp(StepUpOps.ManageTrustAnchor)]
     public async Task<IActionResult> Import([FromBody] ImportTrustAnchorRequest request)
@@ -91,6 +92,7 @@ public class AdminTrustAnchorController(
     /// until the application is restarted.
     /// </summary>
     /// <param name="id">The trust anchor identifier.</param>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.ManageTrustAnchor, "id")]
     public async Task<IActionResult> Delete(Guid id)
@@ -119,6 +121,7 @@ public class AdminTrustAnchorController(
     /// </summary>
     /// <param name="id">The trust anchor identifier.</param>
     /// <param name="request">The toggle request containing the desired enabled state.</param>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{id:guid}/toggle")]
     [RequireStepUp(StepUpOps.ManageTrustAnchor, "id")]
     public async Task<IActionResult> Toggle(Guid id, [FromBody] ToggleTrustAnchorRequest request)

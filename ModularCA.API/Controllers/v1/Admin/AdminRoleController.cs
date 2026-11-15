@@ -109,6 +109,7 @@ public class AdminRoleController(
     /// Creates a custom (non-built-in) role. Requires step-up MFA because a freshly minted role
     /// becomes available for assignment immediately and can carry arbitrary capability bundles.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [RequireStepUp(StepUpOps.CreateRole)]
     public async Task<IActionResult> Create([FromBody] CreateRoleRequest request)
@@ -157,6 +158,7 @@ public class AdminRoleController(
     /// When a capability is removed, the SSH certificates of users who may no longer request from
     /// their SSH CA are revoked.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{id:guid}")]
     [RequireStepUp(StepUpOps.UpdateRole, "id")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateRoleRequest request)
@@ -257,6 +259,7 @@ public class AdminRoleController(
     /// Built-in roles are refused; adding a controlled capability to an assigned role is system-super only.
     /// The assigned-role check runs under the same row lock on the role that role assignment takes.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("{id:guid}/capabilities")]
     [RequireStepUp(StepUpOps.UpdateRole, "id")]
     public async Task<IActionResult> AddCapability(Guid id, [FromBody] AddRoleCapabilityRequest request)
@@ -325,6 +328,7 @@ public class AdminRoleController(
     /// Removing a controlled capability from an assigned role is system-super only, and never orphans a scope.
     /// The SSH certificates of users who may no longer request from their SSH CA are revoked.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id:guid}/capabilities/{capabilityId:guid}")]
     [RequireStepUp(StepUpOps.UpdateRole, "id")]
     public async Task<IActionResult> RemoveCapability(Guid id, Guid capabilityId)
@@ -374,6 +378,7 @@ public class AdminRoleController(
     /// Deleting an assigned role that carries a controlled capability is system-super only, and never orphans a scope.
     /// The SSH certificates of users who may no longer request from their SSH CA are revoked.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.DeleteRole, "id")]
     public async Task<IActionResult> Delete(Guid id)

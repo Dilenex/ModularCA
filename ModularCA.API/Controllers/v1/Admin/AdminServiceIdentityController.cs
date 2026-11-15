@@ -51,6 +51,7 @@ public class AdminServiceIdentityController(
     }
 
     /// <summary>Creates an identity. No password exists for it, ever.</summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [RequireStepUp(StepUpOps.CreateUser)]
     public async Task<IActionResult> Create([FromBody] ServiceIdentityRequest request)
@@ -70,6 +71,7 @@ public class AdminServiceIdentityController(
     }
 
     /// <summary>Changes display name, description and the active flag.</summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{id:guid}")]
     [RequireStepUp(StepUpOps.UpdateUser, "id")]
     public async Task<IActionResult> Update(Guid id, [FromBody] ServiceIdentityUpdateRequest request)
@@ -87,6 +89,7 @@ public class AdminServiceIdentityController(
     }
 
     /// <summary>Replaces the identity's group memberships.</summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{id:guid}/groups")]
     [RequireStepUp(StepUpOps.UpdateUserGroups, "id")]
     public async Task<IActionResult> SetGroups(Guid id, [FromBody] ServiceIdentityGroupsRequest request)
@@ -105,6 +108,7 @@ public class AdminServiceIdentityController(
     }
 
     /// <summary>Deletes the identity. Refused while a Kerberos realm acts as it.</summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.DeleteUser, "id")]
     public async Task<IActionResult> Delete(Guid id)

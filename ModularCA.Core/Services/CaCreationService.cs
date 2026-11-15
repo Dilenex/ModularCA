@@ -49,8 +49,16 @@ public class CaCreationService(
     SystemConfig systemConfig,
     ILogger<CaCreationService> logger,
     ISigningService signer,
-    IAuditService? audit = null)
+    IAuditService? audit = null,
+    ModularCA.Shared.Modes.IInstanceModeGate? modeGate = null)
 {
+    /// <summary>
+    /// Asked before the signer is asked to generate a key: a key operation waits for full mode.
+    /// Null (bootstrap, tests) is an instance nobody set a mode on.
+    /// </summary>
+    private void RequireFullModeForKeyOperation(string what)
+        => ModularCA.Shared.Modes.InstanceModeGate.ThrowIfRefused(modeGate, ModularCA.Shared.Modes.ModeOperation.Frozen, what);
+
     /// <summary>The caller identity CA creation asks the signer under; the signer audits it with every decision.</summary>
     private const string SignerCaller = nameof(CaCreationService);
 
@@ -193,6 +201,7 @@ public class CaCreationService(
         // if anything fails before then. The ceremony's id rides the context so the signer can
         // verify the approval itself.
         var ceremony = SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, spaceId, ceremonyId: ceremonyId);
+        RequireFullModeForKeyOperation("Generating a CA key");
         var generated = await signer.GenerateKeyAsync(
             new KeySpec(keyAlgorithm, KeyAlgorithmPolicy.FormatKeySizeForProfile(keyAlgorithm, keySize)), ceremony);
         X509Certificate newCaCert;
@@ -384,6 +393,7 @@ public class CaCreationService(
         // it is committed to the issued certificate. The ceremony's id rides the context so the
         // signer can verify the approval itself.
         var ceremony = SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, spaceId, ceremonyId: ceremonyId);
+        RequireFullModeForKeyOperation("Generating a CA key");
         var generated = await signer.GenerateKeyAsync(
             new KeySpec(keyAlgorithm, KeyAlgorithmPolicy.FormatKeySizeForProfile(keyAlgorithm, keySize)), ceremony);
 
@@ -1609,6 +1619,7 @@ public class CaCreationService(
         var keyContext = caSigningContext.Purpose == SigningPurpose.Ceremony
             ? SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, caEntity.SpaceId, caEntity.Id, caSigningContext.CeremonyId)
             : SigningContext.ForCa(SignerCaller, SigningPurpose.Infrastructure, caEntity.Id, caEntity.SpaceId);
+        RequireFullModeForKeyOperation("Generating an OCSP, CMP or timestamp signing key");
         var generated = await signer.GenerateKeyAsync(
             new KeySpec(alg, KeyAlgorithmPolicy.FormatKeySizeForProfile(alg, sizeOrCurve)), keyContext);
         try

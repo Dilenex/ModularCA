@@ -88,6 +88,7 @@ public class AdminOidController(
     /// accepted by the profile validator and then silently dropped by the certificate builder,
     /// which maps friendly names onto those nine bits and nothing else.
     /// </remarks>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [Authorize(Policy = "SystemOperator")]
     [RequireStepUp(StepUpOps.ManageOidCatalog)]
@@ -149,6 +150,7 @@ public class AdminOidController(
     /// profile loudly — it quietly issues certificates without that usage, which for a Smart Card
     /// Logon or KDC Authentication EKU means a logon that stops working for no visible reason.
     /// </remarks>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{oid}")]
     [Authorize(Policy = "SystemOperator")]
     [RequireStepUp(StepUpOps.ManageOidCatalog)]

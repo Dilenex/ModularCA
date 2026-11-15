@@ -67,6 +67,7 @@ public class AcmeOrderController(
     /// </para>
     /// </summary>
     [AcmeJws]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("new-order")]
     public async Task<IActionResult> NewOrder()
     {
@@ -119,6 +120,8 @@ public class AcmeOrderController(
     /// Get order status (RFC 8555 §7.4 POST-as-GET). Verifies account ownership.
     /// </summary>
     [AcmeJws]
+    // Reads only (POST-as-GET): answered in every mode.
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("order/{id:guid}")]
     public async Task<IActionResult> GetOrder(Guid id)
     {
@@ -150,6 +153,7 @@ public class AcmeOrderController(
     /// (RFC 8555 section 7.4); the order is invalid either way, as after any other finalize refusal.
     /// </summary>
     [AcmeJws]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("order/{id:guid}/finalize")]
     public async Task<IActionResult> FinalizeOrder(Guid id)
     {
@@ -239,6 +243,8 @@ public class AcmeOrderController(
     /// Download the issued certificate (RFC 8555 §7.4.2). Verifies account ownership.
     /// </summary>
     [AcmeJws]
+    // Reads only (POST-as-GET): a certificate already issued is handed out in every mode.
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("cert/{id:guid}")]
     public async Task<IActionResult> DownloadCertificate(Guid id)
     {
@@ -269,6 +275,7 @@ public class AcmeOrderController(
     // account key: the filter looks the account up by its thumbprint and refuses an unknown key,
     // so revocation by the certificate's own key (§7.6) is not supported.
     [AcmeJws(AllowJwk = true)]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpPost("revoke-cert")]
     public async Task<IActionResult> RevokeCert()
     {

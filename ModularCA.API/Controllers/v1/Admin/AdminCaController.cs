@@ -367,6 +367,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// Making a CA the default clears the default on every other CA of the instance.
         /// Requires step-up MFA verification.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
         [HttpPut("{id:guid}")]
         [Authorize(Policy = "SystemOperator")]
         [RequireStepUp(StepUpOps.UpdateCa, "id")]
@@ -381,6 +382,16 @@ namespace ModularCA.API.Controllers.v1.Admin
 
             var newLabel = request.Label != null && request.Label != ca.Label ? request.Label : null;
             var newName = request.Name != null && request.Name != ca.Name ? request.Name : null;
+
+            // The instance's mode: disabling a CA is a restriction, which a restricted instance
+            // still accepts. Renaming, relabelling, changing the default or enabling a CA waits
+            // for full mode. (DR mode has already refused the request at the filter.)
+            var onlyDisables = newLabel == null && newName == null
+                && (!request.IsDefault.HasValue || request.IsDefault.Value == ca.IsDefault)
+                && (!request.IsEnabled.HasValue || !request.IsEnabled.Value || ca.IsEnabled);
+            if (!onlyDisables && await ModularCA.Auth.Authorization.ModeGateFilter.RequireAsync(
+                    HttpContext, ModularCA.Shared.Modes.ModeOperation.Frozen, "Changing a CA's name, label or default, or enabling it,") is { } modeRefusal)
+                return modeRefusal;
             if (newLabel != null)
             {
                 try
@@ -478,6 +489,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// <see cref="NameConstraintRules"/> refuses (400). The body names the new CA's scope
         /// explicitly, a space id or scope "instance"; neither is a 400.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("create-intermediate")]
         [Authorize]
         [RequireStepUp(StepUpOps.CreateCa)]
@@ -724,6 +736,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// CA's scope explicitly, a space id or scope "instance"; neither is a 400. A name
         /// constraint <see cref="NameConstraintRules"/> refuses is a 400, before any ceremony is opened.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("create-root")]
         [Authorize(Policy = "SystemAdmin")]
         [RequireStepUp(StepUpOps.CreateCa)]
@@ -881,6 +894,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// </remarks>
         /// <param name="caId">The CA to operate on.</param>
         /// <param name="request">Which certificates to reissue.</param>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("{caId:guid}/reissue-infrastructure")]
         [Authorize(Policy = "SystemOperator")]
         [RequireStepUp(StepUpOps.ReissueInfrastructureCerts, "caId")]
@@ -1071,6 +1085,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// </summary>
         /// <param name="caId">The CA.</param>
         /// <param name="request">The profile of each role; a role left out keeps the seeded default.</param>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPut("{caId:guid}/infrastructure-profiles")]
         [Authorize(Policy = "SystemOperator")]
         [RequireStepUp(StepUpOps.UpdateCa, "caId")]

@@ -949,6 +949,11 @@ export interface HttpsConfig {
     publicPort?: number | null;
 }
 
+/** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
+export interface HubConfig {
+    affiliationTokenSha256: string;
+}
+
 /** From `ModularCA.Shared/Models/TrustAnchors/ImportTrustAnchorRequest.cs`. */
 export interface ImportTrustAnchorRequest {
     certificate: string;
@@ -972,6 +977,17 @@ export interface IngressRouteConfig {
     upstream: string;
     plainHttpUpstream?: string | null;
     pinnedSpki?: string | null;
+}
+
+/** From `ModularCA.Shared/Models/InstanceModeModels.cs`. */
+export interface InstanceModeStatus {
+    mode: string;
+    source: string;
+    setBy?: string | null;
+    reason?: string | null;
+    setAtUtc?: string | null;
+    hubConnection: boolean;
+    stillWorks: string;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
@@ -1421,6 +1437,12 @@ export interface SetCertPermissionRequest {
     accessLevel: string;
 }
 
+/** From `ModularCA.Shared/Models/InstanceModeModels.cs`. */
+export interface SetInstanceModeRequest {
+    mode: string;
+    reason: string;
+}
+
 /** From `ModularCA.Shared/Models/Setup/SetupModels.cs`. */
 export interface SetupAdmin {
     username: string;
@@ -1698,6 +1720,7 @@ export interface SystemConfig {
     audit: AuditConfig;
     schema: SchemaConfig;
     health: HealthConfig;
+    hub: HubConfig;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */

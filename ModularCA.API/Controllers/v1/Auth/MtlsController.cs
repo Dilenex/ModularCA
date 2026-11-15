@@ -167,6 +167,7 @@ public class MtlsController : ControllerBase
     /// exists but its signing key is currently unavailable (keystore state prevents signing).
     /// </summary>
     [Authorize]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("enroll")]
     public async Task<IActionResult> Enroll([FromBody] MtlsEnrollRequest request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
@@ -421,6 +422,7 @@ public class MtlsController : ControllerBase
     /// <param name="id">The credential to revoke; it must belong to the caller.</param>
     /// <param name="mfaToken">The step-up token for <see cref="StepUpOps.MtlsDelete"/> on this credential.</param>
     [Authorize]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpDelete("credentials/{id}")]
     public async Task<IActionResult> RevokeCredential(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
@@ -549,6 +551,7 @@ public class MtlsController : ControllerBase
     /// this is the sibling that was missed.
     /// </remarks>
     [AllowAnonymous]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("verify")]
     public async Task<IActionResult> Verify([FromBody] MtlsMfaVerifyRequest request)
     {
@@ -770,6 +773,7 @@ public class MtlsController : ControllerBase
     /// consuming it — <see cref="VerifyRedirect"/> does the consume), and refuses one minted by a
     /// certificate login.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("prepare-redirect")]
     [AllowAnonymous]
     public async Task<IActionResult> PrepareRedirect([FromBody] MtlsPrepareRedirectRequest request)
@@ -1175,6 +1179,7 @@ public class MtlsController : ControllerBase
     /// for the associated JWT tokens. The code is single-use and expires after 30 seconds.
     /// A valid DPoP proof on this request binds the session's refresh token to the proving key.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("exchange")]
     [AllowAnonymous]
     public async Task<IActionResult> ExchangeCode([FromBody] MtlsCodeExchangeRequest request)

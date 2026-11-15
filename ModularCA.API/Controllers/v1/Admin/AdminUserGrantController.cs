@@ -69,6 +69,7 @@ public class AdminUserGrantController(
     /// A controlled grant by a non-super opens a ceremony (202); 409 when the caller reset the
     /// grantee's password or MFA in the last 30 days.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [RequireStepUp(StepUpOps.GrantUserCapability)]
     [ProducesResponseType(201)]
@@ -185,6 +186,7 @@ public class AdminUserGrantController(
     /// revokes the user's SSH certificates on an SSH CA they could request from only through
     /// the grant.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.RevokeUserCapability, "id")]
     [ProducesResponseType(200)]

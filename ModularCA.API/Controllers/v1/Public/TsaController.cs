@@ -25,6 +25,7 @@ public class TsaController(ITimestampService timestampService) : ControllerBase
     /// error.
     /// </summary>
     /// <param name="caLabel">Label of the CA whose TSA signs; null for the default CA.</param>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact)]
     [HttpPost]
     [Consumes("application/timestamp-query")]
     [RequestSizeLimit(16 * 1024)]
@@ -52,6 +53,7 @@ public class TsaController(ITimestampService timestampService) : ControllerBase
     /// Accepts any content type, as the alias always has. The 16 KB cap protects the
     /// unauthenticated endpoint from memory-pressure DoS via oversized requests.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact)]
     [HttpPost("/tsa")]
     [HttpPost("/tsa/{caLabel}")]
     [RequestSizeLimit(16 * 1024)]

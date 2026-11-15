@@ -83,6 +83,7 @@ public class AccountBadgesController(
     }
 
     /// <summary>Creates a badge.</summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] AccessBadgeWriteRequest request)
     {
@@ -113,6 +114,7 @@ public class AccountBadgesController(
     /// Replaces a badge's name, description, default flag and sources. Giving the worn badge a
     /// source it lacked needs step-up MFA.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(Guid id, [FromBody] AccessBadgeWriteRequest request)
     {
@@ -137,6 +139,7 @@ public class AccountBadgesController(
     /// Deletes a badge and takes it off every session that carried it. Deleting the worn badge
     /// takes it off this session too, which widens it, so that needs step-up MFA.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id)
     {
