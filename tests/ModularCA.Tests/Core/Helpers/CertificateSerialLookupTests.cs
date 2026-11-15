@@ -39,6 +39,40 @@ public class CertificateSerialLookupTests
         Assert.Equal(only.CertificateId, result.Certificate!.CertificateId);
     }
 
+    /// <summary>
+    /// The table stores minimal hex. A serial written as OpenSSL prints it and as the consoles
+    /// show it (a leading zero, lower case, separators) names the same certificate.
+    /// </summary>
+    [Theory]
+    [InlineData("02C06C00")]
+    [InlineData("02c06c00")]
+    [InlineData("02:C0:6C:00")]
+    [InlineData("2C06C00")]
+    public async Task A_serial_written_with_a_leading_zero_or_separators_finds_the_stored_row(string written)
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var stored = Cert("2C06C00", "CN=Issuer One");
+        db.Certificates.AddRange(stored, Cert("C06C00", "CN=Issuer One"));
+        await db.SaveChangesAsync();
+
+        var result = await db.Certificates.ResolveBySerialAsync(written);
+        Assert.Equal(SerialResolution.Found, result.Outcome);
+        Assert.Equal(stored.CertificateId, result.Certificate!.CertificateId);
+        Assert.Equal(stored.CertificateId, db.Certificates.ResolveBySerialOrNull(written)!.CertificateId);
+    }
+
+    [Fact]
+    public async Task A_row_stored_exactly_as_written_wins_over_the_stored_form()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var exact = Cert("0A0B", "CN=Issuer One");
+        db.Certificates.AddRange(exact, Cert("A0B", "CN=Issuer Two"));
+        await db.SaveChangesAsync();
+
+        var result = await db.Certificates.ResolveBySerialAsync("0A0B");
+        Assert.Equal(exact.CertificateId, result.Certificate!.CertificateId);
+    }
+
     [Fact]
     public async Task Reports_NotFound_for_an_unknown_serial()
     {

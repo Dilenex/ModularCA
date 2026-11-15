@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { displaySerial } from '@shared/serial';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
@@ -615,7 +616,7 @@ const CertInventory: React.FC = () => {
                                 detailPath={(c) => `/certificates/${c.serialNumber}`}
                                 columns={[
                                     { key: 'subject', header: 'Subject', defaultWidth: 280, minWidth: 160, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-ink truncate" title={c.subjectDN}>{c.subjectDN}</span> },
-                                    { key: 'serial', header: 'Serial', defaultWidth: 280, exportValue: (c) => c.serialNumber, render: (c) => <span className="data-mono text-ink-muted truncate" title={c.serialNumber}>{c.serialNumber}</span> },
+                                    { key: 'serial', header: 'Serial', defaultWidth: 280, exportValue: (c) => displaySerial(c.serialNumber), render: (c) => <span className="data-mono text-ink-muted truncate" title={displaySerial(c.serialNumber)}>{displaySerial(c.serialNumber)}</span> },
                                     { key: 'issuer', header: 'Issuer', defaultWidth: 240, sortable: true, exportValue: (c) => c.issuer, render: (c) => <span className="text-ink-muted truncate" title={c.issuer}>{c.issuer}</span> },
                                     { key: 'issued', header: 'Issued', defaultWidth: 150, align: 'right', sortable: true, sortValue: (c) => issuedOn(c) ? new Date(issuedOn(c)!) : null, exportValue: (c) => formatDateShort(issuedOn(c)), render: (c) => <span className="text-ink-muted whitespace-nowrap">{formatDateShort(issuedOn(c))}</span> },
                                 ] as DataTableColumn<any>[]}
@@ -638,7 +639,7 @@ const CertInventory: React.FC = () => {
                                 detailPath={(c) => `/certificates/${c.serialNumber}`}
                                 columns={[
                                     { key: 'subject', header: 'Subject', defaultWidth: 280, minWidth: 160, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-ink truncate" title={c.subjectDN}>{c.subjectDN}</span> },
-                                    { key: 'serial', header: 'Serial', defaultWidth: 280, exportValue: (c) => c.serialNumber, render: (c) => <span className="data-mono text-ink-muted truncate" title={c.serialNumber}>{c.serialNumber}</span> },
+                                    { key: 'serial', header: 'Serial', defaultWidth: 280, exportValue: (c) => displaySerial(c.serialNumber), render: (c) => <span className="data-mono text-ink-muted truncate" title={displaySerial(c.serialNumber)}>{displaySerial(c.serialNumber)}</span> },
                                     { key: 'reason', header: 'Reason', defaultWidth: 180, sortable: true, exportValue: (c) => c.revocationReason || 'Unspecified', render: (c) => <span className="text-crit">{c.revocationReason || 'Unspecified'}</span> },
                                     { key: 'revoked', header: 'Revoked', defaultWidth: 150, align: 'right', sortable: true, sortValue: (c) => c.revocationDate ? new Date(c.revocationDate) : null, exportValue: (c) => formatDateShort(c.revocationDate), render: (c) => <span className="text-ink-muted whitespace-nowrap">{formatDateShort(c.revocationDate)}</span> },
                                 ] as DataTableColumn<any>[]}

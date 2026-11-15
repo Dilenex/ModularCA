@@ -130,9 +130,11 @@ public class AdminCertificateController(
         if (!string.IsNullOrWhiteSpace(search))
         {
             var s = search.Trim();
+            // A serial is found however it was written: with a leading zero, in lower case or with separators.
+            var asSerial = ModularCA.Shared.Utils.CertificateUtil.SerialSearchTerm(s) ?? s;
             query = query.Where(c =>
                 c.SubjectDN.Contains(s)
-                || c.SerialNumber.Contains(s)
+                || c.SerialNumber.Contains(asSerial)
                 || c.SubjectAlternativeNamesJson.Contains(s)
                 || c.Issuer.Contains(s));
         }
@@ -145,7 +147,10 @@ public class AdminCertificateController(
 
         // Serial number filter
         if (!string.IsNullOrWhiteSpace(serial))
-            query = query.Where(c => c.SerialNumber.Contains(serial));
+        {
+            var asSerial = ModularCA.Shared.Utils.CertificateUtil.SerialSearchTerm(serial) ?? serial;
+            query = query.Where(c => c.SerialNumber.Contains(asSerial));
+        }
 
         // Issuer filter
         if (!string.IsNullOrWhiteSpace(issuer))

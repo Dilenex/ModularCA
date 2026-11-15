@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { displaySerial } from '@shared/serial';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
@@ -163,7 +164,7 @@ const CrlSchedulesSection: React.FC = () => {
     };
 
     const columns: DataTableColumn<any>[] = [
-        { key: 'name', header: 'Name', defaultWidth: 260, minWidth: 140, truncate: false, exportValue: (s) => s.name, render: (s) => <span className="text-ink truncate">{s.name}</span> },
+        { key: 'name', header: 'Name', defaultWidth: 240, minWidth: 140, truncate: false, exportValue: (s) => s.name, render: (s) => <span className="text-ink truncate">{s.name}</span> },
         { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, exportValue: (s) => (s.enabled ? 'enabled' : 'disabled'), render: (s) => <StatusBadge status={s.enabled ? 'enabled' : 'disabled'} /> },
         { key: 'cron', header: 'Cron', defaultWidth: 140, exportValue: (s) => s.cronExpression || s.updateInterval, render: (s) => <span className="data-mono text-ink">{s.cronExpression || s.updateInterval}</span> },
         { key: 'ca', header: 'CA', defaultWidth: 160, exportValue: (s) => s.caName || s.caId || '', render: (s) => <span className="text-ink truncate">{s.caName || s.caId || '-'}</span> },
@@ -304,7 +305,7 @@ const CurrentCrlsSection: React.FC = () => {
                     return (
                         <div key={caId} className="bg-raised border border-line rounded-lg p-4">
                             <h3 className="text-sm font-semibold text-ink mb-2">{ca.name || ca.subjectDN}</h3>
-                            <DetailField label="Serial" value={serial} mono />
+                            <DetailField label="Serial" value={displaySerial(serial)} mono />
                             {ca.crlNumber != null && <DetailField label="CRL Number" value={String(ca.crlNumber)} />}
                             {ca.lastCrlGenerated && <DetailField label="Last Generated" value={formatDate(ca.lastCrlGenerated)} />}
                             {ca.crlEntryCount != null && <DetailField label="Entry Count" value={String(ca.crlEntryCount)} />}

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { displaySerial } from '@shared/serial';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { Link, useNavigate } from 'react-router-dom';
@@ -649,7 +650,7 @@ const Dashboard: React.FC = () => {
                                             <span className="text-xs text-crit ml-2">{cert.revocationReason} — {formatDate(cert.revocationDate)}</span>
                                         </div>
                                     )}
-                                    <DetailField label="Serial" value={cert.serialNumber} mono />
+                                    <DetailField label="Serial" value={displaySerial(cert.serialNumber)} mono />
                                     <DetailField label="Subject" value={cert.subjectDN} />
                                     <DetailField label="Issuer" value={cert.issuer} />
                                     <DetailField label="Not Before" value={formatDate(cert.notBefore)} />
@@ -851,7 +852,7 @@ const Dashboard: React.FC = () => {
                     <div className="space-y-3 text-left">
                         <div className="text-xs text-ink-muted">
                             <div className="break-all"><span className="font-semibold text-ink">Subject:</span> {quickRevoke.subjectDN}</div>
-                            <div className="font-mono break-all"><span className="font-sans font-semibold text-ink">Serial:</span> {quickRevoke.serialNumber}</div>
+                            <div className="font-mono break-all"><span className="font-sans font-semibold text-ink">Serial:</span> {displaySerial(quickRevoke.serialNumber)}</div>
                         </div>
                         <div>
                             <label htmlFor="dashboard-revoke-reason" className="block text-xs text-ink-muted mb-1">Revocation reason</label>

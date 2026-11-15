@@ -523,7 +523,7 @@ const Ceremonies: React.FC = () => {
         { key: 'type', header: 'Type', defaultWidth: 130, truncate: false, exportValue: (c) => FAMILY_META[ceremonyFamily(c)].label,
             render: (c) => <span className={`inline-block px-2 py-0.5 text-[10px] font-semibold rounded border w-fit ${FAMILY_META[ceremonyFamily(c)].cls}`}>{FAMILY_META[ceremonyFamily(c)].label}</span> },
         { key: 'status', header: 'Status', defaultWidth: 120, truncate: false, exportValue: (c) => c.status,
-            render: (c) => <StatusBadge status={ceremonyBadgeStatus(c.status)} label={c.status} /> },
+            render: (c) => <StatusBadge status={ceremonyBadgeStatus(c.status)} label={c.status === 'Cancelled' ? 'Canceled' : c.status} /> },
         { key: 'approvals', header: 'Approvals', defaultWidth: 100, align: 'right', headerTitle: APPROVALS_HINT, exportValue: (c) => `${c.currentApprovals ?? 0}/${c.requiredApprovals ?? '-'}`,
             render: (c) => <span className="text-ink-muted" title={APPROVALS_HINT}>{c.currentApprovals ?? 0} / {c.requiredApprovals ?? '-'}</span> },
         { key: 'initiator', header: 'Initiator', defaultWidth: 140, exportValue: (c) => c.initiatedByUsername || '',
@@ -543,11 +543,10 @@ const Ceremonies: React.FC = () => {
             <h1 className="text-xl font-semibold text-ink">Ceremonies</h1>
 
             <div className="bg-info-soft border border-info/40 rounded-lg p-4 text-xs text-info">
-                Ceremonies are created automatically when a multi-party action is required — you don't start one here.
-                They originate from <Link to="/authorities/manage" className="underline">CA Management</Link> (CA creation/revocation),
-                Space settings (security-policy downgrades), and the <Link to="/users" className="underline">User &amp; Access</Link> pages
-                (promoting, demoting, or deleting a controlled user, or resetting their password or MFA or changing their account,
-                as a non-super). Select one below to approve or reject.
+                A ceremony starts by itself when an action needs more than one person:
+                creating or revoking a <Link to="/authorities/manage" className="underline">CA</Link>, lowering a
+                space's security policy, or changing a <Link to="/users" className="underline">controlled user</Link>.
+                Select one below to approve or reject.
             </div>
 
             <div className="flex flex-wrap items-center gap-3">

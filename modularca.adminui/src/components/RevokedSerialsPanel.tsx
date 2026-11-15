@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { displaySerial } from '@shared/serial';
 import { Link } from 'react-router-dom';
 import type { NoticeInput } from '@shared/notifications/notice';
 import type { AdoptCertificateRequest, RecordRevokedSerialRequest } from '@shared/generated';
@@ -21,19 +22,25 @@ function formatDate(d: string | null | undefined) {
     return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+/** The day only: a serial stays listed for decades, and the hour it stops adds nothing but width. */
+function formatDay(d: string | null | undefined) {
+    if (!d) return '-';
+    return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
 const field = 'w-full px-3 py-2 bg-raised border border-line-strong rounded text-sm text-ink focus:outline-none focus:border-accent disabled:opacity-50';
 const cancelButton = 'px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover transition-colors disabled:opacity-50';
 const confirmDanger = 'px-4 py-2 text-sm bg-crit text-on-accent rounded hover:bg-crit-hover transition-colors disabled:opacity-50';
 const confirmPrimary = 'px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors disabled:opacity-50';
 
 const columns: DataTableColumn<RevokedSerialRow>[] = [
-    { key: 'serial', header: 'Serial', defaultWidth: 280, minWidth: 140, sortable: true, exportValue: (r) => r.serialNumber, render: (r) => <span className="data-mono text-ink break-all">{r.serialNumber}</span> },
-    { key: 'reason', header: 'Reason', defaultWidth: 170, sortable: true, exportValue: (r) => r.reason, render: (r) => <span className="text-ink">{REVOCATION_REASONS.find((x) => x.value === r.reason)?.label ?? r.reason}</span> },
-    { key: 'revoked', header: 'Revoked', defaultWidth: 170, sortable: true, sortValue: (r) => r.revocationDate, exportValue: (r) => r.revocationDate, render: (r) => <span className="text-ink-muted whitespace-nowrap">{formatDate(r.revocationDate)}</span> },
-    { key: 'crl', header: 'On the CRL', defaultWidth: 210, truncate: false, sortable: true, sortValue: (r) => r.listedUntil, exportValue: (r) => r.listedUntil, render: (r) => (
+    { key: 'serial', header: 'Serial', defaultWidth: 280, minWidth: 140, sortable: true, exportValue: (r) => displaySerial(r.serialNumber), render: (r) => <span className="data-mono text-ink break-all">{displaySerial(r.serialNumber)}</span> },
+    { key: 'reason', header: 'Reason', defaultWidth: 180, sortable: true, exportValue: (r) => r.reason, render: (r) => <span className="text-ink">{REVOCATION_REASONS.find((x) => x.value === r.reason)?.label ?? r.reason}</span> },
+    { key: 'revoked', header: 'Revoked', defaultWidth: 190, sortable: true, sortValue: (r) => r.revocationDate, exportValue: (r) => r.revocationDate, render: (r) => <span className="text-ink-muted whitespace-nowrap">{formatDate(r.revocationDate)}</span> },
+    { key: 'crl', header: 'On the CRL', defaultWidth: 195, truncate: false, sortable: true, sortValue: (r) => r.listedUntil, exportValue: (r) => r.listedUntil, render: (r) => (
         <span className="flex items-center gap-2 whitespace-nowrap">
             <StatusBadge status={r.onCrl ? 'revoked' : 'expired'} label={r.onCrl ? 'Listed' : 'Pruned'} />
-            <span className="text-xs text-ink-muted">{r.onCrl ? 'until' : 'since'} {formatDate(r.listedUntil)}</span>
+            <span className="text-xs text-ink-muted"><span title={formatDate(r.listedUntil)}>{r.onCrl ? 'until' : 'since'} {formatDay(r.listedUntil)}</span></span>
         </span>
     ) },
     { key: 'by', header: 'Recorded by', defaultWidth: 140, sortable: true, exportValue: (r) => r.recordedBy, render: (r) => (
@@ -41,7 +48,7 @@ const columns: DataTableColumn<RevokedSerialRow>[] = [
         <Link to={auditPathForSerial(r.serialNumber)} title="The audit records that name this serial" onClick={(e) => e.stopPropagation()}
             className="text-accent-ink underline truncate">{r.recordedBy || 'audit'}</Link>
     ) },
-    { key: 'note', header: 'Note', defaultWidth: 280, minWidth: 160, exportValue: (r) => r.note, render: (r) => <span className="text-ink-muted truncate" title={r.note}>{r.note}</span> },
+    { key: 'note', header: 'Note', defaultWidth: 165, minWidth: 160, exportValue: (r) => r.note, render: (r) => <span className="text-ink-muted truncate" title={r.note}>{r.note}</span> },
 ];
 
 /// <summary>
@@ -93,12 +100,12 @@ const RevokedSerialsPanel: React.FC<{ caId: string; caName: string }> = ({ caId,
             if (dialog === 'serial') {
                 const body: RecordRevokedSerialRequest = tombstoneBody(serial, reason, note);
                 const res = await apiPostWithMfa<any>(`/api/v1/admin/authorities/${caId}/revoked-serials`, body, requireStepUp, StepUpOps.RevokeSerial, caId);
-                setDone(<>Serial <span className="data-mono">{res.serialNumber}</span> is recorded as revoked{res.crlNumber ? <> and listed on CRL {res.crlNumber}</> : <>; the next CRL lists it</>}.</>);
+                setDone(<>Serial <span className="data-mono">{displaySerial(res.serialNumber)}</span> is recorded as revoked{res.crlNumber ? <> and listed on CRL {res.crlNumber}</> : <>; the next CRL lists it</>}.</>);
             } else {
                 const body: AdoptCertificateRequest = adoptionBody(certificate, note, revokeOnAdopt ? reason : null);
                 const res = await apiPostWithMfa<any>(`/api/v1/admin/authorities/${caId}/adopted-certificates`, body, requireStepUp, StepUpOps.AdoptCertificate, caId);
                 setDone(<>
-                    Certificate <Link to={`/certificates/${res.serialNumber}`} className="underline data-mono">{res.serialNumber}</Link> is adopted
+                    Certificate <Link to={`/certificates/${res.serialNumber}`} className="underline data-mono">{displaySerial(res.serialNumber)}</Link> is adopted
                     {res.revoked ? (res.fromTombstone ? ' and revoked, as its serial was already recorded.' : ' and revoked.') : '. It can be revoked from its own page.'}
                 </>);
             }

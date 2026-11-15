@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { displaySerial } from '@shared/serial';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
@@ -213,7 +214,7 @@ const CertificateDetail: React.FC = () => {
             downloadBlob(await resp.text(), `${getCertName(cert)}-fullchain.pem`, 'application/x-pem-file');
         } catch (err: any) { showToast('error', err.message || 'Download failed'); }
     };
-    const handleCopySerial = () => navigator.clipboard.writeText(cert?.serialNumber || '').then(() => showToast('success', 'Serial copied')).catch(() => {});
+    const handleCopySerial = () => navigator.clipboard.writeText(displaySerial(cert?.serialNumber)).then(() => showToast('success', 'Serial copied')).catch(() => {});
 
     const changeExpiryHandling = async (call: () => Promise<unknown>, done: string) => {
         setHandlingBusy(true); setHandlingError(null);
@@ -309,7 +310,7 @@ const CertificateDetail: React.FC = () => {
             breadcrumbs={[{ label: 'Certificates', to: '/certificates' }, { label: cn }]}
             title={cn}
             status={status === 'expired' && cert.replaced ? <StatusBadge status="disabled" label="expired" /> : <StatusBadge status={status} />}
-            subtitle={<span className="font-mono">{cert.serialNumber}</span>}
+            subtitle={<span className="font-mono">{displaySerial(cert.serialNumber)}</span>}
             backTo="/certificates"
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
@@ -348,7 +349,7 @@ const CertificateDetail: React.FC = () => {
                             <span className="text-sm text-ink">
                                 {cert.replaced
                                     ? (cert.replacedBySerial
-                                        ? <>Replaced by <Link to={`/certificates/${cert.replacedBySerial}`} className="font-mono text-accent-ink hover:underline">{cert.replacedBySerial}</Link></>
+                                        ? <>Replaced by <Link to={`/certificates/${cert.replacedBySerial}`} className="font-mono text-accent-ink hover:underline">{displaySerial(cert.replacedBySerial)}</Link></>
                                         : 'Replaced')
                                     : 'Not replaced'}
                             </span>
@@ -388,7 +389,7 @@ const CertificateDetail: React.FC = () => {
                             {sans && sans.length > 0
                                 ? <DetailField label="SANs" value={sans.join(', ')} />
                                 : <DetailField label="SANs" value={cert.subjectAlternativeNames?.join?.(', ') || '-'} />}
-                            <DetailField label="Serial" value={cert.serialNumber} mono />
+                            <DetailField label="Serial" value={displaySerial(cert.serialNumber)} mono />
                             {cert.adoptedAt && (
                                 <DetailField label="Adopted" value={`From outside, requester unknown. Adopted ${formatDate(cert.adoptedAt)}${cert.adoptedBy ? ` by ${cert.adoptedBy}` : ''}${cert.adoptionNote ? `: ${cert.adoptionNote}` : ''}`} />
                             )}
@@ -498,7 +499,7 @@ const CertificateDetail: React.FC = () => {
                         <div className="bg-raised border border-line rounded-lg shadow-xl w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
                             <div className="px-6 py-4 border-b border-line"><h2 className="text-lg font-semibold text-ink">Revoke Certificate</h2></div>
                             <div className="px-6 py-4 space-y-4">
-                                <div className="space-y-1"><div className="text-xs text-ink-muted">Serial Number</div><div className="data-mono text-ink break-all">{cert.serialNumber}</div></div>
+                                <div className="space-y-1"><div className="text-xs text-ink-muted">Serial Number</div><div className="data-mono text-ink break-all">{displaySerial(cert.serialNumber)}</div></div>
                                 <div className="space-y-1"><div className="text-xs text-ink-muted">Subject</div><div className="text-sm text-ink break-all">{cert.subjectDN}</div></div>
                                 <div className="space-y-1">
                                     <label htmlFor="revoke-reason" className="block text-xs text-ink-muted">Revocation Reason</label>
@@ -521,7 +522,7 @@ const CertificateDetail: React.FC = () => {
                                         <ul className="text-xs text-ink space-y-0.5">
                                             {revokeScope.map((c) => (
                                                 <li key={c.serialNumber} className="data-mono break-all">
-                                                    {c.serialNumber}
+                                                    {displaySerial(c.serialNumber)}
                                                     <span className="font-sans text-ink-muted"> {c.isCurrent ? '(current' : '(earlier'}, valid until {String(c.notAfter).slice(0, 10)}{c.revoked ? ', already revoked' : c.onHold ? ', on hold' : ''})</span>
                                                 </li>
                                             ))}
@@ -555,7 +556,7 @@ const CertificateDetail: React.FC = () => {
                                         <ul className="text-xs text-ink space-y-0.5">
                                             {revokeScope.map((c) => (
                                                 <li key={c.serialNumber} className="data-mono break-all">
-                                                    {c.serialNumber}
+                                                    {displaySerial(c.serialNumber)}
                                                     <span className="font-sans text-ink-muted"> {c.isCurrent ? '(current' : '(earlier'}, valid until {String(c.notAfter).slice(0, 10)}{c.revoked ? ', revoked: stays revoked' : c.onHold ? ', on hold: released' : ', not on hold'})</span>
                                                 </li>
                                             ))}

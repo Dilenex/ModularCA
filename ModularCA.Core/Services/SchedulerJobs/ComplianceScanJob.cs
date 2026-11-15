@@ -139,6 +139,13 @@ public class ComplianceScanJob : SingletonCronJob
             .ToListAsync(cancellationToken);
         var renewalSet = renewalCertIds.ToHashSet();
 
+        // The certificates a CA issues to itself (OCSP responder, timestamp signer, CMP signer).
+        var infrastructure = await InfrastructureCertificates.LoadAsync(_db, null, cancellationToken);
+
+        // Findings an earlier scan raised against a CA or infrastructure certificate, under a rule
+        // that no longer applies to it, are closed here so nobody has to resolve them by hand.
+        await AutoResolveExemptFindings(existingFindings, activeCerts, infrastructure, now, cancellationToken);
+
         int newFindings = 0;
 
         foreach (var cert in activeCerts)
@@ -147,7 +154,7 @@ public class ComplianceScanJob : SingletonCronJob
             // scan. The per-tick failure path (DB outage, etc.) still propagates.
             try
             {
-                var findings = AnalyzeCertificate(cert, scanConfig, now, renewalSet);
+                var findings = AnalyzeCertificate(cert, scanConfig, now, renewalSet, infrastructure.Contains(cert));
                 foreach (var finding in findings)
                 {
                     var key = (cert.CertificateId, finding.Type);
@@ -226,12 +233,18 @@ public class ComplianceScanJob : SingletonCronJob
     /// <param name="scanConfig">Compliance scan configuration thresholds.</param>
     /// <param name="now">Current UTC timestamp for validity calculations.</param>
     /// <param name="renewalSet">Set of certificate IDs that have pending renewal requests.</param>
+    /// <param name="infrastructure">
+    /// True for a certificate a CA issued to itself (OCSP responder, timestamp signer, CMP signer;
+    /// <see cref="InfrastructureCertificates"/>). Its validity period and its names come from the
+    /// infrastructure profile, so the over-long validity and missing SAN checks are not made.
+    /// </param>
     /// <returns>List of vulnerability findings for this certificate.</returns>
     internal List<CertComplianceFindingEntity> AnalyzeCertificate(
         CertificateEntity cert,
         ComplianceScanConfig scanConfig,
         DateTime now,
-        HashSet<Guid> renewalSet)
+        HashSet<Guid> renewalSet,
+        bool infrastructure = false)
     {
         var findings = new List<CertComplianceFindingEntity>();
 
@@ -270,16 +283,19 @@ public class ComplianceScanJob : SingletonCronJob
                 $"Certificate uses deprecated signature algorithm: {bcCert.SigAlgName}"));
         }
 
-        // 3. Over-long validity check — warning-only threshold, does not block issuance.
+        // 3. Over-long validity check — warning-only threshold, does not block issuance. The
+        // threshold is for end-entity certificates: a CA certificate is long-lived by design and has
+        // the CA lifetime notices, and an infrastructure certificate's lifetime is its profile's.
         var validityDays = (cert.NotAfter - cert.NotBefore).TotalDays;
-        if (validityDays > scanConfig.WarnOverValidityDays)
+        if (!ExemptFromValidityCheck(cert, infrastructure) && validityDays > scanConfig.WarnOverValidityDays)
         {
             findings.Add(CreateFinding(cert.CertificateId, AlertSeverity.Warning, "OverLongValidity",
                 $"Certificate validity period of {(int)validityDays} days exceeds the warning threshold of {scanConfig.WarnOverValidityDays} days"));
         }
 
-        // 4. Missing SANs on TLS server certificates
-        if (!cert.IsCA && IsTlsServerCert(cert))
+        // 4. Missing SANs on TLS server certificates. An OCSP responder may list the TLS server
+        // usage and serves no host name of its own, so infrastructure certificates are not checked.
+        if (!ExemptFromSanCheck(cert, infrastructure) && IsTlsServerCert(cert))
         {
             var hasSans = !string.IsNullOrWhiteSpace(cert.SubjectAlternativeNamesJson)
                           && cert.SubjectAlternativeNamesJson != "[]";
@@ -360,6 +376,54 @@ public class ComplianceScanJob : SingletonCronJob
         }
 
         return false;
+    }
+
+    /// <summary>The finding type for a validity period over the warning threshold.</summary>
+    internal const string OverLongValidityType = "OverLongValidity";
+
+    /// <summary>The finding type for a TLS server certificate without subject alternative names.</summary>
+    internal const string MissingSansType = "MissingSANs";
+
+    /// <summary>True when the over-long validity check is not made for the certificate: a CA certificate, or an infrastructure one.</summary>
+    internal static bool ExemptFromValidityCheck(CertificateEntity cert, bool infrastructure) => cert.IsCA || infrastructure;
+
+    /// <summary>True when the missing SAN check is not made for the certificate: a CA certificate, or an infrastructure one.</summary>
+    internal static bool ExemptFromSanCheck(CertificateEntity cert, bool infrastructure) => cert.IsCA || infrastructure;
+
+    /// <summary>
+    /// Marks as resolved the unresolved over-long validity and missing SAN findings that stand
+    /// against a certificate the check is no longer made for (a CA certificate or an
+    /// infrastructure certificate). Scans before 0.4.5 raised them against every certificate.
+    /// </summary>
+    internal async Task AutoResolveExemptFindings(
+        List<CertComplianceFindingEntity> existingFindings,
+        List<CertificateEntity> activeCerts,
+        InfrastructureCertificates infrastructure,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        var byId = activeCerts.ToDictionary(c => c.CertificateId);
+        var exempt = existingFindings
+            .Where(f => !f.IsResolved && byId.TryGetValue(f.CertificateId, out var cert)
+                && ((f.Type == OverLongValidityType && ExemptFromValidityCheck(cert, infrastructure.Contains(cert)))
+                    || (f.Type == MissingSansType && ExemptFromSanCheck(cert, infrastructure.Contains(cert)))))
+            .ToList();
+
+        if (exempt.Count == 0)
+            return;
+
+        foreach (var finding in exempt)
+        {
+            finding.IsResolved = true;
+            finding.ResolvedAt = now;
+            _db.CertComplianceFindings.Update(finding);
+        }
+
+        await _db.SaveChangesAsync(cancellationToken);
+
+        _logger.LogInformation(
+            "Auto-resolved {Count} finding(s) raised against CA and infrastructure certificates, which these checks no longer cover",
+            exempt.Count);
     }
 
     /// <summary>

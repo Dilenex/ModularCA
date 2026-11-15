@@ -59,7 +59,8 @@ public class CertHealthScoreService : ICertHealthScoreService
             .Where(v => v.CertificateId == certificateId && !v.IsResolved)
             .ToListAsync();
 
-        return Evaluate(cert, vulnerabilities);
+        var infrastructure = await InfrastructureCertificates.LoadAsync(_db, [certificateId]);
+        return Evaluate(cert, vulnerabilities, infrastructure.Contains(cert));
     }
 
     /// <inheritdoc />
@@ -83,11 +84,13 @@ public class CertHealthScoreService : ICertHealthScoreService
             .GroupBy(v => v.CertificateId)
             .ToDictionary(g => g.Key, g => g.ToList());
 
+        var infrastructure = await InfrastructureCertificates.LoadAsync(_db, certificateIds);
+
         var results = new List<CertHealthScore>();
         foreach (var cert in certs)
         {
             vulnsByCert.TryGetValue(cert.CertificateId, out var certVulns);
-            results.Add(Evaluate(cert, certVulns ?? new List<CertComplianceFindingEntity>()));
+            results.Add(Evaluate(cert, certVulns ?? new List<CertComplianceFindingEntity>(), infrastructure.Contains(cert)));
         }
 
         return results;
@@ -96,7 +99,14 @@ public class CertHealthScoreService : ICertHealthScoreService
     /// <summary>
     /// Runs all scoring rules against a single certificate entity and its active vulnerabilities.
     /// </summary>
-    private CertHealthScore Evaluate(CertificateEntity cert, List<CertComplianceFindingEntity> vulnerabilities)
+    /// <param name="cert">The certificate.</param>
+    /// <param name="vulnerabilities">Its unresolved compliance findings.</param>
+    /// <param name="infrastructure">
+    /// True for a certificate a CA issued to itself (<see cref="InfrastructureCertificates"/>).
+    /// Like a CA certificate, it is not scored on its validity period or on missing subject
+    /// alternative names: both come from its profile and not from a requester.
+    /// </param>
+    private CertHealthScore Evaluate(CertificateEntity cert, List<CertComplianceFindingEntity> vulnerabilities, bool infrastructure)
     {
         var factors = new List<CertHealthFactor>();
         var now = DateTime.UtcNow;
@@ -198,8 +208,14 @@ public class CertHealthScoreService : ICertHealthScoreService
         var validityDays = (cert.NotAfter - cert.NotBefore).TotalDays;
         var complianceThreshold = _compliance.WarnOverValidityDays;
         bool isTls = IsTlsCertificate(cert);
+        // The same exemptions the compliance scan makes: a CA certificate and an infrastructure one.
+        bool exempt = cert.IsCA || infrastructure;
 
-        if (complianceThreshold > 0 && validityDays > complianceThreshold)
+        if (exempt)
+        {
+            // Neither the validity period nor the names are judged.
+        }
+        else if (complianceThreshold > 0 && validityDays > complianceThreshold)
         {
             factors.Add(new CertHealthFactor
             {
@@ -221,7 +237,7 @@ public class CertHealthScoreService : ICertHealthScoreService
         }
 
         // --- SAN check for TLS certificates ---
-        bool isTlsCert = isTls;
+        bool isTlsCert = isTls && !exempt;
         if (isTlsCert)
         {
             var hasSans = !string.IsNullOrWhiteSpace(cert.SubjectAlternativeNamesJson)

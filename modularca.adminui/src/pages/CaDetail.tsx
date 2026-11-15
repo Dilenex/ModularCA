@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { displaySerial } from '@shared/serial';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
@@ -199,7 +200,7 @@ const CaDetail: React.FC = () => {
                     ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
                             <DetailField label="Subject" value={cert.subjectDN} />
-                            <DetailField label="Serial Number" value={cert.serialNumber} mono />
+                            <DetailField label="Serial Number" value={displaySerial(cert.serialNumber)} mono />
                             <DetailField label="Issuer" value={cert.issuer} />
                             <DetailField label="Not Before" value={formatDate(cert.notBefore)} />
                             <DetailField label="Not After" value={formatDate(cert.notAfter)} />
@@ -294,7 +295,7 @@ const CaDetail: React.FC = () => {
                         <DetailField label="Signed by" value={ca.ocspResponder.responderSubject} />
                         {ca.ocspResponder.responderSerial && (
                             <DetailField label="Responder serial" mono value={
-                                <Link to={`/certificates/${ca.ocspResponder.responderSerial}`} className="text-accent-ink hover:underline">{ca.ocspResponder.responderSerial}</Link>
+                                <Link to={`/certificates/${ca.ocspResponder.responderSerial}`} className="text-accent-ink hover:underline">{displaySerial(ca.ocspResponder.responderSerial)}</Link>
                             } />
                         )}
                         {ca.ocspResponder.responderNotAfter && <DetailField label="Responder expires" value={formatDate(ca.ocspResponder.responderNotAfter)} />}
@@ -331,11 +332,9 @@ const CaDetail: React.FC = () => {
                         {!ca.cmpSigningCertificateId && cert?.carriesDigitalSignature !== true && (
                             <div className="rounded border border-warn/40 bg-warn-soft p-3 max-w-3xl">
                                 <p className="text-xs text-warn">
-                                    <strong>No CMP signing certificate.</strong> If CMP is enabled on this CA, its
-                                    signature-protected responses are signed with the CA certificate, which carries no
-                                    <code> digitalSignature</code> key usage and is rejected by OpenSSL-based clients.
-                                    Shared-secret (PBMAC) clients are unaffected. Tick <em>CMP signer</em> below and
-                                    reissue to create one.
+                                    <strong>No CMP signing certificate.</strong> CMP responses are signed with the CA
+                                    certificate, which OpenSSL-based clients reject. Shared-secret clients are
+                                    unaffected. Tick <em>CMP signer</em> below and reissue.
                                 </p>
                             </div>
                         )}
@@ -347,13 +346,12 @@ const CaDetail: React.FC = () => {
                                 be replaced without touching the CA.
                             </p>
                         )}
-                        <div className="rounded border border-warn/40 bg-warn-soft p-3 max-w-3xl">
-                            <p className="text-xs text-warn">
-                                <strong>Use this rather than the generic certificate Reissue action.</strong> That
-                                action revokes the old certificate and issues a replacement, but it does not
-                                update which certificate this CA points at — leaving the CA referencing a revoked
-                                responder, which makes every OCSP request for it answer <code>unauthorized</code>.
-                                Restarting does not fix that. This action does.
+                        {/* Guidance, not a fault: a notice, in the informational tone. */}
+                        <div className="rounded border border-info/40 bg-info-soft p-3 max-w-3xl">
+                            <p className="text-xs text-info">
+                                <strong>Reissue from here, not from a certificate's own Reissue action.</strong> That
+                                action leaves this CA pointing at the revoked certificate, and OCSP then
+                                answers <code>unauthorized</code> until it is reissued here.
                             </p>
                         </div>
 
@@ -392,17 +390,17 @@ const CaDetail: React.FC = () => {
                                 <p className="text-xs text-ok">{reissueResult.message}</p>
                                 {reissueResult.newOcspResponderSerial && (
                                     <p className="text-ok data-mono">
-                                        New OCSP responder: {reissueResult.newOcspResponderSerial}
+                                        New OCSP responder: {displaySerial(reissueResult.newOcspResponderSerial)}
                                     </p>
                                 )}
                                 {reissueResult.newTsaSerial && (
                                     <p className="text-ok data-mono">
-                                        New TSA: {reissueResult.newTsaSerial}
+                                        New TSA: {displaySerial(reissueResult.newTsaSerial)}
                                     </p>
                                 )}
                                 {reissueResult.newCmpSignerSerial && (
                                     <p className="text-ok data-mono">
-                                        New CMP signer: {reissueResult.newCmpSignerSerial}
+                                        New CMP signer: {displaySerial(reissueResult.newCmpSignerSerial)}
                                     </p>
                                 )}
                                 {reissueResult.supersededRevoked?.length > 0 && (

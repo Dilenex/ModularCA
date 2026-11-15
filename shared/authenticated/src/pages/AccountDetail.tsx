@@ -125,8 +125,9 @@ const GeneralTab: React.FC = () => {
                 {mode === 'view' ? (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
                         <DetailField label="Username" value={acct.username} mono />
-                        <DetailField label="Email" value={acct.email} />
                         <DetailField label="Display Name" value={acct.displayName || '—'} />
+                        {/* A row of its own: in half the card an address of ordinary length broke in the middle of a word. */}
+                        <div className="md:col-span-2"><DetailField label="Email" value={acct.email} /></div>
                         <DetailField label="First Name" value={acct.firstName || '—'} />
                         <DetailField label="Last Name" value={acct.lastName || '—'} />
                     </div>

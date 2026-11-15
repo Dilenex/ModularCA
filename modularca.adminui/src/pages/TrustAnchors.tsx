@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { displaySerial } from '@shared/serial';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPut, apiDelete, apiPostWithMfa } from '../api/client';
@@ -61,7 +62,7 @@ const AnchorDetail: React.FC<{ anchor: TrustAnchor }> = ({ anchor }) => {
                 <DetailField label="Description" value={anchor.description} />
                 <DetailField label="Subject DN" value={anchor.subjectDN} mono />
                 <DetailField label="Issuer" value={anchor.issuer} mono />
-                <DetailField label="Serial Number" value={anchor.serialNumber} mono />
+                <DetailField label="Serial Number" value={displaySerial(anchor.serialNumber)} mono />
                 <DetailField label="Status" value={<StatusBadge status={anchor.isEnabled ? 'enabled' : 'disabled'} />} />
                 <DetailField label="Not Before" value={formatDate(anchor.notBefore)} />
                 <DetailField label="Not After" value={formatDate(anchor.notAfter)} />

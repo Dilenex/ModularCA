@@ -640,10 +640,9 @@ const CertificateTemplates: React.FC = () => {
             </p>
 
             <div className="bg-info-soft border border-info/40 rounded-lg p-4 text-sm text-info">
-                <span className="font-semibold">Used by Windows autoenrollment.</span> A template offered to
-                Windows clients is advertised by the MSAE policy service and issued from when a client names it in
-                its request. ACME, EST, SCEP and CMP issue from each CA&apos;s protocol configuration and do not read
-                templates.
+                <span className="font-semibold">Used by Windows autoenrollment.</span> The MSAE policy service
+                offers these templates to Windows clients, and a client names one in its request. ACME, EST, SCEP
+                and CMP use each CA&apos;s protocol configuration instead.
             </div>
 
             <div className="flex gap-1 border-b border-line">

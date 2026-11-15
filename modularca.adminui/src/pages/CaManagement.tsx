@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { displaySerial } from '@shared/serial';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
@@ -61,7 +62,7 @@ const CaDrawer: React.FC<{ ca: any }> = ({ ca }) => {
             <DetailField label="Status" value={ca.isEnabled ? 'Enabled' : 'Disabled'} />
             {ca.spaceName && <DetailField label="Space" value={ca.spaceName} />}
             <DetailField label="Default" value={ca.isDefault ? 'Yes' : 'No'} />
-            {cert && <DetailField label="Serial" value={cert.serialNumber} mono />}
+            {cert && <DetailField label="Serial" value={displaySerial(cert.serialNumber)} mono />}
             {cert && <DetailField label="Not After" value={formatDate(cert.notAfter)} />}
             <p className="text-[11px] text-ink-muted pt-3">Open the full page for certificate, protocol and service details.</p>
         </div>

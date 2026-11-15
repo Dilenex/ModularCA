@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { displaySerial } from '@shared/serial';
 import { Link } from 'react-router-dom';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { StepUpOps } from '@shared/generated';
@@ -132,7 +133,7 @@ const MissingFromCrlPanel: React.FC<{ caId: string; caName: string; onChanged?: 
     };
 
     const columns: DataTableColumn<MissingSerialRow>[] = [
-        { key: 'serial', header: 'Serial', defaultWidth: 280, minWidth: 140, sortable: true, exportValue: (r) => r.serialNumber, render: (r) => <span className="data-mono text-ink break-all">{r.serialNumber}</span> },
+        { key: 'serial', header: 'Serial', defaultWidth: 280, minWidth: 140, sortable: true, exportValue: (r) => displaySerial(r.serialNumber), render: (r) => <span className="data-mono text-ink break-all">{displaySerial(r.serialNumber)}</span> },
         { key: 'reason', header: 'Reason', defaultWidth: 170, sortable: true, exportValue: (r) => r.reason, render: (r) => <span className="text-ink">{REVOCATION_REASONS.find((x) => x.value === r.reason)?.label ?? r.reason}</span> },
         { key: 'revoked', header: 'Revoked', defaultWidth: 170, sortable: true, sortValue: (r) => r.revocationDate, exportValue: (r) => r.revocationDate, render: (r) => <span className="text-ink-muted whitespace-nowrap">{formatDate(r.revocationDate)}</span> },
         { key: 'held', header: 'This CA holds', defaultWidth: 190, truncate: false, sortable: true, sortValue: (r) => (r.certificateHeld ? 1 : 0), exportValue: (r) => (r.certificateHeld ? 'certificate' : 'nothing'), render: (r) => (

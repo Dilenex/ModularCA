@@ -6,6 +6,84 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### 0.4.5-rc.1.4 — 2026-11-15
+
+The fifth release candidate of 0.4.5, from the fourth on the test host. In the console only:
+
+- **Groups names the SSH CA a group belongs to.** The CA column showed the first eight
+  characters of the CA's id for a group of an SSH CA, because it took its names from the X.509
+  hierarchy, which holds no SSH CA. It shows the SSH CA's name.
+
+No migration is added, and nothing outside the console changed.
+
+### 0.4.5-rc.1.3 — 2026-11-15
+
+The fourth release candidate of 0.4.5, from a sweep of every page of the admin console on the
+third, on the test host. In the console only:
+
+- **The revoked-serials table shows its whole reason and its "Recorded by" header.** The table
+  fit its card, but "Cessation of Operation" and that header were cut at the default widths.
+- **Groups and CA Distribution fit a 1480-pixel window again.** Their name columns had been
+  widened and the tables scrolled sideways.
+- **A canceled request or ceremony reads "Canceled".** The status the server sends, and the
+  audit action's name, are unchanged.
+- **Three notices are under 40 words:** on Ceremonies, Certificate Templates and Web TLS.
+
+No migration is added, and nothing outside the console changed.
+
+### 0.4.5-rc.1.2 — 2026-11-14
+
+The third release candidate of 0.4.5, from running the second on the test host: CA
+certificates renewed, maintenance mode, revocation under an intermediate CA, and a look at the
+pages not seen before. Since 0.4.5-rc.1.1:
+
+- **A serial number is shown in whole octets.** A serial whose first octet is below 0x10 read
+  `2C06…` in the consoles where OpenSSL and most other tools print `02C06…`. The consoles
+  now show the second form wherever an X.509 serial is displayed, copied or exported. The
+  stored form, and what the API returns, did not change. SSH serials are decimal and untouched.
+- **A serial is found however it is written.** With a leading zero, in lower case or with
+  colons: a lookup by serial, and the search and the serial filter of the certificate list,
+  find the certificate. A lookup that matched as written before still does.
+- **The revoked-serials table fits its card.** "Revoked" shows its time, the day a serial
+  stops being listed is shown without the hour, and the table no longer scrolls sideways at
+  its default widths.
+- **Two warnings on the CA page are shorter.** The guidance to reissue infrastructure
+  certificates from the CA page is a notice in the informational tone; "No CMP signing
+  certificate" stays a warning.
+- **A request profile's rules show their whole headers** ("Requirement", "Max Length"), and
+  the email on My Account has a row of its own.
+
+No migration is added.
+
+### 0.4.5-rc.1.1 — 2026-11-14
+
+The second release candidate of 0.4.5, from the first on the test host. In the console only:
+
+- **A TOTP code can be typed after "Run now" on Schedules.** The confirm dialog under the
+  step-up dialog took focus back every second, so the code field lost it before a digit could
+  be entered. A security key still worked. The confirm dialog now moves focus when it opens
+  and closes, and at no other time; this holds on every page that confirms before a step-up.
+
+No migration is added, and nothing outside the console changed.
+
+### 0.4.5-rc.1.0 — 2026-11-14
+
+The first release candidate of 0.4.5, for test hosts. It is 0.4.5-dev.1.12 plus what a look at
+the compliance findings on the test host turned up. Since 0.4.5-dev.1.12:
+
+- **CA and infrastructure certificates are not judged by validity period or missing SANs.** The
+  compliance scan raised `OverLongValidity` against every CA certificate and every OCSP
+  responder, timestamp signer and CMP signer, and `MissingSANs` against OCSP responders
+  that list the TLS server usage. Nobody could act on those. The scan and the certificate health
+  score now leave both checks out for a CA certificate and for a certificate a CA issues to
+  itself; every other certificate is judged as before.
+- **The findings already raised against them are closed by the next scan.** Nothing has to be
+  resolved by hand. A count of unresolved findings will drop after the first scan on this build.
+- **The compliance findings table fits its card at the default widths** (type 160, description
+  300).
+
+No migration is added.
+
 ### 0.4.5-dev.1.12 — 2026-11-14
 
 The thirteenth test build of 0.4.5, from what the hub's test of 0.4.5-dev.1.8 in containers

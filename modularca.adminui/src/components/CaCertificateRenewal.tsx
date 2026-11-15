@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { displaySerial } from '@shared/serial';
 import { Link } from 'react-router-dom';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
@@ -101,7 +102,7 @@ const CaCertificateRenewal: React.FC<{ ca: any; onRenewed: () => void }> = ({ ca
     };
 
     const columns: DataTableColumn<CaCertificateHistoryRow>[] = [
-        { key: 'serial', header: 'Serial', ...HISTORY_COLUMN_LAYOUT.serial, exportValue: (r) => r.serialNumber, render: (r) => <span className="data-mono text-ink">{r.serialNumber}</span> },
+        { key: 'serial', header: 'Serial', ...HISTORY_COLUMN_LAYOUT.serial, exportValue: (r) => displaySerial(r.serialNumber), render: (r) => <span className="data-mono text-ink">{displaySerial(r.serialNumber)}</span> },
         { key: 'status', header: 'Status', ...HISTORY_COLUMN_LAYOUT.status, truncate: false, exportValue: (r) => historyBadge(r).title, render: (r) => { const b = historyBadge(r); return <span title={b.title}><StatusBadge status={b.status} label={b.label} /></span>; } },
         { key: 'notBefore', header: 'Valid from', ...HISTORY_COLUMN_LAYOUT.notBefore, exportValue: (r) => day(r.notBefore), render: (r) => <span className="text-ink-muted">{day(r.notBefore)}</span> },
         { key: 'notAfter', header: 'Valid until', ...HISTORY_COLUMN_LAYOUT.notAfter, exportValue: (r) => day(r.notAfter), render: (r) => <span className="text-ink">{day(r.notAfter)}</span> },
@@ -146,7 +147,7 @@ const CaCertificateRenewal: React.FC<{ ca: any; onRenewed: () => void }> = ({ ca
             {result && !result.requiresCeremony && (
                 <div className="rounded border border-ok/40 bg-ok-soft p-3 max-w-3xl space-y-1">
                     <p className="text-xs text-ok">{result.message}</p>
-                    <p className="text-ok data-mono">New serial: {result.serialNumber}</p>
+                    <p className="text-ok data-mono">New serial: {displaySerial(result.serialNumber)}</p>
                     {result.shortenedToParent && <p className="text-xs text-ok">The validity was shortened to end with the parent CA's certificate, on {day(result.notAfter)}.</p>}
                     {effects.after.map((line) => <p key={line} className="text-xs text-ink">{line}</p>)}
                 </div>

@@ -12,6 +12,7 @@
  * useNavigate, was never called.
  */
 import React, { useState, useEffect } from 'react';
+import { displaySerial } from '@shared/serial';
 import { useAuthClient } from '../api/AuthClientContext';
 import { useStepUp } from '../components/StepUpMfaContext';
 import { generateQrSvg } from '../utils/qrcode';
@@ -444,7 +445,7 @@ export const MySecurity: React.FC<{ embedded?: boolean }> = ({ embedded = false 
                     <div key={cred.id} className="flex items-center justify-between py-2 border-t border-line">
                         <div className="text-xs text-ink-muted">
                             <span className="text-ink">{cred.deviceName || 'Client Certificate'}</span>
-                            <span className="ml-2 font-mono">{cred.serialNumber}</span>
+                            <span className="ml-2 font-mono">{displaySerial(cred.serialNumber)}</span>
                             <span className="ml-2">Expires {formatDate(cred.expiresAt)}</span>
                         </div>
                         <button onClick={() => handleRevokeMtls(cred.id)} className="text-xs text-crit hover:text-crit">Revoke</button>

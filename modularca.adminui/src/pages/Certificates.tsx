@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { displaySerial } from '@shared/serial';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPostWithMfa } from '../api/client';
@@ -71,7 +72,7 @@ function ExpiryCell({ cert }: { cert: any }) {
                     <span className="text-ink-muted"> · </span>
                     {cert.replaced
                         ? (cert.replacedBySerial
-                            ? <Link to={`/certificates/${cert.replacedBySerial}`} onClick={(e) => e.stopPropagation()} className="text-accent-ink hover:underline">Replaced by <span className="font-mono">{cert.replacedBySerial}</span></Link>
+                            ? <Link to={`/certificates/${cert.replacedBySerial}`} onClick={(e) => e.stopPropagation()} className="text-accent-ink hover:underline">Replaced by <span className="font-mono">{displaySerial(cert.replacedBySerial)}</span></Link>
                             : <span className="text-ink-muted">Replaced</span>)
                         : <span className="text-ink-muted">{handling === 'retired' ? 'Retired' : handling === 'dismissed' ? 'Warning dismissed' : 'Not replaced'}</span>}
                 </span>
@@ -337,7 +338,7 @@ const X509Certificates: React.FC = () => {
         status: (c) => { const st = certStatus(c); return { label: st, tone: st === 'active' ? 'ok' : st === 'revoked' ? 'bad' : st === 'expired' ? (c.replaced ? 'neutral' : 'warn') : 'neutral' }; },
         columns: [
             { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, exportValue: (c) => certStatus(c), render: (c) => <StatusChip cert={c} /> },
-            { key: 'serial', header: 'Serial', defaultWidth: 180, sortable: true, exportValue: (c) => c.serialNumber, render: (c) => <span className="data-mono text-ink-muted truncate">{c.serialNumber}</span> },
+            { key: 'serial', header: 'Serial', defaultWidth: 180, sortable: true, exportValue: (c) => displaySerial(c.serialNumber), render: (c) => <span className="data-mono text-ink-muted truncate">{displaySerial(c.serialNumber)}</span> },
             { key: 'subject', header: 'Subject', defaultWidth: 280, minWidth: 160, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-sm text-ink truncate">{c.subjectDN}</span> },
             { key: 'keyAlg', header: 'Key Alg', defaultWidth: 110, exportValue: (c) => c.keyAlgorithm || '', render: (c) => <span className="text-xs text-ink-muted">{c.keyAlgorithm || '-'}</span> },
             { key: 'notAfter', header: 'Expires', defaultWidth: 240, minWidth: 140, sortable: true, truncate: false, exportValue: (c) => formatDate(c.notAfter), render: (c) => <ExpiryCell cert={c} /> },
@@ -374,7 +375,7 @@ const X509Certificates: React.FC = () => {
                 title: (c) => c.subjectDN,
                 columns: [
                     { key: 'status', header: 'Status', defaultWidth: 90, truncate: false, render: (c) => <StatusBadge status={certStatus(c)} /> },
-                    { key: 'serial', header: 'Serial', defaultWidth: 150, render: (c) => <span className="data-mono truncate">{c.serialNumber}</span> },
+                    { key: 'serial', header: 'Serial', defaultWidth: 150, render: (c) => <span className="data-mono truncate">{displaySerial(c.serialNumber)}</span> },
                     { key: 'notAfter', header: 'Expires', defaultWidth: 140, render: (c) => <span className="text-xs">{formatDate(c.notAfter)}</span> },
                 ],
                 sections: [],

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { displaySerial } from '@shared/serial';
 import { apiPostWithMfa } from '../api/client';
 import { useStepUp } from './StepUpMfaContext';
 import { looksLikeHostname } from '@shared/hostname';
@@ -268,7 +269,7 @@ const CertificateReissueModal: React.FC<CertificateReissueModalProps> = ({ open,
                     <div className="bg-sunken border border-line rounded p-3 space-y-2">
                         <div>
                             <div className="text-xs text-ink-muted">Current Serial</div>
-                            <div className="data-mono text-ink break-all">{cert.serialNumber}</div>
+                            <div className="data-mono text-ink break-all">{displaySerial(cert.serialNumber)}</div>
                         </div>
                         <div>
                             <div className="text-xs text-ink-muted">Current Subject</div>
