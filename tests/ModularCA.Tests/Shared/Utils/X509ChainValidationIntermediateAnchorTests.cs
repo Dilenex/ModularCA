@@ -61,9 +61,12 @@ public class X509ChainValidationIntermediateAnchorTests
     /// <summary>
     /// With revocation required, a leaf whose status cannot be determined (it names no CRL or OCSP
     /// responder) still fails closed under an intermediate anchor. Only the anchor's own
-    /// undetermined status is tolerated, as a self-signed anchor's is. Off Windows the chain
-    /// engine checks no revocation for a chain that stops at an intermediate, and the refusal
-    /// is the validator's own: the result and the status named are the same on every platform.
+    /// undetermined status is tolerated, as a self-signed anchor's is. No chain engine checks a
+    /// leaf's revocation on a chain that stops at an intermediate: Windows reports the leaf's
+    /// status as unknown without fetching anything, and the OpenSSL-backed engine reports nothing,
+    /// where the refusal is the validator's own. The result and the status named are the same on
+    /// every platform. A check that can pass needs the anchor's issuers: see
+    /// <see cref="X509ChainValidationAnchorIssuersTests"/>.
     /// </summary>
     [Fact]
     public void Required_revocation_still_fails_closed_for_a_leaf_under_the_intermediate()

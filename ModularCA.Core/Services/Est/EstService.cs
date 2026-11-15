@@ -679,9 +679,13 @@ public class EstService : IEstService, IEnrollmentProtocol
         {
             // Honour the same operator switch the mTLS login path uses. When OCSP is not
             // required, revocation is still caught by the database gate immediately below.
+            // When it is, the CA's own issuers are handed over as well, where this instance
+            // holds them, so the check has a complete chain to run on under an intermediate CA.
             var requireRevocationCheck = (await _securityPolicy.GetAsync()).RequireMtlsOcspCheck;
+            using var anchorIssuers = await ModularCA.Core.Helpers.AnchorIssuerPath.LoadAsync(
+                _db, caCertEntity!, requireRevocationCheck);
             if (!X509ChainValidationUtil.ValidateAgainstAnchor(
-                    clientCert, anchorCert, requireRevocationCheck, out var chainErrors))
+                    clientCert, anchorCert, anchorIssuers.Certificates, requireRevocationCheck, out var chainErrors))
             {
                 _logger.LogWarning(
                     "EST chain validation failed for subject '{Subject}' against CA '{CaSubject}': {ChainErrors}",

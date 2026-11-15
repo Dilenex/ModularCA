@@ -113,6 +113,78 @@ internal static class TestCertificates
     }
 
     /// <summary>
+    /// Issues a subordinate CA certificate that names <paramref name="crlUrl"/> as its CRL
+    /// distribution point (none when null) and may itself have <paramref name="pathLength"/> CA
+    /// levels beneath it, returned with its private key.
+    /// </summary>
+    /// <param name="issuer">The CA that signs it; must carry its private key.</param>
+    /// <param name="subject">The new CA's subject.</param>
+    /// <param name="crlUrl">Where <paramref name="issuer"/>'s CRL is published, or null for no distribution point.</param>
+    /// <param name="pathLength">The basicConstraints path length.</param>
+    public static X509Certificate2 IssueIntermediateWithCrl(
+        X509Certificate2 issuer, string subject, string? crlUrl, int pathLength = 0)
+    {
+        using var key = RSA.Create(2048);
+        var req = new CertificateRequest(subject, key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        req.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, true, pathLength, true));
+        req.CertificateExtensions.Add(new X509KeyUsageExtension(
+            X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign, true));
+        req.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(req.PublicKey, false));
+        req.CertificateExtensions.Add(X509AuthorityKeyIdentifierExtension.CreateFromCertificate(issuer, true, false));
+        if (crlUrl != null)
+            req.CertificateExtensions.Add(CertificateRevocationListBuilder.BuildCrlDistributionPointExtension([crlUrl]));
+
+        using var signed = req.Create(issuer, NotBefore.AddHours(1), NotAfter.AddHours(-1), NewSerial());
+        return signed.CopyWithPrivateKey(key);
+    }
+
+    /// <summary>
+    /// Issues a genuine leaf that names <paramref name="crlUrl"/> as its CRL distribution point,
+    /// so an online revocation check has somewhere to look.
+    /// </summary>
+    /// <param name="ca">The CA that signs it; must carry its private key.</param>
+    /// <param name="subject">The leaf's subject.</param>
+    /// <param name="crlUrl">Where <paramref name="ca"/>'s CRL is published.</param>
+    public static X509Certificate2 IssueLeafWithCrl(X509Certificate2 ca, string subject, string crlUrl)
+    {
+        using var leafKey = RSA.Create(2048);
+        var req = new CertificateRequest(subject, leafKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        req.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
+        req.CertificateExtensions.Add(X509AuthorityKeyIdentifierExtension.CreateFromCertificate(ca, true, false));
+        req.CertificateExtensions.Add(CertificateRevocationListBuilder.BuildCrlDistributionPointExtension([crlUrl]));
+
+        using var signed = req.Create(ca, NotBefore.AddDays(1), NotAfter.AddDays(-1), NewSerial());
+        return X509CertificateLoader.LoadCertificate(signed.Export(X509ContentType.Cert));
+    }
+
+    /// <summary>
+    /// Builds a CRL signed by <paramref name="issuer"/>, current now and for a day, listing
+    /// <paramref name="revoked"/> (none for an empty CRL, which is what says "not revoked").
+    /// </summary>
+    /// <param name="issuer">The CA whose CRL this is; must carry its private key.</param>
+    /// <param name="revoked">The certificates of that CA to list as revoked.</param>
+    /// <returns>The DER-encoded CRL.</returns>
+    public static byte[] BuildCrl(X509Certificate2 issuer, params X509Certificate2[] revoked)
+    {
+        var builder = new CertificateRevocationListBuilder();
+        var now = DateTimeOffset.UtcNow;
+        foreach (var certificate in revoked)
+            builder.AddEntry(certificate, now.AddHours(-1));
+        return builder.Build(
+            issuer, crlNumber: 1, nextUpdate: now.AddDays(1), HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1, thisUpdate: now.AddHours(-1));
+    }
+
+    /// <summary>A random positive 16-byte serial number.</summary>
+    private static byte[] NewSerial()
+    {
+        var serial = new byte[16];
+        RandomNumberGenerator.Fill(serial);
+        serial[0] &= 0x7F;
+        return serial;
+    }
+
+    /// <summary>
     /// Creates the forgery: a certificate whose Issuer field carries <paramref name="ca"/>'s exact
     /// Subject DN, but which is signed by a key the "attacker" generated. Any check that compares
     /// issuer strings accepts it; any real chain build rejects it.

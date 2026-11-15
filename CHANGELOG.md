@@ -6,7 +6,18 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
-Nothing yet.
+**Fixed**
+
+- **With "Require mTLS OCSP Check" on, a client certificate issued by an intermediate CA can sign
+  in.** The online revocation check could never complete for a certificate validated against an
+  intermediate CA, so sign-in, step-up and EST re-enrolment with one were always refused while
+  the setting was on. That was so on every platform: the 0.4.4 notes called it a limit on Linux,
+  and Windows refused the same certificates for the same reason. The check now runs through the
+  CA's own issuers up to its root, where the instance holds them. The certificate's own status must be positively confirmed, as before; an
+  issuing CA that its parent has revoked is now refused too; and an issuing CA whose own
+  revocation list cannot be reached does not stop a certificate that was checked. Where the root
+  is not stored in the instance (an external root that was never imported), the certificate is
+  still refused as undetermined. With the setting off, which is the default, nothing changes.
 
 ## [0.4.4] — 2026-11-11
 

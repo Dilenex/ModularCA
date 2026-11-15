@@ -442,6 +442,8 @@ public class ScepService : IScepService, IEnrollmentProtocol
                 // Revocation is checked against our own database below rather than online here:
                 // an unreachable OCSP responder must not turn a renewal into a hard failure on
                 // an enrollment path, and the DB gate is authoritative for certificates we issued.
+                // The CA's own issuers are therefore not loaded: the validator uses them for an
+                // online revocation check alone, and issuance is decided without them.
                 if (X509ChainValidationUtil.ValidateAgainstAnchor(
                         signerCert2, anchorCert2, requireRevocationCheck: false, out var chainErrors))
                 {

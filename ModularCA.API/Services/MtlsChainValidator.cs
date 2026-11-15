@@ -1,5 +1,6 @@
 ﻿using System.Security.Cryptography.X509Certificates;
 using Microsoft.EntityFrameworkCore;
+using ModularCA.Core.Helpers;
 using ModularCA.Database;
 using ModularCA.Shared.Models.Config;
 using ModularCA.Shared.Utils;
@@ -28,7 +29,7 @@ public static class MtlsChainValidator
     /// passes). Writes the outcome to <paramref name="chainErrors"/> for audit.
     /// <para>
     /// The chain build itself now lives in
-    /// <see cref="ModularCA.Shared.Utils.X509ChainValidationUtil.ValidateAgainstAnchor"/> so the
+    /// <see cref="ModularCA.Shared.Utils.X509ChainValidationUtil.ValidateAgainstAnchor(X509Certificate2, X509Certificate2, bool, out string?)"/> so the
     /// mTLS login path and the EST re-enrollment path share one implementation. EST lives in
     /// <c>ModularCA.Core</c>, which cannot reference this assembly, so the chain core was pulled
     /// down into <c>ModularCA.Shared</c>; this method stays as the login path's entry point and
@@ -47,7 +48,20 @@ public static class MtlsChainValidator
     /// Loads the signing CA's <see cref="X509Certificate2"/> from the DB for the given
     /// mTLS credential, then validates <paramref name="clientCert"/>'s chain against it.
     /// Returns <c>true</c> on success.
+    /// <para>
+    /// With <paramref name="requireRevocationCheck"/> set and an intermediate signing CA, the CA's
+    /// own issuers up to its root are loaded as well where this instance holds them
+    /// (<see cref="AnchorIssuerPath"/>) and handed to the validator, which needs a complete chain
+    /// to check revocation on every platform. They do not change which certificates count as
+    /// issued by the signing CA. Without the revocation requirement nothing more is read than
+    /// before.
+    /// </para>
     /// </summary>
+    /// <param name="db">The context to read the signing CA through.</param>
+    /// <param name="signingCaId">The CA recorded as the signer of the credential being asserted.</param>
+    /// <param name="clientCert">The certificate the client presented.</param>
+    /// <param name="requireRevocationCheck">When true, perform online revocation checking and fail closed.</param>
+    /// <param name="ct">Cancellation token.</param>
     public static async Task<bool> ValidateAgainstCredentialCaAsync(
         ModularCADbContext db,
         Guid signingCaId,
@@ -63,15 +77,30 @@ public static class MtlsChainValidator
 
         if (caCertEntity?.CertificateId == null) return false;
 
-        var caCertRow = await db.Certificates
+        if (!requireRevocationCheck)
+        {
+            var caCertRow = await db.Certificates
+                .AsNoTracking()
+                .Where(c => c.CertificateId == caCertEntity.CertificateId)
+                .Select(c => new { c.RawCertificate })
+                .FirstOrDefaultAsync(ct);
+
+            if (caCertRow?.RawCertificate == null) return false;
+
+            using var anchor = X509CertificateLoader.LoadCertificate(caCertRow.RawCertificate);
+            return ValidateAgainstCa(clientCert, anchor, requireRevocationCheck: false, out _);
+        }
+
+        // The whole row this time: the walk up to the root follows its issuer links.
+        var caCertFull = await db.Certificates
             .AsNoTracking()
-            .Where(c => c.CertificateId == caCertEntity.CertificateId)
-            .Select(c => new { c.RawCertificate })
-            .FirstOrDefaultAsync(ct);
+            .FirstOrDefaultAsync(c => c.CertificateId == caCertEntity.CertificateId, ct);
 
-        if (caCertRow?.RawCertificate == null) return false;
+        if (caCertFull?.RawCertificate == null) return false;
 
-        using var caCert = X509CertificateLoader.LoadCertificate(caCertRow.RawCertificate);
-        return ValidateAgainstCa(clientCert, caCert, requireRevocationCheck, out _);
+        using var caCert = X509CertificateLoader.LoadCertificate(caCertFull.RawCertificate);
+        using var caIssuers = await AnchorIssuerPath.LoadAsync(db, caCertFull, requireRevocationCheck: true);
+        return X509ChainValidationUtil.ValidateAgainstAnchor(
+            clientCert, caCert, caIssuers.Certificates, requireRevocationCheck: true, out _);
     }
 }
