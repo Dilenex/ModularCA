@@ -347,12 +347,15 @@ public abstract class RestoreDrillTests(ITestOutputHelper output)
         Assert.All(config, f => Assert.Equal(f.Value, Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(f.Key)))));
         Assert.Equal(root, await host.GetAsync(httpPort, "/ca/drill-root"));
         Assert.DoesNotContain("Restore lock:", host.NodeLog);
-        // The node holds its key of the lock, shared, on its own connection. Under the load of the whole
-        // suite two sessions have been counted here, and one when the drill runs alone; why is not yet
-        // known. So the count is given ten seconds to settle, and if it does not, the failure names the
-        // sessions that hold the key (their start and state), which is what is needed to find the cause.
+        // The node holds its key of the lock, shared, on its own connection. An advisory lock belongs
+        // to one database, and pg_locks lists the whole cluster's: the count is of this drill's
+        // application database only. Without that it also counted the node of another drill running
+        // beside this one in the same cluster, which is what "2 session(s)" was whenever two drills
+        // overlapped (always on the build server, now and then on a developer's machine). The count is
+        // still given ten seconds to settle, and a failure names the sessions that hold the key.
         var lockHolders = $"FROM pg_locks l JOIN pg_stat_activity a USING (pid) WHERE l.locktype = 'advisory' AND l.classid = {RestoreLock.LockClass} "
-            + $"AND l.objid = {RestoreLock.NodeKey} AND l.mode = 'ShareLock' AND l.granted AND a.application_name = 'ModularCA restore lock'";
+            + $"AND l.objid = {RestoreLock.NodeKey} AND l.mode = 'ShareLock' AND l.granted AND a.application_name = 'ModularCA restore lock' "
+            + "AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())";
         long lockSessions = 0;
         for (var waited = 0; waited < 40; waited++)
         {
@@ -362,7 +365,7 @@ public abstract class RestoreDrillTests(ITestOutputHelper output)
             await Task.Delay(250);
         }
         Assert.True(lockSessions == 1, $"{lockSessions} session(s) hold the node's key of the restore lock, where one was expected: "
-            + await TextAsync(db.App, "SELECT coalesce(string_agg(a.pid || ' started ' || a.backend_start || ' state ' || coalesce(a.state, '?') || ' last ' || a.state_change, '; '), 'none') " + lockHolders));
+            + await TextAsync(db.App, "SELECT coalesce(string_agg(a.pid || ' started ' || coalesce(a.backend_start::text, '?') || ' state ' || coalesce(a.state, '?') || ' last ' || coalesce(a.state_change::text, '?'), '; '), 'none') " + lockHolders));
 
         // The check an orchestrator runs beside a serving node still runs beside it.
         var beside = await host.ExecuteAsync("read-only upgrade check beside the node", ["--upgrade-check", "--read-only"]);
