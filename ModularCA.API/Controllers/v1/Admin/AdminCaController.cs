@@ -53,6 +53,8 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// Lists the X.509 CAs the caller's <see cref="SpaceFence"/> lets them see, with each CA's
         /// type, default and enabled flags, parent, and its certificate's id, serial, subject DN
         /// and expiry. SSH CAs are left out; they are listed under <c>/api/v1/admin/ssh</c>.
+        /// A parent outside the caller's fence is not identified: <c>parentCaId</c> is null and
+        /// <c>parentHidden</c> is true (<see cref="ParentsOutsideFenceAsync"/>).
         /// Requires the <c>CaAuditor</c> policy.
         /// </summary>
         [HttpGet]
@@ -69,6 +71,7 @@ namespace ModularCA.API.Controllers.v1.Admin
             query = query.Where(fence.Predicate<ModularCA.Shared.Entities.CertificateAuthorityEntity>(ca => ca.SpaceId));
 
             var cas = await query.ToListAsync();
+            var hiddenParents = await ParentsOutsideFenceAsync(cas, fence);
 
             var result = cas.Select(ca => new
             {
@@ -79,7 +82,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                 IsRoot = ca.Type == "Root",
                 ca.IsDefault,
                 ca.IsEnabled,
-                ca.ParentCaId,
+                ParentCaId = ca.ParentCaId is Guid parentId && hiddenParents.Contains(parentId) ? null : ca.ParentCaId,
+                ParentHidden = ca.ParentCaId is Guid hiddenId && hiddenParents.Contains(hiddenId),
                 // The CA's certificate id, not just its serial. CRL schedules and several other
                 // resources key on CaCertificateId, and without this the admin UI had no way to
                 // resolve one from an authority — the Create CRL Schedule form was posting the
@@ -91,6 +95,34 @@ namespace ModularCA.API.Controllers.v1.Admin
             });
 
             return Ok(result);
+        }
+
+        /// <summary>
+        /// The parents of <paramref name="cas"/> that the caller may not see: those that are not
+        /// among <paramref name="cas"/> and whose space <paramref name="fence"/> does not admit, or
+        /// that no longer exist. A CA whose parent is one of them is returned with no id, name or
+        /// label of that parent, and nothing of the parent's certificate: the same rule the list
+        /// itself applies, so one fact about a CA outside the fence does not cross it. The parent's
+        /// subject DN stays readable as the issuer of the child's own certificate, which the child
+        /// carries wherever it goes.
+        /// </summary>
+        /// <param name="cas">The CAs being returned to the caller, already limited by the fence.</param>
+        /// <param name="fence">The caller's fence for <c>cert.view</c>.</param>
+        private async Task<HashSet<Guid>> ParentsOutsideFenceAsync(
+            IReadOnlyCollection<ModularCA.Shared.Entities.CertificateAuthorityEntity> cas, SpaceFence fence)
+        {
+            var listed = cas.Select(ca => ca.Id).ToHashSet();
+            var others = cas.Where(ca => ca.ParentCaId is Guid p && !listed.Contains(p))
+                .Select(ca => ca.ParentCaId!.Value).Distinct().ToList();
+            if (others.Count == 0)
+                return [];
+            // Past the soft-delete filter, as the lifetime facts read a parent: its space decides.
+            var spaces = await _db.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
+                .Where(ca => others.Contains(ca.Id))
+                .Select(ca => new { ca.Id, ca.SpaceId })
+                .ToListAsync(HttpContext.RequestAborted);
+            var admitted = spaces.Where(s => fence.Allows(s.SpaceId)).Select(s => s.Id).ToHashSet();
+            return others.Where(id => !admitted.Contains(id)).ToHashSet();
         }
 
         /// <summary>
@@ -231,6 +263,11 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// since when the key has signed, the certificate's validity, the latest end of validity among
         /// the certificates it issued, and the longest validity its profiles allow.
         /// System admins see all CAs; other users see only CAs belonging to their accessible spaces.
+        /// A parent CA outside the caller's fence is not identified anywhere in the answer
+        /// (<see cref="ParentsOutsideFenceAsync"/>): <c>parentCaId</c> is null and
+        /// <c>parentHidden</c> true, <c>cryptoperiod.parentName</c> and
+        /// <c>cryptoperiod.parentCertificateNotAfter</c> are null, and the "outlives its parent"
+        /// notice names no parent and gives no date of the parent's certificate.
         /// </summary>
         [HttpGet("hierarchy")]
         [Authorize(Policy = "CaAuditor")]
@@ -250,6 +287,7 @@ namespace ModularCA.API.Controllers.v1.Admin
 
             var cas = await caQuery.ToListAsync();
             var caIds = cas.Select(ca => ca.Id).ToHashSet();
+            var hiddenParents = await ParentsOutsideFenceAsync(cas, fence);
 
             var protocolConfigs = await _db.CaProtocolConfigs
                 .Include(pc => pc.SigningProfile)
@@ -268,8 +306,9 @@ namespace ModularCA.API.Controllers.v1.Admin
             var utcNow = DateTime.UtcNow;
             // Asked of the request's services, like the OCSP service on the public controller: the
             // feed still answers, without the lifetime facts, where the service is not registered.
+            // The fence decides whether a parent that is not in the list may be named.
             var lifecycle = HttpContext.RequestServices?.GetService<CaLifecycleService>() is { } caLifecycle
-                ? await caLifecycle.DescribeAsync(cas, utcNow, HttpContext.RequestAborted)
+                ? await caLifecycle.DescribeAsync(cas, utcNow, HttpContext.RequestAborted, fence.Allows)
                 : new Dictionary<Guid, CaLifecycleReport>();
 
             // Guard against a malformed parent chain (a ParentCaId cycle) causing unbounded
@@ -316,7 +355,9 @@ namespace ModularCA.API.Controllers.v1.Admin
                     IsRoot = ca.Type == "Root",
                     ca.IsDefault,
                     ca.IsEnabled,
-                    ca.ParentCaId,
+                    // A parent outside the caller's fence is not identified: no id here, no name below.
+                    ParentCaId = ca.ParentCaId is Guid parentId && hiddenParents.Contains(parentId) ? null : ca.ParentCaId,
+                    ParentHidden = ca.ParentCaId is Guid hiddenId && hiddenParents.Contains(hiddenId),
                     ca.OcspResponderCertificateId,
                     OcspResponder = ocspStates.TryGetValue(ca.Id, out var ocsp)
                         ? new { ocsp.Mode, ocsp.Problem, ocsp.ResponderSerial, ocsp.ResponderSubject, ocsp.ResponderNotAfter }
@@ -361,6 +402,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                         report.Facts.LatestIssuedNotAfter,
                         LongestProfileValidityDays = report.Facts.LongestProfileValidity is TimeSpan longest ? (int?)(int)longest.TotalDays : null,
                         report.Facts.LongestProfileName,
+                        // True when the only profile with a maximum is one of the CA's own infrastructure profiles.
+                        report.Facts.LongestProfileIsInfrastructure,
                         report.Facts.ParentName,
                         report.Facts.ParentCertificateNotAfter,
                     } : null,
@@ -723,7 +766,9 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// <c>acknowledge</c>; a notice travels in <c>advisories</c>. Refused with 400 for a
         /// revoked CA certificate, an intermediate whose issuer is not a CA of this instance, a
         /// parent that cannot sign, and a validity that would not end after the current
-        /// certificate's. Requires step-up MFA bound to the CA.
+        /// certificate's. A refusal names the parent CA only to a caller who may see it (a system
+        /// administrator, or one whose space fence admits the parent's space); to anyone else it
+        /// says "the parent CA". Requires step-up MFA bound to the CA.
         /// </summary>
         /// <param name="caId">The CA whose certificate is renewed.</param>
         /// <param name="request">The validity asked for.</param>
@@ -741,7 +786,8 @@ namespace ModularCA.API.Controllers.v1.Admin
 
             // As creation: a root is a system administrator's; an intermediate, its space's ca.manage.
             var userId = _currentUser.User.Id;
-            var allowed = await _groupAuth.IsSystemAdminAsync(userId)
+            var systemAdmin = await _groupAuth.IsSystemAdminAsync(userId);
+            var allowed = systemAdmin
                 || (ca.ParentCaId != null && await _groupAuth.HasScopeCapabilityAsync(userId, ca.SpaceId, Capabilities.CaManage));
             if (!allowed)
             {
@@ -751,8 +797,13 @@ namespace ModularCA.API.Controllers.v1.Admin
                     : "You need ca.manage for the CA's space to renew its certificate." });
             }
 
+            // A refusal names the parent CA only to a caller who may see it: a system administrator,
+            // or one whose fence admits the parent's space.
+            var renewalFence = SpaceFence.From(HttpContext, Capabilities.CertView);
+            bool MayNameParentIn(Guid? spaceId) => systemAdmin || renewalFence.Allows(spaceId);
+
             var renewal = HttpContext.RequestServices.GetRequiredService<CaCertificateRenewalService>();
-            var plan = await renewal.PlanAsync(caId, request.ValidityYears, DateTime.UtcNow, HttpContext.RequestAborted);
+            var plan = await renewal.PlanAsync(caId, request.ValidityYears, DateTime.UtcNow, HttpContext.RequestAborted, MayNameParentIn);
 
             // What to know about the validity chosen. A warning has to be acknowledged before
             // anything is signed or any ceremony opened; a notice only travels with the answer.
@@ -809,7 +860,7 @@ namespace ModularCA.API.Controllers.v1.Admin
 
             try
             {
-                var result = await renewal.RenewAsync(caId, plan.NotAfter, ceremonyId: null, _currentUser.User.Username, HttpContext.RequestAborted);
+                var result = await renewal.RenewAsync(caId, plan.NotAfter, ceremonyId: null, _currentUser.User.Username, HttpContext.RequestAborted, MayNameParentIn);
                 await _audit.LogAsync(AuditActionType.CaCertificateRenewed, userId, _currentUser.User.Username,
                     "CertificateAuthority", caId.ToString(),
                     new

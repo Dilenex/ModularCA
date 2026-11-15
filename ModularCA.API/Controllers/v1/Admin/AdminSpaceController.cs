@@ -14,7 +14,6 @@ using ModularCA.Bootstrap;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Errors;
-using ModularCA.Shared.Licensing;
 using ModularCA.Shared.Models.Config;
 using Serilog;
 using System.Text.RegularExpressions;
@@ -38,11 +37,9 @@ public partial class AdminSpaceController(
     IDistributedCache cache,
     ICaGroupAuthorizationService groupAuth,
     ISpacePolicyChangeService spacePolicyChangeService,
-    IControlledUserCeremonyService controlledUserSvc,
-    IEntitlementService entitlements) : ControllerBase
+    IControlledUserCeremonyService controlledUserSvc) : ControllerBase
 {
     private readonly ModularCADbContext _db = db;
-    private readonly IEntitlementService _entitlements = entitlements;
     private readonly ICurrentUserService _currentUser = currentUser;
     private readonly IAuditService _audit = audit;
     private readonly IDistributedCache _cache = cache;
@@ -144,10 +141,9 @@ public partial class AdminSpaceController(
     }
 
     /// <summary>
-    /// Creates a new space. The slug is auto-generated from the name if not provided. Creation
-    /// always succeeds; from the fifth space, without a licence carrying the multi-space feature,
-    /// the response's <c>recommendation</c> says a licence is recommended
-    /// (<see cref="SpaceCreationGate"/>). The slug <c>system</c> is reserved for instance CAs' groups.
+    /// Creates a new space. The slug is auto-generated from the name if not provided. Spaces are
+    /// not counted, limited or licensed: an instance may have any number of them, and the response
+    /// carries no license hint. The slug <c>system</c> is reserved for instance CAs' groups.
     /// </summary>
     [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
@@ -173,8 +169,6 @@ public partial class AdminSpaceController(
         var slugExists = await _db.Spaces.AnyAsync(t => t.Slug == slug);
         if (slugExists)
             return Conflict(new { error = $"A space with slug '{slug}' already exists" });
-
-        var recommendation = SpaceCreationGate.Recommendation(_entitlements, await _db.Spaces.CountAsync());
 
         var space = new SpaceEntity
         {
@@ -225,7 +219,7 @@ public partial class AdminSpaceController(
 
         await _audit.LogAsync(AuditActionType.SpaceCreated, _currentUser.User?.Id, _currentUser.User?.Username,
             "Space", space.Id.ToString(),
-            new { space.Name, space.Slug, LicenceRecommended = recommendation != null },
+            new { space.Name, space.Slug },
             HttpContext.Connection.RemoteIpAddress?.ToString());
 
         return CreatedAtAction(nameof(GetById), new { id = space.Id }, new
@@ -240,7 +234,6 @@ public partial class AdminSpaceController(
             space.ValidityCeilingBehavior,
             space.RequireKeyCeremony,
             space.CeremonyRequiredApprovals,
-            Recommendation = recommendation,
         });
     }
 

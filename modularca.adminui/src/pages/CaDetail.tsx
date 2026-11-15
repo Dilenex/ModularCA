@@ -13,7 +13,8 @@ import { DetailPage, DetailSection } from '../components/DetailPage';
 import { ocspStatus } from './ocspReadiness';
 import { advisoriesOf, openEnrollmentNotice } from './protocolAdvisories';
 import { keyAdvisoriesOf } from './tighterDefaults';
-import { advisoryTitle, advisoryTone, cryptoperiodRows } from './caLifecycle';
+import { advisoryNoticeSeverity, advisoryTitle, cryptoperiodRows } from './caLifecycle';
+import { parentCaDisplay } from './caParentDisplay';
 import InfrastructureProfiles from '../components/InfrastructureProfiles';
 import RevokedSerialsPanel from '../components/RevokedSerialsPanel';
 import MissingFromCrlPanel from '../components/MissingFromCrlPanel';
@@ -58,6 +59,8 @@ const CaDetail: React.FC = () => {
     const { can } = useAuth();
 
     const [ca, setCa] = useState<any | null>(null);
+    // Every CA the hierarchy feed returned to this viewer: the parent is named and linked from it.
+    const [visibleCas, setVisibleCas] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
     // Raised after a renewal, so the page shows the CA's new certificate.
@@ -107,7 +110,9 @@ const CaDetail: React.FC = () => {
             .then((data) => {
                 if (cancelled) return;
                 const items = Array.isArray(data) ? data : (data.items || data.authorities || []);
-                setCa(flattenCas(items).find((c: any) => caKey(c) === id) || null);
+                const flat = flattenCas(items);
+                setVisibleCas(flat);
+                setCa(flat.find((c: any) => caKey(c) === id) || null);
                 setLoading(false);
             })
             .catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load CA')); setLoading(false); } });
@@ -124,6 +129,7 @@ const CaDetail: React.FC = () => {
     );
 
     const typeBadge = caTypeBadge(ca);
+    const parent = parentCaDisplay(ca, visibleCas);
     const ocsp = ocspStatus(ca.ocspResponder);
     // Wire name is `isEnabled`; `ca.enabled` was always undefined, so a disabled CA
     // presented as enabled here and in CaManagement.
@@ -151,12 +157,21 @@ const CaDetail: React.FC = () => {
                         <DetailField label="Label" value={ca.label} mono />
                         {ca.spaceName && <DetailField label="Space" value={ca.spaceName} />}
                         <DetailField label="Default" value={ca.isDefault ? 'Yes' : 'No'} />
-                        {ca.parentCaId && <DetailField label="Parent CA" value={ca.parentCaId} mono />}
+                        {parent && (
+                            <DetailField label="Parent CA" value={
+                                parent.kind === 'link' ? (
+                                    <span>
+                                        <Link to={parent.to} className="text-accent-ink hover:underline">{parent.name}</Link>
+                                        {parent.label && <span className="data-mono text-ink-muted ml-2">{parent.label}</span>}
+                                    </span>
+                                ) : <span className="text-ink-muted">{parent.text}</span>
+                            } />
+                        )}
                     </div>
                     {keyAdvisoriesOf(ca).map((a) => (
                         <InlineNotice
                             key={a.reason}
-                            severity={advisoryTone(a) === 'crit' ? 'error' : 'warning'}
+                            severity={advisoryNoticeSeverity(a)}
                             className="mt-2"
                             notice={{ title: a.reason === 'CaRsaKeyBelow3072' ? "This CA's key should be replaced" : advisoryTitle(a), detail: a.message, code: a.reason }}
                         />
@@ -224,7 +239,7 @@ const CaDetail: React.FC = () => {
                                         </span>
                                     ) },
                                     { key: 'enabled', header: 'Enabled', defaultWidth: 100, truncate: false, sortable: true, sortValue: (pc: any) => !!pc.enabled, exportValue: (pc: any) => (pc.enabled ? 'Yes' : 'No'), render: (pc: any) => <StatusBadge status={pc.enabled ? 'enabled' : 'disabled'} /> },
-                                    { key: 'profile', header: 'Profile', flex: true, exportValue: (pc: any) => pc.signingProfileName || pc.signingProfile || pc.certProfile || '', render: (pc: any) => <span className="text-ink-muted truncate">{pc.signingProfileName || pc.signingProfile || pc.certProfile || '-'}</span> },
+                                    { key: 'profile', header: 'Profile', defaultWidth: 320, minWidth: 160, exportValue: (pc: any) => pc.signingProfileName || pc.signingProfile || pc.certProfile || '', render: (pc: any) => <span className="text-ink-muted truncate">{pc.signingProfileName || pc.signingProfile || pc.certProfile || '-'}</span> },
                                 ] as DataTableColumn<any>[]}
                             />
                         </div>

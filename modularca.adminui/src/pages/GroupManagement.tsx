@@ -198,12 +198,12 @@ const GroupManagement: React.FC = () => {
 
     const columns: DataTableColumn<any>[] = [
         {
-            key: 'displayName', header: 'Display Name', defaultWidth: 220, minWidth: 160, truncate: false, exportValue: (g) => g.displayName || g.name,
+            key: 'displayName', header: 'Display Name', defaultWidth: 280, minWidth: 160, truncate: false, exportValue: (g) => g.displayName || g.name,
             render: (g) => (
                 <span className="text-ink font-medium truncate">{g.displayName || g.name}</span>
             ),
         },
-        { key: 'name', header: 'Name', defaultWidth: 160, exportValue: (g) => g.name, render: (g) => <span className="data-mono text-ink-muted">{g.name}</span> },
+        { key: 'name', header: 'Name', defaultWidth: 220, exportValue: (g) => g.name, render: (g) => <span className="data-mono text-ink-muted">{g.name}</span> },
         { key: 'template', header: 'Template', defaultWidth: 120, truncate: false, exportValue: (g) => templateLabel(g.templateName), render: (g) => <Tag label={templateLabel(g.templateName)} /> },
         { key: 'ca', header: 'CA', defaultWidth: 140, exportValue: (g) => caNameById(g.certificateAuthorityId), render: (g) => caNameById(g.certificateAuthorityId) },
         { key: 'scope', header: 'Scope', defaultWidth: 130, exportValue: (g) => scopeOf(g), render: (g) => scopeOf(g) },

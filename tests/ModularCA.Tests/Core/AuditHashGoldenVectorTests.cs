@@ -4,7 +4,6 @@ using ModularCA.Core.Services;
 using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
-using ModularCA.Shared.Licensing;
 using Xunit;
 
 namespace ModularCA.Tests.Core;
@@ -159,13 +158,6 @@ public class AuditHashGoldenVectorTests
         Assert.Equal("TenantHostnameDeleted", AuditActionType.TenantHostnameDeleted);
         Assert.Equal("TenantHostnameCertificateIssued", AuditActionType.TenantHostnameCertificateIssued);
         Assert.Equal("TenantHostnameUpstreamChanged", AuditActionType.TenantHostnameUpstreamChanged);
-    }
-
-    [Fact]
-    public void Licence_keys_signed_into_issued_licences_are_pinned()
-    {
-        Assert.Equal("tenancy.multi", FeatureKeys.MultiTenancy);
-        Assert.Equal("maxTenants", LicenseLimits.MaxTenants);
     }
 
     [Fact]

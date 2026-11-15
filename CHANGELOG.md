@@ -6,6 +6,114 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### 0.4.5-dev.1.12 — 2026-11-14
+
+The thirteenth test build of 0.4.5, from what the hub's test of 0.4.5-dev.1.8 in containers
+showed. In the signer's journal and how the node reports it:
+
+- **A journal whose directory takes no new file is found at start.** A start that has nothing
+  to record begins no segment, so a journal that could not be written reported itself available
+  until the first record failed. The signer now makes and removes an empty file
+  (`write-probe.tmp`) when it opens such a journal, and reports the journal
+  unavailable when it cannot.
+- **A signer that cannot be reached is "not known", not "none".** Where the signer runs as its
+  own process, the node's journal check said `none` while the signer was starting.
+  It says `not_known`, as it already did where the signer runs in the node's process.
+- **No warning at every start of a split install.** The merge of revocations from the journal
+  logged a warning with a stack trace when the signer was not up yet. That case is one
+  information line; any other failure is still a warning.
+
+No migration is added.
+
+### 0.4.5-dev.1.11 — 2026-11-14
+
+The twelfth test build of 0.4.5, from a pass over every table of the console on
+0.4.5-dev.1.10 on the test host.
+
+- **The journal's last checkpoint is known after a restart.** A start that had recorded
+  nothing yet reported no last checkpoint at all, so the health check, the Signer Journal line
+  on System Health and the hub's inventory showed its age as unknown until the first record of
+  that start. Such a start now reports the newest checkpoint on disk.
+- **Recent-certificate tables have room for a whole serial and for the date with its time.**
+  On Cert Inventory and Compliance the serial column is 280 wide, the issuer 240 and the date
+  columns 150.
+- **Columns that cut their content at the default width are wider.** Thirteen columns on
+  Cert Inventory, Compliance, Enrollment, Whitelists, Schedules, Distribution, Groups and
+  Certificate Templates. A width saved in a browser is kept as it is.
+
+No migration is added.
+
+### 0.4.5-dev.1.10 — 2026-11-14
+
+The eleventh test build of 0.4.5, from looking at 0.4.5-dev.1.9 on the test host, where the
+tables now pack as the certificates table does. In the console only:
+
+- **A serial is shown whole.** The recent-certificate tables on Cert Inventory and Compliance,
+  and the certificate column of the compliance findings, cut every serial to sixteen characters
+  and added dots, however wide the column was.
+- **"Recently Issued" on Cert Inventory shows the date of issue and is in date order.** It read
+  a field the list does not carry, so the date was "-" on every row and the ten rows were not
+  the ten most recent.
+
+No migration is added, and nothing outside the console changed.
+
+### 0.4.5-dev.1.9 — 2026-11-14
+
+The tenth test build of 0.4.5, from looking at 0.4.5-dev.1.8 on the test host. In the console
+only:
+
+- **Every table is laid out as the certificates table is: no column takes "whatever is left".**
+  Ten tables had one flexible column that got only what the others did not use. On the Cert
+  Inventory and Compliance pages, where two tables stood side by side in half the page each,
+  that was nothing: the subject showed five characters ("CN=lo…") and the table scrolled
+  sideways. Each column now has a width of its own, the table packs to the left, and the spare
+  width is left after the last column.
+- **The recent-certificate tables on Cert Inventory and Compliance stand one to a row**, with
+  the subject and serial widths of the certificates page.
+
+No migration is added, and nothing outside the console changed. The widths were worked out by
+arithmetic; this build is for looking at them.
+
+### 0.4.5-dev.1.8 — 2026-11-14
+
+The ninth test build of 0.4.5. Since 0.4.5-dev.1.7:
+
+- **Spaces are not counted or licensed.** One instance may have any number of spaces; creating a
+  fifth no longer recommends a license. What is licensed is running a fleet of instances, high
+  availability, backup orchestration and auditor evidence, and nothing is enforced in the
+  product today.
+- **A parent CA outside your spaces is no longer identified.** A viewer fenced to their own
+  spaces learned the name of a parent CA in another; the CA list and the hierarchy also gave its
+  identifier, and four renewal refusals named it.
+- **Tables with a flexible column keep their other columns at their set widths**, so the
+  flexible one gets the spare width. Wide columns used to grow first and squeeze it.
+- **For the hub:** the journal's check says `not_known` when the signer has not answered yet,
+  where it said `none`, the same word as for a signer that keeps no journal.
+
+No migration is added, and the hub's contract is unchanged at 1.2. The table widths were worked
+out by arithmetic and have not been looked at in a browser.
+
+### 0.4.5-dev.1.7 — 2026-11-13
+
+The eighth test build of 0.4.5, from looking at 0.4.5-dev.1.6 on the test host: the journal
+worked on Linux at the first start, and nothing an upgrade should leave alone had changed. Since
+0.4.5-dev.1.6, in the console only:
+
+- **A new CA no longer carries a notice from its first day.** "Issued certificates are
+  shortened" counted the CA's own OCSP, timestamp and CMP profiles, and fired as soon as a
+  profile's maximum was a day longer than the CA had left. It now leaves those profiles out and
+  waits until a certificate issued now would lose a tenth of its profile's maximum.
+- **Every CA notice is 40 words or fewer**, and says what is so and what to do.
+- **A notice is blue, a warning amber, and what is critical red.** Notices were drawn amber, and
+  critical items on the Security Baseline card were too.
+- **The certificate history table packs its columns** as the console's other tables do; the
+  download and the public address were squeezed off its edge.
+- **A CA's page names its parent CA**, with a link, where it showed an identifier.
+- **System Health has a Signer Journal row**, so the journal can be seen to be healthy and not
+  only seen when it is not.
+
+No migration is added, and the hub's contract is unchanged at 1.2.
+
 ### 0.4.5-dev.1.6 — 2026-11-13
 
 The seventh test build of 0.4.5. Since 0.4.5-dev.1.5:
@@ -141,6 +249,20 @@ what the build is for.
 
 **Upgrade notes**
 
+- **Spaces are not counted or licensed.** The create-space response has no `recommendation`,
+  its audit record no `LicenceRecommended`, and the console no hint. The `tenancy.multi` feature
+  key and the `maxTenants` limit are removed; a license document that names them still loads,
+  and they are ignored.
+- **For a parent CA outside the reader's spaces,** `GET /api/v1/admin/authorities` and
+  `/hierarchy` answer `parentCaId: null` with `parentHidden: true`, and
+  `cryptoperiod.parentName` and `cryptoperiod.parentCertificateNotAfter` are null. A script
+  that walked the hierarchy by `parentCaId` as a fenced user must expect null there.
+- **`checks.journal.status` has a new value, `not_known`:** the signer has not answered yet.
+  `none` now means only that the signer keeps no journal. Neither makes the node not ready.
+- **No table in the console has a flexible column any more.** Each column has a default width
+  and the spare width is left after the last one, as on the certificates page. Column widths a
+  user saved are kept. A width saved for a table while it had a flexible column still applies
+  to the columns it was saved for.
 - **A CA certificate within 30 days of its end, or past it, no longer makes `/health/ready`
   answer 503.** An expiring CA should not take a node out of a load balancer. Monitoring that
   relied on the 503 must read `checks.caLifecycle.status` (`attention`), or
@@ -295,8 +417,9 @@ what the build is for.
   certificate ends, the latest expiry among the certificates it has issued, and the longest
   validity its profiles allow. A notice is raised when the certificate nears its end (two years
   ahead for a root and one for an intermediate, then a warning at 30 days and critical at 7),
-  when its profiles ask for more time than it has left (issued certificates are shortened, as
-  before), when its certificate outlives its parent's, and, if a usage period is set, when its
+  when a certificate issued now would lose a tenth or more of what its profile allows because
+  the CA has too little time left (issued certificates are shortened, as before; the CA's own
+  OCSP, timestamp and CMP profiles are not counted), when its certificate outlives its parent's, and, if a usage period is set, when its
   key has signed for longer than that. They appear on the CA's page, under System Health and,
   once pressing, on the dashboard and as a security alert. Nothing is refused.
 - **Revoking a CA revokes every certificate it has over the same key**, and so do a hold and

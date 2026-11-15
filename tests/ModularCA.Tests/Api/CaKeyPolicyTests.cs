@@ -279,8 +279,8 @@ public sealed class CaKeyPolicyTests
         Assert.Equal(CaKeyPolicy.RsaKeyBelow3072, advisory.Reason);
         Assert.Contains("RSA 2048", advisory.Message);
         Assert.Contains("before 2031", advisory.Message);
-        Assert.Contains("creating a new CA now", advisory.Message);
-        Assert.Contains("keeps working", advisory.Message);
+        Assert.Contains("create a new CA", advisory.Message);
+        Assert.Contains("move issuance to it", advisory.Message);
     }
 
     [Fact]

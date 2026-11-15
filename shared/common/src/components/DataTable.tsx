@@ -21,7 +21,7 @@ import { Chevron } from './Chevron';
 import { Drawer } from './Drawer';
 import { sortRows } from '../tableSort';
 import { findRows } from '../tableFind';
-import { columnTrack } from '../tableTracks';
+import { tableColumnTracks } from '../tableTracks';
 import type { SortSpec } from '../tableQuery';
 
 /* ── public API ───────────────────────────────────────────────────────────── */
@@ -38,8 +38,16 @@ export interface DataTableColumn<Row> {
     defaultWidth?: number;
     /** Minimum pixel width while resizing (default 60). */
     minWidth?: number;
-    /** This column grows to fill remaining space until the user resizes it. */
+    /** This column takes the table's leftover width. It has no resize handle and no stored width. */
     flex?: boolean;
+    /**
+     * Whether an unsized column of 150px or more may grow into free space, up to 1.6 times its
+     * default. Left unset, a column grows only in a table that has no `flex` column; in one that
+     * has, the leftover width is the flex column's and every other column stays at its default
+     * (or user-set) width. Set true to let a column grow anyway: it then takes free space before
+     * the flex column gets any. Set false to keep a column at its default in every table.
+     */
+    grow?: boolean;
     /** Allow drag-resizing (default true). */
     resizable?: boolean;
     /** Allow hiding via the columns menu (default true). */
@@ -306,21 +314,17 @@ export function DataTable<Row>({
         return prefs.widths[col.key];
     };
 
-    // A column track: filler → minmax(min, 1fr) so it expands to fill; a resized column → its px
-    // width; an unsized one → its default, growing a little while there is room (columnTrack).
-    // Resizing changes only the dragged column; the filler absorbs the slack and horizontal
-    // scroll kicks in past `tableMinWidth`.
-    const trackFor = (c: DataTableColumn<Row>): string =>
-        flexKeys.has(c.key) ? `minmax(${c.minWidth ?? 80}px, 1fr)` : columnTrack(c.defaultWidth, widthFor(c));
-
+    // The column tracks (tableColumnTracks): a flex column → minmax(min, 1fr) so it takes the
+    // slack; a resized column → its px width; an unsized one → its default, which grows a little
+    // while there is room only in a table with no flex column (or when the column asks to).
+    // With no flex column a trailing blank spacer takes the slack, so columns left-pack; it
+    // collapses to 0 and never forces a scroll. Resizing changes only the dragged column, and
+    // horizontal scroll kicks in past `tableMinWidth`.
     const gridTemplate = useMemo(() => {
         const parts: string[] = [];
         if (hasRowOpen) parts.push('32px');
         if (selectable) parts.push('36px');
-        for (const c of visibleCols) parts.push(trackFor(c));
-        // Trailing blank filler — only when no real column flexes — so columns left-pack and the
-        // slack lands in this spacer at the far right. Collapses to 0 so it never forces scroll.
-        if (useSpacer) parts.push('minmax(0, 1fr)');
+        parts.push(...tableColumnTracks(visibleCols, widthFor));
         return parts.join(' ');
         // dragging/force drive live width updates via dragRef
         // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -469,7 +469,7 @@ const X509Authorities: React.FC = () => {
                                     <FieldHint id="ca-validity-hint">Parent expires {formatDate(parentNotAfter)}; this CA must not outlive it.</FieldHint>
                                 ) : null}
                                 {validityNotes(formCaType !== 'intermediate', requestedYears).map((note) => (
-                                    <FieldHint key={note.reason}>{note.message}</FieldHint>
+                                    <FieldHint key={note.reason} tone={note.severity === 'warning' ? 'warn' : 'info'}>{note.message}</FieldHint>
                                 ))}
                             </div>
                             <div>

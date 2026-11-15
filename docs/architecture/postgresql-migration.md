@@ -719,7 +719,7 @@ that `VerifyAsync` finds no break in any chain and that `CheckRetiredChainAsync`
 retired chain `Sealed`. `AuditHashGoldenVectorTests` pins the canonical input itself with
 hard-coded hashes. It also pins the persisted strings recorded rows carry: the lock key, the chain
 action and target types, the fold migration id, the seal text and its member names, the retired
-`AuditActionType` values, the licence keys and the signer audit scope tokens.
+`AuditActionType` values and the signer audit scope tokens.
 
 ```bash
 MODULARCA_TEST_PG="Host=localhost;Username=postgres;Password=...;Database=postgres" \

@@ -175,6 +175,23 @@ public class SignerJournalWireTests
         Assert.True((await node.JournalInfoAsync())!.Verified);
     }
 
+    /// <summary>
+    /// "No journal" is the signer's answer; a signer that cannot be reached has given none. The
+    /// node's health check tells the two apart by the refusal, and says <c>not_known</c> for it.
+    /// </summary>
+    [Fact]
+    public async Task A_signer_that_cannot_be_reached_is_a_refusal_and_not_the_answer_of_no_journal()
+    {
+        var world = SignerTestWorld.Create();
+        var host = await HostedSigner.StartAsync(world);
+        using var node = host.Connect();
+        Assert.Null(await node.JournalInfoAsync());
+
+        await host.DisposeAsync();
+        var down = await Assert.ThrowsAsync<SigningRefusedException>(() => node.JournalInfoAsync());
+        Assert.Equal(SigningRefusalReason.SignerUnavailable, down.Reason);
+    }
+
     [Fact]
     public async Task A_signer_that_keeps_no_journal_says_so_over_the_wire()
     {

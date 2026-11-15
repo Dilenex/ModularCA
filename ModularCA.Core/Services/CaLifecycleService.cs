@@ -18,6 +18,13 @@ public sealed record CaLifecycleReport(CaCryptoperiodFacts Facts, IReadOnlyList<
 /// its profiles let it issue for. It reads and decides nothing: the notices are
 /// <see cref="CaCryptoperiod.Advisories"/>'s, under the <c>CaLifecycle</c> settings as they are
 /// when asked.
+/// <para>
+/// A CA's parent is identified (its name, the end of its certificate, and so the text of the
+/// "outlives its parent" notice) only to a reader who may see the parent: one that is among the
+/// CAs asked about, or one whose space the caller says the reader may see. For any other parent
+/// the facts carry <see cref="CaCryptoperiodFacts.WithheldParent"/> and nothing that names or
+/// dates it.
+/// </para>
 /// </summary>
 public sealed class CaLifecycleService(ModularCADbContext db, SystemConfig config)
 {
@@ -29,11 +36,17 @@ public sealed class CaLifecycleService(ModularCADbContext db, SystemConfig confi
     /// <see cref="CertificateAuthorityEntity.Certificate"/> must be loaded; a CA without an X.509
     /// certificate is left out.
     /// </summary>
-    /// <param name="cas">The CAs to describe.</param>
+    /// <param name="cas">The CAs to describe: the ones the reader is being shown.</param>
     /// <param name="now">The instant the notices are judged at.</param>
     /// <param name="ct">Cancellation token.</param>
+    /// <param name="readerMaySeeSpace">
+    /// Whether the reader may see a CA of the space given (null for an instance CA): the caller's
+    /// space fence. It is asked only about a parent that is not among <paramref name="cas"/>.
+    /// Null, the default, withholds every such parent, so a caller that forgets it leaks nothing.
+    /// </param>
     public async Task<IReadOnlyDictionary<Guid, CaLifecycleReport>> DescribeAsync(
-        IReadOnlyCollection<CertificateAuthorityEntity> cas, DateTime now, CancellationToken ct = default)
+        IReadOnlyCollection<CertificateAuthorityEntity> cas, DateTime now, CancellationToken ct = default,
+        Func<Guid?, bool>? readerMaySeeSpace = null)
     {
         var settings = config.CaLifecycle.ToSettings();
         var reports = new Dictionary<Guid, CaLifecycleReport>();
@@ -41,20 +54,39 @@ public sealed class CaLifecycleService(ModularCADbContext db, SystemConfig confi
         if (withCertificate.Count == 0)
             return reports;
 
-        // Parents that are not among the CAs asked about (a fenced caller) are read once.
-        var known = withCertificate.ToDictionary(ca => ca.Id);
+        // Parents that are not among the CAs asked about (a fenced caller, or a parent the list
+        // leaves out) are read once, with their space: the reader is told who such a parent is
+        // only where readerMaySeeSpace admits that space.
+        var known = cas.ToDictionary(ca => ca.Id);
         var missingParents = withCertificate
             .Where(ca => ca.ParentCaId is Guid p && !known.ContainsKey(p))
             .Select(ca => ca.ParentCaId!.Value).Distinct().ToList();
         var parents = missingParents.Count == 0
-            ? new Dictionary<Guid, (string Name, DateTime? NotAfter)>()
+            ? new Dictionary<Guid, (string Name, Guid? SpaceId, DateTime? NotAfter)>()
             : (await db.CertificateAuthorities.IgnoreQueryFilters().AsNoTracking()
                 .Where(ca => missingParents.Contains(ca.Id))
-                .Select(ca => new { ca.Id, ca.Name, NotAfter = ca.Certificate == null ? (DateTime?)null : ca.Certificate.NotAfter })
+                .Select(ca => new { ca.Id, ca.Name, ca.SpaceId, NotAfter = ca.Certificate == null ? (DateTime?)null : ca.Certificate.NotAfter })
                 .ToListAsync(ct))
-                .ToDictionary(p => p.Id, p => (p.Name, p.NotAfter));
+                .ToDictionary(p => p.Id, p => (p.Name, p.SpaceId, p.NotAfter));
 
-        var profileLimits = await LongestProfileValidityAsync(withCertificate.Select(ca => ca.CertificateId!.Value).ToList(), ct);
+        // Each CA's own infrastructure profiles (OCSP responder, timestamp, CMP signer): the
+        // profile it names for a role, and the seeded profile of every role, found the way
+        // issuance finds it. The seeded one stays infrastructure for a CA that names another: it
+        // is usually still linked to that CA, and it is no end-entity profile on any CA.
+        var seeded = new HashSet<Guid>();
+        foreach (var role in InfrastructureCertProfiles.All)
+            if ((await InfrastructureCertProfiles.ResolveAsync(db, null, role, ct))?.Id is Guid id)
+                seeded.Add(id);
+        var infrastructure = new Dictionary<Guid, HashSet<Guid>>();
+        foreach (var ca in withCertificate)
+        {
+            var ids = new HashSet<Guid>(seeded);
+            foreach (var role in InfrastructureCertProfiles.All)
+                if (InfrastructureCertProfiles.ChosenId(ca, role) is Guid chosen)
+                    ids.Add(chosen);
+            infrastructure[ca.CertificateId!.Value] = ids;
+        }
+        var profileLimits = await LongestProfileValidityAsync(withCertificate.Select(ca => ca.CertificateId!.Value).ToList(), infrastructure, ct);
 
         foreach (var ca in withCertificate)
         {
@@ -87,12 +119,21 @@ public sealed class CaLifecycleService(ModularCADbContext db, SystemConfig confi
 
             string? parentName = null;
             DateTime? parentNotAfter = null;
+            CaWithheldParent? withheldParent = null;
             if (ca.ParentCaId is Guid parentId)
             {
                 if (known.TryGetValue(parentId, out var parent))
                     (parentName, parentNotAfter) = (parent.Name, parent.Certificate?.NotAfter);
                 else if (parents.TryGetValue(parentId, out var read))
-                    (parentName, parentNotAfter) = read;
+                {
+                    if (readerMaySeeSpace?.Invoke(read.SpaceId) == true)
+                        (parentName, parentNotAfter) = (read.Name, read.NotAfter);
+                    else
+                        // Outside the reader's fence: only how the parent's end stands against this CA's.
+                        withheldParent = read.NotAfter is DateTime end && end < current.NotAfter
+                            ? (end <= now ? CaWithheldParent.Expired : CaWithheldParent.EndsFirst)
+                            : CaWithheldParent.NoEarlierEnd;
+                }
             }
 
             profileLimits.TryGetValue(currentId, out var limit);
@@ -108,7 +149,8 @@ public sealed class CaLifecycleService(ModularCADbContext db, SystemConfig confi
                 LongestProfileValidity: limit.Validity,
                 LongestProfileName: limit.Name,
                 ParentName: parentName,
-                ParentCertificateNotAfter: parentNotAfter);
+                ParentCertificateNotAfter: parentNotAfter)
+            { LongestProfileIsInfrastructure = limit.Infrastructure, WithheldParent = withheldParent };
             reports[ca.Id] = new CaLifecycleReport(facts, CaCryptoperiod.Advisories(facts, settings, now));
         }
         return reports;
@@ -118,8 +160,13 @@ public sealed class CaLifecycleService(ModularCADbContext db, SystemConfig confi
     /// For each CA certificate id, the longest maximum validity among the end-entity certificate
     /// profiles linked to a signing profile that issues from it, with the profile's name. A
     /// profile that sets no maximum takes the one it inherits; one with none anywhere is left out.
+    /// The CA's own infrastructure profiles (<paramref name="infrastructure"/>, by CA certificate
+    /// id) are left out too: their certificates are issued to end with the CA's. Only when a CA
+    /// has no other profile with a maximum is the longest of those given, marked as such, so the
+    /// fact is not empty; it raises no notice.
     /// </summary>
-    private async Task<Dictionary<Guid, (TimeSpan? Validity, string? Name)>> LongestProfileValidityAsync(List<Guid> caCertificateIds, CancellationToken ct)
+    private async Task<Dictionary<Guid, (TimeSpan? Validity, string? Name, bool Infrastructure)>> LongestProfileValidityAsync(
+        List<Guid> caCertificateIds, IReadOnlyDictionary<Guid, HashSet<Guid>> infrastructure, CancellationToken ct)
     {
         var links = await (from link in db.AllowedCertProfileSigningProfiles.AsNoTracking()
                            join signing in db.SigningProfiles.AsNoTracking() on link.SigningProfileId equals signing.Id
@@ -148,17 +195,20 @@ public sealed class CaLifecycleService(ModularCADbContext db, SystemConfig confi
             return own;
         }
 
-        var longest = new Dictionary<Guid, (TimeSpan? Validity, string? Name)>();
+        var longest = new Dictionary<Guid, (TimeSpan? Validity, string? Name, bool Infrastructure)>();
         foreach (var link in links)
         {
+            var own = infrastructure.TryGetValue(link.IssuerId, out var ids) && ids.Contains(link.Id);
             var max = await EffectiveMaxAsync(link.ValidityPeriodMax, link.InheritanceEnabled, link.InheritsFromId);
             if (string.IsNullOrWhiteSpace(max))
                 continue;
             TimeSpan validity;
             try { validity = Iso8601ParserUtil.ParseIso8601(max); }
             catch (Exception ex) when (ex is FormatException or ArgumentException or OverflowException) { continue; }
-            if (!longest.TryGetValue(link.IssuerId, out var seen) || seen.Validity == null || validity > seen.Validity)
-                longest[link.IssuerId] = (validity, link.Name);
+            // An end-entity profile always displaces an infrastructure one; within a kind, the longer wins.
+            if (!longest.TryGetValue(link.IssuerId, out var seen) || seen.Validity == null
+                || (seen.Infrastructure && !own) || (seen.Infrastructure == own && validity > seen.Validity))
+                longest[link.IssuerId] = (validity, link.Name, own);
         }
         return longest;
     }

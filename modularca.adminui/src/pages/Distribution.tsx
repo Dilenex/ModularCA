@@ -163,7 +163,7 @@ const CrlSchedulesSection: React.FC = () => {
     };
 
     const columns: DataTableColumn<any>[] = [
-        { key: 'name', header: 'Name', defaultWidth: 180, minWidth: 140, truncate: false, exportValue: (s) => s.name, render: (s) => <span className="text-ink truncate">{s.name}</span> },
+        { key: 'name', header: 'Name', defaultWidth: 260, minWidth: 140, truncate: false, exportValue: (s) => s.name, render: (s) => <span className="text-ink truncate">{s.name}</span> },
         { key: 'status', header: 'Status', defaultWidth: 100, truncate: false, exportValue: (s) => (s.enabled ? 'enabled' : 'disabled'), render: (s) => <StatusBadge status={s.enabled ? 'enabled' : 'disabled'} /> },
         { key: 'cron', header: 'Cron', defaultWidth: 140, exportValue: (s) => s.cronExpression || s.updateInterval, render: (s) => <span className="data-mono text-ink">{s.cronExpression || s.updateInterval}</span> },
         { key: 'ca', header: 'CA', defaultWidth: 160, exportValue: (s) => s.caName || s.caId || '', render: (s) => <span className="text-ink truncate">{s.caName || s.caId || '-'}</span> },

@@ -29,7 +29,7 @@ describe('when renewal of a CA certificate is offered', () => {
         expect(validityNotes(true, 25, false, now)).toEqual([]);
         expect(validityNotes(true, 26, false, now).map((n) => [n.reason, n.severity])).toEqual([['CaValidityBeyondCommonPractice', 'notice']]);
         expect(validityNotes(false, 10, false, now)).toEqual([]);
-        expect(validityNotes(false, 11, false, now)[0].message).toContain('No standard that binds a private CA');
+        expect(validityNotes(false, 11, false, now)[0].message).toContain('Nothing is refused');
         expect(validityNotes(true, 3, true, now)).toEqual([]);
         expect(validityNotes(true, 4, true, now).map((n) => [n.reason, n.severity])).toEqual([[RSA_PAST_2030, 'warning']]);
         expect(validityNotes(true, '', true, now)).toEqual([]);
@@ -90,15 +90,20 @@ describe('what the console says a renewal does', () => {
 
 describe('a certificate in the history of a CA', () => {
     it('is labeled by its status, with color for status only', () => {
-        expect(historyBadge({ isCurrent: true })).toEqual({ status: 'active', label: 'Current' });
-        expect(historyBadge({ isCurrent: false })).toEqual({ status: 'disabled', label: 'Earlier, still valid' });
-        expect(historyBadge({ isCurrent: false, expired: true })).toEqual({ status: 'expired', label: 'Expired' });
-        expect(historyBadge({ isCurrent: true, expired: true })).toEqual({ status: 'expired', label: 'Current, expired' });
-        expect(historyBadge({ isCurrent: true, revoked: true, expired: true })).toEqual({ status: 'revoked', label: 'Revoked' });
+        expect(historyBadge({ isCurrent: true })).toEqual({ status: 'active', label: 'Current', title: 'The current certificate' });
+        expect(historyBadge({ isCurrent: false })).toEqual({ status: 'disabled', label: 'Earlier', title: 'An earlier certificate, still valid' });
+        expect(historyBadge({ isCurrent: false, expired: true })).toEqual({ status: 'expired', label: 'Expired', title: 'An earlier certificate, expired' });
+        expect(historyBadge({ isCurrent: true, expired: true })).toEqual({ status: 'expired', label: 'Expired', title: 'The current certificate, expired' });
+        expect(historyBadge({ isCurrent: true, revoked: true, expired: true })).toEqual({ status: 'revoked', label: 'Revoked', title: 'The current certificate, revoked' });
+    });
+
+    it('has a one-word label, so the status column is as wide as a badge', () => {
+        for (const row of [{ isCurrent: true }, { isCurrent: false }, { isCurrent: false, expired: true }, { isCurrent: true, revoked: true }])
+            expect(historyBadge(row).label).toMatch(/^\w+$/);
     });
 
     it('says how it became the CA\'s', () => {
-        expect(originLabel('Renewal')).toBe('Renewal (same key)');
+        expect(originLabel('Renewal')).toBe('Renewal');
         expect(originLabel('Initial')).toBe('First certificate');
         expect(originLabel(undefined)).toBe('First certificate');
     });

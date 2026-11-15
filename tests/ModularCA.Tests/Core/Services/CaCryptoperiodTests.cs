@@ -86,7 +86,7 @@ public sealed class CaCryptoperiodTests
             .Single(a => a.Reason == CaCryptoperiod.CertificateExpiring);
 
         Assert.Equal(severity, expiring.Severity);
-        Assert.Contains("Renew the certificate", expiring.Message);
+        Assert.Contains("Renew the CA certificate", expiring.Message);
     }
 
     [Fact]
@@ -112,22 +112,100 @@ public sealed class CaCryptoperiodTests
 
     // ── Profiles asking for more time than the certificate has left ─────────────────────────
 
+    /// <summary>
+    /// A profile has no default validity, so every request gets its maximum and is shortened from
+    /// the day the CA has less than that left. The notice waits until a certificate issued now
+    /// would lose a tenth of the profile's maximum.
+    /// </summary>
     [Theory]
     [InlineData(1000, 1000, false)]   // exactly what is left: nothing is shortened
-    [InlineData(1000, 1001, true)]
+    [InlineData(1000, 1001, false)]   // shortened by a day in a thousand: not worth saying
+    [InlineData(901, 1000, false)]    // 9.9% lost
+    [InlineData(900, 1000, true)]     // exactly a tenth lost
+    [InlineData(899, 1000, true)]
+    [InlineData(358, 397, false)]     // a 397-day profile: 39 days lost is under a tenth (39.7)
+    [InlineData(357, 397, true)]      // 40 days lost
     [InlineData(3000, 397, false)]
-    public void A_profile_longer_than_what_is_left_says_issuance_is_shortened(int daysLeft, int profileDays, bool expected)
+    [InlineData(3649, 3650, false)]   // a 10-year profile on a 10-year CA made yesterday
+    [InlineData(3285, 3650, true)]    // the same CA a year later
+    public void A_profile_says_issuance_is_shortened_once_a_tenth_of_its_maximum_is_lost(int daysLeft, int profileDays, bool expected)
     {
         var advisories = CaCryptoperiod.Advisories(
             Facts(notAfter: Now.AddDays(daysLeft), longest: TimeSpan.FromDays(profileDays)), new CaCryptoperiodSettings(0, 0, 0), Now);
 
+        Assert.Equal(expected, CaCryptoperiod.ShortensMaterially(TimeSpan.FromDays(profileDays), TimeSpan.FromDays(daysLeft)));
         Assert.Equal(expected, advisories.Any(a => a.Reason == CaCryptoperiod.ProfilesOutliveCertificate));
         if (expected)
         {
             var advisory = advisories.Single();
-            Assert.Contains("shortened", advisory.Message);
+            Assert.Contains("issued shorter", advisory.Message);
             Assert.Contains("TLS Server", advisory.Message);
+            Assert.Equal(CaKeyAdvisory.Notice, advisory.Severity);
         }
+    }
+
+    [Fact]
+    public void An_infrastructure_profile_shown_for_want_of_another_raises_no_notice()
+    {
+        var facts = Facts(notAfter: Now.AddDays(100), longest: TimeSpan.FromDays(3650)) with { LongestProfileIsInfrastructure = true };
+
+        Assert.DoesNotContain(CaCryptoperiod.ProfilesOutliveCertificate, Reasons(facts, new CaCryptoperiodSettings(0, 0, 0)));
+    }
+
+    // ── Every message is short ──────────────────────────────────────────────────────────────
+
+    private static int Words(string text) => text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
+
+    /// <summary>Every notice a CA can carry, from inputs with long names, long spans and every branch of the wording.</summary>
+    public static TheoryData<string, string> EveryAdvisory()
+    {
+        const string longName = "Engineering Department Device Identity Issuing Authority";
+        var settings = new CaCryptoperiodSettings(730, 365, 1095);
+        var found = new List<CaKeyAdvisory>();
+        CaCryptoperiodFacts Of(bool root, DateTime end, TimeSpan? longest = null, DateTime? parentEnd = null, string? profile = longName, string? parent = longName)
+            => new(root, Now.AddDays(-4000), 3, Now.AddDays(-4000), end, end.AddDays(-30), end.AddDays(-7), null, longest, longest == null ? null : profile,
+                parentEnd == null ? null : parent, parentEnd);
+
+        foreach (var root in new[] { true, false })
+        {
+            found.AddRange(CaCryptoperiod.Advisories(Of(root, Now.AddDays(-400)), settings, Now));                                    // expired, key past its period
+            found.AddRange(CaCryptoperiod.Advisories(Of(root, Now.AddDays(299), TimeSpan.FromDays(3650), Now.AddDays(200)), settings, Now)); // expiring, profiles, outlives parent
+            found.AddRange(CaCryptoperiod.Advisories(Of(root, Now.AddDays(5), TimeSpan.FromDays(825), Now.AddDays(-1), profile: null, parent: null), settings, Now));
+            // A parent the reader may not see: neither named nor dated, in both wordings.
+            found.AddRange(CaCryptoperiod.Advisories(Of(root, Now.AddDays(4000)) with { WithheldParent = CaWithheldParent.EndsFirst }, settings, Now));
+            found.AddRange(CaCryptoperiod.Advisories(Of(root, Now.AddDays(4000)) with { WithheldParent = CaWithheldParent.Expired }, settings, Now));
+            found.AddRange(CaKeyPolicy.ValidityAdvisories(root, Now, Now.AddYears(50), 2048));
+        }
+        found.AddRange(CaKeyPolicy.AdvisoriesForRsa(2048));
+
+        var data = new TheoryData<string, string>();
+        foreach (var advisory in found.DistinctBy(a => a.Message))
+            data.Add(advisory.Reason, advisory.Message);
+        foreach (var algorithm in new[] { "ECDSA", "ML-DSA-87", "Ed25519" })
+            foreach (var advisory in ModularCA.Shared.Enrollment.ProtocolCompatibility.Advisories("SCEP", algorithm))
+                data.Add(advisory.Reason, advisory.Message);
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryAdvisory))]
+    public void No_notice_runs_past_forty_words(string reason, string message)
+    {
+        Assert.True(Words(message) <= 40, $"{reason} is {Words(message)} words: {message}");
+        Assert.True(Words(message) >= 12, $"{reason} is {Words(message)} words, too few to say what is so and what to do: {message}");
+    }
+
+    [Fact]
+    public void The_word_count_covers_every_reason_a_ca_can_carry()
+    {
+        var reasons = EveryAdvisory().Select(row => (string)row[0]).ToHashSet();
+
+        Assert.Superset(new HashSet<string>
+        {
+            CaCryptoperiod.CertificateExpiring, CaCryptoperiod.CertificateExpired, CaCryptoperiod.ProfilesOutliveCertificate,
+            CaCryptoperiod.KeyUsagePeriodExceeded, CaCryptoperiod.OutlivesParent, CaKeyPolicy.ValidityBeyondCommonPractice,
+            CaKeyPolicy.RsaBelow3072Past2030, CaKeyPolicy.RsaKeyBelow3072, ModularCA.Shared.Enrollment.ProtocolCompatibility.ScepRequiresRsaKey,
+        }, reasons);
     }
 
     // ── A key past the usage period ─────────────────────────────────────────────────────────
@@ -165,6 +243,30 @@ public sealed class CaCryptoperiodTests
 
         Assert.Equal(expected, reasons.Contains(CaCryptoperiod.OutlivesParent));
     }
+
+    /// <summary>A parent outside the reader's space fence: the notice says so without a name or a date of the parent's certificate.</summary>
+    [Theory]
+    [InlineData(CaWithheldParent.EndsFirst, CaKeyAdvisory.Notice, "its parent's certificate expires earlier.")]
+    [InlineData(CaWithheldParent.Expired, CaKeyAdvisory.Critical, "its parent's certificate has expired.")]
+    public void A_parent_the_reader_may_not_see_is_neither_named_nor_dated(CaWithheldParent standing, string severity, string says)
+    {
+        var end = Now.AddYears(5);
+        var facts = Facts(root: false, notAfter: end) with { WithheldParent = standing };
+
+        var advisory = CaCryptoperiod.Advisories(facts, CaCryptoperiodSettings.Defaults, Now).Single(a => a.Reason == CaCryptoperiod.OutlivesParent);
+
+        Assert.Equal(
+            $"This certificate is valid until {end:yyyy-MM-dd}, but {says} Ask an administrator of the parent CA to renew it.",
+            advisory.Message);
+        Assert.Equal(22, Words(advisory.Message));
+        Assert.Equal(severity, advisory.Severity);
+        Assert.Equal("Outlives its parent's certificate", advisory.Title);
+    }
+
+    [Fact]
+    public void A_withheld_parent_whose_certificate_does_not_end_first_raises_nothing()
+        => Assert.DoesNotContain(CaCryptoperiod.OutlivesParent,
+            Reasons(Facts(root: false, notAfter: Now.AddYears(5)) with { WithheldParent = CaWithheldParent.NoEarlierEnd }));
 
     [Fact]
     public void The_most_pressing_notice_comes_first()
@@ -332,6 +434,113 @@ public sealed class CaCryptoperiodTests
         Assert.Null(report.Facts.ParentCertificateNotAfter);
     }
 
+    /// <summary>
+    /// An intermediate made today for ten years under a longer-lived root, with the profiles a new
+    /// install gives it: the three infrastructure profiles (ten years each, found by their seeded
+    /// names because the CA names none) and, unless left out, a 397-day TLS profile.
+    /// </summary>
+    private static (ModularCADbContext Db, CertificateAuthorityEntity Ca, SigningProfileEntity Signing, DateTime Now) FreshIntermediate(bool withEndEntityProfile = true)
+    {
+        var db = InMemoryDbContextFactory.Create();
+        var now = DateTime.UtcNow;
+        var rootMaterial = TestCaMaterial.CreateCa("CN=Fresh Root");
+        var rootRow = Row(rootMaterial.Certificate);
+        rootRow.NotBefore = now.AddYears(-1);
+        rootRow.NotAfter = now.AddYears(19);
+        var key = TestCaMaterial.CreateCa("CN=Fresh Intermediate");
+        var row = Row(rootMaterial.Issue(BigInteger.ValueOf(501), "CN=Fresh Intermediate", key.KeyPair.Public, isCa: true), rootRow.CertificateId);
+        row.NotBefore = now.AddMinutes(-5);
+        row.NotAfter = now.AddYears(10);
+        (row.ExpiryWarningAt, row.ExpiryAlertAt) = (row.NotAfter.AddDays(-30), row.NotAfter.AddDays(-7));
+        db.Certificates.AddRange(rootRow, row);
+
+        var root = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Fresh Root", Label = "fresh-root", CertificateId = rootRow.CertificateId, Certificate = rootRow, IsEnabled = true };
+        var ca = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Fresh Intermediate", Label = "fresh-intermediate", ParentCaId = root.Id, CertificateId = row.CertificateId, Certificate = row, IsEnabled = true };
+        db.CertificateAuthorities.AddRange(root, ca);
+
+        var signing = new SigningProfileEntity { Id = Guid.NewGuid(), Name = "Fresh signing", IssuerId = row.CertificateId };
+        db.SigningProfiles.Add(signing);
+        var profiles = InfrastructureCertProfiles.All
+            .Select(role => new CertProfileEntity { Id = Guid.NewGuid(), Name = role.DefaultProfileName, ValidityPeriodMin = "P1D", ValidityPeriodMax = "P10Y" })
+            .ToList();
+        if (withEndEntityProfile)
+            profiles.Add(new CertProfileEntity { Id = Guid.NewGuid(), Name = "TLS Server", ValidityPeriodMin = "P30D", ValidityPeriodMax = "P397D" });
+        db.CertProfiles.AddRange(profiles);
+        foreach (var profile in profiles)
+            db.AllowedCertProfileSigningProfiles.Add(new AllowedCertProfileSigningProfileEntity { CertProfileId = profile.Id, SigningProfileId = signing.Id });
+        db.SaveChanges();
+        return (db, ca, signing, now);
+    }
+
+    [Fact]
+    public async Task A_fresh_ten_year_intermediate_with_default_profiles_carries_no_notice()
+    {
+        var (db, ca, _, now) = FreshIntermediate();
+        using var __ = db;
+
+        var report = (await new CaLifecycleService(db, new SystemConfig()).DescribeAsync([ca], now))[ca.Id];
+
+        Assert.Empty(report.Advisories);
+        Assert.Equal(TimeSpan.FromDays(397), report.Facts.LongestProfileValidity);   // the ten-year infrastructure profiles are left out
+        Assert.Equal("TLS Server", report.Facts.LongestProfileName);
+        Assert.False(report.Facts.LongestProfileIsInfrastructure);
+    }
+
+    [Fact]
+    public async Task With_only_infrastructure_profiles_the_fact_shows_one_marked_as_such_and_there_is_still_no_notice()
+    {
+        var (db, ca, _, now) = FreshIntermediate(withEndEntityProfile: false);
+        using var __ = db;
+        var service = new CaLifecycleService(db, new SystemConfig());
+
+        var fresh = (await service.DescribeAsync([ca], now))[ca.Id];
+        // Five years on, the ten-year infrastructure profiles ask for twice what is left: still no notice.
+        var later = (await service.DescribeAsync([ca], now.AddYears(5)))[ca.Id];
+
+        Assert.Empty(fresh.Advisories);
+        Assert.True(fresh.Facts.LongestProfileIsInfrastructure);
+        Assert.NotNull(fresh.Facts.LongestProfileValidity);
+        Assert.DoesNotContain(later.Advisories, a => a.Reason == CaCryptoperiod.ProfilesOutliveCertificate);
+    }
+
+    [Fact]
+    public async Task A_profile_the_ca_names_for_a_role_is_infrastructure_whatever_it_is_called()
+    {
+        var (db, ca, signing, now) = FreshIntermediate();
+        using var __ = db;
+        var own = new CertProfileEntity { Id = Guid.NewGuid(), Name = "Responder, twenty years", ValidityPeriodMin = "P1D", ValidityPeriodMax = "P20Y" };
+        db.CertProfiles.Add(own);
+        db.AllowedCertProfileSigningProfiles.Add(new AllowedCertProfileSigningProfileEntity { CertProfileId = own.Id, SigningProfileId = signing.Id });
+        InfrastructureCertProfiles.Choose(ca, InfrastructureCertProfiles.OcspResponder, own.Id);
+        db.SaveChanges();
+
+        var report = (await new CaLifecycleService(db, new SystemConfig()).DescribeAsync([ca], now))[ca.Id];
+
+        Assert.Empty(report.Advisories);
+        Assert.Equal("TLS Server", report.Facts.LongestProfileName);
+    }
+
+    [Fact]
+    public async Task An_end_entity_profile_as_long_as_the_ca_raises_the_notice_only_once_a_tenth_is_lost()
+    {
+        var (db, ca, signing, now) = FreshIntermediate();
+        using var __ = db;
+        var device = new CertProfileEntity { Id = Guid.NewGuid(), Name = "Device, ten years", ValidityPeriodMin = "P1D", ValidityPeriodMax = "P10Y" };
+        db.CertProfiles.Add(device);
+        db.AllowedCertProfileSigningProfiles.Add(new AllowedCertProfileSigningProfileEntity { CertProfileId = device.Id, SigningProfileId = signing.Id });
+        db.SaveChanges();
+        var service = new CaLifecycleService(db, new SystemConfig());
+
+        var fresh = (await service.DescribeAsync([ca], now))[ca.Id];
+        var afterElevenMonths = (await service.DescribeAsync([ca], now.AddDays(335)))[ca.Id];
+        var afterThirteenMonths = (await service.DescribeAsync([ca], now.AddDays(395)))[ca.Id];
+
+        Assert.Empty(fresh.Advisories);
+        Assert.Equal("Device, ten years", fresh.Facts.LongestProfileName);
+        Assert.Empty(afterElevenMonths.Advisories);
+        Assert.Equal(CaCryptoperiod.ProfilesOutliveCertificate, Assert.Single(afterThirteenMonths.Advisories).Reason);
+    }
+
     [Fact]
     public async Task The_notices_follow_the_settings_as_they_are_when_asked()
     {
@@ -351,7 +560,7 @@ public sealed class CaCryptoperiodTests
     }
 
     [Fact]
-    public async Task A_child_reads_its_parents_end_even_when_the_parent_was_not_asked_about()
+    public async Task A_child_reads_its_parents_end_when_the_parent_was_not_asked_about_and_the_reader_may_see_it()
     {
         var db = InMemoryDbContextFactory.Create();
         using var _ = db;
@@ -367,12 +576,49 @@ public sealed class CaCryptoperiodTests
         db.CertificateAuthorities.AddRange(parent, child);
         db.SaveChanges();
 
-        var report = (await new CaLifecycleService(db, new SystemConfig()).DescribeAsync([child], new DateTime(2027, 1, 1, 0, 0, 0, DateTimeKind.Utc)))[child.Id];
+        var service = new CaLifecycleService(db, new SystemConfig());
+        var now = new DateTime(2027, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var report = (await service.DescribeAsync([child], now, default, readerMaySeeSpace: _ => true))[child.Id];
 
         Assert.False(report.Facts.IsRoot);
         Assert.Equal(parentRow.NotAfter, report.Facts.ParentCertificateNotAfter);
         var outlives = report.Advisories.Single(a => a.Reason == CaCryptoperiod.OutlivesParent);
         Assert.Contains("Short Parent", outlives.Message);
+
+        // Said nothing of the reader, the service names no parent it was not asked about
+        // (ParentCaFenceTests covers the fence through the hierarchy feed).
+        var withheld = (await service.DescribeAsync([child], now))[child.Id];
+        Assert.Null(withheld.Facts.ParentName);
+        Assert.Null(withheld.Facts.ParentCertificateNotAfter);
+        Assert.DoesNotContain("Short Parent", withheld.Advisories.Single(a => a.Reason == CaCryptoperiod.OutlivesParent).Message);
+    }
+
+    [Fact]
+    public async Task The_health_entry_names_a_parent_for_its_system_scope_reader()
+    {
+        // /health/ready is for a system-scope auditor and lists every CA of the instance, so the
+        // "outlives its parent" notice names the parent there even when the parent is not listed
+        // (a disabled one here).
+        var db = InMemoryDbContextFactory.Create();
+        using var _ = db;
+        var parentMaterial = TestCaMaterial.CreateCa("CN=Short Parent");
+        var childMaterial = TestCaMaterial.CreateCa("CN=Long Child");
+        var parentRow = Row(parentMaterial.Certificate);
+        parentRow.NotAfter = DateTime.UtcNow.AddYears(3);
+        var childRow = Row(parentMaterial.Issue(BigInteger.ValueOf(5), childMaterial.SubjectDn, childMaterial.KeyPair.Public, isCa: true), parentRow.CertificateId);
+        childRow.NotAfter = DateTime.UtcNow.AddYears(8);
+        (childRow.ExpiryWarningAt, childRow.ExpiryAlertAt) = (childRow.NotAfter.AddDays(-30), childRow.NotAfter.AddDays(-7));
+        var parent = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Short Parent CA", Label = "short-parent", CertificateId = parentRow.CertificateId, IsEnabled = false };
+        var child = new CertificateAuthorityEntity { Id = Guid.NewGuid(), Name = "Long Child", Label = "long-child", CertificateId = childRow.CertificateId, Certificate = childRow, ParentCaId = parent.Id, IsEnabled = true, SpaceId = Guid.NewGuid() };
+        db.Certificates.AddRange(parentRow, childRow);
+        db.CertificateAuthorities.AddRange(parent, child);
+        db.SaveChanges();
+
+        var (_, report) = await HealthAsync(db, new SystemConfig());
+
+        var listed = report.GetProperty("cas").EnumerateArray().Single(c => c.GetProperty("caId").GetGuid() == child.Id);
+        var outlives = listed.GetProperty("keyAdvisories").EnumerateArray().Single(a => a.GetProperty("reason").GetString() == CaCryptoperiod.OutlivesParent);
+        Assert.Contains("'Short Parent CA'", outlives.GetProperty("message").GetString());
     }
 
     // ── Health ──────────────────────────────────────────────────────────────────────────────

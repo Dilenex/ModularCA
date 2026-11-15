@@ -96,8 +96,11 @@ visibly wrong, without getting in the way of legitimate delegation.
 - A licence names one organisation per instance. Its terms say an instance serves one
   organisation, and that serving several customers needs one instance each (the MSP offering,
   through the visor).
-- Spaces carry no hard licence gate. Up to four spaces need nothing. From the fifth, the console
-  recommends a licence, but creation is never blocked.
+- Spaces are not counted, limited or licensed, in any edition (owner decision, 2026-11-13). The
+  free edition is one instance with unlimited spaces. What is licensed is running a fleet of
+  instances, high availability, backup orchestration and auditor evidence. 0.4.0 to 0.4.4
+  recommended a license from the fifth space without ever blocking creation; 0.4.5 removed that.
+  Nothing is enforced in the product today: see `ARCHITECTURE-OPEN-CORE.md`.
 
 **Spaces never get tenant features.** No change may give a space any of these:
 - its own identity provider (LDAP, SSO or MFA policy);
@@ -307,6 +310,7 @@ that nothing is renamed only to be deleted.
     in a warning at every start. An LDAP mapping to an
     `org-<slug>-*` group resolves to its `space-<slug>-*` group with a warning.
   - The space gate is a soft cap (the guardrails above): `AllowMultipleOrganizations` and
-    `MCA-CFG-017` are retired, and from the fifth space a licence is recommended.
+    `MCA-CFG-017` are retired, and from the fifth space a licence is recommended. (Removed in
+    0.4.5: spaces are not counted, limited or licensed.)
   - `VocabularyTests` fails on "tenant" in source outside an explicit allowlist of migrations, the
     audit schema, pinned strings, legacy readers and dated history.

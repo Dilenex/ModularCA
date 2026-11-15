@@ -29,6 +29,12 @@ public sealed class SignerJournalState
     public const string Ok = "ok";
     /// <summary>The signer keeps no journal, or predates it.</summary>
     public const string None = "none";
+    /// <summary>
+    /// The signer has not answered, so nothing is known of its journal yet: it is still starting, or
+    /// cannot be reached. Distinct from <see cref="None"/>, which is the signer's own answer that it
+    /// keeps no journal, so that a caller who reads the check just after a start can ask again.
+    /// </summary>
+    public const string NotKnown = "not_known";
     /// <summary>The journal cannot take a record: certificates and CRLs are refused.</summary>
     public const string Unavailable = "unavailable";
     /// <summary>The journal's volume is nearly full.</summary>

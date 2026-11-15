@@ -168,8 +168,9 @@ public sealed class JournalWriter : IAsyncDisposable
     /// <summary>
     /// Opens the journal in the directory the options name. A directory with no journal gets
     /// its first segment at once (<c>SegmentStart</c>, <c>Genesis</c>, <c>Start</c>, a
-    /// <c>Checkpoint</c>). A directory that holds one is read, and nothing in it is created,
-    /// renamed or written until the first record is offered: then the start-up rule is applied
+    /// <c>Checkpoint</c>). A directory that holds one is read and tested for taking a new file (an
+    /// empty probe file is made and removed; the open fails when it cannot be), and no segment is
+    /// created, renamed or written until the first record is offered: then the start-up rule is applied
     /// and the opening records are written before it (<c>SegmentStart</c>, <c>Start</c>,
     /// <c>CheckpointKeyChanged</c> when the key differs from the one in force, a
     /// <c>Checkpoint</c>).
@@ -571,9 +572,21 @@ public sealed class JournalWriter : IAsyncDisposable
             _lastIncarnationOnDisk = head.Incarnation;
             // From the tail's own records; for a journal written before segments carried it, from the first segment.
             _genesisHash = head.GenesisHash ?? JournalHead.GenesisOfFirstSegment(segments);
+            // The newest checkpoint on disk is this journal's last checkpoint until this start makes one.
+            // Without it a start that has recorded nothing yet reported no checkpoint at all, and whoever
+            // reads the journal's state (the health check, the hub's inventory) saw its age as unknown.
+            if (head.Checkpoint is { } onDisk)
+            {
+                _lastCheckpointAt = JournalFormat.FromMicros(onDisk.At);
+                _lastCheckpointSeq = onDisk.Seq;
+            }
             if (!begin)
             {
-                // Nothing to record yet: the directory is left exactly as it was found.
+                // Nothing to record yet, so no segment is begun. The directory is still tested for
+                // taking a new file, which is what the first record will need: a journal that cannot
+                // be appended to is then known at the start and not at the first failed write. The
+                // probe file is removed, and the directory is otherwise left exactly as it was found.
+                files.ProbeWritable(_options.Directory);
                 _uncheckpointed = 0;
                 _deferred = null;
                 _buffer.SetLength(0);

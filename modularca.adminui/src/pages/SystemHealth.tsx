@@ -16,7 +16,8 @@ import { protocolFindings, type ProtocolFinding } from './protocolAdvisories';
 import { sshKeyReadiness } from './sshKeyCustody';
 import { sshCaKeyPath } from './sshPlaces';
 import { caKeyFindings, sessionMaximumAdvice, type CaKeyFinding, type PasswordPolicyGuidance } from './tighterDefaults';
-import { advisoryTitle, advisoryTone } from './caLifecycle';
+import { advisoryBadgeStatus, advisoryTitle } from './caLifecycle';
+import { journalBadge, journalRefusedLinks, journalRestored, journalSummary, type JournalTone } from './journalHealth';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -88,6 +89,13 @@ const HealthCheckCard: React.FC = () => {
 
     const sshKeys = sshKeyReadiness(health?.checks?.signer?.sshKeys);
 
+    // The signer's journal: its own row, because its states are more than healthy and degraded.
+    const journal = health?.checks?.journal;
+    const journalState = journalBadge(journal);
+    const journalLine = journalSummary(journal);
+    const journalLinks = [...journalRestored(journal), ...journalRefusedLinks(journal)];
+    const journalDot: Record<JournalTone, string> = { ok: 'bg-ok', neutral: 'bg-ink-faint', info: 'bg-info', warn: 'bg-warn', crit: 'bg-crit' };
+
     const renderCheckRow = (label: string, check: any) => {
         if (!check) return null;
         const status = check.status || 'unknown';
@@ -144,6 +152,14 @@ const HealthCheckCard: React.FC = () => {
                     {health.checks?.auditDatabase && renderCheckRow('Audit Database', health.checks.auditDatabase)}
                     {health.checks?.keystore && renderCheckRow('Keystore', health.checks.keystore)}
                     {health.checks?.signer && renderCheckRow('Signer', health.checks.signer)}
+                    {journalState && (
+                        <div className="flex items-center gap-3 py-2 border-b border-line last:border-b-0">
+                            <span className={`inline-block w-2.5 h-2.5 rounded-full ${journalDot[journalState.tone]}`} />
+                            <span className="text-sm text-ink min-w-[140px]">Signer Journal</span>
+                            <StatusBadge status={journalState.status} label={journalState.label} />
+                            {journalState.hint && <span className="text-xs text-ink-muted ml-auto">{journalState.hint}</span>}
+                        </div>
+                    )}
                     {health.checks?.tlsCertificate && renderCheckRow('TLS Certificate', health.checks.tlsCertificate)}
                     {health.checks?.diskSpace && renderCheckRow('Disk Space', health.checks.diskSpace)}
 
@@ -176,6 +192,18 @@ const HealthCheckCard: React.FC = () => {
                                     {sshKeys.unknown > 0 && (
                                         <span className="text-ink-muted">; {sshKeys.unknown} could not be checked because the signer is locked or did not answer</span>
                                     )}
+                                </div>
+                            )}
+                            {(journalLine || journalLinks.length > 0) && (
+                                <div>
+                                    <span className="text-ink-muted">Signer journal: </span>
+                                    {journalLine && <span className="text-ink">{journalLine}</span>}
+                                    {journalLinks.map((link, i) => (
+                                        <React.Fragment key={link.to}>
+                                            {(journalLine || i > 0) && <span className="text-ink-muted">; </span>}
+                                            <Link to={link.to} className="text-accent-ink hover:underline">{link.text}</Link>
+                                        </React.Fragment>
+                                    ))}
                                 </div>
                             )}
                             {sshKeys?.awaitingImport.map((k) => (
@@ -682,7 +710,7 @@ const SecurityBaselineCard: React.FC<{ hierarchy: Fetched<any[]> | null }> = ({ 
                             <div className="text-ink font-semibold">CA keys and certificates</div>
                             {keys.map((f) => (
                                 <div key={`${f.link}-${f.advisory.reason}`} className="flex items-baseline gap-2 flex-wrap">
-                                    <StatusBadge status={advisoryTone(f.advisory) === 'crit' ? 'expired' : 'held'} label={advisoryTitle(f.advisory)} />
+                                    <StatusBadge status={advisoryBadgeStatus(f.advisory)} label={advisoryTitle(f.advisory)} />
                                     <Link to={f.link} className="text-ink hover:underline">{f.caName}</Link>
                                     <span className="text-ink-muted">{f.advisory.message}</span>
                                 </div>

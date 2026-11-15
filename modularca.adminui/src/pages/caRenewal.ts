@@ -67,9 +67,12 @@ export function renewalMinimumYears(ca: any, now: Date = new Date()): number {
     return RENEWAL_MAX_YEARS;
 }
 
-/** Whether a CA is a root: it has no parent and signs its own certificate. */
+/**
+ * Whether a CA is a root: it has no parent and signs its own certificate. A CA whose parent the
+ * server does not identify to this viewer (`parentHidden`, with no `parentCaId`) is not a root.
+ */
 export function isRootCa(ca: any): boolean {
-    return !ca?.parentCaId;
+    return !ca?.parentCaId && ca?.parentHidden !== true;
 }
 
 /**
@@ -166,14 +169,14 @@ export function validityNotes(root: boolean, years: unknown, rsaBelow3072 = fals
         notes.push({
             reason: RSA_PAST_2030,
             severity: 'warning',
-            message: `This CA's key is RSA under 3072 bits, and the new certificate would be valid until ${end.toISOString().slice(0, 4)}. NIST SP 800-57 accepts such keys only through 2030, so a certificate that runs past 2030 says the key may be relied on longer than that. It can be issued, because the CA has to stay in service while its replacement is prepared; choose a validity that ends by 2030 if you can, and plan the replacement either way.`,
+            message: `This CA's key is RSA under 3072 bits, and the new certificate would run to ${end.toISOString().slice(0, 4)}. NIST SP 800-57 accepts such keys only through 2030. Prefer a validity that ends by 2030, and plan a replacement CA.`,
         });
     const common = root ? COMMON_ROOT_VALIDITY_YEARS : COMMON_INTERMEDIATE_VALIDITY_YEARS;
     if (n > common)
         notes.push({
             reason: 'CaValidityBeyondCommonPractice',
             severity: 'notice',
-            message: `More than ${common} years is longer than common practice for ${root ? 'a root' : 'an intermediate'} CA (${root ? '10 to 25' : '5 to 10'} years). No standard that binds a private CA sets a limit, so nothing is refused; a longer validity means the key is relied on for longer, and the certificate can be renewed later instead.`,
+            message: `More than ${common} years is longer than common practice for ${root ? 'a root' : 'an intermediate'} CA (${root ? '10 to 25' : '5 to 10'} years). Nothing is refused; a shorter certificate can be renewed later.`,
         });
     return notes;
 }
@@ -183,18 +186,41 @@ export function hasRsaBelow3072(ca: any): boolean {
     return Array.isArray(ca?.keyAdvisories) && ca.keyAdvisories.some((a: any) => a?.reason === 'CaRsaKeyBelow3072');
 }
 
-/** The badge of a certificate in the CA's history. Color says status only. */
-export function historyBadge(row: Pick<CaCertificateHistoryRow, 'isCurrent' | 'revoked' | 'expired'>): { status: 'active' | 'revoked' | 'expired' | 'disabled'; label: string } {
-    if (row.revoked) return { status: 'revoked', label: 'Revoked' };
-    if (row.expired) return { status: 'expired', label: row.isCurrent ? 'Current, expired' : 'Expired' };
-    if (row.isCurrent) return { status: 'active', label: 'Current' };
-    return { status: 'disabled', label: 'Earlier, still valid' };
+/**
+ * The badge of a certificate in the CA's history. Color says status only. The label is one word
+ * so the column is as wide as a badge; `title` says the rest on hover and in the export.
+ */
+export function historyBadge(row: Pick<CaCertificateHistoryRow, 'isCurrent' | 'revoked' | 'expired'>): { status: 'active' | 'revoked' | 'expired' | 'disabled'; label: string; title: string } {
+    if (row.revoked) return { status: 'revoked', label: 'Revoked', title: row.isCurrent ? 'The current certificate, revoked' : 'An earlier certificate, revoked' };
+    if (row.expired) return { status: 'expired', label: 'Expired', title: row.isCurrent ? 'The current certificate, expired' : 'An earlier certificate, expired' };
+    if (row.isCurrent) return { status: 'active', label: 'Current', title: 'The current certificate' };
+    return { status: 'disabled', label: 'Earlier', title: 'An earlier certificate, still valid' };
 }
 
-/** How a certificate became the CA's, in words. */
+/** How a certificate became the CA's, in words. A renewal here is always over the same key. */
 export function originLabel(origin: string | undefined): string {
-    return origin === 'Renewal' ? 'Renewal (same key)' : 'First certificate';
+    return origin === 'Renewal' ? 'Renewal' : 'First certificate';
 }
+
+/** The widths of one column of the history table, as DataTable takes them. */
+export interface HistoryColumnLayout { defaultWidth?: number; minWidth?: number; grow?: boolean }
+
+/**
+ * The layout of the "Certificate History and Renewal" table, as the certificates page lays its
+ * table out: no flexible column, every column with a width of its own, packed left, and the
+ * spare width left after the last column. Each holds content of a known length: a 40-digit
+ * serial, a one-word badge, a date, "First certificate", and "Download PEM" beside "Public
+ * address". Neither wide column grows: a serial that grew once took a third of the table and
+ * left the last column at its minimum with its two actions wrapped. The whole is 1,002px wide.
+ */
+export const HISTORY_COLUMN_LAYOUT: Record<'serial' | 'status' | 'notBefore' | 'notAfter' | 'origin' | 'download', HistoryColumnLayout> = {
+    serial: { defaultWidth: 300, minWidth: 160, grow: false },
+    status: { defaultWidth: 90, minWidth: 80 },
+    notBefore: { defaultWidth: 120 },
+    notAfter: { defaultWidth: 120 },
+    origin: { defaultWidth: 132 },
+    download: { defaultWidth: 240, minWidth: 230, grow: false },
+};
 
 /** The file name a certificate from the history downloads under. */
 export function historyFileName(ca: any, row: Pick<CaCertificateHistoryRow, 'serialNumber'>): string {

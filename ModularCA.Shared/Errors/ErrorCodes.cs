@@ -274,7 +274,7 @@ public static class ErrorCodes
     /// <summary>The licence does not grant this feature at all.</summary>
     public const string FeatureNotEntitled = "MCA-LIC-001";
 
-    /// <summary>A licensed ceiling — spaces, seats — is already reached.</summary>
+    /// <summary>A licensed ceiling is already reached. No ceiling is defined today; spaces are never counted.</summary>
     public const string LicenseLimitReached = "MCA-LIC-002";
 
     /// <summary>

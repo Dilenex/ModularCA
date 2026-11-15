@@ -229,6 +229,9 @@ public sealed class JournalRevocationMerge(
             // Said once as a warning; while it keeps failing for the same CA, quietly.
             if (before?.State == JournalMergeState.Failed)
                 logger.LogDebug(ex, "Journal merge: the pass for CA {CaId} stopped again ({Kind}).", caId, ex.GetType().Name);
+            // A signer that is not up yet is what every start of a split install meets, and no fault: said plainly, without the exception.
+            else if (ex is SigningRefusedException { Reason: SigningRefusalReason.SignerUnavailable })
+                logger.LogInformation("Journal merge: the signer cannot be reached yet, so the pass for CA {CaId} waits; it is tried again.", caId);
             else
                 logger.LogWarning(ex, "Journal merge: the pass for CA {CaId} stopped ({Kind}); it is tried again.", caId, ex.GetType().Name);
             state.Set(new CaMergeStatus(caId, name, JournalMergeState.Failed, before?.Merged ?? 0, before?.Remaining ?? 0, before?.Total ?? 0, DateTime.UtcNow,

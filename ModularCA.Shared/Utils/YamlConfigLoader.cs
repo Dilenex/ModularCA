@@ -31,7 +31,7 @@ public static class YamlConfigLoader
     private static readonly (string Section, string Key, string Note, string? WrittenDefault)[] RetiredKeys =
     [
         ("Features", "AllowMultipleOrganizations",
-            "is retired and ignored: creating spaces is always allowed, and past four a licence is recommended. Remove the key.", null),
+            "is retired and ignored: creating spaces is always allowed, and spaces are not counted or licensed. Remove the key.", null),
         ("SshCa", "SshKeygenPath",
             "is retired and ignored: SSH certificates are signed by the signer, and no program is run for them. Remove the key.", "ssh-keygen"),
         ("SshCa", "KeyStoragePath",

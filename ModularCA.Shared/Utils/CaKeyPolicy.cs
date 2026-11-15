@@ -87,10 +87,8 @@ public static class CaKeyPolicy
 
     /// <summary>The sentence shown on a CA whose RSA key is under <see cref="MinRsaBitsForNewCa"/> bits.</summary>
     public static string RsaBelow3072Message(int rsaBits)
-        => $"This CA's key is RSA {rsaBits}. NIST SP 800-57 accepts RSA keys under {MinRsaBitsForNewCa} bits only through 2030, "
-            + "so this CA should be replaced before 2031. A CA's key cannot be changed: replacing it means creating a new CA now "
-            + "(RSA 3072 or larger, or ECDSA P-384), moving issuance to it, and retiring this one once the certificates it issued "
-            + "have expired or been reissued. It keeps working until then.";
+        => $"This CA's key is RSA {rsaBits}, which NIST SP 800-57 accepts only through 2030. Replace this CA before 2031: "
+            + $"create a new CA (RSA {MinRsaBitsForNewCa} or larger, or ECDSA P-384) and move issuance to it.";
 
     /// <summary>The advisory code for a CA certificate whose validity is longer than common practice.</summary>
     public const string ValidityBeyondCommonPractice = "CaValidityBeyondCommonPractice";
@@ -131,18 +129,15 @@ public static class CaKeyPolicy
         var found = new List<CaKeyAdvisory>();
         if (rsaBits is int bits && bits < MinRsaBitsForNewCa && notAfter.ToUniversalTime() > RsaBelow3072AcceptedThrough)
             found.Add(new CaKeyAdvisory(RsaBelow3072Past2030,
-                $"This CA's key is RSA {bits}, and the certificate would be valid until {notAfter.ToUniversalTime():yyyy-MM-dd}. "
-                + $"NIST SP 800-57 accepts RSA keys under {MinRsaBitsForNewCa} bits only through 2030, so a certificate that runs past 2030 says the key may be relied on longer than that. "
-                + "The certificate can be issued: the CA has to stay in service while its replacement is prepared. Choose a validity that ends by 2030 if you can, "
-                + "and plan the replacement in either case: a new CA with RSA 3072 or larger, or ECDSA P-384.",
+                $"This CA's key is RSA {bits}, and the certificate would run to {notAfter.ToUniversalTime():yyyy-MM-dd}. "
+                + "NIST SP 800-57 accepts such keys only through 2030. Prefer a validity that ends by 2030, and plan a replacement CA.",
                 CaKeyAdvisory.Warning, "RSA key under 3072 bits past 2030"));
 
         var common = isRoot ? CommonRootValidityYears : CommonIntermediateValidityYears;
         if (notAfter > notBefore.AddYears(common).AddDays(1))
             found.Add(new CaKeyAdvisory(ValidityBeyondCommonPractice,
-                $"This certificate would be valid for more than {common} years, which is longer than common practice for {(isRoot ? "a root" : "an intermediate")} CA "
-                + $"({(isRoot ? "10 to 25" : "5 to 10")} years). No standard that binds a private CA sets a limit, so nothing is refused. "
-                + "A longer validity means the key is relied on for longer; the certificate can be renewed later instead.",
+                $"More than {common} years is longer than common practice for {(isRoot ? "a root" : "an intermediate")} CA "
+                + $"({(isRoot ? "10 to 25" : "5 to 10")} years). Nothing is refused; a shorter certificate can be renewed later.",
                 CaKeyAdvisory.Notice, "Longer than common practice"));
         return found;
     }

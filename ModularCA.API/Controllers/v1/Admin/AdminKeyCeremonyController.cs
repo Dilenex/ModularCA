@@ -820,7 +820,9 @@ public class AdminKeyCeremonyController : ControllerBase
                     return BadRequest(new { error = "CA ID missing from RenewCaCertificate ceremony parameters." });
 
                 var renewal = HttpContext.RequestServices.GetRequiredService<ModularCA.Core.Services.CaCertificateRenewalService>();
-                var renewed = await renewal.RenewAsync(renewParams.CaId, renewParams.NotAfter, ceremony.Id, _currentUser.User.Username, HttpContext.RequestAborted);
+                // A refusal names the parent CA only to an executor whose fence admits the parent's space.
+                var renewed = await renewal.RenewAsync(renewParams.CaId, renewParams.NotAfter, ceremony.Id, _currentUser.User.Username, HttpContext.RequestAborted,
+                    SpaceFence.From(HttpContext, Capabilities.CertView).Allows);
 
                 await _ceremonySvc.MarkExecutedAsync(id);
 

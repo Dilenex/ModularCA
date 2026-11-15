@@ -23,6 +23,14 @@ public interface IJournalFiles
     /// true: then a destination that holds no whole record is replaced.
     /// </summary>
     void Rename(string from, string to, bool overStub);
+
+    /// <summary>
+    /// Tests that <paramref name="directory"/> takes a new file: makes an empty file of a fixed
+    /// name that is no segment's, and removes it. Throws what the file system threw when it does
+    /// not. A start that has nothing to record yet writes nothing else, and without the test a
+    /// directory that cannot be written is found only when the first record fails.
+    /// </summary>
+    void ProbeWritable(string directory);
 }
 
 /// <summary>A segment file open for appending.</summary>
@@ -76,6 +84,21 @@ public sealed class JournalFiles : IJournalFiles
 
     /// <inheritdoc />
     public void Rename(string from, string to, bool overStub) => File.Move(from, to, overwrite: overStub);
+
+    /// <summary>The name of the file <see cref="ProbeWritable"/> makes and removes. It is not a segment's name, so no reader lists it.</summary>
+    public const string ProbeName = "write-probe.tmp";
+
+    /// <inheritdoc />
+    /// <remarks>A probe file a killed start left behind is written over and removed by the next.</remarks>
+    public void ProbeWritable(string directory)
+    {
+        var path = Path.Combine(directory, ProbeName);
+        var options = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write, Share = FileShare.None, BufferSize = 0 };
+        if (!OperatingSystem.IsWindows())
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        using (new FileStream(path, options)) { }
+        File.Delete(path);
+    }
 
     private sealed class AppendFile : IJournalAppendFile
     {

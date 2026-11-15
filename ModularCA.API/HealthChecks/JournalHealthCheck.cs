@@ -35,10 +35,18 @@ public sealed class JournalHealthCheck(IServiceProvider services, SignerJournalS
     {
         var now = DateTime.UtcNow;
         SignerJournalInfo? info = null;
+        // Whether there is a signer to ask, and whether it answered: a signer that answers "no journal"
+        // and one that has not answered yet both leave info null, and are not the same thing.
+        var signerAsked = false;
+        var answered = false;
         try
         {
             if (services.GetService<ISigningService>() is { } signer)
+            {
+                signerAsked = true;
                 info = await signer.JournalInfoAsync(cancellationToken);
+                answered = true;
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -63,9 +71,14 @@ public sealed class JournalHealthCheck(IServiceProvider services, SignerJournalS
         }
 
         var (status, message) = SignerJournalState.Assess(info, now);
+        if (signerAsked && !answered)
+        {
+            status = SignerJournalState.NotKnown;
+            message = "The signer has not answered, so the state of its issuance journal is not known yet. Ask again; the signer's own check says whether it can be reached.";
+        }
         // The merge of revocations from the journal, as this process knows it: a CA for each pass it has made.
         var merges = services.GetService<JournalMergeState>()?.Snapshot() ?? [];
-        if (status is not (SignerJournalState.Unavailable or SignerJournalState.NotVerified or SignerJournalState.CrlRefused or SignerJournalState.None))
+        if (status is not (SignerJournalState.Unavailable or SignerJournalState.NotVerified or SignerJournalState.CrlRefused or SignerJournalState.None or SignerJournalState.NotKnown))
         {
             if (merges.Where(m => m.State == JournalMergeState.Pending).ToList() is { Count: > 0 } waiting)
             {

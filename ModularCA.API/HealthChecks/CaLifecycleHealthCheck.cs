@@ -15,6 +15,12 @@ namespace ModularCA.API.HealthChecks;
 /// certificate in its expiry warning, or expired). The dashboard lists those under "Needs
 /// attention".
 /// <para>
+/// The answer is for a reader at system scope: <c>/health/ready</c> requires the
+/// <c>SystemAuditor</c> policy, and this entry lists every enabled CA of the instance by name
+/// whatever its space. So it names a CA's parent too, where the space-fenced hierarchy feed
+/// withholds one the caller may not see. Do not serve this entry to a space-scoped reader.
+/// </para>
+/// <para>
 /// The entry is always healthy. A CA certificate that nears its end is something an
 /// administrator acts on, in months; a node that answered not ready for it would be taken out
 /// of service while it still serves everything it served the day before.
@@ -46,7 +52,8 @@ public sealed class CaLifecycleHealthCheck(IServiceProvider services) : IHealthC
                 .Include(ca => ca.Certificate)
                 .Where(ca => !ca.IsSshCa && ca.IsEnabled && ca.CertificateId != null)
                 .ToListAsync(cancellationToken);
-            var periods = await lifecycle.DescribeAsync(cas, now, cancellationToken);
+            // Every space is in view here (see the summary), so a parent is named wherever it is.
+            var periods = await lifecycle.DescribeAsync(cas, now, cancellationToken, readerMaySeeSpace: _ => true);
 
             var listed = cas
                 .Select(ca => new

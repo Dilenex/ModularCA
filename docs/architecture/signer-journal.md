@@ -708,6 +708,7 @@ holds:
 | `status` | Means | Ready |
 |---|---|---|
 | `none` | the signer keeps no journal | yes |
+| `not_known` | the signer has not answered, so nothing is known of its journal yet: it is still starting, or cannot be reached. Ask again; `checks.signer` says whether the signer can be reached | yes |
 | `unavailable` | the journal cannot take a record: the signer issues no certificate and signs no CRL | **no** |
 | `not_verified` | the journal on disk at the signer's start did not verify, as `--journal-verify` would say of it; the signer goes on recording and checking, and revocations are restored only from records a believed checkpoint covers (section 16) | yes |
 | `crl_refused` | the signer refused the last full CRL of at least one CA for leaving out revoked serials (section 9) | yes |

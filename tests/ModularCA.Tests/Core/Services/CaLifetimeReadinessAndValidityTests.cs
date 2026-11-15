@@ -140,7 +140,7 @@ public sealed class CaLifetimeReadinessAndValidityTests
         Assert.Equal(expected, advisories.Any(a => a.Reason == CaKeyPolicy.ValidityBeyondCommonPractice));
         Assert.All(advisories, a => Assert.Equal(CaKeyAdvisory.Notice, a.Severity));
         if (expected)
-            Assert.Contains("No standard that binds a private CA sets a limit", advisories.Single().Message);
+            Assert.Contains("Nothing is refused", advisories.Single().Message);
     }
 
     [Theory]

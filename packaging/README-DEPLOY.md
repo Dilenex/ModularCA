@@ -262,9 +262,13 @@ out, and no password that worked before is refused at sign-in.
 - **CA lifetime notices.** Each CA now shows, on its page and under System Health, Security
   Baseline, when its certificate nears its end: two years ahead for a root and one year ahead for
   an intermediate, becoming a warning 30 days before and critical 7 days before (the windows the
-  certificate itself already had). It also says when its certificate profiles allow a longer
-  validity than its own certificate has left, in which case issued certificates are shortened to
-  end with it, as they always were. The dashboard lists a CA under Needs attention once its
+  certificate itself already had). It also says when an end-entity certificate profile allows a
+  validity longer than its own certificate has left by a tenth of the profile's maximum or more,
+  in which case issued certificates are shortened to end with it, as they always were. (A profile
+  has no default validity, so a request gets the maximum; without the tenth, a 10-year profile on
+  a 10-year CA would raise the notice on the CA's first day. The CA's own OCSP responder,
+  timestamp and CMP signer profiles never raise it.) A notice is shown in blue, a warning in
+  amber, and only something critical in red. The dashboard lists a CA under Needs attention once its
   certificate is within its 30-day warning or has expired. These are notices: nothing is refused,
   and `/health/ready` reports them under `checks.caLifecycle` without becoming not ready. The
   windows are under Settings, Security, CA Lifecycle Notices, and are the same on a new install
@@ -822,8 +826,8 @@ you run now, and can be run before the tarball is even copied to the host. An in
   naming the key, when a configured `SpaceId` names no existing space or is not a value it reads.
   When both keys are set and differ, the process refuses to start (status 3) and names the file
   and both keys; keep the one with the intended value. `Features.AllowMultipleOrganizations` is retired and ignored, with a
-  warning while it is present: creating a space always succeeds, and past four spaces the console
-  recommends a licence.
+  warning while it is present: creating a space always succeeds. (0.4.0 to 0.4.4 recommended a
+  license from the fifth space; from 0.4.5 spaces are not counted, limited or licensed.)
 
 The audit role owns the audit tables on every install. The audit trail is tamper-evident through its
 hash chain, not tamper-proof: see "The audit trail is tamper-evident, not tamper-proof" in

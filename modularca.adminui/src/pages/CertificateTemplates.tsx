@@ -207,7 +207,7 @@ const X509TemplatesTab: React.FC = () => {
             ) },
             { key: 'ca', header: 'CA Name', defaultWidth: 160, sortable: true, exportValue: (t) => t.caName || t.caId, render: (t) => <span className="text-ink text-xs truncate">{t.caName || t.caId}</span> },
             { key: 'certProfile', header: 'Cert Profile', defaultWidth: 160, sortable: true, exportValue: (t) => t.certProfileName || t.certProfileId, render: (t) => <span className="text-ink text-xs truncate">{t.certProfileName || t.certProfileId}</span> },
-            { key: 'signingProfile', header: 'Signing Profile', defaultWidth: 160, sortable: true, exportValue: (t) => t.signingProfileName || t.signingProfileId, render: (t) => <span className="text-ink text-xs truncate">{t.signingProfileName || t.signingProfileId}</span> },
+            { key: 'signingProfile', header: 'Signing Profile', defaultWidth: 210, sortable: true, exportValue: (t) => t.signingProfileName || t.signingProfileId, render: (t) => <span className="text-ink text-xs truncate">{t.signingProfileName || t.signingProfileId}</span> },
             { key: 'templateOid', header: 'Template OID', defaultWidth: 200, sortable: true, exportValue: (t) => (t.offeredToWindows ? t.msaeTemplateOid || '' : ''), render: (t) => (t.offeredToWindows && t.msaeTemplateOid ? <span className="data-mono text-ink truncate">{t.msaeTemplateOid}</span> : <span className="text-ink-muted">-</span>) },
             // What a Windows client will see: whether the template survives its OID parser, the
             // version it is advertised at, the kind of principal it is for, and whether issuance waits.

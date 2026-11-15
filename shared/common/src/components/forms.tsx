@@ -48,8 +48,8 @@ export const labelClass = 'block label-caps mb-1';
  * is the one place such text should go; pass `id` and reference it from the control's
  * `aria-describedby` so assistive technology reads it too.
  */
-export const FieldHint: React.FC<{ id?: string; tone?: 'muted' | 'warn'; className?: string; children: React.ReactNode }> = ({ id, tone = 'muted', className = '', children }) => (
-    <p id={id} className={`mt-1 text-xs ${tone === 'warn' ? 'text-warn' : 'text-ink-muted'} ${className}`}>
+export const FieldHint: React.FC<{ id?: string; tone?: 'muted' | 'warn' | 'info'; className?: string; children: React.ReactNode }> = ({ id, tone = 'muted', className = '', children }) => (
+    <p id={id} className={`mt-1 text-xs ${tone === 'warn' ? 'text-warn' : tone === 'info' ? 'text-info' : 'text-ink-muted'} ${className}`}>
         {children}
     </p>
 );

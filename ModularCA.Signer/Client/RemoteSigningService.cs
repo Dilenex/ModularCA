@@ -387,8 +387,10 @@ public sealed class RemoteSigningService : ISigningService, ISignerEventJournal,
 
     /// <inheritdoc />
     /// <remarks>
-    /// Never throws for a signer that cannot be reached or predates the call: it answers null,
-    /// as for a signer that keeps no journal, so a health answer is not held up by it.
+    /// A signer that predates the call answers null, as one that keeps no journal does. A signer
+    /// that cannot be reached is a refusal (<see cref="SigningRefusalReason.SignerUnavailable"/>)
+    /// and not an answer: the caller must be able to tell "no journal" from "not known yet", and
+    /// the node's health check reports the second as <c>not_known</c>.
     /// </remarks>
     public async Task<SignerJournalInfo?> JournalInfoAsync(CancellationToken cancellationToken = default)
     {
@@ -399,10 +401,6 @@ public sealed class RemoteSigningService : ISigningService, ISignerEventJournal,
                 _options.CallTimeout, cancellationToken);
         }
         catch (RpcException ex) when (ex.StatusCode == StatusCode.Unimplemented)
-        {
-            return null;
-        }
-        catch (SigningRefusedException ex) when (ex.Reason == SigningRefusalReason.SignerUnavailable)
         {
             return null;
         }

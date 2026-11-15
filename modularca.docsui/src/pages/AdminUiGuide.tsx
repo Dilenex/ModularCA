@@ -174,15 +174,28 @@ export default function AdminUiGuide() {
                 <p className="text-ink leading-relaxed mb-3">
                     The same card lists what each CA's certificate and key have to say over time: a CA certificate
                     that expires within its notice window (two years for a root and one year for an intermediate by
-                    default), certificate profiles that allow a longer validity than the CA certificate has left (a
-                    certificate issued then is shortened to end five minutes before the CA certificate, with a
-                    warning to the requester), a CA whose certificate outlives its parent's, and, when a usage period
+                    default), an end-entity certificate profile whose maximum validity is longer than the CA certificate
+                    has left by a tenth of that maximum or more (a certificate issued then is shortened to end five
+                    minutes before the CA certificate, with a warning to the requester; the CA's own OCSP responder,
+                    timestamp and CMP signer profiles are left out, because their certificates are meant to end with
+                    the CA's), a CA whose certificate outlives its parent's, and, when a usage period
                     is set, a key that has been signing longer than it. The windows and the period are under CA
                     Lifecycle Notices on the Security tab of Settings; NIST SP 800-57 Part 1 leaves the usage period
                     of a CA key to your organization's policy, so that notice is off until you set a number. The
                     CA's page shows the same notices with the facts behind them under Key and Certificate Lifetime.
                     A notice is information: no CA stops issuing and <code>/health/ready</code> stays ready
-                    (<code>checks.caLifecycle</code> carries the list).
+                    (<code>checks.caLifecycle</code> carries the list). Color follows the level everywhere a notice is
+                    shown: a notice is blue, a warning is amber, and only something critical is red. Each notice is at
+                    most 40 words: what is so, and what to do.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    The Health Checks card has a Signer Journal row, from <code>checks.journal</code>: Healthy in green; Not
+                    kept in grey for a signer that keeps no journal; blue while revocations are being restored from it, wait
+                    to be restored, the journal waits for a restore marker or is still being verified; amber when its volume
+                    is low on space or its checkpoint is overdue; red when the volume is nearly full, the signer refuses a
+                    CRL, or the journal cannot be written or did not verify. A line under the list gives its records, size,
+                    last checkpoint, free space and whether it verified, names each CA that had revocations restored since
+                    the service started, and, for a refused CRL, links to the missing serials on the CA&apos;s page.
                 </p>
                 <p className="text-ink leading-relaxed mb-3">
                     The Health Checks card shows the readiness payload, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/health/ready</code>,
@@ -425,6 +438,14 @@ export default function AdminUiGuide() {
                     else. A root signs its own new certificate; an intermediate&apos;s is signed by its parent CA, and cannot end
                     after the parent&apos;s certificate. Where the CA&apos;s scope requires a key ceremony, the action opens one
                     that records the exact expiry, and the renewal happens when the approved ceremony is executed.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    The history table shows each certificate&apos;s serial, a one-word status (Current, Earlier, Expired or
+                    Revoked; hover for the rest), its validity, how it became the CA&apos;s (First certificate or Renewal),
+                    and, on one line, Download PEM and the certificate&apos;s public address. Under CA Information, Parent CA
+                    is the parent&apos;s name, linked to its page; a root shows None (root), and a parent outside the spaces
+                    you may see is shown as Not visible to you: the server sends nothing that identifies it, and the
+                    notice that a certificate outlives its parent&apos;s then names no parent and gives no date.
                 </p>
                 <ul className="list-disc list-inside text-ink space-y-1 mb-3">
                     <li>The earlier certificate is not revoked. It stays valid until it expires and stays downloadable from the history and at <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/ca/&#123;serial&#125;</code>.</li>
@@ -1220,7 +1241,7 @@ sshd -t && systemctl reload ssh`}</pre>
                     instance. Each space holds its CAs, its ceilings and per-CA quotas.
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
-                    <li>Create and manage spaces. The Create Space dialog says what a space shares, and from the fifth space that a licence is recommended; creation always succeeds</li>
+                    <li>Create and manage spaces. The Create Space dialog says what a space shares. An instance may have any number of spaces</li>
                     <li>Configure each space's validity ceiling and ceremony policy</li>
                     <li>View each space's CAs, users and per-CA quota usage</li>
                     <li>Enable/disable spaces</li>

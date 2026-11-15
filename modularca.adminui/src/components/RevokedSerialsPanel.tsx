@@ -41,7 +41,7 @@ const columns: DataTableColumn<RevokedSerialRow>[] = [
         <Link to={auditPathForSerial(r.serialNumber)} title="The audit records that name this serial" onClick={(e) => e.stopPropagation()}
             className="text-accent-ink underline truncate">{r.recordedBy || 'audit'}</Link>
     ) },
-    { key: 'note', header: 'Note', flex: true, exportValue: (r) => r.note, render: (r) => <span className="text-ink-muted truncate" title={r.note}>{r.note}</span> },
+    { key: 'note', header: 'Note', defaultWidth: 280, minWidth: 160, exportValue: (r) => r.note, render: (r) => <span className="text-ink-muted truncate" title={r.note}>{r.note}</span> },
 ];
 
 /// <summary>

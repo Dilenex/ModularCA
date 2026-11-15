@@ -23,6 +23,22 @@ public sealed record CaCryptoperiodSettings(int RootExpiryNoticeDays, int Interm
 }
 
 /// <summary>
+/// What a reader who may not see a CA's parent is told about the parent's certificate: only how
+/// its end stands against the CA's own. Nothing here identifies the parent or dates its certificate.
+/// </summary>
+public enum CaWithheldParent
+{
+    /// <summary>The parent's certificate does not end before this CA's, or its end is not known.</summary>
+    NoEarlierEnd,
+
+    /// <summary>The parent's certificate ends before this CA's and has not ended yet.</summary>
+    EndsFirst,
+
+    /// <summary>The parent's certificate ends before this CA's and has already ended.</summary>
+    Expired,
+}
+
+/// <summary>
 /// What is known about a CA's key and certificate over time. Every member is a fact read from
 /// the database, with null for what could not be read; nothing here is a judgment.
 /// </summary>
@@ -38,10 +54,10 @@ public sealed record CaCryptoperiodSettings(int RootExpiryNoticeDays, int Interm
 /// <param name="ExpiryWarningAt">When the certificate's own expiry warning starts (<see cref="ExpiryWarningRule"/>), as stored on it.</param>
 /// <param name="ExpiryAlertAt">When the certificate's own expiry alert starts, as stored on it.</param>
 /// <param name="LatestIssuedNotAfter">The latest end of validity among the unexpired, unrevoked certificates issued under this key; null when there is none.</param>
-/// <param name="LongestProfileValidity">The longest validity a certificate profile linked to this CA allows; null when none sets a maximum.</param>
+/// <param name="LongestProfileValidity">The longest validity an end-entity certificate profile linked to this CA allows, the CA's own infrastructure profiles left out; null when none sets a maximum.</param>
 /// <param name="LongestProfileName">The name of that profile.</param>
-/// <param name="ParentName">The name of the CA that issued this CA's certificate, when it is a CA of this instance.</param>
-/// <param name="ParentCertificateNotAfter">End of validity of that CA's current certificate.</param>
+/// <param name="ParentName">The name of the CA that issued this CA's certificate, when it is a CA of this instance that the reader may see; null for a parent outside the reader's space fence (<see cref="WithheldParent"/>).</param>
+/// <param name="ParentCertificateNotAfter">End of validity of that CA's current certificate; null, like the name, for a parent the reader may not see.</param>
 public sealed record CaCryptoperiodFacts(
     bool IsRoot,
     DateTime? KeyInUseSince,
@@ -56,6 +72,22 @@ public sealed record CaCryptoperiodFacts(
     string? ParentName,
     DateTime? ParentCertificateNotAfter)
 {
+    /// <summary>
+    /// True when the CA has no end-entity profile with a maximum and <see cref="LongestProfileValidity"/>
+    /// is that of one of its own infrastructure profiles (OCSP responder, timestamp, CMP signer),
+    /// shown so the fact is not empty. Such a profile raises no notice: its certificates are meant
+    /// to end with the CA's.
+    /// </summary>
+    public bool LongestProfileIsInfrastructure { get; init; }
+
+    /// <summary>
+    /// Set when the CA has a parent in this instance that the reader may not see (it is outside
+    /// their space fence): <see cref="ParentName"/> and <see cref="ParentCertificateNotAfter"/> are
+    /// then null, and this says the one thing the "outlives its parent" notice needs. Null for a
+    /// root, for a parent the reader may see, and for a parent that no longer exists.
+    /// </summary>
+    public CaWithheldParent? WithheldParent { get; init; }
+
     /// <summary>Where <see cref="KeyInUseSince"/> comes from, for the console to say beside it.</summary>
     public const string KeyInUseSinceSource = "The start of validity of the earliest certificate this CA has had over its current key.";
 }
@@ -104,7 +136,19 @@ public static class CaCryptoperiod
     /// <para>
     /// <b>Profiles.</b> Issuance shortens a certificate that would end after its issuer
     /// (five minutes before the issuer's end) and refuses one whose profile minimum no longer
-    /// fits. The notice says so when a linked profile's maximum is longer than what is left.
+    /// fits. The notice says so once an end-entity profile's maximum is longer than what is left
+    /// by a tenth of that maximum or more (<see cref="ShortensMaterially"/>); the CA's own
+    /// infrastructure profiles never raise it.
+    /// </para>
+    /// <para>
+    /// <b>A parent the reader may not see.</b> The "outlives its parent" notice then names no
+    /// parent and gives no date of the parent's certificate
+    /// (<see cref="CaCryptoperiodFacts.WithheldParent"/>): it says that the parent's certificate
+    /// ends earlier, or has expired, and to ask an administrator of the parent CA.
+    /// </para>
+    /// <para>
+    /// <b>Length.</b> Every message is at most 40 words: what is so, and what to do. The
+    /// mechanism is in the documentation.
     /// </para>
     /// </remarks>
     public static IReadOnlyList<CaKeyAdvisory> Advisories(CaCryptoperiodFacts facts, CaCryptoperiodSettings settings, DateTime now)
@@ -117,10 +161,7 @@ public static class CaCryptoperiod
         if (left <= TimeSpan.Zero)
         {
             found.Add(new CaKeyAdvisory(CertificateExpired,
-                $"This CA's certificate expired on {Day(notAfter)}. Nothing it issued validates any more, and it issues nothing. "
-                + (facts.IsRoot
-                    ? "Renew the certificate (same key, new validity) and give the new one to everyone who trusts this root."
-                    : "Renew the certificate (same key, new validity); its parent signs the new one."),
+                $"This CA's certificate expired on {Day(notAfter)}. It issues nothing, and what it issued no longer validates. Renew the CA certificate.",
                 CaKeyAdvisory.Critical, "Certificate expired"));
         }
         else
@@ -134,20 +175,17 @@ public static class CaCryptoperiod
                 var severity = inAlert ? CaKeyAdvisory.Critical : inWarning ? CaKeyAdvisory.Warning : CaKeyAdvisory.Notice;
                 found.Add(new CaKeyAdvisory(CertificateExpiring,
                     $"This CA's certificate expires on {Day(notAfter)}, in {Span(left)}. "
-                    + "Every certificate it issues ends before that, so the time it can offer shrinks every day. "
                     + (facts.IsRoot
-                        ? "Renew the certificate (same key, new validity) in good time: the new root certificate has to reach everyone who trusts this one before the old one expires."
-                        : "Renew the certificate (same key, new validity) before then; its parent signs the new one, and nothing has to be redistributed to those who trust the root."),
+                        ? "Renew the CA certificate in good time, then give the new root certificate to everyone who trusts this one."
+                        : "Renew the CA certificate; its parent signs the new one."),
                     severity, $"Certificate expires in {Span(left)}"));
             }
 
-            if (facts.LongestProfileValidity is TimeSpan longest && longest > left)
+            if (!facts.LongestProfileIsInfrastructure && facts.LongestProfileValidity is TimeSpan longest && ShortensMaterially(longest, left))
             {
                 found.Add(new CaKeyAdvisory(ProfilesOutliveCertificate,
-                    $"{(string.IsNullOrWhiteSpace(facts.LongestProfileName) ? "A certificate profile" : $"The certificate profile '{facts.LongestProfileName}'")} "
-                    + $"allows certificates valid for {Span(longest)}, and this CA's own certificate has {Span(left)} left. "
-                    + "A certificate issued now is shortened to end five minutes before the CA certificate does, with a warning to whoever requested it, "
-                    + "and a profile whose minimum validity no longer fits is refused. Renew the CA certificate to issue for the full period again.",
+                    $"{(string.IsNullOrWhiteSpace(facts.LongestProfileName) ? "A certificate profile" : $"'{facts.LongestProfileName}'")} allows {Span(longest)}, "
+                    + $"but this CA's certificate ends in {Span(left)}. Certificates are issued shorter until the CA certificate is renewed.",
                     CaKeyAdvisory.Notice, "Issued certificates are shortened"));
             }
         }
@@ -155,23 +193,47 @@ public static class CaCryptoperiod
         if (facts.ParentCertificateNotAfter is DateTime parentEnd && parentEnd < notAfter && left > TimeSpan.Zero)
         {
             found.Add(new CaKeyAdvisory(OutlivesParent,
-                $"This CA's certificate is valid until {Day(notAfter)}, and the certificate of {(string.IsNullOrWhiteSpace(facts.ParentName) ? "its parent CA" : $"its parent, '{facts.ParentName}',")} "
-                + $"expires first, on {Day(parentEnd)}. A chain ends with its shortest certificate: after that day this CA's certificate validates under no chain that uses the parent's current certificate. "
-                + "Renew the parent's certificate before then.",
+                $"This certificate is valid until {Day(notAfter)}, but the certificate of {(string.IsNullOrWhiteSpace(facts.ParentName) ? "its parent CA" : $"its parent '{facts.ParentName}'")} "
+                + $"expires on {Day(parentEnd)}. Renew the parent's certificate before then.",
                 parentEnd <= now ? CaKeyAdvisory.Critical : CaKeyAdvisory.Notice, "Outlives its parent's certificate"));
+        }
+        else if (facts.WithheldParent is CaWithheldParent.EndsFirst or CaWithheldParent.Expired && left > TimeSpan.Zero)
+        {
+            // The reader may not see the parent CA: no name, and no date of its certificate.
+            var expired = facts.WithheldParent == CaWithheldParent.Expired;
+            found.Add(new CaKeyAdvisory(OutlivesParent,
+                $"This certificate is valid until {Day(notAfter)}, but its parent's certificate {(expired ? "has expired" : "expires earlier")}. "
+                + "Ask an administrator of the parent CA to renew it.",
+                expired ? CaKeyAdvisory.Critical : CaKeyAdvisory.Notice, "Outlives its parent's certificate"));
         }
 
         if (settings.KeyUsagePeriodDays > 0 && facts.KeyInUseSince is DateTime since && now - since > TimeSpan.FromDays(settings.KeyUsagePeriodDays))
         {
             found.Add(new CaKeyAdvisory(KeyUsagePeriodExceeded,
-                $"This CA's key has been signing since {Day(since)}, {Span(now - since)}: longer than the {Span(TimeSpan.FromDays(settings.KeyUsagePeriodDays))} this instance sets as a CA key's usage period "
-                + "(CA lifecycle in Settings; NIST SP 800-57 Part 1 calls it the originator-usage period). The key keeps working. "
-                + "Renewing the certificate does not change the key: a CA gets a new key only by creating a new CA and moving issuance to it.",
+                $"This CA's key has been signing since {Day(since)}, longer than the {Span(TimeSpan.FromDays(settings.KeyUsagePeriodDays))} this instance sets as a CA key's usage period "
+                + "(NIST SP 800-57). A new key means a new CA.",
                 CaKeyAdvisory.Notice, $"Key in use {Span(now - since)}"));
         }
 
         return found.OrderBy(a => a.Severity switch { CaKeyAdvisory.Critical => 0, CaKeyAdvisory.Warning => 1, _ => 2 }).ToList();
     }
+
+    /// <summary>The share of a profile's maximum validity that has to be lost before the shortening is worth a notice: a tenth.</summary>
+    public const double MaterialShorteningShare = 0.10;
+
+    /// <summary>
+    /// Whether a CA with <paramref name="left"/> on its certificate shortens what a profile with
+    /// maximum <paramref name="profileMaximum"/> issues by enough to say so. A certificate profile
+    /// has a minimum and a maximum validity and no default of its own: a request that names no
+    /// end gets the maximum. So every request is shortened as soon as the CA has less than the
+    /// maximum left, which for a CA and a profile of the same length is the CA's first day. The
+    /// notice is therefore raised only once a certificate issued now would lose at least a tenth
+    /// of the profile's maximum (<see cref="MaterialShorteningShare"/>): a 10-year profile on a
+    /// CA with 9 years left, a 397-day profile on a CA with 357 days left.
+    /// </summary>
+    public static bool ShortensMaterially(TimeSpan profileMaximum, TimeSpan left)
+        => profileMaximum > TimeSpan.Zero && left < profileMaximum
+           && (profileMaximum - left).Ticks >= (long)(profileMaximum.Ticks * MaterialShorteningShare);
 
     /// <summary>Why <paramref name="settings"/> cannot be saved, or null: each value from 0 to <see cref="CaCryptoperiodSettings.MaxDays"/>.</summary>
     public static string? Problem(CaCryptoperiodSettings settings)

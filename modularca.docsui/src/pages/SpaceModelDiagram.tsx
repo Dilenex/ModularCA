@@ -84,7 +84,7 @@ export default function SpaceModelDiagram() {
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li>Created by system administrators on the Spaces &amp; Quotas page, or with POST /api/v1/admin/spaces</li>
                     <li>Own their CA hierarchy, profiles and ceilings; their administrators see only what the space holds</li>
-                    <li>Up to four spaces need no licence; from the fifth, creation still succeeds and a licence is recommended</li>
+                    <li>Are not counted, limited or licensed: one instance may have any number of spaces</li>
                     <li>Can be enabled or disabled without affecting other spaces (disabled spaces cannot issue certificates)</li>
                     <li>Support soft-delete
                         (<code className={code}>IsDeleted</code>), hidden by the soft-delete query filter, which is the only global filter left; it filters no space</li>

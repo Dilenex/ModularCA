@@ -80,6 +80,66 @@ public class JournalHubReviewTests
     }
 
     [Fact]
+    public async Task A_start_that_has_recorded_nothing_yet_still_knows_the_last_checkpoint_on_disk()
+    {
+        using var sandbox = new JournalSandbox();
+        await using (sandbox.Open()) { }
+        var head = sandbox.Verify().Head!;
+        var onDisk = head.Checkpoint;
+        Assert.NotNull(onDisk);
+
+        // The next start reads the journal and begins nothing. Its last checkpoint is the one it found.
+        await using var writer = sandbox.Open();
+        Assert.Null(writer.Status.OpenSegment);
+        Assert.Equal(onDisk!.Seq, writer.Status.LastCheckpointSeq);
+        Assert.Equal(JournalFormat.FromMicros(onDisk.At), writer.Status.LastCheckpointAt);
+        Assert.Equal(0, writer.Status.Uncheckpointed);
+
+        // Once this start records something, the checkpoint is its own, and later than the one on disk.
+        await AppendFact(writer, 1);
+        await writer.DisposeAsync();
+        var after = sandbox.Verify().Head!.Checkpoint!;
+        Assert.True(after.Seq > onDisk.Seq);
+    }
+
+    [Fact]
+    public async Task A_start_on_a_journal_whose_directory_takes_no_new_file_fails_at_the_open()
+    {
+        using var sandbox = new JournalSandbox();
+        await using (sandbox.Open()) { }
+        var before = Directory.GetFiles(sandbox.Directory).Select(Path.GetFileName).Order().ToList();
+
+        // The directory refuses a new file, as one mounted or set read-only does.
+        var files = new RecordingJournalFiles { FailProbe = _ => new UnauthorizedAccessException("Access to the path is denied.") };
+        var refused = Assert.Throws<JournalUnavailableException>(() => sandbox.Open(files));
+        Assert.Contains("could not be opened", refused.Message);
+        Assert.Contains("denied", refused.Message);
+        Assert.Equal(before, Directory.GetFiles(sandbox.Directory).Select(Path.GetFileName).Order().ToList());
+
+        // Once it takes one again the journal opens, and the probe leaves nothing behind.
+        files.FailProbe = null;
+        await using (var writer = sandbox.Open(files))
+        {
+            Assert.True(writer.Status.Available);
+            Assert.Null(writer.Status.OpenSegment);
+            Assert.Equal(before, Directory.GetFiles(sandbox.Directory).Select(Path.GetFileName).Order().ToList());
+        }
+    }
+
+    [Fact]
+    public async Task A_probe_file_left_by_a_killed_start_does_not_stop_the_next()
+    {
+        using var sandbox = new JournalSandbox();
+        await using (sandbox.Open()) { }
+        File.WriteAllBytes(Path.Combine(sandbox.Directory, JournalFiles.ProbeName), new byte[] { 1, 2, 3 });
+
+        await using var writer = sandbox.Open();
+        Assert.True(writer.Status.Available);
+        Assert.False(File.Exists(Path.Combine(sandbox.Directory, JournalFiles.ProbeName)));
+        Assert.Null(sandbox.Verify().Fault);
+    }
+
+    [Fact]
     public async Task A_signer_killed_in_a_loop_from_its_first_start_on_makes_one_file()
     {
         using var sandbox = new JournalSandbox();
@@ -276,12 +336,16 @@ public class JournalHubReviewTests
         /// <summary>What <c>JournalInfoAsync</c> answers.</summary>
         public SignerJournalInfo? Info { get; set; }
 
+        /// <summary>True for a signer that does not answer: asking it about its journal fails.</summary>
+        public bool Unreachable { get; set; }
+
         /// <summary>What <c>JournalMissingRevocationsAsync</c> answers.</summary>
         public SignerJournalMissingRevocations? Missing { get; set; }
 
         /// <inheritdoc />
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) => targetMethod!.Name switch
         {
+            nameof(ISigningService.JournalInfoAsync) when Unreachable => Task.FromException<SignerJournalInfo?>(new InvalidOperationException("The signer is not reachable.")),
             nameof(ISigningService.JournalInfoAsync) => Task.FromResult(Info),
             nameof(ISigningService.JournalMissingRevocationsAsync) => Task.FromResult(Missing),
             _ => throw new NotSupportedException(targetMethod.Name),
@@ -295,10 +359,31 @@ public class JournalHubReviewTests
         }
     }
 
-    private static async Task<(HealthStatus Health, JsonElement Journal)> CheckAsync(SignerJournalInfo? info, ModularCADbContext? db = null, JournalMergeState? merge = null)
+    [Fact]
+    public async Task A_signer_that_has_not_answered_is_not_known_and_a_signer_with_no_journal_is_none()
+    {
+        // The signer answers and keeps no journal: none.
+        var (keepsNone, none) = await CheckAsync(null);
+        Assert.Equal(("none", HealthStatus.Healthy), (none.GetProperty("status").GetString(), keepsNone));
+        Assert.Equal(JsonValueKind.Null, none.GetProperty("message").ValueKind);
+
+        // The signer does not answer: not_known, with a message that says to ask again, and the node stays ready.
+        var (silent, notKnown) = await CheckAsync(null, unreachable: true);
+        Assert.Equal(("not_known", HealthStatus.Healthy), (notKnown.GetProperty("status").GetString(), silent));
+        Assert.Contains("has not answered", notKnown.GetProperty("message").GetString()!, StringComparison.Ordinal);
+        Assert.False(SignerJournalState.FailsReadiness(SignerJournalState.NotKnown));
+        Assert.Equal(CheckMembers, notKnown.EnumerateObject().Select(p => p.Name));
+
+        // A merge this process knows of does not hide that the signer cannot be asked.
+        var (_, withMerge) = await CheckAsync(null, merge: MergeIn(JournalMergeState.Running, 1, 2), unreachable: true);
+        Assert.Equal("not_known", withMerge.GetProperty("status").GetString());
+    }
+
+    private static async Task<(HealthStatus Health, JsonElement Journal)> CheckAsync(SignerJournalInfo? info, ModularCADbContext? db = null, JournalMergeState? merge = null, bool unreachable = false)
     {
         var (signer, answers) = JournalAnswers.Create();
         answers.Info = info;
+        answers.Unreachable = unreachable;
         var services = new ServiceCollection().AddSingleton(signer);
         if (merge != null)
             services.AddSingleton(merge);

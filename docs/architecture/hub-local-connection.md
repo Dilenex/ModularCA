@@ -275,6 +275,7 @@ instance already knows about itself.
   | `status` | Means | Makes the instance |
   |---|---|---|
   | `none` | the signer keeps no journal | nothing |
+  | `not_known` | the signer has not answered yet, so nothing is known of its journal; ask again | nothing |
   | `unavailable` | the journal cannot be written; the signer issues nothing and signs no CRL | `degraded` |
   | `not_verified` | the journal on disk did not verify when the signer started; nothing is restored from it | nothing |
   | `crl_refused` | the signer refused the last full CRL of at least one CA, because it left out revoked serials, and the merge could not cure it | nothing |

@@ -8,9 +8,10 @@ namespace ModularCA.Shared.Licensing;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Extracted from the space creation gate, which was the only gate in the product and
-/// therefore also the only place that knew how a licensing refusal should read. Two things make
-/// that worth generalising before the second gate exists rather than after.
+/// Extracted from the former space creation gate (removed: spaces are not counted, limited or
+/// licensed), which was the only gate in the product and therefore also the only place that knew
+/// how a licensing refusal should read. No gate calls this today. Two things make it worth
+/// keeping in one place before the next gate exists rather than after.
 /// </para>
 /// <para>
 /// The first is that <b>the refusal is part of the product</b>. Every one of these is read by
@@ -59,7 +60,7 @@ public static class FeatureGate
     /// <param name="featureKey">A key from <see cref="FeatureKeys"/>.</param>
     /// <param name="whatIsGated">
     /// The operation, as a sentence opener in the operator's words rather than the code's —
-    /// "Creating additional spaces", "Scheduling off-host backups".
+    /// "Scheduling off-host backups", "Exporting an auditor evidence pack".
     /// </param>
     /// <param name="whatIsUnaffected">
     /// What keeps working regardless, stated plainly. See the remarks.
@@ -105,9 +106,9 @@ public static class FeatureGate
     /// </para>
     /// </remarks>
     /// <param name="entitlements">This installation's entitlements.</param>
-    /// <param name="limitName">A key from <see cref="LicenseLimits"/>.</param>
+    /// <param name="limitName">A key of <see cref="LicenseClaims.Limits"/>. None is defined today.</param>
     /// <param name="currentCount">How many already exist.</param>
-    /// <param name="noun">What is being counted, singular — "space", "connected directory".</param>
+    /// <param name="noun">What is being counted, singular — "instance", "connected directory".</param>
     /// <param name="whatIsUnaffected">What keeps working regardless.</param>
     public static LicensingException? RequireHeadroom(
         IEntitlementService entitlements,

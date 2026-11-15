@@ -103,10 +103,8 @@ public static class ProtocolCompatibility
     /// has so the operator does not have to go and look it up.
     /// </summary>
     public static string ScepNonRsaMessage(string keyAlgorithm)
-        => $"SCEP cannot run on this CA: its key is {keyAlgorithm}, and a SCEP client encrypts its "
-           + "certification request to the CA certificate using RSA key transport, the only recipient "
-           + "type SCEP defines — so the client cannot build the message and this CA could not decrypt "
-           + "it. Serve SCEP from an RSA authority instead.";
+        => $"SCEP cannot run on this CA: its key is {keyAlgorithm}, and a SCEP client encrypts its request "
+           + "to the CA certificate with RSA key transport. Serve SCEP from an RSA authority instead.";
 
     /// <summary>
     /// The refusal message for enabling a protocol that cannot work on this CA, or null when the

@@ -242,7 +242,7 @@ const Whitelists: React.FC = () => {
             },
             { key: 'scope', header: 'Scope', defaultWidth: 100, sortable: true, exportValue: (wl) => wl.scope, truncate: false,
                 render: (wl) => <span className="px-2 py-0.5 text-xs bg-sunken text-ink rounded">{wl.scope}</span> },
-            { key: 'protocol', header: 'Protocol', defaultWidth: 90, sortable: true, exportValue: (wl) => wl.protocol || '', render: (wl) => wl.protocol || '-' },
+            { key: 'protocol', header: 'Protocol', defaultWidth: 120, sortable: true, exportValue: (wl) => wl.protocol || '', render: (wl) => wl.protocol || '-' },
             { key: 'ca', header: 'CA', defaultWidth: 150, sortable: true, exportValue: (wl) => caNameById(wl.certificateAuthorityId), render: (wl) => caNameById(wl.certificateAuthorityId) },
             { key: 'cidrs', header: 'CIDRs', defaultWidth: 80, align: 'right', sortable: true, sortValue: (wl) => (wl.cidrs || []).length, exportValue: (wl) => (wl.cidrs || []).join(' '), render: (wl) => (wl.cidrs || []).length },
             { key: 'enabled', header: 'Status', defaultWidth: 90, truncate: false, sortable: true, sortValue: (wl) => wl.isEnabled, exportValue: (wl) => (wl.isEnabled ? 'Enabled' : 'Disabled'),

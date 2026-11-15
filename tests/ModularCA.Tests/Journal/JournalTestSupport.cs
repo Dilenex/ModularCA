@@ -55,12 +55,20 @@ internal sealed class RecordingJournalFiles : IJournalFiles
     public Func<string, Exception?>? FailCreate { get; set; }
     public Func<string, int, Exception?>? FailAppend { get; set; }
     public Func<string, Exception?>? FailFlush { get; set; }
+    public Func<string, Exception?>? FailProbe { get; set; }
     public int Flushes { get; private set; }
 
     /// <summary>The longest each file has ever been, by its current path; a shorter length later is a truncation.</summary>
     public Dictionary<string, long> HighWater { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public void EnsureDirectory(string directory) => JournalFiles.Default.EnsureDirectory(directory);
+
+    public void ProbeWritable(string directory)
+    {
+        if (FailProbe?.Invoke(directory) is { } failure)
+            throw failure;
+        JournalFiles.Default.ProbeWritable(directory);
+    }
 
     public IJournalAppendFile Create(string path, bool overStub)
     {

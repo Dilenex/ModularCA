@@ -12,8 +12,9 @@ import { apiGet, apiPostWithMfa } from '../api/client';
 import { useStepUp } from './StepUpMfaContext';
 import { useAuth } from '../context/AuthContext';
 import ConfirmModal from './ConfirmModal';
+import { advisoryBox } from '../pages/caLifecycle';
 import {
-    RENEWAL_MAX_YEARS, RENEWAL_MIN_YEARS, hasRsaBelow3072, historyBadge, historyFileName, isRootCa, originLabel, renewalCannotExtend, renewalEffects, renewalMinimumYears, renewalUnavailable,
+    HISTORY_COLUMN_LAYOUT, RENEWAL_MAX_YEARS, RENEWAL_MIN_YEARS, hasRsaBelow3072, historyBadge, historyFileName, isRootCa, originLabel, renewalCannotExtend, renewalEffects, renewalMinimumYears, renewalUnavailable,
     renewalYearsProblem, validityNotes, type CaCertificateHistoryRow,
 } from '../pages/caRenewal';
 
@@ -100,14 +101,14 @@ const CaCertificateRenewal: React.FC<{ ca: any; onRenewed: () => void }> = ({ ca
     };
 
     const columns: DataTableColumn<CaCertificateHistoryRow>[] = [
-        { key: 'serial', header: 'Serial', defaultWidth: 300, minWidth: 160, exportValue: (r) => r.serialNumber, render: (r) => <span className="data-mono text-ink">{r.serialNumber}</span> },
-        { key: 'status', header: 'Status', defaultWidth: 170, truncate: false, exportValue: (r) => historyBadge(r).label, render: (r) => { const b = historyBadge(r); return <StatusBadge status={b.status} label={b.label} />; } },
-        { key: 'notBefore', header: 'Valid from', defaultWidth: 120, exportValue: (r) => day(r.notBefore), render: (r) => <span className="text-ink-muted">{day(r.notBefore)}</span> },
-        { key: 'notAfter', header: 'Valid until', defaultWidth: 120, exportValue: (r) => day(r.notAfter), render: (r) => <span className="text-ink">{day(r.notAfter)}</span> },
-        { key: 'origin', header: 'How', defaultWidth: 170, exportValue: (r) => originLabel(r.origin), render: (r) => <span className="text-ink-muted">{originLabel(r.origin)}{r.actor ? ` by ${r.actor}` : ''}</span> },
+        { key: 'serial', header: 'Serial', ...HISTORY_COLUMN_LAYOUT.serial, exportValue: (r) => r.serialNumber, render: (r) => <span className="data-mono text-ink">{r.serialNumber}</span> },
+        { key: 'status', header: 'Status', ...HISTORY_COLUMN_LAYOUT.status, truncate: false, exportValue: (r) => historyBadge(r).title, render: (r) => { const b = historyBadge(r); return <span title={b.title}><StatusBadge status={b.status} label={b.label} /></span>; } },
+        { key: 'notBefore', header: 'Valid from', ...HISTORY_COLUMN_LAYOUT.notBefore, exportValue: (r) => day(r.notBefore), render: (r) => <span className="text-ink-muted">{day(r.notBefore)}</span> },
+        { key: 'notAfter', header: 'Valid until', ...HISTORY_COLUMN_LAYOUT.notAfter, exportValue: (r) => day(r.notAfter), render: (r) => <span className="text-ink">{day(r.notAfter)}</span> },
+        { key: 'origin', header: 'How', ...HISTORY_COLUMN_LAYOUT.origin, exportValue: (r) => `${originLabel(r.origin)}${r.actor ? ` by ${r.actor}` : ''}`, render: (r) => <span className="text-ink-muted" title={r.actor ? `${originLabel(r.origin)} by ${r.actor}` : undefined}>{originLabel(r.origin)}</span> },
         {
-            key: 'download', header: 'Certificate', flex: true, truncate: false, exportValue: () => '', render: (r) => (
-                <span className="flex flex-wrap items-center gap-2">
+            key: 'download', header: 'Certificate', ...HISTORY_COLUMN_LAYOUT.download, truncate: false, exportValue: () => '', render: (r) => (
+                <span className="flex flex-nowrap items-center gap-2 whitespace-nowrap">
                     {r.pem && <button type="button" className={actionButton} onClick={() => downloadPem(r.pem!, historyFileName(ca, r))}>Download PEM</button>}
                     <a className="text-xs text-accent-ink underline" href={`/ca/${encodeURIComponent(r.serialNumber)}`}>Public address</a>
                 </span>
@@ -199,7 +200,7 @@ const CaCertificateRenewal: React.FC<{ ca: any; onRenewed: () => void }> = ({ ca
                             </label>
                         </div>
                     ) : (
-                        <p key={note.reason} className="text-xs text-ink-muted">{note.message}</p>
+                        <p key={note.reason} className={`rounded border p-3 text-xs ${advisoryBox('notice').box} ${advisoryBox('notice').text}`}>{note.message}</p>
                     ))}
                     <p className="text-xs text-ink-muted">
                         Not offered here: a new key, a changed subject, a cross-certificate, or renewal on a schedule. A CA gets a new key only by creating a new CA.

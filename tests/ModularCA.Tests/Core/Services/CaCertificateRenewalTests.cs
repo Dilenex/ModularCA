@@ -338,6 +338,48 @@ public sealed class CaCertificateRenewalTests
         Assert.Equal(issuing.CertificateId, world.Ca(issuing.Id).CertificateId);
     }
 
+    /// <summary>
+    /// A refusal names the parent CA only to a reader whose space fence admits it. Said nothing of
+    /// the reader, or told the reader may not see the parent's space, it says "parent CA".
+    /// </summary>
+    [Fact]
+    public async Task A_renewal_refusal_names_the_parent_only_to_a_reader_who_may_see_it()
+    {
+        await using var world = new World();
+        var w = world.W;
+        var root = await w.CreateRootAsync("Hidden Anchor", null, null);
+        var issuing = await w.CreateIntermediateAsync(root, "Fenced Issuing", null, null);
+        var pastParent = world.Certificate(root.CertificateId).NotAfter.ToUniversalTime().AddDays(1);
+
+        var byDefault = await Assert.ThrowsAsync<ConfigurationValidationException>(
+            () => world.Renewal.RenewAsync(issuing.Id, pastParent, null, "tester"));
+        var fenced = await Assert.ThrowsAsync<ConfigurationValidationException>(
+            () => world.Renewal.RenewAsync(issuing.Id, pastParent, null, "tester", default, _ => false));
+        var open = await Assert.ThrowsAsync<ConfigurationValidationException>(
+            () => world.Renewal.RenewAsync(issuing.Id, pastParent, null, "tester", default, _ => true));
+
+        foreach (var refusal in new[] { byDefault, fenced })
+        {
+            Assert.DoesNotContain("Hidden Anchor", refusal.Message);
+            Assert.Contains("after the certificate of its parent CA (", refusal.Message);
+        }
+        Assert.Contains("its parent CA 'Hidden Anchor' (", open.Message);
+
+        // The parent disabled: the same rule.
+        using (var db = w.World.OpenDb())
+        {
+            db.CertificateAuthorities.Single(c => c.Id == root.Id).IsEnabled = false;
+            db.SaveChanges();
+        }
+        w.Db.ChangeTracker.Clear();
+        var disabledFenced = await Assert.ThrowsAsync<ConfigurationValidationException>(
+            () => world.Renewal.PlanAsync(issuing.Id, 2, DateTime.UtcNow, default, _ => false));
+        var disabledOpen = await Assert.ThrowsAsync<ConfigurationValidationException>(
+            () => world.Renewal.PlanAsync(issuing.Id, 2, DateTime.UtcNow, default, _ => true));
+        Assert.Equal("The parent CA is disabled and cannot sign a renewed certificate.", disabledFenced.Message);
+        Assert.Equal("The parent CA 'Hidden Anchor' is disabled and cannot sign a renewed certificate.", disabledOpen.Message);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(51)]

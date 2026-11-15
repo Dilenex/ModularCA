@@ -61,6 +61,28 @@ export function advisoryTone(advisory: Pick<CaKeyAdvisory, 'severity'> | null | 
     return advisory?.severity === 'critical' ? 'crit' : advisory?.severity === 'warning' ? 'warn' : 'notice';
 }
 
+/**
+ * How a notice is shown as an `InlineNotice`: a notice is informational (blue), a warning is
+ * amber, and only something critical is red. A notice is never amber: amber means a deadline.
+ */
+export function advisoryNoticeSeverity(advisory: Pick<CaKeyAdvisory, 'severity'> | null | undefined): 'info' | 'warning' | 'error' {
+    const tone = advisoryTone(advisory);
+    return tone === 'crit' ? 'error' : tone === 'warn' ? 'warning' : 'info';
+}
+
+/** The `StatusBadge` status with a notice's color: blue (`pending`), amber (`held`) or red (`revoked`). */
+export function advisoryBadgeStatus(advisory: Pick<CaKeyAdvisory, 'severity'> | null | undefined): 'pending' | 'held' | 'revoked' {
+    const tone = advisoryTone(advisory);
+    return tone === 'crit' ? 'revoked' : tone === 'warn' ? 'held' : 'pending';
+}
+
+/** The border-and-background and the text classes of a hand-built notice box, from the console's status tokens. */
+export function advisoryBox(tone: AdvisoryTone): { box: string; text: string } {
+    return tone === 'crit' ? { box: 'border-crit/40 bg-crit-soft', text: 'text-crit' }
+        : tone === 'warn' ? { box: 'border-warn/40 bg-warn-soft', text: 'text-warn' }
+        : { box: 'border-info/40 bg-info-soft', text: 'text-info' };
+}
+
 /** The words for a badge or a heading: the server's `title`, or what the console said before notices carried one. */
 export function advisoryTitle(advisory: Pick<CaKeyAdvisory, 'title' | 'reason'>): string {
     if (typeof advisory.title === 'string' && advisory.title.trim() !== '') return advisory.title;
@@ -80,7 +102,11 @@ export interface CaCryptoperiod {
     latestIssuedNotAfter?: string | null;
     longestProfileValidityDays?: number | null;
     longestProfileName?: string | null;
+    /** True when the CA has no end-entity profile with a maximum and the one shown is one of its own infrastructure profiles. */
+    longestProfileIsInfrastructure?: boolean;
+    /** The parent CA's name; null for a root and for a parent outside the viewer's space fence. */
     parentName?: string | null;
+    /** The end of the parent's certificate; null for a root and for a parent outside the viewer's space fence. */
     parentCertificateNotAfter?: string | null;
 }
 
@@ -139,9 +165,11 @@ export function cryptoperiodRows(period: CaCryptoperiod | null | undefined): Cry
     });
     if (typeof period.longestProfileValidityDays === 'number')
         rows.push({
-            label: 'Longest validity its profiles allow',
+            label: period.longestProfileIsInfrastructure ? 'Longest validity its profiles allow (infrastructure only)' : 'Longest validity its profiles allow',
             value: `${daysPhrase(period.longestProfileValidityDays)}${period.longestProfileName ? ` (${period.longestProfileName})` : ''}`,
-            hint: 'A certificate that would end after the CA certificate is shortened to end five minutes before it.',
+            hint: period.longestProfileIsInfrastructure
+                ? 'No end-entity profile linked to this CA sets a maximum. This is one of the CA\'s own infrastructure profiles (OCSP responder, timestamp, CMP signer), whose certificates are issued to end with the CA\'s.'
+                : 'End-entity profiles only. A certificate that would end after the CA certificate is shortened to end five minutes before it.',
         });
     const parentEnd = day(period.parentCertificateNotAfter);
     if (parentEnd)

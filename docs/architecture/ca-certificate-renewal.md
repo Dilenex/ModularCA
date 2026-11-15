@@ -299,6 +299,28 @@ gives the level (`notice` until 30 days, `attention` with a `warning` from 30 da
 `critical` from 7 days and once expired); the dashboard lists the CA; and the expiry
 notification job raises a security alert for it on every run.
 
+## The notices
+
+Every notice text is at most 40 words (a test counts them): what is so, and what to do. The
+console shows a `notice` in blue, a `warning` in amber and `critical` in red.
+
+`CaProfilesOutliveCertificate` compares the CA certificate's remaining time with the longest
+maximum validity among the end-entity profiles linked to the CA. Two things keep it quiet where
+it has nothing to say:
+
+- **Infrastructure profiles are left out.** The profile a CA names for its OCSP responder,
+  timestamp signer or CMP signer, and the seeded profile of each of those roles, are not
+  end-entity profiles: their certificates are issued to end with the CA's. They are found by the
+  CA's own references and by `InfrastructureCertProfiles.ResolveAsync`, the way issuance finds
+  them. When a CA has no other profile with a maximum, the longest of them is still shown as a
+  fact, marked `longestProfileIsInfrastructure`, and raises nothing.
+- **A tenth.** A certificate profile has a minimum and a maximum validity and no default: a
+  request that names no end gets the maximum. Every such request is shortened from the day the
+  CA has less than the maximum left, which for a 10-year profile on a 10-year CA is its first
+  day. The notice is raised once a certificate issued now would lose a tenth of the profile's
+  maximum or more (`CaCryptoperiod.ShortensMaterially`): about a year into that 10-year CA, or
+  with 357 days left for a 397-day profile.
+
 ## Known limits
 - A CA whose key is on a PKCS#11 token resolves by public key like any other; this was not run
   against a token.

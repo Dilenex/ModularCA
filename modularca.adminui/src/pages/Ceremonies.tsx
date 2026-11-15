@@ -20,6 +20,7 @@ import { can } from '../authz';
 import { FieldHint } from '@shared/components/forms';
 import { NameConstraintsView } from '@shared/components/NameConstraintsEditor';
 import { storedPasswordSourceName } from './passwordSource';
+import { advisoryBox } from './caLifecycle';
 
 const APPROVALS_HINT = 'Approvals collected / required. The initiator is never counted.';
 
@@ -257,8 +258,8 @@ const CeremonyDrawer: React.FC<{ ceremony: any; isInitiator: boolean; onCancel: 
                         const warning = (a?.severity ?? a?.Severity) !== 'notice';
                         const acknowledged = (Array.isArray(param(params, 'acknowledged')) ? param(params, 'acknowledged') : []).includes(reason);
                         return (
-                            <div key={reason} className={`mt-2 rounded border p-3 ${warning ? 'border-warn/40 bg-warn-soft' : 'border-line bg-sunken'}`}>
-                                <p className={`text-xs ${warning ? 'text-warn' : 'text-ink-muted'}`}>
+                            <div key={reason} className={`mt-2 rounded border p-3 ${advisoryBox(warning ? 'warn' : 'notice').box}`}>
+                                <p className={`text-xs ${advisoryBox(warning ? 'warn' : 'notice').text}`}>
                                     <strong>{a?.title ?? a?.Title ?? reason}.</strong> {a?.message ?? a?.Message}
                                 </p>
                                 {warning && (
