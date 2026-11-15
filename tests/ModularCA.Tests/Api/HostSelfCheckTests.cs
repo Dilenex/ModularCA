@@ -31,6 +31,31 @@ public sealed class HostSelfCheckTests
     }
 
     /// <summary>
+    /// A self-contained build carries the runtime of the SDK that built it, so a build made with
+    /// an older SDK ships without the release's servicing fixes. Both build scripts refuse a
+    /// payload whose runtime is older than <c>DOTNET-RUNTIME-FLOOR</c>, and the floor is the
+    /// version the project files pin the patched <c>System.Formats.Cbor</c> at, so the two are
+    /// raised together.
+    /// </summary>
+    [Fact]
+    public void The_build_scripts_refuse_a_runtime_older_than_the_floor_the_repository_names()
+    {
+        var floor = File.ReadAllText(Path.Combine(RepoRoot(), "DOTNET-RUNTIME-FLOOR")).Trim();
+        Assert.Matches(@"^\d+\.\d+\.\d+$", floor);
+
+        var bootstrap = File.ReadAllText(Path.Combine(RepoRoot(), "ModularCA.Bootstrap", "ModularCA.Bootstrap.csproj"));
+        Assert.Contains($"Include=\"System.Formats.Cbor\" Version=\"{floor}\"", bootstrap);
+
+        foreach (var name in new[] { "build-linux-dist.sh", "build-windows-dist.sh" })
+        {
+            var script = File.ReadAllText(Path.Combine(RepoRoot(), "scripts", name));
+            Assert.Contains("DOTNET-RUNTIME-FLOOR", script);
+            Assert.Contains("older than the floor", script);
+            Assert.Contains("ModularCA.API.runtimeconfig.json", script);
+        }
+    }
+
+    /// <summary>
     /// The upgrade check runs the self-check before it reads anything: its call comes before the
     /// test for <c>db.yaml</c>, so an empty directory still exercises it.
     /// </summary>

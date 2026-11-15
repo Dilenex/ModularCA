@@ -227,6 +227,26 @@ if compgen -G "$STAGE/*.exe" > /dev/null; then
     exit 1
 fi
 
+# The payload is self-contained: the .NET runtime inside it is the one the SDK on THIS machine
+# carries, whatever versions the project files name. A build made with an older SDK therefore
+# ships an older runtime, without the servicing fixes the release has (0.4.4 built on a
+# distribution's SDK 10.0.114 carried runtime 10.0.14, which GHSA-vmv3-wvjp-wqpj affects). The
+# repository names the oldest runtime a build may carry in DOTNET-RUNTIME-FLOOR; raise it with
+# every servicing update of the Microsoft packages.
+RUNTIME_FLOOR="$(tr -d '[:space:]' < "$ROOT/DOTNET-RUNTIME-FLOOR")"
+RUNTIME_FOUND="$(sed -n '/"Microsoft.NETCore.App"/,/}/ s/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$STAGE/ModularCA.API.runtimeconfig.json" | head -n 1)"
+if [[ -z "$RUNTIME_FOUND" ]]; then
+    echo "REFUSING: could not read the bundled .NET runtime version from ModularCA.API.runtimeconfig.json" >&2
+    exit 1
+fi
+note "bundled .NET runtime: $RUNTIME_FOUND (floor $RUNTIME_FLOOR)"
+if [[ "$(printf '%s\n%s\n' "$RUNTIME_FLOOR" "$RUNTIME_FOUND" | sort -V | head -n 1)" != "$RUNTIME_FLOOR" ]]; then
+    echo "REFUSING: this build bundles .NET runtime $RUNTIME_FOUND, older than the floor $RUNTIME_FLOOR (DOTNET-RUNTIME-FLOOR)." >&2
+    echo "  The runtime comes from the SDK that built it. Install a .NET SDK that carries runtime $RUNTIME_FLOOR or newer" >&2
+    echo "  (dotnet --list-runtimes shows what this machine has), or build from the release's tarball instead." >&2
+    exit 1
+fi
+
 note "creating $TARBALL"
 rm -f "$TARBALL" "$TARBALL.sha256"
 tar --format=gnu -czf "$TARBALL" --owner=0 --group=0 \

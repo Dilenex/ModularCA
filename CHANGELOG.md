@@ -96,6 +96,14 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 **Fixed**
 
+- **A build from source refuses to bundle a .NET runtime older than the release's.** The archive
+  is self-contained, so the runtime inside it is the one the build machine's SDK carries, whatever
+  the project files name. A build of 0.4.4 made with a distribution's SDK 10.0.114 carried runtime
+  10.0.14, without the fix for GHSA-vmv3-wvjp-wqpj that the published release has. Both build
+  scripts now print the runtime they bundled and stop when it is older than the version in
+  `DOTNET-RUNTIME-FLOOR`, naming both and saying which SDK to install. The published releases
+  were built on a current SDK and are not affected.
+
 - **With "Require mTLS OCSP Check" on, a client certificate issued by an intermediate CA can sign
   in.** The online revocation check could never complete for a certificate validated against an
   intermediate CA, so sign-in, step-up and EST re-enrolment with one were always refused while
