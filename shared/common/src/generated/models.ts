@@ -1384,6 +1384,7 @@ export interface SchemaConfig {
     waitSeconds: number;
     migrationCommandTimeoutSeconds: number;
     migrationLockTimeoutSeconds: number;
+    restoreWaitSeconds: number;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */

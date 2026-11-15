@@ -66,6 +66,23 @@ internal static class SchemaStartupApi
         return await (Task<int?>)method.Invoke(null, [array, appliesMigrations, config, notifier, ct])!;
     }
 
+    /// <summary>
+    /// Calls <c>SchemaStartup.TakeServingLockAsync</c>, the first step of a start, with no systemd
+    /// notifier: null when the start goes on, or the exit code it stops with.
+    /// </summary>
+    public static async Task<int?> TakeServingLockAsync(
+        ServingDatabaseLock servingLock, DbInstance instance, SchemaConfig config, CancellationToken ct = default) =>
+        await (Task<int?>)Startup.GetMethod("TakeServingLockAsync", BindingFlags.Public | BindingFlags.Static)!
+            .Invoke(null, [servingLock, instance, config, null, ct])!;
+
+    /// <summary>
+    /// Calls <c>SchemaStartup.ExitWhenRestoreFoundBeside</c> with a stand-in for the process exit,
+    /// so a test sees the status the process would end with.
+    /// </summary>
+    public static void ExitWhenRestoreFoundBeside(ServingDatabaseLock servingLock, string holder, Action<int> exit) =>
+        Startup.GetMethod("ExitWhenRestoreFoundBeside", BindingFlags.Public | BindingFlags.Static)!
+            .Invoke(null, [servingLock, holder, exit]);
+
     /// <summary>The <c>ISystemdNotifier</c> type <c>EnforceAllAsync</c> takes.</summary>
     public static Type NotifierType =>
         Startup.GetMethod("EnforceAllAsync", BindingFlags.Public | BindingFlags.Static)!.GetParameters()[3].ParameterType;

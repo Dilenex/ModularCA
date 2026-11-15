@@ -689,7 +689,13 @@ Schema:
   WaitSeconds: 900
   MigrationCommandTimeoutSeconds: 3600
   MigrationLockTimeoutSeconds: 30
+  RestoreWaitSeconds: 60
 ```
+
+`RestoreWaitSeconds` belongs to the step that now comes before this whole sequence: the process
+takes its restore lock in the application database, and while a restore holds it the process
+waits that long and then exits with status 75. No migration is rehearsed or applied beside a
+running restore. See `restore-exclusion.md`.
 
 Take a dump before every upgrade (`pg_dump -Fc` of both databases). It is the recovery path.
 

@@ -34,8 +34,15 @@ public class AdminBackupController(
     ISecurityAlertService alertService,
     ModularCA.Shared.Signing.ISigningService signer,
     ModularCA.Shared.Utils.EnvVarConfigOverlay envOverlay,
-    ModularCA.Auth.Services.IReplayGuard replayGuard) : ControllerBase
+    ModularCA.Auth.Services.IReplayGuard replayGuard,
+    ModularCA.Database.ServingDatabaseLock servingLock) : ControllerBase
 {
+    /// <summary>
+    /// This node's lock on the application database. A restore from the console asks for the
+    /// same key exclusively on the connection that holds it, so the node does not block itself
+    /// and the restore is refused only while another node, or another restore, uses the database.
+    /// </summary>
+    private readonly ModularCA.Database.ServingDatabaseLock _servingLock = servingLock;
     /// <summary>Spends restore-confirmation tokens atomically, so one token starts one restore.</summary>
     private readonly ModularCA.Auth.Services.IReplayGuard _replayGuard = replayGuard;
     /// <summary>Keeps environment-sourced secrets out of <c>config.yaml</c> when the configuration is persisted.</summary>
@@ -297,13 +304,23 @@ public class AdminBackupController(
         // providedPassword is forwarded straight through — the restore path ignores it for
         // legacy and RandomKey archives, and only uses it when the archive is StoredPassword-mode
         // and the on-disk password file can't decrypt it.
-        var exitCode = await BackupRestore.Restore(
+        //
+        // The restore takes the restore lock through this node's own lock connection: it is
+        // refused, with nothing changed, while another node serves from the same database or
+        // another restore runs, and while it runs no other node starts.
+        var result = await BackupRestore.RestoreWithVerdictAsync(
             archivePath,
             _ => _signer,
-            skipSchemaCheck: false,
-            providedPassword: string.IsNullOrEmpty(request.Password) ? null : request.Password,
-            restoreAudit: request.RestoreAudit,
-            interactive: false);
+            new RestoreOptions
+            {
+                SkipSchemaCheck = false,
+                Keys = new BackupKeySource(Password: string.IsNullOrEmpty(request.Password) ? null : request.Password),
+                RestoreAudit = request.RestoreAudit,
+                Interactive = false,
+                Exclusion = _servingLock,
+            });
+        Console.WriteLine(result.Verdict);
+        var exitCode = result.ExitCode;
 
         if (exitCode != 0)
         {
@@ -314,8 +331,19 @@ public class AdminBackupController(
                 targetEntityType: "Backup",
                 targetEntityId: sanitized,
                 success: false,
-                errorMessage: $"Restore failed with exit code {exitCode}",
+                errorMessage: result.DatabaseInUse
+                    ? $"Restore refused (exit code {exitCode}): the application database is in use by another node or another restore"
+                    : $"Restore failed with exit code {exitCode}",
                 sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());
+
+            // Another node is serving from the database, or another restore is running: nothing
+            // was changed, and the answer says what has to be stopped.
+            if (result.DatabaseInUse)
+                return Conflict(new
+                {
+                    error = "Restore refused: " + ModularCA.Database.RestoreLock.OtherNodeInUse + ". Nothing was changed.",
+                    exitCode,
+                });
 
             return StatusCode(500, new { error = "Restore failed", exitCode });
         }

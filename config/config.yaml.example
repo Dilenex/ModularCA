@@ -442,9 +442,12 @@ Https:
 # the longest one migration statement may run, 0 for no limit; a statement that exceeds it stops
 # the start with status 3. MigrationLockTimeoutSeconds: how long a migration waits for a table lock
 # before that attempt fails and is retried; a longer wait blocks every reader of that table
-# meanwhile. These are the defaults.
+# meanwhile. RestoreWaitSeconds: how long a starting process waits for a restore that is running
+# on the application database before it exits with status 75 to be started again; it never starts
+# beside a running restore, and 0 does not wait. These are the defaults.
 # Schema:
 #   WaitSeconds: 900
 #   MigrationCommandTimeoutSeconds: 3600
 #   MigrationLockTimeoutSeconds: 30
+#   RestoreWaitSeconds: 60
 

@@ -125,6 +125,7 @@ the state when this was drawn (2026-10-05); the readers made live since are list
 |---|---|---|---|---|
 | `DB.App.*`, `DB.Audit.*` (Host, Port, Username, Password, Database, SslMode) | a | connection strings in `StartModularCA`, schema check, `--unlock-user`, `--upgrade-check`, `--db-ownership`, `BackupRestore`, `Unlocker`, `KeystoreDbPassphraseLoader` | restart | restart |
 | `Schema.WaitSeconds`, `MigrationCommandTimeoutSeconds`, `MigrationLockTimeoutSeconds` | a | `SchemaStartup`, `SignerRole`, `UpgradeCheckCommand` | restart | restart |
+| `Schema.RestoreWaitSeconds` (added in 0.4.5: how long a start waits for a running restore before it exits 75; `restore-exclusion.md`) | a | `SchemaStartup.TakeServingLockAsync`, in the node and in `SignerRole` | restart | restart |
 | `Roles` | c | `ProcessRoles.Parse`; `--role` wins | restart | restart |
 | `Signer.Mode`, `Endpoint`, `ClientCertificate`, `ClientCertificatePassword`, `PinnedServerSpki` | c | the node's `RemoteSigningService` | restart | restart |
 | `Signer.Listen`, `ServerCertificate`, `ServerCertificatePassword`, `PinnedClientSpki`, `IdentityCa`, `IdentityCaPassword` | b | `SignerRole`, `SignerIdentityCommands` | restart | restart |

@@ -128,6 +128,56 @@ public class PostgresRollbackContinuityTests
         var server = Environment.GetEnvironmentVariable(ServerVariable)!;
         var missing = new Npgsql.NpgsqlConnectionStringBuilder(server) { Database = $"modularca_absent_{Guid.NewGuid():N}", Pooling = false }.ConnectionString;
 
+        // It tries four times over seven seconds (1 s, 2 s, 4 s between) before it gives up.
+        var clock = System.Diagnostics.Stopwatch.StartNew();
         Assert.False(await BackupRestore.StoreIncarnationAfterRestoreAsync(missing, IncarnationReading.None));
+        Assert.InRange(clock.Elapsed, TimeSpan.FromSeconds(6.5), TimeSpan.FromSeconds(60));
+    }
+
+    /// <summary>
+    /// The restored database refuses the write for a moment (here: a trigger that raises until it
+    /// is dropped), as one that is still settling after a restore does. The store is tried again
+    /// and succeeds, and the next start finds the incarnation current.
+    /// </summary>
+    [RequiresEnvironmentFact(ServerVariable)]
+    public Task A_store_that_fails_at_first_is_tried_again_and_succeeds()
+        => WithDatabaseAsync("modularca_incarnation_retry", async connection =>
+        {
+            var thisMachine = IncarnationReading.From("injected", "this-machine");
+            await ExecuteAsync(connection, """
+                CREATE FUNCTION refuse_incarnation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'not yet'; END $$;
+                CREATE TRIGGER refuse_incarnation BEFORE INSERT OR UPDATE ON "InstanceIncarnation" FOR EACH ROW EXECUTE FUNCTION refuse_incarnation();
+                """);
+            var attempts = 0;
+            var storing = BackupRestore.StoreIncarnationAfterRestoreAsync(connection, thisMachine,
+                retryDelays: [TimeSpan.FromMilliseconds(300), TimeSpan.FromMilliseconds(300), TimeSpan.FromSeconds(8)],
+                store: async (attempt, reading) =>
+                {
+                    attempts = attempt;
+                    // The third attempt finds the database ready.
+                    if (attempt == 3)
+                        await ExecuteAsync(connection, "DROP TRIGGER refuse_incarnation ON \"InstanceIncarnation\"");
+                    await using var db = Open(connection);
+                    await InstanceContinuity.StoreIncarnationAsync(db, reading, "restore");
+                });
+
+            Assert.True(await storing);
+            Assert.Equal(3, attempts);
+            await using var after = Open(connection);
+            Assert.Equal(thisMachine.ValueHash, (await after.InstanceIncarnation.AsNoTracking().SingleAsync()).ValueHash);
+
+            // With the trigger back the real store, on the real database, fails every time and says so.
+            await ExecuteAsync(connection, "CREATE TRIGGER refuse_incarnation BEFORE INSERT OR UPDATE ON \"InstanceIncarnation\" FOR EACH ROW EXECUTE FUNCTION refuse_incarnation()");
+            Assert.False(await BackupRestore.StoreIncarnationAfterRestoreAsync(connection, IncarnationReading.From("injected", "another"),
+                retryDelays: [TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(50)]));
+            await using var unchanged = Open(connection);
+            Assert.Equal(thisMachine.ValueHash, (await unchanged.InstanceIncarnation.AsNoTracking().SingleAsync()).ValueHash);
+        });
+
+    private static async Task ExecuteAsync(string connection, string sql)
+    {
+        await using var conn = new Npgsql.NpgsqlConnection(connection);
+        await conn.OpenAsync();
+        await new Npgsql.NpgsqlCommand(sql, conn).ExecuteNonQueryAsync();
     }
 }

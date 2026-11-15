@@ -11,7 +11,9 @@ namespace ModularCA.API.Startup;
 /// <summary>
 /// <c>--restore &lt;archive&gt; [--restore-audit] [--unattended] [--key-file &lt;file&gt;] [--password-file &lt;file&gt;]</c>:
 /// the command-line restore (<see cref="BackupRestore.RestoreWithVerdictAsync"/>), run with the
-/// node stopped.
+/// node stopped, and on a split install the signer service too. The restore checks: while either
+/// runs, or another restore does, it is refused with status 3 and nothing changed, and while it
+/// runs neither starts (<see cref="ModularCA.Database.RestoreLock"/>).
 /// </summary>
 /// <remarks>
 /// <para>

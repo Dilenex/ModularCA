@@ -34,7 +34,9 @@ public static class SignerRole
     /// it checks the application database, which its audit sink writes to, through
     /// <see cref="SchemaStartup.EnforceAllAsync"/>. It waits, extending the systemd start
     /// timeout, while the control role migrates or the database is unreachable, and refuses a
-    /// schema this build does not match. In the shared layout it warns that the node can rewrite
+    /// schema this build does not match. Before that check it takes the signer's key of the
+    /// restore lock (<see cref="SchemaStartup.TakeServingLockAsync"/>) and holds it while it
+    /// runs. In the shared layout it warns that the node can rewrite
     /// what it reads; in its own directory it writes its file logs and keystore audit there and
     /// warns about a directory or file others can write.
     /// </summary>
@@ -79,6 +81,21 @@ public static class SignerRole
                 + "its own directory with {Flag}; README-DEPLOY.md, \"Two units\", says how.",
                 paths.ConfigPath, paths.DbYamlPath, paths.KeystoreYamlPath, SignerPaths.Flag);
         }
+
+        // The signer writes its audit to the application database and reads its pins from it all
+        // the time it runs, so it holds its own key of the restore lock (RestoreLock.SignerKey),
+        // on a connection of its own, from before its first read: a command-line restore, which
+        // replaces the keystore files under a running signer, is refused while it runs, and a
+        // signer started during such a restore waits, then exits 75. A restore from the node's
+        // console goes through this running signer and does not ask for this key.
+        var signerLock = new ServingDatabaseLock(appConnStr, RestoreLock.SignerKey,
+            new Serilog.Extensions.Logging.SerilogLoggerFactory(Log.Logger).CreateLogger("ModularCA.RestoreLock"), holder: "signer");
+        var lockExit = await SchemaStartup.TakeServingLockAsync(
+            signerLock, config.DB.App, config.Schema, new Microsoft.Extensions.Hosting.Systemd.SystemdNotifier());
+        if (lockExit is int lockCode)
+            return lockCode;
+        // From here on: a restore found beside this running signer ends the signer with status 75.
+        SchemaStartup.ExitWhenRestoreFoundBeside(signerLock, "signer");
 
         var schemaExit = await SchemaStartup.EnforceAllAsync(
             [new SchemaTarget("application", DatabaseKind.Application, config.DB.App)],
@@ -175,6 +192,7 @@ public static class SignerRole
                         Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId
                             .PossibleIncorrectRequiredNavigationWithQueryFilterInteractionWarning)));
                 builder.Services.AddSingleton(config);
+                builder.Services.AddSingleton(signerLock);
                 if (hsm != null)
                     builder.Services.AddSingleton(hsm);
 

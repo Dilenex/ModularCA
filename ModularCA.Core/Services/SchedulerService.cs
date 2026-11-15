@@ -54,6 +54,11 @@ namespace ModularCA.Core.Services
         // The mode whose held jobs were last logged, so a hold is logged once per mode and not on every poll.
         private ModularCA.Shared.Modes.InstanceMode? _modeHoldLogged;
 
+        // Why no job may run in this process right now (a restore beside or under it), or null.
+        private readonly Func<string?>? _heldBecause;
+        // The reason last logged, so a hold is logged once and not on every poll.
+        private string? _heldBecauseLogged;
+
         private bool _firstRun = true;
 
         /// <summary>
@@ -93,6 +98,10 @@ namespace ModularCA.Core.Services
         /// mode and the class of each job type: before each job the scheduler asks whether the
         /// mode allows its class, and holds the job when it does not. With either null no job is
         /// ever held for the mode.
+        /// <paramref name="heldBecause"/> answers why no job at all may run in this process right
+        /// now, or null when jobs may run: the node passes the state of its restore lock, so
+        /// nothing scheduled runs while a restore replaces the database, or after one has until
+        /// the process is restarted. Held jobs are not marked as run.
         /// </summary>
         public SchedulerService(
             IServiceProvider serviceProvider,
@@ -101,8 +110,10 @@ namespace ModularCA.Core.Services
             TimeProvider? timeProvider = null,
             string? leaseName = null,
             ModularCA.Shared.Modes.IInstanceModeGate? modeGate = null,
-            Func<Type, ModularCA.Shared.Modes.ModeOperation>? modeOperationOf = null)
+            Func<Type, ModularCA.Shared.Modes.ModeOperation>? modeOperationOf = null,
+            Func<string?>? heldBecause = null)
         {
+            _heldBecause = heldBecause;
             _modeGate = modeGate;
             _modeOperationOf = modeOperationOf;
             _serviceProvider = serviceProvider;
@@ -172,6 +183,24 @@ namespace ModularCA.Core.Services
         /// </summary>
         private async Task PollCycleAsync(CancellationToken stoppingToken)
         {
+            // A restore beside or under this process: nothing scheduled runs, and nothing is
+            // read or written for the lease either.
+            if (_heldBecause?.Invoke() is { } held)
+            {
+                if (_heldBecauseLogged != held)
+                {
+                    _heldBecauseLogged = held;
+                    // A warning here: the restore lock itself logs an error when the cause is one.
+                    _logger.LogWarning("SchedulerService: holding every scheduled job. {Reason}", held);
+                }
+                return;
+            }
+            if (_heldBecauseLogged != null)
+            {
+                _heldBecauseLogged = null;
+                _logger.LogInformation("SchedulerService: scheduled jobs are no longer held.");
+            }
+
             // Short-lived scope used only for lease acquisition and table-existence checks.
             // Each job below owns its own scope inside its TickAsync via SchedulerJobRunner.
             await using var leaseScope = _serviceProvider.CreateAsyncScope();

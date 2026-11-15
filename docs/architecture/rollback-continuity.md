@@ -389,6 +389,23 @@ Choices the text above left open:
 - **The notice does not make the node unhealthy.** `/health/ready` stays 200 with
   `checks.continuity.status` = `notice`. A 503 would take a rolled-back CA out of rotation,
   which section 2 rules out.
+- **`checks.continuity` keeps this start and the open events apart.** `incarnationCheck` and
+  `incarnationCheckedAt` are the comparison this process made at its own start. `events` are
+  the events nobody has acknowledged, whichever start recorded them; each has `detectedAt` and
+  `recordedAtThisStart`, true only for an event this process recorded at this start (its
+  incarnation comparison or its published-CRL check), and `eventsFromThisStart` and
+  `eventsFromEarlierStarts` count the two. Before this, `incarnationCheck: "Same"` beside an
+  event of an earlier start read as a contradiction. Example, at the start after the one that
+  found a change:
+
+      "continuity": { "status": "notice", "unacknowledged": 1, "incarnationCheck": "Same",
+        "incarnationCheckedAt": "2026-11-13T09:12:04.1Z", "eventsFromThisStart": 0, "eventsFromEarlierStarts": 1,
+        "events": [ { "id": "…", "kind": "IncarnationChanged", "detectedAt": "2026-11-12T22:40:17.5Z",
+                      "recordedAtThisStart": false, "oldTag": "…", "newTag": "…", "message": "…" } ] }
+- **A restore and a running node keep each other out** (`restore-exclusion.md`): the notice that
+  led to it was raised by a node that started while its database was being restored and wrote
+  over the incarnation the restore had just stored. A restore also says in its last line when it
+  could not store the incarnation, after four attempts.
 - **"Source went away"** writes its own audit action (`InstanceIncarnationSourceLost`), does
   not raise the CRL numbers, and shows a notice that also needs acknowledging. That is the
   "warn once": the next start finds "none" stored and says nothing.

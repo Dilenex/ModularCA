@@ -198,6 +198,7 @@ operator sees:
 | Outcome | Exit status | What happens |
 |---|---|---|
 | Everything current, or the control role dry-ran and then applied the pending migrations | — | starts |
+| A restore is running on the application database (`--restore`, or the console's restore on another node) | — then **75** | waits up to `Schema.RestoreWaitSeconds` (60 s) for the restore to finish and then starts; if it is still running, exits and systemd retries. The service never starts beside a running restore. See "A restore and a running node keep each other out" |
 | Database unreachable, locked by a migration, or (enrollment, validation, signer) waiting for the control role's migrations | — then **75** | waits up to `Schema.WaitSeconds` (900 s), then exits and systemd retries |
 | The dry run or a migration failed on a lock timeout, a deadlock or a lost connection | — then **75** | retried in the service with backoff for up to `Schema.WaitSeconds`, then exits and systemd retries |
 | A pending migration refuses in the dry run | **3** | nothing applied to either database; the journal lists every refusal of both databases, each with its migration and message |
@@ -841,7 +842,60 @@ replaced. Each database is restored in one transaction, so one that fails is lef
 
 **A restore is not reported as a rollback.** The restore raises the CRL numbers and records
 itself, and it stores this machine's incarnation in the restored database, so the next start
-does not raise the notice described under "Snapshots, rollbacks and copies of the machine".
+does not raise the notice described under "Snapshots, rollbacks and copies of the machine". It
+tries that store four times over seven seconds. If it still cannot, the restore is done all the
+same and says so in its last line, `RESTORE: DONE (the audit database was kept; the incarnation
+was not stored, so the next start shows a roll-back notice)`: start the node and acknowledge the
+notice.
+
+#### A restore and a running node keep each other out
+
+Stopping the service first is no longer only an instruction. From 0.4.5:
+
+- **A restore is refused while a node is serving from the database.** `--restore` exits **3**
+  before it asks or changes anything, and its last line says why: `RESTORE: REFUSED (a node is
+  serving from this application database, or another restore is running on it: stop the node,
+  every process of it on every host, or wait for the other restore, then restore again). Nothing
+  was changed.` On a split install a running signer service refuses it the same way (`the signer
+  service is running on this application database: stop the signer, then restore again`). Two
+  restores at once: the second is refused.
+- **A node does not start while a restore is running.** It logs once that it is waiting for a
+  restore, waits up to `Schema.RestoreWaitSeconds` (60 s by default, in `config.yaml`; `0` does
+  not wait; it is read from `config.yaml` only, not from the environment, and a restore puts
+  `config.yaml` back from the archive, so a value changed by hand does not outlive one), and starts when the restore has finished. If the restore is still running it exits
+  with status **75**, the status that already means "try again", so `Restart=on-failure` brings
+  it back and it starts once the restore is done. A signer-only process (`--role signer`) does
+  the same.
+- **The console's restore** runs inside the node and is not stopped by that node. It is refused,
+  with the same reason, while *another* node serves from the same database: stop the other
+  nodes first. While it runs, no other node starts.
+- **Nothing else is affected.** `--upgrade-check` in both forms, `--backup`,
+  `--backup-manifest`, `--db-ownership`, `--settings` and the other one-off commands run beside
+  a serving node and beside a restore as before.
+
+How: each side holds a PostgreSQL advisory lock in the application database, on a connection of
+its own, for as long as it runs: `pg_advisory_lock(1296253266, 1)` for a node and
+`(1296253266, 2)` for a signer-only process, shared by the services and exclusive for a restore.
+Nothing is stored; a process that dies releases its lock with its connection. To see who holds
+it:
+
+    SELECT a.pid, a.usename, a.client_addr, a.backend_start, l.objid AS key, l.mode
+      FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+     WHERE l.locktype = 'advisory' AND l.classid = 1296253266;
+
+A session listed there with no process behind it (a host that lost power while the database is
+elsewhere) goes when the server's TCP keepalive gives up; `SELECT pg_terminate_backend(<pid>)`
+ends it at once. The lock needs a direct connection to PostgreSQL or a pooler in *session* mode:
+through a pooler in transaction mode a session lock means nothing.
+
+**If the node's lock connection drops** (the database restarts) the node takes the lock again
+within seconds of the database answering, and nothing else happens. If a restore got in while
+the lock was gone, the node is running beside a restore, on what it read before it: it logs an
+error and exits with status **75**, and so does a signer-only process. The packaged units
+(`Restart=always`, no restart on 3 and 4 only) start it again; that start waits for the restore
+to finish and exits 75 again until it has. A node that nothing restarts, one started by hand for
+instance, stays stopped until you start it. The windows that remain are listed in
+`docs/architecture/restore-exclusion.md`.
 
 **The databases are this host's.** A restore writes into the databases this host's own
 `config/db.yaml` names, with its credentials and any `MODULARCA__DB__*` overrides in the
@@ -939,12 +993,14 @@ exactly that case. A runner that must not put instance A's archive over instance
     ModularCA.API --restore <archive> --unattended [--restore-audit] [--key-file <file>] [--password-file <file>]
 
 With `--unattended` nothing is asked: not the word `RESTORE`, and not the backup password. The
-node must be stopped, and on a split install the signer too.
+node must be stopped, and on a split install the signer too. The restore checks: while either is
+running it exits 3 with nothing changed ("A restore and a running node keep each other out",
+above).
 
 | Exit | Last line of standard output starts with | Meaning | What the runner does |
 |---|---|---|---|
-| 0 | `RESTORE: DONE` | The restore completed. The line says whether the audit database was kept. | Start the node. |
-| 3 | `RESTORE: REFUSED` | Refused, and **nothing was changed**: the line ends `Nothing was changed.` | Start the node again as it was. |
+| 0 | `RESTORE: DONE` | The restore completed. The line says whether the audit database was kept, and whether the incarnation could not be stored. | Start the node. |
+| 3 | `RESTORE: REFUSED` | Refused, and **nothing was changed**: the line ends `Nothing was changed.` | Start the node again as it was; or, when the line says a node or the signer is using the database, stop it and run the restore again. |
 | 75 | `RESTORE: UNREACHABLE` | A database could not be reached; nothing was changed. | Try again, or start the node again as it was. |
 | 4 | `RESTORE: FAILED AFTER CHANGES` | Something was changed, or may have been, and the restore did not complete. | Put the copied volumes back. |
 
@@ -973,6 +1029,12 @@ What is refused with status 3, before anything is touched:
   `config.yaml` (above, "Restoring onto a new host");
 - this host has no usable `db.yaml`, or a database refuses the role it names (the database does
   not exist, the password is wrong);
+- **a node is serving from the application database, the signer service is running on it, or
+  another restore is running**: the line names which and says to stop it. A runner whose
+  orchestrator may have restarted the node around the restore gets this status instead of two
+  processes writing over each other; it stops the node and runs the restore again. A node that
+  the orchestrator starts *while* the restore runs waits for it, or exits 75 and is started
+  again;
 - the pre-restore snapshot cannot be written, or no owner-only staging directory can be made;
 - without `--unattended`: standard input is closed, or something other than `RESTORE` was typed.
 
@@ -989,7 +1051,12 @@ running past `Backup.DatabaseTimeoutMinutes`, which leaves it unknown whether it
 
 **The audit database is kept**, with or without `--unattended`, unless `--restore-audit` is
 given. The `RESTORE: DONE` line says which: `(the audit database was kept)` or `(the audit
-database was replaced with the archive's)`.
+database was replaced with the archive's)`. When the restore could not store the incarnation in
+the restored database, after four attempts over seven seconds, the same brackets say so, and the
+status is still 0: `RESTORE: DONE (the audit database was kept; the incarnation was not stored,
+so the next start shows a roll-back notice)`. The restore is complete; the next start raises the
+notice described under "Snapshots, rollbacks and copies of the machine", which an administrator
+acknowledges.
 
 #### Every secret comes from a file
 
@@ -1073,9 +1140,17 @@ the machine" once more.
 Then, by status: on 0 start the signer and the node; on 3 or 75 start them as they were; on 4,
 or anything else, put the copied volumes back first.
 
+The one-off container must find the node and the signer stopped. If the pod's manager restarts
+either while the restore runs, the restarted container waits for the restore
+(`Schema.RestoreWaitSeconds`, 60 s) and then exits 75 to be started again, so give the pod a
+restart policy that retries; if either was still running when the restore began, the restore
+exits 3 with nothing changed.
+
 What has been run: the command lines `--backup-manifest` and `--restore --unattended`, every
 status above, the read-only archive and the closed standard input are exercised by a drill that
-runs the real program on Windows (`tests/ModularCA.Tests/DisasterRecovery`). The container
+runs the real program on Windows (`tests/ModularCA.Tests/DisasterRecovery`), and so are a
+restore refused beside a running node, a second restore refused beside the first, and a node
+that waits for a restore or exits 75. The container
 commands, the Podman secret, Linux file modes and the split layout with `--signer-dir` in a
 one-off container have not been run.
 
@@ -1119,7 +1194,13 @@ What the instance does about it, from 0.4.5:
   replayed, because the signer keeps no journal yet; revoke what you find as described below.
 - **`/health/ready` carries the notice** under `checks.continuity`: `status` is `notice` while
   one stands, with the events and their text. The node stays healthy; a rolled-back CA that
-  refused traffic would be an outage on top of a gap.
+  refused traffic would be an outage on top of a gap. Two things are reported there and are
+  not the same: `incarnationCheck` (with `incarnationCheckedAt`) is the comparison *this process*
+  made at *its* start, and `events` are the events still waiting to be acknowledged, whichever
+  start recorded them. Each event carries `detectedAt`, when it was recorded, and
+  `recordedAtThisStart`; `eventsFromThisStart` and `eventsFromEarlierStarts` count them. So
+  `"incarnationCheck": "Same"` beside an event with `"recordedAtThisStart": false` means this
+  start found nothing new and an earlier notice has not been acknowledged yet.
 - **A value that disappears** (the instance moved to a host that sets none) is reported once,
   as `InstanceIncarnationSourceLost`, and "none" is stored. The CRL numbers are not raised for
   it. The first start after an upgrade to 0.4.5 stores what it sees and reports nothing.

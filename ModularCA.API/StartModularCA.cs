@@ -1055,6 +1055,12 @@ Log.Information("Process roles: {Roles}", string.Join(",", activeRoles.Names));
 // listener's trust anchors) and never the audit database, and applies no migration.
 // What the continuity step below found, for /health/ready.
 var continuityState = new ModularCA.API.Startup.ContinuityStartState();
+// The lock this node holds on the application database for as long as it runs, on a connection
+// of its own: a restore that finds it held is refused, and this start waits for, or gives way
+// to, a restore that holds the database (ModularCA.Database.RestoreLock). Never taken in setup mode.
+var servingLock = new ModularCA.Database.ServingDatabaseLock(appConnStr, ModularCA.Database.RestoreLock.NodeKey,
+    new Serilog.Extensions.Logging.SerilogLoggerFactory(Log.Logger).CreateLogger("ModularCA.RestoreLock"));
+builder.Services.AddSingleton(servingLock);
 if (!isSetupMode)
 {
     var schemaTargets = new List<ModularCA.API.Startup.SchemaTarget>
@@ -1063,6 +1069,17 @@ if (!isSetupMode)
     };
     if (!ingressOnly && !string.IsNullOrWhiteSpace(config.DB.Audit.Database))
         schemaTargets.Add(new("audit", DatabaseKind.Audit, config.DB.Audit));
+    // First the restore lock, so no migration and no start-up write below can meet a restore:
+    // a restore in progress is waited for (Schema.RestoreWaitSeconds), then the process exits 75.
+    var lockExit = await ModularCA.API.Startup.SchemaStartup.TakeServingLockAsync(
+        servingLock, config.DB.App, config.Schema, new SystemdNotifier());
+    if (lockExit is int lockCode)
+    {
+        await Log.CloseAndFlushAsync();
+        Environment.Exit(lockCode);
+    }
+    // From here on: a restore found beside this running node ends the node with status 75.
+    ModularCA.API.Startup.SchemaStartup.ExitWhenRestoreFoundBeside(servingLock, "node");
     var schemaExit = await ModularCA.API.Startup.SchemaStartup.EnforceAllAsync(
         schemaTargets, controlActive, config.Schema, new SystemdNotifier());
     if (schemaExit is int code)
@@ -1317,7 +1334,8 @@ if (!isSetupMode && ModularCA.API.Startup.SchedulerJobRoles.RunsScheduler(active
         sp.GetService<TimeProvider>(),
         schedulerLeaseName,
         sp.GetRequiredService<ModularCA.Shared.Modes.IInstanceModeGate>(),
-        ModularCA.API.Startup.SchedulerJobRoles.ModeOperationOf));
+        ModularCA.API.Startup.SchedulerJobRoles.ModeOperationOf,
+        () => servingLock.HoldReason));
 }
 else if (!isSetupMode)
 {
@@ -2006,7 +2024,10 @@ var healthChecks = builder.Services.AddHealthChecks()
     // The standing notice that this instance runs from an earlier or copied state. Always
     // healthy: it is information for an orchestrator and an administrator, not a reason to
     // stop serving.
-    .AddCheck<ModularCA.API.HealthChecks.ContinuityHealthCheck>("continuity");
+    .AddCheck<ModularCA.API.HealthChecks.ContinuityHealthCheck>("continuity")
+    // The lock that keeps a restore and this node apart: unhealthy while a restore runs beside
+    // this process, and after one has run until the process is restarted.
+    .AddCheck<ModularCA.API.HealthChecks.RestoreLockHealthCheck>("restore-lock");
 // A node whose remote signer did not answer at start reads the wrapped secrets in the background
 // once it does, without a restart, and reports itself not ready until then.
 if (signerSecretsState.Pending)

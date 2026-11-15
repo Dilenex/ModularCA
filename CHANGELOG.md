@@ -6,6 +6,22 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### 0.4.5-dev.1.3 — 2026-11-12
+
+The fourth test build of 0.4.5. The hub's restore test showed a node starting beside a restore,
+on one database, with neither noticing. Since 0.4.5-dev.1.2:
+
+- **A restore and a running node keep each other out.** A restore beside a serving node exits 3
+  and changes nothing; a node that starts beside a restore waits, then exits 75. See "A restore
+  and a running node keep each other out" under Added, and the upgrade notes.
+- **The restore's last line says when the incarnation could not be stored**, and that step is
+  tried four times before it gives up.
+- **`/health/ready` says which start a continuity event came from**, and has a new entry,
+  `checks.restoreLock`.
+
+No migration is added: the schema is the one 0.4.5-dev.1.0 left. This build ran on Windows only
+before it was cut: nothing in it has run on Linux, in a container or under systemd.
+
 ### 0.4.5-dev.1.2 — 2026-11-12
 
 The third test build of 0.4.5. 0.4.5-dev.1.1 proved on the test host that a certificate issued
@@ -60,6 +76,20 @@ what the build is for.
 
 **Upgrade notes**
 
+- **A start can exit 75 because a restore is running.** A node, or a signer-only process, that
+  finds a restore using its application database waits up to `Schema.RestoreWaitSeconds`
+  (new, 60 seconds, in `config.yaml`; 0 means do not wait) and starts when the restore has
+  finished. Otherwise it exits with status 75. A unit or pod that starts it again on failure needs
+  no change; a runner that treats every failed start as fatal should try again on 75.
+- **A restore can exit 3 because a node or the signer is running.** Stop them and restore again.
+  A script that restored beside a running node, against the deploy guide, is now refused.
+- **The console's restore is refused, with HTTP 409, while another process of the instance serves
+  from the same database.** On an install whose roles run as several processes, stop the others
+  first. Scheduled jobs on the node are held while its console restore runs.
+- **A node or signer that finds a restore ran beside it exits with status 75.** The packaged
+  units restart it. Where nothing restarts the process, it stays stopped until it is started.
+- **A node behind a connection pooler in transaction mode is not protected.** The lock needs a
+  direct connection to PostgreSQL, or a pooler in session mode.
 - **Two migrations, both additive:** `RevokedSerialTombstones` and `InstanceIncarnation`. They add
   tables and three nullable columns on certificates. A backup taken before the upgrade is still
   the way back to 0.4.4.
@@ -97,6 +127,34 @@ what the build is for.
 
 **Added**
 
+- **A restore and a running node keep each other out.** A restore replaces the application
+  database, and until now only the deploy guide said to stop the node first. The instance now
+  enforces it, with a PostgreSQL advisory lock in the application database and no schema change.
+  - **A restore is refused while a node serves from the database.** `--restore` exits 3 with
+    `RESTORE: REFUSED (a node is serving from this application database, or another restore is running on it: ...). Nothing was changed.`
+    On a split install a running signer service refuses it the same way, and a second restore is
+    refused while one runs.
+  - **A node does not start while a restore runs.** It waits up to `Schema.RestoreWaitSeconds`
+    and goes on when the restore has finished; otherwise it exits 75 and says why.
+  - **The console's restore** is refused with HTTP 409 and the reason while another node serves
+    from the same database.
+  - **If a node's lock connection drops** it takes the lock again, and an ordinary database
+    restart costs a log line. If a restore got in meanwhile, the node exits with status 75, and
+    so does a signer-only process: what it holds in memory is from before the restore. The
+    packaged units start it again, and that start waits for the restore to finish. A process
+    that nothing restarts stays stopped until it is started.
+  - **One-off commands are not affected:** `--upgrade-check` in both forms, `--backup`,
+    `--backup-manifest`, `--db-ownership`, `--settings` and the rest take no lock and
+    respect none.
+  - **What it does not cover** is listed in `docs/architecture/restore-exclusion.md`: a
+    `pg_restore` run by hand, a volume put back under a running node, and the few seconds
+    after a node's lock connection drops.
+- **The restore's last line says when the incarnation could not be stored**:
+  `RESTORE: DONE (the audit database was kept; the incarnation was not stored, so the next start shows a roll-back notice).`
+  The exit status is still 0. The store is tried four times over seven seconds first.
+- **`/health/ready`: `checks.continuity` says which start an event came from.** New fields
+  `incarnationCheckedAt`, `eventsFromThisStart`, `eventsFromEarlierStarts`, and
+  `recordedAtThisStart` on each event. Nothing was renamed.
 - **Revoking a certificate the CA has no record of.** After a database has gone back in time, a
   certificate issued in the lost time is valid and unknown, and could not be revoked. On a CA's
   page, an administrator with `cert.revoke` on that CA can now do one of two things, each with

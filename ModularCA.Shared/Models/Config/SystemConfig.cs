@@ -169,6 +169,15 @@ namespace ModularCA.Shared.Models.Config
         /// </summary>
         [Setting(SettingClass.Bootstrap, SettingReload.Restart)]
         public int MigrationLockTimeoutSeconds { get; set; } = 30;
+
+        /// <summary>
+        /// How long a starting process waits, in seconds, for a restore that holds the
+        /// application database to finish, before it exits with status 75 so its supervisor
+        /// starts it again. A restore that ends within the wait lets the start go on; 0 means do
+        /// not wait at all. The process never starts beside a running restore, whatever the value.
+        /// </summary>
+        [Setting(SettingClass.Bootstrap, SettingReload.Restart)]
+        public int RestoreWaitSeconds { get; set; } = 60;
     }
 
     /// <summary>

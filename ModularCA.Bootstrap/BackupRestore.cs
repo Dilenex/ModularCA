@@ -575,11 +575,15 @@ public static class BackupRestore
     /// destructive action. When false (API path), the caller is expected to have enforced its own
     /// confirmation (step-up MFA + single-use restore token) and the prompt is skipped.
     /// </param>
+    /// <param name="exclusion">
+    /// How the restore gets the application database to itself (<see cref="RestoreOptions.Exclusion"/>);
+    /// null takes the restore lock on a connection of its own, as the command line does.
+    /// </param>
     /// <returns>
     /// A status from <see cref="RestoreExit"/>: 0 done, 3 refused with nothing changed, 4 failed
     /// after something was changed, 75 a database could not be reached and nothing was changed.
     /// </returns>
-    public static async Task<int> Restore(string archivePath, Func<string, ISigningService> signerForAppDatabase, bool skipSchemaCheck = false, string? providedPassword = null, bool interactive = true, bool restoreAudit = false)
+    public static async Task<int> Restore(string archivePath, Func<string, ISigningService> signerForAppDatabase, bool skipSchemaCheck = false, string? providedPassword = null, bool interactive = true, bool restoreAudit = false, ModularCA.Database.IRestoreExclusion? exclusion = null)
     {
         var result = await RestoreWithVerdictAsync(archivePath, signerForAppDatabase, new RestoreOptions
         {
@@ -587,6 +591,7 @@ public static class BackupRestore
             Interactive = interactive,
             RestoreAudit = restoreAudit,
             Keys = new BackupKeySource(Password: providedPassword),
+            Exclusion = exclusion,
         });
         Console.WriteLine(result.Verdict);
         return result.ExitCode;
@@ -623,6 +628,15 @@ public static class BackupRestore
     /// are a record of the attempt, as the node's signer writes them all day, and are not counted
     /// as a change. A failure there is <see cref="RestoreExit.Refused"/>, or
     /// <see cref="RestoreExit.Unreachable"/> when it is a database that could not be reached.
+    /// </para>
+    /// <para>
+    /// <b>The restore lock.</b> Once the databases have answered, and before the confirmation or
+    /// the snapshot, the restore takes the application database for itself
+    /// (<see cref="TakeExclusionAsync"/>, <see cref="ModularCA.Database.RestoreLock"/>) and keeps
+    /// it until it ends. While a node serves from that database, the signer service runs on it,
+    /// or another restore runs, it is refused: <see cref="RestoreExit.Refused"/> with
+    /// <see cref="RestoreResult.DatabaseInUse"/>, saying what must be stopped. While it holds the
+    /// lock no node starts. The lock is looked at again just before the first database restore.
     /// </para>
     /// <para>
     /// The first statement that changes anything is the <c>pg_restore --single-transaction</c> of
@@ -682,6 +696,9 @@ public static class BackupRestore
         // predictable path and never beside the archive; null until then, so the cleanup below
         // has nothing to remove.
         string? restoreDir = null;
+        // The restore lock, held from the moment the databases are known to answer until the
+        // restore ends, however it ends.
+        ModularCA.Database.IRestoreExclusionHold? exclusion = null;
 
         try
         {
@@ -812,6 +829,15 @@ public static class BackupRestore
             if (replacesAudit && await ProbeRestoreTargetAsync("audit", target.DB.Audit) is { } auditUnreachable)
                 return auditUnreachable;
 
+            // The application database must be this restore's alone from here to the end: a
+            // node serving from it, the signer service or another restore holds the restore
+            // lock, and then this one is refused, before anything is asked or changed. While
+            // this restore holds it, no node starts.
+            var (taken, notTaken) = await TakeExclusionAsync(options.Exclusion ?? ModularCA.Database.RestoreLock.OwnConnection, target.DB.App);
+            if (notTaken != null)
+                return notTaken;
+            exclusion = taken;
+
             // Schema version check
             if (!options.SkipSchemaCheck)
             {
@@ -909,6 +935,15 @@ public static class BackupRestore
             // and written only its own staging directory and the pre-restore snapshot. The first
             // pg_restore below is the first statement that changes a database; progress.Changed is
             // set the moment one has committed or may have.
+            //
+            // The restore lock is looked at once more first: if the connection that holds it
+            // dropped while the archive was checked, a node may have started since.
+            if (!await exclusion!.StillHeldAsync())
+            {
+                Console.WriteLine("❌ The restore's lock on the application database was lost: the connection that held it dropped.");
+                Console.WriteLine("   A node may have started meanwhile, so the restore stops here. Nothing was changed; run it again.");
+                return RestoreResult.Refused("the restore's lock on the application database was lost before anything was changed (its connection dropped); run the restore again");
+            }
             var auditRestored = false;
             if (!restoreAudit)
             {
@@ -960,7 +995,8 @@ public static class BackupRestore
             // The restored database holds the incarnation of the machine and moment the backup
             // was taken. This restore has just made the repairs a changed incarnation calls for,
             // so it stores this machine's incarnation itself and the next start reports nothing.
-            await StoreIncarnationAfterRestoreAsync(AppConnectionString(target));
+            // A failure here does not fail the restore; the last line says so.
+            var incarnationStored = await StoreIncarnationAfterRestoreAsync(AppConnectionString(target));
 
             // 2. Restore keystores, through the signer. Each file from the archive is offered
             // under the restore context; the signer verifies its signature against the pinned
@@ -1078,13 +1114,66 @@ public static class BackupRestore
                 return RestoreResult.FailedAfterChanges("the restore was applied, but the CRL number counters could not be raised; do not start the CA until they are");
             }
 
+            // The lock was this restore's guard against a node starting under it. If its
+            // connection dropped on the way, the restore is still done, and the operator is told
+            // to look before starting anything.
+            if (!await exclusion.StillHeldAsync())
+            {
+                Console.WriteLine("  ⚠ The restore's lock on the application database was lost while it ran (its connection dropped).");
+                Console.WriteLine("    A node that started meanwhile ran beside the restore: check that none did, and restart any that is running.");
+            }
+
             Console.WriteLine("\n✅ Restore complete. Restart the application to apply changes.");
-            return RestoreResult.Done(auditKept: !auditRestored);
+            return RestoreResult.Done(auditKept: !auditRestored, incarnationStored);
         }
         finally
         {
+            if (exclusion != null)
+                try { await exclusion.DisposeAsync(); } catch { }
             if (restoreDir != null)
                 try { Directory.Delete(restoreDir, true); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// Takes the restore lock (<see cref="ModularCA.Database.RestoreLock"/>) through
+    /// <paramref name="exclusion"/>. Returns the hold, or the verdict when it could not be had:
+    /// <see cref="RestoreResult.InUse"/> when a node, the signer service or another restore is
+    /// using the application database, <see cref="RestoreExit.Unreachable"/> when the server did
+    /// not answer, <see cref="RestoreExit.Refused"/> for anything else. Nothing has been changed
+    /// in any of those cases.
+    /// </summary>
+    /// <param name="exclusion">The command line's own connection, or the console's node.</param>
+    /// <param name="app">The application database the restore writes into.</param>
+    internal static async Task<(ModularCA.Database.IRestoreExclusionHold? Hold, RestoreResult? Verdict)> TakeExclusionAsync(
+        ModularCA.Database.IRestoreExclusion exclusion, ModularCA.Shared.Models.Config.DbInstance app)
+    {
+        try
+        {
+            var attempt = await exclusion.TryTakeAsync(PostgresConnection.Build(app));
+            if (attempt.Hold != null)
+            {
+                Console.WriteLine("  ✓ Restore lock taken: no node is serving from the application database, and none starts while this restore runs.");
+                return (attempt.Hold, null);
+            }
+            var reason = attempt.Refusal ?? ModularCA.Database.RestoreLock.NodeInUse;
+            Console.WriteLine($"❌ The application database '{app.Database}' on {app.Host}:{app.Port} is in use: {reason}.");
+            Console.WriteLine("   A restore replaces that database, so it runs only when nothing else is running on it. Nothing was changed.");
+            return (null, RestoreResult.InUse(reason));
+        }
+        catch (Exception ex)
+        {
+            var failure = ex as ModularCA.Database.SchemaConnectException ?? new ModularCA.Database.SchemaConnectException(ex);
+            var described = ModularCA.Database.SchemaFailure.Describe(failure);
+            if (ModularCA.Database.SchemaFailure.Classify(failure) == ModularCA.Database.SchemaFailureKind.Unreachable)
+            {
+                Console.WriteLine($"❌ The restore lock could not be taken: the application database could not be reached: {described}");
+                Console.WriteLine("   Nothing was changed. Try again when the database server answers.");
+                return (null, RestoreResult.Unreachable($"the application database could not be reached to take the restore lock: {described}"));
+            }
+            Console.WriteLine($"❌ The restore lock could not be taken in the application database: {described}");
+            Console.WriteLine("   Nothing was changed.");
+            return (null, RestoreResult.Refused($"the restore lock could not be taken in the application database: {described}"));
         }
     }
 
@@ -1339,30 +1428,65 @@ public static class BackupRestore
     /// Stores this machine's incarnation in the application database just restored
     /// (<see cref="ModularCA.Core.Services.Continuity.InstanceContinuity.StoreIncarnationAsync"/>),
     /// so the first start after the restore finds the same timeline and does not report the
-    /// restore a second time as a rollback. A failure is reported and does not fail the restore:
+    /// restore a second time as a rollback. A failed attempt is made again after each wait of
+    /// <see cref="IncarnationStoreRetryDelays"/> (four attempts over seven seconds), on a new
+    /// connection each time, so a database that is still settling after the restore does not
+    /// cost a notice. When every attempt failed it is reported and does not fail the restore:
     /// the next start then reports an incarnation change, which costs a notice to acknowledge
-    /// and nothing else, the CRL numbers having been raised already.
+    /// and nothing else, the CRL numbers having been raised already. The restore's last line
+    /// says so (<see cref="RestoreResult.Done"/>).
     /// </summary>
     /// <param name="appConnectionString">The restored application database.</param>
     /// <param name="reading">What this machine reports; read from the default sources when null.</param>
+    /// <param name="retryDelays">The wait before each further attempt; <see cref="IncarnationStoreRetryDelays"/> when null.</param>
+    /// <param name="store">
+    /// What stores the reading, given the attempt's number from 1; null stores it in the database.
+    /// For tests that make the store fail.
+    /// </param>
+    /// <returns>True when the incarnation was stored.</returns>
     internal static async Task<bool> StoreIncarnationAfterRestoreAsync(string appConnectionString,
-        ModularCA.Core.Services.Continuity.IncarnationReading? reading = null)
+        ModularCA.Core.Services.Continuity.IncarnationReading? reading = null,
+        IReadOnlyList<TimeSpan>? retryDelays = null,
+        Func<int, ModularCA.Core.Services.Continuity.IncarnationReading, Task>? store = null)
     {
-        try
+        retryDelays ??= IncarnationStoreRetryDelays;
+        store ??= async (_, r) =>
         {
-            reading ??= ModularCA.Core.Services.Continuity.IncarnationSources.Read();
             using var db = new ModularCA.Database.ModularCADbContext(
                 new DbContextOptionsBuilder<ModularCA.Database.ModularCADbContext>().UseNpgsql(appConnectionString).Options);
-            await ModularCA.Core.Services.Continuity.InstanceContinuity.StoreIncarnationAsync(db, reading, RestoreCaller);
-            Console.WriteLine($"  ✓ Incarnation stored (source: {reading.Source}); the next start will not report this restore as a rollback.");
-            return true;
-        }
-        catch (Exception ex)
+            await ModularCA.Core.Services.Continuity.InstanceContinuity.StoreIncarnationAsync(db, r, RestoreCaller);
+        };
+
+        Exception? last = null;
+        for (var attempt = 1; attempt <= retryDelays.Count + 1; attempt++)
         {
-            Console.WriteLine($"  ⚠ The incarnation could not be stored ({ex.GetType().Name}: {ex.Message}). The next start may show a notice that the instance runs from an earlier state; acknowledge it.");
-            return false;
+            try
+            {
+                reading ??= ModularCA.Core.Services.Continuity.IncarnationSources.Read();
+                await store(attempt, reading);
+                Console.WriteLine($"  ✓ Incarnation stored (source: {reading.Source}{(attempt > 1 ? $", attempt {attempt}" : "")}); the next start will not report this restore as a rollback.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                last = ex;
+                if (attempt <= retryDelays.Count)
+                {
+                    Console.WriteLine($"  … The incarnation could not be stored ({ex.GetType().Name}: {ex.GetBaseException().Message}); trying again in {retryDelays[attempt - 1].TotalSeconds:0.#} s.");
+                    await Task.Delay(retryDelays[attempt - 1]);
+                }
+            }
         }
+        Console.WriteLine($"  ⚠ The incarnation could not be stored after {retryDelays.Count + 1} attempt(s) ({last!.GetType().Name}: {last.GetBaseException().Message}). The restore is done; the next start shows a notice that the instance runs from an earlier state. Acknowledge it.");
+        return false;
     }
+
+    /// <summary>
+    /// The waits between the attempts of <see cref="StoreIncarnationAfterRestoreAsync"/>: 1 s,
+    /// 2 s and 4 s, so four attempts over seven seconds.
+    /// </summary>
+    internal static readonly IReadOnlyList<TimeSpan> IncarnationStoreRetryDelays =
+        [TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(4)];
 
     /// <summary>
     /// Computes a schema version string fingerprinting both the live table list AND the EF

@@ -252,6 +252,35 @@ public sealed class UnattendedRestoreDrillTests(ITestOutputHelper output)
             // Nothing was written beside the archive, and nothing staged was left behind.
             Assert.Equal(mountBefore, Listing(mount));
             Assert.Empty(Staged(host));
+            Assert.Contains(done.Stdout, l => l.Contains("Restore lock taken"));
+            Assert.Contains(done.Stdout, l => l.Contains("Incarnation stored (source: injected)"));
+            Assert.Equal("RESTORE: DONE (the audit database was kept). Start the node to apply the restored state.", done.LastLine);
+
+            // ---- done, and the incarnation could not be stored ------------------------------------
+            // An archive whose application database refuses that one write: it carries a trigger
+            // on the table, which the restore puts back with the rest. The store is tried four
+            // times, the restore is done all the same, and its last line says what the next start
+            // will show.
+            await ExecuteAsync(db.App, """
+                CREATE FUNCTION drill_refuse_incarnation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'the drill refuses the incarnation'; END $$;
+                CREATE TRIGGER drill_refuse_incarnation BEFORE INSERT OR UPDATE ON "InstanceIncarnation" FOR EACH ROW EXECUTE FUNCTION drill_refuse_incarnation();
+                """);
+            await host.RunAsync("backup of a database that refuses the incarnation", ["--backup"]);
+            var refusing = NewestArchive(backups);
+            await ExecuteAsync(db.App, "DROP TRIGGER drill_refuse_incarnation ON \"InstanceIncarnation\"");
+            await MarkAsync(db.App);
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var notStored = await host.ExecuteAsync("restore that cannot store the incarnation", ["--restore", refusing, "--unattended"]);
+            Assert.True(notStored.ExitCode == RestoreExit.Done, notStored.Text);
+            Assert.Equal("RESTORE: DONE (the audit database was kept; the incarnation was not stored, so the next start shows a roll-back notice). "
+                + "Start the node to apply the restored state.", notStored.LastLine);
+            Assert.Equal(3, notStored.Stdout.Count(l => l.Contains("The incarnation could not be stored") && l.Contains("trying again in")));
+            Assert.Contains(notStored.Stdout, l => l.Contains("The incarnation could not be stored after 4 attempt(s)") && l.Contains("the drill refuses the incarnation"));
+            Assert.True(clock.Elapsed > TimeSpan.FromSeconds(7), $"the store was not tried over seven seconds: {clock.Elapsed}");
+            // The restore itself was applied.
+            Assert.False(await MarkedAsync(db.App), "the restore did not replace the application database");
+            Assert.Equal(1, await CountAsync(db.App, "SELECT count(*) FROM pg_trigger WHERE tgname = 'drill_refuse_incarnation'"));
+            Assert.Empty(Staged(host));
         }
         finally
         {

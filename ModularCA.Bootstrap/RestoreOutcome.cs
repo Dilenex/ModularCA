@@ -23,7 +23,9 @@ public static class RestoreExit
     /// <summary>
     /// Refused, and nothing was changed: bad arguments, an archive that cannot be read or opened
     /// with the key given, an archive this build must not restore, a precondition that is not met,
-    /// or a database restore that failed inside its one transaction and was rolled back.
+    /// a node, the signer service or another restore using the application database
+    /// (<see cref="RestoreResult.InUse"/>), or a database restore that failed inside its one
+    /// transaction and was rolled back.
     /// </summary>
     public const int Refused = 3;
 
@@ -57,15 +59,35 @@ public static class RestoreExit
 /// </param>
 public sealed record RestoreResult(int ExitCode, string Verdict)
 {
+    /// <summary>
+    /// True when the restore was refused because a node, the signer service or another restore is
+    /// using the application database (<see cref="ModularCA.Database.RestoreLock"/>). The exit
+    /// status is <see cref="RestoreExit.Refused"/> and nothing was changed.
+    /// </summary>
+    public bool DatabaseInUse { get; init; }
+
     /// <summary>The restore completed.</summary>
     /// <param name="auditKept">Whether this host's audit database was kept.</param>
-    public static RestoreResult Done(bool auditKept) => new(RestoreExit.Done,
-        $"{RestoreExit.DoneMarker} (the audit database was {(auditKept ? "kept" : "replaced with the archive's")}). Start the node to apply the restored state.");
+    /// <param name="incarnationStored">
+    /// Whether this machine's incarnation was stored in the restored database. When it was not,
+    /// the restore is still done, and the line says that the next start shows a roll-back notice.
+    /// </param>
+    public static RestoreResult Done(bool auditKept, bool incarnationStored = true) => new(RestoreExit.Done,
+        $"{RestoreExit.DoneMarker} (the audit database was {(auditKept ? "kept" : "replaced with the archive's")}"
+        + (incarnationStored ? "" : "; the incarnation was not stored, so the next start shows a roll-back notice")
+        + "). Start the node to apply the restored state.");
 
     /// <summary>Refused before anything was changed.</summary>
     /// <param name="reason">Why, in a few words.</param>
     public static RestoreResult Refused(string reason) => new(RestoreExit.Refused,
         $"{RestoreExit.RefusedMarker} ({OneLine(reason)}). Nothing was changed.");
+
+    /// <summary>
+    /// Refused before anything was changed, because a node, the signer service or another restore
+    /// is using the application database and has to be stopped first.
+    /// </summary>
+    /// <param name="reason">Who is using it and what to do (<see cref="ModularCA.Database.RestoreLock.NodeInUse"/> and its siblings).</param>
+    public static RestoreResult InUse(string reason) => Refused(reason) with { DatabaseInUse = true };
 
     /// <summary>A database could not be reached before anything was changed.</summary>
     /// <param name="reason">Which, and how it failed.</param>
@@ -102,4 +124,14 @@ public sealed record RestoreOptions
 
     /// <summary>Where the archive's key comes from; null reads this host's key files.</summary>
     public BackupKeySource? Keys { get; init; }
+
+    /// <summary>
+    /// How the restore gets the application database to itself. Null, for the command line,
+    /// takes the restore lock on a connection of its own
+    /// (<see cref="ModularCA.Database.RestoreLock.OwnConnection"/>): refused while any node or
+    /// the signer service runs. The console passes the lock of the node it runs in
+    /// (<see cref="ModularCA.Database.ServingDatabaseLock"/>), which is refused only while
+    /// another node, or another restore, uses the database.
+    /// </summary>
+    public ModularCA.Database.IRestoreExclusion? Exclusion { get; init; }
 }

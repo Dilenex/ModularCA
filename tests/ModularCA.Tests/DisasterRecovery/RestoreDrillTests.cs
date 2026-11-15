@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using ModularCA.Bootstrap;
 using ModularCA.Core.Services;
 using ModularCA.Database;
 using ModularCA.Shared.Models.Config;
@@ -291,6 +292,10 @@ public abstract class RestoreDrillTests(ITestOutputHelper output)
             Assert.Equal(0, await CountAsync(newDbYaml.App, "SELECT count(*) FROM \"InstanceContinuityEvents\""));
             Assert.DoesNotContain("running from an earlier or copied state", restored.NodeLog);
 
+            // A restore and a running node keep each other out. One drill is enough to show it.
+            if (newHost == NewHost.FreshInstall)
+                await KeepEachOtherOutAsync(restored, httpPort, archiveOnNewHost, root);
+
             output.WriteLine($"backup {backup.TotalSeconds:F0}s, restore {restore.TotalSeconds:F0}s, start to serving {start.TotalSeconds:F0}s");
         }
         finally
@@ -301,6 +306,113 @@ public abstract class RestoreDrillTests(ITestOutputHelper output)
             if (rootDer is not null) RemoveFromWindowsCaStores(rootDer);
             try { Directory.Delete(work, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
+    }
+
+    /// <summary>
+    /// The mutual exclusion, with the real program on both sides and <paramref name="host"/>'s
+    /// node running when it begins: a restore started beside the running node is refused with 3
+    /// and the node is untouched and still serving; a second restore is refused beside one that
+    /// is running; the commands that are neither run beside both; and a node started while a
+    /// restore holds the database exits 75 when the restore outlasts its wait, and otherwise
+    /// waits and starts when the restore has ended. The restore that holds the database here is
+    /// a real one, waiting at its confirmation prompt, which it reaches with the lock taken.
+    /// </summary>
+    private static async Task KeepEachOtherOutAsync(DrillHost host, int httpPort, string archive, byte[] root)
+    {
+        long certificates;
+        var db = host.Databases();
+        var backups = Path.Combine(host.Directory, "backups");
+        var snapshots = Directory.GetFiles(backups, "pre-restore-*.zip").Length;
+        // What a restore replaces on the host: the settings files and the keystores.
+        var config = Directory.GetFiles(host.ConfigDirectory, "*.yaml")
+            .Concat(Directory.GetFiles(Path.Combine(host.Directory, "keystores"), "*.keystore"))
+            .ToDictionary(f => f, f => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(f))));
+        // The node issued its web certificate since the archive was taken: counted now.
+        certificates = await CountAsync(db.App, "SELECT count(*) FROM \"Certificates\"");
+        const string marker = "exclusion-drill-marker";
+        await ExecuteAsync(db.App, $"UPDATE \"FeatureFlags\" SET \"Description\" = '{marker}' WHERE \"Name\" = 'CRL.Enabled'");
+
+        // ---- a restore beside the running node -----------------------------------------------
+        var refused = await host.ExecuteAsync("restore while the node is running", ["--restore", archive, "--unattended"]);
+        Assert.True(refused.ExitCode == RestoreExit.Refused, refused.Text);
+        Assert.StartsWith(RestoreExit.RefusedMarker, refused.LastLine);
+        Assert.Contains("a node is serving from this application database", refused.LastLine);
+        Assert.Contains("stop the node", refused.LastLine);
+        Assert.EndsWith("Nothing was changed.", refused.LastLine);
+        // Nothing was changed, and nothing was even staged: no snapshot, the database and the
+        // files as they were, the node serving, and its lock never disturbed.
+        Assert.Equal(snapshots, Directory.GetFiles(backups, "pre-restore-*.zip").Length);
+        Assert.Equal(1, await CountAsync(db.App, $"SELECT count(*) FROM \"FeatureFlags\" WHERE \"Description\" = '{marker}'"));
+        Assert.Equal(certificates, await CountAsync(db.App, "SELECT count(*) FROM \"Certificates\""));
+        Assert.All(config, f => Assert.Equal(f.Value, Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(f.Key)))));
+        Assert.Equal(root, await host.GetAsync(httpPort, "/ca/drill-root"));
+        Assert.DoesNotContain("Restore lock:", host.NodeLog);
+        // The node holds its key of the lock, shared, on its own connection.
+        Assert.Equal(1, await CountAsync(db.App,
+            $"SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) WHERE l.locktype = 'advisory' AND l.classid = {RestoreLock.LockClass} "
+            + $"AND l.objid = {RestoreLock.NodeKey} AND l.mode = 'ShareLock' AND l.granted AND a.application_name = 'ModularCA restore lock'"));
+
+        // The check an orchestrator runs beside a serving node still runs beside it.
+        var beside = await host.ExecuteAsync("read-only upgrade check beside the node", ["--upgrade-check", "--read-only"]);
+        Assert.True(beside.ExitCode == 0, beside.Text);
+
+        await host.StopAsync();
+
+        // ---- a restore holds the database ----------------------------------------------------
+        using var holding = host.Begin("restore that waits to be confirmed", ["--restore", archive]);
+        await holding.UntilWroteAsync("Restore lock taken", TimeSpan.FromMinutes(3));
+
+        var second = await host.ExecuteAsync("second restore while one runs", ["--restore", archive, "--unattended"]);
+        Assert.True(second.ExitCode == RestoreExit.Refused, second.Text);
+        Assert.Contains("or another restore is running on it", second.LastLine);
+        Assert.EndsWith("Nothing was changed.", second.LastLine);
+
+        // The full upgrade check runs with the node stopped and the database up: also beside a restore.
+        var check = await host.ExecuteAsync("upgrade check beside a restore", ["--upgrade-check"]);
+        Assert.True(check.ExitCode == 0, check.Text);
+
+        // A node started now, told to wait three seconds: it does not start, and exits 75.
+        var configYaml = Path.Combine(host.ConfigDirectory, "config.yaml");
+        var configBefore = File.ReadAllText(configYaml);
+        // The host's own file carries the Schema section with the setting at its default.
+        Assert.Matches(@"(?m)^Schema:\s*$", configBefore);
+        Assert.Matches(@"(?m)^\s+RestoreWaitSeconds:\s*60\s*$", configBefore);
+        File.WriteAllText(configYaml, System.Text.RegularExpressions.Regex.Replace(configBefore, @"(?m)^(\s+RestoreWaitSeconds:\s*)60", "${1}3"));
+        DrillRun gaveUp;
+        try
+        {
+            gaveUp = await host.ExecuteAsync("node started while a restore holds the database", []);
+        }
+        finally
+        {
+            File.WriteAllText(configYaml, configBefore);
+        }
+        Assert.True(gaveUp.ExitCode == 75, gaveUp.Text);
+        Assert.Contains(gaveUp.Stdout, l => l.Contains("A restore is running on the application database") && l.Contains("waiting up to 3 s"));
+        Assert.Contains(gaveUp.Stderr, l => l.Contains("was still running after 3 s (Schema.RestoreWaitSeconds), so this process did not start. Exiting with status 75"));
+        Assert.DoesNotContain(gaveUp.Stdout, l => l.Contains("Schema check passed"));
+        Assert.False(holding.Wrote("RESTORE:"), "the waiting restore ended while a node tried to start");
+
+        // A node started now with the default wait: it waits, the restore ends, and it starts.
+        var starting = host.StartAsync(httpPort);
+        await UntilAsync(TimeSpan.FromMinutes(2), () => Task.FromResult(host.NodeLog.Contains("A restore is running on the application database") ? "waiting" : null),
+            "the node did not say it waits for the restore");
+        Assert.DoesNotContain("Schema check passed", host.NodeLog);
+        var declined = await holding.FinishAsync("no\n");
+        Assert.True(declined.ExitCode == RestoreExit.Refused, declined.Text);
+        Assert.Contains("not confirmed", declined.LastLine);
+        await starting;
+        Assert.Contains("the start goes on", host.NodeLog);
+        Assert.Equal(root, await host.GetAsync(httpPort, "/ca/drill-root"));
+        // The declined restore changed nothing either.
+        Assert.Equal(1, await CountAsync(db.App, $"SELECT count(*) FROM \"FeatureFlags\" WHERE \"Description\" = '{marker}'"));
+    }
+
+    private static async Task ExecuteAsync(DbInstance instance, string sql)
+    {
+        await using var conn = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(PostgresConnection.Build(instance)) { Pooling = false }.ConnectionString);
+        await conn.OpenAsync();
+        await new NpgsqlCommand(sql, conn).ExecuteNonQueryAsync();
     }
 
     private static X509Crl ParseCrl(byte[] der) => new X509CrlParser().ReadCrl(der);
@@ -477,6 +589,89 @@ internal sealed record DrillRun(int ExitCode, IReadOnlyList<string> Stdout, IRea
 
     /// <summary>All of standard output and standard error, for a failure message.</summary>
     public string Text => string.Join(Environment.NewLine, Stdout.Concat(Stderr.Select(l => "[stderr] " + l)));
+}
+
+/// <summary>
+/// A run of the node that is still going, with its standard input open: what it has written so
+/// far can be waited on, and it is finished by answering it or by closing its input.
+/// </summary>
+internal sealed class DrillProcess : IDisposable
+{
+    private readonly string _step;
+    private readonly Process _process;
+    private readonly ITestOutputHelper _output;
+    private readonly Func<StringBuilder, string> _redact;
+    private readonly List<string> _stdout = [];
+    private readonly List<string> _stderr = [];
+    private readonly Stopwatch _watch = Stopwatch.StartNew();
+
+    public DrillProcess(string step, Process process, ITestOutputHelper output, Func<StringBuilder, string> redact)
+    {
+        (_step, _process, _output, _redact) = (step, process, output, redact);
+        process.OutputDataReceived += (_, e) => { if (e.Data is not null) lock (_stdout) _stdout.Add(e.Data); };
+        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) lock (_stderr) _stderr.Add(e.Data); };
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+    }
+
+    /// <summary>Whether a line of standard output written so far contains <paramref name="text"/>.</summary>
+    public bool Wrote(string text)
+    {
+        lock (_stdout) return _stdout.Any(l => l.Contains(text, StringComparison.Ordinal));
+    }
+
+    /// <summary>Waits until it has written <paramref name="text"/>; fails when it exits or the time runs out first.</summary>
+    public async Task UntilWroteAsync(string text, TimeSpan limit)
+    {
+        var waited = Stopwatch.StartNew();
+        while (!Wrote(text))
+        {
+            if (_process.HasExited || waited.Elapsed > limit)
+                Assert.Fail($"The {_step} {(_process.HasExited ? $"exited {_process.ExitCode}" : $"ran {limit.TotalSeconds:F0}s")} without writing '{text}':{Environment.NewLine}{Snapshot().Text}");
+            await Task.Delay(200);
+        }
+    }
+
+    /// <summary>Writes <paramref name="stdin"/>, when given, closes standard input and waits for the exit.</summary>
+    public async Task<DrillRun> FinishAsync(string? stdin = null)
+    {
+        if (stdin is not null)
+            await _process.StandardInput.WriteAsync(stdin);
+        _process.StandardInput.Close();
+        using var limit = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+        try
+        {
+            await _process.WaitForExitAsync(limit.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            _process.Kill(entireProcessTree: true);
+            Assert.Fail($"The {_step} did not finish in 10 minutes:{Environment.NewLine}{Snapshot().Text}");
+        }
+        _process.WaitForExit();
+        var run = Snapshot() with { ExitCode = _process.ExitCode };
+        _output.WriteLine($"--- {_step} (exit {run.ExitCode}, {_watch.Elapsed.TotalSeconds:F0}s){Environment.NewLine}{_redact(new StringBuilder(run.Text))}");
+        return run;
+    }
+
+    private DrillRun Snapshot()
+    {
+        lock (_stdout) lock (_stderr) return new DrillRun(-1, _stdout.ToList(), _stderr.ToList());
+    }
+
+    /// <summary>Ends it if it is still running.</summary>
+    public void Dispose()
+    {
+        try
+        {
+            if (!_process.HasExited)
+                _process.Kill(entireProcessTree: true);
+        }
+        catch (InvalidOperationException)
+        {
+        }
+        _process.Dispose();
+    }
 }
 
 /// <summary>The role and database names of one install on the drill's server.</summary>
@@ -772,6 +967,12 @@ internal sealed class DrillHost
         _output.WriteLine($"--- {step} (exit {run.ExitCode}, {watch.Elapsed.TotalSeconds:F0}s){Environment.NewLine}{Redact(new StringBuilder(run.Text))}");
         return run;
     }
+
+    /// <summary>
+    /// Starts the node with <paramref name="arguments"/> and leaves its standard input open, for a
+    /// command that waits to be answered: the caller answers, or closes it, through the result.
+    /// </summary>
+    public DrillProcess Begin(string step, string[] arguments) => new(step, Start(arguments), _output, Redact);
 
     /// <summary>
     /// Awaits <paramref name="wait"/>, and when it fails, fails with the running node's log
