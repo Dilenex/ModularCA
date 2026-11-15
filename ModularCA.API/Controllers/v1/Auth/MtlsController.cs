@@ -666,7 +666,7 @@ public class MtlsController : ControllerBase
         // carries it to enrollment until a second factor exists. These certificate-primary
         // paths minted an unrestricted token instead, so an admin whose only factor was a
         // .p12 had full API access on one possession factor, and a restricted admin could
-        // enrol a .p12 and certificate-login around the restriction.
+        // enroll a .p12 and certificate-login around the restriction.
         var mfaSetupRequired = groups.Any(g => g.IsSystemGroup);
         var mfaEnforcedForGroup = _config.WebAuthn.EnforceForGroups.Count > 0
             && groups.Any(g => _config.WebAuthn.EnforceForGroups.Contains(g.TemplateName ?? "Custom", StringComparer.OrdinalIgnoreCase));
@@ -674,7 +674,7 @@ public class MtlsController : ControllerBase
         {
             return StatusCode(403, new
             {
-                error = "Multi-factor authentication is required for your group. Sign in with your password to enrol a second factor.",
+                error = "Multi-factor authentication is required for your group. Sign in with your password to enroll a second factor.",
                 requiresMfaEnrollment = true
             });
         }
@@ -937,7 +937,7 @@ public class MtlsController : ControllerBase
         // carries it to enrollment until a second factor exists. These certificate-primary
         // paths minted an unrestricted token instead, so an admin whose only factor was a
         // .p12 had full API access on one possession factor, and a restricted admin could
-        // enrol a .p12 and certificate-login around the restriction.
+        // enroll a .p12 and certificate-login around the restriction.
         var mfaSetupRequired = groups.Any(g => g.IsSystemGroup);
         var mfaEnforcedForGroup = _config.WebAuthn.EnforceForGroups.Count > 0
             && groups.Any(g => _config.WebAuthn.EnforceForGroups.Contains(g.TemplateName ?? "Custom", StringComparer.OrdinalIgnoreCase));
@@ -945,7 +945,7 @@ public class MtlsController : ControllerBase
         {
             return StatusCode(403, new
             {
-                error = "Multi-factor authentication is required for your group. Sign in with your password to enrol a second factor.",
+                error = "Multi-factor authentication is required for your group. Sign in with your password to enroll a second factor.",
                 requiresMfaEnrollment = true
             });
         }
@@ -1103,7 +1103,7 @@ public class MtlsController : ControllerBase
         // carries it to enrollment until a second factor exists. These certificate-primary
         // paths minted an unrestricted token instead, so an admin whose only factor was a
         // .p12 had full API access on one possession factor, and a restricted admin could
-        // enrol a .p12 and certificate-login around the restriction.
+        // enroll a .p12 and certificate-login around the restriction.
         var mfaSetupRequired = groups.Any(g => g.IsSystemGroup);
         var mfaEnforcedForGroup = _config.WebAuthn.EnforceForGroups.Count > 0
             && groups.Any(g => _config.WebAuthn.EnforceForGroups.Contains(g.TemplateName ?? "Custom", StringComparer.OrdinalIgnoreCase));
@@ -1111,7 +1111,7 @@ public class MtlsController : ControllerBase
         {
             return StatusCode(403, new
             {
-                error = "Multi-factor authentication is required for your group. Sign in with your password to enrol a second factor.",
+                error = "Multi-factor authentication is required for your group. Sign in with your password to enroll a second factor.",
                 requiresMfaEnrollment = true
             });
         }

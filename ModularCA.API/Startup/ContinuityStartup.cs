@@ -23,8 +23,25 @@ public sealed class ContinuityStartState
     /// <summary>Whether the published-CRL check of this start has run, and how many publishers' CRLs it compared.</summary>
     public int? PublishedCrlsCompared { get; private set; }
 
+    /// <summary>When this process made the incarnation comparison; null when it made none.</summary>
+    public DateTimeOffset? ComparedAt { get; private set; }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, byte> _recordedHere = new();
+
     /// <summary>Records the outcome of the incarnation comparison.</summary>
-    public void Compared(IncarnationCase found) { Case = found; Fault = null; }
+    public void Compared(IncarnationCase found) { Case = found; Fault = null; ComparedAt = DateTimeOffset.UtcNow; }
+
+    /// <summary>
+    /// Records that this start itself recorded continuity event <paramref name="eventId"/>: its
+    /// incarnation comparison or its published-CRL check found it. Every other unacknowledged
+    /// event was recorded by an earlier start, or by another process.
+    /// </summary>
+    /// <param name="eventId">The event's identifier.</param>
+    public void Recorded(Guid eventId) => _recordedHere[eventId] = 0;
+
+    /// <summary>Whether this start recorded event <paramref name="eventId"/> (<see cref="Recorded"/>).</summary>
+    /// <param name="eventId">The event's identifier.</param>
+    public bool RecordedAtThisStart(Guid eventId) => _recordedHere.ContainsKey(eventId);
 
     /// <summary>Records that the incarnation comparison could not be made.</summary>
     public void Failed(string fault) => Fault = fault;
@@ -72,6 +89,8 @@ public static class ContinuityStartup
             var result = await InstanceContinuity.CheckIncarnationAsync(db, auditDb, new HostAuditService(auditDb), reading,
                 DateTimeOffset.UtcNow, loggers.CreateLogger("ModularCA.Continuity"));
             state.Compared(result.Case);
+            if (result.Event is { } recorded)
+                state.Recorded(recorded.Id);
 
             switch (result.Case)
             {

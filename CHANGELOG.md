@@ -6,6 +6,58 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### 0.4.5-dev.1.2 — 2026-11-12
+
+The third test build of 0.4.5. 0.4.5-dev.1.1 proved on the test host that a certificate issued
+by an intermediate CA is accepted. Since 0.4.5-dev.1.1:
+
+- **A refused EST enrollment always leaves a row on the EST audit tab**, with the reason. On the
+  test host two kinds of refusal had left nothing in the console.
+- **A backup archive or key file that cannot be read is no longer called "not found"**, which
+  the hub met under SELinux.
+- **For the hub:** the mode record says when the CRLs in force run out while the mode is `dr`
+  (`crlsExpireFromUtc` in `mode.read`, the answer of `mode.set` and `health.read`). The
+  contract is still 1.1.
+- **The restore drill restores the same archive a second time** under the incarnation the host
+  already has, and the start after it reports no roll-back.
+
+No migration is added: the schema is the one 0.4.5-dev.1.0 left.
+
+### 0.4.5-dev.1.1 — 2026-11-12
+
+The second test build of 0.4.5, after 0.4.5-dev.1.0 ran on a test host and in the hub's pods.
+Since 0.4.5-dev.1.0:
+
+- **A certificate issued by an intermediate CA is accepted on a real host.** On the test host
+  every such certificate was refused as not chaining to its CA: EST re-enrollment, and with it
+  sign-in by client certificate and SCEP renewal under an intermediate. See "No certificate is
+  fetched while a chain is built" under Security. To check after installing: re-enroll over EST
+  with a certificate an intermediate CA issued.
+- **DR mode says when its CRLs run out**, on the mode card and in the banner.
+- **Refusals for the mode are counted for callers who are not signed in**, one audit record per
+  endpoint every five minutes.
+- **"Enrollment" is spelled one way** in the console and the documentation.
+- **For the hub:** nothing in the contract changed. Its text now says that `mode` in
+  `health.read` is the mode record, which is what 0.4.5-dev.1.0 already sent.
+
+No migration is added: the schema is the one 0.4.5-dev.1.0 left.
+
+### 0.4.5-dev.1.0 — 2026-11-12
+
+The first test build of 0.4.5, for a test host and for the hub's test bed. It carries everything
+below. None of it has run on Linux, in a container or in a browser before this build: that is
+what the build is for.
+
+- **For the hub.** The local connection (contract 1.1, eight operations), the affiliation token,
+  the four instance modes, the timeline variable with the CRL floor and the notice, the
+  inventory read, the unattended restore with `--backup-manifest` and `backup.prune`, and the
+  stored instance identifier.
+- **For a standalone install.** Revoking a certificate the CA has no record of, the instance
+  mode card in Settings, revocation checked under an intermediate CA when
+  "Require mTLS OCSP Check" is on, and the new exit statuses of `--restore`.
+- **Two migrations**, both additive: `RevokedSerialTombstones` and `InstanceIncarnation`.
+- **Built on the .NET 10.0.15 runtime**; the build scripts now refuse an older one.
+
 **Upgrade notes**
 
 - **Two migrations, both additive:** `RevokedSerialTombstones` and `InstanceIncarnation`. They add
@@ -23,7 +75,7 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   socket is off until `--set-hub-token-hash` is run and the node restarted, or the hub gives a
   hash over the connection. The hub's health read says whether the check is on.
 - **A request refused because of the mode answers 503** with `Retry-After: 60` and the code
-  `MCA-MOD-001` (restricted), `MCA-MOD-003` (maintenance) or `MCA-MOD-002` (DR mode). Enrolment
+  `MCA-MOD-001` (restricted), `MCA-MOD-003` (maintenance) or `MCA-MOD-002` (DR mode). Enrollment
   clients will retry.
 - **`--restore` exit statuses changed.** Nearly every failure used to exit 1, wherever it
   happened, and 2 meant "restored, but the CRL numbers were not raised". Now: 0, done; 3, refused
@@ -76,18 +128,29 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 - **Instance mode: full, restricted, maintenance and DR mode.** Restricted keeps issuing, revoking, disabling
   a CA and locking an account, and freezes users, groups, roles, grants, profiles, policy,
   settings, new CAs, key operations, ceremonies, releasing a hold and un-revoking. DR mode also
-  stops issuing, revoking, enrolment over every protocol, every scheduled job but backups, and
+  stops issuing, revoking, enrollment over every protocol, every scheduled job but backups, and
   signing new CRLs; OCSP answers `tryLater`, and a CRL already signed is still served. What the
-  enrolment protocols only read stays up in DR mode (the ACME directory and an order or
+  enrollment protocols only read stays up in DR mode (the ACME directory and an order or
   certificate read back, SCEP GetCACert and GetCACaps, EST `cacerts`, the MSAE policy), so a
   client still finds the CA and is told to try again when it asks for a certificate. Signing in,
   the caller's own credentials, backups, a restore and setting the mode work in every mode.
   **Maintenance** is for an instance that is being updated or audited: it freezes what restricted
-  freezes and also issues nothing (no issuing, renewing, approving, enrolment over any protocol,
+  freezes and also issues nothing (no issuing, renewing, approving, enrollment over any protocol,
   SSH certificates or scheduled renewal), and it still revokes, including a certificate the CA
   does not hold, still signs CRLs and still answers OCSP. Over CMP a revocation request is served
-  and an enrolment refused. Every endpoint that
+  and an enrollment refused. Every endpoint that
   changes something declares which of these it is, and a test fails one that does not.
+- **DR mode says how long its CRLs last.** No new CRL is signed in DR mode, so the CRLs in force
+  run out. The mode card and the standing banner say when the first of them expires, and say so
+  once one has. `GET /api/v1/admin/instance-mode` gives it as `crlsExpireFromUtc`, null in every
+  other mode. The hub reads the same time in its mode record (`mode.read`, the answer of
+  `mode.set`, and `health.read`), present in DR mode and left out otherwise.
+- **A refusal for the mode is recorded once per endpoint and interval for callers who are not
+  signed in.** An enrollment client told to try again every minute, or anyone who can reach a
+  protocol endpoint, wrote one audit record per request for as long as an instance was in
+  maintenance or DR mode. The first refusal of an endpoint is recorded at once; later ones are
+  counted, and one record every five minutes carries the count (`Refusals`, `SinceUtc`). Every
+  request is still refused. A signed-in caller's refusal stays one record each.
 - **Settings, General, Instance mode** shows the mode, who set it and when, and sets it by hand
   with a reason (`system.manage` at system scope, with step-up). A banner stands on every page
   while the mode is not full. `GET` and `PUT /api/v1/admin/instance-mode`. The mode is kept in a
@@ -141,7 +204,37 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   held, reaching the socket is the only proof, and the instance says so at start and in the
   hub's health read.
 
+**Security**
+
+- **No certificate is fetched while a chain is built.** A certificate names where its issuer's
+  certificate can be fetched (authority information access, CA Issuers), and the chain engine
+  follows that address when a chain is incomplete. Three places built chains that way: the check
+  that a certificate was issued by a given CA (EST re-enrollment, sign-in by client certificate,
+  SCEP renewal), and the two that judge a client certificate during a TLS handshake (the mTLS
+  host name and the EST host name). So a certificate presented by anyone who could connect made
+  the instance request an address of the presenter's choosing. All three now build the chain
+  from the certificates the instance holds and fetch none. CRLs and OCSP answers are still
+  fetched where a revocation check asks for them.
+- **The same fetch broke certificates of an intermediate CA.** The certificates an instance
+  issues name that address, so the engine fetched the root above an intermediate CA, completed
+  the chain to it, and ended on a root the check had not been told to trust. Every certificate
+  of an intermediate CA was then refused as not chaining to it. The 0.4.4 entry "mTLS sign-in
+  works when the credential's signing CA is an intermediate" held only for certificates that
+  name no such address, which is what its tests used; on an installed instance it did not hold.
+  It does now, and a test issues certificates that name the address and counts the requests.
+
 **Fixed**
+
+- **A refused EST enrollment always leaves a row on the EST audit tab.** Two kinds left none: an
+  enrollment at a CA whose EST had neither client-certificate nor HTTP authentication switched
+  on (403), and any refusal the enrollment's own steps had not recorded, such as a certificate
+  profile that does not suit the request (400 with a fixed sentence). Both reached only the log
+  file, so an administrator saw nothing of the attempts or the reason. Both are now
+  `EstEnrollRejected` or `EstReenrollRejected` rows, with the reason.
+- **A backup archive or key file that is there and cannot be read is no longer called "not
+  found".** `--restore` and `--backup-manifest` said so when the file's mode, a directory above
+  it or an SELinux label kept the account from reading it, which sent an operator looking for a
+  missing file. They now say the file cannot be read, and by which account.
 
 - **A build from source refuses to bundle a .NET runtime older than the release's.** The archive
   is self-contained, so the runtime inside it is the one the build machine's SDK carries, whatever
@@ -153,7 +246,7 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 - **With "Require mTLS OCSP Check" on, a client certificate issued by an intermediate CA can sign
   in.** The online revocation check could never complete for a certificate validated against an
-  intermediate CA, so sign-in, step-up and EST re-enrolment with one were always refused while
+  intermediate CA, so sign-in, step-up and EST re-enrollment with one were always refused while
   the setting was on. That was so on every platform: the 0.4.4 notes called it a limit on Linux,
   and Windows refused the same certificates for the same reason. The check now runs through the
   CA's own issuers up to its root, where the instance holds them. The certificate's own status must be positively confirmed, as before; an

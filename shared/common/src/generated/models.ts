@@ -988,6 +988,7 @@ export interface InstanceModeStatus {
     setAtUtc?: string | null;
     hubConnection: boolean;
     stillWorks: string;
+    crlsExpireFromUtc?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */

@@ -1,8 +1,10 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using ModularCA.API.Filters;
 using ModularCA.API.Startup;
 using ModularCA.Auth.Interfaces;
+using ModularCA.Database;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
 using ModularCA.Shared.Models;
@@ -36,7 +38,8 @@ public class AdminInstanceModeController(
     IInstanceModeGate gate,
     IAuditService audit,
     ICurrentUserService currentUser,
-    InstanceModeStore? store = null) : ControllerBase
+    InstanceModeStore? store = null,
+    ModularCADbContext? db = null) : ControllerBase
 {
     /// <summary>The longest reason accepted.</summary>
     public const int MaxReasonLength = 500;
@@ -44,7 +47,30 @@ public class AdminInstanceModeController(
     /// <summary>Returns the mode, who set it and when.</summary>
     [HttpGet]
     [ProducesResponseType(typeof(InstanceModeStatus), 200)]
-    public IActionResult Get() => Ok(Describe(gate.Current, store));
+    public async Task<IActionResult> Get() => Ok(await WithCrlExpiryAsync(Describe(gate.Current, store), gate.Current.Mode));
+
+    /// <summary>
+    /// Adds <see cref="InstanceModeStatus.CrlsExpireFromUtc"/> in a mode that signs no new CRL:
+    /// the earliest nextUpdate among the newest full CRLs of the enabled X.509 CAs. A read of
+    /// what is already stored; it signs nothing. A failure to read leaves the field null.
+    /// </summary>
+    /// <param name="status">The status to complete.</param>
+    /// <param name="mode">The mode the instance is in.</param>
+    private async Task<InstanceModeStatus> WithCrlExpiryAsync(InstanceModeStatus status, InstanceMode mode)
+    {
+        // Only DR mode signs no new CRL; in every other mode the CRLs are replaced on schedule.
+        if (db == null || InstanceModeGate.Allows(mode, ModeOperation.Fact))
+            return status;
+        try
+        {
+            status.CrlsExpireFromUtc = await ModularCA.Core.Services.CrlDeadline.EarliestNextUpdateAsync(db, HttpContext?.RequestAborted ?? default);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            status.CrlsExpireFromUtc = null;
+        }
+        return status;
+    }
 
     /// <summary>
     /// Sets the mode. 400 when the mode is not <c>full</c>, <c>restricted</c> or <c>dr</c> or no
@@ -90,7 +116,7 @@ public class AdminInstanceModeController(
             HttpContext.Connection.RemoteIpAddress?.ToString());
 
         var record = store.Set(mode, InstanceModeSource.Administrator, currentUser.User.Username, reason);
-        return Ok(Describe(record, store));
+        return Ok(await WithCrlExpiryAsync(Describe(record, store), record.Mode));
     }
 
     /// <summary>The console's view of a mode record.</summary>

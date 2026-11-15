@@ -152,7 +152,7 @@ public static class ControlledCredentials
             .FirstOrDefaultAsync();
 
     /// <summary>
-    /// SHA-256 over the account's MFA enrolment time and the ids of its TOTP secrets (with their
+    /// SHA-256 over the account's MFA enrollment time and the ids of its TOTP secrets (with their
     /// verified flag), WebAuthn credentials, usable mTLS credentials and unused recovery codes.
     /// An mTLS credential counts by the authentication rule (<see cref="MtlsCredentialStatus.UsableAsync"/>),
     /// so revoking, holding or losing its certificate, its expiry, or a change in the standing of a

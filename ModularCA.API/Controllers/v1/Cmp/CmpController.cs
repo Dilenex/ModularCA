@@ -38,7 +38,7 @@ public class CmpController(ICmpService cmpService) : ControllerBase
     /// Validates content type and request size before processing.
     /// Returns CMP-formatted error responses wherever possible rather than generic HTTP errors.
     /// </summary>
-    // One route carries enrolment, revocation and general messages, so the action asks the
+    // One route carries enrollment, revocation and general messages, so the action asks the
     // gate itself once it has read which this is (ModeOperationOf).
     [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue, AnsweredByAction = true)]
     [HttpPost]
@@ -104,7 +104,7 @@ public class CmpController(ICmpService cmpService) : ControllerBase
     /// <summary>
     /// The mode class of a CMP message: a revocation request is a restriction (it goes on in
     /// maintenance mode), a general message is a fact (it only asks about the CA), and everything
-    /// else is part of an enrolment. A message that cannot be read is treated as an enrolment,
+    /// else is part of an enrollment. A message that cannot be read is treated as an enrollment,
     /// the stricter answer.
     /// </summary>
     /// <param name="derRequest">The request body, a DER PKIMessage.</param>

@@ -44,7 +44,7 @@ public class ScepController(IScepService scepService) : ControllerBase
     /// with SCEP switched off.
     /// </summary>
     // GetCACert and GetCACaps only read, and are answered in every mode. PKIOperation by GET
-    // is an enrolment, and asks the gate itself.
+    // is an enrollment, and asks the gate itself.
     [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue, AnsweredByAction = true)]
     [HttpGet]
     public async Task<IActionResult> Get([FromQuery] string operation, [FromQuery] string? message, string? caLabel = null)
@@ -223,7 +223,7 @@ public class ScepController(IScepService scepService) : ControllerBase
     private async Task<IActionResult> HandlePkiOperationGet(string? message, string? caLabel)
     {
         if (await ModularCA.Auth.Authorization.ModeGateFilter.RequireAsync(
-                HttpContext, ModularCA.Shared.Modes.ModeOperation.Issue, "SCEP enrolment") is { } modeRefusal)
+                HttpContext, ModularCA.Shared.Modes.ModeOperation.Issue, "SCEP enrollment") is { } modeRefusal)
             return modeRefusal;
 
         if (string.IsNullOrWhiteSpace(message))

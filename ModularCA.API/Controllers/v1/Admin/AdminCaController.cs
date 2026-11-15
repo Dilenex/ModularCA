@@ -1155,7 +1155,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         public string? Name { get; set; }
 
         /// <summary>
-        /// New label, the path segment of the CA's CRL, OCSP, AIA and enrolment URLs; null leaves it
+        /// New label, the path segment of the CA's CRL, OCSP, AIA and enrollment URLs; null leaves it
         /// unchanged. Refused once anything references the current label.
         /// </summary>
         [MaxLength(255)]
@@ -1216,7 +1216,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// <summary>Requested validity in years from issuance; clamped to the parent CA certificate's expiry.</summary>
         public int ValidityYears { get; set; } = 10;
 
-        /// <summary>CA label, the path segment of its CRL, OCSP, AIA and enrolment URLs. Must match <c>^[a-z0-9][a-z0-9-]{0,62}$</c> without a reserved prefix; omitted, it is derived from <see cref="SubjectCN"/>.</summary>
+        /// <summary>CA label, the path segment of its CRL, OCSP, AIA and enrollment URLs. Must match <c>^[a-z0-9][a-z0-9-]{0,62}$</c> without a reserved prefix; omitted, it is derived from <see cref="SubjectCN"/>.</summary>
         [MaxLength(255)]
         public string? Label { get; set; }
         /// <summary>Optional CA certificate profile ID. Defaults to "Main CA Certificate Profile" when not specified.</summary>
@@ -1291,7 +1291,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// <summary>Validity of the self-signed certificate in years from issuance.</summary>
         public int ValidityYears { get; set; } = 25;
 
-        /// <summary>CA label, the path segment of its CRL, OCSP, AIA and enrolment URLs. Must match <c>^[a-z0-9][a-z0-9-]{0,62}$</c> without a reserved prefix; omitted, it is derived from <see cref="SubjectCN"/>.</summary>
+        /// <summary>CA label, the path segment of its CRL, OCSP, AIA and enrollment URLs. Must match <c>^[a-z0-9][a-z0-9-]{0,62}$</c> without a reserved prefix; omitted, it is derived from <see cref="SubjectCN"/>.</summary>
         [MaxLength(255)]
         public string? Label { get; set; }
         /// <summary>Optional CA certificate profile ID. Defaults to "Main CA Certificate Profile" when not specified.</summary>

@@ -11,7 +11,7 @@ import { useStepUp } from './StepUpMfaContext';
 import ConfirmModal from './ConfirmModal';
 import {
     INSTANCE_MODE_CHANGED_EVENT, INSTANCE_MODE_OPTIONS, type InstanceModeName,
-    modeChangeBlocked, modeName, modeOption, modeTitle, setByText,
+    modeChangeBlocked, modeName, modeOption, modeTitle, setByText, crlDeadlineText,
 } from '../pages/instanceMode';
 
 const MODE_PATH = '/api/v1/admin/instance-mode';
@@ -90,13 +90,22 @@ export const InstanceModeCard: React.FC = () => {
                         </div>
                         <div>
                             <dt className={labelClass}>When</dt>
-                            <dd className="text-ink">{status.setAtUtc ? new Date(status.setAtUtc).toLocaleString() : '-'}</dd>
+                            <dd className="text-ink">{status.setAtUtc
+                                ? new Date(status.setAtUtc).toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                                : '-'}</dd>
                         </div>
                         <div>
                             <dt className={labelClass}>Reason</dt>
                             <dd className="text-ink">{status.reason || '-'}</dd>
                         </div>
                     </dl>
+
+                    {/* A mode that signs no new CRL has a clock on it: say when the CRLs in force run out. */}
+                    {crlDeadlineText(status) && (
+                        <div className="rounded border border-warn/40 bg-warn-soft p-3 max-w-3xl" role="status">
+                            <p className="text-xs text-warn">{crlDeadlineText(status)}</p>
+                        </div>
+                    )}
 
                     <fieldset className="space-y-2">
                         <legend className={labelClass}>Set the mode</legend>

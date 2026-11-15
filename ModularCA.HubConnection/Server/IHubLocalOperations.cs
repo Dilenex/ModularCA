@@ -33,7 +33,7 @@ public interface IHubLocalOperations
     Task<HubHealthReport> ReadHealthAsync(CancellationToken cancellationToken);
 
     /// <summary>The mode now and who set it.</summary>
-    HubMode ReadMode();
+    Task<HubMode> ReadModeAsync(CancellationToken cancellationToken);
 
     /// <summary>
     /// Sets the mode as the hub, recording it in the audit trail with the operator name the hub

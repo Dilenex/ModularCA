@@ -440,7 +440,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// An account that made a certificate request or gave an approval is retained, not removed:
         /// the answer is still 200, with <c>retained: true</c>, the row stays hidden with its id and
         /// username so that history keeps naming it, and its memberships, grants, sessions and
-        /// credentials are removed. The enrolment account of a Kerberos realm is refused (409).
+        /// credentials are removed. The enrollment account of a Kerberos realm is refused (409).
         /// </summary>
         [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpDelete("{id:guid}")]
@@ -461,7 +461,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             if (await AuthorizeAccountAdministrationAsync(id) is { } denied)
                 return denied;
 
-            // A realm's enrolment account cannot be deleted at all. Said here, before a ceremony
+            // A realm's enrollment account cannot be deleted at all. Said here, before a ceremony
             // is opened for a deletion that could never be carried out.
             if (await _userService.DeletionBlockerAsync(id) is { } blocker)
                 return Conflict(new { error = blocker });

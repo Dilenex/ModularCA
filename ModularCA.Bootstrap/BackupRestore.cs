@@ -669,8 +669,11 @@ public static class BackupRestore
         var restoreAudit = options.RestoreAudit;
         if (string.IsNullOrWhiteSpace(archivePath) || !File.Exists(archivePath))
         {
-            Console.WriteLine($"❌ Backup archive not found: {archivePath}");
-            return RestoreResult.Refused("the backup archive was not found");
+            var unreadable = !string.IsNullOrWhiteSpace(archivePath) && ModularCA.Shared.Utils.FileAccessProbe.IsUnreadable(archivePath);
+            Console.WriteLine("❌ " + (unreadable
+                ? ModularCA.Shared.Utils.FileAccessProbe.Describe("Backup archive", archivePath)
+                : $"Backup archive not found: {archivePath}"));
+            return RestoreResult.Refused(unreadable ? "the backup archive cannot be read by this account" : "the backup archive was not found");
         }
 
         var configDir = Path.Combine(AppContext.BaseDirectory, "config");

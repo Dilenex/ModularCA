@@ -354,7 +354,7 @@ public class GenerateCmpSharedSecretRequest
     public string ReferenceValue { get; set; } = string.Empty;
     /// <summary>Lifetime of the secret in hours; null means 30 days.</summary>
     public double? ExpiresInHours { get; set; }
-    /// <summary>How many enrolments the secret allows; null or zero means unlimited.</summary>
+    /// <summary>How many enrollments the secret allows; null or zero means unlimited.</summary>
     public int? MaxUses { get; set; }
     /// <summary>Signing profile used to resolve the target CA for space enforcement.</summary>
     public Guid? SigningProfileId { get; set; }
@@ -365,7 +365,7 @@ public class GenerateEnrollmentTokenRequest
 {
     /// <summary>Lifetime of the token in hours; null means 24.</summary>
     public double? ExpiresInHours { get; set; }
-    /// <summary>How many enrolments the token allows; null means one, zero or less means unlimited.</summary>
+    /// <summary>How many enrollments the token allows; null means one, zero or less means unlimited.</summary>
     public int? MaxUses { get; set; }
     /// <summary>
     /// Patterns the CSR subject must match, at most 255 characters: a DN component such as

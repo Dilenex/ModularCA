@@ -128,7 +128,7 @@ public static class BackupArchiveFile
         try
         {
             if (!File.Exists(archivePath))
-                throw new BackupArchiveException($"Backup archive not found: {archivePath}");
+                throw new BackupArchiveException(ModularCA.Shared.Utils.FileAccessProbe.Describe("Backup archive", archivePath));
             file = File.ReadAllBytes(archivePath);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
@@ -238,7 +238,9 @@ public static class BackupArchiveFile
         try
         {
             if (!File.Exists(path))
-                throw new BackupArchiveException($"The backup encryption key file '{path}' was not found. Put the backup key this archive was made with there, or name it with --key-file.");
+                throw new BackupArchiveException(ModularCA.Shared.Utils.FileAccessProbe.IsUnreadable(path)
+                    ? $"The backup encryption key file '{path}' cannot be read by '{Environment.UserName}' (permission denied). It is there; check its owner and mode, the directories above it, and the mount's SELinux label."
+                    : $"The backup encryption key file '{path}' was not found. Put the backup key this archive was made with there, or name it with --key-file.");
             key = File.ReadAllBytes(path);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)

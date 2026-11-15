@@ -139,6 +139,49 @@ internal static class TestCertificates
     }
 
     /// <summary>
+    /// Issues an intermediate CA whose certificate names <paramref name="caIssuersUrl"/> as the
+    /// place to fetch its own issuer's certificate (authority information access, CA Issuers), as
+    /// the certificates of a real instance do. A chain engine that follows it completes the chain
+    /// past this CA to the root.
+    /// </summary>
+    /// <param name="issuer">The CA that signs it; must carry its private key.</param>
+    /// <param name="subject">The new CA's subject.</param>
+    /// <param name="caIssuersUrl">Where <paramref name="issuer"/>'s certificate can be fetched.</param>
+    public static X509Certificate2 IssueIntermediateWithCaIssuers(X509Certificate2 issuer, string subject, string caIssuersUrl)
+    {
+        using var key = RSA.Create(2048);
+        var req = new CertificateRequest(subject, key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        req.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, true, 0, true));
+        req.CertificateExtensions.Add(new X509KeyUsageExtension(
+            X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign, true));
+        req.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(req.PublicKey, false));
+        req.CertificateExtensions.Add(X509AuthorityKeyIdentifierExtension.CreateFromCertificate(issuer, true, false));
+        req.CertificateExtensions.Add(new X509AuthorityInformationAccessExtension(null, [caIssuersUrl], false));
+
+        using var signed = req.Create(issuer, NotBefore.AddHours(1), NotAfter.AddHours(-1), NewSerial());
+        return signed.CopyWithPrivateKey(key);
+    }
+
+    /// <summary>
+    /// Issues a genuine leaf that names <paramref name="caIssuersUrl"/> as the place to fetch its
+    /// issuer's certificate (authority information access, CA Issuers).
+    /// </summary>
+    /// <param name="ca">The CA that signs it; must carry its private key.</param>
+    /// <param name="subject">The leaf's subject.</param>
+    /// <param name="caIssuersUrl">Where <paramref name="ca"/>'s certificate can be fetched.</param>
+    public static X509Certificate2 IssueLeafWithCaIssuers(X509Certificate2 ca, string subject, string caIssuersUrl)
+    {
+        using var leafKey = RSA.Create(2048);
+        var req = new CertificateRequest(subject, leafKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        req.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
+        req.CertificateExtensions.Add(X509AuthorityKeyIdentifierExtension.CreateFromCertificate(ca, true, false));
+        req.CertificateExtensions.Add(new X509AuthorityInformationAccessExtension(null, [caIssuersUrl], false));
+
+        using var signed = req.Create(ca, NotBefore.AddDays(1), NotAfter.AddDays(-1), NewSerial());
+        return X509CertificateLoader.LoadCertificate(signed.Export(X509ContentType.Cert));
+    }
+
+    /// <summary>
     /// Issues a genuine leaf that names <paramref name="crlUrl"/> as its CRL distribution point,
     /// so an online revocation check has somewhere to look.
     /// </summary>

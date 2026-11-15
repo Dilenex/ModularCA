@@ -189,7 +189,14 @@ public sealed record HubHello(string ContractVersion, IReadOnlyList<string> Oper
 /// <param name="SetBy">The administrator's username, or the operator name the hub gave.</param>
 /// <param name="Reason">The reason given.</param>
 /// <param name="SetAtUtc">When it was set.</param>
-public sealed record HubMode(string Mode, string Source, string? SetBy = null, string? Reason = null, DateTime? SetAtUtc = null);
+/// <param name="CrlsExpireFromUtc">
+/// In DR mode only, which signs no new CRL: the earliest <c>nextUpdate</c> among the newest full
+/// CRLs of the instance's enabled CAs. From then on a relying party that checks a CRL sees an
+/// expired one, until the mode is changed. Left out in every other mode, and when no CRL has been
+/// signed or the time could not be read.
+/// </param>
+public sealed record HubMode(string Mode, string Source, string? SetBy = null, string? Reason = null, DateTime? SetAtUtc = null,
+    DateTime? CrlsExpireFromUtc = null);
 
 /// <summary>The body of <c>PUT /hub/v1/mode</c>.</summary>
 /// <param name="Mode"><c>full</c>, <c>restricted</c> or <c>dr</c>.</param>

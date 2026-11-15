@@ -70,6 +70,14 @@ const RevokedSerialsPanel: React.FC<{ caId: string; caName: string }> = ({ caId,
         return () => { cancelled = true; };
     }, [caId, refresh]);
 
+    // Escape closes the open dialog, as Cancel does, unless a request is under way.
+    useEffect(() => {
+        if (!dialog) return;
+        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) setDialog(null); };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [dialog, busy]);
+
     const open = useCallback((which: 'serial' | 'adopt') => {
         setSerial(''); setReason('Unspecified'); setNote(''); setCertificate(''); setRevokeOnAdopt(false);
         setError(null); setDone(null); setDialog(which);

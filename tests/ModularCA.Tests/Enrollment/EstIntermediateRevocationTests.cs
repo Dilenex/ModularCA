@@ -12,7 +12,7 @@ namespace ModularCA.Tests.Enrollment;
 
 /// <summary>
 /// EST's proof that a presented client certificate was issued by the CA being enrolled against
-/// (<c>EstService.VerifyPresentedCertificateAsync</c>, shared by enrolment and re-enrolment), for
+/// (<c>EstService.VerifyPresentedCertificateAsync</c>, shared by enrollment and re-enrollment), for
 /// an issuing CA under a root with the <c>RequireMtlsOcspCheck</c> policy on: the CA's stored
 /// issuers have to reach the validator for the online check to be possible at all.
 /// </summary>

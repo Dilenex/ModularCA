@@ -238,16 +238,16 @@ namespace ModularCA.Auth.Services
 
         /// <inheritdoc />
         /// <remarks>
-        /// A realm's foreign key to its enrolment account neither cascades nor clears, and the
-        /// realm cannot enrol without the account, so the realm is moved to another account first.
+        /// A realm's foreign key to its enrollment account neither cascades nor clears, and the
+        /// realm cannot enroll without the account, so the realm is moved to another account first.
         /// </remarks>
         public async Task<string?> DeletionBlockerAsync(Guid userId)
         {
             var realms = await _dbContext.KerberosRealms.CountAsync(k => k.EnrollmentUserId == userId);
             return realms == 0
                 ? null
-                : $"This account cannot be deleted: {realms} Kerberos realm(s) enrol through it. "
-                  + "Give each realm another enrolment account first.";
+                : $"This account cannot be deleted: {realms} Kerberos realm(s) enroll through it. "
+                  + "Give each realm another enrollment account first.";
         }
 
         /// <inheritdoc />
@@ -302,7 +302,7 @@ namespace ModularCA.Auth.Services
         /// A retained account keeps its id and username, so requests and approvals stay attributed
         /// and the name cannot be taken by someone else. It loses its group memberships, roles,
         /// direct grants, badges, sessions, MFA credentials, mTLS credentials, password, password
-        /// history, claim tokens, the enrolment tokens it created and its email address, which is
+        /// history, claim tokens, the enrollment tokens it created and its email address, which is
         /// replaced so the address can be used again. The security stamp changes so access tokens
         /// already issued stop working. Nothing restores a retained account.
         /// </para>
@@ -658,7 +658,7 @@ namespace ModularCA.Auth.Services
 
         /// <summary>
         /// Removes every MFA method of a user (TOTP secrets and WebAuthn credentials) and clears
-        /// <see cref="UserEntity.MfaEnrolledAt"/>, so they must enrol again at next login. Ends the
+        /// <see cref="UserEntity.MfaEnrolledAt"/>, so they must enroll again at next login. Ends the
         /// account's sessions (<see cref="UserSessionTermination"/>), so none outlives the reset. Returns
         /// the counts removed, or null when the user does not exist.
         /// </summary>

@@ -159,6 +159,12 @@ public static class X509ChainValidationUtil
 
         using var chain = new X509Chain();
         chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+        // Never fetch a missing issuer from the address a certificate names (CA Issuers). The
+        // certificates to build with are the ones handed in. A real instance's certificates name
+        // that address, and an engine that follows it completes the chain past an intermediate
+        // anchor to a root nobody said to trust, which then fails every certificate under it.
+        // This turns off only the download of issuer certificates, not of CRLs or OCSP answers.
+        chain.ChainPolicy.DisableCertificateDownloads = true;
         chain.ChainPolicy.CustomTrustStore.Add(anchorCert);
         chain.ChainPolicy.RevocationMode = requireRevocationCheck
             ? X509RevocationMode.Online
@@ -256,6 +262,12 @@ public static class X509ChainValidationUtil
 
         using var chain = new X509Chain();
         chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+        // Never fetch a missing issuer from the address a certificate names (CA Issuers). The
+        // certificates to build with are the ones handed in. A real instance's certificates name
+        // that address, and an engine that follows it completes the chain past an intermediate
+        // anchor to a root nobody said to trust, which then fails every certificate under it.
+        // This turns off only the download of issuer certificates, not of CRLs or OCSP answers.
+        chain.ChainPolicy.DisableCertificateDownloads = true;
         chain.ChainPolicy.ExtraStore.Add(anchorCert);
         var roots = new List<X509Certificate2>();
         foreach (var issuer in anchorIssuers)

@@ -175,7 +175,31 @@ public sealed class NodeHubOperations(
     public Task<HubHealthReport> ReadHealthAsync(CancellationToken cancellationToken) => health(cancellationToken);
 
     /// <inheritdoc/>
-    public HubMode ReadMode() => Describe(modes.Current);
+    public Task<HubMode> ReadModeAsync(CancellationToken cancellationToken) => WithCrlDeadlineAsync(modes.Current, cancellationToken);
+
+    /// <summary>
+    /// The mode record as the hub reads it, with the time the CRLs in force start to expire while
+    /// the mode is one that signs no new CRL (DR mode). A read of what is stored; a failure to
+    /// read leaves the time out and does not fail the answer.
+    /// </summary>
+    /// <param name="record">The mode record.</param>
+    /// <param name="cancellationToken">Cancels the read.</param>
+    private async Task<HubMode> WithCrlDeadlineAsync(InstanceModeRecord record, CancellationToken cancellationToken)
+    {
+        var described = Describe(record);
+        if (InstanceModeGate.Allows(record.Mode, ModeOperation.Fact))
+            return described;
+        try
+        {
+            await using var scope = scopes.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetService<ModularCA.Database.ModularCADbContext>();
+            return db == null ? described : described with { CrlsExpireFromUtc = await CrlDeadline.EarliestNextUpdateAsync(db, cancellationToken) };
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return described;
+        }
+    }
 
     /// <summary>
     /// Reads the inventory (<see cref="NodeInventoryReader"/> over this node's services). Set by
@@ -213,7 +237,7 @@ public sealed class NodeHubOperations(
                     PreviousSetBy = before.SetBy,
                 });
         }
-        return Describe(modes.Set(parsed, InstanceModeSource.Hub, operatorName, reason));
+        return await WithCrlDeadlineAsync(modes.Set(parsed, InstanceModeSource.Hub, operatorName, reason), cancellationToken);
     }
 
     /// <inheritdoc/>

@@ -30,6 +30,14 @@ public class InstanceModeStatus
 
     /// <summary>What still works in this mode, as plain sentences.</summary>
     public string StillWorks { get; set; } = string.Empty;
+
+    /// <summary>
+    /// In a mode that signs no new CRL (DR mode): the earliest <c>nextUpdate</c> among the newest
+    /// full CRLs of the instance's enabled CAs. From that moment a relying party that checks the
+    /// CRL sees an expired one, until the mode is lifted. Null in every other mode, and when no
+    /// CRL has been signed.
+    /// </summary>
+    public DateTime? CrlsExpireFromUtc { get; set; }
 }
 
 /// <summary>The body of <c>PUT /api/v1/admin/instance-mode</c>.</summary>

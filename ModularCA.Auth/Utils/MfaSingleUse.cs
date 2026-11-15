@@ -43,7 +43,7 @@ public static class MfaSingleUse
 
     /// <summary>
     /// Claims TOTP time step <paramref name="timeStep"/> for <paramref name="userId"/>, so the code
-    /// that matched it is accepted once, by whichever flow (sign-in, step-up, enrolment) presents
+    /// that matched it is accepted once, by whichever flow (sign-in, step-up, enrollment) presents
     /// it first.
     /// </summary>
     /// <param name="guard">The atomic single-use claim.</param>

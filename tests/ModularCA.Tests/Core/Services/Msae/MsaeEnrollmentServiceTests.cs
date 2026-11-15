@@ -512,7 +512,7 @@ public class MsaeEnrollmentServiceTests
 
     /// <summary>
     /// A template whose signing profile issues from another CA than the template's own is refused
-    /// as unavailable, so an enrolment against one CA's template cannot be signed by another CA.
+    /// as unavailable, so an enrollment against one CA's template cannot be signed by another CA.
     /// </summary>
     [Fact]
     public async Task A_template_whose_signing_profile_issues_from_another_ca_is_refused()

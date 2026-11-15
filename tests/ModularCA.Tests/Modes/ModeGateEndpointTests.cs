@@ -145,7 +145,7 @@ public sealed class ModeGateEndpointTests : IDisposable
     [InlineData("ModularCA.API.Controllers.v1.Auth.AuthController", "Claim", ModeOperation.Manage)]
     [InlineData("ModularCA.API.Controllers.v1.Auth.MfaStepUpController", "VerifyStepUpTotp", ModeOperation.Manage)]
     [InlineData("ModularCA.API.Controllers.v1.Auth.TotpController", "VerifySetup", ModeOperation.Manage)]
-    // The enrolment protocols are issuance.
+    // The enrollment protocols are issuance.
     [InlineData("ModularCA.API.Controllers.v1.Acme.AcmeOrderController", "FinalizeOrder", ModeOperation.Issue)]
     [InlineData("ModularCA.API.Controllers.v1.Acme.AcmeOrderController", "RevokeCert", ModeOperation.Restriction)]
     [InlineData("ModularCA.API.Controllers.v1.Est.EstController", "SimpleEnroll", ModeOperation.Issue)]
@@ -191,12 +191,12 @@ public sealed class ModeGateEndpointTests : IDisposable
     }
 
     /// <summary>
-    /// CMP carries enrolment and revocation on one route. A revocation request goes on in
-    /// maintenance mode, where an enrolment is refused; a message that cannot be read is held to
+    /// CMP carries enrollment and revocation on one route. A revocation request goes on in
+    /// maintenance mode, where an enrollment is refused; a message that cannot be read is held to
     /// the stricter class.
     /// </summary>
     [Fact]
-    public void A_CMP_revocation_request_is_a_restriction_and_everything_else_an_enrolment()
+    public void A_CMP_revocation_request_is_a_restriction_and_everything_else_an_enrollment()
     {
         var classify = ApiAssembly.TypeNamed("ModularCA.API.Controllers.v1.Cmp.CmpController")
             .GetMethod("ModeOperationOf", BindingFlags.NonPublic | BindingFlags.Static)!;
@@ -403,6 +403,69 @@ public sealed class ModeGateEndpointTests : IDisposable
         Assert.Equal("POST /api/v1/test", audited.TargetId);
     }
 
+    /// <summary>
+    /// A caller who is not signed in is refused every time and recorded once per interval for
+    /// each endpoint, with the count: an enrollment client that retries every minute, or anyone
+    /// who can reach a protocol endpoint, must not fill the audit trail while the instance is in
+    /// maintenance or DR mode. A signed-in caller's refusal stays one record each.
+    /// </summary>
+    [Fact]
+    public async Task Refusals_of_callers_who_are_not_signed_in_are_counted_into_one_record_per_interval()
+    {
+        var now = new DateTime(2026, 11, 12, 22, 0, 0, DateTimeKind.Utc);
+        var clock = ModeGateFilter.UtcNow;
+        ModeGateFilter.UtcNow = () => now;
+        try
+        {
+            // A name no other test uses: what is counted is kept per mode and endpoint.
+            var what = "Enrollment in the counted-refusals test " + Guid.NewGuid().ToString("N");
+            HttpContext Anonymous()
+            {
+                var http = new DefaultHttpContext
+                {
+                    RequestServices = new ServiceCollection()
+                        .AddSingleton<IInstanceModeGate>(new FixedModeGate(InstanceMode.DisasterRecovery))
+                        .AddSingleton<IAuditService>(_audit).BuildServiceProvider(),
+                };
+                http.Request.Method = "POST";
+                http.Request.Path = "/est/lab/simpleenroll";
+                return http;
+            }
+            List<(string Action, string? TargetId, object? Details)> Recorded() => _audit.Entries.Where(e => e.Action == AuditActionType.InstanceModeRefused).ToList();
+
+            // Refused every time; recorded the first time only.
+            for (var i = 0; i < 6; i++)
+            {
+                Assert.Equal(503, (await ModeGateFilter.RequireAsync(Anonymous(), ModeOperation.Issue, what))!.StatusCode);
+                now = now.AddSeconds(20);
+            }
+            var first = Assert.Single(Recorded());
+            Assert.Equal(1, first.Details!.GetType().GetProperty("Refusals")!.GetValue(first.Details));
+
+            // The first refusal after the interval is one record for the five counted and itself.
+            now = now.Add(ModeGateFilter.AnonymousAuditInterval);
+            Assert.NotNull(await ModeGateFilter.RequireAsync(Anonymous(), ModeOperation.Issue, what));
+            Assert.Equal(2, Recorded().Count);
+            var second = Recorded()[1];
+            Assert.Equal(6, second.Details!.GetType().GetProperty("Refusals")!.GetValue(second.Details));
+            Assert.NotNull(second.Details.GetType().GetProperty("SinceUtc")!.GetValue(second.Details));
+
+            // A signed-in caller's refusal is always its own record.
+            var before = Recorded().Count;
+            for (var i = 0; i < 3; i++)
+            {
+                var http = Anonymous();
+                http.User = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", _w.Super.ToString()), new Claim("unique_name", "root")], "test"));
+                Assert.NotNull(await ModeGateFilter.RequireAsync(http, ModeOperation.Issue, what));
+            }
+            Assert.Equal(before + 3, Recorded().Count);
+        }
+        finally
+        {
+            ModeGateFilter.UtcNow = clock;
+        }
+    }
+
     [Fact]
     public async Task A_caller_the_policy_refuses_is_turned_away_before_the_mode_is_asked()
     {
@@ -463,7 +526,7 @@ public sealed class ModeGateEndpointTests : IDisposable
     private async Task<IActionResult> Call(InstanceModeStore store, Guid actor, string action, params object?[] args)
     {
         var type = ApiAssembly.TypeNamed(ModeController);
-        var controller = Activator.CreateInstance(type, store, _audit, new CurrentUserStub(actor, "sysadmin"), store)!;
+        var controller = Activator.CreateInstance(type, store, _audit, new CurrentUserStub(actor, "sysadmin"), store, null)!;
         type.GetProperty("ControllerContext")!.SetValue(controller, new ControllerContext { HttpContext = Http(actor, store) });
         var result = type.GetMethod(action)!.Invoke(controller, args)!;
         return result is Task<IActionResult> task ? await task : (IActionResult)result;

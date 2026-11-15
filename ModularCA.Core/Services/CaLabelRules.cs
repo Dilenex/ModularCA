@@ -9,7 +9,7 @@ namespace ModularCA.Core.Services;
 /// The rules every path that names a CA applies: a label matches
 /// <c>^[a-z0-9][a-z0-9-]{0,62}$</c>, carries no reserved prefix unless the caller is bootstrap,
 /// and a label (compared case-insensitively) or name is unique across the instance, soft-deleted
-/// CAs included, because a label is the path of the CRL, OCSP, AIA and enrolment URLs of every
+/// CAs included, because a label is the path of the CRL, OCSP, AIA and enrollment URLs of every
 /// certificate its CA issued. A label may change only while nothing references it
 /// (<see cref="EnsureLabelChangeableAsync"/>), so a label that was used is never freed for reuse.
 /// </summary>

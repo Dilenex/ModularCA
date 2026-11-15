@@ -176,6 +176,57 @@ public class EstService : IEstService, IEnrollmentProtocol
         System.Security.Cryptography.X509Certificates.X509Certificate2? clientCert, bool isAuthenticated,
         string? callerUsername, bool presentedCertVerified)
     {
+        try
+        {
+            return await SimpleEnrollStepsAsync(base64Csr, caLabel, sourceIp, clientCert, isAuthenticated, callerUsername, presentedCertVerified);
+        }
+        catch (Exception ex) when (!_auditRowWritten && ex is not OperationCanceledException)
+        {
+            // Every refusal the steps know of writes its own row before it throws. One that
+            // reaches here unrecorded (a CA that cannot be resolved, a profile that does not suit
+            // the request, a fault nobody foresaw) was answered with a fixed sentence and left
+            // nothing in the console: the reason was in the log file alone.
+            try
+            {
+                await AuditEstAsync(presentedCertVerified ? "EstReenrollRejected" : "EstEnrollRejected", null, null,
+                    null, null, caLabel, sourceIp, success: false,
+                    errorMessage: Truncate($"{ex.GetType().Name}: {ex.Message}", 500),
+                    callerPrincipal: !string.IsNullOrEmpty(callerUsername) ? $"basic:{callerUsername}" : null);
+            }
+            catch (Exception auditFault)
+            {
+                _logger.LogError(auditFault, "The audit row of a refused EST enrollment could not be written");
+            }
+            throw;
+        }
+    }
+
+    /// <summary>Whether this request has written an EST audit row yet. The service is scoped to one request.</summary>
+    private bool _auditRowWritten;
+
+    /// <summary>
+    /// Writes an EST audit row and notes that this request has one, so that
+    /// <see cref="SimpleEnrollCoreAsync"/> can tell a refusal that was recorded from one that was not.
+    /// </summary>
+    private Task AuditEstAsync(string operation, string? subjectDN, string? certSerial,
+        string? keyAlgorithm, string? keySize, string? caLabel, string? sourceIp,
+        bool success = true, string? errorMessage = null,
+        Guid? certificateAuthorityId = null, Guid? spaceId = null,
+        string? callerPrincipal = null)
+    {
+        _auditRowWritten = true;
+        return _protocolAudit.LogEstAsync(operation, subjectDN, certSerial, keyAlgorithm, keySize, caLabel, sourceIp,
+            success, errorMessage, certificateAuthorityId, spaceId, callerPrincipal);
+    }
+
+    /// <summary>The first <paramref name="max"/> characters of <paramref name="text"/>.</summary>
+    private static string Truncate(string text, int max) => text.Length <= max ? text : text[..max];
+
+    /// <summary>The steps of <see cref="SimpleEnrollCoreAsync"/>, which adds the audit row of a refusal that wrote none.</summary>
+    private async Task<byte[]> SimpleEnrollStepsAsync(string base64Csr, string? caLabel, string? sourceIp,
+        System.Security.Cryptography.X509Certificates.X509Certificate2? clientCert, bool isAuthenticated,
+        string? callerUsername, bool presentedCertVerified)
+    {
         var csrPem = DecodeCsrFromBase64(base64Csr);
 
         var parsedCsr = new CertificateUtil.ParsedCsrInfo();
@@ -254,7 +305,7 @@ public class EstService : IEstService, IEnrollmentProtocol
             // arrived.
             case EnrollmentOutcome.Failed failed:
                 _logger.LogWarning("EST enrollment at CA {CaLabel} failed: {Reason}", caLabel, failed.Message);
-                await _protocolAudit.LogEstAsync(presentedCertVerified ? "EstReenrollRejected" : "EstEnrollRejected", parsedCsr.SubjectName, null,
+                await AuditEstAsync(presentedCertVerified ? "EstReenrollRejected" : "EstEnrollRejected", parsedCsr.SubjectName, null,
                     parsedCsr.KeyAlgorithm, parsedCsr.KeySize, caLabel, sourceIp,
                     success: false, errorMessage: failed.Message,
                     callerPrincipal: AuditPrincipal(clientCert, callerUsername));
@@ -310,7 +361,7 @@ public class EstService : IEstService, IEnrollmentProtocol
             }
             catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
             {
-                await _protocolAudit.LogEstAsync("EstEnrollRejected", parsedCsr.SubjectName, null,
+                await AuditEstAsync("EstEnrollRejected", parsedCsr.SubjectName, null,
                     parsedCsr.KeyAlgorithm, parsedCsr.KeySize, caLabel, sourceIp,
                     success: false, errorMessage: $"Malformed identity input: {ex.Message}",
                     callerPrincipal: $"mtls:{clientCert.Subject ?? "?"}");
@@ -324,7 +375,7 @@ public class EstService : IEstService, IEnrollmentProtocol
 
             if (!subjectOk || !sansOk)
             {
-                await _protocolAudit.LogEstAsync("EstEnrollRejected", parsedCsr.SubjectName, null,
+                await AuditEstAsync("EstEnrollRejected", parsedCsr.SubjectName, null,
                     parsedCsr.KeyAlgorithm, parsedCsr.KeySize, caLabel, sourceIp,
                     success: false, errorMessage: "CSR subject/SAN does not match mTLS client identity",
                     callerPrincipal: $"mtls:{clientCn ?? "?"}");
@@ -346,7 +397,7 @@ public class EstService : IEstService, IEnrollmentProtocol
             }
             catch (Exception ex) when (ex is RequestValidationException or InvalidOperationException)
             {
-                await _protocolAudit.LogEstAsync("EstEnrollRejected", parsedCsr.SubjectName, null,
+                await AuditEstAsync("EstEnrollRejected", parsedCsr.SubjectName, null,
                     parsedCsr.KeyAlgorithm, parsedCsr.KeySize, caLabel, sourceIp,
                     success: false, errorMessage: $"Malformed CSR DN: {ex.Message}",
                     callerPrincipal: $"basic:{callerUsername}");
@@ -355,7 +406,7 @@ public class EstService : IEstService, IEnrollmentProtocol
             if (!string.IsNullOrEmpty(csrCn) &&
                 !string.Equals(csrCn, callerUsername, StringComparison.OrdinalIgnoreCase))
             {
-                await _protocolAudit.LogEstAsync("EstEnrollRejected", parsedCsr.SubjectName, null,
+                await AuditEstAsync("EstEnrollRejected", parsedCsr.SubjectName, null,
                     parsedCsr.KeyAlgorithm, parsedCsr.KeySize, caLabel, sourceIp,
                     success: false, errorMessage: "CSR CN does not match authenticated username",
                     callerPrincipal: $"basic:{callerUsername}");
@@ -375,7 +426,7 @@ public class EstService : IEstService, IEnrollmentProtocol
             // controller read a claim the token never carried, and the binding quietly did not
             // apply. Refuse rather than fall through, so a future mis-wiring fails visibly
             // instead of silently disabling the control.
-            await _protocolAudit.LogEstAsync("EstEnrollRejected", parsedCsr.SubjectName, null,
+            await AuditEstAsync("EstEnrollRejected", parsedCsr.SubjectName, null,
                 parsedCsr.KeyAlgorithm, parsedCsr.KeySize, caLabel, sourceIp,
                 success: false, errorMessage: "Authenticated caller has no resolvable username to bind the CSR to",
                 callerPrincipal: "unknown");
@@ -406,9 +457,9 @@ public class EstService : IEstService, IEnrollmentProtocol
     /// carries the request's own details and no principal, which is the row a rejected enrollment
     /// has always produced.
     /// <para>
-    /// A re-enrolment is named as one: <c>SimpleReenroll</c>, <c>SimpleReenroll-PendingApproval</c>
+    /// A re-enrollment is named as one: <c>SimpleReenroll</c>, <c>SimpleReenroll-PendingApproval</c>
     /// and <c>EstReenrollRejected</c>. Both operations share this path, and every row it wrote was
-    /// named after enrolment, so a renewal could not be told from a first enrolment on the EST tab.
+    /// named after enrollment, so a renewal could not be told from a first enrollment on the EST tab.
     /// </para>
     /// </remarks>
     /// <param name="reenroll">True when the request came in as <c>/simplereenroll</c>.</param>
@@ -417,19 +468,19 @@ public class EstService : IEstService, IEnrollmentProtocol
         bool reenroll)
         => record.Event switch
         {
-            EnrollmentAuditEvent.Issued => _protocolAudit.LogEstAsync(reenroll ? "SimpleReenroll" : "SimpleEnroll", record.Subject,
+            EnrollmentAuditEvent.Issued => AuditEstAsync(reenroll ? "SimpleReenroll" : "SimpleEnroll", record.Subject,
                 record.SerialNumber, record.KeyAlgorithm, record.KeySize, caLabel, sourceIp),
 
-            EnrollmentAuditEvent.Pending => _protocolAudit.LogEstAsync(
+            EnrollmentAuditEvent.Pending => AuditEstAsync(
                 reenroll ? "SimpleReenroll-PendingApproval" : "SimpleEnroll-PendingApproval",
                 record.Subject, null, record.KeyAlgorithm, record.KeySize, caLabel, sourceIp),
 
-            _ when RefusedBeforeTheRequestWasRead(record.Reason) => _protocolAudit.LogEstAsync(
+            _ when RefusedBeforeTheRequestWasRead(record.Reason) => AuditEstAsync(
                 reenroll ? "EstReenrollRejected" : "EstEnrollRejected", null, null, null, null, caLabel, sourceIp,
                 success: false, errorMessage: record.Message ?? "Enrollment not authorized",
                 callerPrincipal: AuditPrincipal(clientCert, callerUsername)),
 
-            _ => _protocolAudit.LogEstAsync(reenroll ? "EstReenrollRejected" : "EstEnrollRejected", record.Subject, null,
+            _ => AuditEstAsync(reenroll ? "EstReenrollRejected" : "EstEnrollRejected", record.Subject, null,
                 record.KeyAlgorithm, record.KeySize, caLabel, sourceIp,
                 success: false, errorMessage: record.Message ?? "Enrollment refused"),
         };
@@ -479,7 +530,7 @@ public class EstService : IEstService, IEnrollmentProtocol
         // the guarantee belongs to the service, not to one controller.
         if (clientCert == null)
         {
-            await _protocolAudit.LogEstAsync("EstReenrollRejected", null, null,
+            await AuditEstAsync("EstReenrollRejected", null, null,
                 null, null, caLabel, sourceIp, success: false,
                 errorMessage: "Re-enrollment attempted without an mTLS client certificate.",
                 callerPrincipal: !string.IsNullOrEmpty(callerUsername) ? $"basic:{callerUsername}" : null);
@@ -605,7 +656,7 @@ public class EstService : IEstService, IEnrollmentProtocol
                 continue;
             }
 
-            await _protocolAudit.LogEstAsync("EstEnrollRejected", parsedCsr.SubjectName, null,
+            await AuditEstAsync("EstEnrollRejected", parsedCsr.SubjectName, null,
                 parsedCsr.KeyAlgorithm, parsedCsr.KeySize, caLabel, sourceIp,
                 success: false,
                 errorMessage: $"SAN '{entry}' is not bound to the authenticated caller",
@@ -724,7 +775,7 @@ public class EstService : IEstService, IEnrollmentProtocol
     private async Task ThrowEnrollRejectedAsync(string reason, string? caLabel, string? sourceIp,
         System.Security.Cryptography.X509Certificates.X509Certificate2 clientCert)
     {
-        await _protocolAudit.LogEstAsync("EstEnrollRejected", clientCert.Subject, null,
+        await AuditEstAsync("EstEnrollRejected", clientCert.Subject, null,
             null, null, caLabel, sourceIp, success: false, errorMessage: reason,
             callerPrincipal: $"mtls:{clientCert.Subject}");
         throw new InvalidOperationException(reason);
@@ -733,7 +784,7 @@ public class EstService : IEstService, IEnrollmentProtocol
     private async Task ThrowReenrollRejectedAsync(string reason, string? caLabel, string? sourceIp,
         System.Security.Cryptography.X509Certificates.X509Certificate2 clientCert)
     {
-        await _protocolAudit.LogEstAsync("EstReenrollRejected", clientCert.Subject, null,
+        await AuditEstAsync("EstReenrollRejected", clientCert.Subject, null,
             null, null, caLabel, sourceIp, success: false, errorMessage: reason,
             callerPrincipal: $"mtls:{clientCert.Subject}");
         throw new InvalidOperationException(reason);

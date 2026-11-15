@@ -169,6 +169,73 @@ public sealed class HubInventoryTests : IDisposable
         return newest;
     }
 
+    /// <summary>
+    /// The console's mode card reads the same stored CRLs: in DR mode, which signs no new CRL, it
+    /// says when the CRLs in force start to expire. That is the newest full CRL of an enabled CA;
+    /// not an older one, not a deleted CA's, and nothing at all in a mode that still signs CRLs.
+    /// </summary>
+    [Theory]
+    [InlineData(ModularCA.Shared.Modes.InstanceMode.DisasterRecovery, true)]
+    [InlineData(ModularCA.Shared.Modes.InstanceMode.Maintenance, false)]
+    [InlineData(ModularCA.Shared.Modes.InstanceMode.Restricted, false)]
+    [InlineData(ModularCA.Shared.Modes.InstanceMode.Full, false)]
+    public async Task The_mode_card_says_when_the_crls_in_force_run_out_only_in_dr_mode(ModularCA.Shared.Modes.InstanceMode mode, bool says)
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        await SeedAsync(db);
+        var type = ModularCA.Tests.Roles.ApiAssembly.TypeNamed("ModularCA.API.Controllers.v1.Admin.AdminInstanceModeController");
+        var gate = new ModularCA.Tests.Modes.FixedModeGate(mode);
+        var controller = Activator.CreateInstance(type, gate, null, null, null, db)!;
+
+        var result = (Microsoft.AspNetCore.Mvc.OkObjectResult)await (Task<Microsoft.AspNetCore.Mvc.IActionResult>)type.GetMethod("Get")!.Invoke(controller, null)!;
+        var status = (ModularCA.Shared.Models.InstanceModeStatus)result.Value!;
+
+        Assert.Equal(says ? NewestCrlNextUpdate : null, status.CrlsExpireFromUtc);
+    }
+
+    /// <summary>
+    /// The hub reads the same deadline in its mode record: present while the mode is DR, which
+    /// signs no new CRL, and left out of the answer in every other mode. It is in the mode read,
+    /// in the answer to setting the mode, and so in the health read, which carries the record.
+    /// </summary>
+    [Fact]
+    public async Task The_hubs_mode_record_carries_the_crl_deadline_in_dr_mode_only()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        await SeedAsync(db);
+        var dir = Directory.CreateTempSubdirectory("hub-mode-deadline-");
+        try
+        {
+            var modes = ModularCA.Shared.Modes.InstanceModeStore.Open(null, null, dir.FullName);
+            var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection()
+                .AddSingleton(db)
+                .AddSingleton<ModularCA.Shared.Interfaces.IAuditService>(new ModularCA.Tests.TestUtils.RecordingAuditService())
+                .BuildServiceProvider();
+            var operations = new NodeHubOperations(modes, new ModularCA.Shared.Models.Config.SystemConfig(),
+                services.GetRequiredService<Microsoft.Extensions.DependencyInjection.IServiceScopeFactory>(),
+                _ => throw new NotSupportedException(), _ => throw new NotSupportedException(), null, "0.4.5-test");
+
+            Assert.Null((await operations.ReadModeAsync(CancellationToken.None)).CrlsExpireFromUtc);
+
+            var set = await operations.SetModeAsync("dr", "a drill", "alice@hub", CancellationToken.None);
+            Assert.Equal(NewestCrlNextUpdate, set.CrlsExpireFromUtc);
+            var read = await operations.ReadModeAsync(CancellationToken.None);
+            Assert.Equal(NewestCrlNextUpdate, read.CrlsExpireFromUtc);
+            Assert.Contains("\"crlsExpireFromUtc\"", JsonSerializer.Serialize(read, HubLocalContract.Json));
+
+            foreach (var mode in new[] { "maintenance", "restricted", "full" })
+            {
+                var other = await operations.SetModeAsync(mode, "over", "alice@hub", CancellationToken.None);
+                Assert.Null(other.CrlsExpireFromUtc);
+                Assert.DoesNotContain("crlsExpireFromUtc", JsonSerializer.Serialize(other, HubLocalContract.Json));
+            }
+        }
+        finally
+        {
+            dir.Delete(true);
+        }
+    }
+
     // ---- every field, against what was seeded ---------------------------------------------------------
 
     [Fact]

@@ -235,7 +235,7 @@ to 0.4.3 means restoring the backup: take it first.
 
 1. **Run the upgrade check with the new build** and read its notes, not only its last line (see
    "Checking an upgrade before installing it" above). They name what on this instance the release
-   changes, such as enrolment clients whose next request would be refused. `install.sh` runs the
+   changes, such as enrollment clients whose next request would be refused. `install.sh` runs the
    same check and stops on a refusal.
 2. **Review who holds the Operator and Administrator roles on a CA or a space.** Those roles now
    approve and issue with the profiles of their scope, and a scoped administrator administers the
@@ -672,7 +672,7 @@ you run now, and can be run before the tarball is even copied to the host. An in
   Bookmarks with `?tenant=system` no longer resolve. There is no downgrade: to go back, restore the
   dumps taken before the upgrade.
 - **CA labels and names are unique across the instance.** A label is the path of a CA's CRL,
-  OCSP, AIA and enrolment URLs. The `InstanceUniqueCaNames` migration refuses (status 3, nothing
+  OCSP, AIA and enrollment URLs. The `InstanceUniqueCaNames` migration refuses (status 3, nothing
   applied) while two CAs, counting soft-deleted ones, share a label, have labels that differ only in
   case, or share a name (check k); the journal lists each, with its space or "instance" and
   whether it is deleted.
@@ -693,7 +693,7 @@ you run now, and can be run before the tarball is even copied to the host. An in
   (status 3, nothing applied) while any enabled configuration of a live X.509 CA is like that
   (check l); the journal lists each CA label, protocol and profile. For each, open Protocol Config
   for that CA in the 0.3.x console and choose that CA's own signing profile, or disable the
-  protocol, then upgrade. The same holds for the certificate templates MSAE enrols against
+  protocol, then upgrade. The same holds for the certificate templates MSAE enrolls against
   (check m): fix each under Certificate Templates (`/admin/templates`), or disable the template.
 - **Tenants are now spaces, and each space's groups are renamed.** The `RenameTenantToSpace`
   migration renames the `Tenants` table to `Spaces` and every `TenantId` column to `SpaceId` in
@@ -2174,8 +2174,8 @@ hub.
 |---|---|
 | `full` | Nothing. |
 | `restricted` | Users, groups, roles, grants, profiles, policy, settings, new CAs, key operations, ceremonies, releasing a hold and un-revoking. Issuing and revoking go on. |
-| `maintenance` | For an instance being updated or audited. Everything `restricted` stops, and issuing, renewing, approving requests, enrolment over every protocol and scheduled renewal. Revoking (a serial with no certificate included), signing CRLs and OCSP go on. |
-| `dr` | Everything `restricted` stops, and issuing, revoking, enrolment over every protocol, signing new CRLs and OCSP, which answers `tryLater`. Signing in, backups, a restore and changing the mode still work; CRLs already signed are still served, and so is what the enrolment protocols only read (the ACME directory, SCEP GetCACert and GetCACaps, EST `cacerts`, the MSAE policy), so a client still finds the CA and is told to try again when it asks for a certificate. |
+| `maintenance` | For an instance being updated or audited. Everything `restricted` stops, and issuing, renewing, approving requests, enrollment over every protocol and scheduled renewal. Revoking (a serial with no certificate included), signing CRLs and OCSP go on. |
+| `dr` | Everything `restricted` stops, and issuing, revoking, enrollment over every protocol, signing new CRLs and OCSP, which answers `tryLater`. Signing in, backups, a restore and changing the mode still work; CRLs already signed are still served, and so is what the enrollment protocols only read (the ACME directory, SCEP GetCACert and GetCACaps, EST `cacerts`, the MSAE policy), so a client still finds the CA and is told to try again when it asks for a certificate. |
 
 - The hub sets the mode over the connection. An administrator sets it in the console under
   Settings, General, Instance mode. Whoever sets it last wins, and the console shows who that was.

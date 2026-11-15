@@ -170,7 +170,7 @@ public class XcepPolicyService(
         }
         catch (Exception ex) when (ex is ModularCA.Shared.Errors.CertificatePolicyViolationException or InvalidOperationException)
         {
-            // Issuance would refuse this template, so advertising it would only fail at enrolment.
+            // Issuance would refuse this template, so advertising it would only fail at enrollment.
             logger.LogWarning(
                 "Template {Template} is offered to Windows but cannot be issued for its extended key usages; skipped. {Reason}",
                 template.Name, ex.Message);

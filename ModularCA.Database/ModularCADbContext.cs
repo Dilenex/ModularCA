@@ -493,7 +493,7 @@ public class ModularCADbContext : DbContext
         modelBuilder.Entity<CertificateAuthorityEntity>(entity =>
         {
             // Label and Name are unique across the instance, soft-deleted CAs included: a label is
-            // the path in the CRL, OCSP, AIA and enrolment URLs of every certificate the CA issued.
+            // the path in the CRL, OCSP, AIA and enrollment URLs of every certificate the CA issued.
             entity.HasIndex(e => e.Label).IsUnique();
             entity.HasIndex(e => e.Name).IsUnique();
             entity.HasIndex(e => e.IsDeleted);

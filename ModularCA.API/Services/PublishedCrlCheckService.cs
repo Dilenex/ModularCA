@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using ModularCA.API.Startup;
 using ModularCA.Core.Services.Continuity;
 using ModularCA.Database;
@@ -32,13 +33,29 @@ public sealed class PublishedCrlCheckService(IServiceScopeFactory scopes, Contin
             if (published.Count == 0)
                 return;
 
+            var db = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+            var now = DateTimeOffset.UtcNow;
             var ahead = await InstanceContinuity.CheckPublishedCrlsAsync(
-                scope.ServiceProvider.GetRequiredService<ModularCADbContext>(),
+                db,
                 scope.ServiceProvider.GetService<AuditDbContext>(),
                 scope.ServiceProvider.GetRequiredService<IAuditService>(),
-                published, DateTimeOffset.UtcNow, logger, cancellationToken);
+                published, now, logger, cancellationToken);
             if (ahead.Count == 0)
+            {
                 logger.LogInformation("Published-CRL check: {Count} CRL(s) read back; none is ahead of the database.", published.Count);
+                return;
+            }
+
+            // The event this check just recorded carries the time it was given: /health/ready
+            // then says it comes from this start. The database keeps microseconds, so the time
+            // is matched within a millisecond.
+            var (from, to) = (now.UtcDateTime.AddMilliseconds(-1), now.UtcDateTime.AddMilliseconds(1));
+            var recordedHere = await db.InstanceContinuityEvents.AsNoTracking()
+                .Where(e => e.Kind == ContinuityEventKind.PublishedCrlAhead && e.DetectedAt >= from && e.DetectedAt <= to)
+                .Select(e => e.Id)
+                .ToListAsync(cancellationToken);
+            foreach (var id in recordedHere)
+                state.Recorded(id);
         }
         catch (Exception ex)
         {

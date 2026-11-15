@@ -148,7 +148,7 @@ public class TotpController : ControllerBase
     /// enrolled their authenticator app. Marks the secret as verified on success and returns ten
     /// one-time recovery codes, stored only as per-user salted PBKDF2 hashes (<see cref="RecoveryCodeHash"/>).
     /// The code's time step is claimed through <see cref="MfaSingleUse.TryClaimTotpStepAsync"/>, so
-    /// one code cannot complete two concurrent enrolments.
+    /// one code cannot complete two concurrent enrollments.
     /// </summary>
     [Authorize]
     [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
@@ -183,7 +183,7 @@ public class TotpController : ControllerBase
         var (valid, timeStep) = VerifyTotpCode(secret, request.Code, 0);
         // 400, not 401: the session is fine, the code the user typed is wrong. The console's API
         // client treats every 401 as the end of the session, so a typo here used to sign the user
-        // out in the middle of enrolment (and, on the security page, throw away the step-up).
+        // out in the middle of enrollment (and, on the security page, throw away the step-up).
         if (!valid || !await MfaSingleUse.TryClaimTotpStepAsync(_replayGuard, userId.Value, timeStep))
             return BadRequest(new { error = "Invalid TOTP code. Check your authenticator app and try again." });
 
@@ -276,7 +276,7 @@ public class TotpController : ControllerBase
 
         // Recovery is a credential exchange, so the account-state checks that gate every other
         // login path apply here too. Without them a disabled or locked account could still
-        // trade a recovery code for a cleared MFA enrolment and a rotated security stamp.
+        // trade a recovery code for a cleared MFA enrollment and a rotated security stamp.
         await ModularCA.Core.Helpers.AccountLockout.ClearElapsedAsync(_db, user, DateTime.UtcNow);
         if (!user.IsActive || user.IsLocked || (user.LockoutEndUtc.HasValue && user.LockoutEndUtc > DateTime.UtcNow))
         {

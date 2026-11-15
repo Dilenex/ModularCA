@@ -12,7 +12,7 @@
 #
 #   ./scripts/test-enrollment-protocols.sh https://ca.example.test my-ca-label
 #   ./scripts/test-enrollment-protocols.sh https://ca.example.test my-ca-label \
-#        --client-cert client.pem --client-key client.key   # EST mTLS enrolment
+#        --client-cert client.pem --client-key client.key   # EST mTLS enrollment
 #
 # NOTE on the mTLS probe: Kestrel asks for a client certificate only when the TLS SNI matches
 # Mtls.AuthSubdomain, so pointing this at the ordinary CA hostname produces a successful
@@ -20,7 +20,7 @@
 # "requires a client certificate (mTLS)". That is the server's SNI gate, not a fault in the
 # certificate or this script — pass the mTLS hostname as the base URL to exercise it.
 #   ./scripts/test-enrollment-protocols.sh https://ca.example.test my-ca-label \
-#        --cmp-secret 'shared-secret'                       # CMP PBM enrolment
+#        --cmp-secret 'shared-secret'                       # CMP PBM enrollment
 #   ./scripts/test-enrollment-protocols.sh https://ca.example.test my-ca-label \
 #        --basic-netrc est.netrc --cmp-secret-file cmp.secret --cmp-ref R --enforcement
 #                                                           # and the request profile's refusals
@@ -53,7 +53,7 @@ while [ $# -gt 0 ]; do
         # shared secret the server verifies the MAC against.
         --cmp-ref)     CMP_REF="$2";     shift 2 ;;
         --insecure)    INSECURE="1";     shift ;;
-        # After each enrolment that issues, the same request with one thing changed that the
+        # After each enrollment that issues, the same request with one thing changed that the
         # seeded request profile refuses. Under a looser profile the CA issues those too.
         --enforcement) ENFORCEMENT="1";  shift ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -137,11 +137,11 @@ else
     note "builds the well-known path cannot reach this server at all."
 fi
 
-# A CSR to enrol with. Key type deliberately EC P-256: it is what a constrained client would use,
+# A CSR to enroll with. Key type deliberately EC P-256: it is what a constrained client would use,
 # and it exercises the ECDSA path rather than the better-trodden RSA one.
 # The doubled slash on -subj is for Git Bash and is load-bearing. MSYS rewrites any argument
 # beginning with a single slash into a Windows path, so -subj "/CN=x" reaches openssl as
-# "C:/Program Files/Git/CN=x" and is rejected; no CSR is written, the enrol step posts an empty
+# "C:/Program Files/Git/CN=x" and is rejected; no CSR is written, the enroll step posts an empty
 # body, and the server answers "Empty request body" — which reads as a server fault and is not one.
 # A leading "//" is left alone by MSYS and collapsed back to "/" for openssl.
 #
@@ -294,7 +294,7 @@ if [ -n "$ENFORCEMENT" ]; then
     note ""
     note "Request profile probes (refused under the seeded 'Enterprise Server (EST)' profile):"
     if [ -z "${EST_BASIC_OK:-}" ]; then
-        note "SKIPPED — they need the HTTP Basic enrolment above to have issued first."
+        note "SKIPPED — they need the HTTP Basic enrollment above to have issued first."
     else
         est_csr "$BASIC_USER" ""
         expect_refused "EST, no SAN (the profile requires one)" "$BASE/est/$CA_LABEL/simpleenroll" --netrc-file "$BASIC_NETRC"

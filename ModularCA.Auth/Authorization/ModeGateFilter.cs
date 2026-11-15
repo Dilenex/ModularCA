@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -27,6 +28,56 @@ public sealed class ModeGateFilter : IAsyncActionFilter, IOrderedFilter
 {
     /// <summary>The seconds a refused client is told to wait before trying again.</summary>
     public const string RetryAfterSeconds = "60";
+
+    /// <summary>
+    /// How often the refusals of callers who are not signed in are written to the audit trail,
+    /// for each endpoint. An enrollment client told to retry every minute, or anyone who can
+    /// reach a protocol endpoint, would otherwise write one record per request for as long as
+    /// the instance is in maintenance or DR mode. The first such refusal of an endpoint is
+    /// recorded at once; later ones are counted, and the first after this interval writes one
+    /// record with the count. A refusal of a signed-in caller is always its own record.
+    /// </summary>
+    public static TimeSpan AnonymousAuditInterval { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>The clock the interval is measured with; replaced in tests.</summary>
+    public static Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
+
+    private static readonly ConcurrentDictionary<string, (DateTime RecordedAt, DateTime CountedSince, int Counted)> AnonymousRefusals = new();
+
+    /// <summary>Forgets what has been counted; for tests.</summary>
+    public static void ResetAnonymousRefusals() => AnonymousRefusals.Clear();
+
+    /// <summary>
+    /// Whether this anonymous refusal is to be recorded now, and for how many refusals the record
+    /// stands. False when it was only counted towards the endpoint's next record.
+    /// </summary>
+    /// <param name="key">The mode and the endpoint.</param>
+    /// <param name="count">The refusals this record stands for, this one included.</param>
+    /// <param name="since">When the first of them was.</param>
+    private static bool RecordAnonymousNow(string key, out int count, out DateTime since)
+    {
+        var now = UtcNow();
+        var recordNow = false;
+        var counted = 1;
+        var from = now;
+        AnonymousRefusals.AddOrUpdate(key,
+            _ => { recordNow = true; return (now, now, 0); },
+            (_, seen) =>
+            {
+                if (now - seen.RecordedAt < AnonymousAuditInterval)
+                {
+                    recordNow = false;
+                    return (seen.RecordedAt, seen.Counted == 0 ? now : seen.CountedSince, seen.Counted + 1);
+                }
+                recordNow = true;
+                counted = seen.Counted + 1;
+                from = seen.Counted == 0 ? now : seen.CountedSince;
+                return (now, now, 0);
+            });
+        count = counted;
+        since = from;
+        return recordNow;
+    }
 
     /// <inheritdoc/>
     public int Order => int.MinValue;
@@ -77,6 +128,13 @@ public sealed class ModeGateFilter : IAsyncActionFilter, IOrderedFilter
                 Guid? actorId = Guid.TryParse(
                     http.User.FindFirstValue("sub") ?? http.User.FindFirstValue(ClaimTypes.NameIdentifier), out var id) ? id : null;
                 var actorName = http.User.FindFirstValue("unique_name") ?? http.User.FindFirstValue(ClaimTypes.Name) ?? http.User.Identity?.Name;
+
+                // A caller who is not signed in is counted per endpoint (AnonymousAuditInterval).
+                var count = 1;
+                var since = UtcNow();
+                var record = actorId != null || !string.IsNullOrEmpty(actorName)
+                    || RecordAnonymousNow($"{refusal.Mode}|{operation}|{what}", out count, out since);
+                if (record)
                 await audit.LogAsync(
                     AuditActionType.InstanceModeRefused, actorId, actorName,
                     targetEntityType: "Endpoint",
@@ -87,6 +145,9 @@ public sealed class ModeGateFilter : IAsyncActionFilter, IOrderedFilter
                         Operation = operation.ToString(),
                         Action = friendly ? null : what,
                         What = friendly ? what : null,
+                        // More than one when refusals of callers who are not signed in were counted.
+                        Refusals = count,
+                        SinceUtc = count > 1 ? since : (DateTime?)null,
                     },
                     sourceIp: http.Connection.RemoteIpAddress?.ToString(),
                     success: false,

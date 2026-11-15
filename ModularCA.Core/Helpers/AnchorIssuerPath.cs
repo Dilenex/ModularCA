@@ -10,7 +10,7 @@ namespace ModularCA.Core.Helpers;
 /// The certificates above a CA certificate that this instance holds, loaded for
 /// <see cref="X509ChainValidationUtil.ValidateAgainstAnchor(X509Certificate2, X509Certificate2, IReadOnlyCollection{X509Certificate2}?, bool, out string?)"/>
 /// so that a required revocation check under an intermediate CA has a complete chain to run on.
-/// The one place the callers that prove issuance (mTLS sign-in and step-up, EST re-enrolment) get
+/// The one place the callers that prove issuance (mTLS sign-in and step-up, EST re-enrollment) get
 /// those certificates, so they cannot come to differ in which parents they pass.
 /// <para>
 /// The walk is <see cref="IssuerChainResolver.ResolveIssuerPathAsync"/>, the same one the rest of

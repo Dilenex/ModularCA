@@ -67,7 +67,7 @@ public enum ModeOperation
 
     /// <summary>
     /// Issuing: a certificate is requested, approved, issued, renewed, reissued or enrolled for,
-    /// over the console, the API or an enrolment protocol. Allowed in full and restricted mode,
+    /// over the console, the API or an enrollment protocol. Allowed in full and restricted mode,
     /// refused in maintenance and DR mode. Apart from <see cref="Fact"/> so that maintenance mode
     /// can stop issuance while CRLs, OCSP and the other facts go on.
     /// </summary>

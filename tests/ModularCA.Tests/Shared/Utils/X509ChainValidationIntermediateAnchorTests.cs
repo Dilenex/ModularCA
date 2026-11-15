@@ -1,3 +1,4 @@
+using System.Security.Cryptography.X509Certificates;
 using ModularCA.Shared.Utils;
 using ModularCA.Tests.TestUtils;
 using Xunit;
@@ -23,6 +24,33 @@ public class X509ChainValidationIntermediateAnchorTests
 
         Assert.True(ok, $"expected the leaf to chain to its issuing intermediate, got: {errors}");
         Assert.Null(errors);
+    }
+
+    /// <summary>
+    /// The certificates of a real instance name where their issuer's certificate can be fetched
+    /// (CA Issuers). A chain engine that follows it fetches the root, builds leaf, intermediate,
+    /// root, and ends on a root nobody said to trust: on a test host every certificate of an
+    /// intermediate CA was then refused as not chaining to it, though the tests, whose
+    /// certificates name no such address, passed. The validator is given the CA to trust and
+    /// fetches nothing: the leaf validates, and the address is never asked for.
+    /// </summary>
+    [Fact]
+    public void A_leaf_validates_under_an_intermediate_whose_certificate_says_where_to_fetch_its_root()
+    {
+        using var server = new LocalCrlServer();
+        using var root = TestCertificates.CreateCa("CN=Offline Root, O=ModularCA");
+        var rootUrl = server.NewUrl();
+        server.Publish(rootUrl, root.Export(X509ContentType.Cert));
+        using var intermediate = TestCertificates.IssueIntermediateWithCaIssuers(root, "CN=Login Issuing CA, O=ModularCA", rootUrl);
+        var intermediateUrl = server.NewUrl();
+        server.Publish(intermediateUrl, intermediate.Export(X509ContentType.Cert));
+        using var leaf = TestCertificates.IssueLeafWithCaIssuers(intermediate, "CN=alice", intermediateUrl);
+
+        var ok = X509ChainValidationUtil.ValidateAgainstAnchor(leaf, intermediate, requireRevocationCheck: false, out var errors);
+
+        Assert.True(ok, $"expected the leaf to chain to its issuing intermediate, got: {errors}");
+        Assert.Equal(0, server.RequestsFor(rootUrl));
+        Assert.Equal(0, server.RequestsFor(intermediateUrl));
     }
 
     [Fact]

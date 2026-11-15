@@ -46,8 +46,8 @@ export const INSTANCE_MODE_OPTIONS: InstanceModeOption[] = [
         label: 'Maintenance',
         summary: 'For an instance that is being updated or audited: issue nothing and change nothing about how it is run, '
             + 'and keep revoking and answering revocation checks.',
-        stops: 'Everything restricted mode stops, and also issuing, renewing, reissuing, approving requests and enrolment '
-            + 'over every protocol (ACME, EST, CMP, SCEP, Windows autoenrolment), SSH certificates and scheduled renewal.',
+        stops: 'Everything restricted mode stops, and also issuing, renewing, reissuing, approving requests and enrollment '
+            + 'over every protocol (ACME, EST, CMP, SCEP, Windows autoenrollment), SSH certificates and scheduled renewal.',
         keeps: 'Revoking, placing a hold, revoking a certificate this CA does not hold, disabling a CA, locking an account, '
             + 'signing CRLs, answering OCSP, timestamps, backups and the other scheduled jobs.',
     },
@@ -56,7 +56,8 @@ export const INSTANCE_MODE_OPTIONS: InstanceModeOption[] = [
         label: 'DR mode',
         summary: 'Stop everything except signing in to manage and repair the instance.',
         stops: 'Everything restricted mode stops, and also issuing, revoking, signing new CRLs, answering OCSP '
-            + '(it reports itself unavailable), the enrolment protocols and scheduled jobs other than backups.',
+            + '(it reports itself unavailable), enrollment over every protocol and scheduled jobs other than backups. '
+            + 'What the protocols only read (CA certificates, the ACME directory) still answers.',
         keeps: 'Signing in, backups, changing the mode, and serving CRLs that are already signed.',
     },
 ];
@@ -99,6 +100,19 @@ export interface InstanceModeBanner {
     text: string;
 }
 
+/**
+ * In a mode that signs no new CRL: when the CRLs in force start to expire, in words. Null when the
+ * server gives no such time (every mode but DR, or no CRL signed yet).
+ */
+export function crlDeadlineText(status: { crlsExpireFromUtc?: string | null } | null | undefined, now: Date = new Date()): string | null {
+    const at = status?.crlsExpireFromUtc ? new Date(status.crlsExpireFromUtc) : null;
+    if (!at || Number.isNaN(at.getTime())) return null;
+    const when = at.toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return at.getTime() <= now.getTime()
+        ? `No new CRL is signed in this mode, and a CRL in force expired on ${when}: relying parties that check it now see an expired CRL.`
+        : `No new CRL is signed in this mode. The CRLs in force start to expire on ${when}; after that, relying parties see an expired CRL until the mode is lifted.`;
+}
+
 /** The standing banner, or null in full mode (and while the mode is not known). */
 export function instanceModeBanner(status: InstanceModeStatus | null | undefined): InstanceModeBanner | null {
     if (!status) return null;
@@ -114,7 +128,8 @@ export function instanceModeBanner(status: InstanceModeStatus | null | undefined
         title: `${modeTitle(name)}.`,
         text: `${name === 'dr' ? 'Nothing is issued or revoked and OCSP is unavailable.'
             : name === 'maintenance' ? 'Nothing is issued. Revoking, CRLs and OCSP go on.' : 'Issuing and revoking go on.'} `
-            + `Stopped: ${lowerFirst(option.stops)} ${by}`,
+            + `Stopped: ${lowerFirst(option.stops)} ${by}`
+            + (crlDeadlineText(status) ? ` ${crlDeadlineText(status)}` : ''),
     };
 }
 

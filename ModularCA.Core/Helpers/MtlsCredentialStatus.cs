@@ -70,7 +70,7 @@ public readonly record struct MtlsCredentialMatch(MtlsCredentialEntity? Credenti
 /// Reading the certificate's own status covers every path, present and future.
 /// </para>
 /// <para>
-/// A credential with no certificate record does not authenticate. Enrolment always records the
+/// A credential with no certificate record does not authenticate. Enrollment always records the
 /// certificate; the link is null only when that row was deleted, and then nothing can show that the
 /// certificate is still good.
 /// </para>

@@ -16,6 +16,16 @@ namespace ModularCA.API.HealthChecks;
 /// what the design rejects. A reader that must act on the notice reads
 /// <c>checks.continuity.status</c>, which is <c>notice</c> while one stands.
 /// </para>
+/// <para>
+/// Two things are reported and kept apart. <c>incarnationCheck</c>, with
+/// <c>incarnationCheckedAt</c>, is the comparison this process made at its own start.
+/// <c>events</c> are the events still waiting to be acknowledged, whichever start recorded them:
+/// each carries <c>detectedAt</c>, when it was recorded, and <c>recordedAtThisStart</c>, true
+/// when this process recorded it at this start and false when an earlier start, or another
+/// process, did. <c>eventsFromThisStart</c> and <c>eventsFromEarlierStarts</c> count the two. So
+/// <c>incarnationCheck: "Same"</c> beside an event with <c>recordedAtThisStart: false</c> reads as
+/// it is: nothing new at this start, and an earlier notice nobody has acknowledged yet.
+/// </para>
 /// </summary>
 public sealed class ContinuityHealthCheck(ModularCADbContext db, ContinuityStartState state) : IHealthCheck
 {
@@ -30,7 +40,13 @@ public sealed class ContinuityHealthCheck(ModularCADbContext db, ContinuityStart
             {
                 status = events.Count > 0 ? "notice" : state.Fault != null ? "check_failed" : "ok",
                 unacknowledged = events.Count,
+                // The comparison this process made at its own start, and when. It says nothing of
+                // the events below that an earlier start recorded: "Same" here beside an open
+                // event means this start found nothing new, and the earlier notice still stands.
                 incarnationCheck = state.Case?.ToString(),
+                incarnationCheckedAt = state.ComparedAt,
+                eventsFromThisStart = events.Count(e => state.RecordedAtThisStart(e.Id)),
+                eventsFromEarlierStarts = events.Count(e => !state.RecordedAtThisStart(e.Id)),
                 checkFault = state.Fault,
                 publishedCrlsCompared = state.PublishedCrlsCompared,
                 journalReplayed = false,
@@ -39,6 +55,7 @@ public sealed class ContinuityHealthCheck(ModularCADbContext db, ContinuityStart
                     id = e.Id,
                     kind = e.Kind,
                     detectedAt = e.DetectedAt,
+                    recordedAtThisStart = state.RecordedAtThisStart(e.Id),
                     oldTag = e.OldTag,
                     newTag = e.NewTag,
                     edgeOfMemoryUtc = e.EdgeOfMemoryUtc,

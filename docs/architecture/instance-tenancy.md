@@ -169,7 +169,7 @@ with the caveats below when the instance is enrolled and in the visor afterwards
    space.
 4. **Fold the system tenant into the instance.** Retire tenant hostnames and tenant ingress
    routes.
-5. **The visor**, starting with enrolment of an instance and its recorded dial direction, then
+5. **The visor**, starting with enrollment of an instance and its recorded dial direction, then
    inventory, ciphertext backup and restore, then staged upgrades. A tool to split a
    multi-tenant instance into instances is only needed if a deployment ever has one.
 

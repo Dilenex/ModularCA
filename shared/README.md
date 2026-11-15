@@ -123,7 +123,7 @@ and `MySecurity` follow.
 Phase 7 (done) — `utils/qrcode.ts`. The two apps had unrelated implementations: adminui wrapped
 the `qrcode-generator` package behind a documented XSS review (the SVG is consumed through
 `dangerouslySetInnerHTML`), while userui hand-rolled 308 lines including its own Reed-Solomon
-arithmetic — and that was the encoder producing the TOTP provisioning code users scan to enrol a
+arithmetic — and that was the encoder producing the TOTP provisioning code users scan to enroll a
 second factor. The library version is the shared one.
 
 It sits in `shared/authenticated`, not `shared/common`, for a mechanical reason worth recording:

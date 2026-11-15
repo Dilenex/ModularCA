@@ -216,7 +216,7 @@ public static class HubLocalHost
                 (status, body, replayed) = operation switch
                 {
                     HubLocalContract.Operations.HealthRead => (200, Json(await HealthAsync(tokenCheck, http.RequestAborted)), false),
-                    HubLocalContract.Operations.ModeRead => (200, Json(operations.ReadMode()), false),
+                    HubLocalContract.Operations.ModeRead => (200, Json(await operations.ReadModeAsync(http.RequestAborted)), false),
                     HubLocalContract.Operations.Hello => (200, Json(await HelloAsync(await ReadAsync<HubHello>(http), tokenCheck, http.RequestAborted)), false),
                     HubLocalContract.Operations.InventoryRead => (200, Json(await operations.ReadInventoryAsync(http.RequestAborted)), false),
                     _ => await ChangeAsync(http, operation, requestId, operatorName),
@@ -267,7 +267,7 @@ public static class HubLocalHost
         private async Task<HubHealth> HealthAsync(string tokenCheck, CancellationToken cancellationToken)
         {
             var report = await operations.ReadHealthAsync(cancellationToken);
-            return new HubHealth(report.Status, operations.ReadMode(), tokenCheck, operations.InstanceVersion,
+            return new HubHealth(report.Status, await operations.ReadModeAsync(cancellationToken), tokenCheck, operations.InstanceVersion,
                 HubLocalContract.Version, DateTime.UtcNow, report.Checks);
         }
 

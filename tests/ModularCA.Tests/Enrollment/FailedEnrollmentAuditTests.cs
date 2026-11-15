@@ -90,8 +90,8 @@ public class FailedEnrollmentAuditTests
     }
 
     /// <summary>
-    /// Enrolment and re-enrolment share one path, and every row it wrote was named after
-    /// enrolment. A re-enrolment's rows carry its own names.
+    /// Enrollment and re-enrollment share one path, and every row it wrote was named after
+    /// enrollment. A re-enrollment's rows carry its own names.
     /// </summary>
     [Theory]
     [InlineData(EnrollmentAuditEvent.Issued, false, "SimpleEnroll")]
@@ -115,6 +115,27 @@ public class FailedEnrollmentAuditTests
         var row = Assert.Single(audit.Rows);
         Assert.Equal(operation, row.Operation);
         Assert.Equal(outcome != EnrollmentAuditEvent.Refused, row.Success);
+    }
+
+    /// <summary>
+    /// A refusal the service's steps did not record themselves still leaves a row. On a test host
+    /// an enrollment was answered 400 with a fixed sentence and left nothing in the console: the
+    /// reason was in the log file alone. Here the request is one the steps cannot even decode.
+    /// </summary>
+    [Fact]
+    public async Task An_EST_enrollment_refused_before_any_step_recorded_it_still_leaves_a_row()
+    {
+        using var db = InMemoryDbContextFactory.Create();
+        var audit = new RecordingAudit();
+        var pipeline = new FailingPipeline();
+        var service = new EstService(db, null!, null!, audit, null!, null!, pipeline, NullLogger<EstService>.Instance);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => service.SimpleEnrollAsync("this is not base64 !!", "lab", "10.0.0.5"));
+
+        Assert.Equal(0, pipeline.Calls);
+        var row = Assert.Single(audit.Rows);
+        Assert.Equal(("EST", "EstEnrollRejected", false, "lab"), (row.Protocol, row.Operation, row.Success, row.CaLabel));
+        Assert.False(string.IsNullOrWhiteSpace(row.Error));
     }
 
     [Fact]

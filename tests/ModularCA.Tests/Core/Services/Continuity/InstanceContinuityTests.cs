@@ -434,6 +434,57 @@ public sealed class InstanceContinuityTests
         };
     }
 
+    /// <summary>
+    /// An event from an earlier start stood beside <c>incarnationCheck: "Same"</c> and read as a
+    /// contradiction. The answer now says which start each event came from, and when this
+    /// process made its own comparison.
+    /// </summary>
+    [Fact]
+    public async Task Health_ready_says_which_start_an_event_came_from_and_keeps_this_starts_comparison_apart()
+    {
+        var w = new World();
+        await w.Start(A);
+        var stateType = ApiAssembly.TypeNamed("ModularCA.API.Startup.ContinuityStartState");
+
+        // The start that found the change: its own comparison, its own event.
+        var earlier = await w.Start(B, Now);
+        var thatStart = Activator.CreateInstance(stateType)!;
+        stateType.GetMethod("Compared")!.Invoke(thatStart, [earlier.Case]);
+        stateType.GetMethod("Recorded")!.Invoke(thatStart, [earlier.Event!.Id]);
+        var then = await HealthAsync(w.Db, thatStart);
+        Assert.Equal("Changed", then.GetProperty("incarnationCheck").GetString());
+        Assert.Equal(1, then.GetProperty("eventsFromThisStart").GetInt32());
+        Assert.Equal(0, then.GetProperty("eventsFromEarlierStarts").GetInt32());
+        Assert.True(Assert.Single(then.GetProperty("events").EnumerateArray()).GetProperty("recordedAtThisStart").GetBoolean());
+
+        // The next start, nobody having acknowledged it: this start compared and found nothing
+        // new, and the event that still waits is marked as an earlier start's, with its time.
+        var later = await w.Start(B, Now.AddHours(3));
+        Assert.Equal(IncarnationCase.Same, later.Case);
+        Assert.Null(later.Event);
+        var thisStart = Activator.CreateInstance(stateType)!;
+        var before = DateTimeOffset.UtcNow;
+        stateType.GetMethod("Compared")!.Invoke(thisStart, [later.Case]);
+        var now = await HealthAsync(w.Db, thisStart);
+
+        Assert.Equal("notice", now.GetProperty("status").GetString());
+        Assert.Equal("Same", now.GetProperty("incarnationCheck").GetString());
+        Assert.InRange(now.GetProperty("incarnationCheckedAt").GetDateTimeOffset(), before.AddSeconds(-1), DateTimeOffset.UtcNow.AddSeconds(1));
+        Assert.Equal(1, now.GetProperty("unacknowledged").GetInt32());
+        Assert.Equal(0, now.GetProperty("eventsFromThisStart").GetInt32());
+        Assert.Equal(1, now.GetProperty("eventsFromEarlierStarts").GetInt32());
+        var waiting = Assert.Single(now.GetProperty("events").EnumerateArray());
+        Assert.Equal(earlier.Event.Id, waiting.GetProperty("id").GetGuid());
+        Assert.False(waiting.GetProperty("recordedAtThisStart").GetBoolean());
+        Assert.Equal(Now.UtcDateTime, waiting.GetProperty("detectedAt").GetDateTime().ToUniversalTime());
+
+        // A process that made no comparison (it does not run the control role) claims no event and no time.
+        var other = await HealthAsync(w.Db);
+        Assert.Equal(JsonValueKind.Null, other.GetProperty("incarnationCheck").ValueKind);
+        Assert.Equal(JsonValueKind.Null, other.GetProperty("incarnationCheckedAt").ValueKind);
+        Assert.Equal(1, other.GetProperty("eventsFromEarlierStarts").GetInt32());
+    }
+
     [Fact]
     public async Task The_notice_stands_in_health_ready_until_it_is_acknowledged_with_step_up()
     {

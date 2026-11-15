@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-    INSTANCE_MODE_OPTIONS, instanceModeBanner, modeChangeBlocked, modeName, modeTitle, setByText,
+    INSTANCE_MODE_OPTIONS, crlDeadlineText, instanceModeBanner, modeChangeBlocked, modeName, modeTitle, setByText,
 } from '@adminui/pages/instanceMode';
 
 const status = (over: Record<string, unknown>) => ({
@@ -59,6 +59,20 @@ describe('instance mode', () => {
         expect(banner.tone).toBe('crit');
         expect(banner.text).toContain('Nothing is issued or revoked');
         expect(banner.text).toContain('Set by root.');
+    });
+
+    it('says in DR mode when the CRLs in force run out, and nothing in a mode that signs them', () => {
+        const now = new Date('2026-11-12T22:00:00Z');
+        expect(crlDeadlineText(null, now)).toBeNull();
+        expect(crlDeadlineText({ crlsExpireFromUtc: null }, now)).toBeNull();
+        expect(crlDeadlineText({ crlsExpireFromUtc: 'not a date' }, now)).toBeNull();
+        expect(crlDeadlineText({ crlsExpireFromUtc: '2026-11-12T22:30:00Z' }, now)).toContain('start to expire on');
+        expect(crlDeadlineText({ crlsExpireFromUtc: '2026-11-12T21:30:00Z' }, now)).toContain('expired on');
+
+        const dr = instanceModeBanner(status({ mode: 'dr', source: 'hub', crlsExpireFromUtc: '2026-11-12T22:30:00Z' }))!;
+        expect(dr.text).toContain('No new CRL is signed in this mode');
+        const restricted = instanceModeBanner(status({ mode: 'restricted', source: 'hub' }))!;
+        expect(restricted.text).not.toContain('No new CRL');
     });
 
     it('says who set the mode', () => {

@@ -354,6 +354,18 @@ public class EstController(IEstService estService, ModularCADbContext db) : Cont
             MetricsService.ProtocolRequestsTotal.WithLabels("EST", "error").Inc();
             MetricsService.ProtocolErrorsTotal.WithLabels("EST", "auth_not_configured").Inc();
 
+            // On the EST tab too, under the CA: the refusal reached only the log file, so an
+            // administrator who had left both switches off saw nothing of the attempts.
+            if (HttpContext.RequestServices.GetService(typeof(ModularCA.Shared.Interfaces.IProtocolAuditService))
+                is ModularCA.Shared.Interfaces.IProtocolAuditService protocolAudit)
+            {
+                await protocolAudit.LogEstAsync("EstEnrollRejected", null, null, null, null,
+                    protocolConfig.Ca?.Label ?? caLabel, HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    success: false,
+                    errorMessage: "EST is enabled for this CA with neither client-certificate nor HTTP authentication switched on, so every enrollment is refused.",
+                    certificateAuthorityId: protocolConfig.Ca?.Id, spaceId: protocolConfig.Ca?.SpaceId);
+            }
+
             var problem = new ValidationProblemDetails
             {
                 Type = "https://tools.ietf.org/html/rfc7231#section-6.5.3",

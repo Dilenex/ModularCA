@@ -34,7 +34,7 @@ read the instance's secrets from a disk or an archive.
 4. **Ceremony policy moves into the signer too**: whether a scope requires ceremonies, its
    quorum, and the scope each key belongs to. The database can no longer waive a ceremony.
 5. **Evidence is generic.** A kind, a closed set of bindings the core understands, a trust set
-   and a threshold, all held in the registry. HA kinds such as member enrolment and wrapping a
+   and a threshold, all held in the registry. HA kinds such as member enrollment and wrapping a
    key to a recipient need no core code.
 6. **The signer keeps an append-only journal on its own disk.** It is hash-chained, with
    checkpoints signed by the member's system key. It holds the full TBS of every certificate and
@@ -106,7 +106,7 @@ the key's kind, the purpose label and the owner. It never parses the bytes. So:
 
 - **A compromised node can get a subordinate CA certificate signed by any CA key**, for a key of
   its own, under `SigningPurpose.Certificate`. No ceremony row is needed, forged or otherwise. The
-  node-side guard that keeps CA profiles off enrolment paths
+  node-side guard that keeps CA profiles off enrollment paths
   (`CertificateIssuanceService.cs:225-232`) is not a guard against the node.
 - **The purpose label constrains nothing.** A CA key may sign under `Certificate`, `Crl`, `Ocsp`,
   `Scep` and `Cmp`. A TBSCertificate submitted under `Ocsp` is signed just the same.
@@ -287,11 +287,11 @@ approvers are lost, and the bootstrap path.
 The first approvers are trusted on first use. There is no other honest answer. Anything the node
 relays at bootstrap, the node could have substituted.
 
-- **New install, single process.** The setup wizard enrols the first administrator's passkey as
+- **New install, single process.** The setup wizard enrolls the first administrator's passkey as
   the first approver and writes the registry before setup ends. The trust anchor is the person who
   installed the product, at a moment when nothing is exposed.
-- **Split install or existing install.** An administrator runs approver enrolment in the console.
-  The node produces an enrolment file: the candidates, their credentials and the policy taken from
+- **Split install or existing install.** An administrator runs approver enrollment in the console.
+  The node produces an enrollment file: the candidates, their credentials and the policy taken from
   the database. On the signer host, `--role signer --approvers adopt <file>` prints each name with
   a credential fingerprint and writes the registry. Each approver then signs a test statement, so
   everyone sees their own approval verify before verified mode is switched on.
@@ -300,15 +300,15 @@ relays at bootstrap, the node could have substituted.
   exists, the signer never falls back.** Deleting the file on the signer host is the only way
   back.
 
-This protects against a node compromised **after** enrolment. Against a node already compromised
-at enrolment it does nothing. That is the same bargain as every SPKI pin in this product.
+This protects against a node compromised **after** enrollment. Against a node already compromised
+at enrollment it does nothing. That is the same bargain as every SPKI pin in this product.
 
 ### Kinds the core does not hard-code
 
 A kind is data in the registry, not code in the signer:
 
 ```
-kind "ha.member-enrol":
+kind "ha.member-enroll":
   trust:     approvers(instance)          ; or pinned-keys(hub-witnesses), or pinned-keys(peer-member)
   threshold: policy(instance).quorum      ; or a number
   licenses:  WrapKeyTo  requires binding recipient-kem-spki-sha256
@@ -324,7 +324,7 @@ kind "ha.member-enrol":
   A module kind may carry more in `detail`, and that is covered by the digest, but the signer
   enforces only bindings it understands.
 - **Trust sets** are the approver registry for a scope, or a set of pinned keys: the hub keys
-  from `hub-enrolment.md`, the peer member's system key. For a pinned-key set the evidence is
+  from `hub-enrollment.md`, the peer member's system key. For a pinned-key set the evidence is
   plain signatures over `digest` rather than WebAuthn assertions.
 - **The kinds the core ships**:
   - `ca.key.create`, `ca.key.import` and `ca.cross-certify`;
@@ -344,7 +344,7 @@ kind "ha.member-enrol":
 | `Sign` of an OCSP-signing certificate | none, if the key is the signer's infrastructure key for this CA; otherwise refused | This is the `Infrastructure` answer |
 | Infrastructure `GenerateKey` and `CommitKey` | none | Bound to a CA the signer has a scope for |
 | `ExportKey` (PKCS#12, legacy stored end-entity keys) | none; rate-limited and journaled | See below |
-| `WrapKeyTo` (HA replication) | `ha.member-enrol` binding the recipient | A module kind |
+| `WrapKeyTo` (HA replication) | `ha.member-enroll` binding the recipient | A module kind |
 | `Unlock` on evidence (HA) | `ha.unlock` binding member and term | A module kind, trust set hub witnesses or the peer's handover |
 | Registry changes | `approvers.change`, `policy.change` | At the instance quorum |
 
@@ -473,7 +473,7 @@ one applied.
   is what is checked, as today. A `cA=TRUE` TBS signed with no ceremony named and no waiver is
   refused. The upgrade check lists CA certificates issued outside a ceremony in the last year, so
   an operator knows whether any workflow depended on that.
-- **Stage B (verified approvals)** is opt-in per install. Enrolment and adoption are as described
+- **Stage B (verified approvals)** is opt-in per install. Enrollment and adoption are as described
   under Bootstrap. The adoption also snapshots every key's scope from the database into the
   registry, on the same trust-on-first-use footing. Ceremonies open at the time of the switch are
   cancelled and must be re-initiated, because they have no statement.
@@ -489,7 +489,7 @@ L overall:
   breaks: an unparsed `Sign` allowed, `cA=TRUE` without evidence, an OCSP-signing certificate for
   an outside key, a TBS under `Ocsp`.
 - **Stage B, L**: the statement, the WebAuthn verifier, the registry, the host commands, the
-  console approval flow and enrolment.
+  console approval flow and enrollment.
 - **Stage C, M**: registry-held policy and key scopes, module kinds, and `VerifyEvidence`.
 
 ### Open questions
@@ -1102,7 +1102,7 @@ What each release protects against, honestly:
   record, and SSH CA keys are still plaintext files the node reads.
 - **0.4.2.** SSH CA keys are no longer in a file the node can read, and the node can get no
   signature from one except on a well-formed certificate within that key's limits.
-- **0.4.3.** A compromised node can no longer forge approvals, on installs that enrol. It can
+- **0.4.3.** A compromised node can no longer forge approvals, on installs that enroll. It can
   still trick approvers through the console it serves. A database restore no longer erases the
   signer's record.
 - **0.4.4.** A compromised node can no longer waive, lower or re-scope the ceremony policy. A
@@ -1139,7 +1139,7 @@ signer with ML-KEM.
 - **Unlock on evidence is a generic kind.** `ha.unlock` has the hub witnesses or the peer's
   handover as its trust set (`signer-lock-unlock.md`). The open item there, "whether the kinds are
   fixed in the core or supplied by a module", is answered: supplied, as registry data.
-- **Key replication is gated by evidence.** `WrapKeyTo` needs `ha.member-enrol` bound to the
+- **Key replication is gated by evidence.** `WrapKeyTo` needs `ha.member-enroll` bound to the
   recipient's ML-KEM SPKI hash. That answers the open question in `keystore-replication.md`:
   "the signer's check has to work on a ceremony kind the core does not define". Each wrap-out and
   each receipt is journaled on both sides.

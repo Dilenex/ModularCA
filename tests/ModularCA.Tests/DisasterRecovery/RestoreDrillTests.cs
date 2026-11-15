@@ -280,6 +280,17 @@ public abstract class RestoreDrillTests(ITestOutputHelper output)
                 Assert.Empty((await new AuditHashChainService().VerifyAsync(audit, null, limit: 100_000)).Breaks);
             }
 
+            // A second restore of the same archive, under the incarnation this host already has
+            // and with the audit database kept (the hub's question, Discussion 017 F3). The
+            // restored database holds the first host's incarnation again; the restore stores this
+            // host's, and the start after it finds the timeline current and reports nothing.
+            Assert.Equal(1, await CountAsync(newDbYaml.App, "SELECT count(*) FROM \"InstanceIncarnation\" WHERE \"Source\" = 'injected' AND \"RecordedBy\" = 'restore'"));
+            Assert.Equal(0, await CountAsync(newDbYaml.App, "SELECT count(*) FROM \"InstanceContinuityEvents\""));
+            await restored.StartAsync(httpPort);
+            Assert.Equal(root, await restored.GetAsync(httpPort, $"/ca/{RootLabel}"));
+            Assert.Equal(0, await CountAsync(newDbYaml.App, "SELECT count(*) FROM \"InstanceContinuityEvents\""));
+            Assert.DoesNotContain("running from an earlier or copied state", restored.NodeLog);
+
             output.WriteLine($"backup {backup.TotalSeconds:F0}s, restore {restore.TotalSeconds:F0}s, start to serving {start.TotalSeconds:F0}s");
         }
         finally

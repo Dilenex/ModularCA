@@ -418,7 +418,7 @@ public sealed class ControlledAccountTakeoverTests
         var h = new Harness();
         var a = h.W.SystemAdmin;
         var c = h.W.User("sysadmin-c", h.W.SystemAdminGroup);
-        var enrolled = h.W.User("enrols-mfa");
+        var enrolled = h.W.User("enrolls-mfa");
         var reset = h.W.User("loses-mfa");
         var untouched = h.W.User("untouched");
         h.W.Db.TotpSecrets.Add(new TotpSecretEntity { UserId = reset, IsVerified = true });
@@ -432,7 +432,7 @@ public sealed class ControlledAccountTakeoverTests
             Assert.Equal(200, Status(await h.Approve(c, ids[x])));
         }
 
-        // Self-service enrolment does not rotate the stamp; the MFA marker still catches it.
+        // Self-service enrollment does not rotate the stamp; the MFA marker still catches it.
         var stamp = h.User(enrolled).SecurityStamp;
         h.W.Db.TotpSecrets.Add(new TotpSecretEntity { UserId = enrolled, IsVerified = true });
         h.User(enrolled).MfaEnrolledAt = DateTime.UtcNow;
@@ -1003,23 +1003,23 @@ public sealed class ControlledAccountTakeoverTests
     }
 
     /// <summary>
-    /// The enrolment account of a Kerberos realm is not deleted, retained or otherwise: the realm
-    /// enrols through it. The delete is refused (409) before a ceremony could be opened for it.
+    /// The enrollment account of a Kerberos realm is not deleted, retained or otherwise: the realm
+    /// enrolls through it. The delete is refused (409) before a ceremony could be opened for it.
     /// </summary>
     [Fact]
-    public async Task The_enrolment_account_of_a_kerberos_realm_is_refused_deletion()
+    public async Task The_enrollment_account_of_a_kerberos_realm_is_refused_deletion()
     {
         var h = new Harness();
         var super = h.W.Super;
-        var enrols = h.W.User("realm-enrolment", h.W.A1Requester);
-        h.W.Db.KerberosRealms.Add(new KerberosRealmEntity { Realm = "EXAMPLE.TEST", DnsDomain = "example.test", ServicePrincipal = "HTTP/ca.example.test", EnrollmentUserId = enrols });
+        var enrolls = h.W.User("realm-enrollment", h.W.A1Requester);
+        h.W.Db.KerberosRealms.Add(new KerberosRealmEntity { Realm = "EXAMPLE.TEST", DnsDomain = "example.test", ServicePrincipal = "HTTP/ca.example.test", EnrollmentUserId = enrolls });
         h.W.Db.SaveChanges();
 
-        var refused = await Call(h.UserManager(super), "DeleteUser", enrols, h.StepUp(super, StepUpOps.DeleteUser, enrols));
+        var refused = await Call(h.UserManager(super), "DeleteUser", enrolls, h.StepUp(super, StepUpOps.DeleteUser, enrolls));
         Assert.Equal(409, Status(refused));
-        Assert.Contains("1 Kerberos realm(s) enrol through it", JsonSerializer.Serialize(((ObjectResult)refused).Value));
-        Assert.True(h.W.Db.Users.Any(u => u.Id == enrols));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => h.Users.DeleteUser(enrols));
+        Assert.Contains("1 Kerberos realm(s) enroll through it", JsonSerializer.Serialize(((ObjectResult)refused).Value));
+        Assert.True(h.W.Db.Users.Any(u => u.Id == enrolls));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.Users.DeleteUser(enrolls));
         Assert.DoesNotContain(h.Audit.Entries, e => e.Action == AuditActionType.UserDeleted);
     }
 

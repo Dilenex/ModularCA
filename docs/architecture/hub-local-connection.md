@@ -33,7 +33,7 @@ creates no socket file, and its mode is full unless an administrator sets anothe
   HTTP/1.1 without TLS. It shares no listener, route or middleware with the HTTPS, HTTP and
   loopback health listeners. Nothing reachable on those reaches a hub request, and a request on
   the socket reaches nothing but the operations listed below: the console, the API, the
-  enrolment protocols and `/health/ready` are not served on it.
+  enrollment protocols and `/health/ready` are not served on it.
 - **Start.** The socket's directory is created if missing. A socket file left by a run that did
   not stop cleanly is removed. After the bind the file's mode is set. A socket that cannot be
   bound stops the node's start.
@@ -98,6 +98,16 @@ answers `inventory.read` and `backup.prune` with `404 operation_not_listed`.
 
 - `status` is `healthy`, `degraded` or `unhealthy`. `checks` is what `/health/ready` reports
   under `checks`; its shape is the instance's own and may grow.
+- In `health.read` the `mode` member is the mode record, the same object `mode.read` answers:
+  `{ mode, source, setBy?, reason?, setAtUtc?, crlsExpireFromUtc? }`, with a member left out when
+  the instance has nothing for it. (The first test build's text called it a string; the answer was always the
+  record.)
+- `crlsExpireFromUtc` is in the mode record while the mode is `dr`, and left out otherwise. DR
+  mode signs no new CRL, so the CRLs in force run out: this is the earliest `nextUpdate` among the
+  newest full CRLs of the instance's enabled CAs. From then on a relying party that checks a CRL
+  sees an expired one, until the mode is changed. It is in `mode.read`, in the answer of
+  `mode.set`, and in `health.read`'s `mode`. Left out too when no CRL has been signed. Added
+  within `1.1`: a member of an answer, which a hub that does not know it ignores.
 - `mode` is `full`, `restricted`, `maintenance` or `dr`. `source` is `default` (nobody set it), `start` (the
   start rule), `hub`, `administrator`, or `unreadable` (the record could not be read and the
   instance holds itself restricted). `setBy` is the administrator's username, or the operator
@@ -377,7 +387,7 @@ One question the core asks: what may this instance do right now? The answers:
 
 | | Full | Restricted | Maintenance | DR mode |
 |---|---|---|---|---|
-| Issuing, renewing, reissuing, approving a request, enrolment over every protocol (ACME, EST, CMP, SCEP, MSAE), SSH certificates, scheduled renewal | Yes | Yes | No | No |
+| Issuing, renewing, reissuing, approving a request, enrollment over every protocol (ACME, EST, CMP, SCEP, MSAE), SSH certificates, scheduled renewal | Yes | Yes | No | No |
 | Revoking, placing a hold, revoking a serial with no certificate, adopting a supplied certificate, disabling a CA or a space, locking or deactivating an account | Yes | Yes | Yes | No |
 | Users, groups, roles, grants, badges, profiles, templates, policy, settings | Yes | No | No | No |
 | New CAs, key operations, ceremonies | Yes | No | No | No |
@@ -385,7 +395,7 @@ One question the core asks: what may this instance do right now? The answers:
 | Signing in, the caller's own password and second factors, step-up | Yes | Yes | Yes | Yes |
 | Reading and setting the mode, creating a backup, restoring one | Yes | Yes | Yes | Yes |
 | Serving a CRL that is already signed, CA certificates | Yes | Yes | Yes | Yes |
-| What the enrolment protocols only read: the ACME directory, nonces, and an order, authorization, account or issued certificate read back (POST-as-GET); SCEP GetCACert and GetCACaps; EST `cacerts` and `csrattrs`; the MSAE enrolment policy | Yes | Yes | Yes | Yes |
+| What the enrollment protocols only read: the ACME directory, nonces, and an order, authorization, account or issued certificate read back (POST-as-GET); SCEP GetCACert and GetCACaps; EST `cacerts` and `csrattrs`; the MSAE enrollment policy | Yes | Yes | Yes | Yes |
 | Signing a new CRL, answering OCSP, timestamps | Yes | Yes | Yes | No |
 
 **Maintenance** is for an instance that is being updated or audited: it issues nothing and
@@ -393,8 +403,8 @@ accepts no change to how it is run, and it still revokes and still answers revoc
 because a relying party must be able to check a certificate, and an administrator to revoke one,
 whatever is being done to the node. It is stricter than restricted, which issues, and looser than
 DR mode, which neither revokes nor answers OCSP. Its name on the wire is `maintenance`. CMP
-carries enrolment and revocation on one route: in maintenance a revocation request is served and
-an enrolment is refused.
+carries enrollment and revocation on one route: in maintenance a revocation request is served and
+an enrollment is refused.
 
 ### How it is enforced
 
