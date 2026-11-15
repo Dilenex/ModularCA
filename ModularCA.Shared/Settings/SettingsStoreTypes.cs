@@ -16,6 +16,9 @@ public static class SettingsSource
 
     /// <summary>A build correcting a stored value at its start: one an earlier build wrote and nobody chose.</summary>
     public const string Upgrade = "Upgrade";
+
+    /// <summary>The instance writing a value about itself at a start: its identifier, once.</summary>
+    public const string Startup = "Startup";
 }
 
 /// <summary>Who is changing settings.</summary>
@@ -79,6 +82,12 @@ public enum SettingsRefusal
 
     /// <summary>Other writes kept getting in first.</summary>
     Busy,
+
+    /// <summary>
+    /// The key is one the instance writes once about itself (<see cref="ReservedSettingKeys"/>),
+    /// such as its identifier. It is not a setting, and no settings change sets, replaces or clears it.
+    /// </summary>
+    WrittenOnce,
 }
 
 /// <summary>A settings write that was refused. Nothing was changed.</summary>
@@ -161,7 +170,8 @@ public sealed record SettingsSnapshot(
     /// Sets on <paramref name="config"/> every stored setting that has a value. A row this build
     /// cannot use is left out and reported, and the setting keeps what <paramref name="config"/>
     /// already held: a key the catalog does not know (a row from another build), a setting that
-    /// does not live in the database, or a value that is not of the setting's type.
+    /// does not live in the database, or a value that is not of the setting's type. A row under
+    /// a reserved key (<see cref="ReservedSettingKeys"/>) is not a setting and is passed over.
     /// </summary>
     /// <returns>One sentence per row that was not applied.</returns>
     public IReadOnlyList<string> ApplyTo(SystemConfig config)
@@ -170,6 +180,7 @@ public sealed record SettingsSnapshot(
         foreach (var stored in Settings.Values.OrderBy(s => s.Key, StringComparer.Ordinal))
         {
             if (stored.ValueJson == null) continue;
+            if (ReservedSettingKeys.IsReserved(stored.Key)) continue;
 
             var definition = SettingsCatalog.Find(stored.Key);
             if (definition == null)
@@ -215,7 +226,9 @@ public interface ISettingsStore
     /// <summary>
     /// Sets and clears settings together, under one new revision. A setting written with the
     /// value it already has is left alone, and a write that changes nothing takes no revision.
-    /// The audit record is written before the change is saved.
+    /// The audit record is written before the change is saved. A change that names a reserved
+    /// key (<see cref="ReservedSettingKeys"/>) is refused whole, whether it sets, clears or only
+    /// expects a version of it.
     /// </summary>
     /// <exception cref="SettingsRefusedException">The write was refused; nothing was changed.</exception>
     Task<SettingsWriteResult> WriteAsync(SettingsChange change, CancellationToken cancellationToken = default);

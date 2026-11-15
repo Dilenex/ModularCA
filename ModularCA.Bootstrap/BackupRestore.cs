@@ -97,7 +97,10 @@ public static class BackupRestore
 
     /// <summary>
     /// Creates a compressed backup archive containing databases, keystores, and configuration files.
-    /// The backup manifest includes a schema version derived from the current database table names.
+    /// The backup manifest includes a schema version derived from the current database table names,
+    /// and, from 0.4.5, what identifies the instance (<see cref="ReadInstanceIdAsync"/>), the product
+    /// version that took the backup and the newest migration of each database; the manifest lies
+    /// inside the archive's encryption, and <c>--backup-manifest</c> prints it.
     /// Validates that the output path and encryption key path do not escape the application directory.
     /// The archived <c>config.yaml</c> never carries a <c>DB</c> section: the credentials stay in
     /// <c>db.yaml</c>, which no archive carries. A database that cannot be dumped ends the backup
@@ -268,6 +271,15 @@ public static class BackupRestore
             var (caCount, certCount, userCount) = await CountEntitiesAsync(config);
             Console.WriteLine($" CAs={caCount}, Certs={certCount}, Users={userCount}");
 
+            // What identifies this instance, the build that took the backup and the newest
+            // migration of each database, so that an archive can say what it is before anyone
+            // restores it (--backup-manifest). They lie inside the archive's encryption.
+            var instanceId = await ReadInstanceIdAsync(AppConnectionString(config));
+            var productVersion = BackupManifestCommand.ProductVersion();
+            var latestMigration = await ReadLatestMigrationAsync(AppConnectionString(config));
+            var latestAuditMigration = string.IsNullOrWhiteSpace(config.DB.Audit.Database) ? null
+                : await ReadLatestMigrationAsync(ModularCA.Shared.Utils.PostgresConnection.Build(config.DB.Audit));
+
             // 7. Check integrity indicators
             var keystoreIntegrity = exported.Count > 0;
             var dbIntegrity = File.Exists(appDumpPath) && new FileInfo(appDumpPath).Length > 0;
@@ -280,6 +292,10 @@ public static class BackupRestore
                 AppDatabase = config.DB.App.Database,
                 AuditDatabase = config.DB.Audit.Database,
                 MachineName = Environment.MachineName,
+                InstanceId = instanceId,
+                ProductVersion = productVersion,
+                LatestMigration = latestMigration,
+                LatestAuditMigration = latestAuditMigration,
                 SchemaVersion = schemaVersion,
                 CaCount = caCount,
                 CertCount = certCount,
@@ -347,6 +363,10 @@ public static class BackupRestore
                 AppDatabase = config.DB.App.Database,
                 AuditDatabase = config.DB.Audit.Database,
                 MachineName = Environment.MachineName,
+                InstanceId = instanceId,
+                ProductVersion = productVersion,
+                LatestMigration = latestMigration,
+                LatestAuditMigration = latestAuditMigration,
                 SchemaVersion = schemaVersion,
                 CaCount = caCount,
                 CertCount = certCount,
@@ -525,9 +545,15 @@ public static class BackupRestore
     /// archive's audit trail: audit history survives a restore, as it survives a reset, unless
     /// the operator deliberately replaces it.
     /// Supports both the new <c>.enc</c> format (magic "MCAB" + mode marker + scrypt header) and
-    /// the legacy format (<c>[nonce][tag][ciphertext]</c>) for backward compatibility.
+    /// the legacy format (<c>[nonce][tag][ciphertext]</c>) for backward compatibility; which one a
+    /// file is comes from its first bytes (<see cref="BackupArchiveFile.ReadZip"/>).
+    /// An archive taken by a newer build is refused before anything changes
+    /// (<see cref="RefuseNewerSchemaAsync"/>), and a database that cannot be reached is told apart
+    /// from a refusal (<see cref="ProbeRestoreTargetAsync"/>).
+    /// The archive is only read, so it may lie on a read-only mount. The last line written is the
+    /// verdict of <see cref="RestoreWithVerdictAsync"/>, which this wraps.
     /// </summary>
-    /// <param name="archivePath">Path to the backup .zip or .enc (encrypted) archive.</param>
+    /// <param name="archivePath">Path to the backup archive: encrypted, or a plain ZIP.</param>
     /// <param name="restoreAudit">
     /// Whether the archive's audit database replaces this host's (<c>--restore-audit</c>). False,
     /// the default, keeps the live audit history and records the restore in it; true is for
@@ -549,195 +575,163 @@ public static class BackupRestore
     /// destructive action. When false (API path), the caller is expected to have enforced its own
     /// confirmation (step-up MFA + single-use restore token) and the prompt is skipped.
     /// </param>
-    /// <returns>0 on success, non-zero on failure.</returns>
+    /// <returns>
+    /// A status from <see cref="RestoreExit"/>: 0 done, 3 refused with nothing changed, 4 failed
+    /// after something was changed, 75 a database could not be reached and nothing was changed.
+    /// </returns>
     public static async Task<int> Restore(string archivePath, Func<string, ISigningService> signerForAppDatabase, bool skipSchemaCheck = false, string? providedPassword = null, bool interactive = true, bool restoreAudit = false)
     {
+        var result = await RestoreWithVerdictAsync(archivePath, signerForAppDatabase, new RestoreOptions
+        {
+            SkipSchemaCheck = skipSchemaCheck,
+            Interactive = interactive,
+            RestoreAudit = restoreAudit,
+            Keys = new BackupKeySource(Password: providedPassword),
+        });
+        Console.WriteLine(result.Verdict);
+        return result.ExitCode;
+    }
+
+    /// <summary>Whether a restore has changed anything yet; see <see cref="RestoreWithVerdictAsync"/>.</summary>
+    private sealed class RestoreProgress
+    {
+        /// <summary>
+        /// True from the moment a database restore committed, or ended without its outcome known.
+        /// Every failure while this is false leaves both databases, the keystores and the config
+        /// directory as they were.
+        /// </summary>
+        public bool Changed;
+    }
+
+    /// <summary>
+    /// The restore behind <see cref="Restore"/>, <c>--restore</c> and the console: the same steps,
+    /// returning how it ended as an exit status and the line that names it
+    /// (<see cref="RestoreExit"/>). It never throws and never asks for anything but the
+    /// confirmation <see cref="RestoreOptions.Interactive"/> turns on. The caller prints
+    /// <see cref="RestoreResult.Verdict"/> as its last line.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Where "nothing was changed" ends.</b> Everything up to the first database restore only
+    /// reads this host: the archive (which may lie on a read-only mount), the key file,
+    /// <c>db.yaml</c>, the databases and the live keystores. What it writes goes elsewhere: the
+    /// extracted archive into an owner-only directory under the temporary directory, removed when
+    /// the restore ends, and the pre-restore snapshot into the backup directory (which is made
+    /// owner-only when others could reach it). One thing is written to a database before the
+    /// boundary: reading the live keystores for that snapshot goes through the signer, which
+    /// records each read as a row in <c>SignerAudit</c> in the application database. Those rows
+    /// are a record of the attempt, as the node's signer writes them all day, and are not counted
+    /// as a change. A failure there is <see cref="RestoreExit.Refused"/>, or
+    /// <see cref="RestoreExit.Unreachable"/> when it is a database that could not be reached.
+    /// </para>
+    /// <para>
+    /// The first statement that changes anything is the <c>pg_restore --single-transaction</c> of
+    /// the first database restored (<see cref="RestoreDumpFileAsync"/>): the audit database with
+    /// <see cref="RestoreOptions.RestoreAudit"/>, otherwise the application database. A
+    /// <c>pg_restore</c> that exits with an error never sent its <c>COMMIT</c>, so that database
+    /// is as it was: still <see cref="RestoreExit.Refused"/> while no other database was restored
+    /// before it. One that was killed for running past its time limit, or failed in a way this
+    /// process cannot read, may have committed: <see cref="RestoreExit.FailedAfterChanges"/>.
+    /// Once one database has been restored, every later failure is
+    /// <see cref="RestoreExit.FailedAfterChanges"/>: the second database, the CRL numbers, a
+    /// keystore the signer refuses, a config file that cannot be written, or any exception.
+    /// </para>
+    /// </remarks>
+    /// <param name="archivePath">The archive; a ZIP, or one encrypted by a backup.</param>
+    /// <param name="signerForAppDatabase">Resolves the signer the keystore files go through; see <see cref="Restore"/>.</param>
+    /// <param name="options">What was asked for.</param>
+    public static async Task<RestoreResult> RestoreWithVerdictAsync(string archivePath, Func<string, ISigningService> signerForAppDatabase, RestoreOptions options)
+    {
         ArgumentNullException.ThrowIfNull(signerForAppDatabase);
-        if (!File.Exists(archivePath))
+        ArgumentNullException.ThrowIfNull(options);
+        var progress = new RestoreProgress();
+        try
+        {
+            return await RestoreCoreAsync(archivePath, signerForAppDatabase, options, progress);
+        }
+        catch (BackupArchiveException ex) when (!progress.Changed)
+        {
+            Console.WriteLine($"❌ {ex.Message}");
+            return RestoreResult.Refused(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ The restore stopped: {ex.GetType().Name}: {ex.Message}");
+            return progress.Changed
+                ? RestoreResult.FailedAfterChanges($"{ex.GetType().Name}: {ex.Message}")
+                : RestoreResult.Refused($"{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>The steps of <see cref="RestoreWithVerdictAsync"/>; what it throws is turned into a verdict there.</summary>
+    private static async Task<RestoreResult> RestoreCoreAsync(string archivePath, Func<string, ISigningService> signerForAppDatabase, RestoreOptions options, RestoreProgress progress)
+    {
+        var restoreAudit = options.RestoreAudit;
+        if (string.IsNullOrWhiteSpace(archivePath) || !File.Exists(archivePath))
         {
             Console.WriteLine($"❌ Backup archive not found: {archivePath}");
-            return 1;
+            return RestoreResult.Refused("the backup archive was not found");
         }
 
         var configDir = Path.Combine(AppContext.BaseDirectory, "config");
         var archiveName = Path.GetFileName(archivePath);
         // Created owner-only just before extraction (CreateRestoreStagingDirectory), never at a
-        // predictable path; null until then, so the cleanup below has nothing to remove.
+        // predictable path and never beside the archive; null until then, so the cleanup below
+        // has nothing to remove.
         string? restoreDir = null;
-        string? tempDecryptedZip = null;
 
         try
         {
             Console.WriteLine($"📦 Restoring from: {archivePath}");
 
-            // If archive is encrypted (.enc), decrypt first
-            if (archivePath.EndsWith(".enc"))
-            {
-                // Resolve RandomKey path (containment check uses GetRelativePath helper).
-                var restoreKeyRelativePath = "config/backup.key";
-                if (restoreKeyRelativePath.Contains("..") || Path.IsPathRooted(restoreKeyRelativePath))
-                    throw new InvalidOperationException("Invalid backup encryption key path — must be relative without '..' sequences.");
-                var randomKeyPath = Path.Combine(AppContext.BaseDirectory, restoreKeyRelativePath);
-                if (!PathIsContainedIn(randomKeyPath, AppContext.BaseDirectory))
-                    throw new InvalidOperationException("Backup encryption key path escapes application directory.");
-
-                // Resolve StoredPassword path
-                var passwordRelativePath = "config/backup-password.key";
-                if (passwordRelativePath.Contains("..") || Path.IsPathRooted(passwordRelativePath))
-                    throw new InvalidOperationException("Invalid backup password file path — must be relative without '..' sequences.");
-                var passwordKeyPath = Path.Combine(AppContext.BaseDirectory, passwordRelativePath);
-                if (!PathIsContainedIn(passwordKeyPath, AppContext.BaseDirectory))
-                    throw new InvalidOperationException("Backup password file path escapes application directory.");
-
-                var encrypted = await File.ReadAllBytesAsync(archivePath);
-                byte[]? key = null;
-                byte[]? derivedKey = null;
-                byte[]? plaintext = null;
-                byte[]? ciphertext = null;
-                try
-                {
-                    // Detect new vs legacy format via magic bytes.
-                    bool isNewFormat = encrypted.Length >= BackupKeyManager.MagicBytes.Length
-                        && encrypted.AsSpan(0, BackupKeyManager.MagicBytes.Length).SequenceEqual(BackupKeyManager.MagicBytes);
-
-                    byte[] nonce;
-                    byte[] tag;
-                    BackupEncryptionMode archiveMode;
-
-                    if (isNewFormat)
-                    {
-                        // New header is 66 bytes: 4 magic + 1 version + 1 mode + 16 salt + 8 N + 4 r + 4 p + 12 nonce + 16 tag
-                        if (encrypted.Length < 66)
-                            throw new InvalidDataException("Backup archive header is truncated.");
-                        var version = encrypted[4];
-                        if (version != BackupKeyManager.FormatVersion)
-                            throw new InvalidDataException($"Unsupported backup archive version: {version}");
-                        archiveMode = (BackupEncryptionMode)encrypted[5];
-                        var salt = encrypted.AsSpan(6, BackupKeyManager.SaltSize).ToArray();
-                        var n = BinaryPrimitives.ReadInt64LittleEndian(encrypted.AsSpan(22, 8));
-                        var r = BinaryPrimitives.ReadInt32LittleEndian(encrypted.AsSpan(30, 4));
-                        var p = BinaryPrimitives.ReadInt32LittleEndian(encrypted.AsSpan(34, 4));
-                        nonce = encrypted.AsSpan(38, BackupKeyManager.NonceSize).ToArray();
-                        tag = encrypted.AsSpan(50, BackupKeyManager.TagSize).ToArray();
-                        ciphertext = encrypted.AsSpan(66).ToArray();
-
-                        if (archiveMode == BackupEncryptionMode.RandomKey)
-                        {
-                            if (!File.Exists(randomKeyPath))
-                                throw new InvalidOperationException("Backup encryption key not found. Cannot decrypt backup.");
-                            key = File.ReadAllBytes(randomKeyPath);
-                            if (key.Length != BackupKeyManager.KeySize)
-                                throw new InvalidOperationException(
-                                    $"Backup encryption key must be 256 bits, got {key.Length * 8}.");
-                        }
-                        else if (archiveMode == BackupEncryptionMode.StoredPassword)
-                        {
-                            // Priority 1: explicit operator-supplied password (disaster recovery).
-                            if (!string.IsNullOrEmpty(providedPassword))
-                            {
-                                derivedKey = BackupKeyManager.DeriveKey(providedPassword, salt, n, r, p);
-                                key = derivedKey;
-                            }
-                            // Priority 2: stored KEK file, but only if its salt matches this archive.
-                            else if (File.Exists(passwordKeyPath))
-                            {
-                                var (storedKek, storedSalt, _, _, _) = BackupKeyManager.ReadPasswordKeyFile(passwordKeyPath);
-                                if (storedSalt.AsSpan().SequenceEqual(salt))
-                                {
-                                    key = storedKek;
-                                }
-                                else
-                                {
-                                    BackupKeyManager.ZeroKey(storedKek);
-                                    throw new InvalidOperationException(
-                                        "This archive was encrypted with an older password and cannot be decrypted using the current stored password file. " +
-                                        "Re-run the restore with the original password supplied via the API.");
-                                }
-                            }
-                            else
-                            {
-                                throw new FileNotFoundException(
-                                    $"Password file '{passwordKeyPath}' not found and no password was supplied. " +
-                                    "Provide the original backup password via the restore API to recover this archive.");
-                            }
-                        }
-                        else
-                        {
-                            throw new InvalidDataException($"Unknown backup encryption mode: {archiveMode}");
-                        }
-                    }
-                    else
-                    {
-                        // Legacy format: [12 nonce][16 tag][ciphertext] — always RandomKey mode.
-                        if (encrypted.Length < BackupKeyManager.NonceSize + BackupKeyManager.TagSize)
-                            throw new InvalidDataException("Legacy backup archive is truncated.");
-                        archiveMode = BackupEncryptionMode.RandomKey;
-                        nonce = encrypted.AsSpan(0, BackupKeyManager.NonceSize).ToArray();
-                        tag = encrypted.AsSpan(BackupKeyManager.NonceSize, BackupKeyManager.TagSize).ToArray();
-                        ciphertext = encrypted.AsSpan(BackupKeyManager.NonceSize + BackupKeyManager.TagSize).ToArray();
-                        if (!File.Exists(randomKeyPath))
-                            throw new InvalidOperationException("Backup encryption key not found. Cannot decrypt backup.");
-                        key = File.ReadAllBytes(randomKeyPath);
-                        if (key.Length != BackupKeyManager.KeySize)
-                            throw new InvalidOperationException(
-                                $"Backup encryption key must be 256 bits, got {key.Length * 8}.");
-                        Console.WriteLine("(i) Restoring from legacy backup format (no mode marker).");
-                    }
-
-                    plaintext = new byte[ciphertext.Length];
-                    using (var aes = new AesGcm(key, BackupKeyManager.TagSize))
-                    {
-                        try { aes.Decrypt(nonce, ciphertext, tag, plaintext); }
-                        catch (CryptographicException ex)
-                        {
-                            throw new InvalidOperationException("Backup decryption failed. File may be corrupted or encrypted with a different key.", ex);
-                        }
-                    }
-
-                    // Write decrypted ZIP to temp location. The decrypted archive contains every
-                    // CA private key in the install, so it is created owner-only (0600) under an
-                    // unguessable name, never written at default permissions and chmodded after:
-                    // a local user who opened it in that window kept a descriptor the chmod did
-                    // not revoke. (Path.GetTempFileName() + ".zip" also left the empty temp file
-                    // behind.)
-                    tempDecryptedZip = Path.Combine(Path.GetTempPath(), $"modularca-restore-{Guid.NewGuid():N}.zip");
-                    FileSecurityUtil.CreateOwnerOnly(tempDecryptedZip, plaintext);
-                    archivePath = tempDecryptedZip; // Use decrypted ZIP for rest of restore
-                }
-                finally
-                {
-                    if (plaintext != null) CryptographicOperations.ZeroMemory(plaintext);
-                    if (ciphertext != null) CryptographicOperations.ZeroMemory(ciphertext);
-                    if (key != null && !ReferenceEquals(key, derivedKey)) BackupKeyManager.ZeroKey(key);
-                    if (derivedKey != null) BackupKeyManager.ZeroKey(derivedKey);
-                }
-            }
-
-            // The archive is expanded in place, so from extraction onward this directory holds
-            // every CA private key in plaintext. A directory only this user can reach is a
-            // precondition, not a nicety: without one the restore stops before extracting anything.
+            // The archive is read where it lies and decrypted in memory: nothing is written
+            // beside it, and the decrypted ZIP, which holds every keystore and both database
+            // dumps, never reaches a disk as one file.
+            var zip = BackupArchiveFile.ReadZip(archivePath, options.Keys, AppContext.BaseDirectory, out var encryption);
             try
             {
-                restoreDir = CreateRestoreStagingDirectory();
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
-            {
-                Console.WriteLine($"❌ Could not create a staging directory only this user can read: {ex.Message}");
-                Console.WriteLine("   Restore stopped before anything was extracted or changed.");
-                return 1;
-            }
+                if (encryption != BackupArchiveFile.NotEncrypted)
+                    Console.WriteLine($"  Archive opened (encryption: {encryption}).");
 
-            // Extract with per-entry path validation to prevent zip slip.
-            // Every entry must resolve to a path inside restoreDir; absolute paths, ADS
-            // markers, null bytes, and parent-traversal sequences are rejected.
-            SafeExtractZip(archivePath, restoreDir);
+                // The archive is expanded into a directory of its own, so from extraction onward
+                // that directory holds the keystore files and the database dumps. A directory only
+                // this user can reach is a precondition, not a nicety: without one the restore
+                // stops before extracting anything.
+                try
+                {
+                    restoreDir = CreateRestoreStagingDirectory();
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+                {
+                    Console.WriteLine($"❌ Could not create a staging directory only this user can read: {ex.Message}");
+                    Console.WriteLine("   Restore stopped before anything was extracted or changed.");
+                    return RestoreResult.Refused("no staging directory only this user can read could be created under the temporary directory");
+                }
+
+                // Extract with per-entry path validation to prevent zip slip.
+                // Every entry must resolve to a path inside restoreDir; absolute paths, ADS
+                // markers, null bytes, and parent-traversal sequences are rejected.
+                try
+                {
+                    using var archive = new ZipArchive(new MemoryStream(zip, writable: false), ZipArchiveMode.Read);
+                    SafeExtractZip(archive, restoreDir);
+                }
+                catch (InvalidDataException ex)
+                {
+                    throw new BackupArchiveException($"The backup archive could not be extracted: {ex.Message}");
+                }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(zip);
+            }
 
             // Validate manifest
             var manifestPath = Path.Combine(restoreDir, "manifest.json");
             if (!File.Exists(manifestPath))
             {
                 Console.WriteLine("❌ Invalid backup archive: manifest.json not found");
-                return 1;
+                return RestoreResult.Refused("the archive holds no manifest.json: it is not a ModularCA backup archive");
             }
             var manifestJson = File.ReadAllText(manifestPath);
             Console.WriteLine($"  Manifest: {manifestJson}");
@@ -750,7 +744,7 @@ public static class BackupRestore
                 Console.WriteLine("❌ Refusing to restore: archive contains denylisted secret-bearing files:");
                 foreach (var d in deniedFound) Console.WriteLine($"     - {d}");
                 Console.WriteLine("   These files must NOT be carried inside a backup archive (they are KEKs or plaintext secrets).");
-                return 1;
+                return RestoreResult.Refused($"the archive carries secret-bearing files no backup may hold ({string.Join(", ", deniedFound)})");
             }
 
             // An archive taken before the PostgreSQL move contains db-app.sql: a mysqldump
@@ -763,7 +757,7 @@ public static class BackupRestore
                 Console.WriteLine();
                 Console.WriteLine("   To recover data from it: restore it with a 0.3.0 build onto MariaDB, then run the");
                 Console.WriteLine("   migration helper against that database. See docs/architecture/postgresql-migration.md.");
-                return 1;
+                return RestoreResult.Refused("the archive was taken from a MySQL/MariaDB installation, which this build cannot restore");
             }
 
             // An archive with no application database would put back keys and settings over a
@@ -774,8 +768,20 @@ public static class BackupRestore
                 Console.WriteLine($"❌ This archive holds no application database ({AppDumpFileName} is missing or empty).");
                 Console.WriteLine("   The backup that wrote it could not dump the database. Nothing was changed; restore an");
                 Console.WriteLine("   earlier archive.");
-                return 1;
+                return RestoreResult.Refused($"the archive holds no application database ({AppDumpFileName} is missing or empty)");
             }
+
+            // The backup's config, for the settings it carries; never for database credentials.
+            var backupConfigPath = Path.Combine(restoreDir, "config", "config.yaml");
+            if (!File.Exists(backupConfigPath))
+            {
+                Console.WriteLine("❌ Backup config.yaml not found in archive");
+                return RestoreResult.Refused("the archive holds no config/config.yaml");
+            }
+            var backupConfig = YamlConfigLoader.Load(backupConfigPath);
+            var toolTimeoutMs = DatabaseToolTimeoutMs(backupConfig.Backup);
+            var auditDump = Path.Combine(restoreDir, AuditDumpFileName);
+            var replacesAudit = restoreAudit && File.Exists(auditDump);
 
             // The databases restored into are this host's own, named by its config/db.yaml. The
             // archive carries no credentials, and a DB: section in an older archive's config.yaml
@@ -787,45 +793,60 @@ public static class BackupRestore
                 Console.WriteLine("   A restore writes into the databases this host's config/db.yaml names, with its credentials.");
                 Console.WriteLine("   On a new host, set up the databases first (the setup wizard, or the roles and databases by");
                 Console.WriteLine("   hand with db.yaml written from db.yaml.example), then run the restore again.");
-                return 1;
+                return RestoreResult.Refused(targetProblem ?? "this host names no database to restore into");
             }
             ReportRestoreTarget(target, manifestJson);
 
+            // Validate database name identifiers before use in command args
+            BootstrapDatabaseSetup.ValidateIdentifier(target.DB.App.Database, "app database name");
+            if (!string.IsNullOrWhiteSpace(target.DB.Audit.Database))
+                BootstrapDatabaseSetup.ValidateIdentifier(target.DB.Audit.Database, "audit database name");
+
+            // Every database the restore writes into must answer now, as its runtime role. A
+            // server that is down is told apart from a refusal: the caller tries again.
+            if (await ProbeRestoreTargetAsync("application", target.DB.App) is { } appUnreachable)
+                return appUnreachable;
+            if (replacesAudit && await ProbeRestoreTargetAsync("audit", target.DB.Audit) is { } auditUnreachable)
+                return auditUnreachable;
+
             // Schema version check
-            if (!skipSchemaCheck)
+            if (!options.SkipSchemaCheck)
             {
-                var schemaCheckResult = await ValidateSchemaVersionAsync(manifestJson);
-                if (schemaCheckResult != 0)
-                    return schemaCheckResult;
+                // An archive taken by a newer build holds migrations this build does not have. It
+                // would restore, and the node would then refuse to start on it.
+                if (await RefuseNewerSchemaAsync("application", appDump, audit: false, toolTimeoutMs) is { } newerApp)
+                    return newerApp;
+                if (replacesAudit && await RefuseNewerSchemaAsync("audit", auditDump, audit: true, toolTimeoutMs) is { } newerAudit)
+                    return newerAudit;
+
+                if (await ValidateSchemaVersionAsync(manifestJson) is { } mismatch)
+                    return mismatch;
             }
 
-            // Confirmation — only consume stdin when running interactively (CLI path).
-            // The API path (interactive=false) is expected to gate the call with step-up MFA
-            // and a single-use restore token before reaching this point.
-            if (interactive)
+            // Confirmation — only consume stdin when running interactively (CLI path). A caller
+            // that turned it off has confirmed already: --unattended on the command line, or
+            // the console's step-up and single-use restore token.
+            if (options.Interactive)
             {
                 Console.Write(restoreAudit
                     ? "\n⚠️  This will OVERWRITE current config, keystores, the application database AND the audit database. Type [RESTORE] to confirm: "
                     : "\n⚠️  This will OVERWRITE current config, keystores and the application database (the audit database is kept). Type [RESTORE] to confirm: ");
-                if (Console.ReadLine()?.Trim() != "RESTORE")
+                var typed = Console.ReadLine();
+                if (typed?.Trim() != "RESTORE")
                 {
-                    Console.WriteLine("❌ Restore cancelled.");
-                    return 1;
+                    Console.WriteLine();
+                    Console.WriteLine(typed == null
+                        ? "❌ Restore cancelled: standard input is closed, so nobody could confirm. Run it with --unattended when no one is at the terminal."
+                        : "❌ Restore cancelled.");
+                    return RestoreResult.Refused(typed == null
+                        ? "not confirmed: standard input is closed; use --unattended to restore with nobody at the terminal"
+                        : "not confirmed: the word RESTORE was not typed");
                 }
             }
             else
             {
-                Console.WriteLine("(i) Non-interactive restore — confirmation enforced upstream by API.");
+                Console.WriteLine("(i) No confirmation prompt: the caller confirmed (--unattended, or the console's restore token).");
             }
-
-            // The backup's config, for the settings it carries; never for database credentials.
-            var backupConfigPath = Path.Combine(restoreDir, "config", "config.yaml");
-            if (!File.Exists(backupConfigPath))
-            {
-                Console.WriteLine("❌ Backup config.yaml not found in archive");
-                return 1;
-            }
-            var backupConfig = YamlConfigLoader.Load(backupConfigPath);
 
             // An archive from before the key ring travelled wrapped carries it, and the SSH CA
             // keys, in the clear under config/. It still restores: dropping the ring would leave
@@ -872,21 +893,19 @@ public static class BackupRestore
             {
                 Console.WriteLine($"❌ Pre-restore snapshot failed: {ex.Message}");
                 Console.WriteLine("   Aborting restore — refusing to destroy live state without a rollback safety net.");
-                return 1;
+                return RestoreResult.Refused($"the pre-restore snapshot could not be taken: {ex.Message}");
             }
-
-            // Validate database name identifiers before use in command args
-            BootstrapDatabaseSetup.ValidateIdentifier(target.DB.App.Database, "app database name");
-            if (!string.IsNullOrWhiteSpace(target.DB.Audit.Database))
-                BootstrapDatabaseSetup.ValidateIdentifier(target.DB.Audit.Database, "audit database name");
 
             // 1. Restore databases. Each is one transaction, so one that fails is left as it was;
             // either failure ends the restore before a keystore or a config file is replaced.
             // The audit database is replaced only when asked (--restore-audit), and then goes
             // first: when it fails, nothing at all has changed. Otherwise the live audit history
             // stays, and the restore is recorded in it below.
-            var toolTimeoutMs = DatabaseToolTimeoutMs(backupConfig.Backup);
-            var auditDump = Path.Combine(restoreDir, AuditDumpFileName);
+            //
+            // THIS IS WHERE "NOTHING WAS CHANGED" ENDS. Up to here the restore has read this host
+            // and written only its own staging directory and the pre-restore snapshot. The first
+            // pg_restore below is the first statement that changes a database; progress.Changed is
+            // set the moment one has committed or may have.
             var auditRestored = false;
             if (!restoreAudit)
             {
@@ -894,30 +913,42 @@ public static class BackupRestore
                     ? "  (i) Keeping this host's audit database: the archive's audit trail is not restored (--restore-audit replaces it)."
                     : "  (i) Keeping this host's audit database; the archive holds no audit trail.");
             }
-            else if (!File.Exists(auditDump))
+            else if (!replacesAudit)
             {
                 Console.WriteLine("  ⚠ --restore-audit was given, but the archive holds no audit database; this host's audit database is kept.");
             }
             else
             {
-                if (!await RestoreDatabaseAsync("audit", target.DB.Audit, auditDump, ensureCitext: false, toolTimeoutMs))
+                switch (await RestoreDatabaseAsync("audit", target.DB.Audit, auditDump, ensureCitext: false, toolTimeoutMs))
                 {
-                    Console.WriteLine("   Nothing was changed: both databases, the keystores and config/ are as they were.");
-                    return 1;
+                    case DatabaseRestore.RolledBack:
+                        Console.WriteLine("   Nothing was changed: both databases, the keystores and config/ are as they were.");
+                        return RestoreResult.Refused("the audit database could not be restored; its one transaction was rolled back");
+                    case DatabaseRestore.Unknown:
+                        progress.Changed = true;
+                        Console.WriteLine("   Whether the audit database was replaced is not known. The application database, the keystores");
+                        Console.WriteLine("   and config/ are as they were.");
+                        return RestoreResult.FailedAfterChanges("the restore of the audit database ended without its outcome known; it may hold the archive's audit trail");
                 }
+                progress.Changed = true;
                 auditRestored = true;
             }
 
-            if (!await RestoreDatabaseAsync("app", target.DB.App, appDump, ensureCitext: true, toolTimeoutMs))
+            switch (await RestoreDatabaseAsync("app", target.DB.App, appDump, ensureCitext: true, toolTimeoutMs))
             {
-                Console.WriteLine(auditRestored
-                    ? "   The audit database now holds the archive's audit trail; the application database, the keystores"
-                    : "   Nothing was changed: the application database, the keystores");
-                Console.WriteLine(auditRestored
-                    ? "   and config/ are as they were. Fix the cause and run the restore again before starting the node."
-                    : "   and config/ are as they were.");
-                return 1;
+                case DatabaseRestore.RolledBack when !auditRestored:
+                    Console.WriteLine("   Nothing was changed: the application database, the keystores and config/ are as they were.");
+                    return RestoreResult.Refused("the application database could not be restored; its one transaction was rolled back");
+                case DatabaseRestore.RolledBack:
+                    Console.WriteLine("   The audit database now holds the archive's audit trail; the application database, the keystores");
+                    Console.WriteLine("   and config/ are as they were. Fix the cause and run the restore again before starting the node.");
+                    return RestoreResult.FailedAfterChanges("the audit database was replaced, then the application database could not be restored");
+                case DatabaseRestore.Unknown:
+                    progress.Changed = true;
+                    Console.WriteLine("   Whether the application database was replaced is not known. The keystores and config/ are as they were.");
+                    return RestoreResult.FailedAfterChanges("the restore of the application database ended without its outcome known; it may hold the archive's contents");
             }
+            progress.Changed = true;
 
             // CRLs published after this backup was taken carried higher numbers than the restored
             // counters; raise every counter past them before anything can generate a CRL.
@@ -981,7 +1012,8 @@ public static class BackupRestore
                         }
                     }
                     Console.WriteLine("     Pre-restore keystore state restored where possible; the restore is aborted.");
-                    return 1;
+                    Console.WriteLine("     The application database already holds the archive's contents.");
+                    return RestoreResult.FailedAfterChanges($"the application database was replaced, then the signer refused a keystore from the archive ({failure})");
                 }
             }
 
@@ -1040,18 +1072,209 @@ public static class BackupRestore
             {
                 Console.WriteLine("\n❌ Restore applied, but the CRL number counters could NOT be raised (see above).");
                 Console.WriteLine("   Do not start the CA until they are: the next CRL would reuse a number already published.");
-                return 2;
+                return RestoreResult.FailedAfterChanges("the restore was applied, but the CRL number counters could not be raised; do not start the CA until they are");
             }
 
             Console.WriteLine("\n✅ Restore complete. Restart the application to apply changes.");
-            return 0;
+            return RestoreResult.Done(auditKept: !auditRestored);
         }
         finally
         {
             if (restoreDir != null)
                 try { Directory.Delete(restoreDir, true); } catch { }
-            if (tempDecryptedZip != null)
-                try { File.Delete(tempDecryptedZip); } catch { }
+        }
+    }
+
+    /// <summary>How the restore of one database ended.</summary>
+    private enum DatabaseRestore
+    {
+        /// <summary><c>pg_restore</c> exited 0: its one transaction committed and the database holds the dump.</summary>
+        Restored,
+
+        /// <summary>
+        /// The database is as it was: <c>pg_restore</c> could not be started, or exited with an
+        /// error. With <c>--single-transaction</c> it sends <c>COMMIT</c> only after every statement
+        /// succeeded and exits non-zero without sending it otherwise, and the server rolls back a
+        /// transaction whose connection closes uncommitted.
+        /// </summary>
+        RolledBack,
+
+        /// <summary>
+        /// Not known: <c>pg_restore</c> was killed for running past its time limit, or this
+        /// process failed while waiting for it, so a <c>COMMIT</c> may have been sent.
+        /// </summary>
+        Unknown,
+    }
+
+    /// <summary>
+    /// Opens one connection to a database the restore writes into, as its runtime role, and
+    /// returns null when it answers. Otherwise the verdict: <see cref="RestoreExit.Unreachable"/>
+    /// when the server could not be reached or is not accepting connections yet, which passes on
+    /// its own, and <see cref="RestoreExit.Refused"/> for anything the operator must fix (the
+    /// database is missing, the login is refused, TLS fails). Nothing has been changed either way.
+    /// </summary>
+    /// <param name="label">How the database is named to the operator.</param>
+    /// <param name="instance">The database and its runtime role.</param>
+    private static async Task<RestoreResult?> ProbeRestoreTargetAsync(string label, ModularCA.Shared.Models.Config.DbInstance instance)
+    {
+        try
+        {
+            await using var conn = new NpgsqlConnection(
+                new NpgsqlConnectionStringBuilder(PostgresConnection.Build(instance)) { Pooling = false }.ConnectionString);
+            await conn.OpenAsync();
+            await using var cmd = new NpgsqlCommand("SELECT 1", conn);
+            await cmd.ExecuteScalarAsync();
+            return null;
+        }
+        catch (Exception ex)
+        {
+            var failure = new ModularCA.Database.SchemaConnectException(ex);
+            var described = ModularCA.Database.SchemaFailure.Describe(failure);
+            if (ModularCA.Database.SchemaFailure.Classify(failure) == ModularCA.Database.SchemaFailureKind.Unreachable)
+            {
+                Console.WriteLine($"❌ The {label} database '{instance.Database}' on {instance.Host}:{instance.Port} could not be reached: {described}");
+                Console.WriteLine("   Nothing was changed. Try again when the database server answers.");
+                return RestoreResult.Unreachable($"the {label} database could not be reached: {described}");
+            }
+            Console.WriteLine($"❌ The {label} database '{instance.Database}' on {instance.Host}:{instance.Port} refused the role '{instance.Username}' of config/db.yaml: {described}");
+            Console.WriteLine("   Nothing was changed. A restore writes into databases that exist, as the roles db.yaml names.");
+            return RestoreResult.Refused($"the {label} database cannot be used as config/db.yaml names it: {described}");
+        }
+    }
+
+    /// <summary>
+    /// Refuses a dump taken by a newer build: one whose migration history
+    /// (<see cref="ReadDumpMigrationsAsync"/>) holds a migration this build does not have. Such a
+    /// database would restore, and the node would then refuse to start on it. Returns null when
+    /// the dump may be restored: every migration in it is known, or it carries no history at all
+    /// (which is said, and not refused). Nothing has been changed either way.
+    /// </summary>
+    /// <param name="label">How the database is named to the operator.</param>
+    /// <param name="dumpFile">The dump, extracted from the archive.</param>
+    /// <param name="audit">True for the audit database's migrations.</param>
+    /// <param name="timeoutMs">How long <c>pg_restore</c> may take to read the dump.</param>
+    private static async Task<RestoreResult?> RefuseNewerSchemaAsync(string label, string dumpFile, bool audit, int timeoutMs)
+    {
+        var (migrations, problem) = await ReadDumpMigrationsAsync(dumpFile, timeoutMs);
+        if (migrations == null)
+        {
+            Console.WriteLine($"❌ The {label} database in the archive could not be read by pg_restore: {problem}");
+            Console.WriteLine("   Nothing was changed. pg_restore must be on the PATH of the account that runs ModularCA, at the");
+            Console.WriteLine("   major version of the pg_dump that wrote the archive or newer.");
+            return RestoreResult.Refused($"the {label} database in the archive could not be read by pg_restore: {problem}");
+        }
+        if (migrations.Count == 0)
+        {
+            Console.WriteLine($"  ⚠ The {label} database in the archive carries no migration history; it cannot be compared with this build.");
+            return null;
+        }
+
+        var known = BackupManifestCommand.KnownMigrations(audit);
+        var unknown = migrations.Where(id => !known.Contains(id)).OrderBy(id => id, StringComparer.Ordinal).ToList();
+        if (unknown.Count == 0)
+        {
+            Console.WriteLine($"  The {label} database in the archive is at {migrations.Max(StringComparer.Ordinal)}, which this build has.");
+            return null;
+        }
+
+        var build = BackupManifestCommand.ProductVersion();
+        Console.WriteLine($"❌ The {label} database in this archive was taken by a newer build than this one ({build}).");
+        Console.WriteLine($"   It holds {unknown.Count} migration(s) this build does not have: {string.Join(", ", unknown.Take(5))}{(unknown.Count > 5 ? ", ..." : "")}");
+        Console.WriteLine("   Nothing was changed. Restore it with the build that took it, or a newer one: this build would");
+        Console.WriteLine("   refuse to start on the restored database.");
+        return RestoreResult.Refused($"the archive's {label} schema is newer than this build ({build}): it holds migration {unknown[^1]}, which this build does not have");
+    }
+
+    /// <summary>
+    /// The migration ids a custom-format dump carries in its <c>__EFMigrationsHistory</c> table,
+    /// read with <c>pg_restore --data-only --table</c> writing to standard output: no database is
+    /// contacted and nothing is written. An empty list means the dump has no such table or no
+    /// rows in it; null, with the reason, means <c>pg_restore</c> could not read the dump.
+    /// </summary>
+    /// <param name="dumpFile">The dump.</param>
+    /// <param name="timeoutMs">How long <c>pg_restore</c> may run.</param>
+    internal static async Task<(IReadOnlyList<string>? Migrations, string? Problem)> ReadDumpMigrationsAsync(string dumpFile, int timeoutMs)
+    {
+        int exit;
+        string stdout, stderr;
+        try
+        {
+            (exit, stdout, stderr) = await RunPostgresToolAsync("pg_restore",
+                ["--data-only", "--table=__EFMigrationsHistory", "--file=-", dumpFile], pgPassFile: null, timeoutMs);
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            return (null, $"pg_restore could not be started ({ex.Message})");
+        }
+        if (exit != 0)
+            return (null, $"exit {exit}: {stderr.Trim()}");
+        return (ParseCopiedMigrations(stdout), null);
+    }
+
+    /// <summary>
+    /// The first column of every row of the <c>COPY ... "__EFMigrationsHistory" ... FROM stdin;</c>
+    /// block in a script <c>pg_restore</c> printed: the migration ids.
+    /// </summary>
+    /// <param name="script">The script.</param>
+    internal static IReadOnlyList<string> ParseCopiedMigrations(string script)
+    {
+        var ids = new List<string>();
+        var inBlock = false;
+        foreach (var raw in script.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r');
+            if (!inBlock)
+            {
+                inBlock = line.StartsWith("COPY ", StringComparison.Ordinal)
+                    && line.Contains("__EFMigrationsHistory", StringComparison.Ordinal)
+                    && line.TrimEnd().EndsWith("FROM stdin;", StringComparison.Ordinal);
+                continue;
+            }
+            if (line == "\\.")
+            {
+                inBlock = false;
+                continue;
+            }
+            var id = line.Split('\t')[0];
+            if (id.Length > 0)
+                ids.Add(id);
+        }
+        return ids;
+    }
+
+    /// <summary>
+    /// What identifies the instance a database belongs to, as a backup's manifest records it and
+    /// the hub's <c>hello</c> answers it: the identifier stored with the instance's data
+    /// (<see cref="ModularCA.Core.Services.Settings.InstanceIdentity"/>), which the first start of
+    /// a build that keeps it wrote once and nothing changes afterwards. It travels with the
+    /// database, so it is the same on every host the instance is restored onto and differs
+    /// between two installs. Only while nothing is stored (a database no such build has started
+    /// on yet) is it derived: the SHA-256 of the public key of the system signing CA, as the
+    /// <c>Keystores</c> rows pin it (<c>SigningCaSpkiSha256</c>, 64 hex digits), which is also
+    /// the value that start stores. It is not a secret. Null when nothing is stored and no row
+    /// carries a pin (an install from before the pin that was never backfilled), when the stored
+    /// row holds no usable value, or when the database cannot be read. Runs over a connection of
+    /// its own, for the host commands that have no service container.
+    /// </summary>
+    /// <param name="appConnectionString">The application database.</param>
+    public static async Task<string?> ReadInstanceIdAsync(string appConnectionString)
+        => (await ModularCA.Core.Services.Settings.InstanceIdentity.ReadAsync(appConnectionString)).Id;
+
+    /// <summary>The newest migration a database's history names, or null when it has none or cannot be read.</summary>
+    /// <param name="connectionString">The database.</param>
+    private static async Task<string?> ReadLatestMigrationAsync(string connectionString)
+    {
+        try
+        {
+            await using var conn = new NpgsqlConnection(connectionString);
+            await conn.OpenAsync();
+            await using var cmd = new NpgsqlCommand(
+                """SELECT "MigrationId" FROM "__EFMigrationsHistory" ORDER BY "MigrationId" DESC LIMIT 1""", conn);
+            return await cmd.ExecuteScalarAsync() as string;
+        }
+        catch (Exception)
+        {
+            return null;
         }
     }
 
@@ -1210,8 +1433,8 @@ public static class BackupRestore
     /// If the current config.yaml is available, computes the live schema version and compares.
     /// </summary>
     /// <param name="manifestJson">The raw JSON content of the backup manifest.</param>
-    /// <returns>0 if versions match or cannot be checked, 1 if there is a mismatch and restore should abort.</returns>
-    private static async Task<int> ValidateSchemaVersionAsync(string manifestJson)
+    /// <returns>Null when the versions match or cannot be compared; the refusal when they differ. Nothing has been changed either way.</returns>
+    private static async Task<RestoreResult?> ValidateSchemaVersionAsync(string manifestJson)
     {
         try
         {
@@ -1219,7 +1442,7 @@ public static class BackupRestore
             if (!doc.RootElement.TryGetProperty("SchemaVersion", out var backupSchemaEl))
             {
                 Console.WriteLine("  ⚠ Backup manifest has no SchemaVersion — skipping schema check.");
-                return 0;
+                return null;
             }
 
             var backupSchema = backupSchemaEl.GetString();
@@ -1227,7 +1450,7 @@ public static class BackupRestore
             if (!File.Exists(configPath))
             {
                 Console.WriteLine("  ⚠ No local config.yaml — cannot verify schema version.");
-                return 0;
+                return null;
             }
 
             var config = YamlConfigLoader.Load(configPath);
@@ -1241,7 +1464,7 @@ public static class BackupRestore
                 Console.WriteLine($"     Current: {currentSchema}");
                 Console.WriteLine("     The database schema has changed since this backup was created.");
                 Console.WriteLine("     Restoring may cause data loss or corruption. Aborting.");
-                return 1;
+                return RestoreResult.Refused($"the archive's schema ({backupSchema}) is not the schema of this host's database ({currentSchema}); restore with the build the archive was taken with, onto a database at that version");
             }
 
             Console.WriteLine($"  Schema version OK: {currentSchema}");
@@ -1251,7 +1474,7 @@ public static class BackupRestore
             Console.WriteLine("  ⚠ Could not parse manifest for schema check — skipping.");
         }
 
-        return 0;
+        return null;
     }
 
     /// <summary>
@@ -1311,99 +1534,168 @@ public static class BackupRestore
     /// owner is the superuser that bootstrapped it. For the application database the extension is
     /// instead ensured first, as the runtime role.
     /// </para>
+    /// <para>
+    /// <b>What a failure leaves.</b> Nothing here changes the database before the last
+    /// <c>pg_restore</c> except the <c>citext</c> extension, created only when the database has
+    /// none; when the restore then does not go through, that extension is dropped again, so a
+    /// database reported as <see cref="DatabaseRestore.RolledBack"/> is as it was found. The
+    /// table of contents is read and filtered without a connection.
+    /// </para>
     /// </summary>
     /// <param name="pgPassFile">Path to the pgpass file holding the credentials.</param>
     /// <param name="instance">The database and runtime role to restore into (name pre-validated).</param>
     /// <param name="dumpFile">Path to the custom-format archive to restore.</param>
     /// <param name="ensureCitext">Create <c>citext</c> as the runtime role first, if it is missing.</param>
     /// <param name="timeoutMs">How long each <c>pg_restore</c> run may take.</param>
-    /// <returns>A tuple of (exitCode, errorOutput).</returns>
-    private static async Task<(int ExitCode, string Stderr)> RestoreDumpFileAsync(
+    /// <returns>How it ended, and for a failure the tool's own message.</returns>
+    private static async Task<(DatabaseRestore Outcome, string Detail)> RestoreDumpFileAsync(
         string pgPassFile, ModularCA.Shared.Models.Config.DbInstance instance, string dumpFile, bool ensureCitext, int timeoutMs)
     {
+        var createdCitext = false;
+
+        // A restore that does not go through leaves the database as it was: the extension this
+        // call created is dropped again. One that cannot be dropped is the one change left.
+        async Task<(DatabaseRestore, string)> NotRestoredAsync(string detail)
+        {
+            if (!createdCitext)
+                return (DatabaseRestore.RolledBack, detail);
+            try
+            {
+                await using var conn = new NpgsqlConnection(PostgresConnection.Build(instance));
+                await conn.OpenAsync();
+                await using var cmd = new NpgsqlCommand($"DROP EXTENSION IF EXISTS {ModularCA.Database.Conventions.TextCaseSensitivity.Extension}", conn);
+                await cmd.ExecuteNonQueryAsync();
+                return (DatabaseRestore.RolledBack, detail);
+            }
+            catch (Exception ex)
+            {
+                return (DatabaseRestore.Unknown,
+                    $"{detail} The {ModularCA.Database.Conventions.TextCaseSensitivity.Extension} extension this restore created in the database could not be removed again ({ex.Message}).");
+            }
+        }
+
         if (ensureCitext)
         {
             try
             {
                 await using var conn = new NpgsqlConnection(PostgresConnection.Build(instance));
                 await conn.OpenAsync();
-                await using var cmd = new NpgsqlCommand(ModularCA.Database.PostgresRoleLayout.ExtensionSql, conn);
-                await cmd.ExecuteNonQueryAsync();
-                // In a database that was empty the extension is new, and this process has
-                // already read the type list without it: every citext column would be unreadable.
-                await conn.ReloadTypesAsync();
+                bool present;
+                await using (var probe = new NpgsqlCommand("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = @name)", conn))
+                {
+                    probe.Parameters.AddWithValue("name", ModularCA.Database.Conventions.TextCaseSensitivity.Extension);
+                    present = (bool)(await probe.ExecuteScalarAsync())!;
+                }
+                if (!present)
+                {
+                    // Set first: a statement whose answer is lost may still have run.
+                    createdCitext = true;
+                    await using var cmd = new NpgsqlCommand(ModularCA.Database.PostgresRoleLayout.ExtensionSql, conn);
+                    await cmd.ExecuteNonQueryAsync();
+                    // In a database that was empty the extension is new, and this process has
+                    // already read the type list without it: every citext column would be unreadable.
+                    await conn.ReloadTypesAsync();
+                }
             }
             catch (Exception ex)
             {
-                return (1, $"could not ensure the citext extension as '{instance.Username}': {ex.Message}");
+                return await NotRestoredAsync($"could not ensure the citext extension as '{instance.Username}': {ex.Message}");
             }
         }
 
-        var (listExit, listing, listErr) = await RunPostgresToolAsync("pg_restore", new[] { "--list", dumpFile }, pgPassFile, timeoutMs);
-        if (listExit != 0)
-            return (listExit, listErr);
-        var listFile = dumpFile + ".list";
-        await File.WriteAllLinesAsync(listFile, WithoutExtensionEntries(listing));
-
-        var (exit, _, stderr) = await RunPostgresToolAsync("pg_restore", new[]
+        string listFile;
+        try
         {
-            "--host", instance.Host,
-            "--port", instance.Port.ToString(),
-            "--username", instance.Username,
-            "--no-password",
-            "--dbname", instance.Database,
-            "--clean",
-            "--if-exists",
-            "--no-owner",
-            "--no-privileges",
-            "--single-transaction",
-            "--use-list", listFile,
-            dumpFile,
-        }, pgPassFile, timeoutMs);
-        return (exit, stderr);
+            var (listExit, listing, listErr) = await RunPostgresToolAsync("pg_restore", new[] { "--list", dumpFile }, pgPassFile, timeoutMs);
+            if (listExit != 0)
+                return await NotRestoredAsync($"pg_restore --list exited {listExit}: {listErr.Trim()}");
+            listFile = dumpFile + ".list";
+            await File.WriteAllLinesAsync(listFile, WithoutExtensionEntries(listing));
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException)
+        {
+            return await NotRestoredAsync(ex is System.ComponentModel.Win32Exception
+                ? $"pg_restore could not be started ({ex.Message}). It must be on the PATH of the account that runs ModularCA."
+                : $"the dump's table of contents could not be staged: {ex.Message}");
+        }
+
+        // From this call on the database may change. It is one transaction: an exit with an
+        // error means COMMIT was never sent; a kill or a failure of this process to follow the
+        // tool means it may have been.
+        int exit;
+        string stderr;
+        try
+        {
+            (exit, _, stderr) = await RunPostgresToolAsync("pg_restore", new[]
+            {
+                "--host", instance.Host,
+                "--port", instance.Port.ToString(),
+                "--username", instance.Username,
+                "--no-password",
+                "--dbname", instance.Database,
+                "--clean",
+                "--if-exists",
+                "--no-owner",
+                "--no-privileges",
+                "--single-transaction",
+                "--use-list", listFile,
+                dumpFile,
+            }, pgPassFile, timeoutMs);
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            return await NotRestoredAsync($"pg_restore could not be started ({ex.Message}). It must be on the PATH of the account that runs ModularCA.");
+        }
+        catch (Exception ex)
+        {
+            return (DatabaseRestore.Unknown, $"pg_restore was started and could not be followed to its end ({ex.GetType().Name}: {ex.Message}).");
+        }
+
+        if (exit == 0)
+            return (DatabaseRestore.Restored, string.Empty);
+        if (exit == ToolTimedOut)
+            return (DatabaseRestore.Unknown, $"{stderr.Trim()}; it was stopped, and whether its transaction had committed is not known. Raise Backup.DatabaseTimeoutMinutes.");
+        return await NotRestoredAsync($"pg_restore exited {exit}: {stderr.Trim()}");
     }
 
     /// <summary>
     /// Restores one database from its dump as its runtime role
-    /// (<see cref="RestoreDumpFileAsync"/>) and says whether it succeeded. A failure is printed
-    /// with the tool's own message; the database is then as it was, the restore being one
-    /// transaction.
+    /// (<see cref="RestoreDumpFileAsync"/>) and says how it ended. A failure is printed with the
+    /// tool's own message, and with whether the database is as it was.
     /// </summary>
     /// <param name="label">How the database is named to the operator.</param>
     /// <param name="instance">The database and runtime role to restore into.</param>
     /// <param name="dumpFile">The custom-format dump from the archive.</param>
     /// <param name="ensureCitext">Create <c>citext</c> as the runtime role first, if it is missing.</param>
     /// <param name="timeoutMs">How long each <c>pg_restore</c> run may take.</param>
-    /// <returns>True when the database now holds the dump.</returns>
-    private static async Task<bool> RestoreDatabaseAsync(
+    /// <returns>Whether the database now holds the dump, is as it was, or may be either.</returns>
+    private static async Task<DatabaseRestore> RestoreDatabaseAsync(
         string label, ModularCA.Shared.Models.Config.DbInstance instance, string dumpFile, bool ensureCitext, int timeoutMs)
     {
         Console.Write($"  Restoring {label} database...");
         var passFile = WritePgPassFile(instance.Host, instance.Port, instance.Database, instance.Username, instance.Password);
-        int exit;
-        string stderr;
+        DatabaseRestore outcome;
+        string detail;
         try
         {
-            (exit, stderr) = await RestoreDumpFileAsync(passFile, instance, dumpFile, ensureCitext, timeoutMs);
-        }
-        catch (System.ComponentModel.Win32Exception ex)
-        {
-            (exit, stderr) = (-1, $"pg_restore could not be started ({ex.Message}). It must be on the PATH of the account that runs ModularCA.");
+            (outcome, detail) = await RestoreDumpFileAsync(passFile, instance, dumpFile, ensureCitext, timeoutMs);
         }
         finally
         {
             try { File.Delete(passFile); } catch { }
         }
 
-        if (exit == 0)
+        if (outcome == DatabaseRestore.Restored)
         {
             Console.WriteLine(" ✓");
-            return true;
+            return outcome;
         }
 
         Console.WriteLine();
-        Console.WriteLine($"❌ The {label} database '{instance.Database}' could not be restored (exit {exit}): {stderr.Trim()}");
-        return false;
+        Console.WriteLine($"❌ The {label} database '{instance.Database}' could not be restored: {detail}");
+        if (outcome == DatabaseRestore.RolledBack)
+            Console.WriteLine($"   The {label} database is as it was: the restore is one transaction, and it did not commit.");
+        return outcome;
     }
 
     /// <summary>
@@ -1419,6 +1711,9 @@ public static class BackupRestore
     private static readonly System.Text.RegularExpressions.Regex ExtensionTocEntry =
         new(@"^\s*\d+;\s*\d+\s+\d+\s+(?:EXTENSION|COMMENT - EXTENSION)\s", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
+    /// <summary>The exit code <see cref="RunPostgresToolAsync"/> reports for a tool it killed for running past its time limit.</summary>
+    private const int ToolTimedOut = -1;
+
     /// <summary>
     /// Runs one of the PostgreSQL command-line tools with the credentials supplied through a
     /// pgpass file rather than through the command line or the environment.
@@ -1431,11 +1726,11 @@ public static class BackupRestore
     /// </summary>
     /// <param name="tool">The executable name, e.g. <c>pg_dump</c> or <c>pg_restore</c>.</param>
     /// <param name="arguments">Arguments, each passed as exactly one token.</param>
-    /// <param name="pgPassFile">Path to the pgpass file to point PGPASSFILE at.</param>
+    /// <param name="pgPassFile">Path to the pgpass file to point PGPASSFILE at; null for a run that contacts no database.</param>
     /// <param name="timeoutMs">How long to wait before killing the process.</param>
-    /// <returns>A tuple of (exitCode, stdout, stderr).</returns>
+    /// <returns>A tuple of (exitCode, stdout, stderr); the exit code is <see cref="ToolTimedOut"/> when the process was killed for running past the limit.</returns>
     private static async Task<(int ExitCode, string Stdout, string Stderr)> RunPostgresToolAsync(
-        string tool, IReadOnlyList<string> arguments, string pgPassFile, int timeoutMs)
+        string tool, IReadOnlyList<string> arguments, string? pgPassFile, int timeoutMs)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -1447,7 +1742,8 @@ public static class BackupRestore
         };
         foreach (var argument in arguments)
             startInfo.ArgumentList.Add(argument);
-        startInfo.Environment["PGPASSFILE"] = pgPassFile;
+        if (pgPassFile != null)
+            startInfo.Environment["PGPASSFILE"] = pgPassFile;
 
         using var process = new Process { StartInfo = startInfo };
         process.Start();
@@ -1459,7 +1755,7 @@ public static class BackupRestore
         if (!completed)
         {
             process.Kill(entireProcessTree: true);
-            return (-1, string.Empty, $"Process '{tool}' timed out after {timeoutMs}ms");
+            return (ToolTimedOut, string.Empty, $"Process '{tool}' timed out after {timeoutMs}ms");
         }
 
         return (process.ExitCode, await stdoutTask, await stderrTask);
@@ -2075,22 +2371,21 @@ public static class BackupRestore
     }
 
     /// <summary>
-    /// Safely extract a ZIP archive into <paramref name="destinationDir"/>, rejecting
+    /// Safely extract an open ZIP archive into <paramref name="destinationDir"/>, rejecting
     /// any entry whose resolved full path falls outside the destination root. Also rejects
     /// absolute entry paths, NUL bytes, and ADS markers (<c>:</c>). This replaces
     /// <c>ZipFile.ExtractToDirectory</c>, which is susceptible to zip-slip when the archive
     /// is attacker-influenced.
     /// </summary>
-    /// <param name="archivePath">Absolute path to the ZIP archive.</param>
+    /// <param name="archive">The ZIP archive, opened for reading.</param>
     /// <param name="destinationDir">Absolute path where entries will be extracted.</param>
-    private static void SafeExtractZip(string archivePath, string destinationDir)
+    private static void SafeExtractZip(ZipArchive archive, string destinationDir)
     {
         var fullDest = Path.GetFullPath(destinationDir);
         var destWithSep = fullDest.EndsWith(Path.DirectorySeparatorChar)
             ? fullDest
             : fullDest + Path.DirectorySeparatorChar;
 
-        using var archive = ZipFile.OpenRead(archivePath);
         foreach (var entry in archive.Entries)
         {
             var rawName = entry.FullName;

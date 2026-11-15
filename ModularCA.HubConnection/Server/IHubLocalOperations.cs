@@ -20,6 +20,14 @@ public interface IHubLocalOperations
     /// <summary>The instance's product version.</summary>
     string InstanceVersion { get; }
 
+    /// <summary>
+    /// The instance's identifier, for <c>hello</c>: the value a backup's manifest records as its
+    /// <c>instanceId</c>. Null when it is not known. Does not throw for an identifier that cannot
+    /// be read: that is null too.
+    /// </summary>
+    /// <param name="cancellationToken">Cancels the read.</param>
+    Task<string?> ReadInstanceIdAsync(CancellationToken cancellationToken);
+
     /// <summary>Runs the instance's readiness checks.</summary>
     /// <param name="cancellationToken">Cancels the read.</param>
     Task<HubHealthReport> ReadHealthAsync(CancellationToken cancellationToken);
@@ -47,6 +55,27 @@ public interface IHubLocalOperations
     /// <param name="operatorName">The operator name the hub claimed, if any.</param>
     /// <param name="cancellationToken">Cancels the request.</param>
     Task ReplaceAffiliationTokenAsync(byte[] newTokenSha256, string? operatorName, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Reads the inventory: what the instance already knows about its versions, signer, web TLS
+    /// certificate, newest backup, failing scheduled jobs and CAs. A read only: it starts no
+    /// work, asks the signer nothing, and carries no issued certificate, user, key, secret or
+    /// audit entry.
+    /// </summary>
+    /// <param name="cancellationToken">Cancels the read.</param>
+    Task<HubInventory> ReadInventoryAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Deletes old backup archives from the instance's backup directory by the rule its own
+    /// scheduled and console backups prune by, and records it in the audit trail as one record.
+    /// The newest archive is never deleted. Throws <see cref="ArgumentException"/> when neither
+    /// value is given or one is out of range.
+    /// </summary>
+    /// <param name="keep">How many of the newest archives to keep, or null.</param>
+    /// <param name="maxAgeDays">The age in days beyond which an archive is deleted, or null.</param>
+    /// <param name="operatorName">The operator name the hub claimed, if any.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    Task<HubPruneBackupsResult> PruneBackupsAsync(int? keep, int? maxAgeDays, string? operatorName, CancellationToken cancellationToken);
 
     /// <summary>Records one request in the audit trail, under the hub.</summary>
     /// <param name="record">The request and its outcome.</param>

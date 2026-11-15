@@ -143,6 +143,8 @@ public static class HubLocalHost
         ("PUT", HubLocalContract.Paths.Mode) => HubLocalContract.Operations.ModeSet,
         ("POST", HubLocalContract.Paths.Backup) => HubLocalContract.Operations.BackupCreate,
         ("PUT", HubLocalContract.Paths.AffiliationToken) => HubLocalContract.Operations.AffiliationTokenReplace,
+        ("GET", HubLocalContract.Paths.Inventory) => HubLocalContract.Operations.InventoryRead,
+        ("POST", HubLocalContract.Paths.BackupPrune) => HubLocalContract.Operations.BackupPrune,
         _ => null,
     };
 
@@ -215,7 +217,8 @@ public static class HubLocalHost
                 {
                     HubLocalContract.Operations.HealthRead => (200, Json(await HealthAsync(tokenCheck, http.RequestAborted)), false),
                     HubLocalContract.Operations.ModeRead => (200, Json(operations.ReadMode()), false),
-                    HubLocalContract.Operations.Hello => (200, Json(Hello(await ReadAsync<HubHello>(http), tokenCheck)), false),
+                    HubLocalContract.Operations.Hello => (200, Json(await HelloAsync(await ReadAsync<HubHello>(http), tokenCheck, http.RequestAborted)), false),
+                    HubLocalContract.Operations.InventoryRead => (200, Json(await operations.ReadInventoryAsync(http.RequestAborted)), false),
                     _ => await ChangeAsync(http, operation, requestId, operatorName),
                 };
             }
@@ -268,12 +271,14 @@ public static class HubLocalHost
                 HubLocalContract.Version, DateTime.UtcNow, report.Checks);
         }
 
-        private HubHello Hello(HubHello theirs, string tokenCheck)
+        /// <summary>The instance's side of <c>hello</c>: its version, operations, product version, token check and identifier.</summary>
+        private async Task<HubHello> HelloAsync(HubHello theirs, string tokenCheck, CancellationToken cancellationToken)
         {
             if (!HubLocalContract.IsCompatible(theirs.ContractVersion))
                 throw new Refused(400, HubLocalContract.Errors.ContractVersionUnsupported,
                     $"The hub states contract version '{theirs.ContractVersion}'; this instance speaks {HubLocalContract.Version}.", listOperations: true);
-            return new HubHello(HubLocalContract.Version, HubLocalContract.Operations.All, operations.InstanceVersion, tokenCheck);
+            return new HubHello(HubLocalContract.Version, HubLocalContract.Operations.All, operations.InstanceVersion, tokenCheck,
+                await operations.ReadInstanceIdAsync(cancellationToken));
         }
 
         /// <summary>An operation that changes something: done once per request identifier.</summary>
@@ -321,6 +326,17 @@ public static class HubLocalHost
                             throw new Refused(400, HubLocalContract.Errors.InvalidRequest, "newTokenSha256 must be the SHA-256 of the new token as 64 hex digits; never the token itself.");
                         await operations.ReplaceAffiliationTokenAsync(newHash, operatorName, http.RequestAborted);
                         json = Json(new HubReplaceTokenResult(HubLocalContract.TokenCheckEnforced));
+                        break;
+                    case HubLocalContract.Operations.BackupPrune:
+                        var prune = Parse<HubPruneBackupsRequest>(raw);
+                        try
+                        {
+                            json = Json(await operations.PruneBackupsAsync(prune.Keep, prune.MaxAgeDays, operatorName, http.RequestAborted));
+                        }
+                        catch (ArgumentException ex)
+                        {
+                            throw new Refused(400, HubLocalContract.Errors.InvalidRequest, ex.Message);
+                        }
                         break;
                     default:
                         throw new InvalidOperationException($"No handler for {operation}.");

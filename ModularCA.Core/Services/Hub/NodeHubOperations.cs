@@ -11,9 +11,10 @@ using ModularCA.Shared.Settings;
 namespace ModularCA.Core.Services.Hub;
 
 /// <summary>
-/// What this node does for each request on the hub's local connection: reads its health and
-/// mode, sets the mode in the per-host state file, writes a backup, replaces the hash of the
-/// affiliation token, and records every request in the audit trail under the hub.
+/// What this node does for each request on the hub's local connection: reads its identifier, its health and
+/// mode, sets the mode in the per-host state file, writes a backup, prunes old backup archives,
+/// replaces the hash of the affiliation token, and records every request in the audit trail
+/// under the hub.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -47,7 +48,7 @@ public sealed class NodeHubOperations(
     public const string Actor = "hub";
 
     /// <summary>
-    /// How often the hub's served reads (health and mode) are written to the audit trail. A hub
+    /// How often the hub's served reads (health, mode and inventory) are written to the audit trail. A hub
     /// polls health every few seconds; one record per request would fill the hash chain with
     /// them. Within this interval the reads are counted, and the first read after it writes one
     /// record with the counts. Changes, refusals and failures are always recorded one by one.
@@ -137,11 +138,55 @@ public sealed class NodeHubOperations(
     /// <inheritdoc/>
     public string InstanceVersion { get; } = instanceVersion;
 
+    /// <summary>
+    /// Reads the instance's identifier (<see cref="InstanceIdentity.ReadAsync"/> over this node's
+    /// application database). Set by the node when it opens the connection; while it is null
+    /// <see cref="ReadInstanceIdAsync"/> answers null and <c>hello</c> carries no identifier.
+    /// </summary>
+    public Func<CancellationToken, Task<InstanceIdReading>>? InstanceId { get; init; }
+
+    private volatile string? _storedInstanceId;
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// A stored identifier never changes, so the first one read is kept for the life of the
+    /// process and the database is not asked again. A derived one (nothing is stored yet) is not
+    /// kept: the next <c>hello</c> reads again, and takes the stored one once there is one.
+    /// </remarks>
+    public async Task<string?> ReadInstanceIdAsync(CancellationToken cancellationToken)
+    {
+        if (_storedInstanceId is { } known) return known;
+        if (InstanceId == null) return null;
+        InstanceIdReading reading;
+        try
+        {
+            reading = await InstanceId(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
+        if (reading is { Stored: true, Id: not null })
+            _storedInstanceId = reading.Id;
+        return reading.Id;
+    }
+
     /// <inheritdoc/>
     public Task<HubHealthReport> ReadHealthAsync(CancellationToken cancellationToken) => health(cancellationToken);
 
     /// <inheritdoc/>
     public HubMode ReadMode() => Describe(modes.Current);
+
+    /// <summary>
+    /// Reads the inventory (<see cref="NodeInventoryReader"/> over this node's services). Set by
+    /// the node when it opens the connection; while it is null <see cref="ReadInventoryAsync"/>
+    /// fails and the hub is answered <c>internal_error</c>.
+    /// </summary>
+    public Func<CancellationToken, Task<HubInventory>>? Inventory { get; init; }
+
+    /// <inheritdoc/>
+    public Task<HubInventory> ReadInventoryAsync(CancellationToken cancellationToken)
+        => (Inventory ?? throw new InvalidOperationException("This node was given no inventory reader."))(cancellationToken);
 
     /// <inheritdoc/>
     public async Task<HubMode> SetModeAsync(string mode, string? reason, string? operatorName, CancellationToken cancellationToken)
@@ -195,6 +240,60 @@ public sealed class NodeHubOperations(
     }
 
     /// <inheritdoc/>
+    /// <remarks>
+    /// The rule is <see cref="BackupRetention"/>, the one the scheduled and the console backups
+    /// prune by, with the instance's <c>Backup.MinimumRetentionDays</c> floor in force. What it
+    /// selects is recorded first, as one <see cref="AuditActionType.BackupsPruned"/> record under
+    /// <see cref="Actor"/>, and then deleted: with a fail-closed audit trail an unrecorded deletion
+    /// must not happen. A file that then cannot be deleted is recorded in a second, failed record.
+    /// </remarks>
+    public async Task<HubPruneBackupsResult> PruneBackupsAsync(int? keep, int? maxAgeDays, string? operatorName, CancellationToken cancellationToken)
+    {
+        if (keep == null && maxAgeDays == null)
+            throw new ArgumentException("Give keep (how many of the newest archives to keep), maxAgeDays, or both.");
+        if (keep is < 1 or > HubPruneBackupsRequest.MaxKeep)
+            throw new ArgumentException($"keep must be between 1 and {HubPruneBackupsRequest.MaxKeep}: the newest archive is never deleted.");
+        if (maxAgeDays is < 1 or > HubPruneBackupsRequest.MaxMaxAgeDays)
+            throw new ArgumentException($"maxAgeDays must be between 1 and {HubPruneBackupsRequest.MaxMaxAgeDays}.");
+
+        var configured = string.IsNullOrWhiteSpace(config.Backup.OutputPath) ? "backups" : config.Backup.OutputPath;
+        var directory = Path.GetFullPath(Path.IsPathRooted(configured) ? configured : Path.Combine(AppContext.BaseDirectory, configured));
+        var minimumRetentionDays = Math.Max(0, config.Backup.MinimumRetentionDays);
+        var selection = BackupRetention.Select(directory, keep, maxAgeDays is { } days ? TimeSpan.FromDays(days) : null,
+            minimumRetentionDays, UtcNow());
+
+        await using var scope = scopes.CreateAsyncScope();
+        var audit = scope.ServiceProvider.GetRequiredService<IAuditService>();
+        await audit.LogAsync(
+            AuditActionType.BackupsPruned, null, Actor, "Backup", null,
+            new
+            {
+                trigger = "hub",
+                ClaimedOperator = operatorName,
+                Keep = keep,
+                MaxAgeDays = maxAgeDays,
+                MinimumRetentionDays = minimumRetentionDays,
+                Deleted = selection.ToDelete.Select(f => f.Name).ToList(),
+                KeptByMinimumRetention = selection.KeptByMinimumRetention.Select(f => f.Name).ToList(),
+                Remaining = selection.ToKeep.Count,
+            });
+
+        var pruned = BackupRetention.Delete(selection);
+        if (pruned.Failed.Count > 0)
+            await audit.LogAsync(
+                AuditActionType.BackupsPruned, null, Actor, "Backup", null,
+                new { trigger = "hub", ClaimedOperator = operatorName, NotDeleted = pruned.Failed.Select(f => f.Archive.FileName).ToList() },
+                success: false, errorMessage: $"{pruned.Failed.Count} archive(s) could not be deleted: {pruned.Failed[0].Error}");
+
+        static HubBackupFile Describe(BackupRetention.Archive a) => new(a.FileName, a.SizeBytes, a.CreatedAtUtc);
+        return new HubPruneBackupsResult(
+            pruned.Deleted.Select(Describe).ToList(),
+            pruned.Remaining.Select(Describe).ToList(),
+            pruned.KeptByMinimumRetention.Select(a => a.FileName).ToList(),
+            pruned.Failed.Select(f => f.Archive.FileName).ToList());
+    }
+
+    /// <inheritdoc/>
     public async Task ReplaceAffiliationTokenAsync(byte[] newTokenSha256, string? operatorName, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(newTokenSha256);
@@ -226,7 +325,7 @@ public sealed class NodeHubOperations(
     /// <inheritdoc/>
     public async Task AuditAsync(HubRequestRecord record, CancellationToken cancellationToken)
     {
-        if (record.Refusal == null && record.Operation is HubLocalContract.Operations.HealthRead or HubLocalContract.Operations.ModeRead)
+        if (record.Refusal == null && record.Operation is HubLocalContract.Operations.HealthRead or HubLocalContract.Operations.ModeRead or HubLocalContract.Operations.InventoryRead)
         {
             await AuditReadAsync(record, cancellationToken);
             return;

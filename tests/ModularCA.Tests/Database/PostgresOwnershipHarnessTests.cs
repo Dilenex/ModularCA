@@ -756,11 +756,21 @@ namespace ModularCA.Tests.Database
             return (process.ExitCode, await stderr);
         }
 
-        /// <summary>Calls the private <c>BackupRestore.RestoreDumpFileAsync</c>, the restore the product runs.</summary>
+        /// <summary>
+        /// Calls the private <c>BackupRestore.RestoreDumpFileAsync</c>, the restore the product
+        /// runs. It answers with an outcome (restored, rolled back, or not known) and a detail;
+        /// this gives 0 for restored and 1 for anything else, with the outcome in the text.
+        /// </summary>
         private static async Task<(int ExitCode, string Stderr)> RestoreDumpFileAsync(string pgpass, DbInstance instance, string dump, bool ensureCitext)
         {
             var method = typeof(BackupRestore).GetMethod("RestoreDumpFileAsync", BindingFlags.NonPublic | BindingFlags.Static)!;
-            return await (Task<(int, string)>)method.Invoke(null, [pgpass, instance, dump, ensureCitext, 600_000])!;
+            var task = (Task)method.Invoke(null, [pgpass, instance, dump, ensureCitext, 600_000])!;
+            await task;
+            // The outcome's type is private to BackupRestore, so the tuple is read by reflection.
+            var result = task.GetType().GetProperty("Result")!.GetValue(task)!;
+            var outcome = result.GetType().GetField("Item1")!.GetValue(result)!.ToString()!;
+            var detail = (string?)result.GetType().GetField("Item2")!.GetValue(result) ?? string.Empty;
+            return (outcome == "Restored" ? 0 : 1, $"{outcome}: {detail}");
         }
 
         /// <summary>Whether any captured event, at any level, contains <paramref name="text"/>.</summary>

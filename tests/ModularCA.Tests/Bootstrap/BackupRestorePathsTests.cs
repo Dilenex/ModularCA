@@ -205,7 +205,7 @@ public sealed class BackupRestorePathsTests : IDisposable
             throw new InvalidOperationException("the signer must not be built");
         }, skipSchemaCheck: true, interactive: false);
 
-        Assert.Equal(1, exit);
+        Assert.Equal(RestoreExit.Refused, exit);
         Assert.False(signerAsked);
         Assert.Equal(before, File.Exists(liveConfig) ? File.ReadAllBytes(liveConfig) : null);
         Assert.Empty(Directory.GetFiles(AppContext.BaseDirectory, "pre-restore-*.zip"));
@@ -246,9 +246,13 @@ public sealed class BackupRestorePathsTests : IDisposable
             Console.SetOut(console);
         }
 
-        Assert.Equal(1, exit);
+        Assert.Equal(RestoreExit.Refused, exit);
         Assert.False(signerAsked);
         Assert.Contains("holds no application database", output.ToString());
+        // The last line says which status it was, in the fixed phrase a runner matches on.
+        var last = output.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries).Last().TrimEnd('\r');
+        Assert.StartsWith(RestoreExit.RefusedMarker, last);
+        Assert.EndsWith("Nothing was changed.", last);
     }
 
     [Theory]

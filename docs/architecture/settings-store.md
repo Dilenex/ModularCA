@@ -343,6 +343,29 @@ still carries one section's proposed values.
   as one wrapped secret; splitting it into a readable list and per-element secrets is not worth
   the bookkeeping.
 
+### A row that is not a setting: the instance's identifier
+
+The `Settings` table also holds one row nobody sets: `Instance_Id`, the instance's identifier
+(`InstanceIdentity`; the `instanceId` of a backup manifest and of the hub's `hello`). It is here
+because this table is with the instance's data: every host reads the same row, and a backup and
+a restore carry it. It is a reserved key (`ReservedSettingKeys`), not a setting:
+
+- No property of `SystemConfig` stands behind it, so it is in no `config.yaml`, no environment
+  variable supplies it, the move out of the file never sees it, and the console's settings
+  pages do not list it. That holds before the move as well as after: the row does not depend on
+  whether the instance-wide settings have been moved.
+- The control role writes it once, at the first start of a build that keeps it, with one
+  `INSERT ... ON CONFLICT DO NOTHING`: the fingerprint of the system signing CA as it is then.
+  Two nodes starting together end with one row. Nothing updates or deletes it.
+- A settings change that names the key is refused whole (`WrittenOnce`), whether it sets, clears
+  or only expects a version of it. That closes the settings endpoints, `--settings` and the hub.
+- It takes no revision and has no history: it is not a change, and it has one value for ever.
+  `--settings list` shows it with the stored settings. Its first store is one `ConfigUpdated`
+  audit record under the host.
+
+A build from before the row logs it once per start as a stored setting it does not know, and is
+otherwise unaffected.
+
 ### Secrets
 
 | Kind | Settings | Stored as |

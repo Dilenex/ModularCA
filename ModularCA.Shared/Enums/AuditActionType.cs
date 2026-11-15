@@ -276,6 +276,8 @@ public static class AuditActionType
     public const string BackupCreated = "BackupCreated";
     public const string BackupRestored = "BackupRestored";
     public const string BackupListed = "BackupListed";
+    /// <summary>Old backup archives were deleted from the backup directory at the hub's request; the details list them.</summary>
+    public const string BackupsPruned = "BackupsPruned";
     /// <summary>A restore raised the CRL number counters so no number already published is reused (RFC 5280 §5.2.3).</summary>
     public const string CrlNumbersRaisedOnRestore = "CrlNumbersRaisedOnRestore";
 

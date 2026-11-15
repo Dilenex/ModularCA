@@ -152,7 +152,7 @@ public sealed class SshKeyImportApiTests
     {
         using var db = install.Node.Reopen();
         var check = (IHealthCheck)Activator.CreateInstance(ApiAssembly.TypeNamed("ModularCA.API.HealthChecks.ModularCAHealthCheck"),
-            db, install.Node.Keystore, signer, new ApiCertificateProvider(), new SystemConfig(), null, state)!;
+            db, install.Node.Keystore, signer, new ApiCertificateProvider(), new SystemConfig(), null, state, null)!;
         var result = await check.CheckHealthAsync(new HealthCheckContext());
         return (result.Status, JsonDocument.Parse(JsonSerializer.Serialize(result.Data["signer"], Web)).RootElement);
     }

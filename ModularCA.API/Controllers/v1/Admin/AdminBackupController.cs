@@ -617,7 +617,9 @@ public class AdminBackupController(
         BackupRestore.ResolveBackupDirectory(AppContext.BaseDirectory, _config.Backup?.OutputPath);
 
     /// <summary>
-    /// Deletes the oldest backup archives when the total count exceeds the configured retention limit.
+    /// Deletes the oldest backup archives when the total count exceeds the configured retention limit,
+    /// by the one rule every pruning of the backup directory uses
+    /// (<see cref="ModularCA.Core.Services.BackupRetention"/>).
     /// </summary>
     /// <remarks>
     /// Honours <see cref="BackupConfig.MinimumRetentionDays"/> as a hard floor.
@@ -631,34 +633,16 @@ public class AdminBackupController(
         var retentionCount = _config.Backup.RetentionCount;
         if (retentionCount <= 0) return;
 
-        var retentionDirInfo = new DirectoryInfo(backupDir);
-        var files = retentionDirInfo.GetFiles("modularca-backup-*.zip")
-            .Concat(retentionDirInfo.GetFiles("modularca-backup-*.enc"))
-            .OrderByDescending(f => f.CreationTimeUtc)
-            .ToList();
-
         var minDays = Math.Max(0, _config.Backup.MinimumRetentionDays);
-        var floor = DateTime.UtcNow.AddDays(-minDays);
-
-        foreach (var file in files.Skip(retentionCount))
-        {
-            if (minDays > 0 && file.CreationTimeUtc > floor)
-            {
-                Serilog.Log.Information(
-                    "Backup retention: skipping delete of {FileName} — younger than MinimumRetentionDays={MinDays} floor",
-                    file.Name, minDays);
-                continue;
-            }
-            try
-            {
-                file.Delete();
-                Serilog.Log.Warning("Backup retention: deleted {FileName} (retentionCount={Count})", file.Name, retentionCount);
-            }
-            catch (Exception ex)
-            {
-                Serilog.Log.Warning(ex, "Backup retention: failed to delete {FileName}", file.Name);
-            }
-        }
+        var pruned = ModularCA.Core.Services.BackupRetention.Apply(backupDir, retentionCount, maxAge: null, minDays, DateTime.UtcNow);
+        foreach (var kept in pruned.KeptByMinimumRetention)
+            Serilog.Log.Information(
+                "Backup retention: skipping delete of {FileName} — younger than MinimumRetentionDays={MinDays} floor",
+                kept.FileName, minDays);
+        foreach (var deleted in pruned.Deleted)
+            Serilog.Log.Warning("Backup retention: deleted {FileName} (retentionCount={Count})", deleted.FileName, retentionCount);
+        foreach (var (archive, error) in pruned.Failed)
+            Serilog.Log.Warning("Backup retention: failed to delete {FileName}: {Error}", archive.FileName, error);
     }
 }
 

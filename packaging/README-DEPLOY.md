@@ -763,7 +763,10 @@ data. It does not hold its own key, the keystore passphrases, the database crede
 ### Taking backups
 
 The node takes one every day at 02:00 UTC and keeps the last ten (`Backup.Schedule`,
-`Backup.RetentionCount`). The console's Backup page takes one on demand. From the command line:
+`Backup.RetentionCount`), never deleting one younger than `Backup.MinimumRetentionDays` (3). The
+console's Backup page takes one on demand and prunes by the same rule; a backup a hub asks for
+over its local connection does not prune, and the hub's `backup.prune` request does, by the same
+rule again. From the command line:
 
     sudo -u modularca /opt/modularca/ModularCA.API --backup
 
@@ -822,9 +825,16 @@ archive's audit trail instead, add `--restore-audit` (on the Backup page, tick *
 audit history with the backup's*). Every audit record made since the backup was taken is then
 lost, so do that only when this host's own audit history is empty or gone.
 
-It asks you to type `RESTORE`. Before it changes anything it writes the live `config/` and
+It asks you to type `RESTORE`; `--unattended` restores without asking ("Restoring with nobody at
+the instance", below). Before it changes anything it writes the live `config/` and
 keystores to `backups/pre-restore-<timestamp>.zip`, owner-only. That file holds every secret in
 `config/`; delete it once the restored node is running and you no longer need to go back.
+
+The last line it prints says how it ended, and the exit status says the same: `RESTORE: DONE`
+(0), `RESTORE: REFUSED ... Nothing was changed.` (3), `RESTORE: UNREACHABLE` (75, a database did
+not answer and nothing was changed) or `RESTORE: FAILED AFTER CHANGES` (4). Before 0.4.5 every
+failure exited 1, and a restore that could not raise the CRL numbers exited 2; a script that
+tested for those must test for the new ones.
 
 A database that cannot be restored stops the restore before a keystore or a config file is
 replaced. Each database is restored in one transaction, so one that fails is left as it was.
@@ -853,8 +863,8 @@ without it. A host with no `db.yaml` is refused before anything changes.
 3. **Put the kit in place**, owned by `modularca`, `0600`: `keystore.yaml` and `backup.key` in
    `config/`, replacing the ones a fresh install made, and the archive in `backups/`.
 4. **Restore**, as above, adding `--restore-audit` so the new host gets the archive's audit
-   trail; its own audit database is empty. For an archive protected by a password, give
-   `--password` or answer the prompt.
+   trail; its own audit database is empty. For an archive protected by a password, give the
+   password in a file with `--password-file <file>`, or answer the prompt.
 5. **Start the service.** At this start it unwraps the stored-data secrets the restore staged in
    `config/restore-pending/`, issues its web certificate and publishes a new CRL.
 6. **Check it**, from another machine:
@@ -881,6 +891,193 @@ With compose, step 2 is `docker compose up -d` and the wizard, and the rest is:
     docker compose up -d modularca
 
 The host procedure is what the test runs. The compose commands have not been run yet.
+
+### Restoring with nobody at the instance (for an orchestrator)
+
+Everything above works without a person: a runner that stops the node, copies the volumes aside
+and runs the restore as a one-off process or container reads the outcome from the exit status and
+the last line of output, and is asked nothing.
+
+#### What an archive is, before anything is stopped: `--backup-manifest`
+
+    ModularCA.API --backup-manifest <archive> [--key-file <file>] [--password-file <file>]
+
+It reads the archive and its key file and nothing else: no database, no keystore, no log file. It
+writes nothing anywhere, so the archive may be on a read-only mount under any name. Standard
+output carries exactly one line, and only on exit 0:
+
+    {"archive":"archive.enc","manifestVersion":"1.0","instanceId":"2185444fcf8b17fa897a185bb2a39859e43f4f071873b5e0058b186db090c311","productVersion":"0.4.5","schemaVersion":"tables:80:6394f35757420abb:migrations:27:3eb08c27186aeda3","latestMigration":"20261112030001_InstanceIncarnation","newerThanThisBuild":false,"createdAtUtc":"2026-11-12T19:35:05.5927388Z","machineName":"ca-pod-7","appDatabase":"modularca","auditDatabase":"modularca-audit","hasAuditDatabase":true,"caCount":2,"certificateCount":41,"encryption":"RandomKey","sizeBytes":50113,"readByVersion":"0.4.5"}
+
+| Field | Meaning |
+|---|---|
+| `instanceId` | The instance that wrote the archive: its identifier, 64 hex digits. The instance stores it once with its data (the first start of a build that keeps it writes the SHA-256 of the public key of its system signing CA as it is then) and never changes it afterwards, so the value is the same on every host the instance is restored onto, stays the same if that CA is ever re-keyed, and differs between two installs. An archive taken before the identifier was stored carries the same value, derived. The hub's `hello` answers the same value. It is not a secret. **`null` for an archive taken before 0.4.5**, which did not record it. |
+| `productVersion` | The version that took the backup. `null` before 0.4.5. |
+| `schemaVersion` | The fingerprint of the application database's tables and migration history. A restore onto a host that has a `config.yaml` requires it to equal the database's. |
+| `latestMigration` | The newest migration applied to the application database. `null` before 0.4.5. |
+| `newerThanThisBuild` | `true` when `latestMigration` is one the build reading the archive does not have: a restore with this build is refused. `null` when the archive does not say. |
+| `createdAtUtc` | When the backup was taken. |
+| `hasAuditDatabase` | Whether the archive holds an audit database, which `--restore-audit` needs. |
+| `encryption` | `RandomKey`, `StoredPassword` or `none`. |
+| `readByVersion` | The version of the build that read the archive. |
+
+Every field is always present; one the archive does not record is `null`. The counts of users a
+manifest carries are not printed. A refusal exits **3** with the reason on standard error and
+nothing on standard output: the file is missing, is not a ModularCA archive, or does not open
+with the key given.
+
+The manifest lies inside the archive's encryption, so the command needs the archive's key.
+Nothing that names the instance is kept outside the encryption: whoever holds only the file
+learns nothing of where it came from.
+
+**Another instance's archive is not refused by the restore.** Restoring onto a new host is
+exactly that case. A runner that must not put instance A's archive over instance B compares
+`instanceId` itself: with the `instanceId` of an archive it knows to be this instance's (the one
+`backup.create` just wrote, for example).
+
+#### The restore: `--restore ... --unattended`
+
+    ModularCA.API --restore <archive> --unattended [--restore-audit] [--key-file <file>] [--password-file <file>]
+
+With `--unattended` nothing is asked: not the word `RESTORE`, and not the backup password. The
+node must be stopped, and on a split install the signer too.
+
+| Exit | Last line of standard output starts with | Meaning | What the runner does |
+|---|---|---|---|
+| 0 | `RESTORE: DONE` | The restore completed. The line says whether the audit database was kept. | Start the node. |
+| 3 | `RESTORE: REFUSED` | Refused, and **nothing was changed**: the line ends `Nothing was changed.` | Start the node again as it was. |
+| 75 | `RESTORE: UNREACHABLE` | A database could not be reached; nothing was changed. | Try again, or start the node again as it was. |
+| 4 | `RESTORE: FAILED AFTER CHANGES` | Something was changed, or may have been, and the restore did not complete. | Put the copied volumes back. |
+
+These are the numbers the schema check uses, with the same meanings (3 nothing applied, 4 failed
+after applying, 75 try again). The reason is in brackets after the phrase, and in full in the
+lines above it. **Any other status, or no such last line** (the process was killed, the host ran
+out of memory) says nothing about what was changed: treat it as 4.
+
+"Changed" means the application database, the audit database, the keystores or `config/`. Two
+things a refused restore may leave behind are not counted, because the instance does not run
+from them: the pre-restore snapshot `backups/pre-restore-<timestamp>.zip`, written once the
+archive has passed every check, and the records of the attempt (the log, the signer's audit rows
+for reading the live keystores, the signer's journal entry).
+
+What is refused with status 3, before anything is touched:
+
+- no archive named, or a flag without its value; `--password` together with `--unattended`;
+- the archive is missing, is not a ModularCA archive, or does not open with the key or password
+  given;
+- the archive is from a MySQL/MariaDB installation, holds no application database, or carries a
+  file no archive may hold;
+- **the archive was taken by a newer build**: its application database (or, with
+  `--restore-audit`, its audit database) holds a migration this build does not have. This is read
+  from the dump itself, so it holds for archives of any age;
+- the archive's schema is not the schema of this host's database, where the host has a
+  `config.yaml` (above, "Restoring onto a new host");
+- this host has no usable `db.yaml`, or a database refuses the role it names (the database does
+  not exist, the password is wrong);
+- the pre-restore snapshot cannot be written, or no owner-only staging directory can be made;
+- without `--unattended`: standard input is closed, or something other than `RESTORE` was typed.
+
+And one refusal that comes later: **a database restore that fails is rolled back.** Each database
+is restored by one `pg_restore --single-transaction`, which commits only after every statement
+succeeded. When the first database restored fails that way, it is as it was, nothing else has
+been touched, and the status is 3 with `its one transaction was rolled back` in the line.
+
+Status 4 is everything from the first database that committed onward: with `--restore-audit`,
+the audit database was replaced and the application database then failed; the application
+database was replaced and the signer then refused a keystore from the archive, the CRL numbers
+could not be raised, or a config file could not be written; or a `pg_restore` was stopped for
+running past `Backup.DatabaseTimeoutMinutes`, which leaves it unknown whether it had committed.
+
+**The audit database is kept**, with or without `--unattended`, unless `--restore-audit` is
+given. The `RESTORE: DONE` line says which: `(the audit database was kept)` or `(the audit
+database was replaced with the archive's)`.
+
+#### Every secret comes from a file
+
+| Secret | Read from | Given explicitly with |
+|---|---|---|
+| The archive's key, for an archive made under the backup key | `config/backup.key`, or the path `Backup.EncryptionKeyPath` names in this host's `config.yaml` | `--key-file <file>` |
+| The archive's key, for an archive made under a backup password | `config/backup-password.key` (the stored key the password was turned into), or the path `Backup.PasswordFilePath` names | `--key-file <file>`, or the password itself in a file: `--password-file <file>` |
+| The database credentials | `config/db.yaml` | |
+| The keystore passphrases | `keystore.yaml`: `config/keystore.yaml`, or the signer's directory with `--role signer --signer-dir` | |
+
+No key and no password is read from an environment variable. `--password <password>` still works
+for a person at a terminal and is refused with `--unattended`: an argument can be read by every
+process on the host. A password file is the password on one line; a line break at its end is
+ignored. The archive says in its header which kind of key it needs, so one `--key-file` flag
+serves both. The database password is handed to `pg_restore` in a temporary `pgpass` file only
+this account can read, deleted when the tool exits, never on its command line.
+
+`MODULARCA__DB__*` variables in the environment still override `db.yaml`, as they do for the
+service. A runner that wants no secret in an environment sets none and mounts `db.yaml`.
+
+#### Where the restore writes
+
+It never writes beside the archive. The archive is read where it lies and decrypted in memory;
+its contents are unpacked into a new directory `modularca-restore-<random>` under the temporary
+directory (`TMPDIR`, `/tmp` in the image), mode `0700`, removed when the restore ends, whatever
+the outcome. That directory holds the keystore files and both database dumps for the length of
+the restore, and the restore needs about twice the archive's size in memory and its unpacked
+size on that disk: give a one-off container a `/tmp` that is not a small `tmpfs`. The
+pre-restore snapshot goes to `backups/`.
+
+#### As a one-off container
+
+The image's entrypoint runs `--restore` and `--backup-manifest` exactly as given and exits with
+their status: nothing is bootstrapped, no wizard starts and nothing is waited for, whatever the
+volumes hold.
+
+The manifest, with the archive and the key as the only mounts:
+
+    podman run --rm --network none \
+      --secret modularca-backup-key \
+      -v /srv/archives/<archive>.enc:/restore/archive.enc:ro \
+      ghcr.io/dilenex/modularca:<version> \
+      --backup-manifest /restore/archive.enc --key-file /run/secrets/modularca-backup-key
+
+The restore, for the pod of "The pod: node and signer as two containers", with the node and the
+signer stopped and the database running. It needs every volume of the instance, because it
+writes all of them, and the signer's directory, because the keystore passphrases are there:
+
+    podman run --rm --pod modularca \
+      -v modularca-config:/opt/modularca/config \
+      -v modularca-signer-config:/opt/modularca/signer \
+      -v modularca-keystores:/opt/modularca/keystores \
+      -v modularca-data:/opt/modularca/backups \
+      -v /srv/archives/<archive>.enc:/restore/archive.enc:ro \
+      --secret modularca-backup-key \
+      ghcr.io/dilenex/modularca:<version> \
+      --role signer --signer-dir /opt/modularca/signer \
+      --restore /restore/archive.enc --unattended --key-file /run/secrets/modularca-backup-key
+
+| Mount | Mode | Why |
+|---|---|---|
+| the archive | read-only | read where it lies |
+| `/run/secrets/modularca-backup-key` (a Podman secret) | read-only | the archive's key; leave `--key-file` out to use the `backup.key` in the config volume |
+| `modularca-config` at `/opt/modularca/config` | read-write | `db.yaml` is read; the archive's `config/` is written |
+| `modularca-signer-config` at `/opt/modularca/signer` | read-write | `keystore.yaml` is read; the restore records itself in `audit-journal/` |
+| `modularca-keystores` at `/opt/modularca/keystores` | read-write | the keystores are replaced |
+| `modularca-data` at `/opt/modularca/backups` | read-write | the pre-restore snapshot |
+
+For an image run as one process (compose), leave out `--role signer --signer-dir` and the
+signer's volume: `keystore.yaml` is in `config/`. Add `--restore-audit` only for a host whose
+own audit database is empty or lost. An archive under a backup password takes
+`--secret modularca-backup-password` and `--password-file /run/secrets/modularca-backup-password`
+in place of the key.
+
+Give the one-off container the `MODULARCA__INSTANCE__INCARNATION` value the node will be started
+with afterwards, or none at all. The restore stores the incarnation it is given in the restored
+database, so that the next start is not reported as a rollback; started with another value than
+the restore had, the node raises the notice described under "Snapshots, rollbacks and copies of
+the machine" once more.
+
+Then, by status: on 0 start the signer and the node; on 3 or 75 start them as they were; on 4,
+or anything else, put the copied volumes back first.
+
+What has been run: the command lines `--backup-manifest` and `--restore --unattended`, every
+status above, the read-only archive and the closed standard input are exercised by a drill that
+runs the real program on Windows (`tests/ModularCA.Tests/DisasterRecovery`). The container
+commands, the Podman secret, Linux file modes and the split layout with `--signer-dir` in a
+one-off container have not been run.
 
 ### Rehearse it
 

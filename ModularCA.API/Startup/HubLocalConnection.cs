@@ -55,12 +55,17 @@ public static class HubLocalConnection
             cancellationToken => ReadHealthAsync(node.Services, cancellationToken),
             cancellationToken => CreateBackupAsync(node.Services, config),
             (store, actor, reason, cancellationToken) => persistence.SaveAsync(store, actor, reason, cancellationToken),
-            InstanceVersion());
+            InstanceVersion())
+        {
+            Inventory = cancellationToken => ReadInventoryAsync(node.Services, config, cancellationToken),
+            // The identifier the start stored, read where a backup's manifest reads it.
+            InstanceId = cancellationToken => InstanceIdentity.ReadAsync(ModularCA.Shared.Utils.PostgresConnection.Build(config.DB.App), cancellationToken),
+        };
 
         var host = HubLocalHost.Build(options, operations, builder => builder.Host.UseSerilog());
         await HubLocalHost.StartAsync(host, options);
 
-        Log.Information("[HUB] Listening for the hub on the Unix socket {Socket} (mode {Mode}); health, mode, backup and token replacement only",
+        Log.Information("[HUB] Listening for the hub on the Unix socket {Socket} (mode {Mode}); health, mode, inventory, backup, pruning of backups and token replacement only",
             options.SocketPath, Convert.ToString((int)options.SocketMode, 8).PadLeft(4, '0'));
         if (operations.AffiliationTokenHash == null)
             Log.Warning("[HUB] This instance holds no affiliation token hash: the token check on the hub's local connection is OFF, "
@@ -102,8 +107,27 @@ public static class HubLocalConnection
     }
 
     /// <summary>
+    /// Reads the inventory in a scope of its own: rows, the state other checks keep in memory,
+    /// and the backup directory's listing. Nothing is started for it. See <see cref="NodeInventoryReader"/>.
+    /// </summary>
+    private static async Task<HubInventory> ReadInventoryAsync(IServiceProvider services, SystemConfig config, CancellationToken cancellationToken)
+    {
+        await using var scope = services.CreateAsyncScope();
+        var reader = new NodeInventoryReader(
+            scope.ServiceProvider.GetRequiredService<ModularCA.Database.ModularCADbContext>(),
+            scope.ServiceProvider.GetService<ModularCA.Database.AuditDbContext>(),
+            scope.ServiceProvider.GetRequiredService<ModularCA.Core.Services.SignerContactState>(),
+            scope.ServiceProvider.GetRequiredService<ModularCA.Core.Services.ApiCertificateProvider>(),
+            BackupRestore.ResolveBackupDirectory(AppContext.BaseDirectory, config.Backup?.OutputPath),
+            InstanceVersion(),
+            scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("ModularCA.HubConnection.Inventory"));
+        return await reader.ReadAsync(cancellationToken);
+    }
+
+    /// <summary>
     /// Writes a backup archive the way the console's "Create backup" does, into the configured
-    /// backup directory. Older archives are pruned by the next scheduled or console backup, not here.
+    /// backup directory. Older archives are pruned by the next scheduled or console backup, or by
+    /// the hub's <c>backup.prune</c>, not here.
     /// </summary>
     private static async Task<HubBackupResult> CreateBackupAsync(IServiceProvider services, SystemConfig config)
     {

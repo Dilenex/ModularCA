@@ -101,6 +101,14 @@ if (ModularCA.API.Startup.SignerReadinessCheck.IsNamedIn(args))
     Environment.Exit(await ModularCA.API.Startup.NodeReadinessCheck.RunAsync(args, AppContext.BaseDirectory, Console.Out, Console.Error));
 }
 
+// --backup-manifest: says what a backup archive is, as one line of JSON, and exits. It runs before
+// the startup logger exists so that the line is all standard output carries, and because it must
+// write nothing: it reads the archive and its key file, no database and no keystore.
+if (ModularCA.Bootstrap.BackupManifestCommand.IsNamedIn(args))
+{
+    Environment.Exit(ModularCA.Bootstrap.BackupManifestCommand.Run(args, AppContext.BaseDirectory, Console.Out, Console.Error));
+}
+
 var bootstrapConfig = new LoggerConfiguration().MinimumLevel.Information();
 switch (bootstrapConsoleFormat)
 {
@@ -279,103 +287,11 @@ if (args.Contains("--backup", StringComparer.OrdinalIgnoreCase))
         backupJournal, outputPath, () => BackupRestore.Backup(outputPath, BackupSignerFor));
     Environment.Exit(exitCode);
 }
-if (args.Contains("--restore", StringComparer.OrdinalIgnoreCase))
+// The restore asks for nothing with --unattended, reads every secret from a file, and ends with one
+// line that says whether anything was changed: see RestoreCommand for the statuses (0, 3, 4, 75).
+if (ModularCA.API.Startup.RestoreCommand.IsNamedIn(args))
 {
-    var archivePath = args.SkipWhile(a => !a.Equals("--restore", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
-    if (string.IsNullOrWhiteSpace(archivePath))
-    {
-        Console.WriteLine("Usage: --restore <backup-archive.enc> [--password <password>] [--restore-audit]");
-        Environment.Exit(1);
-    }
-
-    // Optional --password <pwd> for disaster recovery when backup-password.key is missing
-    // or doesn't match this archive's salt. If the flag isn't supplied but the archive is
-    // a StoredPassword archive that needs a password, fall back to an interactive prompt.
-    string? providedPassword = args
-        .SkipWhile(a => !a.Equals("--password", StringComparison.OrdinalIgnoreCase))
-        .Skip(1)
-        .FirstOrDefault();
-
-    try
-    {
-        var info = ModularCA.Bootstrap.Crypto.BackupKeyManager.PeekArchiveInfo(archivePath);
-        if (info is { IsLegacyFormat: false, Mode: ModularCA.Bootstrap.Crypto.BackupEncryptionMode.StoredPassword }
-            && string.IsNullOrEmpty(providedPassword))
-        {
-            // Check whether the local password file would decrypt this archive by comparing salts.
-            // If the file is missing OR the salts don't match, prompt for the password interactively.
-            // We use the default config-relative path here — the CLI --restore handler runs before
-            // the full runtime config is loaded, and overriding the path is an edge case operators
-            // can handle via `--password <pwd>` if they've moved the key file.
-            var passwordKeyPath = Path.Combine(
-                AppContext.BaseDirectory,
-                "config",
-                "backup-password.key");
-
-            bool needPrompt = true;
-            if (File.Exists(passwordKeyPath))
-            {
-                try
-                {
-                    var (kek, storedSalt, _, _, _) =
-                        ModularCA.Bootstrap.Crypto.BackupKeyManager.ReadPasswordKeyFile(passwordKeyPath);
-                    ModularCA.Bootstrap.Crypto.BackupKeyManager.ZeroKey(kek);
-                    if (info.Salt != null && storedSalt.AsSpan().SequenceEqual(info.Salt))
-                        needPrompt = false;
-                }
-                catch
-                {
-                    needPrompt = true;
-                }
-            }
-
-            if (needPrompt)
-            {
-                Console.WriteLine();
-                Console.WriteLine("This archive is encrypted in StoredPassword mode and cannot be restored with the");
-                Console.WriteLine("current password key file. Enter the backup password to proceed (or Ctrl+C to abort):");
-                Console.Write("Password: ");
-
-                var entered = new StringBuilder();
-                ConsoleKeyInfo keyInfo;
-                while ((keyInfo = Console.ReadKey(intercept: true)).Key != ConsoleKey.Enter)
-                {
-                    if (keyInfo.Key == ConsoleKey.Backspace && entered.Length > 0)
-                        entered.Remove(entered.Length - 1, 1);
-                    else if (!char.IsControl(keyInfo.KeyChar))
-                        entered.Append(keyInfo.KeyChar);
-                }
-                Console.WriteLine();
-                providedPassword = entered.ToString();
-                if (string.IsNullOrEmpty(providedPassword))
-                {
-                    Console.WriteLine("No password entered — aborting.");
-                    Environment.Exit(1);
-                }
-            }
-        }
-    }
-    catch (FileNotFoundException ex)
-    {
-        Console.WriteLine($"❌ {ex.Message}");
-        Environment.Exit(1);
-    }
-    catch (InvalidDataException ex)
-    {
-        Console.WriteLine($"❌ Cannot read backup archive: {ex.Message}");
-        Environment.Exit(1);
-    }
-
-    // The audit database is kept unless --restore-audit asks for the archive's audit trail.
-    var restoreAudit = args.Contains("--restore-audit", StringComparer.OrdinalIgnoreCase);
-    Log.Warning("Operator triggered restore (--restore) archive={ArchivePath} restoreAudit={RestoreAudit}", archivePath, restoreAudit);
-    // As for --backup: run as the signer from its own directory, the restore is recorded in the
-    // signer's audit journal. The password is never part of what is recorded.
-    var restoreJournal = ModularCA.Keystore.Services.SignerToolJournal.Open(signerPaths, message => Log.Warning("{Message}", message));
-    var exitCode = await ModularCA.Keystore.Services.SignerToolJournal.RestoreAsync(
-        restoreJournal, archivePath, restoreAudit,
-        () => BackupRestore.Restore(archivePath, MaintenanceSignerFor, skipSchemaCheck: false, providedPassword: providedPassword, restoreAudit: restoreAudit));
-    Environment.Exit(exitCode);
+    Environment.Exit(await ModularCA.API.Startup.RestoreCommand.RunAsync(args, signerPaths, MaintenanceSignerFor));
 }
 if (args.Contains("--backfill-keystore-pins", StringComparer.OrdinalIgnoreCase))
 {
@@ -1220,6 +1136,13 @@ if (!isSetupMode)
     if (controlActive)
         await ModularCA.API.Startup.ContinuityStartup.RunAsync(config, continuityState);
 
+    // The instance's identifier: the control role stores it once, at the first start of a build
+    // that keeps it, from the fingerprint of the system signing CA as it is then. Every later
+    // start finds it stored and writes nothing. Here, so it is stored before the hub's socket
+    // opens and hello is asked for it. It never stops the start.
+    if (controlActive)
+        await ModularCA.API.Startup.InstanceIdStartup.RunAsync(config);
+
     try
     {
         using var flagConn = new Npgsql.NpgsqlConnection(appConnStr);
@@ -1288,6 +1211,8 @@ builder.Services.AddSingleton(config);
 builder.Services.AddSingleton(envOverlay);
 builder.Services.AddSingleton(settingsPersistence);
 builder.Services.AddSingleton(signerSecretsState);
+// What the readiness check last learned of the signer, with its time; the hub's inventory reads it.
+builder.Services.AddSingleton<ModularCA.Core.Services.SignerContactState>();
 builder.Services.AddSingleton<ModularCA.Core.Services.AuditHashChainService>();
 
 // Entitlements are resolved once from a signed licence file and never change while the process

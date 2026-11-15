@@ -92,6 +92,28 @@ public sealed class HubLocalClient : IDisposable
             new HubReplaceTokenRequest(newTokenSha256Hex), requestId, cancellationToken);
 
     /// <summary>
+    /// Reads the inventory: versions, the signer as the instance last saw it, the web TLS
+    /// certificate's expiry, the newest backup, failing scheduled jobs and the CAs. Needs an
+    /// instance of contract 1.1 or later; an older one answers <c>operation_not_listed</c>.
+    /// </summary>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    public Task<HubInventory> ReadInventoryAsync(CancellationToken cancellationToken = default)
+        => SendAsync<HubInventory>(HttpMethod.Get, HubLocalContract.Paths.Inventory, null, null, cancellationToken);
+
+    /// <summary>
+    /// Deletes old backup archives from the instance's backup directory. Give
+    /// <paramref name="keep"/>, <paramref name="maxAgeDays"/> or both; the newest archive is
+    /// never deleted. An instance older than contract 1.1 answers <c>operation_not_listed</c>.
+    /// </summary>
+    /// <param name="keep">How many of the newest archives to keep, or null.</param>
+    /// <param name="maxAgeDays">The age in days beyond which an archive is deleted, or null.</param>
+    /// <param name="requestId">The request's identifier.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    public Task<HubPruneBackupsResult> PruneBackupsAsync(int? keep, int? maxAgeDays, string requestId, CancellationToken cancellationToken = default)
+        => SendAsync<HubPruneBackupsResult>(HttpMethod.Post, HubLocalContract.Paths.BackupPrune,
+            new HubPruneBackupsRequest(keep, maxAgeDays), requestId, cancellationToken);
+
+    /// <summary>
     /// Sends a request as given and returns the raw response, for callers that need the status,
     /// the headers, or a request this client has no method for.
     /// </summary>

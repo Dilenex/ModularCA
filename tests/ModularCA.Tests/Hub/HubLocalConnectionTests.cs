@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModularCA.Core.Services.Hub;
+using ModularCA.Core.Services.Settings;
 using ModularCA.HubConnection.Client;
 using ModularCA.HubConnection.Contract;
 using ModularCA.HubConnection.Server;
@@ -57,6 +58,14 @@ public sealed class HubLocalConnectionTests : IAsyncLifetime
     private readonly List<string> _saved = [];
     private int _backups;
     private bool _backupFails;
+    private int _inventoryReads;
+
+    /// <summary>What the stand-in for the identifier's reader answers: not known, until a test says otherwise.</summary>
+    private InstanceIdReading _instanceId = new(null, false);
+
+    /// <summary>The inventory the stand-in reader answers: every optional part has nothing to say.</summary>
+    private static readonly HubInventory EmptyInventory = new(
+        "0.4.5-test", new HubInventorySchema(new HubInventoryMigrations("20261101000000_Newest", 3), null), null, null, null, [], []);
     private InstanceModeStore _modes = null!;
     private WebApplication? _host;
 
@@ -89,7 +98,11 @@ public sealed class HubLocalConnectionTests : IAsyncLifetime
                 return Task.FromResult(new HubBackupResult($"modularca-backup-{_backups}.zip", 4096, DateTime.UtcNow));
             },
             (_, actor, reason, _) => { _saved.Add($"{actor.Name}: {reason}"); return Task.CompletedTask; },
-            "0.4.5-test");
+            "0.4.5-test")
+        {
+            Inventory = _ => { Interlocked.Increment(ref _inventoryReads); return Task.FromResult(EmptyInventory); },
+            InstanceId = _ => Task.FromResult(_instanceId),
+        };
     }
 
     private async Task StartAsync(UnixFileMode mode = HubLocalHostOptions.DefaultSocketMode)
@@ -196,7 +209,7 @@ public sealed class HubLocalConnectionTests : IAsyncLifetime
     [InlineData("POST", "/api/v1/auth/login")]
     [InlineData("GET", "/")]
     [InlineData("POST", "/hub/v1/stop")]
-    [InlineData("GET", "/hub/v1/inventory")]
+    [InlineData("POST", "/hub/v1/inventory")]
     [InlineData("DELETE", "/hub/v1/mode")]
     [InlineData("GET", "/hub/v2/health")]
     public async Task A_request_outside_the_list_is_refused_and_audited(string method, string path)
@@ -224,7 +237,7 @@ public sealed class HubLocalConnectionTests : IAsyncLifetime
     public void The_list_is_exactly_health_mode_backup_and_token_replacement()
     {
         Assert.Equal(
-            ["hello", "health.read", "mode.read", "mode.set", "backup.create", "affiliation-token.replace"],
+            ["hello", "health.read", "mode.read", "mode.set", "backup.create", "affiliation-token.replace", "inventory.read", "backup.prune"],
             HubLocalContract.Operations.All);
         Assert.Null(HubLocalHost.OperationOf("POST", "/hub/v1/stop"));
         Assert.Null(HubLocalHost.OperationOf("POST", "/hub/v1/mode"));
@@ -321,13 +334,15 @@ public sealed class HubLocalConnectionTests : IAsyncLifetime
             await Assert.ThrowsAsync<HubLocalException>(() => client.SetModeAsync("full", "x", "r-1")),
             await Assert.ThrowsAsync<HubLocalException>(() => client.CreateBackupAsync("r-2")),
             await Assert.ThrowsAsync<HubLocalException>(() => client.ReplaceAffiliationTokenAsync(new string('a', 64), "r-3")),
+            await Assert.ThrowsAsync<HubLocalException>(() => client.ReadInventoryAsync()),
         };
 
         Assert.All(refusals, r => { Assert.Equal(401, r.Status); Assert.Equal(expected, r.Code); });
         Assert.Equal(InstanceMode.Restricted, _modes.Current.Mode);
         Assert.Equal(0, _backups);
         Assert.Empty(_saved);
-        Assert.Equal(6, _audit.Entries.Count);
+        Assert.Equal(0, _inventoryReads);
+        Assert.Equal(7, _audit.Entries.Count);
         Assert.All(_audit.Entries, e => { Assert.Equal(AuditActionType.HubRequestRefused, e.Action); Assert.Equal(expected, e.Error); });
     }
 
@@ -440,9 +455,68 @@ public sealed class HubLocalConnectionTests : IAsyncLifetime
 
         var theirs = await client.HelloAsync();
 
-        Assert.Equal("1.0", theirs.ContractVersion);
+        Assert.Equal("1.1", theirs.ContractVersion);
         Assert.Equal(HubLocalContract.Operations.All, theirs.Operations);
         Assert.Equal("0.4.5-test", theirs.InstanceVersion);
+    }
+
+    // ---- the identifier in hello ----------------------------------------------------------------
+
+    private const string InstanceId = "9f2c4a1b8e7d6350f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708";
+
+    /// <summary>The body of the instance's answer to a hello sent on a raw connection, as it is on the wire.</summary>
+    private async Task<JsonElement> RawHelloAsync()
+    {
+        const string hello = "{\"contractVersion\":\"1.1\",\"operations\":[\"hello\"]}";
+        var answer = await RawAsync($"POST /hub/v1/hello HTTP/1.1\r\nHost: hub.local\r\n{HubLocalContract.ContractHeader}: 1.1\r\n"
+            + $"Content-Type: application/json\r\nContent-Length: {hello.Length}\r\n\r\n{hello}");
+        Assert.StartsWith("HTTP/1.1 200", answer);
+        var json = answer[answer.IndexOf('{')..(answer.LastIndexOf('}') + 1)];
+        return JsonDocument.Parse(json).RootElement.Clone();
+    }
+
+    [Fact]
+    public async Task Hello_carries_the_instance_identifier_and_the_contract_stays_1_1()
+    {
+        _instanceId = new InstanceIdReading(InstanceId, true);
+        await StartAsync();
+        using var client = Client();
+
+        var theirs = await client.HelloAsync();
+        var wire = await RawHelloAsync();
+
+        Assert.Equal(InstanceId, theirs.InstanceId);
+        Assert.Equal("1.1", theirs.ContractVersion);
+        Assert.Equal("1.1", HubLocalContract.Version);
+        Assert.Equal(InstanceId, wire.GetProperty("instanceId").GetString());
+        // One field was added to the answer and nothing else.
+        Assert.Equal(["contractVersion", "instanceId", "instanceVersion", "operations", "tokenCheck"],
+            wire.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal));
+        // The hub's own hello does not carry one.
+        Assert.Null(new HubHello(HubLocalContract.Version, HubLocalContract.Operations.All).InstanceId);
+    }
+
+    [Fact]
+    public async Task Hello_carries_no_identifier_when_the_instance_does_not_know_it()
+    {
+        await StartAsync();
+        using var client = Client();
+
+        Assert.Null((await client.HelloAsync()).InstanceId);
+        var wire = await RawHelloAsync();
+        Assert.False(wire.TryGetProperty("instanceId", out _));
+        Assert.Equal(["contractVersion", "instanceVersion", "operations", "tokenCheck"],
+            wire.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal));
+
+        // Before the first start of a build that stores it, hello gives the derived fingerprint
+        // the manifest gives; once one is stored, that one, for good.
+        _instanceId = new InstanceIdReading(InstanceId, false);
+        Assert.Equal(InstanceId, (await client.HelloAsync()).InstanceId);
+        _instanceId = new InstanceIdReading(new string('a', 64), true);
+        Assert.Equal(new string('a', 64), (await client.HelloAsync()).InstanceId);
+        _instanceId = new InstanceIdReading(InstanceId, true);
+        Assert.Equal(new string('a', 64), (await client.HelloAsync()).InstanceId);
+        Assert.DoesNotContain(_audit.Entries, e => e.Action == AuditActionType.HubRequestRefused);
     }
 
     [Theory]
@@ -469,7 +543,7 @@ public sealed class HubLocalConnectionTests : IAsyncLifetime
         }
         Assert.StartsWith("HTTP/1.1 400", answer);
         Assert.Contains(HubLocalContract.Errors.ContractVersionUnsupported, answer);
-        Assert.Contains("\"contractVersion\":\"1.0\"", answer);
+        Assert.Contains("\"contractVersion\":\"1.1\"", answer);
         Assert.Equal(HubLocalContract.Errors.ContractVersionUnsupported, Assert.Single(_audit.Entries).Error);
     }
 
@@ -696,6 +770,126 @@ public sealed class HubLocalConnectionTests : IAsyncLifetime
         Assert.Equal("modularca-backup-2.zip", (await client.CreateBackupAsync("backup-3")).FileName);
     }
 
+    // ---- the inventory (contract 1.1) -------------------------------------------------------------
+
+    [Fact]
+    public async Task The_inventory_is_read_over_the_socket_and_what_has_nothing_to_say_is_sent_as_null()
+    {
+        GiveToken();
+        await StartAsync();
+        using var client = Client(Token);
+
+        var inventory = await client.ReadInventoryAsync();
+
+        Assert.Equivalent(EmptyInventory, inventory, strict: true);
+        Assert.Equal(1, _inventoryReads);
+        using var raw = await client.SendRawAsync(new HttpRequestMessage(HttpMethod.Get, "/hub/v1/inventory/"));
+        Assert.Equal(HttpStatusCode.OK, raw.StatusCode);
+        Assert.Equal(
+            "{\"instanceVersion\":\"0.4.5-test\",\"schema\":{\"application\":{\"newestMigration\":\"20261101000000_Newest\",\"appliedCount\":3},\"audit\":null},"
+            + "\"signer\":null,\"webTlsCertificate\":null,\"newestBackup\":null,\"failingJobs\":[],\"certificateAuthorities\":[]}",
+            await raw.Content.ReadAsStringAsync());
+        Assert.Equal("inventory.read", HubLocalHost.OperationOf("GET", "/hub/v1/inventory"));
+        // It is a read: it takes no request identifier and is never replayed from the ledger.
+        Assert.False(raw.Headers.Contains(HubLocalContract.ReplayedHeader));
+        Assert.Equal(0, _backups);
+        Assert.Equal(InstanceMode.Restricted, _modes.Current.Mode);
+    }
+
+    /// <summary>
+    /// Raising the minor version for the new operation does not shut out a hub built against
+    /// 1.0: its requests and its hello are served as before, and the hello tells it what this
+    /// instance now has.
+    /// </summary>
+    [Fact]
+    public async Task A_hub_that_speaks_1_0_is_still_served_and_is_told_of_the_new_operation()
+    {
+        await StartAsync();
+
+        var health = await RawAsync($"GET /hub/v1/health HTTP/1.1\r\nHost: hub.local\r\n{HubLocalContract.ContractHeader}: 1.0\r\n\r\n");
+        var inventory = await RawAsync($"GET /hub/v1/inventory HTTP/1.1\r\nHost: hub.local\r\n{HubLocalContract.ContractHeader}: 1.0\r\n\r\n");
+        const string hello = "{\"contractVersion\":\"1.0\",\"operations\":[\"hello\",\"health.read\",\"mode.read\",\"mode.set\",\"backup.create\",\"affiliation-token.replace\"]}";
+        var answer = await RawAsync($"POST /hub/v1/hello HTTP/1.1\r\nHost: hub.local\r\n{HubLocalContract.ContractHeader}: 1.0\r\n"
+            + $"Content-Type: application/json\r\nContent-Length: {hello.Length}\r\n\r\n{hello}");
+
+        Assert.StartsWith("HTTP/1.1 200", health);
+        Assert.StartsWith("HTTP/1.1 200", inventory);
+        Assert.Contains("\"certificateAuthorities\":[]", inventory);
+        Assert.StartsWith("HTTP/1.1 200", answer);
+        Assert.Contains("\"contractVersion\":\"1.1\"", answer);
+        Assert.Contains("\"inventory.read\"", answer);
+        Assert.DoesNotContain(_audit.Entries, e => e.Action == AuditActionType.HubRequestRefused);
+    }
+
+    /// <summary>
+    /// A hub polls the inventory every minute or so. Like health and the mode it is counted, and
+    /// one record per interval carries the count; it is never one record per request.
+    /// </summary>
+    [Fact]
+    public async Task Inventory_reads_are_counted_with_the_other_reads_and_not_recorded_one_by_one()
+    {
+        await StartAsync();
+        using var client = Client();
+
+        for (var i = 0; i < 6; i++)
+            await client.ReadInventoryAsync();
+        await client.ReadHealthAsync();
+
+        Assert.Equal(6, _inventoryReads);
+        var only = Assert.Single(_audit.Entries);
+        Assert.Equal((AuditActionType.HubRequestServed, "reads"), (only.Action, only.TargetId));
+        Assert.Equal(1, ((Dictionary<string, int>)Detail(only, "Counts")!)[HubLocalContract.Operations.InventoryRead]);
+
+        // The same through the node's operations with the clock in hand: the reads inside the
+        // interval are carried by the first record after it.
+        var now = new DateTime(2026, 11, 12, 10, 0, 0, DateTimeKind.Utc);
+        var operations = Operations();
+        operations.UtcNow = () => now;
+        _audit.Entries.Clear();
+        HubRequestRecord Read(string operation) => new(operation, "GET", "/hub/v1/x", 200, null, null, "alice@hub", HubLocalContract.Version, false, HubLocalContract.TokenCheckOff);
+
+        await operations.AuditAsync(Read(HubLocalContract.Operations.InventoryRead), CancellationToken.None);
+        Assert.Single(_audit.Entries);
+        for (var i = 0; i < 4; i++)
+        {
+            now = now.AddMinutes(1);
+            await operations.AuditAsync(Read(HubLocalContract.Operations.InventoryRead), CancellationToken.None);
+            await operations.AuditAsync(Read(HubLocalContract.Operations.HealthRead), CancellationToken.None);
+        }
+        Assert.Single(_audit.Entries);
+
+        now = now.Add(operations.ReadAuditInterval);
+        await operations.AuditAsync(Read(HubLocalContract.Operations.InventoryRead), CancellationToken.None);
+        Assert.Equal(2, _audit.Entries.Count);
+        var counts = (Dictionary<string, int>)Detail(_audit.Entries[1], "Counts")!;
+        Assert.Equal(5, counts[HubLocalContract.Operations.InventoryRead]);
+        Assert.Equal(4, counts[HubLocalContract.Operations.HealthRead]);
+
+        // A refused inventory read is its own record, as every refusal is.
+        await operations.AuditAsync(new HubRequestRecord(HubLocalContract.Operations.InventoryRead, "GET", "/hub/v1/inventory", 400,
+            HubLocalContract.Errors.ContractVersionUnsupported, null, null, "2.0", false, HubLocalContract.TokenCheckOff), CancellationToken.None);
+        Assert.Equal(AuditActionType.HubRequestRefused, _audit.Entries[2].Action);
+    }
+
+    [Fact]
+    public async Task An_inventory_that_cannot_be_read_is_a_failure_recorded_on_its_own()
+    {
+        var options = new HubLocalHostOptions(SocketPath, HubLocalHostOptions.DefaultSocketMode, Path.Combine(_dir, HubRequestLedger.FileName));
+        var services = new ServiceCollection().AddSingleton<IAuditService>(_audit).BuildServiceProvider();
+        // A node that was given no reader: the read throws inside the node.
+        var operations = new NodeHubOperations(_modes, _config, services.GetRequiredService<IServiceScopeFactory>(),
+            _ => throw new NotSupportedException(), _ => throw new NotSupportedException(), null, "0.4.5-test");
+        _host = HubLocalHost.Build(options, operations, b => b.Logging.ClearProviders());
+        await HubLocalHost.StartAsync(_host, options);
+        using var client = Client();
+
+        var failure = await Assert.ThrowsAsync<HubLocalException>(() => client.ReadInventoryAsync());
+
+        Assert.Equal((500, HubLocalContract.Errors.InternalError), (failure.Status, failure.Code));
+        var audited = Assert.Single(_audit.Entries);
+        Assert.Equal((AuditActionType.HubRequestRefused, "inventory.read"), (audited.Action, audited.TargetId));
+    }
+
     // ---- the audit trail and the socket ---------------------------------------------------------
 
     [Fact]
@@ -717,7 +911,7 @@ public sealed class HubLocalConnectionTests : IAsyncLifetime
         Assert.All(_audit.Entries, e => { Assert.Equal("hub", e.Actor); Assert.Null(e.ActorId); });
         Assert.All(requests, e => Assert.Equal("carol@hub", Detail(e, "ClaimedOperator")));
         Assert.Equal("all-1", Detail(requests[2], "RequestId"));
-        Assert.Equal("1.0", Detail(requests[0], "ContractVersion"));
+        Assert.Equal("1.1", Detail(requests[0], "ContractVersion"));
     }
 
     [Fact]

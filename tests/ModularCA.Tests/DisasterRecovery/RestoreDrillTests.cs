@@ -101,6 +101,20 @@ public abstract class RestoreDrillTests(ITestOutputHelper output)
             Assert.DoesNotContain("JWT:", File.ReadAllText(Path.Combine(old.ConfigDirectory, "config.yaml")));
             // The copy keeps the rest of that section; the secret itself is gone from it.
             Assert.DoesNotMatch(@"(?m)^\s+Secret:\s*\S", File.ReadAllText(kept));
+            // The first start stored the instance's identifier, with its data and in no file: the
+            // fingerprint of the system signing CA as it was then.
+            var pin = await TextAsync(dbYaml.App, PinSql) ?? string.Empty;
+            Assert.Matches("^[0-9a-f]{64}$", pin);
+            Assert.Equal($"\"{pin}\"", await TextAsync(dbYaml.App, InstanceIdSql));
+            Assert.Contains("[INSTANCE] Identifier stored: " + pin, old.NodeLog);
+            Assert.DoesNotContain(pin, File.ReadAllText(Path.Combine(old.ConfigDirectory, "config.yaml")));
+            // From here on the stored identifier and the fingerprint differ, as they do once the
+            // system signing CA has been re-keyed. The drill cannot re-key it (changing the pin
+            // locks the keystore), so it changes the other side: what matters below is that
+            // every reader and every later start takes the stored one and none derives it again.
+            const string instanceId = "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e";
+            Assert.Equal(1, await CountAsync(dbYaml.App,
+                $"WITH changed AS (UPDATE \"Settings\" SET \"ValueJson\" = '\"{instanceId}\"' WHERE \"Key\" = 'Instance_Id' RETURNING 1) SELECT count(*) FROM changed"));
             var unwrapsBefore = await CountAsync(dbYaml.App, "SELECT count(*) FROM \"SignerAudit\" WHERE \"Operation\" = 'UnwrapSecret' AND \"Purpose\" = 'Configuration' AND \"Outcome\" = 'allowed'");
             var certificates = await CountAsync(dbYaml.App, "SELECT count(*) FROM \"Certificates\"");
             var auditRecords = await CountAsync(dbYaml.Audit, "SELECT count(*) FROM \"AuditLogs\"");
@@ -111,6 +125,11 @@ public abstract class RestoreDrillTests(ITestOutputHelper output)
             // The node's scheduler may have taken a backup of its own while it ran; the drill restores the last one.
             var archive = Directory.GetFiles(Path.Combine(old.Directory, "backups"), "modularca-backup-*.enc")
                 .OrderBy(File.GetLastWriteTimeUtc).Last();
+
+            // The archive names the instance by its stored identifier, not by the fingerprint.
+            var manifest = await old.ExecuteAsync("manifest", ["--backup-manifest", archive, "--key-file", Path.Combine(old.ConfigDirectory, "backup.key")]);
+            Assert.True(manifest.ExitCode == 0, manifest.Text);
+            Assert.Equal(instanceId, System.Text.Json.JsonDocument.Parse(Assert.Single(manifest.Stdout)).RootElement.GetProperty("instanceId").GetString());
 
             // What an operator keeps off the host, and nothing else.
             var kit = Path.Combine(work, "kit");
@@ -134,6 +153,11 @@ public abstract class RestoreDrillTests(ITestOutputHelper output)
                 await restored.StartAsync(httpPort);
                 Assert.NotEqual(root, await restored.GetAsync(httpPort, $"/ca/{RootLabel}"));
                 await restored.StopAsync();
+                // Another install is another instance: it stored an identifier of its own.
+                var others = await TextAsync(restored.Databases().App, InstanceIdSql);
+                Assert.Matches("^\"[0-9a-f]{64}\"$", others);
+                Assert.NotEqual($"\"{pin}\"", others);
+                Assert.NotEqual($"\"{instanceId}\"", others);
             }
             else
             {
@@ -147,8 +171,9 @@ public abstract class RestoreDrillTests(ITestOutputHelper output)
             File.Copy(Path.Combine(kit, "backup.key"), Path.Combine(restored.ConfigDirectory, "backup.key"), overwrite: true);
             File.Copy(Path.Combine(kit, "keystore.yaml"), Path.Combine(restored.ConfigDirectory, "keystore.yaml"), overwrite: true);
 
-            // The new host's audit database is empty, so it takes the archive's audit trail.
-            var restore = await restored.RunAsync("restore", ["--restore", archiveOnNewHost, "--restore-audit"], stdin: "RESTORE\n");
+            // The new host's audit database is empty, so it takes the archive's audit trail. Nobody
+            // is at the terminal: --unattended, standard input closed, and nothing is asked.
+            var restore = await restored.RunAsync("restore", ["--restore", archiveOnNewHost, "--restore-audit", "--unattended"]);
 
             var newDbYaml = restored.Databases();
             Assert.Equal(certificates, await CountAsync(newDbYaml.App, "SELECT count(*) FROM \"Certificates\""));
@@ -156,8 +181,18 @@ public abstract class RestoreDrillTests(ITestOutputHelper output)
             // The archive's database last saw the first host. The restore stored this host's
             // incarnation in it, so the start below is not taken for a rollback.
             Assert.Equal(1, await CountAsync(newDbYaml.App, "SELECT count(*) FROM \"InstanceIncarnation\" WHERE \"Source\" = 'injected' AND \"RecordedBy\" = 'restore'"));
+            // The restore brought the archive's identifier with the database: this is the same
+            // instance on another host, whatever identifier that host's database held before.
+            Assert.Equal($"\"{instanceId}\"", await TextAsync(newDbYaml.App, InstanceIdSql));
+            Assert.Equal(pin, await TextAsync(newDbYaml.App, PinSql));
 
             var start = await restored.StartAsync(httpPort);
+
+            // The start after the restore found an identifier stored and left it: it did not
+            // put the fingerprint, which differs, in its place.
+            Assert.Equal($"\"{instanceId}\"", await TextAsync(newDbYaml.App, InstanceIdSql));
+            Assert.Equal(1, await CountAsync(newDbYaml.App, "SELECT \"Version\" FROM \"Settings\" WHERE \"Key\" = 'Instance_Id'"));
+            Assert.DoesNotContain("[INSTANCE] Identifier stored: " + pin, restored.NodeLog);
 
             // The same root, and a certificate the restored key signed after the restore.
             Assert.Equal(root, await restored.GetAsync(httpPort, $"/ca/{RootLabel}"));
@@ -261,6 +296,19 @@ public abstract class RestoreDrillTests(ITestOutputHelper output)
 
     private static long CrlNumber(X509Crl crl) =>
         DerInteger.GetInstance(Asn1Object.FromByteArray(crl.GetExtensionValue(X509Extensions.CrlNumber).GetOctets())).Value.LongValue;
+
+    /// <summary>The fingerprint of the system signing CA, as the keystore rows pin it.</summary>
+    private const string PinSql = "SELECT \"SigningCaSpkiSha256\" FROM \"Keystores\" WHERE \"SigningCaSpkiSha256\" IS NOT NULL ORDER BY \"Id\" LIMIT 1";
+
+    /// <summary>The stored identifier, as the JSON the row holds.</summary>
+    private const string InstanceIdSql = "SELECT \"ValueJson\" FROM \"Settings\" WHERE \"Key\" = 'Instance_Id'";
+
+    private static async Task<string?> TextAsync(DbInstance instance, string sql)
+    {
+        await using var conn = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(PostgresConnection.Build(instance)) { Pooling = false }.ConnectionString);
+        await conn.OpenAsync();
+        return await new NpgsqlCommand(sql, conn).ExecuteScalarAsync() as string;
+    }
 
     private static async Task<long> CountAsync(DbInstance instance, string sql)
     {
@@ -402,6 +450,22 @@ internal static class RestoreDrillCollection
 
     /// <summary>The collection of <see cref="RestoreDrillOntoFreshInstallTests"/>.</summary>
     public const string FreshInstall = Prefix + "onto a fresh install";
+
+    /// <summary>The collection of <see cref="UnattendedRestoreDrillTests"/>.</summary>
+    public const string Unattended = Prefix + "with nobody at the instance";
+}
+
+/// <summary>One finished run of the node: its exit status and what it wrote, line by line.</summary>
+/// <param name="ExitCode">The exit status.</param>
+/// <param name="Stdout">Standard output.</param>
+/// <param name="Stderr">Standard error.</param>
+internal sealed record DrillRun(int ExitCode, IReadOnlyList<string> Stdout, IReadOnlyList<string> Stderr)
+{
+    /// <summary>The last line of standard output that is not empty.</summary>
+    public string LastLine => Stdout.LastOrDefault(l => !string.IsNullOrWhiteSpace(l)) ?? string.Empty;
+
+    /// <summary>All of standard output and standard error, for a failure message.</summary>
+    public string Text => string.Join(Environment.NewLine, Stdout.Concat(Stderr.Select(l => "[stderr] " + l)));
 }
 
 /// <summary>The role and database names of one install on the drill's server.</summary>
@@ -514,6 +578,13 @@ internal sealed class DrillHost
     /// (<c>MODULARCA__INSTANCE__INCARNATION</c>); null for a host that reports none.
     /// </summary>
     public string? Incarnation { get; set; }
+
+    /// <summary>
+    /// The temporary directory every process of this host is given (<c>TMP</c>, <c>TEMP</c>,
+    /// <c>TMPDIR</c>), so a drill can see what a command staged and whether it cleaned up; null
+    /// for the account's own.
+    /// </summary>
+    public string? TempDirectory { get; set; }
 
     private Process? _node;
 
@@ -658,6 +729,40 @@ internal sealed class DrillHost
     }
 
     /// <summary>
+    /// Runs the node with <paramref name="arguments"/> to completion and returns its exit status
+    /// with standard output and standard error apart, whatever the status. Standard input is
+    /// closed at once unless <paramref name="stdin"/> is given.
+    /// </summary>
+    public async Task<DrillRun> ExecuteAsync(string step, string[] arguments, string? stdin = null)
+    {
+        var watch = Stopwatch.StartNew();
+        using var process = Start(arguments);
+        var (stdout, stderr) = (new List<string>(), new List<string>());
+        process.OutputDataReceived += (_, e) => { if (e.Data is not null) lock (stdout) stdout.Add(e.Data); };
+        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) lock (stderr) stderr.Add(e.Data); };
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+        if (stdin is not null)
+            await process.StandardInput.WriteAsync(stdin);
+        process.StandardInput.Close();
+
+        using var limit = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+        try
+        {
+            await process.WaitForExitAsync(limit.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            process.Kill(entireProcessTree: true);
+            Assert.Fail($"The {step} did not finish in 10 minutes:{Environment.NewLine}{Redact(new StringBuilder(string.Join(Environment.NewLine, stdout)))}");
+        }
+        process.WaitForExit();
+        var run = new DrillRun(process.ExitCode, stdout, stderr);
+        _output.WriteLine($"--- {step} (exit {run.ExitCode}, {watch.Elapsed.TotalSeconds:F0}s){Environment.NewLine}{Redact(new StringBuilder(run.Text))}");
+        return run;
+    }
+
+    /// <summary>
     /// Awaits <paramref name="wait"/>, and when it fails, fails with the running node's log
     /// (redacted) appended, so a node that starts but never gets as far as the check says why.
     /// </summary>
@@ -747,6 +852,9 @@ internal sealed class DrillHost
         if (Incarnation is not null)
             start.Environment[ModularCA.Core.Services.Continuity.InjectedIncarnationSource.Variable] = Incarnation;
         start.Environment["PATH"] = PostgresClientTools.Directory + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
+        if (TempDirectory is not null)
+            foreach (var name in new[] { "TMP", "TEMP", "TMPDIR" })
+                start.Environment[name] = TempDirectory;
         return Process.Start(start)!;
     }
 

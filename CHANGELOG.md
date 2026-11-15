@@ -25,7 +25,20 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 - **A request refused because of the mode answers 503** with `Retry-After: 60` and the code
   `MCA-MOD-001` (restricted), `MCA-MOD-003` (maintenance) or `MCA-MOD-002` (DR mode). Enrolment
   clients will retry.
-- **New audit actions:** `RevokedSerialRecorded`, `CertificateAdopted`,
+- **`--restore` exit statuses changed.** Nearly every failure used to exit 1, wherever it
+  happened, and 2 meant "restored, but the CRL numbers were not raised". Now: 0, done; 3, refused
+  and nothing was changed; 4, failed after something was changed, or may have been; 75, a
+  database could not be reached and nothing was changed. The last line of output says which
+  (`RESTORE: DONE`, `RESTORE: REFUSED`, `RESTORE: FAILED AFTER CHANGES`,
+  `RESTORE: UNREACHABLE`). A script that tests for 1 or 2 must be changed; treat any other
+  status, or no such line, as 4. The console's restore reports the same numbers.
+- **A restore with its standard input closed is refused** unless `--unattended` is given, where
+  it used to fail oddly. `--password` on the command line is refused together with
+  `--unattended`: give the password in a file.
+- **A restore reads the archive's key from where the host's `config.yaml` says**
+  (`Backup.EncryptionKeyPath`, `Backup.PasswordFilePath`). It used the default paths whatever
+  the settings said.
+- **New audit actions:** `BackupsPruned`, `RevokedSerialRecorded`, `CertificateAdopted`,
   `InstanceIncarnationChanged`, `InstanceIncarnationSourceLost`,
   `InstanceContinuityAcknowledged`, `InstanceModeChanged`, `InstanceModeRefused`,
   `HubRequestServed`, `HubRequestRefused`, `HubAffiliationTokenReplaced`.
@@ -87,6 +100,40 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
   identifier is done once. The socket's file mode is `MODULARCA__HUB__SOCKETMODE` (default
   0660). `docs/architecture/hub-local-connection.md` has the contract, and
   `ModularCA.HubConnection` is a project a hub can reference by itself.
+- **The hub's inventory read** (`inventory.read`, `GET /hub/v1/inventory`; the contract becomes
+  1.1). One answer with what a hub shows about an instance: its version and schema version, the
+  signer's last known state, when the web TLS certificate expires, the newest backup and whether
+  its last verification passed, the scheduled jobs whose last run failed, and for each CA when
+  its certificate expires, the number of its newest CRL and when the next is due, and when its
+  OCSP responder certificate expires. It starts no work and carries no issued certificate, user,
+  key or secret. The backup verification job now records what each run found, in
+  `backup-verification.json` in the backup directory, which is where the answer reads it.
+- **A restore with nobody at the instance.** `--restore <archive> --unattended` asks for
+  nothing: no confirmation and no password prompt. `--key-file` and `--password-file` give the
+  archive's key or password from a file. The archive can sit on a read-only mount under any
+  name, and the decrypted archive is no longer written to disk as one file. A restore refuses an
+  archive made by a newer build before it changes anything, and reports a database it cannot
+  reach before it tries anything. The audit database is kept unless `--restore-audit` is given,
+  as before. "Restoring with nobody at the instance (for an orchestrator)" in the deploy guide
+  has the command lines for a one-off container.
+- **`--backup-manifest <archive>`** prints one line of JSON saying which instance made an
+  archive, with which version and schema, and when. It needs the archive's key and nothing else:
+  no database, and it changes nothing. Backups now record the instance (the fingerprint of the
+  system signing CA's public key), the product version and the newest migration, inside the
+  archive's encryption; an archive made by an earlier build shows `null` for these.
+- **The hub can prune old backups** (`backup.prune`, `POST /hub/v1/backup/prune`): keep the
+  newest N, or those younger than a number of days, or both. It deletes by the rule the
+  scheduled and console backups already prune by, so the newest archive is never deleted and
+  `Backup.MinimumRetentionDays` holds for the hub too. Audited as `BackupsPruned`.
+- **The container image runs `--restore` and `--backup-manifest` as one-off commands**, without
+  bootstrapping or waiting for anything.
+- **The instance has an identifier that never changes.** The first start of this version stores
+  it with the instance's data, in the `Settings` row `Instance_Id`: the SHA-256 of the public key
+  of the system signing CA, which is the value a backup's manifest carries. From then on it is
+  only read, so a later re-keying of that CA would not change it. It is in no file on any host,
+  follows a restore onto a new host, and cannot be changed from the console, the settings API,
+  `--settings` or the hub; `--settings list` shows it. The hub's `hello` answers it as
+  `instanceId`, so a hub can match an archive to a running instance. No migration.
 - **The affiliation token.** The hub keeps a random token and gives the instance its SHA-256:
   `Hub.AffiliationTokenSha256` in `bootstrap.yaml`, or `--new-hub-token` and
   `--set-hub-token-hash` on a host. With a hash held, every request on the hub's socket must
