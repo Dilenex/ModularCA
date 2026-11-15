@@ -267,6 +267,19 @@ public static class AuditActionType
     /// <summary>A restore raised the CRL number counters so no number already published is reused (RFC 5280 §5.2.3).</summary>
     public const string CrlNumbersRaisedOnRestore = "CrlNumbersRaisedOnRestore";
 
+    // Rollback continuity
+    /// <summary>
+    /// A start found the instance running from an earlier or copied state: its incarnation
+    /// differs from the one the database last saw, or a CRL it published carries a higher number
+    /// than the database knows. Details name the detector, the old and new tag, the newest record
+    /// the database holds, and what was done (the CRL number floor; no journal was replayed).
+    /// </summary>
+    public const string InstanceIncarnationChanged = "InstanceIncarnationChanged";
+    /// <summary>The machine stopped reporting an incarnation the database held one for; "none" was stored. Written once.</summary>
+    public const string InstanceIncarnationSourceLost = "InstanceIncarnationSourceLost";
+    /// <summary>An administrator acknowledged a continuity event with step-up, which ends its standing notice.</summary>
+    public const string InstanceContinuityAcknowledged = "InstanceContinuityAcknowledged";
+
     // ACME EAB keys
     public const string AcmeEabKeyCreated = "AcmeEabKeyCreated";
     public const string AcmeEabKeyDeleted = "AcmeEabKeyDeleted";

@@ -26,6 +26,7 @@ const TEXT: Record<string, string> = {
     'revoke-cert': 'Revoke a certificate',
     'revoke-serial': 'Revoke a serial number that has no certificate here',
     'adopt-certificate': 'Adopt a certificate supplied from outside',
+    'acknowledge-continuity-event': 'Acknowledge that this instance runs from an earlier or copied state',
     'hold-cert': 'Place a certificate on hold',
     'unhold-cert': 'Lift the hold on a certificate',
     'retire-cert': 'Retire a certificate, so it is never renewed',

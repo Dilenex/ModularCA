@@ -10,6 +10,7 @@ import { navItemActive } from '../navActive';
 import { scopeLabel } from '../scope';
 import LogPanel from './LogPanel';
 import TopBar from './TopBar';
+import ContinuityNoticeBanner from './ContinuityNoticeBanner';
 import { switchBadge } from './BadgeSwitcher';
 import { useStepUp } from './StepUpMfaContext';
 import { APP_VERSION, fetchServerVersion, isVersionDrift, type ServerVersion } from '../version';
@@ -188,6 +189,10 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
             <div className="flex-1 flex flex-col overflow-hidden min-w-0">
                 <TopBar onOpenSidebar={() => setSidebarOpen(true)} />
+                {/* Rollback notice: the instance found at start that it runs from an earlier or
+                    copied state. First of the banners, and the only one that cannot be dismissed:
+                    it stands until a system administrator acknowledges it with step-up. */}
+                {PORTAL === 'admin' && <ContinuityNoticeBanner />}
                 {/* Deploy-drift banner: UI bundle and API report different versions. */}
                 {showDrift && serverVersion && (
                     <div

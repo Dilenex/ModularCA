@@ -72,6 +72,8 @@ public abstract class RestoreDrillTests(ITestOutputHelper output)
             // The first host: installed unattended, started, used, stopped, backed up.
             var oldLayout = server.NewLayout();
             old = DrillHost.Create(Path.Combine(work, "old"), server, output);
+            // What an orchestrator injects: each host of the drill is its own incarnation.
+            old.Incarnation = "drill-first-host";
             old.WriteInstallFiles(oldLayout, httpsPort, httpPort);
             await old.RunAsync("install", ["--bootstrap"]);
             await old.StartAsync(httpPort);
@@ -83,6 +85,9 @@ public abstract class RestoreDrillTests(ITestOutputHelper output)
             await old.StopAsync();
 
             var dbYaml = old.Databases();
+            // The first start stored the incarnation it was given and had nothing to report.
+            Assert.Equal(1, await CountAsync(dbYaml.App, "SELECT count(*) FROM \"InstanceIncarnation\" WHERE \"Source\" = 'injected' AND \"RecordedBy\" = 'startup'"));
+            Assert.Equal(0, await CountAsync(dbYaml.App, "SELECT count(*) FROM \"InstanceContinuityEvents\""));
             // The first start moved the instance-wide settings to the database: they are marked as
             // moved there, and the file the install wrote is down to this host's settings, with
             // the original kept beside it.
@@ -121,6 +126,7 @@ public abstract class RestoreDrillTests(ITestOutputHelper output)
             // The second host.
             var newLayout = server.NewLayout();
             restored = DrillHost.Create(Path.Combine(work, "new"), server, output);
+            restored.Incarnation = "drill-second-host";
             if (newHost == NewHost.FreshInstall)
             {
                 restored.WriteInstallFiles(newLayout, httpsPort, httpPort);
@@ -147,6 +153,9 @@ public abstract class RestoreDrillTests(ITestOutputHelper output)
             var newDbYaml = restored.Databases();
             Assert.Equal(certificates, await CountAsync(newDbYaml.App, "SELECT count(*) FROM \"Certificates\""));
             Assert.True(await CountAsync(newDbYaml.Audit, "SELECT count(*) FROM \"AuditLogs\"") >= auditRecords);
+            // The archive's database last saw the first host. The restore stored this host's
+            // incarnation in it, so the start below is not taken for a rollback.
+            Assert.Equal(1, await CountAsync(newDbYaml.App, "SELECT count(*) FROM \"InstanceIncarnation\" WHERE \"Source\" = 'injected' AND \"RecordedBy\" = 'restore'"));
 
             var start = await restored.StartAsync(httpPort);
 
@@ -182,6 +191,35 @@ public abstract class RestoreDrillTests(ITestOutputHelper output)
                 var chain = await new AuditHashChainService().VerifyAsync(audit, null, limit: 100_000);
                 Assert.Empty(chain.Breaks);
                 Assert.False(chain.Truncated);
+            }
+
+            // The restore was not reported as a rollback: the start found the incarnation current.
+            Assert.Equal(0, await CountAsync(newDbYaml.App, "SELECT count(*) FROM \"InstanceContinuityEvents\""));
+            Assert.Equal(1, await CountAsync(newDbYaml.App, "SELECT count(*) FROM \"InstanceIncarnation\" WHERE \"RecordedBy\" = 'restore'"));
+
+            // A rollback the product is not told about: the same databases come up under another
+            // incarnation, as after a snapshot revert or a volume restore. The node starts and
+            // serves, raises the CRL numbers again, records the event, audits it once in a chain
+            // that stays whole, and stores the new incarnation. One drill is enough to show it.
+            if (newHost == NewHost.EmptyDatabases)
+            {
+                await restored.StopAsync();
+                restored.Incarnation = "drill-after-a-rollback";
+                await restored.StartAsync(httpPort);
+
+                Assert.Equal(root, await restored.GetAsync(httpPort, $"/ca/{RootLabel}"));
+                Assert.Contains("[CONTINUITY] This instance is running from an earlier or copied state", restored.NodeLog);
+                Assert.Equal(1, await CountAsync(newDbYaml.App,
+                    "SELECT count(*) FROM \"InstanceContinuityEvents\" WHERE \"Kind\" = 'IncarnationChanged' AND \"AcknowledgedAt\" IS NULL "
+                    + "AND \"CrlNumberFloor\" IS NOT NULL AND \"EdgeOfMemoryUtc\" IS NOT NULL AND \"OldTag\" <> \"NewTag\""));
+                Assert.Equal(1, await CountAsync(newDbYaml.App, "SELECT count(*) FROM \"InstanceIncarnation\" WHERE \"RecordedBy\" = 'startup'"));
+                Assert.Equal(1, await CountAsync(newDbYaml.Audit, "SELECT count(*) FROM \"AuditLogs\" WHERE \"ActionType\" = 'InstanceIncarnationChanged'"));
+                var crlAfterRollback = await UntilAsync(TimeSpan.FromMinutes(3), async () =>
+                {
+                    var crl = ParseCrl(await restored.GetAsync(httpPort, $"/crl/{RootLabel}"));
+                    return CrlNumber(crl) > CrlNumber(crlAfter) ? crl : null;
+                }, "the node published no CRL numbered above the last one after its incarnation changed");
+                crlAfterRollback.Verify(rootCertificate.GetPublicKey());
             }
 
             // A later restore without --restore-audit keeps the audit history this host wrote
@@ -470,6 +508,13 @@ internal sealed class DrillHost
 
     /// <summary>What the node has written since it was last started.</summary>
     public string NodeLog { get { lock (_nodeLog) return _nodeLog.ToString(); } }
+
+    /// <summary>
+    /// The incarnation every process of this host is started with, as an orchestrator injects it
+    /// (<c>MODULARCA__INSTANCE__INCARNATION</c>); null for a host that reports none.
+    /// </summary>
+    public string? Incarnation { get; set; }
+
     private Process? _node;
 
     private DrillHost(string directory, DrillServer server, ITestOutputHelper output)
@@ -699,6 +744,8 @@ internal sealed class DrillHost
         start.StandardOutputEncoding = start.StandardErrorEncoding = Encoding.UTF8;
         foreach (var name in start.Environment.Keys.Where(k => k.StartsWith("MODULARCA", StringComparison.OrdinalIgnoreCase)).ToList())
             start.Environment.Remove(name);
+        if (Incarnation is not null)
+            start.Environment[ModularCA.Core.Services.Continuity.InjectedIncarnationSource.Variable] = Incarnation;
         start.Environment["PATH"] = PostgresClientTools.Directory + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
         return Process.Start(start)!;
     }

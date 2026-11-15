@@ -193,6 +193,12 @@ public class ModularCADbContext : DbContext
     /// <summary>Revoked serials with no certificate row: what the CRL and OCSP say about a certificate known only from outside.</summary>
     public DbSet<RevokedSerialTombstoneEntity> RevokedSerialTombstones { get; set; }
 
+    /// <summary>The incarnation this database last saw; one row. See <c>docs/architecture/rollback-continuity.md</c>.</summary>
+    public DbSet<InstanceIncarnationEntity> InstanceIncarnation { get; set; }
+
+    /// <summary>The times this instance found itself running from an earlier or copied state; the unacknowledged ones are the standing notice.</summary>
+    public DbSet<InstanceContinuityEventEntity> InstanceContinuityEvents { get; set; }
+
     /// <summary>
     /// Applies the model-wide conventions that are not entity-specific.
     /// <para>
@@ -416,6 +422,7 @@ public class ModularCADbContext : DbContext
                   .OnDelete(DeleteBehavior.Restrict);
         });
 
+        modelBuilder.Entity<InstanceContinuityEventEntity>().HasIndex(e => e.AcknowledgedAt);
 
         modelBuilder.Entity<CrlEntity>()
             .HasOne(c => c.Task)

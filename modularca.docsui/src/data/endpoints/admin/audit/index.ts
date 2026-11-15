@@ -4,6 +4,7 @@ import { adminCompliance } from './compliance';
 import { adminPolicy } from './policy';
 import { adminVulnerabilities } from './vulnerabilities';
 import { adminBackup } from './backup';
+import { adminContinuity } from './continuity';
 
 export const adminAuditEndpoints: ApiEndpoint[] = [
     ...adminAudit,
@@ -11,4 +12,5 @@ export const adminAuditEndpoints: ApiEndpoint[] = [
     ...adminPolicy,
     ...adminVulnerabilities,
     ...adminBackup,
+    ...adminContinuity,
 ];

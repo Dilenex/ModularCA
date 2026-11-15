@@ -1084,6 +1084,8 @@ Log.Information("Process roles: {Roles}", string.Join(",", activeRoles.Names));
 // missing or empty database is left to setup recovery below. Setup mode skips the check:
 // bootstrap creates the schema. An ingress-only process reads the application database (the
 // listener's trust anchors) and never the audit database, and applies no migration.
+// What the continuity step below found, for /health/ready.
+var continuityState = new ModularCA.API.Startup.ContinuityStartState();
 if (!isSetupMode)
 {
     var schemaTargets = new List<ModularCA.API.Startup.SchemaTarget>
@@ -1155,6 +1157,15 @@ if (!isSetupMode)
             Environment.Exit(1);
         }
     }
+
+    // Rollback continuity: the control role compares the machine's incarnation with the one the
+    // database last saw, here, before the web host, the scheduler or any CRL generation exists
+    // in this process. A change raises the CRL numbers, is recorded and stands as a notice; it
+    // never stops the start. Only the control role compares, so the processes of a split
+    // install do not each store their own view; it is also the role that generates CRLs on a
+    // schedule. Two control processes starting together take a database lock in turn.
+    if (controlActive)
+        await ModularCA.API.Startup.ContinuityStartup.RunAsync(config, continuityState);
 
     try
     {
@@ -1306,6 +1317,15 @@ builder.Services.AddSingleton(sp => new ModularCA.Core.Services.SchedulerJobRunn
     sp.GetRequiredService<ILogger<ModularCA.Core.Services.SchedulerJobRunner>>(),
     sp.GetRequiredService<SystemConfig>(),
     ModularCA.Core.Services.SchedulerService.InstanceId));
+// The published-CRL check of a start, registered before the scheduler: hosted services start in
+// order and each is awaited, so a CRL read back with a higher number than the database knows has
+// raised the counters before the scheduler ticks. The control role runs it, as it runs the
+// incarnation comparison above.
+builder.Services.AddSingleton(continuityState);
+builder.Services.AddScoped<ModularCA.Core.Services.Continuity.IPublishedCrlReader, ModularCA.Core.Services.Continuity.LdapPublishedCrlReader>();
+if (!isSetupMode && controlActive)
+    builder.Services.AddHostedService<ModularCA.API.Services.PublishedCrlCheckService>();
+
 // The scheduler runs where a role that owns jobs runs: the control plane, or an enrollment
 // process for its protocol sweeps. A validation-only process hosts none. The lease is the
 // control plane's usual one, or the enrollment set's own when control is elsewhere.
@@ -1999,7 +2019,11 @@ var healthChecks = builder.Services.AddHealthChecks()
     .AddCheck<ModularCA.API.HealthChecks.NodeRoleHealthCheck>("roles")
     // Whether the secrets the signer wraps have been read: not while a node that started before
     // its signer answered waits for it.
-    .AddCheck<ModularCA.API.HealthChecks.SignerSecretsHealthCheck>("signer-secrets");
+    .AddCheck<ModularCA.API.HealthChecks.SignerSecretsHealthCheck>("signer-secrets")
+    // The standing notice that this instance runs from an earlier or copied state. Always
+    // healthy: it is information for an orchestrator and an administrator, not a reason to
+    // stop serving.
+    .AddCheck<ModularCA.API.HealthChecks.ContinuityHealthCheck>("continuity");
 // A node whose remote signer did not answer at start reads the wrapped secrets in the background
 // once it does, without a restart, and reports itself not ready until then.
 if (signerSecretsState.Pending)

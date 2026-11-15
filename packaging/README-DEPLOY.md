@@ -782,11 +782,13 @@ take up to `Backup.DatabaseTimeoutMinutes` (60).
 A restored CA is the CA as it was when the archive was taken.
 
 - **Certificates issued after the backup are unknown to it.** They still chain to the CA, but
-  they are not in its records: they cannot be revoked or renewed from the console, they are not
-  on its CRL, and its OCSP responder answers "revoked" for them, because it answers that for any
-  serial it never issued. Reissue them.
+  they are not in its records: they cannot be renewed from the console, they are not on its CRL,
+  and its OCSP responder answers "revoked" for them, because it answers that for any serial it
+  never issued. A client that checks only the CRL goes on accepting them. Reissue them, and
+  revoke the old ones: see "Revoking a certificate the CA does not hold" below.
 - **Revocations made after the backup are forgotten.** Those certificates are valid again as far
   as the CA knows. Revoke them again; the old host's last CRL, if you still have it, lists them.
+  A kept audit database lists them too (`CertificateRevoked`).
 - **The first start publishes a new CRL**, numbered above every CRL the old host published, so a
   client that has seen a later CRL does not treat the new one as a rollback.
 - **The web certificate is new.** Its key is in no archive, so the node issues itself a
@@ -827,6 +829,10 @@ keystores to `backups/pre-restore-<timestamp>.zip`, owner-only. That file holds 
 A database that cannot be restored stops the restore before a keystore or a config file is
 replaced. Each database is restored in one transaction, so one that fails is left as it was.
 
+**A restore is not reported as a rollback.** The restore raises the CRL numbers and records
+itself, and it stores this machine's incarnation in the restored database, so the next start
+does not raise the notice described under "Snapshots, rollbacks and copies of the machine".
+
 **The databases are this host's.** A restore writes into the databases this host's own
 `config/db.yaml` names, with its credentials and any `MODULARCA__DB__*` overrides in the
 service's environment. No archive carries `db.yaml`, and the restore ignores a `DB:` section in
@@ -857,7 +863,8 @@ without it. A host with no `db.yaml` is refused before anything changes.
    - `http://<name>:<http port>/crl/<label>` returns a CRL dated today.
    - Sign in. The audit trail's integrity check is `GET /api/v1/admin/audit/verify`, as an
      administrator; it should report no breaks.
-7. **Deal with the gap**: reissue what was issued after the backup, revoke again what was
+7. **Deal with the gap**: reissue what was issued after the backup and revoke the certificates
+   it replaces ("Revoking a certificate the CA does not hold", below), revoke again what was
    revoked after it, take a new backup, and delete `backups/pre-restore-*.zip`.
 
 Where the host has a `config.yaml` (after the wizard), the restore compares the archive's schema
@@ -880,6 +887,80 @@ The host procedure is what the test runs. The compose commands have not been run
 A backup you have not restored is a guess. Restore your latest archive onto a spare machine or a
 second compose project now and again, with the kit you actually keep, and do step 6. Do not
 give the rehearsal the production name: it would answer OCSP and publish CRLs as the CA.
+
+### Snapshots, rollbacks and copies of the machine
+
+`--restore` is the one way back in time the product is told about. Reverting a VM snapshot,
+restoring a backup of the whole VM, putting archived volumes back, cloning the machine, or
+failing over to a standby that was a little behind all take the database back, or copy it,
+without telling it. What is lost is the same as after a restore (above): certificates issued and
+revocations made in the lost time are unknown, and the CRL numbers go backwards.
+
+**Take a snapshot with the service stopped, or accept that a rollback forgets whatever was
+issued or revoked after it.** Prefer the product's backup and restore for anything but an
+upgrade that failed at once.
+
+What the instance does about it, from 0.4.5:
+
+- **It compares an incarnation ID at every start.** Whatever restores or copies the instance
+  says so by setting the environment variable `MODULARCA__INSTANCE__INCARNATION` to a new value:
+  any text, for example a timestamp or a UUID. It is not a secret, and only its SHA-256 is
+  stored. An orchestrator sets a new value at every volume restore and every promotion of a
+  standby, and leaves it alone otherwise. Set it for the process that runs the control role;
+  with systemd, in a drop-in (`Environment=MODULARCA__INSTANCE__INCARNATION=...`); in a pod or
+  compose file, in the container's environment. Two control processes on one database must be
+  given the same value.
+- **A machine that sets none is not covered by this check.** A hypervisor's own generation ID is
+  not read yet, so a snapshot rollback on a home lab is detected only by the published-CRL check
+  below, or not at all. Changing the variable yourself after a rollback gets you the repair.
+- **When the value differs from the one the database last saw**, the instance starts as usual
+  and: raises every CRL number counter, as a restore does, so no published number is used again
+  and a new CRL is published at once; writes one audit row, `InstanceIncarnationChanged`; and
+  shows a notice at the top of the admin console until a system administrator acknowledges it
+  with step-up. The notice gives the time of the newest record the database holds: certificates
+  issued and revocations made after it on the earlier timeline are not known here. Nothing is
+  replayed, because the signer keeps no journal yet; revoke what you find as described below.
+- **`/health/ready` carries the notice** under `checks.continuity`: `status` is `notice` while
+  one stands, with the events and their text. The node stays healthy; a rolled-back CA that
+  refused traffic would be an outage on top of a gap.
+- **A value that disappears** (the instance moved to a host that sets none) is reported once,
+  as `InstanceIncarnationSourceLost`, and "none" is stored. The CRL numbers are not raised for
+  it. The first start after an upgrade to 0.4.5 stores what it sees and reports nothing.
+- **Where an LDAP publisher publishes CRLs**, the control process reads its own CRL back from
+  each directory at start, whatever the incarnation says. A CRL there with a higher number than
+  the database knows, signed by the CA, proves the database went back, and is handled like a
+  changed incarnation. A directory that does not answer within ten seconds is skipped.
+
+After a rollback: read the notice, look in the audit trail for `CertificateIssued` and
+`CertificateRevoked` after the time it names (the audit database is a separate database and may
+not have gone back), revoke what must be revoked, then acknowledge the notice.
+
+### Revoking a certificate the CA does not hold
+
+A certificate that the CA signed but has no record of cannot be revoked from the certificate
+list: there is nothing to select. On the CA's own page, under *Certificates This CA Does Not
+Hold*, an administrator with `cert.revoke` on that CA can do one of two things, both with
+step-up and both audited:
+
+- **Adopt the certificate**, if the subscriber, an ACME client or a log can produce it. Paste
+  it as PEM. It is adopted only if its issuer is the CA and its signature verifies under the
+  CA's current key. It then appears with the CA's other certificates, marked as adopted, with no
+  known requester, and can be revoked, held and released like any other; the dialog can revoke
+  it in the same step. This is the better way: the CRL entry leaves the CRL when the
+  certificate expires.
+- **Revoke the serial**, if all you have is the serial number. The serial goes on the CRL with
+  the reason you give, and OCSP answers "revoked" with that date and reason. The revocation is
+  permanent, and nothing checks that the CA ever issued the serial. With no certificate there is
+  no expiry date, so the entry stays on the CRL for the longest validity the CA's certificate
+  profiles allow, counted from the day it was recorded (one year when no profile states a
+  maximum; never past the end of the CA certificate). There is no setting for this.
+
+A serial the CA does hold is refused: revoke the certificate. Adopting a certificate whose
+serial was revoked earlier moves the revocation onto the certificate and removes the serial's
+own entry. A CA certificate is not adopted; revoke a subordinate CA's serial instead.
+
+The API is `POST /api/v1/admin/authorities/{caId}/adopted-certificates` and
+`POST /api/v1/admin/authorities/{caId}/revoked-serials`.
 
 ## Firewall and ports
 

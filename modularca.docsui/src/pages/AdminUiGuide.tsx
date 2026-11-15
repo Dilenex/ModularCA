@@ -182,6 +182,17 @@ export default function AdminUiGuide() {
                     be null when the keys could not be read.
                 </p>
                 <p className="text-ink leading-relaxed mb-3">
+                    When the instance finds at start that it is running from an earlier or copied state (a snapshot of the
+                    machine was rolled back, its volumes were restored, or it was cloned), a notice stands at the top of every
+                    console page until a system administrator acknowledges it with step-up. It says after which time
+                    certificates and revocations of the earlier timeline are not known here, and that the CRL numbers were
+                    raised. The same notice is in the readiness payload under <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">checks.continuity</code>,
+                    whose <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">status</code> is <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">notice</code> while
+                    one stands. It never makes the node unhealthy: an instance that came back after a rollback keeps serving.
+                    A certificate from the lost time can be revoked from its CA&apos;s page, by its serial alone or by supplying
+                    the certificate.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
                     The Enrollment Protocols card lists every enabled protocol configuration that cannot run on its CA, with the
                     reason: today, SCEP on a CA whose key is not RSA. Such a configuration could be saved before the console
                     refused it, and it is not switched off for you; SCEP clients sent to that CA are refused with the same reason.
@@ -190,6 +201,8 @@ export default function AdminUiGuide() {
                 </p>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /health/ready<br />
+                    GET /api/v1/admin/continuity/notice<br />
+                    POST /api/v1/admin/continuity/events/&#123;id&#125;/acknowledge<br />
                     GET /api/v1/admin/authorities/hierarchy<br />
                     GET /api/v1/admin/scheduler/health<br />
                     GET /api/v1/admin/certificates/health/summary

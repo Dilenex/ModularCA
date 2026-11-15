@@ -517,7 +517,9 @@ public static class BackupRestore
     /// An archive with no application database is refused before anything changes, and a
     /// database that cannot be restored ends the restore before a keystore or a config file is
     /// replaced. The CRL counters are raised and every CRL configuration made due
-    /// (<see cref="CrlNumberFloor"/>), and this host's self-issued Web TLS certificate file is
+    /// (<see cref="CrlNumberFloor"/>), this machine's incarnation is stored in the restored
+    /// database (<see cref="StoreIncarnationAfterRestoreAsync"/>) so the next start does not
+    /// report the restore as a rollback, and this host's self-issued Web TLS certificate file is
     /// removed: the node issues a new one at its next start.
     /// The audit database is left as it is unless <paramref name="restoreAudit"/> asks for the
     /// archive's audit trail: audit history survives a restore, as it survives a reset, unless
@@ -921,6 +923,11 @@ public static class BackupRestore
             // counters; raise every counter past them before anything can generate a CRL.
             var crlFloorFailed = !await RaiseCrlNumbersAfterRestoreAsync(target, archiveName);
 
+            // The restored database holds the incarnation of the machine and moment the backup
+            // was taken. This restore has just made the repairs a changed incarnation calls for,
+            // so it stores this machine's incarnation itself and the next start reports nothing.
+            await StoreIncarnationAfterRestoreAsync(AppConnectionString(target));
+
             // 2. Restore keystores, through the signer. Each file from the archive is offered
             // under the restore context; the signer verifies its signature against the pinned
             // signer in the just-restored app database before it replaces the file in place, and
@@ -1100,6 +1107,35 @@ public static class BackupRestore
             Console.WriteLine($"  ⚠ The CRL number floor was applied but not audited ({ex.GetType().Name}: {ex.Message}).");
         }
         return true;
+    }
+
+    /// <summary>
+    /// Stores this machine's incarnation in the application database just restored
+    /// (<see cref="ModularCA.Core.Services.Continuity.InstanceContinuity.StoreIncarnationAsync"/>),
+    /// so the first start after the restore finds the same timeline and does not report the
+    /// restore a second time as a rollback. A failure is reported and does not fail the restore:
+    /// the next start then reports an incarnation change, which costs a notice to acknowledge
+    /// and nothing else, the CRL numbers having been raised already.
+    /// </summary>
+    /// <param name="appConnectionString">The restored application database.</param>
+    /// <param name="reading">What this machine reports; read from the default sources when null.</param>
+    internal static async Task<bool> StoreIncarnationAfterRestoreAsync(string appConnectionString,
+        ModularCA.Core.Services.Continuity.IncarnationReading? reading = null)
+    {
+        try
+        {
+            reading ??= ModularCA.Core.Services.Continuity.IncarnationSources.Read();
+            using var db = new ModularCA.Database.ModularCADbContext(
+                new DbContextOptionsBuilder<ModularCA.Database.ModularCADbContext>().UseNpgsql(appConnectionString).Options);
+            await ModularCA.Core.Services.Continuity.InstanceContinuity.StoreIncarnationAsync(db, reading, RestoreCaller);
+            Console.WriteLine($"  ✓ Incarnation stored (source: {reading.Source}); the next start will not report this restore as a rollback.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  ⚠ The incarnation could not be stored ({ex.GetType().Name}: {ex.Message}). The next start may show a notice that the instance runs from an earlier state; acknowledge it.");
+            return false;
+        }
     }
 
     /// <summary>

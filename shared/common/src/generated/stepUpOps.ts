@@ -23,6 +23,7 @@ export const StepUpOps = {
     UnholdCert: 'unhold-cert',
     RevokeSerial: 'revoke-serial',
     AdoptCertificate: 'adopt-certificate',
+    AcknowledgeContinuityEvent: 'acknowledge-continuity-event',
     RevokeSelfCert: 'revoke-self-cert',
     ReissueCert: 'reissue-cert',
     ExportCert: 'export-cert',
