@@ -119,6 +119,7 @@ public sealed class VocabularyTests
         new("ModularCA.Shared/Enums/AuditActionType.cs", Reason.Pinned, Text: "per-tenant audit chain"),
         new("ModularCA.Shared/Enums/AuditActionType.cs", Reason.Pinned, Text: "retired tenant"),
         new("ModularCA.Shared/Licensing/License.cs", Reason.Pinned, Text: "maxTenants"),
+        new("ARCHITECTURE-OPEN-CORE.md", Reason.Pinned, Text: "maxTenants"),
         new("ModularCA.Shared/Signing/SigningRefusedException.cs", Reason.Pinned, Text: "TenantMismatch"),
         new("ModularCA.Keystore/Signing/InProcessSigningService.cs", Reason.Pinned, Text: "TenantMismatch"),
         new("ModularCA.Keystore/Signing/InProcessSigningService.SshKeys.cs", Reason.Pinned, Text: "TenantMismatch"),

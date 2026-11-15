@@ -225,6 +225,8 @@ public class BootstrapService
             // the int form the cert-request pipeline expects.
             var rootCaAlgorithm = SetupKeySizeParser.ResolveAlgorithm(request.RootCa.Algorithm, request.RootCa.KeySize);
             var rootCaKeySizeInt = SetupKeySizeParser.ParseToInt(request.RootCa.Algorithm, request.RootCa.KeySize);
+            // The wizard endpoint refused this before any setup work; this is the check of last resort.
+            BootstrapCertCreator.EnsureRootKeyAcceptable(rootCaAlgorithm, rootCaKeySizeInt);
 
             var caCertRequest = BootstrapCertCreator.CreateCertificateRequest(
                 request.RootCa.CommonName ?? "ModularCA",

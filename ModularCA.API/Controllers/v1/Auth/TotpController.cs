@@ -79,6 +79,7 @@ public class TotpController : ControllerBase
     /// If the user already has an unverified secret, it is replaced.
     /// </summary>
     [Authorize]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("setup")]
     public async Task<IActionResult> Setup([FromBody] TotpSetupRequest? request = null, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
@@ -147,9 +148,10 @@ public class TotpController : ControllerBase
     /// enrolled their authenticator app. Marks the secret as verified on success and returns ten
     /// one-time recovery codes, stored only as per-user salted PBKDF2 hashes (<see cref="RecoveryCodeHash"/>).
     /// The code's time step is claimed through <see cref="MfaSingleUse.TryClaimTotpStepAsync"/>, so
-    /// one code cannot complete two concurrent enrolments.
+    /// one code cannot complete two concurrent enrollments.
     /// </summary>
     [Authorize]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("verify-setup")]
     public async Task<IActionResult> VerifySetup([FromBody] TotpCodeRequest request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
@@ -181,7 +183,7 @@ public class TotpController : ControllerBase
         var (valid, timeStep) = VerifyTotpCode(secret, request.Code, 0);
         // 400, not 401: the session is fine, the code the user typed is wrong. The console's API
         // client treats every 401 as the end of the session, so a typo here used to sign the user
-        // out in the middle of enrolment (and, on the security page, throw away the step-up).
+        // out in the middle of enrollment (and, on the security page, throw away the step-up).
         if (!valid || !await MfaSingleUse.TryClaimTotpStepAsync(_replayGuard, userId.Value, timeStep))
             return BadRequest(new { error = "Invalid TOTP code. Check your authenticator app and try again." });
 
@@ -248,6 +250,7 @@ public class TotpController : ControllerBase
     /// wrong code, so the response time does not tell them apart.
     /// </summary>
     [AllowAnonymous]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("recovery")]
     public async Task<IActionResult> TotpRecovery([FromBody] TotpRecoveryRequest request)
     {
@@ -273,7 +276,7 @@ public class TotpController : ControllerBase
 
         // Recovery is a credential exchange, so the account-state checks that gate every other
         // login path apply here too. Without them a disabled or locked account could still
-        // trade a recovery code for a cleared MFA enrolment and a rotated security stamp.
+        // trade a recovery code for a cleared MFA enrollment and a rotated security stamp.
         await ModularCA.Core.Helpers.AccountLockout.ClearElapsedAsync(_db, user, DateTime.UtcNow);
         if (!user.IsActive || user.IsLocked || (user.LockoutEndUtc.HasValue && user.LockoutEndUtc > DateTime.UtcNow))
         {
@@ -399,6 +402,7 @@ public class TotpController : ControllerBase
     /// </summary>
     /// <param name="request">The pending-MFA token and the TOTP code.</param>
     [AllowAnonymous]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("verify")]
     public async Task<IActionResult> Verify([FromBody] TotpMfaVerifyRequest request)
     {
@@ -533,7 +537,7 @@ public class TotpController : ControllerBase
         var defaultBadge = await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeService>().GetDefaultClaimAsync(user.Id);
         var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, badge: defaultBadge);
         var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
-        var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash,
+        var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, (await _securityPolicy.GetAsync()).MaxSessionLifetimeHours, userAgentHash,
             await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Services.IDpopProofService>().GetValidatedJktAsync(HttpContext));
         refreshToken.AccessBadgeId = defaultBadge?.Id;
         // Hand the plaintext back to the client; the DB stores the hash.
@@ -594,6 +598,7 @@ public class TotpController : ControllerBase
     /// is audited as <see cref="AuditActionType.UserSessionsEnded"/>.
     /// </summary>
     [Authorize]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpDelete]
     [RequireStepUp(StepUpOps.TotpRemove)]
     public async Task<IActionResult> Remove()

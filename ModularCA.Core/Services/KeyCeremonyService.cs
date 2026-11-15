@@ -399,6 +399,16 @@ public class KeyCeremonyService : IKeyCeremonyService
                 return Math.Max(1, policy.CeremonyRequiredApprovals);
         }
 
+        // Renewing a CA's certificate is held to whichever is stricter: what creating a CA in its
+        // scope needs, or the quorum of the CA's own administrators.
+        var renewalFloor = 0;
+        if (operationType == ModularCA.Shared.Models.RenewCaCertificateCeremonyParameters.OperationType)
+        {
+            var policy = await _policies.ResolveAsync(spaceId);
+            if (policy.Found)
+                renewalFloor = Math.Max(1, policy.CeremonyRequiredApprovals);
+        }
+
         // For existing CA operations, use the CA's admin group quorum
         if (Guid.TryParse(targetEntityId, out var caId))
         {
@@ -412,10 +422,10 @@ public class KeyCeremonyService : IKeyCeremonyService
                 .ThenBy(g => g.Id)
                 .FirstOrDefaultAsync();
             if (adminGroup != null)
-                return adminGroup.RequiredQuorum;
+                return Math.Max(renewalFloor, adminGroup.RequiredQuorum);
         }
 
-        return 1;
+        return Math.Max(1, renewalFloor);
     }
 
     /// <summary>

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { displaySerial } from '@shared/serial';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { apiBlob, apiGetAllPages } from '../../api/client';
@@ -219,7 +220,7 @@ const CaInformation: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                     <DetailField label="Subject" value={cert.subjectDN} />
                     <DetailField label="Issuer" value={cert.issuer} />
-                    <DetailField label="Serial Number" value={cert.serialNumber} mono />
+                    <DetailField label="Serial Number" value={displaySerial(cert.serialNumber)} mono />
                     <DetailField label="Not Before" value={formatDate(cert.notBefore)} />
                     <DetailField label="Not After" value={formatDate(cert.notAfter)} />
                     <DetailField label="Algorithm" value={`${cert.keyAlgorithm || '-'} ${cert.keySize || ''}`} />

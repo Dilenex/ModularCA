@@ -72,6 +72,7 @@ public class AdminUserBadgesController(
     }
 
     /// <summary>Creates a badge for the user; 403 for a system-super's unless the caller is system-super.</summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [RequireStepUp(StepUpOps.ManageUserBadge, "userId")]
     public async Task<IActionResult> Create(Guid userId, [FromBody] AccessBadgeWriteRequest request)
@@ -92,6 +93,7 @@ public class AdminUserBadgesController(
     }
 
     /// <summary>Replaces one of the user's badges; 403 for a system-super's unless the caller is system-super.</summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{id:guid}")]
     [RequireStepUp(StepUpOps.ManageUserBadge, "userId")]
     public async Task<IActionResult> Update(Guid userId, Guid id, [FromBody] AccessBadgeWriteRequest request)
@@ -111,6 +113,7 @@ public class AdminUserBadgesController(
     }
 
     /// <summary>Deletes one of the user's badges; 403 for a system-super's unless the caller is system-super.</summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.ManageUserBadge, "userId")]
     public async Task<IActionResult> Delete(Guid userId, Guid id)

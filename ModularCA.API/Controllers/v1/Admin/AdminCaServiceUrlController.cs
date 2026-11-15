@@ -101,6 +101,7 @@ public class AdminCaServiceUrlController(
     /// endpoints embedded in every issued certificate. Step-up MFA is required because
     /// redirecting these URLs is a classic certificate-poisoning vector.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{caCertificateId:guid}")]
     [RequireStepUp(StepUpOps.UpdateCaServiceUrl, "caCertificateId")]
     public async Task<IActionResult> CreateOrUpdate(Guid caCertificateId, [FromBody] CaServiceUrlRequest request)
@@ -139,6 +140,7 @@ public class AdminCaServiceUrlController(
     /// removing the configured URL forces fall-back behavior that could be redirected
     /// elsewhere — a certificate-poisoning vector for CDP/AIA/OCSP lookups.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{caCertificateId:guid}")]
     [RequireStepUp(StepUpOps.DeleteCaServiceUrl, "caCertificateId")]
     public async Task<IActionResult> Delete(Guid caCertificateId)

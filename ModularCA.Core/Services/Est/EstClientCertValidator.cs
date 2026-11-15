@@ -54,6 +54,12 @@ public static class EstClientCertValidator
 
         using var chain = new X509Chain();
         chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+        // The certificate comes from whoever is connecting, and it names where its issuer can be
+        // fetched (CA Issuers). Left to itself the chain engine follows that address: this host would
+        // make a request to a place of a stranger's choosing during a handshake, and a fetched root
+        // can complete the chain past the CAs trusted here and fail a good certificate. The chain
+        // is built from the certificates this instance holds, and nothing is fetched.
+        chain.ChainPolicy.DisableCertificateDownloads = true;
 
         foreach (var ca in estCaCerts)
             chain.ChainPolicy.CustomTrustStore.Add(ca);

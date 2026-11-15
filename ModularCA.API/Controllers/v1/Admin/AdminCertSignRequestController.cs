@@ -103,6 +103,7 @@ public class AdminCertSignRequestController(
     /// class policy so an auditor cannot seed the issuance pipeline. The request names its
     /// request profile (400 without one) and is held to it (<see cref="RequestProfileEnforcement"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SigningProfile, "request.SigningProfileId")]
@@ -130,6 +131,7 @@ public class AdminCertSignRequestController(
     /// and step-up MFA. Answers 409 with the reason when the certificate is not issued yet, the
     /// key was already delivered, or no key was ever held.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact)]
     [HttpPost("{id:guid}/pkcs12")]
     [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.ExportCert, "id")]
@@ -161,6 +163,7 @@ public class AdminCertSignRequestController(
     /// SANs, key information, requested extensions, and signature validation status.
     /// This is a read-only operation that does not store anything.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("parse-csr")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertView, CaTarget.AnyCa)]
@@ -193,6 +196,7 @@ public class AdminCertSignRequestController(
     /// of previewing as a pass and then behaving differently at issuance time.
     /// Requirements and per-type SAN rules are compared ignoring case (<see cref="RequestProfileRules"/>), as issuance compares them.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("validate-against-profile")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertView, CaTarget.AnyCa)]
@@ -455,6 +459,7 @@ public class AdminCertSignRequestController(
     /// Requires CaOperator (state-changing: persists a CsrSubmitted record) — overrides the
     /// read-only CaAuditor class policy so an auditor cannot seed the issuance pipeline.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("upload")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SigningProfile, "request.SigningProfileId")]
@@ -486,6 +491,7 @@ public class AdminCertSignRequestController(
     /// their own request only under <see cref="RequestApprovals.MaySelfApproveAsync"/>, and that
     /// approval completes it whatever the count: it is audited and answered as <c>selfApproved</c>.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("{id:guid}/approve")]
     [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.ApproveRequest, "id")]
@@ -671,6 +677,7 @@ public class AdminCertSignRequestController(
     /// <summary>
     /// Rejects a pending certificate signing request with a reason.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpPost("{id:guid}/reject")]
     [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.RejectRequest, "id")]
@@ -713,6 +720,7 @@ public class AdminCertSignRequestController(
     /// Cancels an approved (but not yet issued) certificate signing request.
     /// Sets the status to "Cancelled" so it no longer appears as actionable.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpPost("{id:guid}/cancel")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> Cancel(Guid id, [FromBody] CancelCsrRequest request)

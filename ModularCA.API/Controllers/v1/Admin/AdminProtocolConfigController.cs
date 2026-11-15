@@ -160,6 +160,7 @@ public class AdminProtocolConfigController(
     /// signing profile that does not issue from this CA's certificate.
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{caId:guid}/{protocol}")]
     public async Task<IActionResult> Upsert(Guid caId, string protocol, [FromBody] ProtocolConfigUpdateRequest request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {

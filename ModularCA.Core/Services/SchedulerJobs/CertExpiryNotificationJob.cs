@@ -102,6 +102,9 @@ public class CertExpiryNotificationJob : SingletonCronJob
         if (!_config.CertExpiryNotification.Enabled)
             return;
 
+        // CA certificates go to the security alert channels, which do not need e-mail.
+        await AlertOnCaCertificatesAsync(cancellationToken);
+
         if (!_config.Email.Enabled)
             return;
 
@@ -116,6 +119,42 @@ public class CertExpiryNotificationJob : SingletonCronJob
     }
 
     /// <summary>The event type of the SSH CA key review reminder, in the notification log and to webhooks.</summary>
+    /// <summary>The security alert raised for a CA certificate in its expiry warning or alert.</summary>
+    public const string CaCertificateExpiringAlert = "CaCertificateExpiring";
+
+    /// <summary>The security alert raised for a CA whose current certificate has expired.</summary>
+    public const string CaCertificateExpiredAlert = "CaCertificateExpired";
+
+    /// <summary>
+    /// Raises a security alert for every enabled X.509 CA whose current certificate is in its
+    /// expiry warning (a warning), in its expiry alert or expired (critical): the instants are
+    /// the ones stored on the certificate, which the console's notices use too. One alert for
+    /// each such CA on each run of the job; the alert service's cooldown and severity floor
+    /// apply. This is what tells a monitoring system now that the health answer no longer turns
+    /// not ready for an expiring CA certificate. Returns how many alerts were raised.
+    /// </summary>
+    public async Task<int> AlertOnCaCertificatesAsync(CancellationToken cancellationToken)
+    {
+        var now = TimeProvider.GetUtcNow().UtcDateTime;
+        var cas = await _db.CertificateAuthorities.AsNoTracking()
+            .Where(ca => !ca.IsSshCa && ca.IsEnabled && ca.Certificate != null && !ca.Certificate.Revoked && ca.Certificate.ExpiryWarningAt <= now)
+            .Select(ca => new { ca.Id, ca.Name, ca.Label, ca.Certificate!.SerialNumber, ca.Certificate.NotAfter, ca.Certificate.ExpiryAlertAt })
+            .ToListAsync(cancellationToken);
+        foreach (var ca in cas)
+        {
+            var expired = ca.NotAfter <= now;
+            var critical = expired || ca.ExpiryAlertAt <= now;
+            await _alerts.RaiseAlertAsync(
+                expired ? CaCertificateExpiredAlert : CaCertificateExpiringAlert,
+                critical ? AlertSeverity.Critical : AlertSeverity.Warning,
+                expired
+                    ? $"The certificate of CA '{ca.Name}' expired on {ca.NotAfter:yyyy-MM-dd}. It issues nothing until its certificate is renewed."
+                    : $"The certificate of CA '{ca.Name}' expires on {ca.NotAfter:yyyy-MM-dd}. Renew it from the CA's page.",
+                new { CaId = ca.Id, ca.Label, ca.SerialNumber, ca.NotAfter });
+        }
+        return cas.Count;
+    }
+
     public const string SshCaKeyReviewDueEvent = "SshCaKeyReviewDue";
 
     /// <summary>

@@ -68,7 +68,7 @@ public sealed class SshCaOpenSshInteropTests : IDisposable
     [RequiresSshKeygenFact]
     public async Task Ssh_keygen_reads_a_certificate_the_node_issued_and_the_krl_that_revokes_it()
     {
-        foreach (var (keyType, keySize) in new (string, int?)[] { ("ed25519", null), ("ecdsa", 384), ("rsa", 2048) })
+        foreach (var (keyType, keySize) in new (string, int?)[] { ("ed25519", null), ("ecdsa", 384), ("rsa", 3072) })
         {
             using var node = new SshNode();
             var ca = await node.CreateCaAsync($"Interop {keyType}", keyType, keySize);

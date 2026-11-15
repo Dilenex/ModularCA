@@ -94,12 +94,9 @@ namespace ModularCA.API.Controllers.v1.User
             var fence = SpaceFence.From(HttpContext, ModularCA.Shared.Authorization.Capabilities.CertRequest);
             if (fence.InstanceWide)
                 return true;
-            var ca = await _db.CertificateAuthorities
-                .AsNoTracking()
-                .Where(c => c.CertificateId == certificateId)
-                .Select(c => new { c.SpaceId })
-                .FirstOrDefaultAsync();
-            return ca != null && fence.Allows(ca.SpaceId);
+            // The CA whose certificate it is, current or an earlier one a renewal superseded.
+            var owner = ModularCA.Core.Helpers.IssuerChainResolver.OwnerOf(_db, certificateId);
+            return owner != null && fence.Allows(owner.SpaceId);
         }
 
         /// <summary>

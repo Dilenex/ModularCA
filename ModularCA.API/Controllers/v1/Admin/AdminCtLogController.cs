@@ -57,6 +57,7 @@ public class AdminCtLogController(
     /// (<see cref="PublicKeyError"/>). Without a key, the log's SCTs cannot be verified and are
     /// discarded. Requires the <c>SystemOperator</c> policy and step-up MFA.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [RequireStepUp(StepUpOps.CreateCtLog)]
     public async Task<IActionResult> Create([FromBody] CreateCtLogRequest request)
@@ -86,6 +87,7 @@ public class AdminCtLogController(
     /// <see cref="Create"/> (400); an empty one removes the key. Requires the <c>SystemOperator</c>
     /// policy and step-up MFA.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{id:guid}")]
     [RequireStepUp(StepUpOps.UpdateCtLog, "id")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateCtLogRequest request)
@@ -111,6 +113,7 @@ public class AdminCtLogController(
     }
 
     /// <summary>Removes a CT log, or 404. Requires the <c>SystemOperator</c> policy and step-up MFA.</summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.DeleteCtLog, "id")]
     public async Task<IActionResult> Delete(Guid id)

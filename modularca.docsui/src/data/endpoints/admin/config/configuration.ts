@@ -59,6 +59,7 @@ export const adminConfiguration: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token scoped to update-config.' },
         ],
         responseDescription: 'Update confirmation.',
+        notes: 'The security policy\'s maximum session lifetime (maxSessionLifetimeHours) wins over this setting: a refresh token expires RefreshTokenDays after it is issued or when its session reaches the maximum, whichever comes first. With the 12-hour maximum of a new install this setting has no effect until it is shorter than the maximum or the maximum is turned off. A value longer than the maximum is accepted, not refused.',
     },
     {
         method: 'PUT',
@@ -192,6 +193,24 @@ export const adminConfiguration: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token scoped to update-config.' },
         ],
         responseDescription: 'Update confirmation with the refreshed auto-renewal config.',
+    },
+    {
+        method: 'PUT',
+        path: '/api/v1/admin/config/ca-lifecycle',
+        summary: 'Update when the notices about a CA\'s certificate and key over time are shown: the expiry notice window of a root and of an intermediate CA certificate, and the usage period of a CA key.',
+        auth: 'Authorize (SystemAdmin)',
+        category: 'Admin Configuration',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token scoped to update-config.' },
+        ],
+        requestBody: [
+            { name: 'rootExpiryNoticeDays', type: 'number', required: true, description: 'Days before a root CA certificate expires at which its notice starts. Default 730. 0 gives no early notice.' },
+            { name: 'intermediateExpiryNoticeDays', type: 'number', required: true, description: 'The same for a CA certificate that another CA issued. Default 365.' },
+            { name: 'keyUsagePeriodDays', type: 'number', required: true, description: 'Days a CA key may have been signing before a notice says so. Default 0, which is off.' },
+        ],
+        responseDescription: 'Update confirmation with the three values. 400 when a value is outside 0 to 36500 days; nothing is saved.',
+        notes: 'Added in 0.4.5. Each value is in days and 0 turns that notice off. The settings decide when a notice appears (keyAdvisories on GET /api/v1/admin/authorities/hierarchy, checks.caLifecycle in /health/ready) and nothing else: no CA stops issuing and the node stays ready. The certificate\'s own expiry warning (30 days, alert at 7, unless its profile says otherwise) is shown whatever the window. The key usage period is off by default: NIST SP 800-57 Part 1 leaves the number to the organization\'s policy. Applies at once.',
     },
     {
         method: 'PUT',

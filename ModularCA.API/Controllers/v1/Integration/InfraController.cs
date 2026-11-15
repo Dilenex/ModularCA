@@ -62,6 +62,7 @@ public class InfraController(
     /// </summary>
     /// <param name="request">The certificate issuance request containing the CSR and profile IDs.</param>
     /// <returns>The issued certificate details including PEM, chain, and metadata.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("certificates")]
     public async Task<IActionResult> IssueCertificate([FromBody] InfraIssueCertificateRequest request)
     {
@@ -174,7 +175,7 @@ public class InfraController(
     /// <see cref="ErrorCodes.RequestInvalid"/>.
     /// <para>
     /// A certificate on hold is revoked permanently with the reason given, under the same rules as
-    /// the admin revoke (RFC 5280 §5.3.1, <see cref="ICertificateRevocationService.RevokeCertificateAsync"/>);
+    /// the admin revoke (RFC 5280 §5.3.1, <see cref="ICertificateRevocationService.RevokeCertificateAsync(Guid?, string?, ModularCA.Shared.Enums.RevocationReason, DateTime?)"/>);
     /// the response carries <c>previousReason</c> = <c>CertificateHold</c>. Asking for
     /// <c>certificateHold</c> on a certificate already on hold returns success and changes nothing,
     /// in keeping with the endpoint's idempotence. A revocation state that changed under the request
@@ -189,6 +190,7 @@ public class InfraController(
     /// <param name="serial">The serial number of the certificate to revoke.</param>
     /// <param name="request">Optional revocation reason.</param>
     /// <returns>Confirmation of revocation with the certificate's current state.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpDelete("certificates/{serial}")]
     public async Task<IActionResult> RevokeCertificate(string serial, [FromBody] InfraRevokeCertificateRequest? request)
     {
@@ -283,6 +285,7 @@ public class InfraController(
     /// </summary>
     /// <param name="serial">The serial number of the certificate to renew.</param>
     /// <returns>The newly issued certificate details.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("certificates/{serial}/renew")]
     public async Task<IActionResult> RenewCertificate(string serial)
     {

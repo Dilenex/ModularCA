@@ -27,7 +27,7 @@ const CATEGORY_GROUPS: Record<string, string[]> = {
     'audit compliance': ['Admin Audit', 'Admin Compliance', 'Admin Policy'],
     'protocols': ['ACME', 'EST', 'SCEP', 'CMP', 'Admin ACME EAB', 'Admin Protocol Configs', 'Admin Enrollment Tokens'],
     'integration': ['Integration', 'Admin LDAP', 'Admin LDAP Publisher', 'Admin LDAP Publishers', 'Admin Notifications'],
-    'system': ['Admin Configuration', 'Admin Feature Flags', 'Admin Scheduler', 'Admin Backup', 'Admin Whitelists', 'Admin Rate Limit Policy'],
+    'system': ['Admin Configuration', 'Admin Feature Flags', 'Admin Scheduler', 'Admin Backup', 'Admin Continuity', 'Admin Whitelists', 'Admin Rate Limit Policy'],
     'setup': ['Setup'],
     'public': ['Public', 'Public Enrollment', 'Public Short URLs'],
 };

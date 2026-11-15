@@ -63,6 +63,16 @@ Administration:
   # ClaimTokenSha256: "<64 hex digits>"
   # ClaimTokenLifetimeHours: 168
 
+# Hub:
+#   Only for an instance a ModularCA Hub makes; leave the section out otherwise.
+#   The SHA-256 (lowercase hex) of the hub's affiliation token, never the token. The hub makes the
+#   token and keeps it; the instance keeps this hash with its data and from then on accepts a
+#   request on the hub's local connection (the Unix socket named by MODULARCA__HUB__SOCKET) only
+#   with that token. Left out, the instance holds no hash and the token check is off until one is
+#   given: on the host with  ModularCA.API --set-hub-token-hash <64 hex digits>  or by the hub
+#   over the connection. To make a pair:  ModularCA.API --new-hub-token
+#   AffiliationTokenSha256: "<64 hex digits>"
+
 Acme:
   # Will ACME clients be on a private network? Only read when Features.ACME is true.
   #   true  - the first CA's http-01 validation may fetch challenges from private, loopback and

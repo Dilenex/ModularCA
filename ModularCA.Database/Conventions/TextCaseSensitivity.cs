@@ -109,6 +109,7 @@ public static class TextCaseSensitivity
         new(typeof(CertificateEntity), nameof(CertificateEntity.SerialNumber)),
         new(typeof(CertificateEntity), nameof(CertificateEntity.Issuer)),
         new(typeof(TrustAnchorEntity), nameof(TrustAnchorEntity.SerialNumber)),
+        new(typeof(RevokedSerialTombstoneEntity), nameof(RevokedSerialTombstoneEntity.SerialNumber)),
         new(typeof(TrustAnchorEntity), nameof(TrustAnchorEntity.Issuer)),
         new(typeof(CrlEntity), nameof(CrlEntity.IssuerName)),
 

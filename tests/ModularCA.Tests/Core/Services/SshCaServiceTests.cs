@@ -32,7 +32,8 @@ public class SshCaServiceTests
         { "ecdsa", 256, SshKeyTypes.EcdsaP256 },
         { "ecdsa", 384, SshKeyTypes.EcdsaP384 },
         { "ecdsa", 521, SshKeyTypes.EcdsaP521 },
-        { "rsa", 2048, SshKeyTypes.Rsa },
+        // 3072 is the smallest RSA key a new SSH CA may have (CaKeyPolicy).
+        { "rsa", 3072, SshKeyTypes.Rsa },
     };
 
     private static SshPublicKey KeyOf(SshCaKeyEntity row) => SshPublicKey.ParseAuthorizedKey(row.PublicKey);
@@ -140,6 +141,10 @@ public class SshCaServiceTests
         var asked = node.Relay.Generated.Count;
         await Assert.ThrowsAsync<ArgumentException>(() => node.CreateCaAsync("Other A", "dsa"));
         await Assert.ThrowsAsync<ArgumentException>(() => node.CreateCaAsync("Other B", "rsa", 1024));
+        // RSA 2048 was allowed before 0.4.5; a new SSH CA key is refused it with the reason and what to pick.
+        var small = await Assert.ThrowsAsync<ArgumentException>(() => node.CreateCaAsync("Other D", "rsa", 2048));
+        Assert.Contains("at least 3072 bits", small.Message);
+        Assert.Contains("ECDSA P-384", small.Message);
         await Assert.ThrowsAsync<ArgumentException>(() => node.CreateCaAsync("Other C", "ecdsa", 255));
         Assert.Equal(asked, node.Relay.Generated.Count);
         Assert.Equal(2, RowCounts(node).Cas);

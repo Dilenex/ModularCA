@@ -131,6 +131,7 @@ public class AdminLdapPublishersController(
     /// (<see cref="StepUpOps.CreateLdapPublisher"/>) and enforces the space fence on the
     /// target CA. Emits an audit event on both success and access-failure paths.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [RequireStepUp(StepUpOps.CreateLdapPublisher, "caId")]
     public async Task<IActionResult> Create(Guid caId, [FromBody] CreateLdapPublisherRequest request)
@@ -199,6 +200,7 @@ public class AdminLdapPublishersController(
     /// Audit emits before/after field snapshots on success and access-failure on cross-space
     /// or missing-publisher paths. The password value is never written to the audit payload.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{id:guid}")]
     [RequireStepUp(StepUpOps.UpdateLdapPublisher, "id")]
     public async Task<IActionResult> Update(Guid caId, Guid id, [FromBody] UpdateLdapPublisherRequest request)
@@ -322,6 +324,7 @@ public class AdminLdapPublishersController(
     /// Audit emits identifying fields of the deleted resource on success, and access-failure
     /// payloads on cross-space or missing-publisher paths.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id:guid}")]
     [RequireStepUp(StepUpOps.DeleteLdapPublisher, "id")]
     public async Task<IActionResult> Delete(Guid caId, Guid id)
@@ -400,6 +403,7 @@ public class AdminLdapPublishersController(
     /// message and the correlation id under which its exception is logged, not the exception's
     /// message, which can name hosts and DNs.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("bulk")]
     [RequireStepUp(StepUpOps.BulkLdapPublisher, "caId")]
     public async Task<IActionResult> BulkUpdate(Guid caId, [FromBody] BulkLdapPublisherRequest request)
@@ -501,6 +505,7 @@ public class AdminLdapPublishersController(
     /// space fence on the owning CA so callers cannot probe directories belonging to
     /// other spaces.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("{id:guid}/test")]
     public async Task<IActionResult> TestConnection(Guid caId, Guid id)
     {

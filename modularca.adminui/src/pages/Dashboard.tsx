@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
+import { displaySerial } from '@shared/serial';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { Link, useNavigate } from 'react-router-dom';
-import { apiGet, apiPost, apiPostWithMfa } from '../api/client';
+import { journalAttention, type JournalAttentionItem } from '../components/journalAttention';
+import { caLifecycleAttention, type CaAttentionItem } from './caLifecycle';
+import { apiGet, apiPost, apiPostWithMfa, getToken } from '../api/client';
 import { useScope } from '../context/ScopeContext';
 import { scopeKey } from '../scope';
 import { rowsInScope } from './scopedRows';
@@ -251,6 +254,24 @@ const Dashboard: React.FC = () => {
         : [];
     const attention = summary ? sortAttention(summary.attention, now) : [];
 
+    // The signer's issuance journal, from the readiness answer: an entry when its volume is
+    // running out or it cannot be written (issuance stops), when the signer refuses a CRL that
+    // leaves out revoked serials (with the CAs and when their published CRLs run out), and
+    // while it waits for a restore marker. A viewer who may not read the readiness answer sees
+    // no entry.
+    const [journalItem, setJournalItem] = useState<JournalAttentionItem | null>(null);
+    // From the same answer: each CA whose certificate is in its expiry warning or has expired.
+    const [caItems, setCaItems] = useState<CaAttentionItem[]>([]);
+    useEffect(() => {
+        let cancelled = false;
+        const token = getToken();
+        fetch('/health/ready', { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+            .then((res) => res.json())
+            .then((body) => { if (!cancelled) { setJournalItem(journalAttention(body)); setCaItems(caLifecycleAttention(body)); } })
+            .catch(() => { if (!cancelled) { setJournalItem(null); setCaItems([]); } });
+        return () => { cancelled = true; };
+    }, []);
+
     // Fetch CA list. Each scoped load clears what it showed, and drops its answer if the scope
     // has moved on by the time it arrives.
     useEffect(() => {
@@ -454,8 +475,38 @@ const Dashboard: React.FC = () => {
                         <span className="text-xs text-ink-muted">Showing {attention.length} of {summary.attentionTotal}</span>
                     )}
                 </div>
+                {journalItem && (
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 border-b border-line">
+                        <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${toneDotClass(journalItem.tone)}`} aria-hidden="true" />
+                        <div className="min-w-0 flex-1">
+                            <div className={`text-sm font-medium ${toneTextClass(journalItem.tone)}`}>{journalItem.title}</div>
+                            <div className="text-xs text-ink-muted">{journalItem.message}</div>
+                            {journalItem.details && (
+                                <ul className="mt-1 text-xs text-ink">
+                                    {journalItem.details.map((line) => <li key={line}>{line}</li>)}
+                                </ul>
+                            )}
+                            {journalItem.links && (
+                                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs">
+                                    {journalItem.links.map((link) => <Link key={link.to} to={link.to} className="text-accent-ink underline">{link.label}</Link>)}
+                                </div>
+                            )}
+                        </div>
+                        <Link to="/health" className={actionButton}>System health</Link>
+                    </div>
+                )}
+                {caItems.map((item) => (
+                    <div key={item.caId} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 border-b border-line">
+                        <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${toneDotClass(item.tone)}`} aria-hidden="true" />
+                        <div className="min-w-0 flex-1">
+                            <div className={`text-sm font-medium ${toneTextClass(item.tone)}`}>{item.title}</div>
+                            <div className="text-xs text-ink-muted">{item.message}</div>
+                        </div>
+                        <Link to={item.to} className={actionButton}>Open CA</Link>
+                    </div>
+                ))}
                 {certStatsLoading && <div className="p-4 text-sm text-ink-muted text-center">Loading...</div>}
-                {!certStatsLoading && summary && attention.length === 0 && (
+                {!certStatsLoading && summary && attention.length === 0 && !journalItem && caItems.length === 0 && (
                     <div className="px-4 py-6 text-center">
                         <div className="text-sm text-ink font-medium">Nothing needs attention</div>
                         <div className="text-xs text-ink-muted mt-1">No certificate expired in the last 30 days or is in its expiry warning without a replacement.</div>
@@ -599,7 +650,7 @@ const Dashboard: React.FC = () => {
                                             <span className="text-xs text-crit ml-2">{cert.revocationReason} — {formatDate(cert.revocationDate)}</span>
                                         </div>
                                     )}
-                                    <DetailField label="Serial" value={cert.serialNumber} mono />
+                                    <DetailField label="Serial" value={displaySerial(cert.serialNumber)} mono />
                                     <DetailField label="Subject" value={cert.subjectDN} />
                                     <DetailField label="Issuer" value={cert.issuer} />
                                     <DetailField label="Not Before" value={formatDate(cert.notBefore)} />
@@ -801,7 +852,7 @@ const Dashboard: React.FC = () => {
                     <div className="space-y-3 text-left">
                         <div className="text-xs text-ink-muted">
                             <div className="break-all"><span className="font-semibold text-ink">Subject:</span> {quickRevoke.subjectDN}</div>
-                            <div className="font-mono break-all"><span className="font-sans font-semibold text-ink">Serial:</span> {quickRevoke.serialNumber}</div>
+                            <div className="font-mono break-all"><span className="font-sans font-semibold text-ink">Serial:</span> {displaySerial(quickRevoke.serialNumber)}</div>
                         </div>
                         <div>
                             <label htmlFor="dashboard-revoke-reason" className="block text-xs text-ink-muted mb-1">Revocation reason</label>

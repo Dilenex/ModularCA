@@ -15,6 +15,9 @@ import { OCSP_REFUSED_CONSEQUENCE, ocspRows, ocspStatus, type CaOcspRow } from '
 import { protocolFindings, type ProtocolFinding } from './protocolAdvisories';
 import { sshKeyReadiness } from './sshKeyCustody';
 import { sshCaKeyPath } from './sshPlaces';
+import { caKeyFindings, sessionMaximumAdvice, type CaKeyFinding, type PasswordPolicyGuidance } from './tighterDefaults';
+import { advisoryBadgeStatus, advisoryTitle } from './caLifecycle';
+import { journalBadge, journalRefusedLinks, journalRestored, journalSummary, type JournalTone } from './journalHealth';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -86,6 +89,13 @@ const HealthCheckCard: React.FC = () => {
 
     const sshKeys = sshKeyReadiness(health?.checks?.signer?.sshKeys);
 
+    // The signer's journal: its own row, because its states are more than healthy and degraded.
+    const journal = health?.checks?.journal;
+    const journalState = journalBadge(journal);
+    const journalLine = journalSummary(journal);
+    const journalLinks = [...journalRestored(journal), ...journalRefusedLinks(journal)];
+    const journalDot: Record<JournalTone, string> = { ok: 'bg-ok', neutral: 'bg-ink-faint', info: 'bg-info', warn: 'bg-warn', crit: 'bg-crit' };
+
     const renderCheckRow = (label: string, check: any) => {
         if (!check) return null;
         const status = check.status || 'unknown';
@@ -142,6 +152,14 @@ const HealthCheckCard: React.FC = () => {
                     {health.checks?.auditDatabase && renderCheckRow('Audit Database', health.checks.auditDatabase)}
                     {health.checks?.keystore && renderCheckRow('Keystore', health.checks.keystore)}
                     {health.checks?.signer && renderCheckRow('Signer', health.checks.signer)}
+                    {journalState && (
+                        <div className="flex items-center gap-3 py-2 border-b border-line last:border-b-0">
+                            <span className={`inline-block w-2.5 h-2.5 rounded-full ${journalDot[journalState.tone]}`} />
+                            <span className="text-sm text-ink min-w-[140px]">Signer Journal</span>
+                            <StatusBadge status={journalState.status} label={journalState.label} />
+                            {journalState.hint && <span className="text-xs text-ink-muted ml-auto">{journalState.hint}</span>}
+                        </div>
+                    )}
                     {health.checks?.tlsCertificate && renderCheckRow('TLS Certificate', health.checks.tlsCertificate)}
                     {health.checks?.diskSpace && renderCheckRow('Disk Space', health.checks.diskSpace)}
 
@@ -174,6 +192,18 @@ const HealthCheckCard: React.FC = () => {
                                     {sshKeys.unknown > 0 && (
                                         <span className="text-ink-muted">; {sshKeys.unknown} could not be checked because the signer is locked or did not answer</span>
                                     )}
+                                </div>
+                            )}
+                            {(journalLine || journalLinks.length > 0) && (
+                                <div>
+                                    <span className="text-ink-muted">Signer journal: </span>
+                                    {journalLine && <span className="text-ink">{journalLine}</span>}
+                                    {journalLinks.map((link, i) => (
+                                        <React.Fragment key={link.to}>
+                                            {(journalLine || i > 0) && <span className="text-ink-muted">; </span>}
+                                            <Link to={link.to} className="text-accent-ink hover:underline">{link.text}</Link>
+                                        </React.Fragment>
+                                    ))}
                                 </div>
                             )}
                             {sshKeys?.awaitingImport.map((k) => (
@@ -619,6 +649,80 @@ const DrStatusCard: React.FC = () => {
     );
 };
 
+/* ─── Security Baseline Card ─── */
+/* The three sets of defaults a new install starts with (NIST SP 800-63B sessions and passwords,
+   SP 800-57 CA keys), where this instance differs. An install made before 0.4.5 keeps what it has
+   stored: this card says so and links to where the change is made; it changes nothing. The two
+   policies need a system administrator to read, so for anyone else those rows are left out. */
+const SecurityBaselineCard: React.FC<{ hierarchy: Fetched<any[]> | null }> = ({ hierarchy }) => {
+    const [securityPolicy, setSecurityPolicy] = useState<Fetched<any> | null>(null);
+    const [guidance, setGuidance] = useState<Fetched<PasswordPolicyGuidance> | null>(null);
+    const [sshKeys, setSshKeys] = useState<Fetched<any[]> | null>(null);
+
+    useEffect(() => {
+        fetched(apiGet<any>('/api/v1/admin/security-policy', { toast: false })).then(setSecurityPolicy);
+        fetched(apiGet<PasswordPolicyGuidance>('/api/v1/admin/password-policy/guidance', { toast: false })).then(setGuidance);
+        fetched(apiGet<any[]>('/api/v1/admin/ssh/ca-keys', { toast: false }).then((d) => (Array.isArray(d) ? d : []))).then(setSshKeys);
+    }, []);
+
+    const loading = !hierarchy || !securityPolicy || !guidance || !sshKeys;
+    const sessionAdvice = securityPolicy?.ok ? sessionMaximumAdvice(securityPolicy.value?.maxSessionLifetimeHours) : null;
+    const passwordDifferences = guidance?.ok && !guidance.value.nist80063B.meets ? guidance.value.nist80063B.differences : [];
+    const blocklistMissing = guidance?.ok && guidance.value.bundledBlocklist.inUse && !guidance.value.bundledBlocklist.available;
+    const keys: CaKeyFinding[] = hierarchy?.ok ? caKeyFindings(hierarchy.value, sshKeys?.ok ? sshKeys.value : []) : [];
+    const nothing = !loading && !sessionAdvice && passwordDifferences.length === 0 && !blocklistMissing && keys.length === 0;
+
+    return (
+        <div className="bg-raised border border-line rounded-lg p-4">
+            <h2 className="text-sm font-semibold text-ink mb-3">Security Baseline</h2>
+            {loading && <div className="text-sm text-ink-muted">Loading...</div>}
+            {hierarchy && !hierarchy.ok && <Unavailable what="certificate authorities" error={hierarchy.error} />}
+            {nothing && hierarchy?.ok && (
+                <div className="text-sm text-ink-muted">
+                    Session lifetime, password policy and CA keys are at the baseline a new install starts with (NIST SP 800-63B and SP 800-57), and no CA's certificate or key raises a notice.
+                </div>
+            )}
+            {!loading && !nothing && (
+                <div className="space-y-3 text-xs">
+                    <p className="text-ink-muted max-w-3xl">
+                        Where this instance differs from what a new install starts with, and what its CAs' certificates and keys have to say over time. Nothing here was changed by an upgrade: each setting is as it was stored, and each change is yours to make.
+                    </p>
+                    {sessionAdvice && (
+                        <div>
+                            <div className="text-ink font-semibold">Session lifetime</div>
+                            <div className="text-ink-muted">{sessionAdvice} <Link to="/settings?tab=Security" className="text-ink underline hover:no-underline">Security Policy in Settings</Link></div>
+                        </div>
+                    )}
+                    {(passwordDifferences.length > 0 || blocklistMissing) && (
+                        <div>
+                            <div className="text-ink font-semibold">Password policy</div>
+                            <ul className="list-disc pl-5 text-ink-muted space-y-0.5">
+                                {passwordDifferences.map((d) => <li key={d}>{d}</li>)}
+                                {blocklistMissing && guidance?.ok && <li className="text-warn">The bundled blocklist is on but {guidance.value.bundledBlocklist.fileName} was not found on this node, so nothing is checked against it.</li>}
+                            </ul>
+                            {passwordDifferences.length > 0 && (
+                                <div className="text-ink-muted mt-1">The NIST SP 800-63B preset sets all of these in one action: <Link to="/settings?tab=Security" className="text-ink underline hover:no-underline">Password Policy in Settings</Link></div>
+                            )}
+                        </div>
+                    )}
+                    {keys.length > 0 && (
+                        <div className="space-y-1">
+                            <div className="text-ink font-semibold">CA keys and certificates</div>
+                            {keys.map((f) => (
+                                <div key={`${f.link}-${f.advisory.reason}`} className="flex items-baseline gap-2 flex-wrap">
+                                    <StatusBadge status={advisoryBadgeStatus(f.advisory)} label={advisoryTitle(f.advisory)} />
+                                    <Link to={f.link} className="text-ink hover:underline">{f.caName}</Link>
+                                    <span className="text-ink-muted">{f.advisory.message}</span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+};
+
 /* ─── System Health Page ─── */
 const SystemHealth: React.FC = () => {
     // One read of the CA hierarchy feeds both the OCSP and the enrollment-protocol findings.
@@ -636,6 +740,7 @@ const SystemHealth: React.FC = () => {
                 <OcspRespondersCard hierarchy={hierarchy} />
                 <ProtocolFindingsCard hierarchy={hierarchy} />
             </div>
+            <SecurityBaselineCard hierarchy={hierarchy} />
             <DrStatusCard />
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <SystemStatusCard />

@@ -343,7 +343,8 @@ public sealed class SettingsStore(ModularCADbContext db, IAuditService audit, IS
     /// <summary>
     /// Checks every key and value of <paramref name="change"/> (its type, and the value rule of
     /// <see cref="ModularCA.Shared.Utils.ConfigInputRules.StoredSettingError"/>) and returns what each
-    /// setting's row should hold.
+    /// setting's row should hold. A change that names a reserved key anywhere, the instance's
+    /// identifier for one, is refused before anything is read or written.
     /// </summary>
     private static Dictionary<string, Wanted> Validate(SettingsChange change)
     {
@@ -399,8 +400,16 @@ public sealed class SettingsStore(ModularCADbContext db, IAuditService audit, IS
         return SettingsSecretHash.Compute(secret);
     }
 
+    /// <summary>
+    /// The setting a change may write under <paramref name="key"/>. Refuses a reserved key
+    /// (<see cref="ReservedSettingKeys"/>), a key that is no setting, and a setting that does not
+    /// live in the database.
+    /// </summary>
     private static SettingDefinition Definition(string key)
     {
+        if (ReservedSettingKeys.IsReserved(key))
+            throw new SettingsRefusedException(SettingsRefusal.WrittenOnce,
+                $"{key} is written once by the instance itself and is not a setting: it cannot be set, replaced or cleared.", key);
         var definition = SettingsCatalog.Find(key)
             ?? throw new SettingsRefusedException(SettingsRefusal.UnknownKey, $"{key} is not a setting.", key);
         return definition.Class switch

@@ -77,6 +77,9 @@ public class AdminSecurityPolicyController(
     /// Applies a partial update to the security policy. Needs a system administrator; a change to
     /// <c>UserQuorum</c> or <c>AllowSystemSuperSelfApproval</c> needs a system-super (403 otherwise,
     /// nothing saved). Null fields are left untouched.
+    /// <c>MaxSessionLifetimeHours</c> is the maximum session lifetime (0 = none); it wins over
+    /// the refresh-token lifetime, and lowering it ends sessions already older than the new value
+    /// at their next refresh. <c>MaxSessionLifetimeDays</c> is still accepted and stored as hours.
     /// TTL knobs are clamped to their documented ranges. The keystore scrypt cost
     /// (<c>KeystoreScryptN</c>, <c>KeystoreScryptR</c>, <c>KeystoreScryptP</c>) is not clamped:
     /// when any of the three changes, the resulting triple must pass
@@ -93,6 +96,7 @@ public class AdminSecurityPolicyController(
     /// <see cref="StepUpOps.DisableCeremonyRequirement"/>; that change is audited with a
     /// <c>CeremonyRequirementDisabled</c> marker.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut]
     public async Task<IActionResult> Update(
         [FromBody] SecurityPolicyUpdateRequest request,
@@ -179,8 +183,12 @@ public class AdminSecurityPolicyController(
             policy.SessionIdleTimeoutMinutes = sit;
         if (request.MaxConcurrentSessions is int mcs && mcs >= 0)
             policy.MaxConcurrentSessions = mcs;
-        if (request.MaxSessionLifetimeDays is int msld && msld >= 0)
-            policy.MaxSessionLifetimeDays = msld;
+        // Hours are the stored unit. Days, the unit before 0.4.5, are still accepted from a client
+        // that has not caught up, and mean the same length; hours win when both are sent.
+        if (request.MaxSessionLifetimeHours is int mslh && mslh >= 0)
+            policy.MaxSessionLifetimeHours = mslh;
+        else if (request.MaxSessionLifetimeDays is int msld && msld >= 0)
+            policy.MaxSessionLifetimeHours = (int)Math.Min((long)msld * 24, int.MaxValue);
 
         // Login posture
         if (request.LoginResponseDelayMs is int lrd && lrd >= 0)
@@ -299,7 +307,15 @@ public class SecurityPolicyUpdateRequest
     public int? SessionIdleTimeoutMinutes { get; set; }
     /// <summary>Most active refresh tokens one user may hold; 0 means unlimited. Negative values are ignored.</summary>
     public int? MaxConcurrentSessions { get; set; }
-    /// <summary>Absolute session lifetime in days from the first token of the family; 0 disables the cap. Negative values are ignored.</summary>
+    /// <summary>
+    /// Maximum session lifetime in hours from the sign-in; 0 disables the maximum. Negative values
+    /// are ignored. No refresh token outlives it, whatever the refresh-token lifetime.
+    /// </summary>
+    public int? MaxSessionLifetimeHours { get; set; }
+    /// <summary>
+    /// Deprecated: the maximum session lifetime in days, as it was set before 0.4.5. Stored as
+    /// that many hours times 24; ignored when <see cref="MaxSessionLifetimeHours"/> is sent.
+    /// </summary>
     public int? MaxSessionLifetimeDays { get; set; }
     /// <summary>Constant wall-clock budget in milliseconds for the pre-authentication login path, against timing side channels; 0 disables it. Negative values are ignored.</summary>
     public int? LoginResponseDelayMs { get; set; }

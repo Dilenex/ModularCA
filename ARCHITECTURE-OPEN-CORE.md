@@ -35,14 +35,32 @@ Two properties of the project graph make this possible, and
 The layer order is `Shared → Database → Keystore → Core → Auth → Bootstrap → API`, and a project
 may only reference projects below it.
 
+## What is free and what is licensed
+
+Decided 2026-11-13.
+
+- **Free: one instance, with unlimited spaces.** Spaces are not counted, limited or licensed, in
+  any edition. Nothing in the product recommends a license at any number of spaces. (0.4.0 to 0.4.4
+  recommended one from the fifth space, through `SpaceCreationGate` and the `tenancy.multi` feature
+  key; both are removed.) Certificates and CAs are never counted either.
+- **Licensed: running a fleet of instances, high availability, backup orchestration and auditor
+  evidence.** A space delegates within one organization; a separate customer belongs in a separate
+  instance, and it is the fleet of instances that is sold.
+
+**Nothing is enforced in the product today.** The vendor key in `LicenseVerifier` is a placeholder,
+so no license can verify: every installation runs as the free edition, no `FeatureGate` is called
+anywhere, and no feature is withheld or refused. The feature keys, the verifier and `FeatureGate`
+are the place a gate attaches when there is something to sell.
+
+A license document written while `tenancy.multi` or the `maxTenants` limit existed still parses: an
+entitlement or limit name this build does not know is ignored, never an error.
+
 ## Two ways a feature can be paid, and they are not interchangeable
 
-**Licence-gated open code.** The implementation is here, under AGPL, readable and forkable. What is
+**License-gated open code.** The implementation is here, under AGPL, readable and forkable. What is
 sold is the right to use it past the free threshold, enforced with a clear refusal and an audit
-record through `FeatureGate`. Enforcement is honour-system; the protection is the licence agreement
-and the audit trail, not the `if` statement. Spaces are deliberately not gated: past four,
-`SpaceCreationGate` only recommends a licence, because a space delegates within one organisation and
-the licence terms, not a refusal, are what keep separate customers in separate instances.
+record through `FeatureGate`. Enforcement is honor-system; the protection is the license agreement
+and the audit trail, not the `if` statement.
 
 **Private module.** Code that genuinely is not in this repository. The only mechanism that
 withholds anything, and it can only ever apply to work not yet published.
@@ -90,10 +108,10 @@ Three things are load-bearing:
 - **Say what still works.** An operator refused mid-task assumes the worst — that issuance has
   stopped, that something they built is now unusable. A feature where nothing can be said in that
   sentence is a feature that should not be gated this way.
-- **Gate at one site if you can.** Space creation could be gated, or as now recommend a licence,
-  because there is exactly one runtime space-creation site, even though `SpaceId` reaches hundreds
-  of places. A feature with no such chokepoint is a poor candidate for licence-gating and probably
-  wants to be a module instead.
+- **Gate at one site if you can.** Scheduling an off-host backup has exactly one place where the
+  schedule is saved, so one check covers it. A feature with no such chokepoint is a poor candidate
+  for license-gating and probably wants to be a module instead. (Spaces are not an example: they
+  are not gated, recommended against or counted.)
 
 ## What is deliberately not built yet
 

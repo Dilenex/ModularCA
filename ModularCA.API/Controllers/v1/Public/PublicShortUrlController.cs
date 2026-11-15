@@ -133,6 +133,7 @@ public class PublicShortUrlController(
     /// through, and the
     /// <c>Cache-Control</c> header is emitted derived from the responder's nextUpdate.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact, AnsweredByAction = true)]
     [HttpPost("/ocsp")]
     [HttpPost("/ocsp/ca/{caLabel}")]
     [RequestSizeLimit(8 * 1024)]
@@ -149,6 +150,7 @@ public class PublicShortUrlController(
     /// Malformed base64 returns HTTP 400 (previously threw
     /// <see cref="FormatException"/>). The body cap is dropped to
     /// 8 KB to match POST.</summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact, AnsweredByAction = true)]
     [HttpGet("/ocsp/{encodedRequest}")]
     [HttpGet("/ocsp/ca/{caLabel}/{encodedRequest}")]
     [RequestSizeLimit(8 * 1024)]

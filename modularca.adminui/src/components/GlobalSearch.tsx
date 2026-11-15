@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { displaySerial } from '@shared/serial';
 import { useNavigate } from 'react-router-dom';
 import { apiGet } from '../api/client';
 import { useScope } from '../context/ScopeContext';
@@ -91,7 +92,7 @@ const GlobalSearch: React.FC = () => {
                 jobs.push(apiGet<any>(`/api/v1/admin/certificates?search=${encodeURIComponent(q)}&pageSize=${RECORD_FETCH}`).then((r) => {
                     for (const c of (r?.items ?? [])) {
                         const cn = (c.subjectDN || '').match(/CN=([^,]+)/)?.[1];
-                        found.certificate.push({ key: `cert:${c.serialNumber}`, title: cn || c.subjectDN || c.serialNumber, subtitle: c.serialNumber, path: `/certificates/${c.serialNumber}` });
+                        found.certificate.push({ key: `cert:${c.serialNumber}`, title: cn || c.subjectDN || c.serialNumber, subtitle: displaySerial(c.serialNumber), path: `/certificates/${c.serialNumber}` });
                     }
                     if (typeof r?.total === 'number') found.certificate.length = Math.min(found.certificate.length, RECORD_FETCH);
                 }).catch(() => { /* a failed lookup just yields no record hits */ }));

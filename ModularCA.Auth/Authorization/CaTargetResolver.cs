@@ -275,12 +275,16 @@ public sealed class CaTargetResolver(ModularCADbContext db)
         return new CaTargetResolution(cas, NotFound: false, Unscoped: unscoped);
     }
 
-    /// <summary>The CA whose certificate this is, or null when no CA owns it.</summary>
+    /// <summary>
+    /// The CA whose certificate this is, or null when no CA owns it: the CA whose current
+    /// certificate it is or, for an earlier certificate of a CA whose certificate was renewed,
+    /// the CA that <see cref="ModularCA.Core.Helpers.IssuerChainResolver.OwnerOf(ModularCADbContext, Guid)"/> gives.
+    /// </summary>
     private async Task<Guid?> CaByCertificateAsync(Guid certificateId)
     {
         var ca = await db.CertificateAuthorities.AsNoTracking().IgnoreQueryFilters()
             .Where(c => c.CertificateId == certificateId).Select(c => new { c.Id }).FirstOrDefaultAsync();
-        return ca?.Id;
+        return ca?.Id ?? ModularCA.Core.Helpers.IssuerChainResolver.OwnerOf(db, certificateId)?.CaId;
     }
 
     /// <summary>

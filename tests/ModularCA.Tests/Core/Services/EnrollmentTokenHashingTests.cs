@@ -13,7 +13,7 @@ namespace ModularCA.Tests.Core.Services;
 /// row: what is stored is not what is issued.
 /// <para>
 /// These tokens are SCEP's challenge password and the bearer value the public enrollment
-/// controller accepts, so a readable <c>EnrollmentTokens.Token</c> column was enrolment rights
+/// controller accepts, so a readable <c>EnrollmentTokens.Token</c> column was enrollment rights
 /// against every certificate authority it covered, for as long as the rows lived. The column now
 /// holds a SHA-256 hash and every lookup hashes the presented value first — the same scheme
 /// <c>JwtTokenService.HashRefreshToken</c> has always used for refresh tokens.

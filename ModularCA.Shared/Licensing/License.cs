@@ -46,19 +46,14 @@ public sealed class LicenseClaims
     public IReadOnlyList<string> Entitlements { get; init; } = Array.Empty<string>();
 
     /// <summary>
-    /// Numeric ceilings, keyed by limit name — currently <c>maxTenants</c>. A limit that is
-    /// absent means the entitlement carries no ceiling.
+    /// Numeric ceilings, keyed by limit name. A limit that is absent means the entitlement carries
+    /// no ceiling. No limit name is defined today, and nothing in the product reads one: a name in
+    /// a license document (the retired <c>maxTenants</c>, a space count, included) is parsed and
+    /// ignored. Spaces are not counted or limited in any edition.
     /// </summary>
     [JsonPropertyName("limits")]
     public IReadOnlyDictionary<string, int> Limits { get; init; } =
         new Dictionary<string, int>(StringComparer.Ordinal);
-}
-
-/// <summary>Well-known keys for <see cref="LicenseClaims.Limits"/>.</summary>
-public static class LicenseLimits
-{
-    /// <summary>A space count signed into older licences. Kept verbatim; space creation no longer reads it.</summary>
-    public const string MaxTenants = "maxTenants";
 }
 
 /// <summary>

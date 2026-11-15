@@ -70,6 +70,20 @@ public class CrlService : ICrlService
     private readonly ILdapSecretProtector _ldapSecretProtector;
 
     /// <summary>
+    /// The instance's mode. In DR mode no new CRL is signed: both generators throw
+    /// <see cref="ModularCA.Shared.Modes.InstanceModeException"/> before anything is read or
+    /// signed, and the CRLs already signed go on being served. Null allows everything.
+    /// </summary>
+    private readonly ModularCA.Shared.Modes.IInstanceModeGate? _modeGate;
+
+    /// <summary>
+    /// The merge of revocations from the signer's journal, run for a CA before its CRL is
+    /// generated when it has not run yet in this process, and again when the signer refuses a
+    /// CRL for leaving out revoked serials. Null where nothing registers one (tests, tools).
+    /// </summary>
+    private readonly ModularCA.Core.Services.Journal.IJournalRevocationMerge? _merge;
+
+    /// <summary>
     /// Constructs the CRL service. The unused <c>IFeatureFlagService</c> dependency
     /// that was wired in but never referenced has been removed.
     /// Added <see cref="IAuditService"/> so each
@@ -78,8 +92,12 @@ public class CrlService : ICrlService
     /// scheduler's <c>CrlExported</c> dispatch event).
     /// </summary>
     public CrlService(ModularCADbContext dbContext, IKeystoreCertificates keystore, ILogger<CrlService> logger, IAuditService audit,
-        ICaServiceUrlService caServiceUrls, ILdapSecretProtector ldapSecretProtector, ISigningService signer)
+        ICaServiceUrlService caServiceUrls, ILdapSecretProtector ldapSecretProtector, ISigningService signer,
+        ModularCA.Shared.Modes.IInstanceModeGate? modeGate = null,
+        ModularCA.Core.Services.Journal.IJournalRevocationMerge? merge = null)
     {
+        _modeGate = modeGate;
+        _merge = merge;
         _dbContext = dbContext;
         _keystore = keystore;
         _logger = logger;
@@ -95,12 +113,89 @@ public class CrlService : ICrlService
     /// monotonic CRL number atomically, and emits the <c>IssuingDistributionPoint</c>
     /// extension when the configuration scopes over a subset. Covers certificates issued under the
     /// CA's current certificate and any superseded certificate of the same CA with the same name and
-    /// key (see <see cref="IssuerChainResolver.SameKeyCaCertificateIdsAsync"/>). Emits an
+    /// key (see <see cref="IssuerChainResolver.SameKeyCaCertificateIdsAsync"/>), and the serials
+    /// revoked under them with no certificate row (<see cref="RevokedSerialTombstoneEntity"/>),
+    /// each until its <c>ListedUntil</c>. Emits an
     /// <see cref="AuditActionType.CrlGenerated"/> audit record after successful persistence,
     /// with <c>IsDelta=false</c> in the details payload.
     /// </summary>
+    /// <remarks>
+    /// The signer holds a CRL to the newest one in its journal. When it refuses this one because
+    /// the number does not rise, the database's counter is behind the journal: a CRL was signed
+    /// and its save failed, or the database was taken back. The counters are then raised to
+    /// the time-derived floor a restore applies (<see cref="CrlNumberFloor"/>) and the CRL is
+    /// generated once more.
+    /// <para>
+    /// A database that has gone back in time has also lost revocations. Before the CA's first
+    /// CRL of this process the merge makes again every revocation the signer's journal holds and
+    /// the database lacks (<see cref="ModularCA.Core.Services.Journal.JournalRevocationMerge"/>).
+    /// When the signer still refuses the CRL for leaving out revoked serials, the merge runs
+    /// once more and the CRL is generated once more; a second refusal is the caller's, and
+    /// stands in the health answer.
+    /// </para>
+    /// </remarks>
     public async Task<string> GenerateCrlAsync(Guid caCertificateId, CancellationToken cancellationToken = default)
     {
+        ModularCA.Shared.Modes.InstanceModeGate.ThrowIfRefused(_modeGate, ModularCA.Shared.Modes.ModeOperation.Fact, "Signing a new CRL");
+        // A CA whose certificate was renewed has one CRL, kept under its current certificate. A
+        // caller that names an earlier certificate over the same key (a leaf's issuer row) gets it.
+        caCertificateId = await IssuerChainResolver.CurrentSameKeyCertificateIdAsync(_dbContext, caCertificateId, cancellationToken);
+        if (_merge != null)
+            await _merge.EnsureMergedAsync(caCertificateId, cancellationToken);
+        try
+        {
+            return await GenerateCrlNumberedAsync(caCertificateId, cancellationToken);
+        }
+        catch (SigningRefusedException ex) when (_merge != null && ex.Reason == SigningRefusalReason.CrlNotContinuous && !IsNumberBehindJournal(ex))
+        {
+            // The signer's journal lists revocations this CRL left out. Make them again, once, and generate again.
+            _dbContext.ChangeTracker.Clear();
+            var merged = await _merge.MergeForCertificateAsync(caCertificateId, cancellationToken);
+            if (merged is not { Merged: > 0 })
+                throw;
+            _logger.LogWarning("The signer refused a CRL for CA certificate {CaId} because it left out revoked serials; {Count} revocation(s) were restored from the signer's journal and the CRL is generated again.",
+                caCertificateId, merged.Merged);
+            return await GenerateCrlNumberedAsync(caCertificateId, cancellationToken);
+        }
+    }
+
+    /// <summary>Generates the CRL, and once more after raising the counters when the signer says its number is behind the journal.</summary>
+    private async Task<string> GenerateCrlNumberedAsync(Guid caCertificateId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await GenerateCrlOnceAsync(caCertificateId, cancellationToken);
+        }
+        catch (SigningRefusedException ex) when (IsNumberBehindJournal(ex))
+        {
+            await RaiseNumbersPastJournalAsync(caCertificateId, ex, cancellationToken);
+            return await GenerateCrlOnceAsync(caCertificateId, cancellationToken);
+        }
+    }
+
+    /// <summary>Whether the signer refused a CRL because its number does not rise above the one in its journal.</summary>
+    internal static bool IsNumberBehindJournal(SigningRefusedException ex)
+        => ex.Reason == SigningRefusalReason.CrlNotContinuous && ex.Message.Contains("carries number", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Raises every CRL counter to the time-derived floor after the signer said a number was
+    /// behind its journal, and forgets what this context tracked of the attempt that was rolled
+    /// back, so the second attempt reads the counters as they now are.
+    /// </summary>
+    private async Task RaiseNumbersPastJournalAsync(Guid caCertificateId, SigningRefusedException refusal, CancellationToken cancellationToken)
+    {
+        _dbContext.ChangeTracker.Clear();
+        var floor = CrlNumberFloor.FloorAt(DateTimeOffset.UtcNow);
+        var raised = await CrlNumberFloor.ApplyAsync(_dbContext, floor, cancellationToken);
+        _logger.LogWarning(
+            "The signer refused a CRL for CA certificate {CaId} because its number is not above the one in the signer's journal ({Refusal}). "
+            + "The database's CRL counters were behind; {Count} were raised to {Floor} and the CRL is generated again.",
+            caCertificateId, refusal.Message, raised.Count, floor);
+    }
+
+    private async Task<string> GenerateCrlOnceAsync(Guid caCertificateId, CancellationToken cancellationToken)
+    {
+        ModularCA.Shared.Modes.InstanceModeGate.ThrowIfRefused(_modeGate, ModularCA.Shared.Modes.ModeOperation.Fact, "Signing a new CRL");
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         // Override the default 30s command timeout — CRLs for CAs with
@@ -195,15 +290,32 @@ public class CrlService : ICrlService
                 .ToListAsync(cancellationToken);
             revokedCount = revokedCerts.Count;
 
+            var listedSerials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var cert in revokedCerts)
             {
                 var revocationDate = cert.RevocationDate ?? now;
                 var reasonCode = GetCrlReasonCode(cert.RevocationReason);
-                var extensions = BuildEntryExtensions(cert);
+                var extensions = BuildEntryExtensions(cert.RevocationReason, cert.InvalidityDate);
                 if (extensions != null)
                     crlGen.AddCrlEntry(new BigInteger(cert.SerialNumber, 16), revocationDate, extensions);
                 else
                     crlGen.AddCrlEntry(new BigInteger(cert.SerialNumber, 16), revocationDate, reasonCode);
+                listedSerials.Add(cert.SerialNumber);
+            }
+
+            // Serials revoked with no certificate row (RevokedSerialService). A tombstone has no
+            // notAfter, so it is listed until its own ListedUntil. A serial a certificate row
+            // already lists is not listed twice.
+            var tombstones = await _dbContext.RevokedSerialTombstones
+                .Where(t => scope.Contains(t.CaCertificateId) && t.ListedUntil > now)
+                .AsNoTracking()
+                .ToListAsync(cancellationToken);
+            foreach (var tombstone in tombstones)
+            {
+                if (!listedSerials.Add(tombstone.SerialNumber))
+                    continue;
+                AddTombstoneEntry(crlGen, tombstone);
+                revokedCount++;
             }
 
             crlGen.AddExtension(X509Extensions.CrlNumber, false, new DerInteger(BigInteger.ValueOf(newCrlNumber)));
@@ -318,13 +430,32 @@ public class CrlService : ICrlService
     /// <summary>
     /// Generates a delta CRL containing only revocations since the last full CRL.
     /// RFC 5280 §5.2.4 — includes DeltaCRLIndicator and IssuingDistributionPoint extensions.
-    /// Scoped like the full CRL: the CA's certificates that share the signing key. Its base, and
+    /// Scoped like the full CRL: the CA's certificates that share the signing key, and the
+    /// tombstones recorded under them since the base. Its base, and
     /// the delta row it replaces, are this CA certificate's own (by configuration, not issuer DN).
     /// Audit findings #26: emits an <see cref="AuditActionType.CrlGenerated"/> audit record
     /// with <c>IsDelta=true</c> in the details payload after successful persistence.
     /// </summary>
+    /// <remarks>As for a full CRL, a number the signer says is behind its journal raises the counters and the delta is generated once more.</remarks>
     public async Task<string> GenerateDeltaCrlAsync(Guid caCertificateId, CancellationToken cancellationToken = default)
     {
+        // The mode is asked before anything is read, as for a full CRL.
+        ModularCA.Shared.Modes.InstanceModeGate.ThrowIfRefused(_modeGate, ModularCA.Shared.Modes.ModeOperation.Fact, "Signing a new delta CRL");
+        caCertificateId = await IssuerChainResolver.CurrentSameKeyCertificateIdAsync(_dbContext, caCertificateId, cancellationToken);
+        try
+        {
+            return await GenerateDeltaCrlOnceAsync(caCertificateId, cancellationToken);
+        }
+        catch (SigningRefusedException ex) when (IsNumberBehindJournal(ex))
+        {
+            await RaiseNumbersPastJournalAsync(caCertificateId, ex, cancellationToken);
+            return await GenerateDeltaCrlOnceAsync(caCertificateId, cancellationToken);
+        }
+    }
+
+    private async Task<string> GenerateDeltaCrlOnceAsync(Guid caCertificateId, CancellationToken cancellationToken)
+    {
+        ModularCA.Shared.Modes.InstanceModeGate.ThrowIfRefused(_modeGate, ModularCA.Shared.Modes.ModeOperation.Fact, "Signing a new delta CRL");
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         _dbContext.Database.SetCommandTimeout(TimeSpan.FromMinutes(5));
 
@@ -421,14 +552,31 @@ public class CrlService : ICrlService
                 .ToListAsync(cancellationToken);
             revokedCount = revokedSinceBase.Count;
 
+            var listedSerials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var cert in revokedSinceBase)
             {
-                var extensions = BuildEntryExtensions(cert);
+                var extensions = BuildEntryExtensions(cert.RevocationReason, cert.InvalidityDate);
                 var revocationDate = cert.RevocationDate ?? cert.NotAfter;
                 if (extensions != null)
                     crlGen.AddCrlEntry(new BigInteger(cert.SerialNumber, 16), revocationDate, extensions);
                 else
                     crlGen.AddCrlEntry(new BigInteger(cert.SerialNumber, 16), revocationDate, GetCrlReasonCode(cert.RevocationReason));
+                listedSerials.Add(cert.SerialNumber);
+            }
+
+            // Tombstones recorded after the base, as the certificate rows above.
+            var tombstonesSinceBase = await _dbContext.RevokedSerialTombstones
+                .Where(t => scope.Contains(t.CaCertificateId)
+                    && t.ListedUntil > now
+                    && t.RevocationDate > baseFullCrl.GeneratedAt)
+                .AsNoTracking()
+                .ToListAsync(cancellationToken);
+            foreach (var tombstone in tombstonesSinceBase)
+            {
+                if (!listedSerials.Add(tombstone.SerialNumber))
+                    continue;
+                AddTombstoneEntry(crlGen, tombstone);
+                revokedCount++;
             }
 
             // Batched removeFromCRL lookup. Collect base CRL serials into a
@@ -630,22 +778,36 @@ public class CrlService : ICrlService
 
     /// <summary>
     /// Builds the per-entry CRL extension set — always the reason code,
-    /// plus the invalidity date when the cert carries one. Returns null when no extensions
+    /// plus the invalidity date when the entry carries one. Returns null when no extensions
     /// are needed so the caller can use the reason-only overload.
     /// </summary>
-    private static X509Extensions? BuildEntryExtensions(CertificateEntity cert)
+    private static X509Extensions? BuildEntryExtensions(string? revocationReason, DateTime? invalidityDate)
     {
-        if (cert.InvalidityDate == null)
+        if (invalidityDate == null)
             return null;
 
         var ext = new Dictionary<DerObjectIdentifier, X509Extension>
         {
             [X509Extensions.ReasonCode] = new X509Extension(false,
-                new DerOctetString(new CrlReason(GetCrlReasonCode(cert.RevocationReason)))),
+                new DerOctetString(new CrlReason(GetCrlReasonCode(revocationReason)))),
             [X509Extensions.InvalidityDate] = new X509Extension(false,
-                new DerOctetString(new Org.BouncyCastle.Asn1.X509.Time(cert.InvalidityDate.Value.ToUniversalTime()))),
+                new DerOctetString(new Org.BouncyCastle.Asn1.X509.Time(invalidityDate.Value.ToUniversalTime()))),
         };
         return new X509Extensions(ext);
+    }
+
+    /// <summary>
+    /// Adds the CRL entry of a serial revoked with no certificate row, with its recorded date,
+    /// reason and, when it has one, invalidity date: the same entry a certificate row gets.
+    /// </summary>
+    private static void AddTombstoneEntry(X509V2CrlGenerator crlGen, RevokedSerialTombstoneEntity tombstone)
+    {
+        var serial = new BigInteger(tombstone.SerialNumber, 16);
+        var extensions = BuildEntryExtensions(tombstone.RevocationReason, tombstone.InvalidityDate);
+        if (extensions != null)
+            crlGen.AddCrlEntry(serial, tombstone.RevocationDate, extensions);
+        else
+            crlGen.AddCrlEntry(serial, tombstone.RevocationDate, GetCrlReasonCode(tombstone.RevocationReason));
     }
 
     /// <summary>
@@ -807,8 +969,15 @@ public class CrlService : ICrlService
     /// every public CRL fetch. The CRL is the one whose configuration names
     /// <paramref name="caCertificateId"/>, never one matched by issuer DN.
     /// </summary>
+    /// <remarks>
+    /// An earlier certificate of a CA whose certificate was renewed over the same key is answered
+    /// with the CA's one CRL (<see cref="IssuerChainResolver.CurrentSameKeyCertificateIdAsync"/>):
+    /// it names the same issuer, is signed by the same key and lists what was issued under either
+    /// certificate, so a URL that carries the old serial keeps serving a CRL that is current.
+    /// </remarks>
     public async Task<CrlBlob?> GetLatestCrlRawAsync(Guid caCertificateId, CancellationToken cancellationToken = default)
     {
+        caCertificateId = await IssuerChainResolver.CurrentSameKeyCertificateIdAsync(_dbContext, caCertificateId, cancellationToken);
         var ca = await _dbContext.Certificates
             .AsNoTracking()
             .FirstOrDefaultAsync(c => c.CertificateId == caCertificateId, cancellationToken);
@@ -838,6 +1007,7 @@ public class CrlService : ICrlService
     /// </summary>
     public async Task<CrlBlob?> GetLatestDeltaCrlRawAsync(Guid caCertificateId, CancellationToken cancellationToken = default)
     {
+        caCertificateId = await IssuerChainResolver.CurrentSameKeyCertificateIdAsync(_dbContext, caCertificateId, cancellationToken);
         var ca = await _dbContext.Certificates
             .AsNoTracking()
             .FirstOrDefaultAsync(c => c.CertificateId == caCertificateId, cancellationToken);

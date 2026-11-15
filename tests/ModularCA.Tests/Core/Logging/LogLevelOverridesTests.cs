@@ -8,7 +8,7 @@ namespace ModularCA.Tests.Core.Logging;
 
 /// <summary>
 /// The built-in ingress (YARP) logged "Proxying to {targetUrl}" at Information with the full
-/// upstream path, so an enrolment routed through it put its token in the logs.
+/// upstream path, so an enrollment routed through it put its token in the logs.
 /// <see cref="LogLevelOverrides"/> holds YARP at Warning whatever the global level.
 /// </summary>
 public class LogLevelOverridesTests

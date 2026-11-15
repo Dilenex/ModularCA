@@ -15,7 +15,7 @@ namespace ModularCA.Auth.Utils;
 /// <para>
 /// Legacy form: bare uppercase hex of unsalted SHA-256, written before 0.4.3. Rows in that form keep
 /// verifying (<see cref="Candidates"/> yields both), so existing codes stay usable without a migration;
-/// each is consumed on use and the next enrolment writes the current form.
+/// each is consumed on use and the next enrollment writes the current form.
 /// </para>
 /// </summary>
 public static class RecoveryCodeHash

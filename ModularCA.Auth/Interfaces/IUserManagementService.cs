@@ -28,7 +28,7 @@ namespace ModularCA.Auth.Interfaces
         Task<bool> DeleteUser(Guid userId);
 
         /// <summary>
-        /// Why the account cannot be deleted, or null when it can: it is the enrolment account of
+        /// Why the account cannot be deleted, or null when it can: it is the enrollment account of
         /// a Kerberos realm, which would stop enrolling without it. Null also for an id that names
         /// no account.
         /// </summary>

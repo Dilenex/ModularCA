@@ -82,6 +82,18 @@ public sealed partial class InProcessSigningService
         SshCertificateFields? fields = null;
         if (refusal == null)
             (fields, refusal) = ReadSshCertificateFields(request);
+        if (refusal == null && _journal != null)
+        {
+            try
+            {
+                _journal.EnsureAvailable();
+            }
+            catch (ModularCA.Journal.JournalUnavailableException ex)
+            {
+                refusal = new SigningRefusedException(SigningRefusalReason.JournalUnavailable,
+                    $"The signer's journal cannot take a record, and the signer signs no certificate it cannot record: {ex.Message}");
+            }
+        }
 
         SshCertificate? certificate = null;
         if (refusal == null)
@@ -120,6 +132,16 @@ public sealed partial class InProcessSigningService
         }
 
         var blob = certificate!.Blob;
+        if (_journal != null)
+        {
+            // Fail closed, as for an X.509 certificate: one the journal cannot record is not returned.
+            var unrecorded = await RecordInJournalAsync(() => _journal.RecordSshCertificateAsync(context.CaId, binding!.PublicKey.Blob, blob, context));
+            if (unrecorded != null)
+            {
+                await RecordAsync(SignSshOperation, context, key, null, allowed: false, unrecorded.Message, SHA256.HashData(blob), cancellationToken, summary: summary);
+                throw unrecorded;
+            }
+        }
         await RecordAsync(SignSshOperation, context, key,
             SignatureAlgorithm.FromName(SshSignatureAlgorithms.SignerAlgorithmName(certificate.SignatureAlgorithm)),
             allowed: true, reason: null, SHA256.HashData(blob), cancellationToken, summary: summary);

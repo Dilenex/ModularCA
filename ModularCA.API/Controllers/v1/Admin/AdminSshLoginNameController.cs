@@ -104,6 +104,7 @@ public class AdminSshLoginNameController(ISshLoginNameService loginNames, ICurre
     /// the key's maximum, an end in the past, a name that is no login name, both or neither of
     /// <c>userId</c> and <c>groupId</c>, and a user or group the SSH CA may not refer to, are 400.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("ca-keys/{caKeyId:guid}/login-names")]
     [Authorize(Policy = "CaAdmin")]
     [RequireStepUp(StepUpOps.ManageSshLoginNames, "caKeyId")]
@@ -124,6 +125,7 @@ public class AdminSshLoginNameController(ISshLoginNameService loginNames, ICurre
     /// their validity; lowering the limit revokes none. Answers the grant and how many
     /// certificates were revoked.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("ca-keys/{caKeyId:guid}/login-names/{grantId:guid}")]
     [Authorize(Policy = "CaAdmin")]
     [RequireStepUp(StepUpOps.ManageSshLoginNames, "caKeyId")]
@@ -141,6 +143,7 @@ public class AdminSshLoginNameController(ISshLoginNameService loginNames, ICurre
     /// Removes a grant, revokes the certificates whose subject then no longer holds a name, and
     /// answers how many were revoked.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("ca-keys/{caKeyId:guid}/login-names/{grantId:guid}")]
     [Authorize(Policy = "CaAdmin")]
     [RequireStepUp(StepUpOps.ManageSshLoginNames, "caKeyId")]
@@ -157,6 +160,7 @@ public class AdminSshLoginNameController(ISshLoginNameService loginNames, ICurre
     /// Sets whether everyone may log in as their own username on an SSH CA key, without a grant.
     /// Turning it off revokes the certificates whose subject then no longer holds a name.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("ca-keys/{caKeyId:guid}/login-names/own-username")]
     [Authorize(Policy = "CaAdmin")]
     [RequireStepUp(StepUpOps.ManageSshLoginNames, "caKeyId")]
@@ -258,6 +262,7 @@ public class AdminSshLoginNameController(ISshLoginNameService loginNames, ICurre
     /// because the caller may not revoke on their key. Needs user.manage, step-up MFA, and a
     /// user inside the caller's user.manage fence; otherwise 404.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpPost("users/{userId:guid}/certificates/revoke")]
     [Authorize]
     [RequireCaCapability(Capabilities.UserManage, CaTarget.AnyCa)]

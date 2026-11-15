@@ -101,6 +101,23 @@ if (ModularCA.API.Startup.SignerReadinessCheck.IsNamedIn(args))
     Environment.Exit(await ModularCA.API.Startup.NodeReadinessCheck.RunAsync(args, AppContext.BaseDirectory, Console.Out, Console.Error));
 }
 
+// --backup-manifest: says what a backup archive is, as one line of JSON, and exits. It runs before
+// the startup logger exists so that the line is all standard output carries, and because it must
+// write nothing: it reads the archive and its key file, no database and no keystore.
+if (ModularCA.Bootstrap.BackupManifestCommand.IsNamedIn(args))
+{
+    Environment.Exit(ModularCA.Bootstrap.BackupManifestCommand.Run(args, AppContext.BaseDirectory, Console.Out, Console.Error));
+}
+
+// --role signer --journal-head and --journal-verify: read the signer's issuance journal from its
+// files and exit. Before the startup logger for the same reasons: one line on standard output,
+// and nothing written anywhere. They open segment files for reading only and touch no database,
+// keystore or lock, so they run beside a signer that is appending and on a copy of the directory.
+if (ModularCA.API.Startup.JournalCommands.IsNamedIn(args))
+{
+    Environment.Exit(ModularCA.API.Startup.JournalCommands.Run(args, signerPaths, Console.Out, Console.Error));
+}
+
 var bootstrapConfig = new LoggerConfiguration().MinimumLevel.Information();
 switch (bootstrapConsoleFormat)
 {
@@ -279,103 +296,11 @@ if (args.Contains("--backup", StringComparer.OrdinalIgnoreCase))
         backupJournal, outputPath, () => BackupRestore.Backup(outputPath, BackupSignerFor));
     Environment.Exit(exitCode);
 }
-if (args.Contains("--restore", StringComparer.OrdinalIgnoreCase))
+// The restore asks for nothing with --unattended, reads every secret from a file, and ends with one
+// line that says whether anything was changed: see RestoreCommand for the statuses (0, 3, 4, 75).
+if (ModularCA.API.Startup.RestoreCommand.IsNamedIn(args))
 {
-    var archivePath = args.SkipWhile(a => !a.Equals("--restore", StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault();
-    if (string.IsNullOrWhiteSpace(archivePath))
-    {
-        Console.WriteLine("Usage: --restore <backup-archive.enc> [--password <password>] [--restore-audit]");
-        Environment.Exit(1);
-    }
-
-    // Optional --password <pwd> for disaster recovery when backup-password.key is missing
-    // or doesn't match this archive's salt. If the flag isn't supplied but the archive is
-    // a StoredPassword archive that needs a password, fall back to an interactive prompt.
-    string? providedPassword = args
-        .SkipWhile(a => !a.Equals("--password", StringComparison.OrdinalIgnoreCase))
-        .Skip(1)
-        .FirstOrDefault();
-
-    try
-    {
-        var info = ModularCA.Bootstrap.Crypto.BackupKeyManager.PeekArchiveInfo(archivePath);
-        if (info is { IsLegacyFormat: false, Mode: ModularCA.Bootstrap.Crypto.BackupEncryptionMode.StoredPassword }
-            && string.IsNullOrEmpty(providedPassword))
-        {
-            // Check whether the local password file would decrypt this archive by comparing salts.
-            // If the file is missing OR the salts don't match, prompt for the password interactively.
-            // We use the default config-relative path here — the CLI --restore handler runs before
-            // the full runtime config is loaded, and overriding the path is an edge case operators
-            // can handle via `--password <pwd>` if they've moved the key file.
-            var passwordKeyPath = Path.Combine(
-                AppContext.BaseDirectory,
-                "config",
-                "backup-password.key");
-
-            bool needPrompt = true;
-            if (File.Exists(passwordKeyPath))
-            {
-                try
-                {
-                    var (kek, storedSalt, _, _, _) =
-                        ModularCA.Bootstrap.Crypto.BackupKeyManager.ReadPasswordKeyFile(passwordKeyPath);
-                    ModularCA.Bootstrap.Crypto.BackupKeyManager.ZeroKey(kek);
-                    if (info.Salt != null && storedSalt.AsSpan().SequenceEqual(info.Salt))
-                        needPrompt = false;
-                }
-                catch
-                {
-                    needPrompt = true;
-                }
-            }
-
-            if (needPrompt)
-            {
-                Console.WriteLine();
-                Console.WriteLine("This archive is encrypted in StoredPassword mode and cannot be restored with the");
-                Console.WriteLine("current password key file. Enter the backup password to proceed (or Ctrl+C to abort):");
-                Console.Write("Password: ");
-
-                var entered = new StringBuilder();
-                ConsoleKeyInfo keyInfo;
-                while ((keyInfo = Console.ReadKey(intercept: true)).Key != ConsoleKey.Enter)
-                {
-                    if (keyInfo.Key == ConsoleKey.Backspace && entered.Length > 0)
-                        entered.Remove(entered.Length - 1, 1);
-                    else if (!char.IsControl(keyInfo.KeyChar))
-                        entered.Append(keyInfo.KeyChar);
-                }
-                Console.WriteLine();
-                providedPassword = entered.ToString();
-                if (string.IsNullOrEmpty(providedPassword))
-                {
-                    Console.WriteLine("No password entered — aborting.");
-                    Environment.Exit(1);
-                }
-            }
-        }
-    }
-    catch (FileNotFoundException ex)
-    {
-        Console.WriteLine($"❌ {ex.Message}");
-        Environment.Exit(1);
-    }
-    catch (InvalidDataException ex)
-    {
-        Console.WriteLine($"❌ Cannot read backup archive: {ex.Message}");
-        Environment.Exit(1);
-    }
-
-    // The audit database is kept unless --restore-audit asks for the archive's audit trail.
-    var restoreAudit = args.Contains("--restore-audit", StringComparer.OrdinalIgnoreCase);
-    Log.Warning("Operator triggered restore (--restore) archive={ArchivePath} restoreAudit={RestoreAudit}", archivePath, restoreAudit);
-    // As for --backup: run as the signer from its own directory, the restore is recorded in the
-    // signer's audit journal. The password is never part of what is recorded.
-    var restoreJournal = ModularCA.Keystore.Services.SignerToolJournal.Open(signerPaths, message => Log.Warning("{Message}", message));
-    var exitCode = await ModularCA.Keystore.Services.SignerToolJournal.RestoreAsync(
-        restoreJournal, archivePath, restoreAudit,
-        () => BackupRestore.Restore(archivePath, MaintenanceSignerFor, skipSchemaCheck: false, providedPassword: providedPassword, restoreAudit: restoreAudit));
-    Environment.Exit(exitCode);
+    Environment.Exit(await ModularCA.API.Startup.RestoreCommand.RunAsync(args, signerPaths, MaintenanceSignerFor));
 }
 if (args.Contains("--backfill-keystore-pins", StringComparer.OrdinalIgnoreCase))
 {
@@ -606,14 +531,22 @@ if (args.Contains(ModularCA.API.Startup.ClaimTokenCommand.IssueFlag, StringCompa
 // Host-local access to the stored settings, with the db.yaml credentials: the way to read and
 // change an instance-wide setting without the console, above all one that has locked the
 // administrators out of it. See SettingsCommand.
-if (args.Contains(ModularCA.Core.Services.Settings.SettingsCommand.Flag, StringComparer.OrdinalIgnoreCase))
+// --new-hub-token prints an affiliation token with its hash and touches nothing.
+// --set-hub-token-hash sets the hash an existing instance holds, through the same store as
+// --settings below. See HubTokenCommand.
+if (args.Contains(ModularCA.API.Startup.HubTokenCommand.NewFlag, StringComparer.OrdinalIgnoreCase))
+{
+    Environment.Exit(ModularCA.API.Startup.HubTokenCommand.RunNew(Console.Out));
+}
+var hubTokenHashCommand = args.Contains(ModularCA.API.Startup.HubTokenCommand.SetFlag, StringComparer.OrdinalIgnoreCase);
+if (hubTokenHashCommand || args.Contains(ModularCA.Core.Services.Settings.SettingsCommand.Flag, StringComparer.OrdinalIgnoreCase))
 {
     var settingsArgs = args.SkipWhile(a => !a.Equals(ModularCA.Core.Services.Settings.SettingsCommand.Flag, StringComparison.OrdinalIgnoreCase)).Skip(1).ToList();
     var settingsDbYaml = YamlDbConfigLoader.Load(Path.Combine(AppContext.BaseDirectory, "config", "db.yaml"));
     if (settingsDbYaml == null)
     {
-        Console.Error.WriteLine("config/db.yaml was not found: --settings runs on an installed node, as the service user.");
-        Console.Error.WriteLine(ModularCA.Core.Services.Settings.SettingsCommand.Usage);
+        Console.Error.WriteLine("config/db.yaml was not found: --settings and --set-hub-token-hash run on an installed node, as the service user.");
+        Console.Error.WriteLine(hubTokenHashCommand ? ModularCA.API.Startup.HubTokenCommand.Usage : ModularCA.Core.Services.Settings.SettingsCommand.Usage);
         Environment.Exit(1);
     }
     var settingsDbConfig = new SystemConfig();
@@ -644,9 +577,21 @@ if (args.Contains(ModularCA.Core.Services.Settings.SettingsCommand.Flag, StringC
             new ModularCA.Core.Services.Settings.HostAuditService(settingsAuditDb),
             new ModularCA.Core.Services.Settings.NoSecretsSigner(),
             Microsoft.Extensions.Logging.Abstractions.NullLogger<ModularCA.Core.Services.Settings.SettingsStore>.Instance);
-        // The verb and the key are logged; a value is not.
-        Log.Warning("Operator triggered --settings {Verb} {Key}", settingsArgs.ElementAtOrDefault(0) ?? "", settingsArgs.ElementAtOrDefault(1) ?? "");
-        settingsExit = await ModularCA.Core.Services.Settings.SettingsCommand.RunAsync(settingsStore, settingsArgs, Console.Out, Console.Error);
+        if (hubTokenHashCommand)
+        {
+            Log.Warning("Operator triggered --set-hub-token-hash");
+            settingsExit = await ModularCA.API.Startup.HubTokenCommand.RunSetAsync(
+                settingsStore,
+                new ModularCA.Core.Services.Settings.HostAuditService(settingsAuditDb),
+                args.SkipWhile(a => !a.Equals(ModularCA.API.Startup.HubTokenCommand.SetFlag, StringComparison.OrdinalIgnoreCase)).Skip(1).FirstOrDefault(),
+                Console.Out, Console.Error);
+        }
+        else
+        {
+            // The verb and the key are logged; a value is not.
+            Log.Warning("Operator triggered --settings {Verb} {Key}", settingsArgs.ElementAtOrDefault(0) ?? "", settingsArgs.ElementAtOrDefault(1) ?? "");
+            settingsExit = await ModularCA.Core.Services.Settings.SettingsCommand.RunAsync(settingsStore, settingsArgs, Console.Out, Console.Error);
+        }
     }
     catch (Exception ex)
     {
@@ -1038,6 +983,39 @@ builder.Services.AddSingleton(activeRoles);
 // The control role gates the most: the console and wizard surface, every startup write, and
 // the scheduled jobs that mutate. Named once so the gates below read the same.
 var controlActive = activeRoles.Has(ModularCA.API.Startup.ProcessRole.Control);
+// The instance's mode: what it may do right now. Kept in a small file on this host, beside the
+// hub's socket when MODULARCA__HUB__SOCKET names one and in config/ otherwise, never in the
+// database. With no hub socket and no file it is full, as an install with no hub always was.
+// The setup wizard runs before there is an instance, so it is always full.
+var hubSocketPath = Environment.GetEnvironmentVariable(ModularCA.Shared.Modes.InstanceModeStore.HubSocketVariable);
+if (string.IsNullOrWhiteSpace(hubSocketPath)) hubSocketPath = null;
+ModularCA.Shared.Modes.InstanceModeStore? instanceModeStore = null;
+if (!isSetupMode)
+{
+    try
+    {
+        instanceModeStore = ModularCA.Shared.Modes.InstanceModeStore.Open(
+            hubSocketPath,
+            Environment.GetEnvironmentVariable(ModularCA.Shared.Modes.InstanceModeStore.HubStartModeVariable),
+            Path.Combine(AppContext.BaseDirectory, "config"));
+    }
+    catch (ArgumentException ex)
+    {
+        Console.Error.WriteLine($"[FATAL] {ex.Message}");
+        Environment.Exit(1);
+        throw;
+    }
+    builder.Services.AddSingleton(instanceModeStore);
+    var modeAtStart = instanceModeStore.Current;
+    if (modeAtStart.Mode != ModularCA.Shared.Modes.InstanceMode.Full)
+        Log.Warning("This instance starts in {Mode} (set by {Source}{SetBy}); record at {Path}",
+            ModularCA.Shared.Modes.InstanceModeGate.DisplayName(modeAtStart.Mode),
+            ModularCA.Shared.Modes.InstanceModeStore.SourceName(modeAtStart.Source),
+            modeAtStart.SetBy == null ? "" : " " + modeAtStart.SetBy,
+            instanceModeStore.FilePath);
+}
+builder.Services.AddSingleton<ModularCA.Shared.Modes.IInstanceModeGate>(
+    instanceModeStore ?? (ModularCA.Shared.Modes.IInstanceModeGate)ModularCA.Shared.Modes.FullInstanceModeGate.Instance);
 // A process with the ingress role and nothing else terminates TLS and forwards; it holds no
 // key, hosts no controller, no scheduler and no console, and needs no signer at all.
 var ingressOnly = !activeRoles.HasAnyNodeRole && !activeRoles.Has(ModularCA.API.Startup.ProcessRole.Signer);
@@ -1084,6 +1062,14 @@ Log.Information("Process roles: {Roles}", string.Join(",", activeRoles.Names));
 // missing or empty database is left to setup recovery below. Setup mode skips the check:
 // bootstrap creates the schema. An ingress-only process reads the application database (the
 // listener's trust anchors) and never the audit database, and applies no migration.
+// What the continuity step below found, for /health/ready.
+var continuityState = new ModularCA.API.Startup.ContinuityStartState();
+// The lock this node holds on the application database for as long as it runs, on a connection
+// of its own: a restore that finds it held is refused, and this start waits for, or gives way
+// to, a restore that holds the database (ModularCA.Database.RestoreLock). Never taken in setup mode.
+var servingLock = new ModularCA.Database.ServingDatabaseLock(appConnStr, ModularCA.Database.RestoreLock.NodeKey,
+    new Serilog.Extensions.Logging.SerilogLoggerFactory(Log.Logger).CreateLogger("ModularCA.RestoreLock"));
+builder.Services.AddSingleton(servingLock);
 if (!isSetupMode)
 {
     var schemaTargets = new List<ModularCA.API.Startup.SchemaTarget>
@@ -1092,6 +1078,17 @@ if (!isSetupMode)
     };
     if (!ingressOnly && !string.IsNullOrWhiteSpace(config.DB.Audit.Database))
         schemaTargets.Add(new("audit", DatabaseKind.Audit, config.DB.Audit));
+    // First the restore lock, so no migration and no start-up write below can meet a restore:
+    // a restore in progress is waited for (Schema.RestoreWaitSeconds), then the process exits 75.
+    var lockExit = await ModularCA.API.Startup.SchemaStartup.TakeServingLockAsync(
+        servingLock, config.DB.App, config.Schema, new SystemdNotifier());
+    if (lockExit is int lockCode)
+    {
+        await Log.CloseAndFlushAsync();
+        Environment.Exit(lockCode);
+    }
+    // From here on: a restore found beside this running node ends the node with status 75.
+    ModularCA.API.Startup.SchemaStartup.ExitWhenRestoreFoundBeside(servingLock, "node");
     var schemaExit = await ModularCA.API.Startup.SchemaStartup.EnforceAllAsync(
         schemaTargets, controlActive, config.Schema, new SystemdNotifier());
     if (schemaExit is int code)
@@ -1155,6 +1152,22 @@ if (!isSetupMode)
             Environment.Exit(1);
         }
     }
+
+    // Rollback continuity: the control role compares the machine's incarnation with the one the
+    // database last saw, here, before the web host, the scheduler or any CRL generation exists
+    // in this process. A change raises the CRL numbers, is recorded and stands as a notice; it
+    // never stops the start. Only the control role compares, so the processes of a split
+    // install do not each store their own view; it is also the role that generates CRLs on a
+    // schedule. Two control processes starting together take a database lock in turn.
+    if (controlActive)
+        await ModularCA.API.Startup.ContinuityStartup.RunAsync(config, continuityState);
+
+    // The instance's identifier: the control role stores it once, at the first start of a build
+    // that keeps it, from the fingerprint of the system signing CA as it is then. Every later
+    // start finds it stored and writes nothing. Here, so it is stored before the hub's socket
+    // opens and hello is asked for it. It never stops the start.
+    if (controlActive)
+        await ModularCA.API.Startup.InstanceIdStartup.RunAsync(config);
 
     try
     {
@@ -1224,6 +1237,10 @@ builder.Services.AddSingleton(config);
 builder.Services.AddSingleton(envOverlay);
 builder.Services.AddSingleton(settingsPersistence);
 builder.Services.AddSingleton(signerSecretsState);
+// What the readiness check last learned of the signer, with its time; the hub's inventory reads it.
+builder.Services.AddSingleton<ModularCA.Core.Services.SignerContactState>();
+// What the readiness check last learned of the signer's issuance journal, for the hub's inventory.
+builder.Services.AddSingleton<ModularCA.Core.Services.Journal.SignerJournalState>();
 builder.Services.AddSingleton<ModularCA.Core.Services.AuditHashChainService>();
 
 // Entitlements are resolved once from a signed licence file and never change while the process
@@ -1306,6 +1323,28 @@ builder.Services.AddSingleton(sp => new ModularCA.Core.Services.SchedulerJobRunn
     sp.GetRequiredService<ILogger<ModularCA.Core.Services.SchedulerJobRunner>>(),
     sp.GetRequiredService<SystemConfig>(),
     ModularCA.Core.Services.SchedulerService.InstanceId));
+// The published-CRL check of a start, registered before the scheduler: hosted services start in
+// order and each is awaited, so a CRL read back with a higher number than the database knows has
+// raised the counters before the scheduler ticks. The control role runs it, as it runs the
+// incarnation comparison above.
+builder.Services.AddSingleton(continuityState);
+builder.Services.AddScoped<ModularCA.Core.Services.Continuity.IPublishedCrlReader, ModularCA.Core.Services.Continuity.LdapPublishedCrlReader>();
+if (!isSetupMode && controlActive)
+    builder.Services.AddHostedService<ModularCA.API.Services.PublishedCrlCheckService>();
+
+// The merge of revocations from the signer's journal: after a database has gone back in time the
+// node makes again the revocations the journal holds and the database lacks. The CRL service
+// runs it for a CA before that CA's first CRL of this process; the control role also runs it for
+// every CA in the background after start, so the node is ready without waiting for it.
+builder.Services.AddSingleton<ModularCA.Core.Services.Journal.JournalMergeState>();
+builder.Services.AddSingleton<ModularCA.Core.Services.Journal.IJournalRevocationMerge, ModularCA.Core.Services.Journal.JournalRevocationMerge>();
+if (!isSetupMode && controlActive)
+    builder.Services.AddHostedService<ModularCA.Core.Services.Journal.JournalMergeService>();
+// A CA made before the certificate history existed (or by bootstrap) gets its first entry, in
+// the background after the start and never while the instance is in DR mode.
+if (!isSetupMode && controlActive)
+    builder.Services.AddHostedService<ModularCA.Core.Services.CaCertificateHistoryService>();
+
 // The scheduler runs where a role that owns jobs runs: the control plane, or an enrollment
 // process for its protocol sweeps. A validation-only process hosts none. The lease is the
 // control plane's usual one, or the enrollment set's own when control is elsewhere.
@@ -1317,7 +1356,10 @@ if (!isSetupMode && ModularCA.API.Startup.SchedulerJobRoles.RunsScheduler(active
         sp.GetRequiredService<ILogger<SchedulerService>>(),
         sp.GetRequiredService<SystemConfig>(),
         sp.GetService<TimeProvider>(),
-        schedulerLeaseName));
+        schedulerLeaseName,
+        sp.GetRequiredService<ModularCA.Shared.Modes.IInstanceModeGate>(),
+        ModularCA.API.Startup.SchedulerJobRoles.ModeOperationOf,
+        () => servingLock.HoldReason));
 }
 else if (!isSetupMode)
 {
@@ -1343,6 +1385,8 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUserService, CurrentUserService>();
 
 builder.Services.AddScoped<ICertificateRevocationService, CertificateRevocationService>();
+// Revocation of what the database does not hold: tombstones and adoption of a supplied certificate.
+builder.Services.AddScoped<ModularCA.Core.Services.RevokedSerialService>();
 
 // ACME Protocol Services
 builder.Services.AddScoped<IAcmeNonceService, AcmeNonceService>();
@@ -1430,6 +1474,8 @@ builder.Services.AddScoped<ModularCA.Core.Services.IApiKeyService, ModularCA.Cor
 
 // CA creation at runtime (root + intermediate)
 builder.Services.AddScoped<CaCreationService>();
+builder.Services.AddScoped<CaLifecycleService>();
+builder.Services.AddScoped<CaCertificateRenewalService>();
 
 // Use the already-loaded config instance instead of building a temporary provider
 var loadedConfig = config;
@@ -1853,7 +1899,11 @@ else
             sp.GetRequiredService<IServiceScopeFactory>(),
             sp.GetRequiredService<ModularCA.Keystore.Signing.ISignerAuditSink>(),
             sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ModularCA.Keystore.Signing.InProcessSigningService>>(),
-            sp.GetRequiredService<IKeyWrappingPassphraseProvider>()));
+            sp.GetRequiredService<IKeyWrappingPassphraseProvider>(),
+            // The issuance journal, beside the keystore files unless Signer.Journal.Directory says
+            // otherwise. In one process it survives a database restore, and it does not protect
+            // against the process itself: the same process holds the keys and the files.
+            journal: ModularCA.API.Startup.SignerRole.JournalSettings(signerPaths, config)));
 }
 
 // Key wrapping passphrase provider for HKDF-based non-RSA private key encryption. A node with
@@ -1887,6 +1937,8 @@ builder.Services.AddScoped<ICsrService, CsrService>();
 builder.Services.AddControllers(options =>
 {
     options.Conventions.Add(new ModularCA.API.Startup.NodeRoleConvention(processRoles));
+    // The instance's mode, asked once for every endpoint that declares a class: see ModeGateFilter.
+    options.Filters.Add(new ModularCA.Auth.Authorization.ModeGateFilter());
 }).AddJsonOptions(opts => ModularCA.API.Json.ApiJsonOptions.Apply(opts.JsonSerializerOptions));
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
@@ -1947,6 +1999,11 @@ builder.Services.AddSingleton<SiemLogFormatter>();
 builder.Services.AddScoped<IEnrollmentTokenService, EnrollmentTokenService>();
 builder.Services.AddScoped<IEnrollmentAuthorizationService, EnrollmentAuthorizationService>();
 builder.Services.AddHostedService<ModularCA.API.Services.WhitelistRewarmService>();
+// The facts the node asserts in the signer's issuance journal (a revocation, a released hold,
+// something disabled, a restore) wait in a table, written in the same save as the change each
+// describes. Every process that has a signer offers them to it and removes what it took.
+if (!isSetupMode && !ingressOnly)
+    builder.Services.AddHostedService<ModularCA.Core.Services.Journal.SignerFactDrain>();
 builder.Services.AddScoped<ModularCA.Shared.Interfaces.IEnrollmentPrincipalAuthorizer, ModularCA.Auth.Authorization.EnrollmentPrincipalAuthorizer>();
 builder.Services.AddScoped<ModularCA.Auth.Services.ILdapAuthService, ModularCA.Auth.Services.LdapAuthService>();
 builder.Services.AddScoped<ICtSubmissionService, CtSubmissionService>();
@@ -1995,9 +2052,24 @@ var healthChecks = builder.Services.AddHealthChecks()
     // The active roles and, per role, whether what it needs is there (validation: the signer
     // reachable; enrollment: the signer unlocked; control: the database).
     .AddCheck<ModularCA.API.HealthChecks.NodeRoleHealthCheck>("roles")
+    .AddCheck<ModularCA.API.HealthChecks.InstanceModeHealthCheck>("instance-mode")
     // Whether the secrets the signer wraps have been read: not while a node that started before
     // its signer answered waits for it.
-    .AddCheck<ModularCA.API.HealthChecks.SignerSecretsHealthCheck>("signer-secrets");
+    .AddCheck<ModularCA.API.HealthChecks.SignerSecretsHealthCheck>("signer-secrets")
+    // The standing notice that this instance runs from an earlier or copied state. Always
+    // healthy: it is information for an orchestrator and an administrator, not a reason to
+    // stop serving.
+    .AddCheck<ModularCA.API.HealthChecks.ContinuityHealthCheck>("continuity")
+    // The lock that keeps a restore and this node apart: unhealthy while a restore runs beside
+    // this process, and after one has run until the process is restarted.
+    .AddCheck<ModularCA.API.HealthChecks.RestoreLockHealthCheck>("restore-lock")
+    // The signer's issuance journal: its head, its size, the room on its volume and the age of
+    // its last checkpoint. Degraded when it cannot be written or its volume is nearly full,
+    // since issuance stops with it; never unhealthy.
+    .AddCheck<ModularCA.API.HealthChecks.JournalHealthCheck>("journal")
+    // The notices about each CA's key and certificate over time (expiry, key usage period).
+    // Always healthy: a CA certificate nearing its end is acted on in months, not by a probe.
+    .AddCheck<ModularCA.API.HealthChecks.CaLifecycleHealthCheck>("ca-lifecycle");
 // A node whose remote signer did not answer at start reads the wrapped secrets in the background
 // once it does, without a restart, and reports itself not ready until then.
 if (signerSecretsState.Pending)
@@ -3313,6 +3385,16 @@ if (!needsSetup)
         }
         if (trustAnchors.Count > 0)
             Console.WriteLine($"[TrustAnchors] Loaded {trustAnchors.Count} trust anchor(s) into runtime registry.");
+
+        // A CA whose certificate was renewed has a current certificate the keystore files do
+        // not carry: they hold the certificate each key was committed with. The registry is
+        // told of the current one here, so it is the certificate the CA is known by.
+        var renewedCount = ModularCA.Core.Helpers.CaCertificateHistory.RegisterRenewedAsync(trustDb, signerBootstrap.Certificates).GetAwaiter().GetResult();
+        if (renewedCount > 0)
+            Console.WriteLine($"[TrustAnchors] Registered the current certificate of {renewedCount} renewed CA(s).");
+
+        // The first entry of each older CA's certificate history is written in the background
+        // (CaCertificateHistoryService), and not while the instance is in DR mode.
     }
     catch (Exception ex)
     {
@@ -3871,6 +3953,24 @@ if (!isSetupMode && controlActive)
     {
         var replayLogger = app.Services.GetRequiredService<ILogger<Program>>();
         replayLogger.LogWarning(ex, "Bootstrap audit replay failed at startup; will retry on next boot");
+    }
+}
+
+// The hub's local connection: a listener of its own, on the Unix socket MODULARCA__HUB__SOCKET
+// names, for health, mode, backup and token replacement only. With the variable unset nothing is
+// opened. See HubLocalConnection.
+if (ModularCA.API.Startup.HubLocalConnection.Hosts(hubSocketPath, activeRoles, isSetupMode))
+{
+    try
+    {
+        await ModularCA.API.Startup.HubLocalConnection.StartAsync(app, hubSocketPath!, instanceModeStore!, config, settingsPersistence);
+    }
+    catch (Exception ex)
+    {
+        Log.Fatal(ex, "The hub's local connection could not be opened on {Socket}", hubSocketPath);
+        Console.Error.WriteLine($"[FATAL] The hub's local connection could not be opened on {hubSocketPath}: {ex.Message}");
+        await Log.CloseAndFlushAsync();
+        Environment.Exit(1);
     }
 }
 

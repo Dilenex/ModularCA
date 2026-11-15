@@ -105,6 +105,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// (<see cref="StepUpOps.CreateCrlSchedule"/>) and verifies the caller can
         /// access the target CA's space. Audit fires on success and on access-failure paths.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.CaCertificate, "request.CaCertificateId")]
@@ -167,6 +168,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// cadence/overlap/delta config are reviewable. Failure paths (cross-space or
         /// missing schedule) emit a failure audit row.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPut("{id:guid}")]
         [Authorize(Policy = "CaOperator")]
         [RequireStepUp(StepUpOps.UpdateCrlSchedule, "id")]
@@ -217,6 +219,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// space fence. Toggling is treated as a sensitive operation because disabling
         /// CRL generation silently degrades revocation freshness for an entire CA.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPut("{id:guid}/status")]
         [Authorize(Policy = "CaOperator")]
         [RequireStepUp(StepUpOps.ToggleCrlSchedule, "id")]
@@ -254,6 +257,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// Captures the deleted resource's identifying fields in the audit payload so
         /// deletes are reviewable after the row is gone. Failure paths emit a failure audit row.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpDelete("{id:guid}")]
         [Authorize(Policy = "CaOperator")]
         [RequireStepUp(StepUpOps.DeleteCrlSchedule, "id")]
@@ -308,6 +312,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// A failed row carries a generic message and the correlation id under which its exception
         /// is logged, not the exception's message. Requires <c>CaOperator</c>.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("bulk")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.CrlConfigurations, "request.Actions")]

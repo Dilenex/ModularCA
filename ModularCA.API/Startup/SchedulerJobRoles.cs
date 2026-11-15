@@ -1,5 +1,6 @@
 using ModularCA.Core.Services.SchedulerJobs;
 using ModularCA.Shared.Interfaces;
+using ModularCA.Shared.Modes;
 
 namespace ModularCA.API.Startup;
 
@@ -43,6 +44,60 @@ public static class SchedulerJobRoles
     };
 
     /// <summary>
+    /// The mode class of every registered job, which decides the modes the scheduler runs it in
+    /// (<see cref="InstanceModeGate.Allows"/>). Scheduled issuance, CRL signing, publishing and
+    /// the sweeps are facts or restrictions: they go on while the instance is restricted and are
+    /// held in DR mode. The directory group sync changes grants and the audit retention deletes,
+    /// so both wait for full mode. Backups change no instance data and run in every mode.
+    /// A job with no class stops startup, and the architecture test over this table fails first.
+    /// </summary>
+    public static readonly IReadOnlyDictionary<Type, ModeOperation> ModeOperations = new Dictionary<Type, ModeOperation>
+    {
+        [typeof(AcmeCleanupJob)] = ModeOperation.Fact,
+        [typeof(ProtocolCleanupJob)] = ModeOperation.Fact,
+        [typeof(CrlExportJob)] = ModeOperation.Fact,
+        [typeof(LdapPublisherJob)] = ModeOperation.Fact,
+        [typeof(LdapGroupSyncJob)] = ModeOperation.Frozen,
+        [typeof(CertExpiryNotificationJob)] = ModeOperation.Fact,
+        [typeof(ComplianceScanJob)] = ModeOperation.Fact,
+        [typeof(AutoRenewalJob)] = ModeOperation.Issue,
+        [typeof(CertExpireJob)] = ModeOperation.Fact,
+        [typeof(BackupCreationJob)] = ModeOperation.Manage,
+        [typeof(BackupVerificationJob)] = ModeOperation.Manage,
+        [typeof(AuditRetentionJob)] = ModeOperation.Frozen,
+        [typeof(TlsRenewalJob)] = ModeOperation.Fact,
+        [typeof(SshLoginNameSweepJob)] = ModeOperation.Restriction,
+    };
+
+    /// <summary>
+    /// The mode class of <paramref name="jobType"/>. Throws <see cref="InvalidOperationException"/>
+    /// naming the type when the table does not list it.
+    /// </summary>
+    public static ModeOperation ModeOperationOf(Type jobType)
+    {
+        ArgumentNullException.ThrowIfNull(jobType);
+        return ModeOperations.TryGetValue(jobType, out var operation)
+            ? operation
+            : throw new InvalidOperationException($"{jobType.FullName} is a scheduled job with no mode class; add it to SchedulerJobRoles.ModeOperations.");
+    }
+
+    /// <summary>
+    /// The mode class of the job a manual run names (<c>AutoRenewal</c>, <c>Compliance</c>):
+    /// the job type's name without its <c>Job</c> suffix, and <c>Compliance</c> for the compliance
+    /// scan. A name that is no job's is <see cref="ModeOperation.Frozen"/>, the most restrictive.
+    /// </summary>
+    public static ModeOperation ModeOperationOfName(string jobName)
+    {
+        foreach (var (type, operation) in ModeOperations)
+        {
+            var name = type == typeof(ComplianceScanJob) ? "Compliance" : type.Name[..^"Job".Length];
+            if (string.Equals(name, jobName, StringComparison.Ordinal))
+                return operation;
+        }
+        return ModeOperation.Frozen;
+    }
+
+    /// <summary>
     /// The role that owns <paramref name="jobType"/>. Throws <see cref="InvalidOperationException"/>
     /// naming the type when the table does not list it.
     /// </summary>
@@ -77,6 +132,7 @@ public static class SchedulerJobRoles
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(roles);
+        _ = ModeOperationOf(typeof(TJob));
         services.AddScoped<TJob>();
         if (roles.Has(OwnerOf(typeof(TJob))))
             services.AddScoped<ISchedulerJob, TJob>(sp => sp.GetRequiredService<TJob>());

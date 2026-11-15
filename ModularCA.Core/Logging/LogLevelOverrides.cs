@@ -12,8 +12,8 @@ public static class LogLevelOverrides
     /// Applies the overrides to <paramref name="configuration"/>: ModularCA's own sources log from
     /// Information, ASP.NET Core from <paramref name="aspNetLevel"/>, EF Core from
     /// <paramref name="efCoreLevel"/>, and the built-in ingress (YARP) from Warning only. YARP logs
-    /// each proxied request's full upstream URL at Information, and enrolment tokens travel in the
-    /// path, so below Warning every routed enrolment would put its token in the logs.
+    /// each proxied request's full upstream URL at Information, and enrollment tokens travel in the
+    /// path, so below Warning every routed enrollment would put its token in the logs.
     /// </summary>
     public static LoggerConfiguration Apply(LoggerConfiguration configuration, LogEventLevel aspNetLevel, LogEventLevel efCoreLevel)
         => configuration

@@ -34,7 +34,7 @@ export const adminSsh: ApiEndpoint[] = [
         requestBody: [
             { name: 'name', type: 'string', required: true, description: 'Name for the SSH CA key' },
             { name: 'keyType', type: 'string', required: false, description: 'Key type: ed25519 (default), ecdsa, or rsa' },
-            { name: 'keySize', type: 'int', required: false, description: 'Key size in bits. RSA: 2048/3072/4096/7680/8192. ECDSA: 256/384/521. Ignored for ed25519' },
+            { name: 'keySize', type: 'int', required: false, description: 'Key size in bits. RSA: 3072/4096/7680/8192 (default 3072; from 0.4.5 RSA 2048 is refused with 400 for a new SSH CA key, as for an X.509 CA). ECDSA: 256/384/521. Ignored for ed25519' },
             { name: 'isUserCa', type: 'bool', required: false, description: 'Allow user certificate signing (default: true)' },
             { name: 'isHostCa', type: 'bool', required: false, description: 'Allow host certificate signing (default: false). Both flags may be true; the console creates a key of one type' },
             { name: 'maxValidityHours', type: 'int', required: false, description: 'The longest certificate the key signs, in hours. Omitted, it is 24 for a key that signs user certificates and 8760 (one year) for a host-only key' },

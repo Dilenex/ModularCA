@@ -215,6 +215,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// Issues a certificate from an approved CSR. Enforces space access and profile.use
         /// capability checks before delegating to the issuance service.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
         [HttpPost("issue")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Csr, "req.CsrId")]
@@ -315,6 +316,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// </summary>
         /// <param name="req">The request body containing subject, SANs, key algorithm, profiles, and validity dates.</param>
         /// <returns>The request id, the CSR, and whether the key is held.</returns>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
         [HttpPost("issue-with-key")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SigningProfile, "req.SigningProfileId")]
@@ -532,6 +534,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// delegating to the issuance service. A body <c>CertificateId</c> must be empty or
         /// match the route: the route is what the CA-scoped policy authorized.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
         [HttpPost("{certId:guid}/reissue")]
         [Authorize(Policy = "CaOperator")]
         public async Task<IActionResult> ReissueCertId(Guid certId, [FromBody] ReissueCertificateRequestByCertId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -637,6 +640,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// The body's <c>SerialNumber</c> must match the route's, which is what the CA-scoped
         /// policy authorized.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
         [HttpPost("serial/{serial}/reissue")]
         [Authorize(Policy = "CaOperator")]
         public async Task<IActionResult> ReissueCertSn(string serial, [FromBody] ReissueCertificateRequestByCertSn request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -739,6 +743,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// A body <c>CsrId</c> must be empty or match the route, which is what the CA-scoped
         /// policy authorized.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
         [HttpPost("csr/{csrId:guid}/reissue")]
         [Authorize(Policy = "CaOperator")]
         public async Task<IActionResult> ReissueCsrId(Guid csrId, [FromBody] ReissueCertificateRequestByCsrId request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)

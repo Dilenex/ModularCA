@@ -13,7 +13,7 @@ export type { ClaimedState } from './claimFlow';
  * This is how the first administrator of an unattended install gets in when bootstrap.yaml gave a
  * claim token, and how an account given a token on the host (`--issue-claim-token`) does. On
  * success it goes to the sign-in page with the username filled in, so the usual sign-in flow
- * (login banner, MFA enrolment) follows. The checks, the request and the outcome are in
+ * (login banner, MFA enrollment) follows. The checks, the request and the outcome are in
  * claimFlow.ts; this is the form.
  */
 const Claim: React.FC = () => {

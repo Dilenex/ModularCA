@@ -26,13 +26,11 @@ namespace ModularCA.Shared.Licensing;
 /// <list type="bullet">
 ///   <item>
 ///     <description>
-///     <b>Licence-gated open code.</b> <see cref="FeatureKeys.MultiTenancy"/>,
-///     <see cref="FeatureKeys.BackupOrchestration"/> and
+///     <b>License-gated open code.</b> <see cref="FeatureKeys.BackupOrchestration"/> and
 ///     <see cref="FeatureKeys.ComplianceReporting"/> are implemented in this repository, under
-///     AGPL-3.0, and can be read and forked by anyone. What the licence grants is the right to
+///     AGPL-3.0, and can be read and forked by anyone. What the license grants is the right to
 ///     use them past the free threshold, enforced by a clear refusal and an audit record
-///     (<see cref="FeatureGate"/>), not a technical impossibility; for spaces, by a recommendation
-///     only (<see cref="SpaceCreationGate"/>). Honour system, with evidence.
+///     (<see cref="FeatureGate"/>), not a technical impossibility. Honor system, with evidence.
 ///     </description>
 ///   </item>
 ///   <item>
@@ -57,22 +55,24 @@ namespace ModularCA.Shared.Licensing;
 /// key that has been sold is as append-only as an error code.
 /// </para>
 /// <para>
+/// A fifth key, <c>tenancy.multi</c> ("more than four spaces"), was removed on 2026-11-13 under the
+/// same condition: the vendor key in <see cref="LicenseVerifier"/> is still a placeholder, so no
+/// license naming it can ever have verified. Spaces are not counted, limited or licensed in any
+/// edition: the free edition is one instance with unlimited spaces, and what is licensed is running
+/// a fleet of instances, high availability, backup orchestration and auditor evidence. A license
+/// document that names the removed key still parses and verifies; the key is an unknown name and
+/// is ignored, like any other name this build does not know.
+/// </para>
+/// <para>
 /// One rule constrains what may be added here at all: <b>never gate on how many certificates or
 /// CAs exist.</b> This is a security product, and a ceiling on those numbers pays operators to do
-/// the wrong thing — reuse certificates, skip rotations, let an expiry slide. Gate on
-/// organisational boundaries (spaces, identity federation, clustering), never on the activity
-/// the product exists to encourage.
+/// the wrong thing — reuse certificates, skip rotations, let an expiry slide. Spaces are not
+/// counted either. Gate on organisational boundaries (a fleet of instances, identity federation,
+/// clustering), never on the activity the product exists to encourage.
 /// </para>
 /// </remarks>
 public static class FeatureKeys
 {
-    /// <summary>
-    /// More than four spaces. A soft cap: creating a fifth space succeeds and a licence is
-    /// recommended (<see cref="SpaceCreationGate"/>); a licence carrying this key suppresses the
-    /// recommendation. The key string is signed into issued licences and never changes.
-    /// </summary>
-    public const string MultiTenancy = "tenancy.multi";
-
     /// <summary>
     /// Scheduled, encrypted, off-host backup and restore orchestration. Licence-gated open code —
     /// and deliberately only the orchestration. Taking and restoring a backup by hand stays free,
@@ -154,7 +154,6 @@ public static class FeatureCatalog
             // whose maintenance later lapses still receives SSO, HSM fleet and clustering when
             // they ship. Dating them at their real ship date would sell a lapsed customer a
             // roadmap they then have to renew to collect.
-            [FeatureKeys.MultiTenancy] = new DateOnly(2026, 1, 1),
             [FeatureKeys.BackupOrchestration] = new DateOnly(2026, 1, 1),
             [FeatureKeys.ComplianceReporting] = new DateOnly(2026, 1, 1),
             [FeatureKeys.SingleSignOn] = new DateOnly(2026, 1, 1),
@@ -168,10 +167,10 @@ public static class FeatureCatalog
     /// <remarks>
     /// A key identifies; a name explains — the same division of labour as
     /// <see cref="ModularCA.Shared.Errors.ErrorCodes"/> and the messages beside them. A refusal
-    /// reading "requires the 'tenancy.multi' entitlement" makes the reader decode an identifier
-    /// before they can tell whether it is relevant to them; one reading "requires the multi-tenancy
-    /// license entitlement: 'tenancy.multi'" tells them what it is and still gives them the string
-    /// to quote in a ticket.
+    /// reading "requires the 'backup.orchestration' entitlement" makes the reader decode an identifier
+    /// before they can tell whether it is relevant to them; one reading "requires the backup
+    /// orchestration license entitlement: 'backup.orchestration'" tells them what it is and still
+    /// gives them the string to quote in a ticket.
     /// <para>
     /// Centralised rather than passed in at each gate, because every call site inventing its own
     /// noun is exactly the drift <see cref="FeatureGate"/> exists to prevent — and because the
@@ -185,7 +184,6 @@ public static class FeatureCatalog
     private static readonly IReadOnlyDictionary<string, string> DisplayNames =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            [FeatureKeys.MultiTenancy] = "multi-tenancy",
             [FeatureKeys.BackupOrchestration] = "backup orchestration",
             [FeatureKeys.ComplianceReporting] = "compliance reporting",
             [FeatureKeys.SingleSignOn] = "identity federation",

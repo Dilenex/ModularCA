@@ -247,7 +247,7 @@ public sealed class SingleAdministratorCeremonyTests
         Assert.Null(ex.RequirementScope);
 
         var space = New(w, Ns + "AdminSpaceController", actor,
-            w.Db, new CurrentUserStub(actor), new RecordingAuditService(), cache, GroupAuth(w), PolicyChanges(w), Controlled(w), null);
+            w.Db, new CurrentUserStub(actor), new RecordingAuditService(), cache, GroupAuth(w), PolicyChanges(w), Controlled(w));
         var spaceRequest = Body("UpdateSpaceRequest", ("Name", "Renamed"), ("RequireKeyCeremony", (bool?)false));
         ex = await Assert.ThrowsAsync<CeremonyQuorumUnreachableException>(() => Call(space, "Update", w.Space, spaceRequest, null));
         Assert.Equal(nameof(CeremonyType.SpacePolicyChange), ex.OperationType);

@@ -20,6 +20,7 @@ import { can } from '../authz';
 import { FieldHint } from '@shared/components/forms';
 import { NameConstraintsView } from '@shared/components/NameConstraintsEditor';
 import { storedPasswordSourceName } from './passwordSource';
+import { advisoryBox } from './caLifecycle';
 
 const APPROVALS_HINT = 'Approvals collected / required. The initiator is never counted.';
 
@@ -243,7 +244,41 @@ const CeremonyDrawer: React.FC<{ ceremony: any; isInitiator: boolean; onCancel: 
                 </div>
             )}
 
-            {params && family === 'CaCreation' && (
+            {params && ceremony?.operationType === 'RenewCaCertificate' && (
+                <div>
+                    <span className="text-xs font-semibold text-ink-muted">CA Certificate Renewal</span>
+                    <DetailField label="CA" value={param(params, 'caName') || '-'} />
+                    <DetailField label="CA ID" value={param(params, 'caId') || '-'} mono />
+                    <DetailField label="Certificate to Renew (Serial)" value={param(params, 'currentSerialNumber') || '-'} mono />
+                    <DetailField label="New Certificate Valid Until" value={param(params, 'notAfter') ? String(param(params, 'notAfter')).replace('T', ' ').replace(/\.\d+/, '') : '-'} />
+                    <DetailField label="Key" value="Unchanged: the CA's existing key" />
+                    <DetailField label="Subject and Extensions" value="Unchanged: copied from the current certificate" />
+                    {(Array.isArray(param(params, 'advisories')) ? param(params, 'advisories') : []).map((a: any) => {
+                        const reason = a?.reason ?? a?.Reason;
+                        const warning = (a?.severity ?? a?.Severity) !== 'notice';
+                        const acknowledged = (Array.isArray(param(params, 'acknowledged')) ? param(params, 'acknowledged') : []).includes(reason);
+                        return (
+                            <div key={reason} className={`mt-2 rounded border p-3 ${advisoryBox(warning ? 'warn' : 'notice').box}`}>
+                                <p className={`text-xs ${advisoryBox(warning ? 'warn' : 'notice').text}`}>
+                                    <strong>{a?.title ?? a?.Title ?? reason}.</strong> {a?.message ?? a?.Message}
+                                </p>
+                                {warning && (
+                                    <p className="mt-1 text-xs text-ink">
+                                        {acknowledged
+                                            ? `Acknowledged by ${ceremony?.initiatedByUsername || 'the initiator'} when this ceremony was opened. Approving it approves the renewal with this warning.`
+                                            : 'Not acknowledged by the initiator.'}
+                                    </p>
+                                )}
+                            </div>
+                        );
+                    })}
+                    <p className="mt-1 text-xs text-ink-muted">
+                        The signer signs only a certificate for this CA that ends at exactly this time and repeats the current certificate in everything but its serial and validity. The earlier certificate stays valid and is not revoked.
+                    </p>
+                </div>
+            )}
+
+            {params && family === 'CaCreation' && ceremony?.operationType !== 'RenewCaCertificate' && (
                 <div>
                     <span className="text-xs font-semibold text-ink-muted">CA Parameters</span>
                     <DetailField label="Common Name" value={params.subjectCN || params.SubjectCN || '-'} />
@@ -406,7 +441,9 @@ const Ceremonies: React.FC = () => {
                     <CeremonyWarnings warnings={warnings} className="mb-2" />
                     <p>Execute &ldquo;{text}&rdquo;?</p>
                     <p className="mt-2">
-                        {isCa
+                        {ceremony.operationType === 'RenewCaCertificate'
+                            ? 'This signs the CA’s new certificate over its existing key now. The earlier certificate stays valid and is not revoked. It cannot be re-run; a mistake means a new ceremony.'
+                            : isCa
                             ? 'This generates the CA’s key pair now. It cannot be re-run; a mistake means a new ceremony.'
                             : 'This applies the approved change now. It cannot be re-run; a mistake means a new ceremony.'}
                     </p>
@@ -486,7 +523,7 @@ const Ceremonies: React.FC = () => {
         { key: 'type', header: 'Type', defaultWidth: 130, truncate: false, exportValue: (c) => FAMILY_META[ceremonyFamily(c)].label,
             render: (c) => <span className={`inline-block px-2 py-0.5 text-[10px] font-semibold rounded border w-fit ${FAMILY_META[ceremonyFamily(c)].cls}`}>{FAMILY_META[ceremonyFamily(c)].label}</span> },
         { key: 'status', header: 'Status', defaultWidth: 120, truncate: false, exportValue: (c) => c.status,
-            render: (c) => <StatusBadge status={ceremonyBadgeStatus(c.status)} label={c.status} /> },
+            render: (c) => <StatusBadge status={ceremonyBadgeStatus(c.status)} label={c.status === 'Cancelled' ? 'Canceled' : c.status} /> },
         { key: 'approvals', header: 'Approvals', defaultWidth: 100, align: 'right', headerTitle: APPROVALS_HINT, exportValue: (c) => `${c.currentApprovals ?? 0}/${c.requiredApprovals ?? '-'}`,
             render: (c) => <span className="text-ink-muted" title={APPROVALS_HINT}>{c.currentApprovals ?? 0} / {c.requiredApprovals ?? '-'}</span> },
         { key: 'initiator', header: 'Initiator', defaultWidth: 140, exportValue: (c) => c.initiatedByUsername || '',
@@ -506,11 +543,10 @@ const Ceremonies: React.FC = () => {
             <h1 className="text-xl font-semibold text-ink">Ceremonies</h1>
 
             <div className="bg-info-soft border border-info/40 rounded-lg p-4 text-xs text-info">
-                Ceremonies are created automatically when a multi-party action is required — you don't start one here.
-                They originate from <Link to="/authorities/manage" className="underline">CA Management</Link> (CA creation/revocation),
-                Space settings (security-policy downgrades), and the <Link to="/users" className="underline">User &amp; Access</Link> pages
-                (promoting, demoting, or deleting a controlled user, or resetting their password or MFA or changing their account,
-                as a non-super). Select one below to approve or reject.
+                A ceremony starts by itself when an action needs more than one person:
+                creating or revoking a <Link to="/authorities/manage" className="underline">CA</Link>, lowering a
+                space's security policy, or changing a <Link to="/users" className="underline">controlled user</Link>.
+                Select one below to approve or reject.
             </div>
 
             <div className="flex flex-wrap items-center gap-3">

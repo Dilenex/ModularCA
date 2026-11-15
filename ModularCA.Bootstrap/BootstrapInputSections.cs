@@ -72,6 +72,28 @@ public static class BootstrapInputSections
                 "Leave it out for seven days; nothing was changed.");
     }
 
+    /// <summary>
+    /// Refuses a bootstrap.yaml whose <c>Hub.AffiliationTokenSha256</c> is not a SHA-256: 64 hex
+    /// digits. The likeliest mistake is the token itself in place of its hash, and an instance
+    /// started with that would refuse its own hub, so it is refused before anything is changed.
+    /// A missing or empty value passes: the instance then holds no hash.
+    /// </summary>
+    /// <param name="hub">bootstrap.yaml's Hub section, or null when it is absent.</param>
+    public static void EnsureHubTokenUsable(YamlBootstrapLoader.HubBootstrapConfig? hub)
+    {
+        if (string.IsNullOrWhiteSpace(hub?.AffiliationTokenSha256)) return;
+        if (!ModularCA.Auth.Services.AccountClaims.TryParseHashHex(hub.AffiliationTokenSha256, out _))
+            throw new InvalidRequestException(
+                "bootstrap.yaml's Hub.AffiliationTokenSha256 is not a SHA-256: it must be 64 hex digits.",
+                ErrorCodes.RequestInvalid,
+                "Put the hash of the hub's affiliation token there, never the token itself. ModularCA.API --new-hub-token prints a token and the line to use; nothing was changed.");
+    }
+
+    /// <summary>The hash as the instance stores it: lower-case hex, or empty when bootstrap.yaml gives none.</summary>
+    /// <param name="hub">bootstrap.yaml's Hub section, or null when it is absent.</param>
+    public static string HubTokenHash(YamlBootstrapLoader.HubBootstrapConfig? hub)
+        => string.IsNullOrWhiteSpace(hub?.AffiliationTokenSha256) ? "" : hub.AffiliationTokenSha256.Trim().ToLowerInvariant();
+
     private static void Refuse(string source, List<string> missing)
     {
         if (missing.Count == 0) return;

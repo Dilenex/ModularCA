@@ -1106,11 +1106,16 @@ public static partial class SchemaStartup
         private readonly ISystemdNotifier? _notifier;
         private readonly Task _loop;
         private volatile string _status;
+        private readonly string _completed;
 
-        /// <summary>Starts the heartbeat with <paramref name="status"/>.</summary>
-        public Heartbeat(ISystemdNotifier? notifier, string status)
+        /// <summary>
+        /// Starts the heartbeat with <paramref name="status"/>; <paramref name="completed"/> is
+        /// the status sent when it is disposed.
+        /// </summary>
+        public Heartbeat(ISystemdNotifier? notifier, string status, string completed = "Schema check complete; starting")
         {
             _status = status;
+            _completed = completed;
             if (notifier is not { IsEnabled: true })
             {
                 _loop = Task.CompletedTask;
@@ -1154,7 +1159,7 @@ public static partial class SchemaStartup
             await _loop;
             _stop.Dispose();
             _notifier?.Notify(new ServiceState(
-                $"STATUS=Schema check complete; starting\nEXTEND_TIMEOUT_USEC={PostGateExtendTimeoutMicroseconds}"));
+                $"STATUS={_completed}\nEXTEND_TIMEOUT_USEC={PostGateExtendTimeoutMicroseconds}"));
         }
     }
 }

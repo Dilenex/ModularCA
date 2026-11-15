@@ -81,6 +81,7 @@ public class AdminUserQuorumController(
     /// CAs. Step-up gated. System-super applies directly; any other caller opens an
     /// InstancePolicyChange ceremony (202 + ceremonyId).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("instance")]
     [RequireStepUp(StepUpOps.UpdateSpaceSettings)]
     public async Task<IActionResult> SetInstance([FromBody] QuorumValueRequest request)
@@ -113,6 +114,7 @@ public class AdminUserQuorumController(
     /// settings save. System-super applies directly; any other caller opens a SpacePolicyChange
     /// ceremony (202 + ceremonyId), mirroring <c>AdminSpaceController.UpdateSettings</c>.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("space/{id:guid}")]
     [RequireStepUp(StepUpOps.UpdateSpaceSettings, "id")]
     public async Task<IActionResult> SetSpace(Guid id, [FromBody] QuorumValueRequest request)
@@ -145,6 +147,7 @@ public class AdminUserQuorumController(
     /// Step-up gated; system-super applies directly, any other caller opens a policy-change
     /// ceremony on the CA's scope (202 + ceremonyId).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("ca/{id:guid}")]
     [RequireStepUp(StepUpOps.UpdateSpaceSettings, "id")]
     public async Task<IActionResult> SetCa(Guid id, [FromBody] QuorumValueRequest request)

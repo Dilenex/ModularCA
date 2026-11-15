@@ -86,6 +86,10 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
             {
                 k.Id, k.Name, k.CertificateAuthorityId, k.KeyType, k.KeySize, k.PublicKey, k.IsUserCa, k.IsHostCa,
                 k.MaxValidityHours, k.IsEnabled, k.CreatedAt, k.ReviewBy,
+                // An existing RSA key under 3072 bits keeps signing and says it should be replaced.
+                KeyAdvisories = string.Equals(k.KeyType, "rsa", StringComparison.OrdinalIgnoreCase) && k.KeySize is int rsaBits
+                    ? ModularCA.Shared.Utils.CaKeyPolicy.AdvisoriesForRsa(rsaBits)
+                    : [],
                 KeyStorage = JsonNamingPolicy.CamelCase.ConvertName(k.KeyStorage),
                 SignerState = held?.State ?? SshKeyCustody.Unknown,
                 SignerStateCode = held?.ReasonCode,
@@ -140,6 +144,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// <c>maxValidityHours</c> is omitted it is 24 for a key that signs user certificates and
     /// 8760 for a host-only key (<see cref="SshCaKeyDefaults"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("ca-keys")]
     [Authorize(Policy = "SystemOperator")]
     public async Task<IActionResult> GenerateCaKey(
@@ -158,6 +163,12 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         if (ModularCA.Shared.Utils.DnComponentSanitizer.HasControlCharacter(request.Name)
             || ModularCA.Shared.Utils.DnComponentSanitizer.HasControlCharacter(request.KeyType))
             return BadRequest(new { error = "Name and KeyType must not contain control characters." });
+
+        // A new SSH CA's RSA key is at least 3072 bits, as an X.509 CA's is; refused here so no
+        // ceremony is opened for a key the service would refuse when the ceremony is executed.
+        if (string.Equals(request.KeyType?.Trim(), "rsa", StringComparison.OrdinalIgnoreCase)
+            && ModularCA.Shared.Utils.CaKeyPolicy.RefusalForNewCa("RSA", request.KeySize ?? ModularCA.Shared.Utils.CaKeyPolicy.MinRsaBitsForNewCa) is { } keyRefusal)
+            return BadRequest(new { error = keyRefusal });
 
         var sshLabel = request.Name.ToLowerInvariant().Replace(" ", "-");
         try
@@ -242,6 +253,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// signed, refused or revoked because of it, and no limit of the key changes
     /// (<c>StepUpGuardTests</c> names this route with that reason).
     /// </remarks>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("ca-keys/{caKeyId:guid}/review-by")]
     [Authorize(Policy = "CaAdmin")]
     public async Task<IActionResult> SetReviewBy(Guid caKeyId, [FromBody] SetSshCaKeyReviewByRequest request)
@@ -299,6 +311,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// locked signer, a key the signer cannot serve and a key awaiting its import into the signer
     /// are 503 with the reason; a certificate the signer's rules refuse is 400 with its reason.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("ca-keys/{caKeyId:guid}/certificates/sign-user")]
     [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.SignSshCert, "caKeyId")]
@@ -399,6 +412,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// A locked signer, a key the signer cannot serve and a key awaiting its import into the
     /// signer are 503 with the reason; a certificate the signer's rules refuse is 400 with its reason.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("ca-keys/{caKeyId:guid}/certificates/sign-host")]
     [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.SignSshCert, "caKeyId")]
@@ -579,6 +593,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// <summary>
     /// Revokes an SSH certificate by its identifier, scoped to a specific CA key.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpPost("ca-keys/{caKeyId:guid}/certificates/{id:guid}/revoke")]
     [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.RevokeSshCert, "id")]
@@ -598,6 +613,7 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
     /// If the CA's scope (the instance, for an SSH CA) requires key ceremonies, initiates a
     /// ceremony instead.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpDelete("ca-keys/{id:guid}")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> DisableSshCaKey(
@@ -619,6 +635,10 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
             var policy = await new EffectivePolicyResolver(db).ResolveAsync(key.CertificateAuthority?.SpaceId);
             if (policy.RequireKeyCeremony)
             {
+                // Disabling is a restriction, but here it needs a ceremony, and ceremonies wait for full mode.
+                if (await ModularCA.Auth.Authorization.ModeGateFilter.RequireAsync(
+                        HttpContext, ModularCA.Shared.Modes.ModeOperation.Frozen, "Starting the key ceremony this SSH CA needs to be disabled") is { } modeRefusal)
+                    return modeRefusal;
                 var sshParams = new SshKeyCeremonyParameters
                 {
                     SshCaKeyId = id,
@@ -653,8 +673,8 @@ public class GenerateSshCaKeyRequest
     /// <summary><c>ed25519</c> (the default), <c>ecdsa</c> or <c>rsa</c>.</summary>
     public string? KeyType { get; set; }
     /// <summary>
-    /// Key size in bits. RSA: 2048/3072/4096/7680/8192 (default 3072). ECDSA: 256/384/521 (default 256).
-    /// Ignored for ed25519 (fixed size).
+    /// Key size in bits. RSA: 3072/4096/7680/8192 (default 3072; 2048 is refused for a new CA key).
+    /// ECDSA: 256/384/521 (default 256). Ignored for ed25519 (fixed size).
     /// </summary>
     public int? KeySize { get; set; }
     /// <summary>Whether the key signs user certificates; null means true.</summary>

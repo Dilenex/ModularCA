@@ -49,9 +49,28 @@ public class CaCreationService(
     SystemConfig systemConfig,
     ILogger<CaCreationService> logger,
     ISigningService signer,
-    IAuditService? audit = null)
+    IAuditService? audit = null,
+    ModularCA.Shared.Modes.IInstanceModeGate? modeGate = null)
 {
+    /// <summary>
+    /// Asked before the signer is asked to generate a key: a key operation waits for full mode.
+    /// Null (bootstrap, tests) is an instance nobody set a mode on.
+    /// </summary>
+    private void RequireFullModeForKeyOperation(string what)
+        => ModularCA.Shared.Modes.InstanceModeGate.ThrowIfRefused(modeGate, ModularCA.Shared.Modes.ModeOperation.Frozen, what);
+
     /// <summary>The caller identity CA creation asks the signer under; the signer audits it with every decision.</summary>
+    /// <summary>
+    /// What the signer is told, for its journal, about a certificate signed while a CA is
+    /// created or its delegated signers are reissued: the space it belongs to and, when a
+    /// ceremony licensed it, that ceremony as what it answers. It rides the ceremony context
+    /// and is read only when that context signs a certificate.
+    /// </summary>
+    private static IssuanceOrigin CaCreationOrigin(Guid? spaceId, Guid? ceremonyId) => new(
+        Answers: new IssuanceAnswers(ModularCA.Journal.AnswersKind.None, ceremonyId?.ToString("D")),
+        Belongs: spaceId is Guid space ? new IssuanceBelongs(Space: space.ToString("D")) : null,
+        Protocol: "CaCreation");
+
     private const string SignerCaller = nameof(CaCreationService);
 
     /// <summary>
@@ -125,7 +144,12 @@ public class CaCreationService(
         }
     }
 
-    private static void AddCdpAndAiaFromResolved(X509V3CertificateGenerator certGen, ResolvedCaServiceUrls resolved)
+    /// <summary>
+    /// Adds the CRL distribution points and the authority information access (OCSP and CA
+    /// issuers) that <paramref name="resolved"/> holds to a CA certificate being built; an
+    /// extension with no URL is left out. Shared with the renewal of a CA certificate.
+    /// </summary>
+    internal static void AddCdpAndAiaFromResolved(X509V3CertificateGenerator certGen, ResolvedCaServiceUrls resolved)
     {
         var cdpUrls = resolved.CdpUrls.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var ocspUrls = resolved.OcspUrls.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
@@ -164,6 +188,17 @@ public class CaCreationService(
     }
 
     /// <summary>
+    /// Throws <see cref="ArgumentException"/> when a new CA may not have this key: today an RSA key
+    /// under 3072 bits (<see cref="CaKeyPolicy"/>). The last check before a CA key is generated,
+    /// behind the ones the admin API makes before it opens a ceremony.
+    /// </summary>
+    private static void EnsureNewCaKeyAllowed(string keyAlgorithm, int keySize)
+    {
+        if (CaKeyPolicy.RefusalForNewCa(keyAlgorithm, keySize) is { } refusal)
+            throw new ArgumentException(refusal);
+    }
+
+    /// <summary>
     /// Creates a new self-signed root CA. Generates a key pair, builds and self-signs the
     /// CA certificate, stores it in DB and keystore, creates the CertificateAuthorityEntity,
     /// seeds protocol configs, and registers the new CA in the runtime registry.
@@ -174,9 +209,33 @@ public class CaCreationService(
     /// <paramref name="ceremonyId"/> is the approved key ceremony this creation executes, when
     /// the space required one; the signer verifies it before it generates or commits a key.
     /// An invalid or reserved label, or a label or name another CA of the instance has
-    /// (soft-deleted CAs included), is refused before any key is generated.
+    /// (soft-deleted CAs included), is refused before any key is generated, and so is an RSA key
+    /// under 3072 bits (<see cref="CaKeyPolicy.RefusalForNewCa(string, int)"/>, an
+    /// <see cref="ArgumentException"/>).
     /// </summary>
     public async Task<CertificateAuthorityEntity> CreateRootAsync(
+        string subjectCN, string? subjectO, string? subjectOU,
+        string? subjectL, string? subjectST, string? subjectC,
+        string keyAlgorithm, int keySize, int validityYears, string? label,
+        Guid? spaceId,
+        string? publicBaseUrl = null,
+        string? nameConstraintsPermittedJson = null,
+        string? nameConstraintsExcludedJson = null,
+        Guid? ceremonyId = null)
+    {
+        EnsureNewCaKeyAllowed(keyAlgorithm, keySize);
+        return await CreateRootWithoutKeyRuleAsync(subjectCN, subjectO, subjectOU, subjectL, subjectST, subjectC,
+            keyAlgorithm, keySize, validityYears, label, spaceId, publicBaseUrl,
+            nameConstraintsPermittedJson, nameConstraintsExcludedJson, ceremonyId);
+    }
+
+    /// <summary>
+    /// <see cref="CreateRootAsync"/> without the rule for a new CA's key (<see cref="CaKeyPolicy"/>);
+    /// everything else is the same. Not reachable from the API: it exists so that tests can stand
+    /// up a CA as an install made before 0.4.5 may hold one, with an RSA 2048 key, without the
+    /// rule itself being loosened.
+    /// </summary>
+    internal async Task<CertificateAuthorityEntity> CreateRootWithoutKeyRuleAsync(
         string subjectCN, string? subjectO, string? subjectOU,
         string? subjectL, string? subjectST, string? subjectC,
         string keyAlgorithm, int keySize, int validityYears, string? label,
@@ -192,7 +251,8 @@ public class CaCreationService(
         // it signs only under it until it is committed to the certificate row, and is retired
         // if anything fails before then. The ceremony's id rides the context so the signer can
         // verify the approval itself.
-        var ceremony = SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, spaceId, ceremonyId: ceremonyId);
+        var ceremony = SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, spaceId, ceremonyId: ceremonyId) with { Issuance = CaCreationOrigin(spaceId, ceremonyId) };
+        RequireFullModeForKeyOperation("Generating a CA key");
         var generated = await signer.GenerateKeyAsync(
             new KeySpec(keyAlgorithm, KeyAlgorithmPolicy.FormatKeySizeForProfile(keyAlgorithm, keySize)), ceremony);
         X509Certificate newCaCert;
@@ -310,7 +370,8 @@ public class CaCreationService(
     /// creation executes, when the space required one; the signer verifies it before it
     /// generates or commits a key. A parent that is disabled, deleted, revoked or outside its
     /// validity is refused (see <see cref="Helpers.IssuingCaGuard"/>) before any key is generated,
-    /// as is an invalid or reserved label, or a label or name another CA of the instance has. A
+    /// as is an invalid or reserved label, or a label or name another CA of the instance has, and
+    /// an RSA key under 3072 bits (<see cref="CaKeyPolicy.RefusalForNewCa(string, int)"/>). A
     /// <paramref name="certProfileId"/> that <see cref="CertProfileScope"/> does not admit for the
     /// parent and the new CA's space is reported as not found, like a missing one.
     /// </summary>
@@ -326,6 +387,7 @@ public class CaCreationService(
         string? nameConstraintsExcludedJson = null,
         Guid? ceremonyId = null)
     {
+        EnsureNewCaKeyAllowed(keyAlgorithm, keySize);
         await EnsureNamingAsync(subjectCN, label);
 
         var parentBcCert = CertificateUtil.ParseFromPem(parentCert.Pem);
@@ -383,7 +445,8 @@ public class CaCreationService(
         // ceremony context; it signs the CSR under it, and is retired if anything fails before
         // it is committed to the issued certificate. The ceremony's id rides the context so the
         // signer can verify the approval itself.
-        var ceremony = SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, spaceId, ceremonyId: ceremonyId);
+        var ceremony = SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, spaceId, ceremonyId: ceremonyId) with { Issuance = CaCreationOrigin(spaceId, ceremonyId) };
+        RequireFullModeForKeyOperation("Generating a CA key");
         var generated = await signer.GenerateKeyAsync(
             new KeySpec(keyAlgorithm, KeyAlgorithmPolicy.FormatKeySizeForProfile(keyAlgorithm, keySize)), ceremony);
 
@@ -624,6 +687,9 @@ public class CaCreationService(
                 SpaceId = spaceId,
             };
             db.CertificateAuthorities.Add(caEntity);
+            // The first entry of the CA's certificate history, in the transaction that creates it.
+            if (CaCertificateHistory.InitialRow(caEntity.Id, certEntity, DateTime.UtcNow, ceremony.CeremonyId) is { } firstCertificate)
+                db.CaCertificates.Add(firstCertificate);
             await db.SaveChangesAsync();
 
             // Auto-generate per-CA authorization groups for all capability templates
@@ -885,7 +951,7 @@ public class CaCreationService(
     /// Builds a CertificateEntity for a CA certificate (root or intermediate).
     /// Does NOT add to DB — caller is responsible for persisting.
     /// </summary>
-    private static CertificateEntity BuildCaCertEntity(X509Certificate cert, Guid? parentCertificateId)
+    internal static CertificateEntity BuildCaCertEntity(X509Certificate cert, Guid? parentCertificateId)
     {
         byte[] sha1hash = SHA1.HashData(cert.GetEncoded());
         byte[] sha256hash = SHA256.HashData(cert.GetEncoded());
@@ -990,7 +1056,7 @@ public class CaCreationService(
         var caSigningContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, caEntity.Id, caEntity.SpaceId);
         // Reissuing a CA's delegated signers is an operator's action on an existing CA, not a
         // ceremony: the keys are generated under the infrastructure context and can never become CA keys.
-        var ceremony = SigningContext.ForCa(SignerCaller, SigningPurpose.Infrastructure, caEntity.Id, caEntity.SpaceId);
+        var ceremony = SigningContext.ForCa(SignerCaller, SigningPurpose.Infrastructure, caEntity.Id, caEntity.SpaceId) with { Issuance = CaCreationOrigin(caEntity.SpaceId, null) };
 
         // A CA's signing profile is linked by IssuerId pointing at the CA's certificate, the same
         // way the creation path resolves a parent's profile.
@@ -1609,6 +1675,7 @@ public class CaCreationService(
         var keyContext = caSigningContext.Purpose == SigningPurpose.Ceremony
             ? SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, caEntity.SpaceId, caEntity.Id, caSigningContext.CeremonyId)
             : SigningContext.ForCa(SignerCaller, SigningPurpose.Infrastructure, caEntity.Id, caEntity.SpaceId);
+        RequireFullModeForKeyOperation("Generating an OCSP, CMP or timestamp signing key");
         var generated = await signer.GenerateKeyAsync(
             new KeySpec(alg, KeyAlgorithmPolicy.FormatKeySizeForProfile(alg, sizeOrCurve)), keyContext);
         try

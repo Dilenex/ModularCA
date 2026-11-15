@@ -31,5 +31,16 @@
     <InternalsVisibleTo Include="ModularCA.Tests" />
   </ItemGroup>
 
+  <!-- The bundled password blocklist (BundledPasswordBlocklist). A content file, not an embedded
+       resource, so it lands beside the binaries of every program that references this project
+       (the API's build and publish output, hence the tarball and the package, and the tests'
+       output) at password-blocklist/bundled-blocklist.txt, where an administrator can read it. -->
+  <ItemGroup>
+    <Content Include="Data\password-blocklist\bundled-blocklist.txt"
+             Link="password-blocklist\bundled-blocklist.txt"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
 

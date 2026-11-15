@@ -442,6 +442,8 @@ public class ScepService : IScepService, IEnrollmentProtocol
                 // Revocation is checked against our own database below rather than online here:
                 // an unreachable OCSP responder must not turn a renewal into a hard failure on
                 // an enrollment path, and the DB gate is authoritative for certificates we issued.
+                // The CA's own issuers are therefore not loaded: the validator uses them for an
+                // online revocation check alone, and issuance is decided without them.
                 if (X509ChainValidationUtil.ValidateAgainstAnchor(
                         signerCert2, anchorCert2, requireRevocationCheck: false, out var chainErrors))
                 {
@@ -453,11 +455,15 @@ public class ScepService : IScepService, IEnrollmentProtocol
                     // reject a healthy renewal. Rows with no IssuerCertificateId (legacy, pre-FK)
                     // are still considered so the check fails closed for them.
                     var signerSerial = CertificateUtil.FormatSerialNumber(cmsSignerCert.SerialNumber);
-                    var issuerCertId = context.Ca?.CertificateId;
+                    // The issuer is the CA's key: every certificate the CA has had over it, since a
+                    // renewed CA issued the signer's certificate under the earlier one.
+                    var issuerScope = context.Ca?.CertificateId is Guid issuerCertId
+                        ? await ModularCA.Core.Helpers.IssuerChainResolver.SameKeyScopeAsync(_db, issuerCertId)
+                        : new List<Guid>();
                     var revoked = await _db.Certificates.AsNoTracking().AnyAsync(c =>
                         c.SerialNumber == signerSerial &&
                         c.Revoked &&
-                        (c.IssuerCertificateId == null || c.IssuerCertificateId == issuerCertId));
+                        (c.IssuerCertificateId == null || issuerScope.Contains(c.IssuerCertificateId.Value)));
                     if (revoked)
                     {
                         _logger.LogWarning(
@@ -514,7 +520,7 @@ public class ScepService : IScepService, IEnrollmentProtocol
                     // the same reason the revocation lookup above is.
                     var renewedId = await _db.Certificates.AsNoTracking()
                         .Where(c => c.SerialNumber == signerSerial &&
-                            (c.IssuerCertificateId == null || c.IssuerCertificateId == issuerCertId))
+                            (c.IssuerCertificateId == null || issuerScope.Contains(c.IssuerCertificateId.Value)))
                         .Select(c => (Guid?)c.CertificateId)
                         .FirstOrDefaultAsync();
                     if (renewedId != null)

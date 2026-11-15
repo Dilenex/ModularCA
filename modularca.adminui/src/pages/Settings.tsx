@@ -28,6 +28,12 @@ import { ApiKeysPanel } from '../components/ApiKeysPanel';
 import { CARD_FIELDS, type SettingsIndex, describeField, fieldBadges, fieldLocked, fieldsApply, indexSettings, secretState } from './settingsMeta';
 import { actionButton } from '@shared/components/actionButtons';
 import { hsmCardView } from './settingsHsm';
+import { caLifecycleBody, caLifecycleProblem, caLifecycleSummary } from './caLifecycle';
+import { InstanceModeCard } from '../components/InstanceModeCard';
+import {
+    NIST_PASSWORD_PRESET, NIST_PRESET_SUMMARY, RECOMMENDED_SESSION_HOURS, hoursPhrase, refreshTokenRule, sessionMaximumAdvice,
+    type PasswordPolicyGuidance,
+} from './tighterDefaults';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -266,13 +272,13 @@ const WebhookTestCard: React.FC = () => {
 
 /* --- Password policy field metadata: human labels + what each value does --- */
 const POLICY_FIELDS: Record<string, { label: string; hint: string }> = {
-    minLength: { label: 'Minimum length', hint: 'Shortest password accepted. Length is the single strongest lever; 12 or more is the usual floor.' },
+    minLength: { label: 'Minimum length', hint: 'Shortest password accepted. Length is the single strongest lever. NIST SP 800-63B asks for 15 where the password can be the only factor, and allows 8 where a second factor is always used.' },
     maxLength: { label: 'Maximum length', hint: 'Longest password accepted. 0 means no upper limit. Keep it high; a low cap blocks passphrases.' },
     minUppercase: { label: 'Minimum uppercase letters', hint: 'Exact count required, enforced even when the "at least one uppercase" rule is off. 0 means no count is enforced.' },
     minLowercase: { label: 'Minimum lowercase letters', hint: 'Exact count required, independent of the "at least one lowercase" rule. 0 means no count is enforced.' },
     minDigits: { label: 'Minimum digits', hint: 'Exact count required, independent of the "at least one digit" rule. 0 means no count is enforced.' },
     minSpecial: { label: 'Minimum symbols', hint: 'Exact count of non-alphanumeric characters required. 0 means no count is enforced.' },
-    maxAgeDays: { label: 'Maximum password age (days)', hint: 'Users must change their password this many days after setting it; the expiry is stamped at each change. 0 means passwords never expire (accounts marked "never expires" are exempt either way).' },
+    maxAgeDays: { label: 'Maximum password age (days)', hint: 'Users must change their password this many days after setting it; the expiry is stamped at each change. 0 means passwords never expire: nobody is asked to change one, including accounts whose date was stamped while a maximum age was set. NIST SP 800-63B says not to expire passwords on a schedule, only on evidence of compromise.' },
     historyCount: { label: 'Password history', hint: 'A new password may not match any of this many previous ones. 0 keeps no history and allows immediate reuse.' },
     requireUppercase: { label: 'Require at least one uppercase letter', hint: 'Rejects passwords with no A–Z character.' },
     requireLowercase: { label: 'Require at least one lowercase letter', hint: 'Rejects passwords with no a–z character.' },
@@ -404,6 +410,11 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
     const [policyLoading, setPolicyLoading] = useState(false);
     const [policyError, setPolicyError] = useState<NoticeInput | null>(null);
     const [policySaving, setPolicySaving] = useState(false);
+    /* How the stored policy compares with NIST SP 800-63B, and what the bundled blocklist holds.
+       Read-only: it decides whether the preset is offered. Null until known. */
+    const [policyGuidance, setPolicyGuidance] = useState<PasswordPolicyGuidance | null>(null);
+    const [confirmPreset, setConfirmPreset] = useState(false);
+    const [presetApplying, setPresetApplying] = useState(false);
 
     /* Security Policy (DB) state — runtime-tunable session/lockout/MFA/OCSP knobs.
        Loaded from /admin/security-policy; saved with step-up MFA. Distinct from the
@@ -461,12 +472,19 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
         }
     };
 
+    const loadPolicyGuidance = () => {
+        apiGet<PasswordPolicyGuidance>('/api/v1/admin/password-policy/guidance', { toast: false })
+            .then(setPolicyGuidance)
+            .catch(() => setPolicyGuidance(null));
+    };
+
     const loadPolicy = () => {
         setPolicyLoading(true);
         apiGet<any>('/api/v1/admin/password-policy')
             .then((p) => { setPolicy(p); snap('policy', p); })
             .catch((err) => setPolicyError(errorNotice(err, 'The request failed.')))
             .finally(() => setPolicyLoading(false));
+        loadPolicyGuidance();
     };
 
     const loadSecurityPolicy = () => {
@@ -580,6 +598,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
         try {
             await apiPutWithMfa('/api/v1/admin/password-policy', policy, requireStepUp, StepUpOps.UpdateConfig);
             snap('policy', policy);
+            loadPolicyGuidance();
             showToast('success', 'Password policy updated');
         } catch (err: any) {
             if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to save policy');
@@ -588,6 +607,23 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
         }
     };
     const updatePolicyField = (key: string, value: any) => setPolicy({ ...policy, [key]: value });
+    /* One action: the server writes the preset's values over the stored policy and returns the
+       result. Unsaved edits in the form are replaced by what was stored. */
+    const applyNistPreset = async () => {
+        setPresetApplying(true);
+        try {
+            const stored = await apiPostWithMfa<any>(`/api/v1/admin/password-policy/presets/${NIST_PASSWORD_PRESET}`, {}, requireStepUp, StepUpOps.UpdateConfig);
+            setPolicy(stored);
+            snap('policy', stored);
+            loadPolicyGuidance();
+            showToast('success', 'NIST SP 800-63B preset applied to the password policy');
+        } catch (err: any) {
+            if (err.message !== 'Step-up MFA cancelled') showToast('error', err.message || 'Failed to apply the preset');
+        } finally {
+            setPresetApplying(false);
+            setConfirmPreset(false);
+        }
+    };
 
     /* The bounds the server enforces (AdminPasswordPolicyController), checked before saving.
        MaxLength 0 means "no cap", so the comparisons only apply when a cap is set. A policy no
@@ -694,6 +730,9 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
             {/* ================================================================ */}
             {tab === 'General' && (
                 <>
+                    {/* Instance mode: full, restricted or DR mode. Set by the hub, or here by hand. */}
+                    <InstanceModeCard />
+
                     {/* Public Domain */}
                     <div className={cardClass}>
                         <SectionHeader fields={CARD_FIELDS.baseurl} title="Public Domain" expanded={expanded === 'baseurl'} onToggle={() => toggle('baseurl')}
@@ -907,7 +946,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                         binding (security middleware), previously split across two cards. */}
                     <div className={cardClass}>
                         <SectionHeader fields={CARD_FIELDS.tokenBinding} title="Token Binding & Lifetime" expanded={expanded === 'tokenBinding'} onToggle={() => toggle('tokenBinding')}
-                            description={`Refresh ${config.tokens?.refreshTokenDays || 7}d — JWT IP binding: ${jwtIpBindingMode(config.security?.bindJwtToIp)}`} />
+                            description={`Refresh ${config.tokens?.refreshTokenDays || 7}d, session maximum ${securityPolicy ? hoursPhrase(securityPolicy.maxSessionLifetimeHours) : '...'} — JWT IP binding: ${jwtIpBindingMode(config.security?.bindJwtToIp)}`} />
                         {expanded === 'tokenBinding' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 <div className="bg-info-soft border border-info/40 rounded p-3 text-xs text-info">
@@ -918,8 +957,9 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                 <div className="flex items-center gap-2"><h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide">Refresh Token Lifetime</h4><AppliesTag fields={['tokens.refreshTokenDays']} /></div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <ConfigNumber label="Refresh Token Lifetime (days, 1-30)" value={config.tokens.refreshTokenDays} path="tokens.refreshTokenDays" onChange={(v) => update('tokens', 'refreshTokenDays', v)} fallback={7}
-                                        hint="Days a session can be renewed without logging in again. A stolen refresh token stays usable for the same period, subject to the bindings below and the session caps in Security Policy." />
+                                        hint="Days one refresh token stays usable when the session is not refreshed in the meantime. A stolen refresh token stays usable for the same period, subject to the bindings below and the session limits in Security Policy." />
                                 </div>
+                                <FieldHint>{refreshTokenRule(config.tokens.refreshTokenDays, securityPolicy?.maxSessionLifetimeHours)}</FieldHint>
                                 <SaveButton saving={saving === 'tokens'} onClick={() => saveSection('tokens', config.tokens, 'tokens')} label="Save Lifetime" />
 
                                 {/* JWT & Refresh Binding */}
@@ -1037,11 +1077,23 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                         <h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide">Session</h4>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                             <ConfigNumber label="Session Idle Timeout (min, 0 = none)" value={securityPolicy.sessionIdleTimeoutMinutes} onChange={(v) => updateSecurityPolicyField('sessionIdleTimeoutMinutes', v)}
-                                                hint="Minutes without any request before the session ends and the user must log in again. 0 means a session never ends from inactivity." />
+                                                hint="Minutes without any request before the session ends and the user must log in again. 0 means a session never ends from inactivity. NIST SP 800-63B allows at most 30 at AAL2 and 15 at AAL3." />
                                             <ConfigNumber label="Max Concurrent Sessions (0 = unlimited)" value={securityPolicy.maxConcurrentSessions} onChange={(v) => updateSecurityPolicyField('maxConcurrentSessions', v)}
                                                 hint="Devices or browsers one user may be logged in from at once. Logging in beyond this ends the oldest session." />
-                                            <ConfigNumber label="Max Session Lifetime (days, 0 = unlimited)" value={securityPolicy.maxSessionLifetimeDays} onChange={(v) => updateSecurityPolicyField('maxSessionLifetimeDays', v)}
-                                                hint="Hard cap from first login, however active the user is; after this a fresh login is required. 0 removes the cap." />
+                                            <div>
+                                                <ConfigNumber label="Max Session Lifetime (hours, 0 = unlimited)" value={securityPolicy.maxSessionLifetimeHours} onChange={(v) => updateSecurityPolicyField('maxSessionLifetimeHours', v)}
+                                                    hint={`Hours from sign-in, however active the user is; after this a fresh sign-in is required. Now ${hoursPhrase(securityPolicy.maxSessionLifetimeHours)}. It wins over the refresh token lifetime: no refresh token and no access token is valid past it. Lowering it ends sessions already older than the new value at their next refresh. 0 removes the maximum.`} />
+                                                {sessionMaximumAdvice(securityPolicy.maxSessionLifetimeHours) && (
+                                                    <FieldHint>
+                                                        {sessionMaximumAdvice(securityPolicy.maxSessionLifetimeHours)}{' '}
+                                                        <button type="button" onClick={() => updateSecurityPolicyField('maxSessionLifetimeHours', RECOMMENDED_SESSION_HOURS)}
+                                                            className="underline font-semibold text-ink hover:text-accent-ink">
+                                                            Set to {RECOMMENDED_SESSION_HOURS} hours
+                                                        </button>
+                                                        {' '}(applies when you save this card).
+                                                    </FieldHint>
+                                                )}
+                                            </div>
                                         </div>
                                         <h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide pt-2">Approval &amp; mTLS</h4>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1152,7 +1204,7 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                     {/* Password Policy (inlined) */}
                     <div className={cardClass}>
                         <SectionHeader title="Password Policy" expanded={expanded === 'passwordPolicy'} onToggle={() => toggle('passwordPolicy')}
-                            description="Complexity and rotation rules" tag="live" />
+                            description={policyGuidance ? (policyGuidance.nist80063B.meets ? 'Length and blocklist, meets NIST SP 800-63B' : 'Length, complexity and rotation rules; NIST SP 800-63B preset available') : 'Length, complexity and rotation rules'} tag="live" />
                         {expanded === 'passwordPolicy' && (
                             <div className="p-4 border-t border-line space-y-4">
                                 {policyLoading && <div className="text-sm text-ink-muted">Loading...</div>}
@@ -1160,10 +1212,28 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                 {policy && (
                                     <>
                                         <p className="text-[11px] text-ink-muted">
-                                            Applies to local accounts at their next password change; LDAP users are governed by the directory.
+                                            Applies to local accounts when a password is set or changed; LDAP users are governed by the directory.
+                                            A password already stored is never checked again at sign-in, so a stricter policy locks nobody out.
                                             The "require at least one" switches and the minimum counts are independent rules: a count of 2 is
                                             enforced even with its switch off, and a switch on with a count of 0 demands exactly one.
                                         </p>
+                                        {policyGuidance && !policyGuidance.nist80063B.meets && (
+                                            <div className="bg-info-soft border border-info/40 rounded p-3 text-xs text-info space-y-2">
+                                                <div>
+                                                    This policy differs from <strong>NIST SP 800-63B</strong>, which a new install starts with. The preset sets: {NIST_PRESET_SUMMARY}.
+                                                    Every setting stays editable afterwards, for organizations required to keep composition rules or rotation.
+                                                </div>
+                                                <ul className="list-disc pl-5 space-y-0.5">
+                                                    {policyGuidance.nist80063B.differences.map((d) => <li key={d}>{d}</li>)}
+                                                </ul>
+                                                <button type="button" onClick={() => setConfirmPreset(true)} disabled={presetApplying} className={actionButton}>
+                                                    {presetApplying ? 'Applying...' : 'Apply NIST SP 800-63B preset'}
+                                                </button>
+                                            </div>
+                                        )}
+                                        {policyGuidance?.nist80063B.meets && (
+                                            <div className="text-[11px] text-ink-muted">This policy meets NIST SP 800-63B: length is the requirement, there are no composition rules or scheduled expiry, and new passwords are checked against a blocklist.</div>
+                                        )}
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                             {Object.entries(policy).filter(([key]) => policyNumberFields.includes(key)).map(([key, value]) => (
                                                 <div key={key}>
@@ -1195,8 +1265,36 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                                 </div>
                                             ))}
                                         </div>
+                                        <h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wide pt-2">Blocklist</h4>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <div>
+                                                <ConfigToggle label="Check the bundled blocklist" checked={!!policy.useBundledBlocklist} onChange={(v) => updatePolicyField('useBundledBlocklist', v)}
+                                                    hintTone={policyGuidance && !policyGuidance.bundledBlocklist.available ? 'warn' : 'muted'}
+                                                    hint={policyGuidance && !policyGuidance.bundledBlocklist.available
+                                                        ? `The list shipped with ModularCA (${policyGuidance.bundledBlocklist.fileName} beside the program files) was not found on this node, so nothing is checked against it. Reinstall the release to put it back.`
+                                                        : `A new password is refused when it is on the list shipped with ModularCA${policyGuidance ? ` (${policyGuidance.bundledBlocklist.entries.toLocaleString('en-US')} entries, a starter list of the most common choices)` : ''}, ignoring case, or is one entry or one or two characters repeated. Checked on this server only: no password and no hash of one is sent anywhere.`} />
+                                            </div>
+                                            <div>
+                                                <label className={labelClass}>Your own blocklist</label>
+                                                <div className="text-xs text-ink mono break-all">{policy.dictionaryPath || 'None'}</div>
+                                                <FieldHint>
+                                                    A file of your own in config/password-dictionaries on the server, set through the API (dictionaryPath). It is checked in addition to
+                                                    the bundled list, not instead of it{policy.dictionaryIsHashed ? '; this one lists SHA-256 hashes' : ''}.
+                                                </FieldHint>
+                                            </div>
+                                        </div>
                                         {policyProblems.map((p) => <FieldHint key={p} tone="warn">{p} Save is blocked until this is fixed.</FieldHint>)}
                                         <SaveButton saving={policySaving} disabled={policyProblems.length > 0} onClick={handleSavePolicy} label="Save Policy" />
+                                        <ConfirmModal
+                                            isOpen={confirmPreset}
+                                            title="Apply the NIST SP 800-63B preset"
+                                            message={`Set the password policy to: ${NIST_PRESET_SUMMARY}? Password history and your own blocklist are kept. Passwords already in use keep working; the policy applies when a password is next set or changed. Unsaved edits on this card are discarded.`}
+                                            confirmLabel="Apply preset"
+                                            tone="accent"
+                                            loading={presetApplying}
+                                            onConfirm={applyNistPreset}
+                                            onCancel={() => setConfirmPreset(false)}
+                                        />
                                     </>
                                 )}
                             </div>
@@ -1389,6 +1487,29 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                 </div>
                                 <SaveButton saving={saving === 'ldapAuth'} onClick={() => saveSection('ldap-auth', config.ldapAuth, 'ldapAuth')}
                                     blockedReason={ldapMappingsInvalid ? 'Fix the group mappings marked in red before saving.' : null} />
+                            </div>
+                        )}
+                    </div>
+
+                    {/* CA lifecycle notices: when a CA's certificate and key raise a notice. They change nothing a CA does. */}
+                    <div className={cardClass}>
+                        <SectionHeader fields={CARD_FIELDS.caLifecycle} title="CA Lifecycle Notices" expanded={expanded === 'caLifecycle'} onToggle={() => toggle('caLifecycle')}
+                            description={caLifecycleSummary(config.caLifecycle)} tag="live" />
+                        {expanded === 'caLifecycle' && (
+                            <div className="p-4 border-t border-line space-y-4">
+                                <div className="bg-info-soft border border-info/40 rounded p-3 text-xs text-info">
+                                    These settings decide when a notice about a CA appears on its page, on System Health and, once pressing, on the dashboard.
+                                    They change nothing a CA does: no CA stops issuing and no node becomes not ready because of a notice.
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    <ConfigNumber label="Root CA Expiry Notice (days)" value={config.caLifecycle?.rootExpiryNoticeDays} path="caLifecycle.rootExpiryNoticeDays" onChange={(v) => update('caLifecycle', 'rootExpiryNoticeDays', v)} fallback={0}
+                                        hint="A root CA certificate raises a notice this many days before it expires. The default is 730 (two years): a renewed root certificate has to reach everyone who trusts the old one. 0 gives no early notice; the certificate's own expiry warning still appears." />
+                                    <ConfigNumber label="Intermediate CA Expiry Notice (days)" value={config.caLifecycle?.intermediateExpiryNoticeDays} path="caLifecycle.intermediateExpiryNoticeDays" onChange={(v) => update('caLifecycle', 'intermediateExpiryNoticeDays', v)} fallback={0}
+                                        hint="The same for a CA certificate that another CA issued. The default is 365. 0 gives no early notice." />
+                                    <ConfigNumber label="CA Key Usage Period (days, 0 = off)" value={config.caLifecycle?.keyUsagePeriodDays} path="caLifecycle.keyUsagePeriodDays" onChange={(v) => update('caLifecycle', 'keyUsagePeriodDays', v)} fallback={0}
+                                        hint="A CA whose key has been signing longer than this raises a notice. Off by default: NIST SP 800-57 Part 1 suggests a usage period for a signing key and leaves the number to your organization's policy, so write that policy's number here (for example 3650 for ten years). The key keeps working either way." />
+                                </div>
+                                <SaveButton saving={saving === 'caLifecycle'} onClick={() => saveSection('ca-lifecycle', caLifecycleBody(config.caLifecycle), 'caLifecycle')} blockedReason={caLifecycleProblem(config.caLifecycle)} />
                             </div>
                         )}
                     </div>

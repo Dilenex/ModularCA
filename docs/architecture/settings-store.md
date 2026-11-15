@@ -125,6 +125,7 @@ the state when this was drawn (2026-10-05); the readers made live since are list
 |---|---|---|---|---|
 | `DB.App.*`, `DB.Audit.*` (Host, Port, Username, Password, Database, SslMode) | a | connection strings in `StartModularCA`, schema check, `--unlock-user`, `--upgrade-check`, `--db-ownership`, `BackupRestore`, `Unlocker`, `KeystoreDbPassphraseLoader` | restart | restart |
 | `Schema.WaitSeconds`, `MigrationCommandTimeoutSeconds`, `MigrationLockTimeoutSeconds` | a | `SchemaStartup`, `SignerRole`, `UpgradeCheckCommand` | restart | restart |
+| `Schema.RestoreWaitSeconds` (added in 0.4.5: how long a start waits for a running restore before it exits 75; `restore-exclusion.md`) | a | `SchemaStartup.TakeServingLockAsync`, in the node and in `SignerRole` | restart | restart |
 | `Roles` | c | `ProcessRoles.Parse`; `--role` wins | restart | restart |
 | `Signer.Mode`, `Endpoint`, `ClientCertificate`, `ClientCertificatePassword`, `PinnedServerSpki` | c | the node's `RemoteSigningService` | restart | restart |
 | `Signer.Listen`, `ServerCertificate`, `ServerCertificatePassword`, `PinnedClientSpki`, `IdentityCa`, `IdentityCaPassword` | b | `SignerRole`, `SignerIdentityCommands` | restart | restart |
@@ -186,6 +187,7 @@ the state when this was drawn (2026-10-05); the readers made live since are list
 | `ComplianceScan.ExpiringWithinDays` | none | none since 0.4.3: retired; the scan reads each certificate's expiry warning, which its certificate profile sets. The `ProfileExpiryWarnings` migration deletes its stored row, and a config file still holding it is warned about unless it holds the written default, 30 | none | none |
 | `CertPolicy.Enabled`, `MinRsaKeySize`, `ForbiddenAlgorithms`, `RequireSans`, `AlgorithmSunsetRules`, `ExpireCheckSchedule` | d | `CertPolicyService` (issuance, enrollment role), `CertExpireJob` | live | live |
 | `CertPolicy.RsaSignaturePadding` | d | the static `KeyAlgorithmPolicy.UseRsaPss`, set once at startup | restart | live |
+| `CaLifecycle.RootExpiryNoticeDays`, `IntermediateExpiryNoticeDays`, `KeyUsagePeriodDays` | d | `CaLifecycleService` (the CA hierarchy feed, `checks.caLifecycle` in `/health/ready`); notices only, nothing is refused | live | live |
 | `AutoRenewal.Enabled`, `Schedule`, `RenewDaysBeforeExpiry`, `AutoApprove`, `RequireKeyRotation` | d | `AutoRenewalJob`, `AdminCertificateController` | live | live |
 | `IntegrationApi.Enabled`, `SpaceId` | d | `ApiKeyAuthAttribute`, `InfraController`, `IntegrationScopeCheck`, `--upgrade-check` | live (the console says restart) | live |
 | `IntegrationApi.ApiKey` | e, hashed | `ApiKeyAuthAttribute` | live | live |
@@ -342,6 +344,29 @@ still carries one section's proposed values.
 - `Webhook_Endpoints` is one setting whose elements each carry a secret. The whole list is kept
   as one wrapped secret; splitting it into a readable list and per-element secrets is not worth
   the bookkeeping.
+
+### A row that is not a setting: the instance's identifier
+
+The `Settings` table also holds one row nobody sets: `Instance_Id`, the instance's identifier
+(`InstanceIdentity`; the `instanceId` of a backup manifest and of the hub's `hello`). It is here
+because this table is with the instance's data: every host reads the same row, and a backup and
+a restore carry it. It is a reserved key (`ReservedSettingKeys`), not a setting:
+
+- No property of `SystemConfig` stands behind it, so it is in no `config.yaml`, no environment
+  variable supplies it, the move out of the file never sees it, and the console's settings
+  pages do not list it. That holds before the move as well as after: the row does not depend on
+  whether the instance-wide settings have been moved.
+- The control role writes it once, at the first start of a build that keeps it, with one
+  `INSERT ... ON CONFLICT DO NOTHING`: the fingerprint of the system signing CA as it is then.
+  Two nodes starting together end with one row. Nothing updates or deletes it.
+- A settings change that names the key is refused whole (`WrittenOnce`), whether it sets, clears
+  or only expects a version of it. That closes the settings endpoints, `--settings` and the hub.
+- It takes no revision and has no history: it is not a change, and it has one value for ever.
+  `--settings list` shows it with the stored settings. Its first store is one `ConfigUpdated`
+  audit record under the host.
+
+A build from before the row logs it once per start as a stored setting it does not know, and is
+otherwise unaffected.
 
 ### Secrets
 

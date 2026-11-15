@@ -22,6 +22,7 @@ public class ModularCAHealthCheck : IHealthCheck
     private readonly ApiCertificateProvider _apiCertProvider;
     private readonly SystemConfig _config;
     private readonly SshKeyImportState? _sshImports;
+    private readonly SignerContactState? _signerContact;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ModularCAHealthCheck"/> class.
@@ -33,6 +34,7 @@ public class ModularCAHealthCheck : IHealthCheck
     /// <param name="config">The system configuration.</param>
     /// <param name="auditDb">The optional audit database context.</param>
     /// <param name="sshImports">What the last import of SSH CA key files in this process left, for the reasons shown beside keys awaiting import.</param>
+    /// <param name="signerContact">Where each answer of the signer to this check is kept with its time, for readers that must not ask the signer themselves; null to keep none.</param>
     public ModularCAHealthCheck(
         ModularCADbContext db,
         IKeystoreCertificates keystore,
@@ -40,9 +42,11 @@ public class ModularCAHealthCheck : IHealthCheck
         ApiCertificateProvider apiCertProvider,
         SystemConfig config,
         AuditDbContext? auditDb = null,
-        SshKeyImportState? sshImports = null)
+        SshKeyImportState? sshImports = null,
+        SignerContactState? signerContact = null)
     {
         _sshImports = sshImports;
+        _signerContact = signerContact;
         _db = db;
         _auditDb = auditDb;
         _keystore = keystore;
@@ -164,7 +168,8 @@ public class ModularCAHealthCheck : IHealthCheck
     /// <summary>
     /// Asks the signer for its own state. A signer that has not unlocked its keystore holds no
     /// usable key, so nothing can be issued: the node is not ready, and the readiness endpoint
-    /// says so with the signer's report rather than an inference from the registry.
+    /// says so with the signer's report rather than an inference from the registry. What the
+    /// signer answered, or that it did not, is also kept with its time in <see cref="SignerContactState"/>.
     /// </summary>
     /// <remarks>
     /// The entry also carries <c>sshKeys</c>: how many SSH CA keys there are and how many the
@@ -179,6 +184,7 @@ public class ModularCAHealthCheck : IHealthCheck
         try
         {
             var health = await _signer.HealthAsync(ct);
+            _signerContact?.Observe(health, DateTime.UtcNow);
             var status = health.Unlocked ? "healthy" : "unhealthy";
             SshKeyReadiness? sshKeys = null;
             try
@@ -193,6 +199,8 @@ public class ModularCAHealthCheck : IHealthCheck
         }
         catch (Exception ex)
         {
+            if (ex is not OperationCanceledException)
+                _signerContact?.ObserveUnreachable(DateTime.UtcNow);
             Serilog.Log.Error(ex, "Health check: the signer did not answer");
             return ("unhealthy", new { status = "unhealthy", unlocked = false });
         }
@@ -213,7 +221,14 @@ public class ModularCAHealthCheck : IHealthCheck
             var keystorePath = Path.Combine(AppContext.BaseDirectory, "keystores");
             var keystoreExists = Directory.Exists(keystorePath);
 
-            var expiringCas = trusted.Where(c => c.NotAfter < DateTime.UtcNow.AddDays(30)).ToList();
+            // A certificate that was renewed over the same key is not expiring: the CA has a
+            // later one. Only a certificate with no later one of the same name and key counts.
+            var expiringCas = trusted
+                .Where(c => c.NotAfter < DateTime.UtcNow.AddDays(30))
+                .Where(c => !trusted.Any(other => other.NotAfter > c.NotAfter
+                    && other.SubjectDN.Equivalent(c.SubjectDN, true)
+                    && other.GetPublicKey().Equals(c.GetPublicKey())))
+                .ToList();
 
             if (signers.Count == 0)
                 return ("unhealthy", new { status = "unhealthy", caSigners = 0, trustedCerts = trusted.Count, keystoreDirectoryExists = keystoreExists });
@@ -227,13 +242,19 @@ public class ModularCAHealthCheck : IHealthCheck
                     "Health check: {Count} CA certificates expire within 30 days: {Subjects}",
                     expiringCas.Count,
                     string.Join("; ", expiringCas.Select(c => $"{c.SubjectDN} (NotAfter={c.NotAfter:o})")));
-                return ("degraded", new
+                // Reported, and no longer a reason to answer not ready: a CA certificate near
+                // its end, or past it, is acted on by an administrator (it has a renewal action
+                // and its own notices under checks.caLifecycle), and a node taken out of
+                // rotation for it would stop serving the CRLs and OCSP answers that everything
+                // it issued still needs.
+                return ("healthy", new
                 {
-                    status = "degraded",
+                    status = "healthy",
                     caSigners = signers.Count,
                     trustedCerts = trusted.Count,
                     keystoreDirectoryExists = keystoreExists,
-                    expiringCaCerts = expiringCas.Count
+                    expiringCaCerts = expiringCas.Count,
+                    expiredCaCerts = expiringCas.Count(c => c.NotAfter <= DateTime.UtcNow),
                 });
             }
 

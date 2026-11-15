@@ -190,6 +190,14 @@ export interface AcmeRevokeCertRequest {
     reason?: number | null;
 }
 
+/** From `ModularCA.Shared/Models/Revocation/RevokedSerialRequests.cs`. */
+export interface AdoptCertificateRequest {
+    certificate: string;
+    note: string;
+    revokeReason?: E.RevocationReason | null;
+    invalidityDate?: string | null;
+}
+
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
 export interface AlertConfig {
     enabled: boolean;
@@ -264,6 +272,13 @@ export interface BulkRevokeRequest {
 export interface BulkUserGroupsRequest {
     addGroupIds: string[];
     removeGroupIds: string[];
+}
+
+/** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
+export interface CaLifecycleConfig {
+    rootExpiryNoticeDays: number;
+    intermediateExpiryNoticeDays: number;
+    keyUsagePeriodDays: number;
 }
 
 /** From `ModularCA.Shared/Models/SpacePolicyChangeCeremonyParameters.cs`. */
@@ -366,6 +381,9 @@ export interface CertificateInfoModel {
     retiredAt?: string | null;
     retiredBy?: string | null;
     retiredReason?: string | null;
+    adoptedAt?: string | null;
+    adoptedBy?: string | null;
+    adoptionNote?: string | null;
     expiryWarningDismissedAt?: string | null;
     expiryWarningDismissedBy?: string | null;
     expiryWarningAt?: string | null;
@@ -938,6 +956,11 @@ export interface HttpsConfig {
     publicPort?: number | null;
 }
 
+/** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
+export interface HubConfig {
+    affiliationTokenSha256: string;
+}
+
 /** From `ModularCA.Shared/Models/TrustAnchors/ImportTrustAnchorRequest.cs`. */
 export interface ImportTrustAnchorRequest {
     certificate: string;
@@ -961,6 +984,18 @@ export interface IngressRouteConfig {
     upstream: string;
     plainHttpUpstream?: string | null;
     pinnedSpki?: string | null;
+}
+
+/** From `ModularCA.Shared/Models/InstanceModeModels.cs`. */
+export interface InstanceModeStatus {
+    mode: string;
+    source: string;
+    setBy?: string | null;
+    reason?: string | null;
+    setAtUtc?: string | null;
+    hubConnection: boolean;
+    stillWorks: string;
+    crlsExpireFromUtc?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
@@ -1204,6 +1239,20 @@ export interface ProtocolCleanupConfig {
     orphanRequestGraceMinutes: number;
 }
 
+/** From `ModularCA.Shared/Models/Revocation/RevokedSerialRequests.cs`. */
+export interface RecordRevokedSerialRequest {
+    serialNumber: string;
+    reason: E.RevocationReason;
+    invalidityDate?: string | null;
+    note: string;
+}
+
+/** From `ModularCA.Shared/Models/Revocation/RevokedSerialRequests.cs`. */
+export interface RecordRevokedSerialsRequest {
+    serials: RevokedSerialItem[];
+    note: string;
+}
+
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
 export interface RedisConfig {
     enabled: boolean;
@@ -1236,6 +1285,26 @@ export interface ReissueCertificateRequestByCsrId {
     notAfter?: string | null;
     newSubjectDn?: string | null;
     newSans?: string[] | null;
+}
+
+/** From `ModularCA.Shared/Models/RenewCaCertificateCeremonyParameters.cs`. */
+export interface RenewalAdvisory {
+    reason: string;
+    severity: string;
+    title?: string | null;
+    message: string;
+}
+
+/** From `ModularCA.Shared/Models/RenewCaCertificateCeremonyParameters.cs`. */
+export interface RenewCaCertificateCeremonyParameters {
+    caId: string;
+    caName: string;
+    currentCertificateId: string;
+    currentSerialNumber: string;
+    notAfter: string;
+    advisories: RenewalAdvisory[];
+    acknowledged: string[];
+    spaceId?: string | null;
 }
 
 /** From `ModularCA.Shared/Models/RequestedExtension.cs`. */
@@ -1279,6 +1348,13 @@ export interface RetainedAccountDto {
     approvals: number;
 }
 
+/** From `ModularCA.Shared/Models/Revocation/RevokedSerialRequests.cs`. */
+export interface RevokeAllMissingSerialsRequest {
+    confirmedCount: number;
+    journaledCrlNumber: number;
+    note: string;
+}
+
 /** From `ModularCA.Shared/Models/RevokeCaCeremonyParameters.cs`. */
 export interface RevokeCaCeremonyParameters {
     certificateId: string;
@@ -1299,6 +1375,12 @@ export interface RevokeCertificateRequestByCertSerial {
     serialNumber: string;
     reason: E.RevocationReason;
     invalidityDate?: string | null;
+}
+
+/** From `ModularCA.Shared/Models/Revocation/RevokedSerialRequests.cs`. */
+export interface RevokedSerialItem {
+    serialNumber: string;
+    reason: E.RevocationReason;
 }
 
 /** From `ModularCA.Shared/Models/Csr/ParseCsrResponse.cs`. */
@@ -1348,6 +1430,7 @@ export interface SchemaConfig {
     waitSeconds: number;
     migrationCommandTimeoutSeconds: number;
     migrationLockTimeoutSeconds: number;
+    restoreWaitSeconds: number;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
@@ -1400,6 +1483,12 @@ export interface ServerKeyRefusal {
 export interface SetCertPermissionRequest {
     userId: string;
     accessLevel: string;
+}
+
+/** From `ModularCA.Shared/Models/InstanceModeModels.cs`. */
+export interface SetInstanceModeRequest {
+    mode: string;
+    reason: string;
 }
 
 /** From `ModularCA.Shared/Models/Setup/SetupModels.cs`. */
@@ -1540,6 +1629,15 @@ export interface SignerConfig {
     pinnedClientSpki: string;
     identityCa: string;
     identityCaPassword: string;
+    journal: SignerJournalConfig;
+}
+
+/** From `ModularCA.Shared/Models/Config/SignerConfig.cs`. */
+export interface SignerJournalConfig {
+    directory: string;
+    checks: string;
+    lowSpaceMiB: number;
+    criticalSpaceMiB: number;
 }
 
 /** From `ModularCA.Shared/Models/Config/SignerPaths.cs`. */
@@ -1670,6 +1768,7 @@ export interface SystemConfig {
     certExpiryNotification: CertExpiryNotificationConfig;
     complianceScan: ComplianceScanConfig;
     certPolicy: CertPolicyConfig;
+    caLifecycle: CaLifecycleConfig;
     autoRenewal: AutoRenewalConfig;
     integrationApi: IntegrationApiConfig;
     policySync: PolicySyncConfig;
@@ -1679,6 +1778,7 @@ export interface SystemConfig {
     audit: AuditConfig;
     schema: SchemaConfig;
     health: HealthConfig;
+    hub: HubConfig;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */

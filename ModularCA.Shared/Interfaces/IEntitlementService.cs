@@ -9,7 +9,7 @@ namespace ModularCA.Shared.Interfaces;
 /// <para>
 /// Deliberately separate from <see cref="IFeatureFlagService"/>, which reads a database table an
 /// administrator can edit through the admin UI. That is exactly right for "turn OCSP off on this
-/// host" and exactly wrong for "you have not bought multi-tenancy": one is an operator
+/// host" and exactly wrong for "you have not bought high availability": one is an operator
 /// preference, the other is a licence term, and an entitlement stored where the operator can
 /// flip it is not an entitlement.
 /// </para>

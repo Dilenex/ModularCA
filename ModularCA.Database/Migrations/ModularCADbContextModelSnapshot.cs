@@ -17,7 +17,7 @@ namespace ModularCA.Database.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.14")
+                .HasAnnotation("ProductVersion", "10.0.15")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "citext");
@@ -432,6 +432,51 @@ namespace ModularCA.Database.Migrations
                         .IsUnique();
 
                     b.ToTable("ApiKeys");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.CaCertificateEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("ActivatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Actor")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<Guid?>("CeremonyId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CertificateAuthorityId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CertificateId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("KeyId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Origin")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<DateTime?>("SupersededAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CertificateAuthorityId");
+
+                    b.HasIndex("CertificateId")
+                        .IsUnique();
+
+                    b.ToTable("CaCertificates");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.CaGroupEntity", b =>
@@ -1127,6 +1172,17 @@ namespace ModularCA.Database.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<DateTime?>("AdoptedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("AdoptedBy")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<string>("AdoptionNote")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
                     b.Property<byte[]>("AesKeyEncryptionIv")
                         .HasColumnType("bytea");
 
@@ -1764,6 +1820,87 @@ namespace ModularCA.Database.Migrations
                     b.ToTable("Fido2Credentials");
                 });
 
+            modelBuilder.Entity("ModularCA.Shared.Entities.InstanceContinuityEventEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("AcknowledgedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("AcknowledgedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("AcknowledgedByUsername")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<DateTime?>("AuditNewestUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("CrlCountersRaised")
+                        .HasColumnType("integer");
+
+                    b.Property<long?>("CrlNumberFloor")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("DetailsJson")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("DetectedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("EdgeOfMemoryUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("NewTag")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("OldTag")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AcknowledgedAt");
+
+                    b.ToTable("InstanceContinuityEvents");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.InstanceIncarnationEntity", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("RecordedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RecordedBy")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("ValueHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("InstanceIncarnation");
+                });
+
             modelBuilder.Entity("ModularCA.Shared.Entities.KerberosRealmEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2323,6 +2460,9 @@ namespace ModularCA.Database.Migrations
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<bool>("UseBundledBlocklist")
+                        .HasColumnType("boolean");
+
                     b.HasKey("Id");
 
                     b.ToTable("PasswordPolicy");
@@ -2483,6 +2623,71 @@ namespace ModularCA.Database.Migrations
                     b.ToTable("RequestProfiles", t =>
                         {
                             t.HasCheckConstraint("CK_RequestProfiles_Name_Length", "length(\"Name\") <= 255");
+                        });
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.RevokedSerialTombstoneEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CaCertificateId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CertificateAuthorityId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("CreatedByUsername")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<DateTime?>("InvalidityDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("IssuerDN")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
+                    b.Property<DateTime>("ListedUntil")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Note")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTime>("RevocationDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RevocationReason")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("SerialNumber")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("citext");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CertificateAuthorityId");
+
+                    b.HasIndex("CaCertificateId", "SerialNumber")
+                        .IsUnique();
+
+                    b.ToTable("RevokedSerialTombstones", t =>
+                        {
+                            t.HasCheckConstraint("CK_RevokedSerialTombstones_SerialNumber_Length", "length(\"SerialNumber\") <= 64");
                         });
                 });
 
@@ -2769,7 +2974,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<int>("MaxFailedLoginAttempts")
                         .HasColumnType("integer");
 
-                    b.Property<int>("MaxSessionLifetimeDays")
+                    b.Property<int>("MaxSessionLifetimeHours")
                         .HasColumnType("integer");
 
                     b.Property<int>("MaxSingleRequestsPerRequest")
@@ -3071,6 +3276,39 @@ namespace ModularCA.Database.Migrations
                     b.HasIndex("KeyCertificateId");
 
                     b.ToTable("SignerAudit");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.SignerFactEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTime?>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<byte[]>("Payload")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.Property<int>("Type")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("SignerFactQueue");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.SigningProfileEntity", b =>
@@ -4208,6 +4446,17 @@ namespace ModularCA.Database.Migrations
                     b.Navigation("SigningProfile");
                 });
 
+            modelBuilder.Entity("ModularCA.Shared.Entities.CaCertificateEntity", b =>
+                {
+                    b.HasOne("ModularCA.Shared.Entities.CertificateEntity", "Certificate")
+                        .WithMany()
+                        .HasForeignKey("CertificateId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Certificate");
+                });
+
             modelBuilder.Entity("ModularCA.Shared.Entities.CaGroupEntity", b =>
                 {
                     b.HasOne("ModularCA.Shared.Entities.CertificateAuthorityEntity", "CertificateAuthority")
@@ -4652,6 +4901,17 @@ namespace ModularCA.Database.Migrations
                     b.Navigation("DefaultCertProfile");
 
                     b.Navigation("InheritsFrom");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.RevokedSerialTombstoneEntity", b =>
+                {
+                    b.HasOne("ModularCA.Shared.Entities.CertificateEntity", "CaCertificate")
+                        .WithMany()
+                        .HasForeignKey("CaCertificateId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("CaCertificate");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.RoleAssignmentEntity", b =>

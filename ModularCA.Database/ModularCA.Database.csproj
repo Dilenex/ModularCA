@@ -30,6 +30,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ModularCA.Shared\ModularCA.Shared.csproj" />
+    <!-- The journal's record types: the facts a save queues for the signer's journal are encoded here. -->
+    <ProjectReference Include="..\ModularCA.Journal\ModularCA.Journal.csproj" />
   </ItemGroup>
 
   <ItemGroup>

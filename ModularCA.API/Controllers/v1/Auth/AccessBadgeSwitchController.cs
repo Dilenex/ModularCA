@@ -16,6 +16,8 @@ namespace ModularCA.API.Controllers.v1.Auth;
 /// <summary>
 /// Puts an access badge on, takes it off, or switches to another. Mints a fresh access token
 /// carrying the badge and records it on the session's refresh token so later refreshes keep it.
+/// The fresh access token stops at the session's horizon (the security policy's maximum session
+/// lifetime, <see cref="ModularCA.Shared.Utils.SessionLifetime"/>), like one issued by a refresh.
 /// </summary>
 /// <remarks>
 /// Narrowing is free; broadening (taking a badge off, or switching to one that keeps a source
@@ -33,9 +35,11 @@ public class AccessBadgeSwitchController(
     IJwtTokenService jwt,
     IAccessBadgeContext badgeContext,
     IDistributedCache cache,
-    IAuditService audit) : ControllerBase
+    IAuditService audit,
+    ISecurityPolicyService securityPolicy) : ControllerBase
 {
     /// <summary>Switches the session's badge. <c>BadgeId</c> null takes the worn badge off.</summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost]
     public async Task<IActionResult> Switch([FromBody] AccessBadgeSwitchRequest request)
     {
@@ -93,7 +97,9 @@ public class AccessBadgeSwitchController(
             .ToListAsync();
         var mfaSetupRequired = User.FindFirst("mfa_setup_required")?.Value == "true";
         var claim = target == null ? null : new AccessBadgeClaim(target.Id, target.Name);
-        var (token, expiresAt) = jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired, claim);
+        var horizon = ModularCA.Shared.Utils.SessionLifetime.Horizon(
+            session.FamilyCreatedAt ?? session.CreatedAt, (await securityPolicy.GetAsync()).MaxSessionLifetimeHours);
+        var (token, expiresAt) = jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired, claim, notAfter: horizon);
 
         session.AccessBadgeId = target?.Id;
         session.LastActivityAt = DateTime.UtcNow;

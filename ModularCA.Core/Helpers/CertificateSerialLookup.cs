@@ -61,6 +61,12 @@ public static class CertificateSerialLookup
     /// Reads at most two rows: enough to prove ambiguity, without loading an unbounded result set
     /// if the data turns out to be worse than expected.
     /// </para>
+    /// <para>
+    /// The serial is matched as given first. When that finds nothing it is matched in its stored
+    /// form (<see cref="ModularCA.Shared.Utils.CertificateUtil.NormalizeSerialForLookup"/>): a
+    /// serial written with a leading zero, in lower case or with separators, as OpenSSL prints
+    /// it and as the consoles show it, names the same certificate.
+    /// </para>
     /// </summary>
     /// <param name="source">Certificate query to resolve against; pre-filter it by issuer where possible.</param>
     /// <param name="serialNumber">The serial number to look up. Null or whitespace yields <see cref="SerialResolution.NotFound"/>.</param>
@@ -77,6 +83,11 @@ public static class CertificateSerialLookup
             .Where(c => c.SerialNumber == serialNumber)
             .Take(2)
             .ToListAsync(ct);
+        if (matches.Count == 0 && StoredForm(serialNumber) is { } stored)
+            matches = await source
+                .Where(c => c.SerialNumber == stored)
+                .Take(2)
+                .ToListAsync(ct);
 
         return matches.Count switch
         {
@@ -121,7 +132,19 @@ public static class CertificateSerialLookup
             .Where(c => c.SerialNumber == serialNumber)
             .Take(2)
             .ToList();
+        if (matches.Count == 0 && StoredForm(serialNumber) is { } stored)
+            matches = source
+                .Where(c => c.SerialNumber == stored)
+                .Take(2)
+                .ToList();
 
         return matches.Count == 1 ? matches[0] : null;
+    }
+
+    /// <summary>The stored form of <paramref name="serialNumber"/> when it differs from what was given; null when it is the same.</summary>
+    private static string? StoredForm(string serialNumber)
+    {
+        var stored = ModularCA.Shared.Utils.CertificateUtil.NormalizeSerialForLookup(serialNumber);
+        return string.Equals(stored, serialNumber, StringComparison.Ordinal) ? null : stored;
     }
 }

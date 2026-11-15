@@ -34,8 +34,15 @@ public class AdminBackupController(
     ISecurityAlertService alertService,
     ModularCA.Shared.Signing.ISigningService signer,
     ModularCA.Shared.Utils.EnvVarConfigOverlay envOverlay,
-    ModularCA.Auth.Services.IReplayGuard replayGuard) : ControllerBase
+    ModularCA.Auth.Services.IReplayGuard replayGuard,
+    ModularCA.Database.ServingDatabaseLock servingLock) : ControllerBase
 {
+    /// <summary>
+    /// This node's lock on the application database. A restore from the console asks for the
+    /// same key exclusively on the connection that holds it, so the node does not block itself
+    /// and the restore is refused only while another node, or another restore, uses the database.
+    /// </summary>
+    private readonly ModularCA.Database.ServingDatabaseLock _servingLock = servingLock;
     /// <summary>Spends restore-confirmation tokens atomically, so one token starts one restore.</summary>
     private readonly ModularCA.Auth.Services.IReplayGuard _replayGuard = replayGuard;
     /// <summary>Keeps environment-sourced secrets out of <c>config.yaml</c> when the configuration is persisted.</summary>
@@ -54,6 +61,7 @@ public class AdminBackupController(
     /// beyond the retention count are pruned.
     /// </summary>
     /// <returns>The filename of the created backup archive.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost]
     [RequireStepUp(StepUpOps.CreateBackup)]
     public async Task<IActionResult> CreateBackup()
@@ -151,6 +159,7 @@ public class AdminBackupController(
     /// </summary>
     /// <param name="request">Restore request containing the target archive filename.</param>
     /// <returns>A one-time confirmation token plus a manifest summary.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("preview-restore")]
     [RequireStepUp(StepUpOps.RestoreBackup)]
     public async Task<IActionResult> PreviewRestore(
@@ -246,6 +255,8 @@ public class AdminBackupController(
     /// </summary>
     /// <param name="request">The request body containing the backup filename and confirmation token.</param>
     /// <returns>A success message or error details.</returns>
+    // A restore is how an instance in DR mode is repaired, so it is not held to full mode.
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("restore")]
     [RequireStepUp(StepUpOps.RestoreBackup)]
     public async Task<IActionResult> RestoreBackup(
@@ -293,13 +304,23 @@ public class AdminBackupController(
         // providedPassword is forwarded straight through — the restore path ignores it for
         // legacy and RandomKey archives, and only uses it when the archive is StoredPassword-mode
         // and the on-disk password file can't decrypt it.
-        var exitCode = await BackupRestore.Restore(
+        //
+        // The restore takes the restore lock through this node's own lock connection: it is
+        // refused, with nothing changed, while another node serves from the same database or
+        // another restore runs, and while it runs no other node starts.
+        var result = await BackupRestore.RestoreWithVerdictAsync(
             archivePath,
             _ => _signer,
-            skipSchemaCheck: false,
-            providedPassword: string.IsNullOrEmpty(request.Password) ? null : request.Password,
-            restoreAudit: request.RestoreAudit,
-            interactive: false);
+            new RestoreOptions
+            {
+                SkipSchemaCheck = false,
+                Keys = new BackupKeySource(Password: string.IsNullOrEmpty(request.Password) ? null : request.Password),
+                RestoreAudit = request.RestoreAudit,
+                Interactive = false,
+                Exclusion = _servingLock,
+            });
+        Console.WriteLine(result.Verdict);
+        var exitCode = result.ExitCode;
 
         if (exitCode != 0)
         {
@@ -310,8 +331,19 @@ public class AdminBackupController(
                 targetEntityType: "Backup",
                 targetEntityId: sanitized,
                 success: false,
-                errorMessage: $"Restore failed with exit code {exitCode}",
+                errorMessage: result.DatabaseInUse
+                    ? $"Restore refused (exit code {exitCode}): the application database is in use by another node or another restore"
+                    : $"Restore failed with exit code {exitCode}",
                 sourceIp: HttpContext.Connection.RemoteIpAddress?.ToString());
+
+            // Another node is serving from the database, or another restore is running: nothing
+            // was changed, and the answer says what has to be stopped.
+            if (result.DatabaseInUse)
+                return Conflict(new
+                {
+                    error = "Restore refused: " + ModularCA.Database.RestoreLock.OtherNodeInUse + ". Nothing was changed.",
+                    exitCode,
+                });
 
             return StatusCode(500, new { error = "Restore failed", exitCode });
         }
@@ -483,6 +515,7 @@ public class AdminBackupController(
     /// </summary>
     /// <param name="request">Request body containing the new password.</param>
     /// <returns>Success message with the new mode, or an error response.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("encryption/set-password")]
     [RequireStepUp(StepUpOps.SetBackupPassword)]
     public async Task<IActionResult> SetBackupPassword(
@@ -539,6 +572,7 @@ public class AdminBackupController(
     /// Requires step-up MFA verification with operation token <c>change-backup-encryption-mode</c>.
     /// </summary>
     /// <returns>Success message with the new mode, or an error response.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("encryption/revert-to-random-key")]
     [RequireStepUp(StepUpOps.ChangeBackupEncryptionMode)]
     public async Task<IActionResult> RevertToRandomKey()
@@ -611,7 +645,9 @@ public class AdminBackupController(
         BackupRestore.ResolveBackupDirectory(AppContext.BaseDirectory, _config.Backup?.OutputPath);
 
     /// <summary>
-    /// Deletes the oldest backup archives when the total count exceeds the configured retention limit.
+    /// Deletes the oldest backup archives when the total count exceeds the configured retention limit,
+    /// by the one rule every pruning of the backup directory uses
+    /// (<see cref="ModularCA.Core.Services.BackupRetention"/>).
     /// </summary>
     /// <remarks>
     /// Honours <see cref="BackupConfig.MinimumRetentionDays"/> as a hard floor.
@@ -625,34 +661,16 @@ public class AdminBackupController(
         var retentionCount = _config.Backup.RetentionCount;
         if (retentionCount <= 0) return;
 
-        var retentionDirInfo = new DirectoryInfo(backupDir);
-        var files = retentionDirInfo.GetFiles("modularca-backup-*.zip")
-            .Concat(retentionDirInfo.GetFiles("modularca-backup-*.enc"))
-            .OrderByDescending(f => f.CreationTimeUtc)
-            .ToList();
-
         var minDays = Math.Max(0, _config.Backup.MinimumRetentionDays);
-        var floor = DateTime.UtcNow.AddDays(-minDays);
-
-        foreach (var file in files.Skip(retentionCount))
-        {
-            if (minDays > 0 && file.CreationTimeUtc > floor)
-            {
-                Serilog.Log.Information(
-                    "Backup retention: skipping delete of {FileName} — younger than MinimumRetentionDays={MinDays} floor",
-                    file.Name, minDays);
-                continue;
-            }
-            try
-            {
-                file.Delete();
-                Serilog.Log.Warning("Backup retention: deleted {FileName} (retentionCount={Count})", file.Name, retentionCount);
-            }
-            catch (Exception ex)
-            {
-                Serilog.Log.Warning(ex, "Backup retention: failed to delete {FileName}", file.Name);
-            }
-        }
+        var pruned = ModularCA.Core.Services.BackupRetention.Apply(backupDir, retentionCount, maxAge: null, minDays, DateTime.UtcNow);
+        foreach (var kept in pruned.KeptByMinimumRetention)
+            Serilog.Log.Information(
+                "Backup retention: skipping delete of {FileName} — younger than MinimumRetentionDays={MinDays} floor",
+                kept.FileName, minDays);
+        foreach (var deleted in pruned.Deleted)
+            Serilog.Log.Warning("Backup retention: deleted {FileName} (retentionCount={Count})", deleted.FileName, retentionCount);
+        foreach (var (archive, error) in pruned.Failed)
+            Serilog.Log.Warning("Backup retention: failed to delete {FileName}: {Error}", archive.FileName, error);
     }
 }
 

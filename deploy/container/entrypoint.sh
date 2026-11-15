@@ -17,8 +17,20 @@
 # <dir>/signer.yaml and <dir>/db.yaml and nothing under config/, which in the pod it does not
 # even mount, so those are the files it waits for; the pod's init containers fill them. The
 # identity init containers run the binary directly and pass their own role.
+#
+# One-off commands, run beside a stopped node by an orchestrator (podman run --rm ... <image>
+# --restore ..., or --backup-manifest ...): the binary is run with exactly the arguments given and
+# its exit status is the container's. Nothing is bootstrapped, no wizard starts and nothing is
+# waited for, whatever the volumes hold: a restore onto empty databases has a db.yaml and no
+# config.yaml, which below would otherwise read as "not configured".
 set -e
 cd /opt/modularca
+
+for arg in "$@"; do
+  case "$arg" in
+    --restore|--backup-manifest) exec ./ModularCA.API "$@" ;;
+  esac
+done
 
 # --bootstrap-only: do the first-start bootstrap if it is needed and stop, serving nothing. This
 # is what the pod's first init container runs, so that "is this install configured yet" is

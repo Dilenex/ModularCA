@@ -26,6 +26,7 @@ export default function AdminUiGuide() {
                     <h3 className="text-lg font-semibold text-ink mb-2">Operations Requiring Step-Up</h3>
                     <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                         <li>Certificate revocation, hold, and unhold (via the Certificates page and Dashboard)</li>
+                        <li>Revoking a serial with no certificate, and, as a separate operation, revoking every serial missing from a CA&apos;s refused CRL</li>
                         <li>Certificate export (PEM with private key)</li>
                         <li>Profile deletion (certificate profiles, signing profiles, request profiles)</li>
                         <li>Protocol configuration updates</li>
@@ -88,7 +89,7 @@ export default function AdminUiGuide() {
                     <li>CA status cards showing each authority's health, key algorithm, and certificate count</li>
                     <li>Recently issued certificates with quick links to details</li>
                     <li>Pending request count with approve/reject shortcuts</li>
-                    <li>Needs attention: certificates in their expiry warning or alert, and recently expired ones, with no replacement</li>
+                    <li>Needs attention: certificates in their expiry warning or alert, and recently expired ones, with no replacement; and each CA whose own certificate is in its expiry warning (30 days by default) or has expired</li>
                     <li>System health summary (scheduler, database, OCSP responder)</li>
                     <li>Quick-action buttons for common tasks (issue certificate, create CA)</li>
                 </ul>
@@ -164,6 +165,39 @@ export default function AdminUiGuide() {
                     <li>Memory and resource utilization</li>
                 </ul>
                 <p className="text-ink leading-relaxed mb-3">
+                    The Security Baseline card lists where the instance differs from what a new install starts with: a maximum
+                    session lifetime over 12 hours (or none), a password policy that differs from NIST SP 800-63B, and every
+                    CA, X.509 or SSH, whose key is RSA under 3072 bits. An upgrade changes none of these: each is as it was
+                    stored, and the card links to where the change is made. The first two rows are shown to a system
+                    administrator, who alone can read those policies.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    The same card lists what each CA's certificate and key have to say over time: a CA certificate
+                    that expires within its notice window (two years for a root and one year for an intermediate by
+                    default), an end-entity certificate profile whose maximum validity is longer than the CA certificate
+                    has left by a tenth of that maximum or more (a certificate issued then is shortened to end five
+                    minutes before the CA certificate, with a warning to the requester; the CA's own OCSP responder,
+                    timestamp and CMP signer profiles are left out, because their certificates are meant to end with
+                    the CA's), a CA whose certificate outlives its parent's, and, when a usage period
+                    is set, a key that has been signing longer than it. The windows and the period are under CA
+                    Lifecycle Notices on the Security tab of Settings; NIST SP 800-57 Part 1 leaves the usage period
+                    of a CA key to your organization's policy, so that notice is off until you set a number. The
+                    CA's page shows the same notices with the facts behind them under Key and Certificate Lifetime.
+                    A notice is information: no CA stops issuing and <code>/health/ready</code> stays ready
+                    (<code>checks.caLifecycle</code> carries the list). Color follows the level everywhere a notice is
+                    shown: a notice is blue, a warning is amber, and only something critical is red. Each notice is at
+                    most 40 words: what is so, and what to do.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    The Health Checks card has a Signer Journal row, from <code>checks.journal</code>: Healthy in green; Not
+                    kept in grey for a signer that keeps no journal; blue while revocations are being restored from it, wait
+                    to be restored, the journal waits for a restore marker or is still being verified; amber when its volume
+                    is low on space or its checkpoint is overdue; red when the volume is nearly full, the signer refuses a
+                    CRL, or the journal cannot be written or did not verify. A line under the list gives its records, size,
+                    last checkpoint, free space and whether it verified, names each CA that had revocations restored since
+                    the service started, and, for a refused CRL, links to the missing serials on the CA&apos;s page.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
                     The Health Checks card shows the readiness payload, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/health/ready</code>,
                     which answers only a caller the SystemAuditor policy admits. Its signer entry says whether the signer has unlocked its
                     keystore, and, on an install with SSH CAs, how many SSH CA keys the signer holds
@@ -182,6 +216,29 @@ export default function AdminUiGuide() {
                     be null when the keys could not be read.
                 </p>
                 <p className="text-ink leading-relaxed mb-3">
+                    When the instance finds at start that it is running from an earlier or copied state (a snapshot of the
+                    machine was rolled back, its volumes were restored, or it was cloned), a notice stands at the top of every
+                    console page until a system administrator acknowledges it with step-up. It says after which time
+                    certificates and revocations of the earlier timeline are not known here, and that the CRL numbers were
+                    raised. The same notice is in the readiness payload under <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">checks.continuity</code>,
+                    whose <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">status</code> is <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">notice</code> while
+                    one stands. It never makes the node unhealthy: an instance that came back after a rollback keeps serving.
+                    A certificate from the lost time can be revoked from its CA&apos;s page, by its serial alone or by supplying
+                    the certificate.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    Revocations are the one thing the instance gives back to itself. At start each node asks the signer for the
+                    revocations its journal holds for every CA and makes again the ones the database has lost; a notice says
+                    how many were restored for which CA. Where it cannot (the signer does not vouch for its journal for that
+                    CA), the signer refuses the CA&apos;s next CRL, and the CA&apos;s page lists every serial that CRL would have
+                    left out, under &ldquo;Certificates This CA Does Not Hold&rdquo;:
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li><span className="font-semibold">Revoke serial</span> on a row, or <span className="font-semibold">Revoke the selected serials</span> for the rows you tick: one step-up and one note. A serial whose certificate the CA still holds is revoked on the certificate&apos;s page, which the row links to.</li>
+                    <li><span className="font-semibold">Revoke all</span> is set apart below the list, because it is a heavier act than revoking the rows you chose. Its dialog names the certificate authority and the exact number of serials, says that they are revocations the signer already published on a CRL for this CA and that revoking cannot be undone, and its button stays disabled until you type the name of the certificate authority. It asks for a step-up of its own (&ldquo;Revoke every serial missing from a certificate authority&apos;s CRL&rdquo;): the step-up for revoking a serial does not open it.</li>
+                    <li>If the list changes between the moment you read it and the moment you confirm (another administrator revoked some, or the signer refused a newer CRL), nothing is revoked and the dialog says so; read the list again and confirm what it shows now. Ticking every row is treated as Revoke all.</li>
+                </ul>
+                <p className="text-ink leading-relaxed mb-3">
                     The Enrollment Protocols card lists every enabled protocol configuration that cannot run on its CA, with the
                     reason: today, SCEP on a CA whose key is not RSA. Such a configuration could be saved before the console
                     refused it, and it is not switched off for you; SCEP clients sent to that CA are refused with the same reason.
@@ -190,6 +247,8 @@ export default function AdminUiGuide() {
                 </p>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /health/ready<br />
+                    GET /api/v1/admin/continuity/notice<br />
+                    POST /api/v1/admin/continuity/events/&#123;id&#125;/acknowledge<br />
                     GET /api/v1/admin/authorities/hierarchy<br />
                     GET /api/v1/admin/scheduler/health<br />
                     GET /api/v1/admin/certificates/health/summary
@@ -364,6 +423,52 @@ export default function AdminUiGuide() {
                     <li>Configure CA-specific settings</li>
                 </ul>
                 <p className="text-ink leading-relaxed mb-3">
+                    A new CA&apos;s RSA key is at least 3072 bits, so the form offers 3072, 4096, 7680 and 8192, and the API
+                    refuses 2048 with a message that says why: NIST SP 800-57 accepts RSA 2048 only through 2030, and a CA key made
+                    today is relied on well beyond that. The default stays ECDSA P-384. A CA that already has an RSA 2048 key keeps
+                    issuing and shows a notice on its page and on System Health: it should be replaced before 2031, and because a
+                    CA&apos;s key cannot be changed, replacing it means creating a new CA now, moving issuance to it, and retiring
+                    the old one once what it issued has expired or been reissued. The same rule and notice apply to SSH CA keys.
+                </p>
+                <h3 className="text-lg font-semibold text-ink mt-4 mb-2">Renewing a CA certificate</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    A CA&apos;s page lists every certificate the CA has had under Certificate History and Renewal, and offers
+                    Renew certificate. A renewal gives the CA a new certificate over the key it already has: the key, the subject
+                    and every extension stay; the serial and the validity change. You choose the new validity in years and nothing
+                    else. A root signs its own new certificate; an intermediate&apos;s is signed by its parent CA, and cannot end
+                    after the parent&apos;s certificate. Where the CA&apos;s scope requires a key ceremony, the action opens one
+                    that records the exact expiry, and the renewal happens when the approved ceremony is executed.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    The history table shows each certificate&apos;s serial, a one-word status (Current, Earlier, Expired or
+                    Revoked; hover for the rest), its validity, how it became the CA&apos;s (First certificate or Renewal),
+                    and, on one line, Download PEM and the certificate&apos;s public address. Under CA Information, Parent CA
+                    is the parent&apos;s name, linked to its page; a root shows None (root), and a parent outside the spaces
+                    you may see is shown as Not visible to you: the server sends nothing that identifies it, and the
+                    notice that a certificate outlives its parent&apos;s then names no parent and gives no date.
+                </p>
+                <ul className="list-disc list-inside text-ink space-y-1 mb-3">
+                    <li>The earlier certificate is not revoked. It stays valid until it expires and stays downloadable from the history and at <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/ca/&#123;serial&#125;</code>.</li>
+                    <li>Certificates issued before and after validate under either CA certificate: both have one name and one key. One CRL and one OCSP responder cover both, at the same addresses.</li>
+                    <li>Subordinate CAs are not renewed and keep validating.</li>
+                    <li><strong>A root:</strong> give the new root certificate to everyone who trusts the old one (trust stores, devices, clients that pin it) before the old one expires. The product cannot do this for you.</li>
+                    <li><strong>An intermediate:</strong> nothing has to be redistributed to those who trust the root.</li>
+                    <li>Afterwards, reissue the CA&apos;s OCSP responder, TSA and CMP certificates under Infrastructure Certificates: they were issued to end no later than the earlier certificate.</li>
+                </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    Revoking a CA certificate revokes every certificate that CA has over the same key, with one reason and one
+                    date; the confirmation lists them. A hold and its release reach all of them too. The system signing CA is
+                    renewed the same way and nothing else changes with it: what depends on it depends on its key. The dialogs
+                    say when a validity is longer than common practice (25 years for a root, 10 for an intermediate), which
+                    is practice and not a standard&apos;s requirement, and ask for an acknowledgment before a CA whose key is
+                    RSA under 3072 bits is renewed to past 2030. A CA certificate that is close to its end or past it is
+                    listed under Needs attention and raises a security alert; it does not make the node answer not ready.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    Not in this version: renewal with a new key, a changed subject, cross-certificates, renewal by a CA outside
+                    this instance, and renewal on a schedule. A CA gets a new key only by creating a new CA.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
                     The page has two tabs, X.509 and SSH, for whoever can use both. The SSH tab
                     (<code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/admin/authorities/manage?tab=SSH</code>) lists the SSH
                     CA keys and has the form for a new one. It is shown to whoever may list the SSH CA keys or generate one.
@@ -374,7 +479,9 @@ export default function AdminUiGuide() {
                     POST /api/v1/admin/authorities/create-root<br />
                     POST /api/v1/admin/authorities/create-intermediate<br />
                     GET /api/v1/admin/authorities/&#123;serial&#125;<br />
-                    PUT /api/v1/admin/authorities/&#123;id&#125;
+                    PUT /api/v1/admin/authorities/&#123;id&#125;<br />
+                    GET /api/v1/admin/authorities/&#123;caId&#125;/certificates<br />
+                    POST /api/v1/admin/authorities/&#123;caId&#125;/renew-certificate
                 </div>
             </section>
 
@@ -1081,6 +1188,16 @@ sshd -t && systemctl reload ssh`}</pre>
                     <li>Protocol audit tab: ACME, EST, SCEP, CMP protocol-level events</li>
                     <li>Filter by user, action type, date range, and resource</li>
                     <li>Export audit logs</li>
+                    <li>
+                        <span className="font-semibold">Revoked serial</span> (General tab): finds the records that restored a revocation from the
+                        signer&apos;s journal or recorded a serial with no certificate, by the serial. When more than 1,000 revocations
+                        are made at once (a large merge after a database was taken back, or Revoke all), they are not written one
+                        record each: one record carries up to 500 serials in its details
+                        (<code className="text-sm bg-sunken px-1.5 py-0.5 rounded">RevocationsMergedFromJournalBatch</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">RevokedSerialsRecordedBatch</code>),
+                        and its target is the certificate authority. This filter finds such a record by a serial inside it; the
+                        row&apos;s drawer shows the first fifty serials and the raw JSON holds them all. On a CA&apos;s page,
+                        &ldquo;Recorded by&rdquo; beside a serial recorded without its certificate opens this search for that serial.
+                    </li>
                 </ul>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/admin/audit<br />
@@ -1124,7 +1241,7 @@ sshd -t && systemctl reload ssh`}</pre>
                     instance. Each space holds its CAs, its ceilings and per-CA quotas.
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
-                    <li>Create and manage spaces. The Create Space dialog says what a space shares, and from the fifth space that a licence is recommended; creation always succeeds</li>
+                    <li>Create and manage spaces. The Create Space dialog says what a space shares. An instance may have any number of spaces</li>
                     <li>Configure each space's validity ceiling and ceremony policy</li>
                     <li>View each space's CAs, users and per-CA quota usage</li>
                     <li>Enable/disable spaces</li>
@@ -1149,15 +1266,85 @@ sshd -t && systemctl reload ssh`}</pre>
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li>General settings: system name, public base URL</li>
-                    <li>Security settings: password policy, session timeout, MFA requirements</li>
+                    <li>Security settings: password policy, session lifetime, MFA requirements (see below)</li>
                     <li>Email/SMTP configuration</li>
                     <li>Logging level configuration</li>
                     <li>Rate limiting settings</li>
                     <li>OCSP responder configuration</li>
+                    <li>
+                        Instance mode (General tab): shows whether the instance is in full, restricted or DR mode, who set
+                        it and when, and sets it by hand with a reason. Restricted mode keeps issuing and revoking and
+                        freezes everything that changes how the instance is run. DR mode stops everything except signing
+                        in, backups and changing the mode. A banner stands on every page while the mode is not full.
+                    </li>
                 </ul>
+                <h3 className="text-lg font-semibold text-ink mb-2">Session lifetime</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    On the Security tab, the Security Policy card holds two limits on a signed-in session. <strong>Session Idle
+                    Timeout</strong> (minutes, default 30) ends a session that makes no request. <strong>Max Session
+                    Lifetime</strong> is in hours, counted from the sign-in: after it the user signs in again however active
+                    they are. A new install starts with 12 hours, the most NIST SP 800-63B allows between sign-ins at AAL2 and
+                    AAL3 (with 30 idle minutes at AAL2 and 15 at AAL3). 0 means no maximum.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    The Token Binding &amp; Lifetime card holds the <strong>Refresh Token Lifetime</strong> in days: how long one
+                    refresh token stays usable when the session is not refreshed in the meantime. Of the two, the maximum session
+                    lifetime wins. A refresh token expires when its lifetime runs out or when its session reaches the maximum,
+                    whichever comes first, so no chain of refreshes outlives the maximum, and with a 12-hour maximum the
+                    refresh token lifetime has no effect until it is set shorter than that. The card says which of the two is
+                    deciding with the values as they stand. Lowering the maximum ends sessions already older than the new value
+                    at their next refresh.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    An install made before 0.4.5 stored the maximum in days, 14 by default. The upgrade keeps it as the same
+                    length in hours (336) and signs nobody out. The field then shows a line offering 12 hours with a button that
+                    fills it in; the change is made when you save the card.
+                </p>
+                <h3 className="text-lg font-semibold text-ink mb-2">Password policy</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    The Password Policy card sets what a local account&apos;s password must meet when it is set or changed. A
+                    password already stored is never checked again at sign-in, so a stricter policy locks nobody out. A new
+                    install starts with the <strong>NIST SP 800-63B</strong> preset: minimum length 15, no required character
+                    classes, no expiry, and the bundled blocklist on. The standard asks for length as the main requirement (15
+                    where a password can be the only factor, 8 where a second factor is always used), no composition rules, no
+                    scheduled expiry, and a check of every new password against a list of common and compromised values.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    An install made before 0.4.5 keeps the policy it has (by default 12 characters, all four character classes
+                    and 90 days). The card then lists how that policy differs from the standard and offers <strong>Apply NIST SP
+                    800-63B preset</strong>, which sets all of the above in one action after a confirmation and step-up MFA. A
+                    maximum length under 64 becomes 128; password history and your own blocklist are kept. Every setting stays
+                    editable afterwards, for organizations required to keep composition rules or rotation.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    <strong>Maximum password age</strong> of 0 means passwords never expire: nobody is asked to change one,
+                    including accounts whose expiry date was stamped while a maximum age was set, and a password change then
+                    clears the date.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    <strong>Check the bundled blocklist</strong> refuses a new password that is on the list shipped with
+                    ModularCA, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">password-blocklist/bundled-blocklist.txt</code> beside
+                    the program files. It is a starter list of the most common choices (number and keyboard runs,
+                    &ldquo;password&rdquo; and its variants, account names and defaults, seasons and years, the product&apos;s
+                    name), not a corpus of compromised passwords. Matching ignores case, and one entry, or any one or two
+                    characters, repeated end to end is refused too. <strong>Your own blocklist</strong> is a file you place in
+                    <code className="text-sm bg-sunken px-1.5 py-0.5 rounded"> config/password-dictionaries</code> and name through the
+                    API (<code className="text-sm bg-sunken px-1.5 py-0.5 rounded">dictionaryPath</code>); it is checked in addition to the
+                    bundled list, not instead of it. Both are checked on the server: no password and no hash of one is sent
+                    anywhere.
+                </p>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/admin/config<br />
-                    PUT /api/v1/admin/config/security
+                    PUT /api/v1/admin/config/security<br />
+                    PUT /api/v1/admin/config/tokens<br />
+                    GET /api/v1/admin/security-policy<br />
+                    PUT /api/v1/admin/security-policy<br />
+                    GET /api/v1/admin/password-policy<br />
+                    PUT /api/v1/admin/password-policy<br />
+                    GET /api/v1/admin/password-policy/guidance<br />
+                    POST /api/v1/admin/password-policy/presets/&#123;preset&#125;<br />
+                    GET /api/v1/admin/instance-mode<br />
+                    PUT /api/v1/admin/instance-mode
                 </div>
             </section>
 

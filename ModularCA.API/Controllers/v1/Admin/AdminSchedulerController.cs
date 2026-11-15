@@ -158,6 +158,7 @@ public class AdminSchedulerController(
     /// Cron is validated via NCrontab before persistence; an invalid expression returns
     /// 400 without mutating anything.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("jobs/{name}")]
     [RequireStepUp(StepUpOps.UpdateSchedulerJob, "name")]
     public async Task<IActionResult> UpdateJob(string name, [FromBody] UpdateSchedulerJobRequest request)
@@ -251,6 +252,7 @@ public class AdminSchedulerController(
     /// <c>StepUpOps.UpdateSchedulerJob</c> because operator intent is the same as a cron
     /// edit — flipping how the job behaves on the next tick.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("jobs/{name}/enabled")]
     [RequireStepUp(StepUpOps.UpdateSchedulerJob, "name")]
     public async Task<IActionResult> UpdateJobEnabled(string name, [FromBody] UpdateSchedulerJobEnabledRequest request)
@@ -304,12 +306,18 @@ public class AdminSchedulerController(
     /// the job runs on a background task with its own DI scope and timeout. Failures
     /// surface in the regular scheduler audit/alert path.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage, AnsweredByAction = true)]
     [HttpPost("jobs/{name}/run")]
     [RequireStepUp(StepUpOps.RunSchedulerJob, "name")]
     public async Task<IActionResult> RunJob(string name)
     {
         if (!_registry.IsRegistered(name))
             return NotFound(new { error = $"Unknown scheduler job '{name}'." });
+
+        // A manual run is of the job's own class: the scheduler would hold it in the same mode.
+        if (await ModularCA.Auth.Authorization.ModeGateFilter.RequireAsync(
+                HttpContext, ModularCA.API.Startup.SchedulerJobRoles.ModeOperationOfName(name), $"Running the {name} job") is { } modeRefusal)
+            return modeRefusal;
 
         await _currentUser.EnsureLoadedAsync();
 
@@ -403,6 +411,7 @@ public class AdminSchedulerController(
     /// 202 Accepted — the export runs on a background task and writes its own audit
     /// row on completion via <c>CrlExportJob</c>.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact)]
     [HttpPost("schedules/crl/{taskId:guid}/run")]
     [RequireStepUp(StepUpOps.RunSchedulerSchedule, "taskId")]
     public async Task<IActionResult> RunCrlSchedule(Guid taskId)
@@ -469,6 +478,7 @@ public class AdminSchedulerController(
     /// hydrates the connection/credential fields from the row when only <c>TaskId</c>
     /// is supplied.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact)]
     [HttpPost("schedules/ldap/{id:guid}/run")]
     [RequireStepUp(StepUpOps.RunSchedulerSchedule, "id")]
     public async Task<IActionResult> RunLdapSchedule(Guid id)
@@ -529,6 +539,7 @@ public class AdminSchedulerController(
     /// job timeout, consecutive-failure alert threshold. Validates each field
     /// independently so a malformed request never partially mutates state.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("config")]
     [RequireStepUp(StepUpOps.UpdateSchedulerConfig)]
     public async Task<IActionResult> UpdateConfig([FromBody] UpdateSchedulerConfigRequest request)

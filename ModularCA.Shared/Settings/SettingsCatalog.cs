@@ -165,6 +165,10 @@ public static class SettingsCatalog
         var duplicate = definitions.GroupBy(d => d.Key, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
         if (duplicate != null)
             throw new InvalidOperationException($"Two settings share the key {duplicate.Key}: {string.Join(", ", duplicate.Select(d => d.Path))}.");
+        // A reserved key is a row the instance writes about itself. A setting under the same key
+        // would let the file, the console and the move out of the file reach that row.
+        if (definitions.FirstOrDefault(d => ReservedSettingKeys.IsReserved(d.Key)) is { } reserved)
+            throw new InvalidOperationException($"{reserved.Path} cannot be a setting: the key {reserved.Key} is reserved for a value the instance writes once.");
         return definitions;
     }
 

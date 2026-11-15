@@ -22,7 +22,8 @@ interface RootCaConfigProps {
 
 const keySizeOptions: Record<KeyAlgorithm, string[]> = {
     ECDSA: ['256', '384', '521'],
-    RSA: ['2048', '3072', '4096', '7680', '8192'],
+    // No 2048: a new CA's RSA key is at least 3072 bits (the server refuses a smaller one).
+    RSA: ['3072', '4096', '7680', '8192'],
     Ed25519: [],
     'ML-DSA': ['44', '65', '87'],
     'SLH-DSA': ['128f', '128s', '192f', '192s', '256f', '256s'],
@@ -180,6 +181,11 @@ const RootCaConfig: React.FC<RootCaConfigProps> = ({ data, orgName, onChange }) 
                                     </option>
                                 ))}
                             </select>
+                            {data.keyAlgorithm === 'RSA' && (
+                                <p className="text-xs text-ink-muted mt-1">
+                                    A CA's RSA key is at least 3072 bits: NIST SP 800-57 accepts RSA 2048 only through 2030, and a root made today is relied on well beyond that.
+                                </p>
+                            )}
                             {(data.keySize === '7680' || data.keySize === '8192') && (
                                 <p className="text-xs text-warn mt-1">
                                     ⚠ High-compute RSA — key generation may take 30+ seconds.

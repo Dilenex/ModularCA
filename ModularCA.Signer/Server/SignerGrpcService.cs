@@ -211,6 +211,42 @@ public sealed class SignerGrpcService : Wire.Signer.SignerBase
         }, "ReadKeystoreEvents");
 
     /// <summary>
+    /// Appends a fact the node asserts to the signer's journal. A type the node may not assert,
+    /// or a payload that is not that type's, comes back as the signer's refusal.
+    /// </summary>
+    public override Task<RecordFactResponse> RecordFact(RecordFactRequest request, ServerCallContext context)
+        => GuardAsync(async () =>
+        {
+            if (request.Type > ushort.MaxValue)
+                throw new ArgumentException("type is not a record type.");
+            var seq = await _signer.RecordFactAsync((ushort)request.Type, request.Payload.ToByteArray(),
+                ContextFrom(request.Context, context), context.CancellationToken);
+            return new RecordFactResponse { Seq = seq };
+        }, "RecordFact");
+
+    /// <summary>Reports the journal's head and its room; <c>present</c> is false when the signer keeps none.</summary>
+    public override Task<JournalInfoResponse> JournalInfo(JournalInfoRequest request, ServerCallContext context)
+        => GuardAsync(async () => WireMapping.ToWire(await _signer.JournalInfoAsync(context.CancellationToken)), "JournalInfo");
+
+    /// <summary>Lists the serials the last refused full CRL of a CA left out; <c>present</c> is false when no refusal stands.</summary>
+    public override Task<JournalMissingRevocationsResponse> JournalMissingRevocations(JournalMissingRevocationsRequest request, ServerCallContext context)
+        => GuardAsync(async () =>
+        {
+            if (!Guid.TryParse(request.CaId, out var caId))
+                throw new ArgumentException("ca_id is not an identifier.");
+            return WireMapping.ToWire(await _signer.JournalMissingRevocationsAsync(caId, context.CancellationToken));
+        }, "JournalMissingRevocations");
+
+    /// <summary>Reads a part of the revocations the journal holds for a CA; <c>present</c> is false when it holds none.</summary>
+    public override Task<JournaledRevocationsResponse> JournaledRevocations(JournaledRevocationsRequest request, ServerCallContext context)
+        => GuardAsync(async () =>
+        {
+            if (!Guid.TryParse(request.CaId, out var caId))
+                throw new ArgumentException("ca_id is not an identifier.");
+            return WireMapping.ToWire(await _signer.JournaledRevocationsAsync(caId, request.Skip, request.Take, context.CancellationToken));
+        }, "JournaledRevocations");
+
+    /// <summary>
     /// Reads the context off the wire and stamps it with the peer's identity: the SPKI pin of
     /// the client certificate on this call's connection, computed here from the certificate
     /// Kestrel admitted, never taken from the request. The wire has no field for it, so a node

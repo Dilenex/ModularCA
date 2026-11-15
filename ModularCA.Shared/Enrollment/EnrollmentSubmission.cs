@@ -195,6 +195,13 @@ public sealed record EnrollmentSubmission
     /// </summary>
     public Guid? RequestorUserId { get; init; }
 
+    /// <summary>
+    /// The certificate template the request was made under, when the protocol has templates and
+    /// the client named one that resolved. It goes into the certificate's record in the signer's
+    /// journal (<c>belongs</c>); nothing is decided from it.
+    /// </summary>
+    public Guid? TemplateId { get; init; }
+
     /// <summary>The caller's address, for the audit row.</summary>
     public string? SourceIp { get; init; }
 

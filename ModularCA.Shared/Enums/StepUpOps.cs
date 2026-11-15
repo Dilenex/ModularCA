@@ -22,6 +22,18 @@ public static class StepUpOps
     public const string RevokeCert = "revoke-cert";
     public const string HoldCert = "hold-cert";
     public const string UnholdCert = "unhold-cert";
+    /// <summary>Recording a serial as revoked for a CA with no certificate row behind it (a tombstone).</summary>
+    public const string RevokeSerial = "revoke-serial";
+    /// <summary>
+    /// Revoking, in one act, every serial the signer reports missing from a CA's refused CRL.
+    /// Not the operation of revoking one serial or the ones selected: a token for those does
+    /// not reach it.
+    /// </summary>
+    public const string RevokeAllMissingSerials = "revoke-all-missing-serials";
+    /// <summary>Adopting a certificate supplied from outside as a row of the CA whose key signed it.</summary>
+    public const string AdoptCertificate = "adopt-certificate";
+    /// <summary>Acknowledging the standing notice that the instance runs from an earlier or copied state.</summary>
+    public const string AcknowledgeContinuityEvent = "acknowledge-continuity-event";
 
     // User self-service revocation of an owned end-entity certificate
     public const string RevokeSelfCert = "revoke-self-cert";
@@ -92,6 +104,12 @@ public static class StepUpOps
     /// answers unauthorized for every request, which is exactly how this operation came to exist.
     /// </summary>
     public const string ReissueInfrastructureCerts = "reissue-infrastructure-certs";
+
+    /// <summary>
+    /// Renewing a CA's own certificate over the key it has: a new certificate that everything the
+    /// CA issues from then on names as its issuer. Gated like creating the CA, and bound to the CA.
+    /// </summary>
+    public const string RenewCaCertificate = "renew-ca-certificate";
 
     // Profile management
     public const string UpdateSigningProfile = "update-signing-profile";
@@ -253,6 +271,8 @@ public static class StepUpOps
     public const string RevokeApiKey = "revoke-api-key";
     /// <summary>Replacing the JWT secret with a newly generated one.</summary>
     public const string RotateJwtSecret = "rotate-jwt-secret";
+    /// <summary>Setting the instance's mode by hand: full, restricted or DR mode.</summary>
+    public const string SetInstanceMode = "set-instance-mode";
 
     /// <summary>Granting, changing or removing SSH login names on an SSH CA key, or switching its own-username rule.</summary>
     public const string ManageSshLoginNames = "manage-ssh-login-names";
@@ -275,6 +295,7 @@ public static class StepUpOps
         SwitchBadge,
         ManageKerberosRealm,
         RevokeCert, HoldCert, UnholdCert,
+        RevokeSerial, RevokeAllMissingSerials, AdoptCertificate, AcknowledgeContinuityEvent,
         RevokeSelfCert,
         ReissueCert,
         ExportCert,
@@ -287,7 +308,7 @@ public static class StepUpOps
         AssignRole, UnassignRole,
         ResetPassword, ResetMfa, ChangePassword, ChangeEmail,
         CreateBackup, RestoreBackup, SetBackupPassword, ChangeBackupEncryptionMode,
-        CreateCa, UpdateCa, RevokeCa, ReissueInfrastructureCerts, CreateSshCa, DisableSshCa,
+        CreateCa, UpdateCa, RevokeCa, ReissueInfrastructureCerts, RenewCaCertificate, CreateSshCa, DisableSshCa,
         UpdateSigningProfile, DeleteSigningProfile,
         UpdateCertProfile, DeleteCertProfile,
         UpdateRequestProfile, DeleteRequestProfile,
@@ -307,7 +328,7 @@ public static class StepUpOps
         UpdateCaServiceUrl, DeleteCaServiceUrl,
         UpdateFeatureFlag,
         DeleteEabKey,
-        CreateApiKey, RevokeApiKey, RotateJwtSecret,
+        CreateApiKey, RevokeApiKey, RotateJwtSecret, SetInstanceMode,
         CreateSshProfile, UpdateSshProfile, DeleteSshProfile,
         TotpSetup, TotpVerifySetup, TotpRemove,
         WebAuthnRegister, WebAuthnDelete,

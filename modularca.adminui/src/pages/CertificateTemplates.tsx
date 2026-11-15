@@ -207,7 +207,7 @@ const X509TemplatesTab: React.FC = () => {
             ) },
             { key: 'ca', header: 'CA Name', defaultWidth: 160, sortable: true, exportValue: (t) => t.caName || t.caId, render: (t) => <span className="text-ink text-xs truncate">{t.caName || t.caId}</span> },
             { key: 'certProfile', header: 'Cert Profile', defaultWidth: 160, sortable: true, exportValue: (t) => t.certProfileName || t.certProfileId, render: (t) => <span className="text-ink text-xs truncate">{t.certProfileName || t.certProfileId}</span> },
-            { key: 'signingProfile', header: 'Signing Profile', defaultWidth: 160, sortable: true, exportValue: (t) => t.signingProfileName || t.signingProfileId, render: (t) => <span className="text-ink text-xs truncate">{t.signingProfileName || t.signingProfileId}</span> },
+            { key: 'signingProfile', header: 'Signing Profile', defaultWidth: 210, sortable: true, exportValue: (t) => t.signingProfileName || t.signingProfileId, render: (t) => <span className="text-ink text-xs truncate">{t.signingProfileName || t.signingProfileId}</span> },
             { key: 'templateOid', header: 'Template OID', defaultWidth: 200, sortable: true, exportValue: (t) => (t.offeredToWindows ? t.msaeTemplateOid || '' : ''), render: (t) => (t.offeredToWindows && t.msaeTemplateOid ? <span className="data-mono text-ink truncate">{t.msaeTemplateOid}</span> : <span className="text-ink-muted">-</span>) },
             // What a Windows client will see: whether the template survives its OID parser, the
             // version it is advertised at, the kind of principal it is for, and whether issuance waits.
@@ -640,10 +640,9 @@ const CertificateTemplates: React.FC = () => {
             </p>
 
             <div className="bg-info-soft border border-info/40 rounded-lg p-4 text-sm text-info">
-                <span className="font-semibold">Used by Windows autoenrollment.</span> A template offered to
-                Windows clients is advertised by the MSAE policy service and issued from when a client names it in
-                its request. ACME, EST, SCEP and CMP issue from each CA&apos;s protocol configuration and do not read
-                templates.
+                <span className="font-semibold">Used by Windows autoenrollment.</span> The MSAE policy service
+                offers these templates to Windows clients, and a client names one in its request. ACME, EST, SCEP
+                and CMP use each CA&apos;s protocol configuration instead.
             </div>
 
             <div className="flex gap-1 border-b border-line">

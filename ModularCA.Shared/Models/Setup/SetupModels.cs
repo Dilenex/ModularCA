@@ -359,7 +359,8 @@ public static class SetupKeySizeParser
     /// <summary>
     /// Parses a setup-wizard key-size string for the given algorithm into the integer form the
     /// bootstrap certificate-request pipeline expects. Null / empty strings fall back to the
-    /// algorithm's natural default (RSA → 2048, ECDSA → 256, everything else → 0).
+    /// algorithm's natural default (RSA → 3072, the smallest RSA key a new CA may have; ECDSA →
+    /// 256; everything else → 0).
     /// </summary>
     public static int ParseToInt(string algorithm, string? keySize)
     {
@@ -367,7 +368,7 @@ public static class SetupKeySizeParser
 
         if (string.IsNullOrWhiteSpace(keySize))
         {
-            if (upper == "RSA") return 2048;
+            if (upper == "RSA") return ModularCA.Shared.Utils.CaKeyPolicy.MinRsaBitsForNewCa;
             if (upper == "ECDSA") return 256;
             return 0;
         }
@@ -393,7 +394,7 @@ public static class SetupKeySizeParser
         if (int.TryParse(digits, out var digitsOnly))
             return digitsOnly;
 
-        return upper == "RSA" ? 2048 : 0;
+        return upper == "RSA" ? ModularCA.Shared.Utils.CaKeyPolicy.MinRsaBitsForNewCa : 0;
     }
 
     /// <summary>

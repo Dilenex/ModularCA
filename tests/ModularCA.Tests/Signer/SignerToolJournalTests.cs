@@ -160,12 +160,19 @@ public sealed class SignerToolJournalTests : IDisposable
             "var backupJournal = ModularCA.Keystore.Services.SignerToolJournal.Open(signerPaths,", startup);
         Assert.Contains(
             "SignerToolJournal.BackupAsync(\n        backupJournal, outputPath, () => BackupRestore.Backup(outputPath, BackupSignerFor));", startup);
+        // The restore is a command of its own (RestoreCommand), given the signer's paths and the
+        // maintenance signer; it opens the journal and runs the restore inside the wrapper.
         Assert.Contains(
-            "var restoreJournal = ModularCA.Keystore.Services.SignerToolJournal.Open(signerPaths,", startup);
+            "ModularCA.API.Startup.RestoreCommand.RunAsync(args, signerPaths, MaintenanceSignerFor)", startup);
+        var restoreCommand = File.ReadAllText(Path.Combine(dir.FullName, "ModularCA.API", "Startup", "RestoreCommand.cs")).ReplaceLineEndings("\n");
         Assert.Contains(
-            "SignerToolJournal.RestoreAsync(\n        restoreJournal, archivePath, restoreAudit,\n        () => BackupRestore.Restore(archivePath, MaintenanceSignerFor,", startup);
+            "var journal = SignerToolJournal.Open(signerPaths,", restoreCommand);
+        Assert.Contains(
+            "await SignerToolJournal.RestoreAsync(journal, archivePath, restoreAudit, async () =>\n        {\n            result = await BackupRestore.RestoreWithVerdictAsync(archivePath, signerForAppDatabase,", restoreCommand);
         // Neither is called anywhere else in the host's startup, so no path skips the record.
         Assert.Equal(1, startup.Split("BackupRestore.Backup(").Length - 1);
-        Assert.Equal(1, startup.Split("BackupRestore.Restore(").Length - 1);
+        Assert.Equal(0, startup.Split("BackupRestore.Restore").Length - 1);
+        Assert.Equal(1, restoreCommand.Split("BackupRestore.RestoreWithVerdictAsync(").Length - 1);
+        Assert.Equal(0, restoreCommand.Split("BackupRestore.Restore(").Length - 1);
     }
 }

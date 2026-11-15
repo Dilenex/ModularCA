@@ -21,7 +21,9 @@ namespace ModularCA.Core.Services.Ocsp;
 /// Enforces per-item policies — delegated-responder-only signing, validity
 /// and revocation checks on the signing chain, explicit thisUpdate/nextUpdate, extended-revoked
 /// for serials the CA never issued, issuer-scoped cert lookup, nonce length bounds, signed-request
-/// verification, hash-algorithm allowlist, and CA-label route binding.
+/// verification, hash-algorithm allowlist, and CA-label route binding. A serial revoked with no
+/// certificate row (<see cref="RevokedSerialTombstoneEntity"/>) is answered revoked with its
+/// recorded date and reason, not as never issued.
 /// </summary>
 public class OcspResponderService : IOcspService
 {
@@ -47,6 +49,13 @@ public class OcspResponderService : IOcspService
     private readonly ISecurityPolicyService _securityPolicy;
 
     /// <summary>
+    /// The instance's mode. In DR mode the responder signs nothing and answers every request
+    /// <c>tryLater</c>, the protocol's own "unavailable": an answer signed from locked data could
+    /// report a certificate as good after another copy revoked it. Null allows everything.
+    /// </summary>
+    private readonly ModularCA.Shared.Modes.IInstanceModeGate? _modeGate;
+
+    /// <summary>
     /// Signs every response. The responder holds a <see cref="KeyRef"/> to the delegated
     /// responder certificate, or to the CA certificate when CA-direct signing is allowed, and a
     /// context naming the CA; the key stays with the signer.
@@ -67,8 +76,10 @@ public class OcspResponderService : IOcspService
         IKeystoreCertificates keystore,
         ILogger<OcspResponderService> logger,
         ISecurityPolicyService securityPolicy,
-        ISigningService signer)
+        ISigningService signer,
+        ModularCA.Shared.Modes.IInstanceModeGate? modeGate = null)
     {
+        _modeGate = modeGate;
         _db = db;
         _keystore = keystore;
         _logger = logger;
@@ -117,6 +128,10 @@ public class OcspResponderService : IOcspService
         // given, every distinct label became a time series kept for the life of the process.
         result.CaLabel = string.Empty;
         result.CacheMaxAgeSeconds = 0;
+
+        // DR mode: unavailable, before the request is parsed or anything is read or signed.
+        if (ModularCA.Shared.Modes.InstanceModeGate.Require(_modeGate, ModularCA.Shared.Modes.ModeOperation.Fact, "Answering OCSP") != null)
+            return BuildStatusResponse(OcspRespStatus.TryLater, result);
 
         // Single load of the runtime security policy — cache in the service for
         // the rest of the request scope.
@@ -306,7 +321,20 @@ public class OcspResponderService : IOcspService
                 // RFC 6960 §4.4.8 extended revoked definition.
                 // Only respond "revoked at epoch" when we are authoritative for
                 // this issuer. Otherwise fall through to classic "unknown".
-                if (isOurIssuer)
+                // A serial revoked with no certificate row (a tombstone) is answered with its
+                // recorded date and reason, not as never issued: the administrator said what it is.
+                var tombstone = isOurIssuer && issuerScope.Count > 0
+                    ? await _db.RevokedSerialTombstones.AsNoTracking()
+                        .Where(t => t.SerialNumber == serialHex && issuerScope.Contains(t.CaCertificateId))
+                        .FirstOrDefaultAsync(cancellationToken)
+                    : null;
+                if (tombstone != null)
+                {
+                    var recorded = new RevokedStatus(tombstone.RevocationDate, MapRevocationReason(tombstone.RevocationReason));
+                    singleNextUpdate = now.AddMinutes(revokedTtlMinutes);
+                    respGen.AddResponse(certId, recorded, singleThisUpdate, singleNextUpdate, null);
+                }
+                else if (isOurIssuer)
                 {
                     var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
                     var neverIssued = new RevokedStatus(epoch, CrlReason.CertificateHold);

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
+import { keyAdvisoriesOf } from './tighterDefaults';
 import { errorNotice } from '@shared-auth/api/notices';
 import { useParams, useNavigate } from 'react-router-dom';
 import { apiGet, apiPut, apiDeleteWithMfa, apiBlob } from '../api/client';
@@ -238,6 +239,14 @@ const SshCaKeyDetail: React.FC = () => {
                     <div className="mt-2">
                         <DetailField label="Public Key" value={key.publicKey} mono />
                     </div>
+                    {keyAdvisoriesOf(key).map((a) => (
+                        <InlineNotice
+                            key={a.reason}
+                            severity="warning"
+                            className="mt-2"
+                            notice={{ title: "This CA's key should be replaced", detail: a.message, code: a.reason }}
+                        />
+                    ))}
                 </DetailSection>
 
                 <SshCaKeyReviewSection caKey={key} onMoved={() => setRefresh((r) => r + 1)} />

@@ -36,6 +36,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// </summary>
         /// <param name="request">The certificate parameters to evaluate.</param>
         /// <returns>A response containing any policy violations found.</returns>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
         [HttpPost("check")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.AnyCa)]

@@ -144,6 +144,7 @@ public class AdminConfigController(
             NetworkAudit = _config.NetworkAudit,
             Backup = _config.Backup,
             CertPolicy = _config.CertPolicy,
+            CaLifecycle = new { _config.CaLifecycle.RootExpiryNoticeDays, _config.CaLifecycle.IntermediateExpiryNoticeDays, _config.CaLifecycle.KeyUsagePeriodDays },
             Mtls = _config.Mtls,
             AutoRenewal = _config.AutoRenewal,
             ComplianceScan = _config.ComplianceScan,
@@ -192,6 +193,7 @@ public class AdminConfigController(
     /// the Serilog LoggingLevelSwitch. File path, retention, and size changes require a restart.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("logging")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateLogging([FromBody] LoggingUpdateRequest update)
@@ -258,6 +260,7 @@ public class AdminConfigController(
     /// (<see cref="ConfigInputRules.ReverseProxyError"/>), since startup refuses the same.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("http")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateHttp([FromBody] HttpConfig update)
@@ -294,6 +297,7 @@ public class AdminConfigController(
     /// leader-election lease.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("scheduler")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateScheduler([FromBody] SchedulerConfig update)
@@ -319,6 +323,7 @@ public class AdminConfigController(
     /// between 1 and <see cref="TokenConfig.MaxRefreshTokenDays"/> (400 otherwise).
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("tokens")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateTokens([FromBody] TokenConfig update)
@@ -343,6 +348,7 @@ public class AdminConfigController(
     /// managed via <c>PUT /api/v1/admin/security-policy</c> and lives in the
     /// <c>SecurityPolicy</c> table.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("security")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateSecurity([FromBody] SecurityUpdateRequest update)
@@ -394,6 +400,7 @@ public class AdminConfigController(
     /// system or privilege-controlled group are rejected with 400. A save by a super rewrites
     /// mapping targets still naming a space group by its pre-0.4.0 <c>org-</c> name.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("ldap-auth")]
     // Step-up parity with every other security-relevant section. Omitting it here was
     // account takeover, not merely an inconsistency: LdapAuthService re-reads this config per
@@ -457,6 +464,7 @@ public class AdminConfigController(
     /// chose or sent in the clear. Admin Recipients must each parse as a mail address (400).
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("email")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateEmail([FromBody] EmailConfigUpdateRequest update)
@@ -499,6 +507,7 @@ public class AdminConfigController(
     /// <summary>
     /// Updates the metrics scrape path. Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("metrics")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateMetrics([FromBody] MetricsConfig update)
@@ -517,6 +526,7 @@ public class AdminConfigController(
     /// Updates the HTTPS configuration including the public domain used for management-UI redirects
     /// and ACME URL binding. Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("https")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateHttps([FromBody] HttpsConfig update)
@@ -545,6 +555,7 @@ public class AdminConfigController(
     /// Updates the IP whitelist configuration for protocol endpoint access control.
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("ip-whitelist")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateIpWhitelist([FromBody] IpWhitelistConfig update)
@@ -567,6 +578,7 @@ public class AdminConfigController(
     /// Restarts the application. Requires the SystemAdmin authorization policy.
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("restart")]
     [RequireStepUp(StepUpOps.Restart)]
     public async Task<IActionResult> Restart()
@@ -590,6 +602,7 @@ public class AdminConfigController(
     /// Updates the backup configuration (schedule, retention, verification).
     /// Requires step-up MFA verification.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("backup")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateBackup([FromBody] BackupConfig update)
@@ -615,6 +628,7 @@ public class AdminConfigController(
     /// (<see cref="ConfigInputRules.AlgorithmSunsetRuleError"/>) is refused with 400, rather than
     /// saved and then skipped at issuance with a log line. Requires step-up MFA verification.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("certificate-policy")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateCertPolicy([FromBody] CertPolicyConfig update)
@@ -662,6 +676,7 @@ public class AdminConfigController(
     /// cleared list raises a security alert.
     /// </para>
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("mtls")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateMtls([FromBody] MtlsUpdateRequest update)
@@ -736,9 +751,35 @@ public class AdminConfigController(
     }
 
     /// <summary>
+    /// Updates when the notices about a CA's certificate and key over time are shown
+    /// (<see cref="ModularCA.Shared.Utils.CaCryptoperiod"/>): the notice window of a root CA
+    /// certificate and of an intermediate one, and the usage period of a CA key, each in days
+    /// from 0 (off) to 36500. A value outside that is refused with 400 and nothing is saved. The
+    /// settings change when a notice appears and nothing else. They apply at once.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
+    /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
+    [HttpPut("ca-lifecycle")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
+    public async Task<IActionResult> UpdateCaLifecycle([FromBody] CaLifecycleUpdateRequest request)
+    {
+        var settings = new ModularCA.Shared.Utils.CaCryptoperiodSettings(request.RootExpiryNoticeDays, request.IntermediateExpiryNoticeDays, request.KeyUsagePeriodDays);
+        if (ModularCA.Shared.Utils.CaCryptoperiod.Problem(settings) is { } problem)
+            return BadRequest(new { error = problem });
+
+        _config.CaLifecycle.RootExpiryNoticeDays = request.RootExpiryNoticeDays;
+        _config.CaLifecycle.IntermediateExpiryNoticeDays = request.IntermediateExpiryNoticeDays;
+        _config.CaLifecycle.KeyUsagePeriodDays = request.KeyUsagePeriodDays;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
+        await AuditConfigChange("CaLifecycle", new { request.RootExpiryNoticeDays, request.IntermediateExpiryNoticeDays, request.KeyUsagePeriodDays });
+        return Ok(new { message = "CA lifecycle notices updated", config = new { _config.CaLifecycle.RootExpiryNoticeDays, _config.CaLifecycle.IntermediateExpiryNoticeDays, _config.CaLifecycle.KeyUsagePeriodDays } });
+    }
+
+    /// <summary>
     /// Updates the automatic certificate renewal configuration.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("auto-renewal")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateAutoRenewal([FromBody] AutoRenewalUpdateRequest request)
@@ -757,6 +798,7 @@ public class AdminConfigController(
     /// Updates the certificate compliance scan configuration.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("compliance-scan")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateComplianceScan([FromBody] ComplianceScanUpdateRequest request)
@@ -777,6 +819,7 @@ public class AdminConfigController(
     /// each must be from 1 to <see cref="ConfigInputRules.MaxWarningDays"/> (400 otherwise).
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("cert-expiry-notifications")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateCertExpiryNotifications([FromBody] CertExpiryNotificationUpdateRequest request)
@@ -795,6 +838,7 @@ public class AdminConfigController(
     /// Updates the ACME protocol policy configuration.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("acme-policies")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateAcmePolicies([FromBody] AcmePoliciesUpdateRequest request)
@@ -824,6 +868,7 @@ public class AdminConfigController(
     /// dotted object identifier (<see cref="ConfigInputRules.ObjectIdentifierError"/>) is refused
     /// with 400. Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("tsa")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateTsa([FromBody] TsaUpdateRequest request)
@@ -843,6 +888,7 @@ public class AdminConfigController(
     /// Updates the security alert configuration.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("alert")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateAlert([FromBody] AlertUpdateRequest request)
@@ -859,6 +905,7 @@ public class AdminConfigController(
     /// Updates the webhook notification configuration.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("webhook")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateWebhook([FromBody] WebhookUpdateRequest request)
@@ -875,6 +922,7 @@ public class AdminConfigController(
     /// Updates the network audit (request logging) configuration.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("network-audit")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateNetworkAudit([FromBody] NetworkAuditUpdateRequest request)
@@ -891,6 +939,7 @@ public class AdminConfigController(
     /// Updates the GitOps-style policy synchronization configuration.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("policy-sync")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdatePolicySync([FromBody] PolicySyncUpdateRequest request)
@@ -908,6 +957,7 @@ public class AdminConfigController(
     /// Requires a restart to take full effect.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("cert-manager")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateCertManager([FromBody] CertManagerUpdateRequest request)
@@ -927,6 +977,7 @@ public class AdminConfigController(
     /// Requires a restart to take full effect.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("integration-api")]
     [RequireStepUp(StepUpOps.UpdateConfig)]
     public async Task<IActionResult> UpdateIntegrationApi([FromBody] IntegrationApiUpdateRequest request)
@@ -1049,6 +1100,17 @@ public class MtlsUpdateRequest
 
     /// <summary>Trust-anchor certificate file paths; null keeps, empty clears.</summary>
     public List<string>? TrustedCaCertPaths { get; set; }
+}
+
+/// <summary>Request body for PUT /config/ca-lifecycle. Every value is in days, from 0 (off) to 36500.</summary>
+public class CaLifecycleUpdateRequest
+{
+    /// <summary>How many days before a root CA certificate expires its notice starts; 0 for no early notice.</summary>
+    public int RootExpiryNoticeDays { get; set; }
+    /// <summary>How many days before an intermediate CA certificate expires its notice starts; 0 for no early notice.</summary>
+    public int IntermediateExpiryNoticeDays { get; set; }
+    /// <summary>How many days a CA key may have been signing before a notice says so; 0 for never.</summary>
+    public int KeyUsagePeriodDays { get; set; }
 }
 
 /// <summary>Request body for PUT /config/auto-renewal.</summary>

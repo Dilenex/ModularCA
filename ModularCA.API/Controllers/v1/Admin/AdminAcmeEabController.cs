@@ -70,6 +70,7 @@ public class AdminAcmeEabController(
     /// be securely distributed to the ACME client. Refused (403) to a caller without cert.revoke
     /// at system scope.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.AnyCa)]
@@ -120,6 +121,7 @@ public class AdminAcmeEabController(
     /// Deletes an EAB key by its database ID. Used keys can also be deleted. A caller without
     /// cert.revoke at system scope gets 404.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpDelete("{id:guid}")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.AnyCa)]

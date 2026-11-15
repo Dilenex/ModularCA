@@ -215,44 +215,25 @@ public class BackupCreationJob : SingletonCronJob
 
     /// <summary>
     /// Deletes oldest archives beyond <see cref="BackupConfig.RetentionCount"/>, honouring
-    /// <see cref="BackupConfig.MinimumRetentionDays"/> as a hard floor. Mirrors
-    /// <c>AdminBackupController.EnforceRetention</c> so scheduled and manual backups apply
-    /// the same retention rules.
+    /// <see cref="BackupConfig.MinimumRetentionDays"/> as a hard floor, by the one rule every
+    /// pruning of the backup directory uses (<see cref="BackupRetention"/>).
     /// </summary>
     private void EnforceRetention(string backupDir)
     {
         var retentionCount = _config.Backup.RetentionCount;
         if (retentionCount <= 0) return;
 
-        var retentionDirInfo = new DirectoryInfo(backupDir);
-        var files = retentionDirInfo.GetFiles("modularca-backup-*.zip")
-            .Concat(retentionDirInfo.GetFiles("modularca-backup-*.enc"))
-            .OrderByDescending(f => f.CreationTimeUtc)
-            .ToList();
-
         var minDays = Math.Max(0, _config.Backup.MinimumRetentionDays);
-        var floor = TimeProvider.GetUtcNow().UtcDateTime.AddDays(-minDays);
-
-        foreach (var file in files.Skip(retentionCount))
-        {
-            if (minDays > 0 && file.CreationTimeUtc > floor)
-            {
-                _logger.LogInformation(
-                    "Scheduled backup retention: skipping delete of {FileName} — younger than MinimumRetentionDays={MinDays} floor",
-                    file.Name, minDays);
-                continue;
-            }
-            try
-            {
-                file.Delete();
-                _logger.LogWarning(
-                    "Scheduled backup retention: deleted {FileName} (retentionCount={Count})",
-                    file.Name, retentionCount);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Scheduled backup retention: failed to delete {FileName}", file.Name);
-            }
-        }
+        var pruned = BackupRetention.Apply(backupDir, retentionCount, maxAge: null, minDays, TimeProvider.GetUtcNow().UtcDateTime);
+        foreach (var kept in pruned.KeptByMinimumRetention)
+            _logger.LogInformation(
+                "Scheduled backup retention: skipping delete of {FileName} — younger than MinimumRetentionDays={MinDays} floor",
+                kept.FileName, minDays);
+        foreach (var deleted in pruned.Deleted)
+            _logger.LogWarning(
+                "Scheduled backup retention: deleted {FileName} (retentionCount={Count})",
+                deleted.FileName, retentionCount);
+        foreach (var (archive, error) in pruned.Failed)
+            _logger.LogWarning("Scheduled backup retention: failed to delete {FileName}: {Error}", archive.FileName, error);
     }
 }

@@ -60,6 +60,23 @@ export interface SshCaKeyRef {
 }
 
 /**
+ * What to call each SSH CA, by its CA id, from the keys `/api/v1/admin/ssh/ca-keys` lists. An SSH
+ * CA is not in the X.509 hierarchy, so a page that names CAs from the hierarchy alone has no name
+ * for one. A CA with keys of different names is called by all of them, in the order listed.
+ */
+export function sshCaNames(caKeys: readonly { certificateAuthorityId?: string | null; name?: string | null }[]): Map<string, string> {
+    const names = new Map<string, string[]>();
+    for (const key of caKeys) {
+        const name = key.name?.trim();
+        if (!key.certificateAuthorityId || !name) continue;
+        const held = names.get(key.certificateAuthorityId) ?? [];
+        if (!held.includes(name)) held.push(name);
+        names.set(key.certificateAuthorityId, held);
+    }
+    return new Map([...names].map(([caId, held]) => [caId, held.join(', ')]));
+}
+
+/**
  * The CA an SSH signing profile signs for, as a `refOf` for `rowsInScope`: the CA of its SSH CA
  * key. A profile whose key is not listed gives the key id itself, which names no CA, so the row is
  * out of any narrower scope rather than taken for an unbound one; a profile with no key gives null.

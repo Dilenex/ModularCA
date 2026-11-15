@@ -391,9 +391,11 @@ public class BootstrapModularCA
         {
             BootstrapInputSections.EnsureBootstrapSectionsPresent(bootstrapConfig);
             BootstrapCertCreator.EnsureRootLabelUsable(bootstrapConfig.CA.Subject.CN ?? "ModularCA");
+            BootstrapCertCreator.EnsureRootKeyAcceptable(bootstrapConfig.CA.Algorithm, bootstrapConfig.CA.KeySize);
             BootstrapCertCreator.EnsureWebTlsSansSupported(bootstrapConfig.HttpsApi.SANs);
             BootstrapServiceUrlBuilder.EnsurePublicDomainUsable(bootstrapConfig.HttpsApi.PublicDomain);
             BootstrapInputSections.EnsureClaimTokenUsable(bootstrapConfig.Administration);
+            BootstrapInputSections.EnsureHubTokenUsable(bootstrapConfig.Hub);
         }
         catch (ModularCA.Shared.Errors.RequestValidationException ex)
         {
@@ -1217,6 +1219,46 @@ public class BootstrapModularCA
                 continue;
             File.Delete(path);
             Console.WriteLine($"✓ Deleted {Path.GetFileName(path)}");
+        }
+
+        SetJournalAside(Path.GetDirectoryName(certPath) ?? string.Empty);
+    }
+
+    /// <summary>
+    /// Sets aside what the instance being reset left for its signer's journal: the live journal
+    /// in the default home, and the keystore of its checkpoint key. The instance made after a
+    /// reset is another instance, with another system key, and its signer does not append to a
+    /// journal that names the old one. Nothing is deleted: <c>&lt;home&gt;/current</c> is renamed
+    /// to <c>&lt;home&gt;/set-aside-reset-&lt;time&gt;</c>, inside the home, and the keystore to
+    /// <c>journal.keystore.reset-&lt;time&gt;</c>. The home is the default one of the shared
+    /// layout, <c>signer/journal</c> beside the keystores directory. A journal whose home a
+    /// setting names elsewhere is not known here: the new instance's signer finds it at its
+    /// first start and sets it aside itself, as <c>set-aside-instance-…</c>.
+    /// </summary>
+    internal static void SetJournalAside(string keystoresDirectory)
+    {
+        var now = DateTime.UtcNow;
+        var stamp = now.ToString("yyyyMMdd-HHmmss-fff", System.Globalization.CultureInfo.InvariantCulture);
+        try
+        {
+            var baseDirectory = Path.GetDirectoryName(Path.GetFullPath(keystoresDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            if (!string.IsNullOrEmpty(baseDirectory))
+            {
+                var home = Path.GetFullPath(Path.Combine(baseDirectory, ModularCA.Shared.Models.Config.SignerPaths.DefaultJournalDirectory));
+                if (ModularCA.Journal.JournalLayout.SetAsideCurrent(home, ModularCA.Journal.JournalLayout.SetAsideResetName(now)) is { } aside)
+                    Console.WriteLine($"✓ The previous instance's signer journal was kept and set aside as {aside}");
+            }
+            var keystore = Path.Combine(keystoresDirectory, ModularCA.Shared.Signing.KeyRef.JournalKeystore);
+            foreach (var path in new[] { keystore, keystore + CreatingSuffix })
+            {
+                if (File.Exists(path))
+                    File.Move(path, $"{path}.reset-{stamp}");
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.WriteLine($"(!) The previous instance's signer journal could not be set aside ({ex.Message}). "
+                + "The new instance's signer sets it aside itself at its first start; if it cannot either, it issues nothing until 'current' in the journal's home is renamed by hand.");
         }
     }
 

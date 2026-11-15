@@ -15,7 +15,7 @@ namespace ModularCA.Database;
 /// rows for a user apply <c>SpaceFence</c> explicitly.
 /// </para>
 /// </summary>
-public class ModularCADbContext : DbContext
+public partial class ModularCADbContext : DbContext
 {
     /// <summary>
     /// Name of the shadow property that carries the PostgreSQL <c>xmin</c> optimistic-concurrency
@@ -189,6 +189,18 @@ public class ModularCADbContext : DbContext
     /// apart from the node's audit so a lost node audit still leaves the signer's account.
     /// </summary>
     public DbSet<SignerAuditEntity> SignerAudit { get; set; }
+
+    /// <summary>Revoked serials with no certificate row: what the CRL and OCSP say about a certificate known only from outside.</summary>
+    public DbSet<RevokedSerialTombstoneEntity> RevokedSerialTombstones { get; set; }
+
+    /// <summary>The certificates each CA has had over time (<c>docs/architecture/ca-certificate-renewal.md</c>).</summary>
+    public DbSet<CaCertificateEntity> CaCertificates { get; set; }
+
+    /// <summary>The incarnation this database last saw; one row. See <c>docs/architecture/rollback-continuity.md</c>.</summary>
+    public DbSet<InstanceIncarnationEntity> InstanceIncarnation { get; set; }
+
+    /// <summary>The times this instance found itself running from an earlier or copied state; the unacknowledged ones are the standing notice.</summary>
+    public DbSet<InstanceContinuityEventEntity> InstanceContinuityEvents { get; set; }
 
     /// <summary>
     /// Applies the model-wide conventions that are not entity-specific.
@@ -401,6 +413,32 @@ public class ModularCADbContext : DbContext
             .HasForeignKey(c => c.CaCertificateId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        // A tombstone belongs to the CA certificate whose CRL lists it. Restrict, as for the CRL
+        // configuration: deleting a CA certificate must not quietly take revocations off its CRL.
+        modelBuilder.Entity<RevokedSerialTombstoneEntity>(entity =>
+        {
+            entity.HasIndex(e => new { e.CaCertificateId, e.SerialNumber }).IsUnique();
+            entity.HasIndex(e => e.CertificateAuthorityId);
+            entity.HasOne(e => e.CaCertificate)
+                  .WithMany()
+                  .HasForeignKey(e => e.CaCertificateId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        // A certificate belongs to one CA. Restrict: a CA certificate that is part of a CA's
+        // history is not deleted from under it.
+        modelBuilder.Entity<CaCertificateEntity>(entity =>
+        {
+            entity.HasIndex(e => e.CertificateId).IsUnique();
+            entity.HasIndex(e => e.CertificateAuthorityId);
+            entity.HasOne(e => e.Certificate)
+                  .WithMany()
+                  .HasForeignKey(e => e.CertificateId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<InstanceContinuityEventEntity>().HasIndex(e => e.AcknowledgedAt);
+
         modelBuilder.Entity<CrlEntity>()
             .HasOne(c => c.Task)
             .WithMany()
@@ -470,7 +508,7 @@ public class ModularCADbContext : DbContext
         modelBuilder.Entity<CertificateAuthorityEntity>(entity =>
         {
             // Label and Name are unique across the instance, soft-deleted CAs included: a label is
-            // the path in the CRL, OCSP, AIA and enrolment URLs of every certificate the CA issued.
+            // the path in the CRL, OCSP, AIA and enrollment URLs of every certificate the CA issued.
             entity.HasIndex(e => e.Label).IsUnique();
             entity.HasIndex(e => e.Name).IsUnique();
             entity.HasIndex(e => e.IsDeleted);
@@ -1191,20 +1229,44 @@ public class ModularCADbContext : DbContext
     // is identified.
     // ===========================================================================================
 
-    /// <summary>Saves, after <see cref="StampDefaultExpiryWarnings"/> and the CERT-FK-DIAG trace.</summary>
+    /// <summary>
+    /// Whether this context queues no facts for the signer's journal from its tracked changes.
+    /// Set by code that writes a database whose schema may be older than this build, which is
+    /// what a restore does to the database it has just restored: the queue's table may not be
+    /// there yet.
+    /// </summary>
+    public bool SuppressSignerFacts { get; set; }
+
+    /// <summary>
+    /// Saves, after <see cref="StampDefaultExpiryWarnings"/>, the CERT-FK-DIAG trace and the
+    /// facts the changes amount to for the signer's journal
+    /// (<see cref="QueueSignerFactsForTrackedChanges"/>), which are written in this same save.
+    /// </summary>
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         StampDefaultExpiryWarnings();
         LogCertFkCorruptionDiagnostics();
-        return base.SaveChanges(acceptAllChangesOnSuccess);
+        var queued = !SuppressSignerFacts && QueueSignerFactsForTrackedChanges();
+        var saved = base.SaveChanges(acceptAllChangesOnSuccess);
+        if (queued)
+            SignalSignerFactQueued();
+        return saved;
     }
 
-    /// <summary>Saves, after <see cref="StampDefaultExpiryWarnings"/> and the CERT-FK-DIAG trace.</summary>
-    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Saves, after <see cref="StampDefaultExpiryWarnings"/>, the CERT-FK-DIAG trace and the
+    /// facts the changes amount to for the signer's journal
+    /// (<see cref="QueueSignerFactsForTrackedChanges"/>), which are written in this same save.
+    /// </summary>
+    public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
         StampDefaultExpiryWarnings();
         LogCertFkCorruptionDiagnostics();
-        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        var queued = !SuppressSignerFacts && QueueSignerFactsForTrackedChanges();
+        var saved = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        if (queued)
+            SignalSignerFactQueued();
+        return saved;
     }
 
     /// <summary>

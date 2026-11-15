@@ -167,6 +167,7 @@ public class MtlsController : ControllerBase
     /// exists but its signing key is currently unavailable (keystore state prevents signing).
     /// </summary>
     [Authorize]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("enroll")]
     public async Task<IActionResult> Enroll([FromBody] MtlsEnrollRequest request, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
@@ -209,7 +210,16 @@ public class MtlsController : ControllerBase
         // signer judges whether this CA's key signs a certificate for this CA and space, and
         // records the decision, before any bytes are signed.
         var caKey = new KeyRef(caCertEntity.CertificateId);
-        var signingContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, targetCa.Id, targetCa.SpaceId);
+        var signingContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, targetCa.Id, targetCa.SpaceId) with
+        {
+            // For the signer's journal record: a sign-in certificate the account asked for itself.
+            Issuance = new IssuanceOrigin(
+                Answers: new IssuanceAnswers(ModularCA.Journal.AnswersKind.None, null),
+                Belongs: new IssuanceBelongs(Space: targetCa.SpaceId?.ToString("D"),
+                    OwnerKind: ModularCA.Journal.OwnerKind.User, Owner: userId.Value.ToString("D")),
+                Protocol: "MtlsCredential",
+                Requester: userId.Value.ToString("D")),
+        };
 
         // Generate RSA-2048 keypair for the client cert
         var keyGenParams = new Org.BouncyCastle.Crypto.Parameters.RsaKeyGenerationParameters(
@@ -421,6 +431,7 @@ public class MtlsController : ControllerBase
     /// <param name="id">The credential to revoke; it must belong to the caller.</param>
     /// <param name="mfaToken">The step-up token for <see cref="StepUpOps.MtlsDelete"/> on this credential.</param>
     [Authorize]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpDelete("credentials/{id}")]
     public async Task<IActionResult> RevokeCredential(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
@@ -549,6 +560,7 @@ public class MtlsController : ControllerBase
     /// this is the sibling that was missed.
     /// </remarks>
     [AllowAnonymous]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("verify")]
     public async Task<IActionResult> Verify([FromBody] MtlsMfaVerifyRequest request)
     {
@@ -663,7 +675,7 @@ public class MtlsController : ControllerBase
         // carries it to enrollment until a second factor exists. These certificate-primary
         // paths minted an unrestricted token instead, so an admin whose only factor was a
         // .p12 had full API access on one possession factor, and a restricted admin could
-        // enrol a .p12 and certificate-login around the restriction.
+        // enroll a .p12 and certificate-login around the restriction.
         var mfaSetupRequired = groups.Any(g => g.IsSystemGroup);
         var mfaEnforcedForGroup = _config.WebAuthn.EnforceForGroups.Count > 0
             && groups.Any(g => _config.WebAuthn.EnforceForGroups.Contains(g.TemplateName ?? "Custom", StringComparer.OrdinalIgnoreCase));
@@ -671,14 +683,14 @@ public class MtlsController : ControllerBase
         {
             return StatusCode(403, new
             {
-                error = "Multi-factor authentication is required for your group. Sign in with your password to enrol a second factor.",
+                error = "Multi-factor authentication is required for your group. Sign in with your password to enroll a second factor.",
                 requiresMfaEnrollment = true
             });
         }
         var defaultBadge = await GetDefaultBadgeAsync(user.Id);
         var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired, badge: defaultBadge);
         var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
-        var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash, await GetDpopJktAsync());
+        var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, (await _securityPolicy.GetAsync()).MaxSessionLifetimeHours, userAgentHash, await GetDpopJktAsync());
         refreshToken.AccessBadgeId = defaultBadge?.Id;
         // Plaintext is returned to the client; DB stores the hash.
         var refreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
@@ -770,6 +782,7 @@ public class MtlsController : ControllerBase
     /// consuming it — <see cref="VerifyRedirect"/> does the consume), and refuses one minted by a
     /// certificate login.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("prepare-redirect")]
     [AllowAnonymous]
     public async Task<IActionResult> PrepareRedirect([FromBody] MtlsPrepareRedirectRequest request)
@@ -933,7 +946,7 @@ public class MtlsController : ControllerBase
         // carries it to enrollment until a second factor exists. These certificate-primary
         // paths minted an unrestricted token instead, so an admin whose only factor was a
         // .p12 had full API access on one possession factor, and a restricted admin could
-        // enrol a .p12 and certificate-login around the restriction.
+        // enroll a .p12 and certificate-login around the restriction.
         var mfaSetupRequired = groups.Any(g => g.IsSystemGroup);
         var mfaEnforcedForGroup = _config.WebAuthn.EnforceForGroups.Count > 0
             && groups.Any(g => _config.WebAuthn.EnforceForGroups.Contains(g.TemplateName ?? "Custom", StringComparer.OrdinalIgnoreCase));
@@ -941,14 +954,14 @@ public class MtlsController : ControllerBase
         {
             return StatusCode(403, new
             {
-                error = "Multi-factor authentication is required for your group. Sign in with your password to enrol a second factor.",
+                error = "Multi-factor authentication is required for your group. Sign in with your password to enroll a second factor.",
                 requiresMfaEnrollment = true
             });
         }
         var defaultBadge = await GetDefaultBadgeAsync(user.Id);
         var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired, badge: defaultBadge);
         var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
-        var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash);
+        var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, (await _securityPolicy.GetAsync()).MaxSessionLifetimeHours, userAgentHash);
         refreshToken.AccessBadgeId = defaultBadge?.Id;
         var refreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
 
@@ -1099,7 +1112,7 @@ public class MtlsController : ControllerBase
         // carries it to enrollment until a second factor exists. These certificate-primary
         // paths minted an unrestricted token instead, so an admin whose only factor was a
         // .p12 had full API access on one possession factor, and a restricted admin could
-        // enrol a .p12 and certificate-login around the restriction.
+        // enroll a .p12 and certificate-login around the restriction.
         var mfaSetupRequired = groups.Any(g => g.IsSystemGroup);
         var mfaEnforcedForGroup = _config.WebAuthn.EnforceForGroups.Count > 0
             && groups.Any(g => _config.WebAuthn.EnforceForGroups.Contains(g.TemplateName ?? "Custom", StringComparer.OrdinalIgnoreCase));
@@ -1107,14 +1120,14 @@ public class MtlsController : ControllerBase
         {
             return StatusCode(403, new
             {
-                error = "Multi-factor authentication is required for your group. Sign in with your password to enrol a second factor.",
+                error = "Multi-factor authentication is required for your group. Sign in with your password to enroll a second factor.",
                 requiresMfaEnrollment = true
             });
         }
         var defaultBadge = await GetDefaultBadgeAsync(user.Id);
         var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired, badge: defaultBadge);
         var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
-        var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash);
+        var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, (await _securityPolicy.GetAsync()).MaxSessionLifetimeHours, userAgentHash);
         refreshToken.AccessBadgeId = defaultBadge?.Id;
         var refreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
 
@@ -1175,6 +1188,7 @@ public class MtlsController : ControllerBase
     /// for the associated JWT tokens. The code is single-use and expires after 30 seconds.
     /// A valid DPoP proof on this request binds the session's refresh token to the proving key.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("exchange")]
     [AllowAnonymous]
     public async Task<IActionResult> ExchangeCode([FromBody] MtlsCodeExchangeRequest request)

@@ -82,8 +82,9 @@ SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 
 # Only what the signer writes: the keystores, and its own directory, where its file logs (logs/
-# there) and its journal of keystore events (audit-journal/ there, which the node reads over the
-# signer channel) go. The leading "-" lets the unit start while the directory does not
+# there), its journal of keystore events (audit-journal/ there, which the node reads over the
+# signer channel) and its issuance journal (journal/ there, which it creates; a volume may be
+# mounted on it) go. The leading "-" lets the unit start while the directory does not
 # exist yet. config/ and logs/ are the node's: read-only here, and not read with --signer-dir.
 ReadWritePaths=/opt/modularca/keystores -/opt/modularca/signer
 # A PKCS#11 module needs its device; add e.g. DeviceAllow= and drop PrivateDevices when using one.

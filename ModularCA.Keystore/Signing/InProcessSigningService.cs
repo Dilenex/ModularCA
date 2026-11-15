@@ -75,7 +75,7 @@ namespace ModularCA.Keystore.Signing;
 /// builds from fields, never bytes.
 /// </para>
 /// </remarks>
-public sealed partial class InProcessSigningService : ISigningService
+public sealed partial class InProcessSigningService : ISigningService, IAsyncDisposable, IDisposable
 {
     private static readonly TimeSpan ClassificationTtl = TimeSpan.FromSeconds(60);
 
@@ -91,6 +91,7 @@ public sealed partial class InProcessSigningService : ISigningService
     private readonly ConcurrentDictionary<Guid, CachedOwner> _owners = new();
     private readonly ConcurrentDictionary<Guid, PendingKey> _pending = new();
     private readonly IReadOnlyDictionary<string, HsmKeyRefusal> _hsmRefusals;
+    private readonly SignerJournal? _journal;
 
     /// <summary>
     /// Creates the in-process signer.
@@ -115,6 +116,12 @@ public sealed partial class InProcessSigningService : ISigningService
     /// them; a request for one is refused as <see cref="SigningRefusalReason.CertificateMismatch"/>
     /// with the reason, and audited, rather than as an unknown key.
     /// </param>
+    /// <param name="journal">
+    /// The signer's issuance journal, or null for a signer that keeps none: one that never
+    /// unlocks (setup mode, the command-line backup and restore), and tests. With a journal, a
+    /// certificate, CRL or SSH certificate is returned only once its record is flushed to the
+    /// journal's disk, and the journal's CRL and OCSP checks are made before signing.
+    /// </param>
     public InProcessSigningService(
         ISignerKeyRegistry keystore,
         IServiceScopeFactory scopes,
@@ -125,8 +132,10 @@ public sealed partial class InProcessSigningService : ISigningService
         string backend = SignerHealth.SoftwareBackend,
         IKeyWrappingPassphraseProvider? keyWrapping = null,
         bool failClosedOnAuditFailure = false,
-        IReadOnlyCollection<HsmKeyRefusal>? hsmKeyRefusals = null)
+        IReadOnlyCollection<HsmKeyRefusal>? hsmKeyRefusals = null,
+        SignerJournal? journal = null)
     {
+        _journal = journal;
         _hsmRefusals = (hsmKeyRefusals ?? Array.Empty<HsmKeyRefusal>())
             .GroupBy(r => CertificateKey(r.Certificate))
             .ToDictionary(g => g.Key, g => g.First());
@@ -147,6 +156,11 @@ public sealed partial class InProcessSigningService : ISigningService
     /// then the bytes: <see cref="JudgeData"/> parses them as the structure the purpose and
     /// the key sign and refuses anything else, so the purpose label constrains what is signed.
     /// A key in <see cref="KeyRef.SshKeystore"/> signs nothing here.
+    /// With a journal, a CRL is first held to the newest one journaled for the CA key and an
+    /// OCSP response to the newest journaled CRL (<see cref="JudgeJournalAsync"/>), and the
+    /// signature over a certificate or a CRL is returned only once its record is flushed: one
+    /// whose record cannot be written is refused as <see cref="SigningRefusalReason.JournalUnavailable"/>
+    /// and the signature is dropped.
     /// </remarks>
     public async Task<byte[]> SignAsync(KeyRef key, SignatureAlgorithm algorithm, byte[] data, SigningContext context, CancellationToken cancellationToken = default)
     {
@@ -162,6 +176,11 @@ public sealed partial class InProcessSigningService : ISigningService
         else
             resolved = await ResolveAsync(key, context, JudgeSign, JudgePending, cancellationToken);
         var refusal = resolved.Refusal ?? JudgeData(resolved, key, algorithm, data, context);
+        if (refusal == null && context.Purpose == SigningPurpose.CaCertificateRenewal)
+            refusal = await JudgeCaCertificateRenewalAsync(resolved.Owner!, algorithm, data, context, cancellationToken);
+        Func<byte[], Task>? journalRecord = null;
+        if (refusal == null && _journal != null)
+            (journalRecord, refusal) = await JudgeJournalAsync(resolved, data, context, cancellationToken);
         if (refusal != null)
         {
             await RecordAsync("Sign", context, key, algorithm, allowed: false, refusal.Message, dataHash, cancellationToken);
@@ -169,9 +188,284 @@ public sealed partial class InProcessSigningService : ISigningService
         }
 
         var signature = resolved.Handle!.Sign(data, algorithm.Name);
+        if (journalRecord != null)
+        {
+            // Fail closed: what the journal cannot record is not returned.
+            var unrecorded = await RecordInJournalAsync(() => journalRecord(signature));
+            if (unrecorded != null)
+            {
+                await RecordAsync("Sign", context, key, algorithm, allowed: false, unrecorded.Message, dataHash, cancellationToken);
+                throw unrecorded;
+            }
+        }
         await RecordAsync("Sign", context, key, algorithm, allowed: true, reason: null, dataHash, cancellationToken);
         return signature;
     }
+
+    /// <summary>
+    /// Runs a journal append and turns its failure into the refusal the caller gets: the
+    /// signature exists and is not returned.
+    /// </summary>
+    private async Task<SigningRefusedException?> RecordInJournalAsync(Func<Task> append)
+    {
+        try
+        {
+            await append();
+            return null;
+        }
+        catch (ModularCA.Journal.JournalUnavailableException ex)
+        {
+            _logger.LogError("Signer: the journal could not record what was signed, so it is not returned: {Message}", ex.Message);
+            return new SigningRefusedException(SigningRefusalReason.JournalUnavailable,
+                $"The signer signed and could not record it in its journal, so nothing is returned: {ex.Message}");
+        }
+        catch (JournalCheckException ex)
+        {
+            return new SigningRefusedException(SigningRefusalReason.CrlNotContinuous, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// What the journal has to say before a signature: whether the data is something it records
+    /// (a certificate or a CRL), and whether its checks allow it. Returns the append to run with
+    /// the signature, or a refusal; neither for data the journal does not record.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A to-be-signed certificate is recorded whichever key signs it: a CA key under
+    /// <see cref="SigningPurpose.Certificate"/>, or a generated key not yet committed, which
+    /// signs its own CA certificate and the certificates of its delegated keys. A certification
+    /// request is not a certificate and is not recorded.
+    /// </para>
+    /// <para>
+    /// A CRL is judged by <see cref="SignerJournal.JudgeCrlAsync"/>; each serial it leaves out
+    /// has to be shown expired by <see cref="UnprovenDropsAsync"/>. An OCSP response is judged
+    /// by <see cref="SignerJournal.JudgeOcspAsync"/> under the key of the CA the signing key
+    /// belongs to. With <c>Signer.Journal.Checks: warn</c> what a check finds is logged and
+    /// signed.
+    /// </para>
+    /// </remarks>
+    private async Task<(Func<byte[], Task>? Record, SigningRefusedException? Refusal)> JudgeJournalAsync(
+        Resolution resolved, byte[] data, SigningContext context, CancellationToken cancellationToken)
+    {
+        var journal = _journal!;
+        var owner = resolved.Owner;
+        var pending = resolved.Pending;
+        try
+        {
+            var certificate = pending != null
+                ? (SignedDataTypes.CertificationRequestInfo(data) == null ? SignedDataTypes.TbsCertificate(data) : null)
+                : owner!.Kind == KeyKind.Ca && context.Purpose is SigningPurpose.Certificate or SigningPurpose.CaCertificateRenewal ? SignedDataTypes.TbsCertificate(data) : null;
+            if (certificate != null)
+            {
+                journal.EnsureAvailable();
+                var signerKey = pending?.PublicKeyDer ?? SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(owner!.Certificate.GetPublicKey()).GetDerEncoded();
+                var caId = owner?.CaId ?? context.CaId;
+                var caCertificate = owner?.Certificate.GetEncoded();
+                return (signature => journal.RecordCertificateAsync(caId, signerKey, caCertificate, certificate, data, signature, context), null);
+            }
+
+            if (owner is { Kind: KeyKind.Ca } && context.Purpose == SigningPurpose.Crl && SignedDataTypes.TbsCertList(data) is { } crl)
+            {
+                var caKey = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(owner.Certificate.GetPublicKey()).GetDerEncoded();
+                var judgement = await journal.JudgeCrlAsync(caKey, crl);
+                var problem = judgement.Refusal;
+                if (problem == null && judgement.Dropped.Count > 0)
+                {
+                    var unproven = await UnprovenDropsAsync(owner, judgement.Dropped, judgement.Crl!.ThisUpdate, cancellationToken);
+                    if (unproven.Count > 0)
+                    {
+                        problem = $"The CRL leaves out {unproven.Count} serial(s) that the newest CRL the signer journaled for this CA key lists, that were not on hold there "
+                                  + $"and are not shown to be expired: {string.Join(", ", unproven.Take(5))}{(unproven.Count > 5 ? ", ..." : string.Empty)}. "
+                                  + "A revocation is not undone by leaving it off a CRL. If the database was taken back, revoke these serials again (a serial can be revoked without its certificate). "
+                                  + (owner.CaId is Guid listed
+                                      ? $"The whole list: GET /api/v1/admin/authorities/{listed:D}/revoked-serials/missing-from-crl."
+                                      : "The health answer's journal check counts them.");
+                        if (journal.Settings.Enforce)
+                            journal.NoteCrlRefused(caKey, owner.CaId, unproven);
+                    }
+                }
+                if (problem != null)
+                {
+                    if (journal.Settings.Enforce || judgement.Crl == null)
+                        return (null, new SigningRefusedException(SigningRefusalReason.CrlNotContinuous, problem));
+                    _logger.LogWarning("Signer journal (checks: warn), CA {CaId}: {Problem} The CRL is signed all the same.", owner.CaId, problem);
+                }
+                return (signature => journal.RecordCrlAsync(owner.CaId, caKey, owner.Certificate.GetEncoded(), judgement.Crl!, data, signature, context), null);
+            }
+
+            if (owner is { Kind: KeyKind.Ca or KeyKind.OcspResponder } && context.Purpose == SigningPurpose.Ocsp
+                && SignedDataTypes.OcspResponseData(data) is { } response)
+            {
+                var caKey = owner.Kind == KeyKind.Ca
+                    ? SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(owner.Certificate.GetPublicKey()).GetDerEncoded()
+                    : await CaPublicKeyAsync(owner.CaId, cancellationToken);
+                var problem = caKey == null ? null : await journal.JudgeOcspAsync(caKey, response);
+                if (problem != null)
+                {
+                    if (journal.Settings.Enforce)
+                        return (null, new SigningRefusedException(SigningRefusalReason.RevokedOnJournaledCrl, problem));
+                    _logger.LogWarning("Signer journal (checks: warn), CA {CaId}: {Problem} The response is signed all the same.", owner.CaId, problem);
+                }
+            }
+            return (null, null);
+        }
+        catch (ModularCA.Journal.JournalUnavailableException ex)
+        {
+            return (null, new SigningRefusedException(SigningRefusalReason.JournalUnavailable,
+                $"The signer's journal cannot take a record, and the signer signs no certificate or CRL it cannot record: {ex.Message}"));
+        }
+    }
+
+    private readonly ConcurrentDictionary<Guid, (byte[] Spki, DateTime ExpiresAt)> _caKeys = new();
+
+    /// <summary>
+    /// The public key (SubjectPublicKeyInfo) of the CA <paramref name="caId"/> names, from its
+    /// current certificate row; cached like a classification. Null when the CA or its
+    /// certificate cannot be read.
+    /// </summary>
+    private async Task<byte[]?> CaPublicKeyAsync(Guid? caId, CancellationToken cancellationToken)
+    {
+        if (caId is not Guid id)
+            return null;
+        if (_caKeys.TryGetValue(id, out var cached) && cached.ExpiresAt > DateTime.UtcNow)
+            return cached.Spki;
+        using var scope = _scopes.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        var row = await (from ca in db.CertificateAuthorities.AsNoTracking()
+                         join cert in db.Certificates.AsNoTracking() on ca.CertificateId equals cert.CertificateId
+                         where ca.Id == id
+                         select cert).FirstOrDefaultAsync(cancellationToken);
+        var parsed = row == null ? null : TryParse(row);
+        if (parsed == null)
+            return null;
+        var spki = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(parsed.GetPublicKey()).GetDerEncoded();
+        _caKeys[id] = (spki, DateTime.UtcNow + ClassificationTtl);
+        return spki;
+    }
+
+    /// <summary>
+    /// Of the serials a CRL leaves out, those that are not shown to be expired at
+    /// <paramref name="thisUpdate"/>. A serial is shown expired by its certificate: a row that
+    /// carries the serial, whose certificate verifies under this CA's key and whose notAfter is
+    /// not after <paramref name="thisUpdate"/>, which is the node's own rule for leaving an
+    /// entry off. The signature is what makes the row's word the CA's. A serial revoked with no
+    /// certificate has no notAfter; it is taken as expired when its tombstone's
+    /// <c>ListedUntil</c> has passed, and that is the node's word alone.
+    /// </summary>
+    private async Task<List<string>> UnprovenDropsAsync(CachedOwner owner, IReadOnlyList<string> serials, DateTime thisUpdate, CancellationToken cancellationToken)
+    {
+        var unproven = new List<string>();
+        using var scope = _scopes.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+        var caPublicKey = owner.Certificate.GetPublicKey();
+        foreach (var serial in serials)
+        {
+            var upper = serial.ToUpperInvariant();
+            var forms = new[] { upper, "0" + upper, "00" + upper };
+            var proven = false;
+            var rows = await db.Certificates.AsNoTracking()
+                .Where(c => forms.Contains(c.SerialNumber.ToUpper()))
+                .ToListAsync(cancellationToken);
+            foreach (var row in rows)
+            {
+                var certificate = TryParse(row);
+                if (certificate == null || !certificate.SerialNumber.ToString(16).Equals(serial, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                try
+                {
+                    certificate.Verify(caPublicKey);
+                }
+                catch (Exception ex) when (ex is Org.BouncyCastle.Security.GeneralSecurityException or InvalidOperationException or ArgumentException)
+                {
+                    continue;
+                }
+                if (certificate.NotAfter.ToUniversalTime() <= thisUpdate)
+                {
+                    proven = true;
+                    break;
+                }
+            }
+            if (!proven)
+            {
+                proven = await db.RevokedSerialTombstones.AsNoTracking()
+                    .AnyAsync(t => forms.Contains(t.SerialNumber.ToUpper()) && t.ListedUntil <= thisUpdate
+                                   && (owner.CaId == null || t.CertificateAuthorityId == owner.CaId), cancellationToken);
+            }
+            if (!proven)
+                unproven.Add(serial);
+        }
+        return unproven;
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Permitted under <see cref="SigningPurpose.JournalFact"/> only. The fact is checked
+    /// against its type, re-encoded and appended with flag bit 0; no key is used and no audit
+    /// row is written, since the journal record is the record.
+    /// </remarks>
+    public async Task<ulong> RecordFactAsync(ushort type, byte[] payload, SigningContext context, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        ArgumentNullException.ThrowIfNull(context);
+        if (context.Purpose != SigningPurpose.JournalFact)
+            throw new SigningRefusedException(SigningRefusalReason.PurposeNotPermitted,
+                $"A fact is recorded only under a {SigningPurpose.JournalFact} context, not {context.Purpose}.");
+        if (_journal == null)
+            throw new SigningRefusedException(SigningRefusalReason.OperationUnsupported, "This signer keeps no journal.");
+        try
+        {
+            return (await _journal.RecordFactAsync(type, payload)).Seq;
+        }
+        catch (FormatException ex)
+        {
+            throw new SigningRefusedException(SigningRefusalReason.FactNotAccepted, ex.Message);
+        }
+        catch (ModularCA.Journal.JournalUnavailableException ex)
+        {
+            throw new SigningRefusedException(SigningRefusalReason.JournalUnavailable, ex.Message);
+        }
+    }
+
+    /// <inheritdoc />
+    public Task<SignerJournalInfo?> JournalInfoAsync(CancellationToken cancellationToken = default)
+        => Task.FromResult(_journal?.Info());
+
+    /// <inheritdoc />
+    public Task<SignerJournalMissingRevocations?> JournalMissingRevocationsAsync(Guid caId, CancellationToken cancellationToken = default)
+        => Task.FromResult(_journal?.MissingRevocations(caId));
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The CA's key is the one of its current certificate row. A journal that cannot be opened
+    /// is answered as one that is not trusted, with the reason.
+    /// </remarks>
+    public async Task<SignerJournaledRevocations?> JournaledRevocationsAsync(Guid caId, int skip, int take, CancellationToken cancellationToken = default)
+    {
+        if (_journal == null)
+            return null;
+        var spki = await CaPublicKeyAsync(caId, cancellationToken);
+        if (spki == null)
+            return null;
+        try
+        {
+            return await _journal.JournaledRevocationsAsync(caId, spki, Org.BouncyCastle.Security.PublicKeyFactory.CreateKey(spki), skip, take);
+        }
+        catch (ModularCA.Journal.JournalUnavailableException ex)
+        {
+            return new SignerJournaledRevocations(caId, false, ex.Message, null, null, 0, []);
+        }
+    }
+
+    /// <summary>Stops the journal in order: its open segment is sealed and takes its sealed name.</summary>
+    public async ValueTask DisposeAsync()
+    {
+        if (_journal != null)
+            await _journal.DisposeAsync();
+    }
+
+    /// <summary>As <see cref="DisposeAsync"/>, for a container that is disposed synchronously.</summary>
+    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 
     /// <inheritdoc />
     /// <remarks>
@@ -778,7 +1072,7 @@ public sealed partial class InProcessSigningService : ISigningService
         var permitted = owner.Kind switch
         {
             KeyKind.Ca => context.Purpose is SigningPurpose.Certificate or SigningPurpose.Crl or SigningPurpose.Ocsp
-                                             or SigningPurpose.Scep or SigningPurpose.Cmp,
+                                             or SigningPurpose.Scep or SigningPurpose.Cmp or SigningPurpose.CaCertificateRenewal,
             KeyKind.OcspResponder => context.Purpose is SigningPurpose.Ocsp,
             KeyKind.Tsa => context.Purpose is SigningPurpose.Tsa,
             KeyKind.CmpSigner => context.Purpose is SigningPurpose.Cmp,
@@ -843,6 +1137,8 @@ public sealed partial class InProcessSigningService : ISigningService
         return (owner.Kind, context.Purpose) switch
         {
             (KeyKind.Ca, SigningPurpose.Certificate) => JudgeCertificate(owner, algorithm, data),
+            // Typed by JudgeCaCertificateRenewalAsync, which reads the CA being renewed.
+            (KeyKind.Ca, SigningPurpose.CaCertificateRenewal) => null,
             (KeyKind.Ca, SigningPurpose.Crl) => JudgeCrl(owner, algorithm, data),
             (KeyKind.Ca or KeyKind.OcspResponder, SigningPurpose.Ocsp) => JudgeOcspResponse(owner, data),
             (KeyKind.Ca, SigningPurpose.Scep) => SignedDataTypes.SignedAttributes(data, SignedDataTypes.IdData, SignedDataTypes.ScepMessageType) != null

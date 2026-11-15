@@ -196,6 +196,7 @@ public class AdminQuotaController(
     /// </summary>
     /// <param name="groupId">The CA group ID to update.</param>
     /// <param name="request">The new quota limits.</param>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{groupId:guid}")]
     public async Task<IActionResult> UpdateQuota(Guid groupId, [FromBody] UpdateQuotaRequest request)
     {

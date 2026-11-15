@@ -55,7 +55,7 @@ export const adminBackup: ApiEndpoint[] = [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token scoped to restore-backup.' },
         ],
-        responseDescription: 'Success message; an application restart is required to apply changes.',
+        responseDescription: 'Success message; an application restart is required to apply changes. 409 with the reason, and nothing changed, while another node is serving from the same database or another restore is running: stop the other nodes first.',
     },
     {
         method: 'GET',

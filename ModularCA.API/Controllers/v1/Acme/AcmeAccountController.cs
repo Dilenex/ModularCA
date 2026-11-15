@@ -77,6 +77,7 @@ public class AcmeAccountController(
     /// that creates or binds the account, and a request that loses the claim to a concurrent one
     /// is refused with <c>unauthorized</c> and changes nothing.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact)]
     [HttpPost("new-account")]
     [AcmeJws(AllowNewAccount = true)]
     public async Task<IActionResult> NewAccount()
@@ -234,6 +235,9 @@ public class AcmeAccountController(
     /// the ACME tab, beside the account's <c>AccountRegistered</c>. Any other update (a change of
     /// contact) is an <c>AccountUpdated</c> row on the ACME tab.
     /// </summary>
+    // An empty payload (POST-as-GET) reads the account and is answered in every mode. A change
+    // to the account asks the gate itself.
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact, AnsweredByAction = true)]
     [HttpPost("account/{id:guid}")]
     [AcmeJws]
     public async Task<IActionResult> UpdateAccount(Guid id)
@@ -250,6 +254,10 @@ public class AcmeAccountController(
                 return NotFound();
             return Ok(account);
         }
+
+        if (await ModularCA.Auth.Authorization.ModeGateFilter.RequireAsync(
+                HttpContext, ModularCA.Shared.Modes.ModeOperation.Fact, "Changing an ACME account") is { } modeRefusal)
+            return modeRefusal;
 
         var request = JsonSerializer.Deserialize<UpdateAcmeAccountRequest>(jws.Payload, JsonOpts);
         if (request == null)
@@ -315,6 +323,7 @@ public class AcmeAccountController(
     /// The new key is the one in the inner JWS header; the inner payload carries <c>account</c>
     /// and <c>oldKey</c>, and a <c>newKey</c> member is optional and must match the header.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact)]
     [HttpPost("key-change")]
     [AcmeJws]
     public async Task<IActionResult> KeyChange()

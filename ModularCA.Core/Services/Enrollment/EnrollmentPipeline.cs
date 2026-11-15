@@ -274,6 +274,12 @@ public class EnrollmentPipeline : IEnrollmentPipeline
         if (submission.ClampRequestedNotAfterToProfileMax && notAfter > profileMaximum)
             notAfter = profileMaximum;
 
+        // For the signer's journal record of the certificate: the protocol, what the protocol's
+        // own identifier answers, and the template the client named. A request that waits for
+        // approval is issued later from its row alone and carries none of these.
+        ModularCA.Core.Services.Journal.IssuanceNotes.NoteRequest(_db, csrEntity.Id, protocol,
+            ModularCA.Core.Services.Journal.IssuanceNotes.AnswersFor(protocol, submission.Correlation), submission.TemplateId?.ToString("D"));
+
         IssuanceResult issuanceResult;
         try
         {

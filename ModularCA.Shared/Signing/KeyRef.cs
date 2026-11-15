@@ -29,6 +29,17 @@ public sealed record KeyRef(Guid CertificateId, string Keystore = KeyRef.Default
     public const string SshKeystore = "ssh-ca.keystore";
 
     /// <summary>
+    /// The keystore that holds the journal's checkpoint key and nothing else
+    /// (<c>docs/architecture/signer-journal.md</c>). The signer creates it at the first start
+    /// that needs it, signed by and pinned to the system signer like every other keystore file.
+    /// Its last entry is the checkpoint key in use; no reference to a key in it is ever served,
+    /// so nothing but a checkpoint is signed with one. A backup does not carry it: the key
+    /// vouches for one host's journal, which a backup does not carry either, and a signer that
+    /// finds the file gone or unreadable makes a new key, which the system key signs for.
+    /// </summary>
+    public const string JournalKeystore = "journal.keystore";
+
+    /// <summary>
     /// The keystore files a backup carries, in the order a backup writes them. A signer that
     /// keeps no <see cref="SshKeystore"/>, which is every install without an SSH CA, has none to
     /// carry, and the backup goes without it.

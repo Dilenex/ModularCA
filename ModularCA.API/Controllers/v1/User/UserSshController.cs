@@ -100,6 +100,7 @@ public class UserSshController(
     /// are 503 with the reason; a certificate the signer's rules refuse is 400 with its reason.
     /// The audit entry is written by <see cref="ISshCaService"/>.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("sign-user")]
     [Authorize]
     [ModularCA.API.Filters.RequireUnlockedSigner]

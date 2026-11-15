@@ -34,7 +34,9 @@ public static class SignerRole
     /// it checks the application database, which its audit sink writes to, through
     /// <see cref="SchemaStartup.EnforceAllAsync"/>. It waits, extending the systemd start
     /// timeout, while the control role migrates or the database is unreachable, and refuses a
-    /// schema this build does not match. In the shared layout it warns that the node can rewrite
+    /// schema this build does not match. Before that check it takes the signer's key of the
+    /// restore lock (<see cref="SchemaStartup.TakeServingLockAsync"/>) and holds it while it
+    /// runs. In the shared layout it warns that the node can rewrite
     /// what it reads; in its own directory it writes its file logs and keystore audit there and
     /// warns about a directory or file others can write.
     /// </summary>
@@ -79,6 +81,21 @@ public static class SignerRole
                 + "its own directory with {Flag}; README-DEPLOY.md, \"Two units\", says how.",
                 paths.ConfigPath, paths.DbYamlPath, paths.KeystoreYamlPath, SignerPaths.Flag);
         }
+
+        // The signer writes its audit to the application database and reads its pins from it all
+        // the time it runs, so it holds its own key of the restore lock (RestoreLock.SignerKey),
+        // on a connection of its own, from before its first read: a command-line restore, which
+        // replaces the keystore files under a running signer, is refused while it runs, and a
+        // signer started during such a restore waits, then exits 75. A restore from the node's
+        // console goes through this running signer and does not ask for this key.
+        var signerLock = new ServingDatabaseLock(appConnStr, RestoreLock.SignerKey,
+            new Serilog.Extensions.Logging.SerilogLoggerFactory(Log.Logger).CreateLogger("ModularCA.RestoreLock"), holder: "signer");
+        var lockExit = await SchemaStartup.TakeServingLockAsync(
+            signerLock, config.DB.App, config.Schema, new Microsoft.Extensions.Hosting.Systemd.SystemdNotifier());
+        if (lockExit is int lockCode)
+            return lockCode;
+        // From here on: a restore found beside this running signer ends the signer with status 75.
+        SchemaStartup.ExitWhenRestoreFoundBeside(signerLock, "signer");
 
         var schemaExit = await SchemaStartup.EnforceAllAsync(
             [new SchemaTarget("application", DatabaseKind.Application, config.DB.App)],
@@ -175,6 +192,7 @@ public static class SignerRole
                         Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId
                             .PossibleIncorrectRequiredNavigationWithQueryFilterInteractionWarning)));
                 builder.Services.AddSingleton(config);
+                builder.Services.AddSingleton(signerLock);
                 if (hsm != null)
                     builder.Services.AddSingleton(hsm);
 
@@ -198,7 +216,15 @@ public static class SignerRole
                     sp.GetRequiredService<ISignerAuditSink>(),
                     sp.GetRequiredService<ILogger<InProcessSigningService>>(),
                     sp.GetRequiredService<IKeyWrappingPassphraseProvider>(),
-                    failClosedOnAuditFailure: true));
+                    failClosedOnAuditFailure: true,
+                    journal: JournalSettings(paths, config)));
+                // Made at start, not at the first request: the checkpoint key is loaded or made
+                // then, a new journal gets its Genesis, the wait for a restore marker is counted
+                // from the start, and a journal that cannot be opened (another instance's that
+                // cannot be set aside, a chain that does not hold) is said in the log before
+                // anything asks for a signature. Over an existing journal the start writes
+                // nothing to the directory: its segment begins with the first record.
+                builder.Services.AddHostedService<SignerAtStart>();
             });
         }
         catch (ArgumentException ex)
@@ -223,6 +249,36 @@ public static class SignerRole
         {
             hsm?.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Where the signer's issuance journal is and how its checks behave, from the signer's
+    /// settings: <c>Signer.Journal.Directory</c> (overridden by
+    /// <c>MODULARCA__SIGNER__JOURNAL__DIRECTORY</c>, which the environment overlay has applied
+    /// to <paramref name="config"/>) resolved against the installation directory,
+    /// <c>Signer.Journal.Checks</c>, the two free-space warning levels
+    /// (<c>Signer.Journal.LowSpaceMiB</c>, <c>Signer.Journal.CriticalSpaceMiB</c>), the product
+    /// version, and the hash of the incarnation value this process was started with.
+    /// </summary>
+    public static SignerJournalSettings JournalSettings(SignerPaths paths, SystemConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        ArgumentNullException.ThrowIfNull(config);
+        return new SignerJournalSettings(
+            paths.JournalDirectory(config.Signer),
+            config.Signer.Journal.Enforces,
+            ModularCA.Bootstrap.BackupManifestCommand.ProductVersion(),
+            InstanceIncarnationHash.FromEnvironment(),
+            LowSpaceBytes: Math.Max(0, (long)config.Signer.Journal.LowSpaceMiB) << 20,
+            CriticalSpaceBytes: Math.Max(0, (long)config.Signer.Journal.CriticalSpaceMiB) << 20);
+    }
+
+    /// <summary>Resolves the signer when the host starts, so that it and its journal exist before the first call.</summary>
+    private sealed class SignerAtStart(ISigningService signer) : IHostedService
+    {
+        public Task StartAsync(CancellationToken cancellationToken) => signer.HealthAsync(cancellationToken);
+
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     /// <summary>

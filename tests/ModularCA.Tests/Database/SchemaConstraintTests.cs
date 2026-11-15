@@ -79,7 +79,7 @@ public class SchemaConstraintTests
 
     /// <summary>
     /// From 0.4.0 S4 a CA's label and name are unique across the instance over all rows, deleted
-    /// ones included (no filter): the label is the path of the CA's CRL, OCSP, AIA and enrolment URLs.
+    /// ones included (no filter): the label is the path of the CA's CRL, OCSP, AIA and enrollment URLs.
     /// The per-space and instance-only indexes are gone.
     /// </summary>
     [Theory]

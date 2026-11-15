@@ -206,7 +206,7 @@ public class AuditChainSealTests
             ModularCA.Tests.Roles.ApiAssembly.TypeNamed("ModularCA.API.Controllers.v1.Admin.AdminAuditController"),
             mainDb, null, new NoUser(), db, new AuditHashChainService())!;
         var list = (Task<Microsoft.AspNetCore.Mvc.IActionResult>)controller.GetType().GetMethod("GetAuditLogs")!
-            .Invoke(controller, [null, null, null, null, null, 1, 50, Space, null, null, null, null])!;
+            .Invoke(controller, [null, null, null, null, null, 1, 50, Space, null, null, null, null, null])!;
         var ok = Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(await list);
         using var page = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(ok.Value));
         Assert.Equal(4, page.RootElement.GetProperty("total").GetInt32());
@@ -214,6 +214,52 @@ public class AuditChainSealTests
         var actions = items.Select(i => i.GetProperty("ActionType").GetString()).OrderBy(a => a).ToList();
         Assert.Equal(["CertificateIssued", "GroupUpdated", "KerberosRealmCreated", "TenantUpdated"], actions);
         Assert.Equal(Space, items.Single(i => i.GetProperty("ActionType").GetString() == "KerberosRealmCreated").GetProperty("SpaceId").GetGuid());
+    }
+
+    /// <summary>
+    /// One serial is found among the records that carry serials in their details, whether the
+    /// record is for that serial alone or for a batch, and in no record of another kind.
+    /// </summary>
+    [Fact]
+    public async Task The_audit_query_finds_the_records_that_name_one_revoked_serial_also_inside_a_batch()
+    {
+        await using var db = Context();
+        using var mainDb = ModularCA.Tests.TestUtils.InMemoryDbContextFactory.Create();
+        var caId = Guid.NewGuid();
+        AuditLogEntity Row(string action, string? target, object details) => new()
+        {
+            ActionType = action, ActorUsername = "journal-merge", Success = true, TargetEntityType = "x", TargetEntityId = target,
+            CertificateAuthorityId = caId, DetailsJson = AuditJsonScrubber.SerializeAndScrub(details),
+        };
+        db.AuditLogs.AddRange(
+            Row(ModularCA.Shared.Enums.AuditActionType.RevocationMergedFromJournal, "A1B2", new { SerialNumber = "A1B2", Reason = "Superseded" }),
+            Row(ModularCA.Shared.Enums.AuditActionType.RevocationsMergedFromJournalBatch, caId.ToString(), new { Count = 2, Revocations = new[] { new { Serial = "A1B2C3", Made = "certificate" }, new { Serial = "FF01", Made = "serial without a certificate" } } }),
+            Row(ModularCA.Shared.Enums.AuditActionType.RevokedSerialsRecordedBatch, caId.ToString(), new { Count = 1, Serials = new[] { new { Serial = "FF01", Reason = "Superseded" } } }),
+            Row(ModularCA.Shared.Enums.AuditActionType.RevokedSerialRecorded, "FF02", new { SerialNumber = "FF02" }),
+            // Another kind of record that happens to hold the same text is not one of them.
+            Row(ModularCA.Shared.Enums.AuditActionType.CertificateRevoked, "x", new { SerialNumber = "FF01" }));
+        await db.SaveChangesAsync();
+
+        var controller = Activator.CreateInstance(
+            ModularCA.Tests.Roles.ApiAssembly.TypeNamed("ModularCA.API.Controllers.v1.Admin.AdminAuditController"),
+            mainDb, null, new NoUser(), db, new AuditHashChainService())!;
+        async Task<Microsoft.AspNetCore.Mvc.IActionResult> Find(string serial) =>
+            await (Task<Microsoft.AspNetCore.Mvc.IActionResult>)controller.GetType().GetMethod("GetAuditLogs")!
+                .Invoke(controller, [null, null, null, null, null, 1, 50, null, null, null, null, null, serial])!;
+        async Task<List<string?>> Actions(string serial)
+        {
+            using var page = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(await Find(serial)).Value));
+            return page.RootElement.GetProperty("items").EnumerateArray().Select(i => i.GetProperty("ActionType").GetString()).OrderBy(a => a).ToList();
+        }
+
+        // Inside a batch of the merge and inside a batch of a revoke-all; written with leading zeros, lower case or separators.
+        Assert.Equal([ModularCA.Shared.Enums.AuditActionType.RevocationsMergedFromJournalBatch, ModularCA.Shared.Enums.AuditActionType.RevokedSerialsRecordedBatch], await Actions("00:ff:01"));
+        // A whole serial, never a part of one: A1B2 is not A1B2C3.
+        Assert.Equal([ModularCA.Shared.Enums.AuditActionType.RevocationMergedFromJournal], await Actions("A1B2"));
+        Assert.Equal([ModularCA.Shared.Enums.AuditActionType.RevocationsMergedFromJournalBatch], await Actions("a1b2c3"));
+        Assert.Equal([ModularCA.Shared.Enums.AuditActionType.RevokedSerialRecorded], await Actions("FF02"));
+        Assert.Empty(await Actions("ABCD"));
+        Assert.IsType<Microsoft.AspNetCore.Mvc.BadRequestObjectResult>(await Find("not a serial"));
     }
 
     [Fact]

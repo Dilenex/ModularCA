@@ -91,7 +91,8 @@ public class BackupVerificationJob : SingletonCronJob
     /// <c>BackupMissing</c> / <c>BackupStale</c> alerts on deployments that have
     /// disabled scheduled backups outright. The CronExpression short-circuit handles
     /// the TickAsync path; the duplicate check below protects the manual-run RunAsync
-    /// path which bypasses cron evaluation in the base class.
+    /// path which bypasses cron evaluation in the base class. A run that checks archives
+    /// leaves what it found in the backup directory (<see cref="BackupVerificationRecord"/>).
     /// </summary>
     /// <param name="cancellationToken">Token to signal cancellation of the operation.</param>
     protected override async Task ExecuteAsync(CancellationToken cancellationToken)
@@ -192,10 +193,12 @@ public class BackupVerificationJob : SingletonCronJob
         var verifyCount = Math.Max(1, _config.Backup.VerifyCount);
         var toVerify = backupFiles.Take(verifyCount).ToList();
         int ok = 0;
+        var found = new List<BackupVerificationRecord.Archive>(toVerify.Count);
         foreach (var archive in toVerify)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var (isValid, issues) = ValidateBackupIntegrity(archive);
+            found.Add(new BackupVerificationRecord.Archive(archive.Name, isValid));
             if (!isValid)
             {
                 _logger.LogError("Backup verification: backup {FileName} is corrupted. Issues: {Issues}",
@@ -214,6 +217,19 @@ public class BackupVerificationJob : SingletonCronJob
         }
         _logger.LogInformation("Backup verification: {Ok}/{Total} recent backups passed checks (latest age {AgeHours:F1}h)",
             ok, toVerify.Count, ageHours);
+
+        // What this run found is kept beside the archives, for readers that must not verify
+        // anything themselves (the hub's inventory). Failing to keep it does not fail the run:
+        // the alerts above have already said what matters.
+        try
+        {
+            BackupVerificationRecord.Write(backupDir, new BackupVerificationRecord(TimeProvider.GetUtcNow().UtcDateTime, found));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogWarning("Backup verification: the result of this run could not be written to {File} in {BackupDir} ({Error})",
+                BackupVerificationRecord.FileName, backupDir, ex.GetType().Name);
+        }
     }
 
     /// <summary>

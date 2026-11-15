@@ -145,9 +145,10 @@ public sealed class NameConstraintIssuanceTests
         /// <summary>The certificate policy issuance evaluates; a test adds violations to refuse.</summary>
         public ConfigurablePolicy Policy { get; } = new();
 
-        public IssuanceWorld()
+        /// <param name="journal">The signer's issuance journal, for the tests of what issuance records in it; none otherwise.</param>
+        public IssuanceWorld(ModularCA.Keystore.Signing.SignerJournal? journal = null)
         {
-            var signer = TestSigner.Over(_world.Keystore, _world.DatabaseName, _world.Persistence);
+            var signer = TestSigner.Over(_world.Keystore, _world.DatabaseName, _world.Persistence, journal);
             Signer = signer;
             Db = _world.OpenDb();
             BootstrapProfileSeeder.SeedBuiltInRoles(Db);

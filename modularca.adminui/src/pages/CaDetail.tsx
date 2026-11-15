@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { displaySerial } from '@shared/serial';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
@@ -6,13 +7,20 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { apiGet, apiPostWithMfa } from '../api/client';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { StepUpOps } from '@shared/generated';
+import { Capabilities, StepUpOps } from '@shared/generated';
 import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { ocspStatus } from './ocspReadiness';
 import { advisoriesOf, openEnrollmentNotice } from './protocolAdvisories';
+import { keyAdvisoriesOf } from './tighterDefaults';
+import { advisoryNoticeSeverity, advisoryTitle, cryptoperiodRows } from './caLifecycle';
+import { parentCaDisplay } from './caParentDisplay';
 import InfrastructureProfiles from '../components/InfrastructureProfiles';
+import RevokedSerialsPanel from '../components/RevokedSerialsPanel';
+import MissingFromCrlPanel from '../components/MissingFromCrlPanel';
+import CaCertificateRenewal from '../components/CaCertificateRenewal';
+import { useAuth } from '../context/AuthContext';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -40,17 +48,24 @@ function flattenCas(cas: any[]): any[] {
 /// <summary>
 /// Read-only detail page for a single certificate authority: CA info, certificate details, protocol
 /// configurations, service URLs and OCSP responder. CAs aren't edited in place (creation lives on the
-/// CA Management page), so this page is View-only.
+/// CA Management page), so this page is View-only. Its actions are the reissue of the CA's
+/// infrastructure certificates and, for a caller with cert.revoke on the CA, revoking a serial or
+/// adopting a certificate the CA does not hold.
 /// </summary>
 const CaDetail: React.FC = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
 
     const { requireStepUp } = useStepUp();
+    const { can } = useAuth();
 
     const [ca, setCa] = useState<any | null>(null);
+    // Every CA the hierarchy feed returned to this viewer: the parent is named and linked from it.
+    const [visibleCas, setVisibleCas] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
+    // Raised after a renewal, so the page shows the CA's new certificate.
+    const [reload, setReload] = useState(0);
 
     // Infrastructure certificate reissue. OCSP defaults on because a broken responder is the
     // reason to be here; TSA defaults off because reissuing it is rarer and not free.
@@ -96,12 +111,14 @@ const CaDetail: React.FC = () => {
             .then((data) => {
                 if (cancelled) return;
                 const items = Array.isArray(data) ? data : (data.items || data.authorities || []);
-                setCa(flattenCas(items).find((c: any) => caKey(c) === id) || null);
+                const flat = flattenCas(items);
+                setVisibleCas(flat);
+                setCa(flat.find((c: any) => caKey(c) === id) || null);
                 setLoading(false);
             })
             .catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load CA')); setLoading(false); } });
         return () => { cancelled = true; };
-    }, [id]);
+    }, [id, reload]);
 
     if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return <InlineNotice notice={error} />;
@@ -113,6 +130,7 @@ const CaDetail: React.FC = () => {
     );
 
     const typeBadge = caTypeBadge(ca);
+    const parent = parentCaDisplay(ca, visibleCas);
     const ocsp = ocspStatus(ca.ocspResponder);
     // Wire name is `isEnabled`; `ca.enabled` was always undefined, so a disabled CA
     // presented as enabled here and in CaManagement.
@@ -140,9 +158,41 @@ const CaDetail: React.FC = () => {
                         <DetailField label="Label" value={ca.label} mono />
                         {ca.spaceName && <DetailField label="Space" value={ca.spaceName} />}
                         <DetailField label="Default" value={ca.isDefault ? 'Yes' : 'No'} />
-                        {ca.parentCaId && <DetailField label="Parent CA" value={ca.parentCaId} mono />}
+                        {parent && (
+                            <DetailField label="Parent CA" value={
+                                parent.kind === 'link' ? (
+                                    <span>
+                                        <Link to={parent.to} className="text-accent-ink hover:underline">{parent.name}</Link>
+                                        {parent.label && <span className="data-mono text-ink-muted ml-2">{parent.label}</span>}
+                                    </span>
+                                ) : <span className="text-ink-muted">{parent.text}</span>
+                            } />
+                        )}
                     </div>
+                    {keyAdvisoriesOf(ca).map((a) => (
+                        <InlineNotice
+                            key={a.reason}
+                            severity={advisoryNoticeSeverity(a)}
+                            className="mt-2"
+                            notice={{ title: a.reason === 'CaRsaKeyBelow3072' ? "This CA's key should be replaced" : advisoryTitle(a), detail: a.message, code: a.reason }}
+                        />
+                    ))}
                 </DetailSection>
+
+                {cryptoperiodRows(ca.cryptoperiod).length > 0 && (
+                    <DetailSection title="Key and Certificate Lifetime">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
+                            {cryptoperiodRows(ca.cryptoperiod).map((row) => (
+                                <div key={row.label} title={row.hint}>
+                                    <DetailField label={row.label} value={row.value} />
+                                </div>
+                            ))}
+                        </div>
+                        <p className="mt-2 text-xs text-ink-muted max-w-3xl">
+                            When these raise a notice is set under <Link to="/settings?tab=Security" className="text-accent-ink underline">CA Lifecycle Notices in Settings</Link>. A notice is information: it stops nothing.
+                        </p>
+                    </DetailSection>
+                )}
 
                 <DetailSection title="Certificate Details">
                     {!cert ? (
@@ -150,7 +200,7 @@ const CaDetail: React.FC = () => {
                     ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
                             <DetailField label="Subject" value={cert.subjectDN} />
-                            <DetailField label="Serial Number" value={cert.serialNumber} mono />
+                            <DetailField label="Serial Number" value={displaySerial(cert.serialNumber)} mono />
                             <DetailField label="Issuer" value={cert.issuer} />
                             <DetailField label="Not Before" value={formatDate(cert.notBefore)} />
                             <DetailField label="Not After" value={formatDate(cert.notAfter)} />
@@ -162,6 +212,12 @@ const CaDetail: React.FC = () => {
                         </div>
                     )}
                 </DetailSection>
+
+                {cert && (
+                    <DetailSection title="Certificate History and Renewal">
+                        <CaCertificateRenewal ca={ca} onRenewed={() => setReload((n) => n + 1)} />
+                    </DetailSection>
+                )}
 
                 {ca.protocolConfigs && ca.protocolConfigs.length > 0 && (
                     <DetailSection title="Protocol Configurations">
@@ -184,7 +240,7 @@ const CaDetail: React.FC = () => {
                                         </span>
                                     ) },
                                     { key: 'enabled', header: 'Enabled', defaultWidth: 100, truncate: false, sortable: true, sortValue: (pc: any) => !!pc.enabled, exportValue: (pc: any) => (pc.enabled ? 'Yes' : 'No'), render: (pc: any) => <StatusBadge status={pc.enabled ? 'enabled' : 'disabled'} /> },
-                                    { key: 'profile', header: 'Profile', flex: true, exportValue: (pc: any) => pc.signingProfileName || pc.signingProfile || pc.certProfile || '', render: (pc: any) => <span className="text-ink-muted truncate">{pc.signingProfileName || pc.signingProfile || pc.certProfile || '-'}</span> },
+                                    { key: 'profile', header: 'Profile', defaultWidth: 320, minWidth: 160, exportValue: (pc: any) => pc.signingProfileName || pc.signingProfile || pc.certProfile || '', render: (pc: any) => <span className="text-ink-muted truncate">{pc.signingProfileName || pc.signingProfile || pc.certProfile || '-'}</span> },
                                 ] as DataTableColumn<any>[]}
                             />
                         </div>
@@ -239,7 +295,7 @@ const CaDetail: React.FC = () => {
                         <DetailField label="Signed by" value={ca.ocspResponder.responderSubject} />
                         {ca.ocspResponder.responderSerial && (
                             <DetailField label="Responder serial" mono value={
-                                <Link to={`/certificates/${ca.ocspResponder.responderSerial}`} className="text-accent-ink hover:underline">{ca.ocspResponder.responderSerial}</Link>
+                                <Link to={`/certificates/${ca.ocspResponder.responderSerial}`} className="text-accent-ink hover:underline">{displaySerial(ca.ocspResponder.responderSerial)}</Link>
                             } />
                         )}
                         {ca.ocspResponder.responderNotAfter && <DetailField label="Responder expires" value={formatDate(ca.ocspResponder.responderNotAfter)} />}
@@ -276,11 +332,9 @@ const CaDetail: React.FC = () => {
                         {!ca.cmpSigningCertificateId && cert?.carriesDigitalSignature !== true && (
                             <div className="rounded border border-warn/40 bg-warn-soft p-3 max-w-3xl">
                                 <p className="text-xs text-warn">
-                                    <strong>No CMP signing certificate.</strong> If CMP is enabled on this CA, its
-                                    signature-protected responses are signed with the CA certificate, which carries no
-                                    <code> digitalSignature</code> key usage and is rejected by OpenSSL-based clients.
-                                    Shared-secret (PBMAC) clients are unaffected. Tick <em>CMP signer</em> below and
-                                    reissue to create one.
+                                    <strong>No CMP signing certificate.</strong> CMP responses are signed with the CA
+                                    certificate, which OpenSSL-based clients reject. Shared-secret clients are
+                                    unaffected. Tick <em>CMP signer</em> below and reissue.
                                 </p>
                             </div>
                         )}
@@ -292,13 +346,12 @@ const CaDetail: React.FC = () => {
                                 be replaced without touching the CA.
                             </p>
                         )}
-                        <div className="rounded border border-warn/40 bg-warn-soft p-3 max-w-3xl">
-                            <p className="text-xs text-warn">
-                                <strong>Use this rather than the generic certificate Reissue action.</strong> That
-                                action revokes the old certificate and issues a replacement, but it does not
-                                update which certificate this CA points at — leaving the CA referencing a revoked
-                                responder, which makes every OCSP request for it answer <code>unauthorized</code>.
-                                Restarting does not fix that. This action does.
+                        {/* Guidance, not a fault: a notice, in the informational tone. */}
+                        <div className="rounded border border-info/40 bg-info-soft p-3 max-w-3xl">
+                            <p className="text-xs text-info">
+                                <strong>Reissue from here, not from a certificate's own Reissue action.</strong> That
+                                action leaves this CA pointing at the revoked certificate, and OCSP then
+                                answers <code>unauthorized</code> until it is reissued here.
                             </p>
                         </div>
 
@@ -337,17 +390,17 @@ const CaDetail: React.FC = () => {
                                 <p className="text-xs text-ok">{reissueResult.message}</p>
                                 {reissueResult.newOcspResponderSerial && (
                                     <p className="text-ok data-mono">
-                                        New OCSP responder: {reissueResult.newOcspResponderSerial}
+                                        New OCSP responder: {displaySerial(reissueResult.newOcspResponderSerial)}
                                     </p>
                                 )}
                                 {reissueResult.newTsaSerial && (
                                     <p className="text-ok data-mono">
-                                        New TSA: {reissueResult.newTsaSerial}
+                                        New TSA: {displaySerial(reissueResult.newTsaSerial)}
                                     </p>
                                 )}
                                 {reissueResult.newCmpSignerSerial && (
                                     <p className="text-ok data-mono">
-                                        New CMP signer: {reissueResult.newCmpSignerSerial}
+                                        New CMP signer: {displaySerial(reissueResult.newCmpSignerSerial)}
                                     </p>
                                 )}
                                 {reissueResult.supersededRevoked?.length > 0 && (
@@ -366,6 +419,18 @@ const CaDetail: React.FC = () => {
                     </div>
                 </DetailSection>
 
+
+                {/* Revocation of what this CA does not hold. Only an X.509 CA with a certificate has
+                    a CRL to put a serial on, and only cert.revoke on this CA may do it. */}
+                {cert && ca.id && can(Capabilities.CertRevoke, ca.id) && (
+                    <DetailSection title="Certificates This CA Does Not Hold">
+                        <div className="space-y-4">
+                            {/* Only while the signer refuses this CA's CRL: the serials it left out, to revoke again. */}
+                            <MissingFromCrlPanel caId={ca.id} caName={ca.name || ca.subjectDN} />
+                            <RevokedSerialsPanel caId={ca.id} caName={ca.name || ca.subjectDN} />
+                        </div>
+                    </DetailSection>
+                )}
 
                 <DetailSection title="Quick Links">
                     <Link to={`/distribution?tab=ldap&caId=${caKey(ca)}`}

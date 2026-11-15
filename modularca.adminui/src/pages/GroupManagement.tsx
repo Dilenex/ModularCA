@@ -20,6 +20,7 @@ import { can, spacesOf } from '../authz';
 import {
     GROUP_TYPE_FILTERS, INSTANCE_GROUP_SCOPE, createGroupBody, groupKind, groupScopeName, groupTypeLabel, spaceNameMap,
 } from './groupScope';
+import { sshCaNames } from './scopedRows';
 
 /**
  * What each template grants, taken from `Capabilities.*Template` in ModularCA.Shared. Shown under
@@ -83,6 +84,8 @@ const GroupManagement: React.FC = () => {
     const { requireStepUp } = useStepUp();
     const [groups, setGroups] = useState<any[]>([]);
     const [authorities, setAuthorities] = useState<any[]>([]);
+    // SSH CAs by CA id: they are not in the hierarchy the line above holds.
+    const [sshCas, setSshCas] = useState<Map<string, string>>(new Map());
     // Null when the system-admin space list is forbidden; names then come from /me and the CA list.
     const [adminSpaces, setAdminSpaces] = useState<any[] | null>(null);
     const [loading, setLoading] = useState(true);
@@ -119,8 +122,11 @@ const GroupManagement: React.FC = () => {
                 if (isApiError(err) && err.status === 403) return null;
                 throw err;
             }),
-        ]).then(([groupsData, authData, spacesData]) => {
+            // Only to name the SSH CAs that groups belong to; a caller who may not list them sees the id's start, as before.
+            apiGet<any>('/api/v1/admin/ssh/ca-keys', { toast: false }).catch(() => []),
+        ]).then(([groupsData, authData, spacesData, sshKeyData]) => {
             if (cancelled) return;
+            setSshCas(sshCaNames(Array.isArray(sshKeyData) ? sshKeyData : (sshKeyData?.items || [])));
             setGroups(Array.isArray(groupsData) ? groupsData : (groupsData.items || groupsData.groups || []));
             const cas = Array.isArray(authData) ? authData : (authData.items || authData.authorities || []);
             const flat: any[] = [];
@@ -142,7 +148,7 @@ const GroupManagement: React.FC = () => {
     const caNameById = (caId: string | null) => {
         if (!caId) return '-';
         const ca = authorities.find((a) => a.id === caId);
-        return ca ? (ca.label || ca.commonName || ca.id) : caId.substring(0, 8);
+        return ca ? (ca.label || ca.commonName || ca.id) : (sshCas.get(caId) ?? caId.substring(0, 8));
     };
 
     const filteredGroups = groups.filter((g) => {
@@ -198,12 +204,12 @@ const GroupManagement: React.FC = () => {
 
     const columns: DataTableColumn<any>[] = [
         {
-            key: 'displayName', header: 'Display Name', defaultWidth: 220, minWidth: 160, truncate: false, exportValue: (g) => g.displayName || g.name,
+            key: 'displayName', header: 'Display Name', defaultWidth: 230, minWidth: 160, truncate: false, exportValue: (g) => g.displayName || g.name,
             render: (g) => (
                 <span className="text-ink font-medium truncate">{g.displayName || g.name}</span>
             ),
         },
-        { key: 'name', header: 'Name', defaultWidth: 160, exportValue: (g) => g.name, render: (g) => <span className="data-mono text-ink-muted">{g.name}</span> },
+        { key: 'name', header: 'Name', defaultWidth: 190, exportValue: (g) => g.name, render: (g) => <span className="data-mono text-ink-muted">{g.name}</span> },
         { key: 'template', header: 'Template', defaultWidth: 120, truncate: false, exportValue: (g) => templateLabel(g.templateName), render: (g) => <Tag label={templateLabel(g.templateName)} /> },
         { key: 'ca', header: 'CA', defaultWidth: 140, exportValue: (g) => caNameById(g.certificateAuthorityId), render: (g) => caNameById(g.certificateAuthorityId) },
         { key: 'scope', header: 'Scope', defaultWidth: 130, exportValue: (g) => scopeOf(g), render: (g) => scopeOf(g) },

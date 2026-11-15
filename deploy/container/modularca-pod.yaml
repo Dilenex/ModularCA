@@ -81,6 +81,9 @@
 #                  lost volume means keystores nobody can open.
 #   keystores      The signer's alone. The node never mounts it: a node that cannot read the
 #                  keystore cannot leak it, which is the entire point of the split.
+#   journal        The signer's alone, mounted at /opt/modularca/signer/journal: its issuance
+#                  journal (current/ and any journal set aside). Never rolled back or restored
+#                  with the other volumes; copy its sealed segments to keep them elsewhere.
 #   data           The node's alone: its backup archives, mounted at /opt/modularca/backups.
 #
 # The signer listens on the pod's loopback only. Nothing outside the pod can reach it, and the
@@ -97,7 +100,7 @@ spec:
 
   initContainers:
     - name: bootstrap
-      image: ghcr.io/dilenex/modularca:0.4.4
+      image: ghcr.io/dilenex/modularca:0.4.5
       # The entrypoint bootstraps when there is no config.yaml and, told --bootstrap-only, stops
       # there instead of serving. A configured install makes this a no-op.
       args: ["--bootstrap-only"]
@@ -106,7 +109,7 @@ spec:
         - { name: keystores, mountPath: /opt/modularca/keystores }
 
     - name: signer-dir
-      image: ghcr.io/dilenex/modularca:0.4.4
+      image: ghcr.io/dilenex/modularca:0.4.5
       command: ["/opt/modularca/ModularCA.API"]
       args: ["--role", "signer", "--signer-dir", "/opt/modularca/signer", "--migrate-signer-dir"]
       volumeMounts:
@@ -114,14 +117,14 @@ spec:
         - { name: signer-config, mountPath: /opt/modularca/signer }
 
     - name: signer-init
-      image: ghcr.io/dilenex/modularca:0.4.4
+      image: ghcr.io/dilenex/modularca:0.4.5
       command: ["/opt/modularca/ModularCA.API"]
       args: ["--role", "signer", "--signer-dir", "/opt/modularca/signer", "--init-identity"]
       volumeMounts:
         - { name: signer-config, mountPath: /opt/modularca/signer }
 
     - name: node-identity
-      image: ghcr.io/dilenex/modularca:0.4.4
+      image: ghcr.io/dilenex/modularca:0.4.5
       command: ["/opt/modularca/ModularCA.API"]
       args: ["--role", "signer", "--signer-dir", "/opt/modularca/signer",
              "--issue-node-identity", "--apply", "/opt/modularca/config/config.yaml"]
@@ -131,11 +134,15 @@ spec:
 
   containers:
     - name: signer
-      image: ghcr.io/dilenex/modularca:0.4.4
+      image: ghcr.io/dilenex/modularca:0.4.5
       args: ["--role", "signer", "--signer-dir", "/opt/modularca/signer"]
       volumeMounts:
         - { name: signer-config, mountPath: /opt/modularca/signer }
         - { name: keystores, mountPath: /opt/modularca/keystores }
+        # The issuance journal's home, <dir>/journal, on a volume of its own, mounted on the
+        # directory itself. The signer alone mounts it. Do not put this volume back when the
+        # keystores or the database are put back: it is what remembers what they lost.
+        - { name: journal, mountPath: /opt/modularca/signer/journal }
         # With --signer-dir the signer's file logs go to <dir>/logs, which need not be kept. Its
         # keystore events do not go there: they wait in <dir>/audit-journal, in the signer-config
         # volume, until the node has recorded them.
@@ -175,7 +182,7 @@ spec:
     # it asks again in the background (2 s, doubling to 60 s) and reads them, without a restart,
     # once the signer answers. README-DEPLOY.md, "A node that starts before its signer listens".
     - name: node
-      image: ghcr.io/dilenex/modularca:0.4.4
+      image: ghcr.io/dilenex/modularca:0.4.5
       args: ["--role", "node"]
       # The loopback-only health listener (Health.LoopbackPort), which the probes below ask:
       # plain HTTP on 127.0.0.1:8081, /health, /health/live and /health/ready only (404 for any
@@ -245,6 +252,8 @@ spec:
       persistentVolumeClaim: { claimName: modularca-keystores }
     - name: data
       persistentVolumeClaim: { claimName: modularca-data }
+    - name: journal
+      persistentVolumeClaim: { claimName: modularca-journal }
     - name: signer-logs
       emptyDir: {}
     - name: signer-tmp

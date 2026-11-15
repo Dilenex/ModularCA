@@ -274,6 +274,18 @@ Https:
 #   ServerCertificatePassword: ""
 #   PinnedClientSpki: ""                       # printed by --issue-node-identity
 #   IdentityCa: "config/signer-identity-ca.pfx"   # written by --init-identity; never read at runtime
+#   # --- the signer's issuance journal (read by whichever process holds the keys) ---
+#   Journal:
+#     Directory: "signer/journal"              # the journal's home: <install directory>/signer/journal, or journal/ in the
+#                                              # signer's own directory (--signer-dir). An absolute path puts it elsewhere,
+#                                              # and MODULARCA__SIGNER__JOURNAL__DIRECTORY overrides it. A volume may be
+#                                              # mounted on it. Never roll it back or restore it with the keystores or the
+#                                              # database. A full volume stops issuance.
+#     Checks: "enforce"                        # enforce (default) | warn: whether a CRL that drops a revoked serial,
+#                                              # and an OCSP "good" for a serial on the newest CRL, are refused or logged
+#     LowSpaceMiB: 1024                        # free space under which /health/ready says low_space; 0 = never
+#     CriticalSpaceMiB: 128                    # free space under which it says critical_space; 0 = never. Both only
+#                                              # warn: the signer issues until a write to the journal fails
 #   IdentityCaPassword: ""
 
 # Process roles. By default one process runs every role. A process may run any subset:
@@ -442,9 +454,12 @@ Https:
 # the longest one migration statement may run, 0 for no limit; a statement that exceeds it stops
 # the start with status 3. MigrationLockTimeoutSeconds: how long a migration waits for a table lock
 # before that attempt fails and is retried; a longer wait blocks every reader of that table
-# meanwhile. These are the defaults.
+# meanwhile. RestoreWaitSeconds: how long a starting process waits for a restore that is running
+# on the application database before it exits with status 75 to be started again; it never starts
+# beside a running restore, and 0 does not wait. These are the defaults.
 # Schema:
 #   WaitSeconds: 900
 #   MigrationCommandTimeoutSeconds: 3600
 #   MigrationLockTimeoutSeconds: 30
+#   RestoreWaitSeconds: 60
 

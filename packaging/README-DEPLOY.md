@@ -11,6 +11,7 @@ Self-contained `linux-x64` build. No .NET runtime is required on the target.
 | `ModularCA.API` | The service. Native ELF apphost; the systemd unit runs it directly. |
 | `ModularCA.Keystore.Unlocker` | Break-glass keystore CLI. Separate binary on purpose — it exists for when the service will not start, so it must not depend on the service's hosting or configuration. |
 | `wwwroot/` | The five built SPAs: admin, user, public, setup, docs. |
+| `password-blocklist/bundled-blocklist.txt` | The password blocklist shipped with the product: a starter list of the most common passwords, checked when the password policy has "Check the bundled blocklist" on. A program file: installed root-owned into `/opt/modularca` and replaced by every upgrade. See "The password blocklist". |
 | `config/*.example` | Templates. `install.sh` copies them in only on a first install and never over a real config. |
 | `deploy/` | systemd units, per-role unit drop-ins (`dropins/`), plus nginx and nftables templates. `install.sh` installs both units in `/etc/systemd/system/` (`modularca-signer.service` is not enabled); the rest are examples to apply by hand from the extracted archive. |
 | `share/sql/adopt-ownership.sql` | The one-time schema-ownership repair for installs made before 0.4.0, run as the PostgreSQL superuser. `install.sh` installs it root-owned to `/usr/share/modularca/sql/`, never into `/opt/modularca`. |
@@ -198,6 +199,7 @@ operator sees:
 | Outcome | Exit status | What happens |
 |---|---|---|
 | Everything current, or the control role dry-ran and then applied the pending migrations | — | starts |
+| A restore is running on the application database (`--restore`, or the console's restore on another node) | — then **75** | waits up to `Schema.RestoreWaitSeconds` (60 s) for the restore to finish and then starts; if it is still running, exits and systemd retries. The service never starts beside a running restore. See "A restore and a running node keep each other out" |
 | Database unreachable, locked by a migration, or (enrollment, validation, signer) waiting for the control role's migrations | — then **75** | waits up to `Schema.WaitSeconds` (900 s), then exits and systemd retries |
 | The dry run or a migration failed on a lock timeout, a deadlock or a lost connection | — then **75** | retried in the service with backoff for up to `Schema.WaitSeconds`, then exits and systemd retries |
 | A pending migration refuses in the dry run | **3** | nothing applied to either database; the journal lists every refusal of both databases, each with its migration and message |
@@ -228,6 +230,127 @@ To check schema ownership read-only at any time, as the service user and never a
 
 It exits 0 when both databases are sound and 3 when not, and prints what it found and the repair.
 
+### Upgrading to 0.4.5
+
+0.4.5 tightens three sets of defaults (session lifetime, password policy, CA key size) for **new
+installs**. An upgraded instance keeps every setting it has stored: nobody is signed out or locked
+out, and no password that worked before is refused at sign-in.
+
+- **Session lifetime.** The maximum session lifetime is now stored in hours. The `TighterDefaults`
+  migration keeps your value at the same length (the default 14 days becomes 336 hours; 0 stays
+  "no maximum"). A new install starts with 12 hours. To adopt that: Settings, Security, Security
+  Policy, "Set to 12 hours", then save. The maximum wins over the refresh token lifetime, so with
+  12 hours the 7-day refresh token lifetime no longer decides anything. Scripts that send
+  `maxSessionLifetimeDays` to `PUT /api/v1/admin/security-policy` keep working; the value is stored
+  as hours.
+- **Password policy.** Your stored policy is unchanged and the bundled blocklist is off for it. A
+  new install starts with the NIST SP 800-63B preset (15 characters, no character classes, no
+  expiry, bundled blocklist on). To adopt it: Settings, Security, Password Policy, "Apply NIST SP
+  800-63B preset". Passwords already in use keep working; the policy applies when a password is
+  next set or changed.
+- **"Never expires" is now honored everywhere.** With a maximum password age of 0, no account is
+  treated as expired, including one whose expiry date was stamped earlier. Before 0.4.5 such an
+  account, and every account an administrator created or reset (stamped with a fixed 90 days),
+  could still be asked to change its password. If you rely on rotation, check that the maximum age
+  in your policy is the number you mean.
+- **CA keys.** A new CA, X.509 or SSH, can no longer be created with an RSA key under 3072 bits,
+  in the console, the API, a key ceremony (including one approved before the upgrade and executed
+  after it), the setup wizard or `bootstrap.yaml`. Existing CAs are untouched and keep issuing. One
+  with an RSA 2048 key shows a notice on its page and under System Health, Security Baseline: plan
+  its replacement before 2031. Automation that creates RSA 2048 CAs must ask for 3072 or larger,
+  or ECDSA.
+- **CA lifetime notices.** Each CA now shows, on its page and under System Health, Security
+  Baseline, when its certificate nears its end: two years ahead for a root and one year ahead for
+  an intermediate, becoming a warning 30 days before and critical 7 days before (the windows the
+  certificate itself already had). It also says when an end-entity certificate profile allows a
+  validity longer than its own certificate has left by a tenth of the profile's maximum or more,
+  in which case issued certificates are shortened to end with it, as they always were. (A profile
+  has no default validity, so a request gets the maximum; without the tenth, a 10-year profile on
+  a 10-year CA would raise the notice on the CA's first day. The CA's own OCSP responder,
+  timestamp and CMP signer profiles never raise it.) A notice is shown in blue, a warning in
+  amber, and only something critical in red. The dashboard lists a CA under Needs attention once its
+  certificate is within its 30-day warning or has expired. These are notices: nothing is refused,
+  and `/health/ready` reports them under `checks.caLifecycle` without becoming not ready. The
+  windows are under Settings, Security, CA Lifecycle Notices, and are the same on a new install
+  and an upgraded one. A third setting there, the CA key usage period, is off: NIST SP 800-57
+  Part 1 leaves how long a CA key may sign to your policy, so set the number of days your policy
+  names if you want a notice when a key passes it.
+- **An expiring CA certificate no longer answers 503.** Until 0.4.5 a CA certificate within 30
+  days of its end made `/health/ready` answer 503 (`checks.keystore.status` was `degraded`). It
+  no longer does, and an expired one does not either: the node still serves the CRLs and OCSP
+  answers that everything the CA issued depends on, and a load balancer that removed it would
+  take those away. **Monitoring that relied on the 503 must read the data instead:**
+  `checks.caLifecycle.status` is `attention` when a CA is within its 30-day warning, within its
+  7-day alert or expired (`casNeedingAttention` counts them, and each CA's `keyAdvisories` carry
+  a `severity` of `warning` or `critical`), and `checks.keystore.expiringCaCerts` and
+  `expiredCaCerts` count the certificates. The expiry notification job also raises a security
+  alert for each such CA on every run (`CaCertificateExpiring`, a warning from 30 days and
+  critical from 7; `CaCertificateExpired`, critical), through the channels security alerts
+  already use. What an expired CA certificate stops: that CA issues nothing, and what it issued
+  no longer validates. What goes on: every other CA, sign-in, revocation, CRLs and OCSP for the
+  expired CA too, and the renewal that mends it.
+- **The signer's issuance journal.** The first start begins a journal of every certificate and
+  CRL the signer signs from then on, in `signer/journal/` under the install directory
+  (`/opt/modularca/signer/journal`). Nothing issued before that start is in it. The start also
+  makes a key for the journal's checkpoints, in `keystores/journal.keystore`. To know before
+  the upgrade:
+  - **The installer makes the journal's home.** Where one process holds the keys, `install.sh`
+    and the `.deb` create `/opt/modularca/signer/journal` for `modularca`, mode `0700`, in a
+    `signer/` that is root's, and the packaged `modularca.service` lists it in
+    `ReadWritePaths=`. **If you keep your own copy of the unit file, add
+    `-/opt/modularca/signer/journal` to its `ReadWritePaths=`**: without it the journal cannot
+    be written and the instance issues nothing.
+  - **On a split install the journal is in the signer's own directory**,
+    `/opt/modularca/signer/journal`, which the signer makes itself. **A split install whose
+    signer still reads the shared `config/` (no `/opt/modularca/signer` yet) must be moved onto
+    its own directory first** ("Moving an existing split install onto the signer's directory"): its signer cannot create
+    `signer/journal`, and refuses to issue until it can. Alternatively name another home with
+    `Signer.Journal.Directory`, created for `modularca-signer` and listed in the signer unit's
+    `ReadWritePaths=` with a drop-in.
+  - **It needs disk space, and a full volume stops issuance.** Give the home a volume of its
+    own when you can ("The signer's issuance journal"); it may be mounted on the directory.
+  - **On a split install, upgrade the signer first**, as for any release that adds to its
+    contract. A signer that cannot create its journal starts, and refuses to issue until it
+    can.
+  - **In a pod or under compose, add the journal's volume**: `modularca-journal` mounted on
+    `/opt/modularca/signer/journal` in the signer's container (the shipped
+    `modularca-pod.yaml` and `compose.yaml` have it). Without it the journal is lost with the
+    container.
+  - **After a restore or a roll-back, revocations come back by themselves.** The node makes
+    again the revocations the journal holds and the database has lost, and says so in a notice
+    ("After a database went back: the merge").
+  - **A hub must speak contract `1.2` only if it wants what `1.2` adds**; a hub that states
+    `1.0` or `1.1` is served as before.
+  The `SignerFactQueue` migration adds one empty table, the queue of facts that wait for the
+  journal.
+- **Going back to 0.4.4** means restoring the backup taken before the upgrade, as for any release
+  that adds a migration. 0.4.4 cannot run on a database this release has migrated. 0.4.4 does not read
+  `signer/journal/`; leave it where it is.
+
+### Upgrading to 0.4.5
+
+0.4.5 adds five migrations. One of them renames a column (the session maximum is stored in
+hours), so going back to 0.4.4 means restoring the backup: take it first.
+
+1. **Run the upgrade check with the new build** and read its notes, not only its last line (see
+   "Checking an upgrade before installing it" above). `install.sh` runs the same check and stops
+   on a refusal.
+2. **The signer's journal needs a directory it can write, with disk space.** The installer and
+   the `.deb` make `/opt/modularca/signer/journal`. A unit file of your own needs
+   `-/opt/modularca/signer/journal` in `ReadWritePaths=`; a pod or a compose file needs a volume
+   there on the signer only. The signer issues nothing while the journal cannot be written.
+   **Split installs** upgrade the signer with the node, and a signer that still reads the node's
+   `config/` is moved onto its own directory first ("Two units").
+3. **Stop the node before a restore.** A restore beside a running node is refused (exit status
+   3), and a node started beside a running restore waits, then exits 75; the packaged units start
+   it again. A script that reads `--restore` exit statuses must change: 0 done, 3 refused, 4
+   failed after changes, 75 unreachable.
+4. **After it starts,** check that `/health/ready` shows `checks.journal.status` `ok`. No setting
+   changed: the console offers the tighter session and password defaults under System Health,
+   Security Baseline. An expiring CA certificate no longer makes `/health/ready` answer 503; read
+   `checks.caLifecycle.status`. Leave `signer/journal` out of snapshots that are rolled back. The
+   changelog's "Upgrading from 0.4.4" lists the rest.
+
 ### Upgrading to 0.4.4
 
 0.4.4 adds four migrations. One of them drops two setting columns that nothing read, so going back
@@ -235,7 +358,7 @@ to 0.4.3 means restoring the backup: take it first.
 
 1. **Run the upgrade check with the new build** and read its notes, not only its last line (see
    "Checking an upgrade before installing it" above). They name what on this instance the release
-   changes, such as enrolment clients whose next request would be refused. `install.sh` runs the
+   changes, such as enrollment clients whose next request would be refused. `install.sh` runs the
    same check and stops on a refusal.
 2. **Review who holds the Operator and Administrator roles on a CA or a space.** Those roles now
    approve and issue with the profiles of their scope, and a scoped administrator administers the
@@ -672,7 +795,7 @@ you run now, and can be run before the tarball is even copied to the host. An in
   Bookmarks with `?tenant=system` no longer resolve. There is no downgrade: to go back, restore the
   dumps taken before the upgrade.
 - **CA labels and names are unique across the instance.** A label is the path of a CA's CRL,
-  OCSP, AIA and enrolment URLs. The `InstanceUniqueCaNames` migration refuses (status 3, nothing
+  OCSP, AIA and enrollment URLs. The `InstanceUniqueCaNames` migration refuses (status 3, nothing
   applied) while two CAs, counting soft-deleted ones, share a label, have labels that differ only in
   case, or share a name (check k); the journal lists each, with its space or "instance" and
   whether it is deleted.
@@ -693,7 +816,7 @@ you run now, and can be run before the tarball is even copied to the host. An in
   (status 3, nothing applied) while any enabled configuration of a live X.509 CA is like that
   (check l); the journal lists each CA label, protocol and profile. For each, open Protocol Config
   for that CA in the 0.3.x console and choose that CA's own signing profile, or disable the
-  protocol, then upgrade. The same holds for the certificate templates MSAE enrols against
+  protocol, then upgrade. The same holds for the certificate templates MSAE enrolls against
   (check m): fix each under Certificate Templates (`/admin/templates`), or disable the template.
 - **Tenants are now spaces, and each space's groups are renamed.** The `RenameTenantToSpace`
   migration renames the `Tenants` table to `Spaces` and every `TenantId` column to `SpaceId` in
@@ -727,8 +850,8 @@ you run now, and can be run before the tarball is even copied to the host. An in
   naming the key, when a configured `SpaceId` names no existing space or is not a value it reads.
   When both keys are set and differ, the process refuses to start (status 3) and names the file
   and both keys; keep the one with the intended value. `Features.AllowMultipleOrganizations` is retired and ignored, with a
-  warning while it is present: creating a space always succeeds, and past four spaces the console
-  recommends a licence.
+  warning while it is present: creating a space always succeeds. (0.4.0 to 0.4.4 recommended a
+  license from the fifth space; from 0.4.5 spaces are not counted, limited or licensed.)
 
 The audit role owns the audit tables on every install. The audit trail is tamper-evident through its
 hash chain, not tamper-proof: see "The audit trail is tamper-evident, not tamper-proof" in
@@ -763,7 +886,10 @@ data. It does not hold its own key, the keystore passphrases, the database crede
 ### Taking backups
 
 The node takes one every day at 02:00 UTC and keeps the last ten (`Backup.Schedule`,
-`Backup.RetentionCount`). The console's Backup page takes one on demand. From the command line:
+`Backup.RetentionCount`), never deleting one younger than `Backup.MinimumRetentionDays` (3). The
+console's Backup page takes one on demand and prunes by the same rule; a backup a hub asks for
+over its local connection does not prune, and the hub's `backup.prune` request does, by the same
+rule again. From the command line:
 
     sudo -u modularca /opt/modularca/ModularCA.API --backup
 
@@ -782,11 +908,15 @@ take up to `Backup.DatabaseTimeoutMinutes` (60).
 A restored CA is the CA as it was when the archive was taken.
 
 - **Certificates issued after the backup are unknown to it.** They still chain to the CA, but
-  they are not in its records: they cannot be revoked or renewed from the console, they are not
-  on its CRL, and its OCSP responder answers "revoked" for them, because it answers that for any
-  serial it never issued. Reissue them.
+  they are not in its records: they cannot be renewed from the console, they are not on its CRL,
+  and its OCSP responder answers "revoked" for them, because it answers that for any serial it
+  never issued. A client that checks only the CRL goes on accepting them. Reissue them, and
+  revoke the old ones: see "Revoking a certificate the CA does not hold" below.
 - **Revocations made after the backup are forgotten.** Those certificates are valid again as far
   as the CA knows. Revoke them again; the old host's last CRL, if you still have it, lists them.
+  A kept audit database lists them too (`CertificateRevoked`). On a host that kept its journal
+  ("The signer's issuance journal") the signer refuses the next CRL until they are revoked
+  again, and names them.
 - **The first start publishes a new CRL**, numbered above every CRL the old host published, so a
   client that has seen a later CRL does not treat the new one as a rollback.
 - **The web certificate is new.** Its key is in no archive, so the node issues itself a
@@ -820,12 +950,76 @@ archive's audit trail instead, add `--restore-audit` (on the Backup page, tick *
 audit history with the backup's*). Every audit record made since the backup was taken is then
 lost, so do that only when this host's own audit history is empty or gone.
 
-It asks you to type `RESTORE`. Before it changes anything it writes the live `config/` and
+It asks you to type `RESTORE`; `--unattended` restores without asking ("Restoring with nobody at
+the instance", below). Before it changes anything it writes the live `config/` and
 keystores to `backups/pre-restore-<timestamp>.zip`, owner-only. That file holds every secret in
 `config/`; delete it once the restored node is running and you no longer need to go back.
 
+The last line it prints says how it ended, and the exit status says the same: `RESTORE: DONE`
+(0), `RESTORE: REFUSED ... Nothing was changed.` (3), `RESTORE: UNREACHABLE` (75, a database did
+not answer and nothing was changed) or `RESTORE: FAILED AFTER CHANGES` (4). Before 0.4.5 every
+failure exited 1, and a restore that could not raise the CRL numbers exited 2; a script that
+tested for those must test for the new ones.
+
 A database that cannot be restored stops the restore before a keystore or a config file is
 replaced. Each database is restored in one transaction, so one that fails is left as it was.
+
+**A restore is not reported as a rollback.** The restore raises the CRL numbers and records
+itself, and it stores this machine's incarnation in the restored database, so the next start
+does not raise the notice described under "Snapshots, rollbacks and copies of the machine". It
+tries that store four times over seven seconds. If it still cannot, the restore is done all the
+same and says so in its last line, `RESTORE: DONE (the audit database was kept; the incarnation
+was not stored, so the next start shows a roll-back notice)`: start the node and acknowledge the
+notice.
+
+#### A restore and a running node keep each other out
+
+Stopping the service first is no longer only an instruction. From 0.4.5:
+
+- **A restore is refused while a node is serving from the database.** `--restore` exits **3**
+  before it asks or changes anything, and its last line says why: `RESTORE: REFUSED (a node is
+  serving from this application database, or another restore is running on it: stop the node,
+  every process of it on every host, or wait for the other restore, then restore again). Nothing
+  was changed.` On a split install a running signer service refuses it the same way (`the signer
+  service is running on this application database: stop the signer, then restore again`). Two
+  restores at once: the second is refused.
+- **A node does not start while a restore is running.** It logs once that it is waiting for a
+  restore, waits up to `Schema.RestoreWaitSeconds` (60 s by default, in `config.yaml`; `0` does
+  not wait; it is read from `config.yaml` only, not from the environment, and a restore puts
+  `config.yaml` back from the archive, so a value changed by hand does not outlive one), and starts when the restore has finished. If the restore is still running it exits
+  with status **75**, the status that already means "try again", so `Restart=on-failure` brings
+  it back and it starts once the restore is done. A signer-only process (`--role signer`) does
+  the same.
+- **The console's restore** runs inside the node and is not stopped by that node. It is refused,
+  with the same reason, while *another* node serves from the same database: stop the other
+  nodes first. While it runs, no other node starts.
+- **Nothing else is affected.** `--upgrade-check` in both forms, `--backup`,
+  `--backup-manifest`, `--db-ownership`, `--settings` and the other one-off commands run beside
+  a serving node and beside a restore as before.
+
+How: each side holds a PostgreSQL advisory lock in the application database, on a connection of
+its own, for as long as it runs: `pg_advisory_lock(1296253266, 1)` for a node and
+`(1296253266, 2)` for a signer-only process, shared by the services and exclusive for a restore.
+Nothing is stored; a process that dies releases its lock with its connection. To see who holds
+it:
+
+    SELECT a.pid, a.usename, a.client_addr, a.backend_start, l.objid AS key, l.mode
+      FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+     WHERE l.locktype = 'advisory' AND l.classid = 1296253266;
+
+A session listed there with no process behind it (a host that lost power while the database is
+elsewhere) goes when the server's TCP keepalive gives up; `SELECT pg_terminate_backend(<pid>)`
+ends it at once. The lock needs a direct connection to PostgreSQL or a pooler in *session* mode:
+through a pooler in transaction mode a session lock means nothing.
+
+**If the node's lock connection drops** (the database restarts) the node takes the lock again
+within seconds of the database answering, and nothing else happens. If a restore got in while
+the lock was gone, the node is running beside a restore, on what it read before it: it logs an
+error and exits with status **75**, and so does a signer-only process. The packaged units
+(`Restart=always`, no restart on 3 and 4 only) start it again; that start waits for the restore
+to finish and exits 75 again until it has. A node that nothing restarts, one started by hand for
+instance, stays stopped until you start it. The windows that remain are listed in
+`docs/architecture/restore-exclusion.md`.
 
 **The databases are this host's.** A restore writes into the databases this host's own
 `config/db.yaml` names, with its credentials and any `MODULARCA__DB__*` overrides in the
@@ -847,8 +1041,8 @@ without it. A host with no `db.yaml` is refused before anything changes.
 3. **Put the kit in place**, owned by `modularca`, `0600`: `keystore.yaml` and `backup.key` in
    `config/`, replacing the ones a fresh install made, and the archive in `backups/`.
 4. **Restore**, as above, adding `--restore-audit` so the new host gets the archive's audit
-   trail; its own audit database is empty. For an archive protected by a password, give
-   `--password` or answer the prompt.
+   trail; its own audit database is empty. For an archive protected by a password, give the
+   password in a file with `--password-file <file>`, or answer the prompt.
 5. **Start the service.** At this start it unwraps the stored-data secrets the restore staged in
    `config/restore-pending/`, issues its web certificate and publishes a new CRL.
 6. **Check it**, from another machine:
@@ -857,7 +1051,8 @@ without it. A host with no `db.yaml` is refused before anything changes.
    - `http://<name>:<http port>/crl/<label>` returns a CRL dated today.
    - Sign in. The audit trail's integrity check is `GET /api/v1/admin/audit/verify`, as an
      administrator; it should report no breaks.
-7. **Deal with the gap**: reissue what was issued after the backup, revoke again what was
+7. **Deal with the gap**: reissue what was issued after the backup and revoke the certificates
+   it replaces ("Revoking a certificate the CA does not hold", below), revoke again what was
    revoked after it, take a new backup, and delete `backups/pre-restore-*.zip`.
 
 Where the host has a `config.yaml` (after the wizard), the restore compares the archive's schema
@@ -875,11 +1070,613 @@ With compose, step 2 is `docker compose up -d` and the wizard, and the rest is:
 
 The host procedure is what the test runs. The compose commands have not been run yet.
 
+### Restoring with nobody at the instance (for an orchestrator)
+
+Everything above works without a person: a runner that stops the node, copies the volumes aside
+and runs the restore as a one-off process or container reads the outcome from the exit status and
+the last line of output, and is asked nothing.
+
+#### What an archive is, before anything is stopped: `--backup-manifest`
+
+    ModularCA.API --backup-manifest <archive> [--key-file <file>] [--password-file <file>]
+
+It reads the archive and its key file and nothing else: no database, no keystore, no log file. It
+writes nothing anywhere, so the archive may be on a read-only mount under any name. Standard
+output carries exactly one line, and only on exit 0:
+
+    {"archive":"archive.enc","manifestVersion":"1.0","instanceId":"2185444fcf8b17fa897a185bb2a39859e43f4f071873b5e0058b186db090c311","productVersion":"0.4.5","schemaVersion":"tables:80:6394f35757420abb:migrations:27:3eb08c27186aeda3","latestMigration":"20261112030001_InstanceIncarnation","newerThanThisBuild":false,"createdAtUtc":"2026-11-12T19:35:05.5927388Z","machineName":"ca-pod-7","appDatabase":"modularca","auditDatabase":"modularca-audit","hasAuditDatabase":true,"caCount":2,"certificateCount":41,"encryption":"RandomKey","sizeBytes":50113,"readByVersion":"0.4.5"}
+
+| Field | Meaning |
+|---|---|
+| `instanceId` | The instance that wrote the archive: its identifier, 64 hex digits. The instance stores it once with its data (the first start of a build that keeps it writes the SHA-256 of the public key of its system signing CA as it is then) and never changes it afterwards, so the value is the same on every host the instance is restored onto, stays the same if that CA is ever re-keyed, and differs between two installs. An archive taken before the identifier was stored carries the same value, derived. The hub's `hello` answers the same value. It is not a secret. **`null` for an archive taken before 0.4.5**, which did not record it. |
+| `productVersion` | The version that took the backup. `null` before 0.4.5. |
+| `schemaVersion` | The fingerprint of the application database's tables and migration history. A restore onto a host that has a `config.yaml` requires it to equal the database's. |
+| `latestMigration` | The newest migration applied to the application database. `null` before 0.4.5. |
+| `newerThanThisBuild` | `true` when `latestMigration` is one the build reading the archive does not have: a restore with this build is refused. `null` when the archive does not say. |
+| `createdAtUtc` | When the backup was taken. |
+| `hasAuditDatabase` | Whether the archive holds an audit database, which `--restore-audit` needs. |
+| `encryption` | `RandomKey`, `StoredPassword` or `none`. |
+| `readByVersion` | The version of the build that read the archive. |
+
+Every field is always present; one the archive does not record is `null`. The counts of users a
+manifest carries are not printed. A refusal exits **3** with the reason on standard error and
+nothing on standard output: the file is missing, is not a ModularCA archive, or does not open
+with the key given.
+
+The manifest lies inside the archive's encryption, so the command needs the archive's key.
+Nothing that names the instance is kept outside the encryption: whoever holds only the file
+learns nothing of where it came from.
+
+**Another instance's archive is not refused by the restore.** Restoring onto a new host is
+exactly that case. A runner that must not put instance A's archive over instance B compares
+`instanceId` itself: with the `instanceId` of an archive it knows to be this instance's (the one
+`backup.create` just wrote, for example).
+
+#### The restore: `--restore ... --unattended`
+
+    ModularCA.API --restore <archive> --unattended [--restore-audit] [--key-file <file>] [--password-file <file>]
+
+With `--unattended` nothing is asked: not the word `RESTORE`, and not the backup password. The
+node must be stopped, and on a split install the signer too. The restore checks: while either is
+running it exits 3 with nothing changed ("A restore and a running node keep each other out",
+above).
+
+| Exit | Last line of standard output starts with | Meaning | What the runner does |
+|---|---|---|---|
+| 0 | `RESTORE: DONE` | The restore completed. The line says whether the audit database was kept, and whether the incarnation could not be stored. | Start the node. |
+| 3 | `RESTORE: REFUSED` | Refused, and **nothing was changed**: the line ends `Nothing was changed.` | Start the node again as it was; or, when the line says a node or the signer is using the database, stop it and run the restore again. |
+| 75 | `RESTORE: UNREACHABLE` | A database could not be reached; nothing was changed. | Try again, or start the node again as it was. |
+| 4 | `RESTORE: FAILED AFTER CHANGES` | Something was changed, or may have been, and the restore did not complete. | Put the copied volumes back. |
+
+These are the numbers the schema check uses, with the same meanings (3 nothing applied, 4 failed
+after applying, 75 try again). The reason is in brackets after the phrase, and in full in the
+lines above it. **Any other status, or no such last line** (the process was killed, the host ran
+out of memory) says nothing about what was changed: treat it as 4.
+
+"Changed" means the application database, the audit database, the keystores or `config/`. Two
+things a refused restore may leave behind are not counted, because the instance does not run
+from them: the pre-restore snapshot `backups/pre-restore-<timestamp>.zip`, written once the
+archive has passed every check, and the records of the attempt (the log, the signer's audit rows
+for reading the live keystores, the signer's journal entry).
+
+What is refused with status 3, before anything is touched:
+
+- no archive named, or a flag without its value; `--password` together with `--unattended`;
+- the archive is missing, is not a ModularCA archive, or does not open with the key or password
+  given;
+- the archive is from a MySQL/MariaDB installation, holds no application database, or carries a
+  file no archive may hold;
+- **the archive was taken by a newer build**: its application database (or, with
+  `--restore-audit`, its audit database) holds a migration this build does not have. This is read
+  from the dump itself, so it holds for archives of any age;
+- the archive's schema is not the schema of this host's database, where the host has a
+  `config.yaml` (above, "Restoring onto a new host");
+- this host has no usable `db.yaml`, or a database refuses the role it names (the database does
+  not exist, the password is wrong);
+- **a node is serving from the application database, the signer service is running on it, or
+  another restore is running**: the line names which and says to stop it. A runner whose
+  orchestrator may have restarted the node around the restore gets this status instead of two
+  processes writing over each other; it stops the node and runs the restore again. A node that
+  the orchestrator starts *while* the restore runs waits for it, or exits 75 and is started
+  again;
+- the pre-restore snapshot cannot be written, or no owner-only staging directory can be made;
+- without `--unattended`: standard input is closed, or something other than `RESTORE` was typed.
+
+And one refusal that comes later: **a database restore that fails is rolled back.** Each database
+is restored by one `pg_restore --single-transaction`, which commits only after every statement
+succeeded. When the first database restored fails that way, it is as it was, nothing else has
+been touched, and the status is 3 with `its one transaction was rolled back` in the line.
+
+Status 4 is everything from the first database that committed onward: with `--restore-audit`,
+the audit database was replaced and the application database then failed; the application
+database was replaced and the signer then refused a keystore from the archive, the CRL numbers
+could not be raised, or a config file could not be written; or a `pg_restore` was stopped for
+running past `Backup.DatabaseTimeoutMinutes`, which leaves it unknown whether it had committed.
+
+**The audit database is kept**, with or without `--unattended`, unless `--restore-audit` is
+given. The `RESTORE: DONE` line says which: `(the audit database was kept)` or `(the audit
+database was replaced with the archive's)`. When the restore could not store the incarnation in
+the restored database, after four attempts over seven seconds, the same brackets say so, and the
+status is still 0: `RESTORE: DONE (the audit database was kept; the incarnation was not stored,
+so the next start shows a roll-back notice)`. The restore is complete; the next start raises the
+notice described under "Snapshots, rollbacks and copies of the machine", which an administrator
+acknowledges.
+
+#### Every secret comes from a file
+
+| Secret | Read from | Given explicitly with |
+|---|---|---|
+| The archive's key, for an archive made under the backup key | `config/backup.key`, or the path `Backup.EncryptionKeyPath` names in this host's `config.yaml` | `--key-file <file>` |
+| The archive's key, for an archive made under a backup password | `config/backup-password.key` (the stored key the password was turned into), or the path `Backup.PasswordFilePath` names | `--key-file <file>`, or the password itself in a file: `--password-file <file>` |
+| The database credentials | `config/db.yaml` | |
+| The keystore passphrases | `keystore.yaml`: `config/keystore.yaml`, or the signer's directory with `--role signer --signer-dir` | |
+
+No key and no password is read from an environment variable. `--password <password>` still works
+for a person at a terminal and is refused with `--unattended`: an argument can be read by every
+process on the host. A password file is the password on one line; a line break at its end is
+ignored. The archive says in its header which kind of key it needs, so one `--key-file` flag
+serves both. The database password is handed to `pg_restore` in a temporary `pgpass` file only
+this account can read, deleted when the tool exits, never on its command line.
+
+`MODULARCA__DB__*` variables in the environment still override `db.yaml`, as they do for the
+service. A runner that wants no secret in an environment sets none and mounts `db.yaml`.
+
+#### Where the restore writes
+
+It never writes beside the archive. The archive is read where it lies and decrypted in memory;
+its contents are unpacked into a new directory `modularca-restore-<random>` under the temporary
+directory (`TMPDIR`, `/tmp` in the image), mode `0700`, removed when the restore ends, whatever
+the outcome. That directory holds the keystore files and both database dumps for the length of
+the restore, and the restore needs about twice the archive's size in memory and its unpacked
+size on that disk: give a one-off container a `/tmp` that is not a small `tmpfs`. The
+pre-restore snapshot goes to `backups/`.
+
+#### As a one-off container
+
+The image's entrypoint runs `--restore` and `--backup-manifest` exactly as given and exits with
+their status: nothing is bootstrapped, no wizard starts and nothing is waited for, whatever the
+volumes hold.
+
+The manifest, with the archive and the key as the only mounts:
+
+    podman run --rm --network none \
+      --secret modularca-backup-key \
+      -v /srv/archives/<archive>.enc:/restore/archive.enc:ro \
+      ghcr.io/dilenex/modularca:<version> \
+      --backup-manifest /restore/archive.enc --key-file /run/secrets/modularca-backup-key
+
+The restore, for the pod of "The pod: node and signer as two containers", with the node and the
+signer stopped and the database running. It needs every volume of the instance, because it
+writes all of them, and the signer's directory, because the keystore passphrases are there:
+
+    podman run --rm --pod modularca \
+      -v modularca-config:/opt/modularca/config \
+      -v modularca-signer-config:/opt/modularca/signer \
+      -v modularca-keystores:/opt/modularca/keystores \
+      -v modularca-data:/opt/modularca/backups \
+      -v /srv/archives/<archive>.enc:/restore/archive.enc:ro \
+      --secret modularca-backup-key \
+      ghcr.io/dilenex/modularca:<version> \
+      --role signer --signer-dir /opt/modularca/signer \
+      --restore /restore/archive.enc --unattended --key-file /run/secrets/modularca-backup-key
+
+| Mount | Mode | Why |
+|---|---|---|
+| the archive | read-only | read where it lies |
+| `/run/secrets/modularca-backup-key` (a Podman secret) | read-only | the archive's key; leave `--key-file` out to use the `backup.key` in the config volume |
+| `modularca-config` at `/opt/modularca/config` | read-write | `db.yaml` is read; the archive's `config/` is written |
+| `modularca-signer-config` at `/opt/modularca/signer` | read-write | `keystore.yaml` is read; the restore records itself in `audit-journal/` |
+| `modularca-keystores` at `/opt/modularca/keystores` | read-write | the keystores are replaced |
+| `modularca-data` at `/opt/modularca/backups` | read-write | the pre-restore snapshot |
+
+For an image run as one process (compose), leave out `--role signer --signer-dir` and the
+signer's volume: `keystore.yaml` is in `config/`. Add `--restore-audit` only for a host whose
+own audit database is empty or lost. An archive under a backup password takes
+`--secret modularca-backup-password` and `--password-file /run/secrets/modularca-backup-password`
+in place of the key.
+
+Give the one-off container the `MODULARCA__INSTANCE__INCARNATION` value the node will be started
+with afterwards, or none at all. The restore stores the incarnation it is given in the restored
+database, so that the next start is not reported as a rollback; started with another value than
+the restore had, the node raises the notice described under "Snapshots, rollbacks and copies of
+the machine" once more.
+
+Then, by status: on 0 start the signer and the node; on 3 or 75 start them as they were; on 4,
+or anything else, put the copied volumes back first.
+
+The one-off container must find the node and the signer stopped. If the pod's manager restarts
+either while the restore runs, the restarted container waits for the restore
+(`Schema.RestoreWaitSeconds`, 60 s) and then exits 75 to be started again, so give the pod a
+restart policy that retries; if either was still running when the restore began, the restore
+exits 3 with nothing changed.
+
+What has been run: the command lines `--backup-manifest` and `--restore --unattended`, every
+status above, the read-only archive and the closed standard input are exercised by a drill that
+runs the real program on Windows (`tests/ModularCA.Tests/DisasterRecovery`), and so are a
+restore refused beside a running node, a second restore refused beside the first, and a node
+that waits for a restore or exits 75. The container
+commands, the Podman secret, Linux file modes and the split layout with `--signer-dir` in a
+one-off container have not been run.
+
 ### Rehearse it
 
 A backup you have not restored is a guess. Restore your latest archive onto a spare machine or a
 second compose project now and again, with the kit you actually keep, and do step 6. Do not
 give the rehearsal the production name: it would answer OCSP and publish CRLs as the CA.
+
+### Snapshots, rollbacks and copies of the machine
+
+`--restore` is the one way back in time the product is told about. Reverting a VM snapshot,
+restoring a backup of the whole VM, putting archived volumes back, cloning the machine, or
+failing over to a standby that was a little behind all take the database back, or copy it,
+without telling it. What is lost is the same as after a restore (above): certificates issued and
+revocations made in the lost time are unknown, and the CRL numbers go backwards.
+
+**Take a snapshot with the service stopped, or accept that a rollback forgets whatever was
+issued or revoked after it.** Prefer the product's backup and restore for anything but an
+upgrade that failed at once.
+
+What the instance does about it, from 0.4.5:
+
+- **It compares an incarnation ID at every start.** Whatever restores or copies the instance
+  says so by setting the environment variable `MODULARCA__INSTANCE__INCARNATION` to a new value:
+  any text, for example a timestamp or a UUID. It is not a secret, and only its SHA-256 is
+  stored. An orchestrator sets a new value at every volume restore and every promotion of a
+  standby, and leaves it alone otherwise. Set it for the process that runs the control role;
+  with systemd, in a drop-in (`Environment=MODULARCA__INSTANCE__INCARNATION=...`); in a pod or
+  compose file, in the container's environment. Two control processes on one database must be
+  given the same value.
+- **A machine that sets none is not covered by this check.** A hypervisor's own generation ID is
+  not read yet, so a snapshot rollback on a home lab is detected only by the published-CRL check
+  below, or not at all. Changing the variable yourself after a rollback gets you the repair.
+- **When the value differs from the one the database last saw**, the instance starts as usual
+  and: raises every CRL number counter, as a restore does, so no published number is used again
+  and a new CRL is published at once; writes one audit row, `InstanceIncarnationChanged`; and
+  shows a notice at the top of the admin console until a system administrator acknowledges it
+  with step-up. The notice gives the time of the newest record the database holds: certificates
+  issued and revocations made after it on the earlier timeline are not known here. Nothing is
+  replayed, because the signer keeps no journal yet; revoke what you find as described below.
+- **`/health/ready` carries the notice** under `checks.continuity`: `status` is `notice` while
+  one stands, with the events and their text. The node stays healthy; a rolled-back CA that
+  refused traffic would be an outage on top of a gap. Two things are reported there and are
+  not the same: `incarnationCheck` (with `incarnationCheckedAt`) is the comparison *this process*
+  made at *its* start, and `events` are the events still waiting to be acknowledged, whichever
+  start recorded them. Each event carries `detectedAt`, when it was recorded, and
+  `recordedAtThisStart`; `eventsFromThisStart` and `eventsFromEarlierStarts` count them. So
+  `"incarnationCheck": "Same"` beside an event with `"recordedAtThisStart": false` means this
+  start found nothing new and an earlier notice has not been acknowledged yet.
+- **A value that disappears** (the instance moved to a host that sets none) is reported once,
+  as `InstanceIncarnationSourceLost`, and "none" is stored. The CRL numbers are not raised for
+  it. The first start after an upgrade to 0.4.5 stores what it sees and reports nothing.
+- **Where an LDAP publisher publishes CRLs**, the control process reads its own CRL back from
+  each directory at start, whatever the incarnation says. A CRL there with a higher number than
+  the database knows, signed by the CA, proves the database went back, and is handled like a
+  changed incarnation. A directory that does not answer within ten seconds is skipped.
+
+After a rollback: read the notice, look in the audit trail for `CertificateIssued` and
+`CertificateRevoked` after the time it names (the audit database is a separate database and may
+not have gone back), revoke what must be revoked, then acknowledge the notice.
+
+### Renewing a CA certificate
+
+A CA certificate that nears its end is renewed from the CA's page in the console (Certificate
+History and Renewal, Renew certificate), or with
+`POST /api/v1/admin/authorities/{caId}/renew-certificate`. The CA keeps its key, its subject and
+every extension; it gets a new serial and a new validity, which is the only thing you choose.
+The design is in `docs/architecture/ca-certificate-renewal.md`.
+
+- **Who and how.** A system administrator for a root, `ca.manage` in the space for an
+  intermediate, with step-up. Where the CA's scope requires a key ceremony the action opens one,
+  and the renewal happens when the approved ceremony is executed. It is refused outside full
+  mode.
+- **What stays.** The earlier certificate is not revoked: it stays valid until it expires and is
+  still served at `/ca/{serial}`. Certificates issued before and after the renewal validate
+  under either CA certificate. The CRL and OCSP addresses are the same, and one CRL covers both.
+  Subordinate CAs are untouched. Nothing is written to the keystore files, so no new backup is
+  needed for the keys; the new certificate is in the database, so take a backup as after any
+  change you would not want to lose.
+- **A root: distribute the new certificate.** Everyone who trusts the old root certificate has
+  to be given the new one before the old one expires: operating system and browser trust
+  stores, devices, anything that pins the root. The product cannot do this. Download both from the CA's page. Until a
+  relying party has the new one, it keeps validating everything under the old one.
+- **An intermediate.** Its parent signs the new certificate, which cannot end after the
+  parent's: renew the parent first when it is the one running out. Nothing has to be
+  redistributed to those who trust the root.
+- **Afterwards.** Reissue the CA's OCSP responder, TSA and CMP certificates (Infrastructure
+  Certificates on the CA's page): they were issued to end no later than the earlier certificate.
+  The instance's own TLS certificate keeps the chain it was issued with until it next renews.
+- **Revoking a renewed CA.** Revoking a CA certificate revokes every certificate that CA has over
+  the same key, with one reason and one date, and the console lists them before you confirm: a
+  key that is no longer trusted is not trusted under any of them. A hold, and its release, reach
+  all of them too. An intermediate's certificates are listed on its parent's CRL; a root's on
+  its own CRL, which is all a self-signed certificate can have, so a relying party learns of a
+  revoked root by having it removed from its trust store, as before.
+- **The system signing CA** is renewed the same way, by a system administrator. Nothing else
+  changes: the keystore files are not rewritten, their pins and signatures, the instance
+  identifier, the key the hub knows the instance by, the signer journal's checkpoint key and the
+  wrapped settings are all tied to its key, which stays. No restart is needed, on a single host
+  or with a separate signer. The certificate bootstrap gives it is valid for 100 years and a
+  renewal has to end after the current certificate, so on an install as bootstrap made it there
+  is nothing to renew yet, and its page says so with the date instead of offering the action.
+- **The certificate history after an upgrade.** Each CA made before 0.4.5 gets the first entry
+  of its certificate history in the background after the first start, not during it. In DR mode
+  nothing is written: it is written when the mode is left. Until then the CA's page shows its
+  one certificate as before.
+- **Restoring an archive taken before a renewal** brings the database back to the earlier
+  certificate; the key is the same, so the CA signs under it as it did, and the renewal can be
+  made again. The renewed certificate is gone from the database (it stays in the signer's
+  journal); anything issued under it between the backup and the restore still validates, since
+  the earlier certificate has the same name and key.
+- **Validity.** 1 to 50 years. No standard that binds a private PKI caps a CA certificate's
+  validity; common practice is a root of 10 to 25 years and an intermediate of 5 to 10, and the
+  dialogs say so when you go beyond that, without refusing. Renewing a CA whose key is RSA under
+  3072 bits to past 2030 needs an acknowledgment, because NIST SP 800-57 accepts such keys only
+  through 2030. These are notices of practice, not a claim of compliance with any standard.
+- **Not in this version.** A new key for an existing CA (create a new CA instead), a changed
+  subject, cross-certificates, renewal by a CA outside this instance, and renewal on a schedule.
+
+### Revoking a certificate the CA does not hold
+
+A certificate that the CA signed but has no record of cannot be revoked from the certificate
+list: there is nothing to select. On the CA's own page, under *Certificates This CA Does Not
+Hold*, an administrator with `cert.revoke` on that CA can do one of two things, both with
+step-up and both audited:
+
+- **Adopt the certificate**, if the subscriber, an ACME client or a log can produce it. Paste
+  it as PEM. It is adopted only if its issuer is the CA and its signature verifies under the
+  CA's current key. It then appears with the CA's other certificates, marked as adopted, with no
+  known requester, and can be revoked, held and released like any other; the dialog can revoke
+  it in the same step. This is the better way: the CRL entry leaves the CRL when the
+  certificate expires.
+- **Revoke the serial**, if all you have is the serial number. The serial goes on the CRL with
+  the reason you give, and OCSP answers "revoked" with that date and reason. The revocation is
+  permanent, and nothing checks that the CA ever issued the serial. With no certificate there is
+  no expiry date, so the entry stays on the CRL for the longest validity the CA's certificate
+  profiles allow, counted from the day it was recorded (one year when no profile states a
+  maximum; never past the end of the CA certificate). There is no setting for this.
+
+A serial the CA does hold is refused: revoke the certificate. Adopting a certificate whose
+serial was revoked earlier moves the revocation onto the certificate and removes the serial's
+own entry. A CA certificate is not adopted; revoke a subordinate CA's serial instead.
+
+The API is `POST /api/v1/admin/authorities/{caId}/adopted-certificates` and
+`POST /api/v1/admin/authorities/{caId}/revoked-serials`.
+
+## The signer's issuance journal
+
+From 0.4.5 the process that holds the keys keeps a journal of what it signs: every certificate,
+every CRL and every SSH certificate, each chained to the one before, with what the node tells it
+of revocations, released holds, spent tokens, restores and things disabled. It is files in one
+directory. A database that goes back in time no longer takes the knowledge of what was issued
+and revoked with it: the journal still has it.
+
+**This version writes the journal and reads its head. It does not read it back into a
+database.** After a restore the CA still does not know the certificates issued since the
+archive; the journal is where they are. `docs/architecture/signer-journal.md` has the format and
+what is and is not built.
+
+### The home
+
+| | |
+|---|---|
+| Setting | `Signer.Journal.Directory`, in the settings of whichever process holds the keys: `config/config.yaml` on one process, `signer.yaml` on a split install |
+| Environment | `MODULARCA__SIGNER__JOURNAL__DIRECTORY` overrides it |
+| Default | `signer/journal`: `/opt/modularca/signer/journal` on a packaged install, whichever process holds the keys. A relative path is taken from the install directory, or from the signer's own directory when it has one (`--signer-dir`), where a leading `signer/` names that directory; an absolute path is used as it is |
+| Owner | the account that holds the keys: `modularca` on one process (the installer makes the home for it), `modularca-signer` on a split install (the signer makes it in its own directory). Mode `0700`, files `0600` |
+| Contents | `current/`, with the segment files `<20 digits>.mcaj` and one `<20 digits>.open.mcaj`; and any journal that was set aside, `set-aside-instance-<id>-<time>/` or `set-aside-reset-<time>/`. Nothing else belongs there |
+
+- **It is not in `keystores/`**, and must not go back in time with it: a journal that is rolled
+  back or copied back with the keystores or the database protects nothing.
+- **Give it a volume of its own when you can, mounted on the home itself.** The signer never
+  renames the home: it makes `current/` in an empty one, and sets a journal aside by renaming
+  `current` inside it. On one machine with one disk the journal survives `--restore` and a lost
+  database. It does not survive a snapshot roll-back of the whole machine, which takes it back
+  with everything else.
+- **A home elsewhere**: create it (or its parent) for the account that holds the keys, name it
+  with `Signer.Journal.Directory`, and on a packaged install add it to `ReadWritePaths=` with a
+  drop-in for the unit that holds the keys. To keep the journal already written, stop the
+  service and move the whole home; started over an empty home the signer begins a new journal
+  from sequence 1, which is a different journal.
+- **On a split install or a pod it belongs to the signer.** The node never needs the path, and
+  should not be able to reach it: that is what keeps a node that was taken over from rewriting
+  what the signer recorded. In a pod, keep it on the signer's volume and do not put that volume
+  back when the database's volume is put back.
+- **On one process it is no defense against the process itself**: the same process holds the
+  keys and the files.
+- **Do not edit, truncate, compress or delete the files.** The signer only ever creates,
+  appends and renames there. A file removed or changed is found by `--journal-verify`.
+- **It is not in a backup**, and a restore neither writes nor removes it. A backup's manifest
+  records the journal's head (sequence and hash) as it was just before the database was dumped.
+  To keep the journal off the host, copy the sealed segments (the files without `.open`): they
+  never change once they have their name.
+- **Size.** About 1.5 to 3 KB for a certificate, 132 bytes and its entries for a CRL whose
+  revoked set changed, some 300 bytes for one that did not, and about 250 bytes for a
+  checkpoint, of which there is at most one a second while something is being signed. An
+  instance issuing 10,000 certificates a day writes about 30 MB a day. Nothing prunes it yet.
+
+### A full volume stops issuance
+
+The signer returns no certificate, CRL or SSH certificate whose record it could not write and
+flush to disk. When the directory is missing, unwritable or full:
+
+- issuance and CRL signing are refused, with the reason in the answer and in the signer's log;
+- OCSP, timestamps, SCEP and CMP protection, sign-in and the console go on;
+- revocation goes on: the revocation is made, and its record waits in a queue in the database
+  until the journal takes it. The CRL that would publish it waits for the journal.
+
+It is seen coming. `/health/ready` reports the journal under `checks.journal`: its size, the free
+space on its volume and the age of its last checkpoint. The dashboard shows an entry under
+"Needs attention" for each of these:
+
+| `status` | When | The node |
+|---|---|---|
+| `low_space` | less free space than `Signer.Journal.LowSpaceMiB`: 1024 (1 GiB) by default | stays ready |
+| `critical_space` | less than `Signer.Journal.CriticalSpaceMiB`: 128 by default | stays ready |
+| `unavailable` | a record could not be written | degraded: `/health/ready` answers 503 |
+
+- **The two levels warn and do nothing else.** At `critical_space` the signer goes on issuing
+  until a write to the journal actually fails. 0 turns a warning off. They are settings of the
+  process that holds the keys, read at its start.
+- No status of the journal fails `--check-ready`, so the journal never takes a node out of a
+  load balancer or fails an upgrade's wait for ready; OCSP and CRL distribution go on.
+- Give the volume space; the signer goes on by itself with the next request.
+
+### What the signer now refuses
+
+- **A CRL that drops a revoked serial.** The signer holds each CRL to the newest one in its
+  journal for that CA key: the number must rise, and a serial may leave the list only when its
+  certificate has expired, when it was on hold and the hold was released, or when it was
+  revoked without a certificate and its listing has run out.
+- **"Good" for a revoked serial.** An OCSP response that says "good" for a serial on the newest
+  journaled CRL is refused; the client gets an error for that request.
+
+Neither is met in ordinary running. Both are met **after a database was taken back** on a host
+whose journal was not: the database has forgotten revocations the journal remembers, so the next
+CRL would drop them. **The instance cures that itself** ("After a database went back: the
+merge", below), and the CRL is signed. What follows is for when it cannot.
+
+**What you see when it cannot.** The instance goes on issuing, serving and answering OCSP. The
+CRL already published stays in force until its `nextUpdate`; no new one is signed for that CA.
+
+- The dashboard's "Needs attention" says that the signer refuses a CRL, with each CA, how many
+  serials are missing, and when its published CRL runs out. That time is the deadline.
+- `/health/ready` has the same under `checks.journal`: `status` is `crl_refused`, and
+  `refusedCrls` lists the CAs. The node stays ready.
+- The CRL job for that CA fails, and its error names the first five serials.
+
+**What to do.**
+
+1. Open the CA's page in the console (Certificate Authorities, the CA, "Certificates This CA
+   Does Not Hold"; the dashboard's entry links to it, and its address is
+   `/admin/authorities/manage/{caId}#missing-from-crl`). While the signer refuses the CA's CRL
+   it lists every missing serial with its reason and date. The same list is
+
+       GET /api/v1/admin/authorities/{caId}/revoked-serials/missing-from-crl
+
+   Both need the capability to revoke on that CA.
+2. Revoke each again. Where the CA still has the certificate, the page links to it: revoke it
+   there. Where it does not, use "Revoke serial" on its row, or tick several and "Revoke the
+   selected serials": one note and one second-factor prompt for them. By API:
+   `POST …/revoked-serials` for one, or `POST …/revoked-serials/bulk` with
+   `{ "serials": [{ "serialNumber", "reason" }], "note" }` for up to 5,000.
+
+   **"Revoke all" is a separate, heavier action**, below the list. It shows the certificate
+   authority and the exact number of serials, and its button stays disabled until you type
+   the certificate authority's name. It asks for a second-factor prompt of its own. If the
+   list changed after you read it, nothing is revoked and you are told to read it again. By
+   API: `POST …/revoked-serials/missing-from-crl/revoke-all` with
+   `{ "confirmedCount", "journaledCrlNumber", "note" }` (the number of listed serials with
+   `certificateHeld` false, and the list's `journaledCrlNumber`), under the step-up
+   operation `revoke-all-missing-serials`. The bulk call refuses a request that names the
+   whole list.
+3. Generate the CRL. When it lists every serial again, the signer signs it and the entry goes.
+   If some are still missing, the entry stays with the smaller number.
+
+- CRL numbers need nothing: the node raises its counters past the journal by itself.
+- The list is as of the last CRL the signer refused, and the signer holds it in memory: after a
+  restart of the signer it is empty until the CRL schedule next runs for that CA.
+- **If CRLs must be published before that is done**, set `Signer.Journal.Checks: warn` in the
+  signer's settings and restart it: both findings are then logged and signed, and the CRL
+  leaves out the lost revocations. Set it back to `enforce` afterwards. `enforce` is the
+  default, with or without a hub.
+
+### After a database went back: the merge
+
+When the database has gone back in time (a restore, a snapshot roll-back) and the journal has
+not, the instance makes again every revocation the journal holds and the database has lost.
+You do not have to do anything, and nothing asks for a second factor.
+
+- **What comes back.** Every revocation on the last CRL the signer signed for the CA, and
+  every revocation made after that CRL, each with its original date and reason. A hold that
+  still stood comes back as a hold. A certificate the database still has is revoked again; a
+  serial it no longer has (the certificate was issued in the lost time) is recorded as revoked
+  with no certificate.
+- **What does not.** A hold that was released, a certificate that has expired, and everything
+  that is not a revocation: certificates issued in the lost time, accounts, settings.
+- **A revocation cannot be undone by going back.** If a certificate was revoked by mistake,
+  restoring an older database does not un-revoke it.
+- **When.** In the background after every start, for every CA, and before a CA's next CRL. The
+  instance is ready meanwhile. Until a serial is restored, OCSP does not answer "good" for it:
+  the client gets an error for that request.
+- **It is recorded.** One audit entry for each revocation restored
+  (`RevocationMergedFromJournal`, by `journal-merge`, with the CRL or the journal record it
+  came from). When more than 1,000 are restored for a CA at once, one entry for each 500
+  instead (`RevocationsMergedFromJournalBatch`), which carries the serials with their dates,
+  reasons and sources in its details: find a serial with the audit list's "Revoked serial"
+  filter, or `GET /api/v1/admin/audit?revokedSerial=<hex>`. One summary for each CA
+  (`JournalRevocationMergeCompleted`), which says which of the two forms was used, and a notice in the
+  console, "N revocation(s) were restored from the signer's journal for CA X after the database
+  went back in time", which stays until an administrator acknowledges it.
+- **In DR mode nothing is changed**, so the merge waits: `/health/ready` says `merge_pending`
+  with how many revocations wait, and they are made when the mode is changed.
+- **Why it needs no approval.** It only adds revocations, and only ones this CA's own signer
+  signed onto a CRL or the instance itself recorded at the time. It takes them from the signer,
+  and the signer believes a record of its journal only when a checkpoint signed with a key of
+  its own, one its system key signed for, follows it. What somebody wrote into the journal's
+  files without that key restores nothing.
+- **After the keystores were put back to another system key**, revocations recorded before
+  that are not restored from the journal (the signer's present key never signed for them);
+  those recorded afterwards are. You then have the list and the steps above for the CRL the
+  signer refuses.
+- **A large journal.** At every start the signer verifies its whole journal in the background.
+  It signs meanwhile; only the merge waits. `/health/ready` shows how far it is
+  (`verifiedBytes` of `verifyTotalBytes`).
+
+### Reading it: two commands
+
+Both read the files and nothing else. They need no database, no keystore, no settings and no
+running service, write nothing, and may be run beside a running signer, as any user that can
+read the directory, on a read-only mount or on a copy.
+
+    ./ModularCA.API --role signer --journal-head [--journal-directory <path>] [--sealed | --sealed-from <sequence>]
+
+prints the journal's head as one line of JSON: the sequence and hash of its last record, the
+open segment and how many bytes of it are whole records, the newest checkpoint with its
+signature, and the checkpoint key with the system public key and its signature over it. It
+reads the newest segment only, so it can be called every second. `--sealed` lists every sealed
+segment as well, and reads them all. `--sealed-from <sequence>` lists the sealed segments whose
+first sequence is at or after the one given and reads no older one: for a copy that already
+has the segments before it. Exit status **0** with the line, **3** when the directory holds no
+journal, **4** when what it read does not chain, with the reason on standard error, **1** for a
+command line it cannot read.
+
+    ./ModularCA.API --role signer --journal-verify [--journal-directory <path>] [--system-key <hex>]
+
+checks the whole journal: every record's hash, the chain from the first record, every
+checkpoint's signature and the system key's signature over each checkpoint key. It prints one
+line of JSON and exits **0**, or **4** naming the segment and sequence of the first fault,
+**3** when the directory holds no journal, **1** for a command line it cannot read. Like the
+head command it creates and locks nothing, and works on a read-only mount, on read-only files
+and on a bare copy of the directory. With `--system-key` (the `systemKey` of the hub's
+`hello`, or the SHA-256 of the system signing CA's public key) the journal must begin under
+that key. Without `--journal-directory` both read the directory the signer's settings name; on
+a split install add `--signer-dir`.
+
+`--journal-directory` takes the journal's home, which is read through its `current/`, or a
+directory that holds segment files itself: `current/`, a set-aside journal, or a copy of the
+segments. A home with no `current/`, or an empty one, has no journal (exit 3).
+
+Neither command, nor any other one-off command (`--upgrade-check`, `--check-ready`,
+`--backup-manifest`, `--backup`, `--restore`), writes to the journal directory. Only the
+running service does, and a start of it that signs nothing writes nothing either: a service
+that restarts in a loop leaves the directory as it was.
+
+### After a restore
+
+- The restore leaves a marker for the journal in the restored database; the node hands it to
+  the signer at its next start, and the journal records that a restore ran and from which
+  archive.
+- **Restoring onto a host that ran another instance** (a fresh install, then `--restore`):
+  the journal and the checkpoint key there are the other instance's. At its first start the
+  signer keeps both and sets them aside, and begins this instance's journal. It says so in
+  its log. Nothing needs doing.
+  - `current` in the journal's home is renamed, inside the home, to
+    `set-aside-instance-<first 16 letters and digits of that instance's identifier>-<yyyyMMdd-HHmmss-fff>`,
+    and a new `current/` is made. The checkpoint key becomes
+    `keystores/journal.keystore.bak.<time>`.
+  - **Nothing removes a set-aside journal.** It takes space on the journal's volume until you
+    delete it. `checks.journal` counts them (`setAsideJournals`, `setAsideBytes`).
+    `--journal-head --journal-directory <that directory>` reads one as the other instance's
+    journal, if you want to keep a copy elsewhere first.
+- A factory reset (`--reset`, or bootstrapping again) makes another instance. The old one's
+  journal is kept: `current` in `signer/journal` is renamed `set-aside-reset-<yyyyMMdd-HHmmss-fff>`
+  there, and the new instance begins its own. A home placed elsewhere with
+  `Signer.Journal.Directory`, or in a signer directory elsewhere, is not known to the reset: the
+  new instance's signer sets the old journal aside at its first start, as after a restore.
+- **A changed system key that no restore explains.** When the keystores are put back to a
+  state with another system signing CA key (a roll-back of the volume, not `--restore`), the
+  journal waits up to ten minutes for a restore's marker. The instance is ready and signs
+  throughout; `checks.journal` says `awaiting_restore_marker` with the time left. With no
+  marker the change is recorded unexplained, which `--journal-verify` reports as a fault: it
+  is yours to explain.
+- **A `keystores/` put back to an older state with the same system key** needs nothing: the
+  signer's checkpoint key is then not the journal's current one, and the journal records the
+  change, signed for by the system signing CA's key.
+- The checkpoint key is in `keystores/journal.keystore`, which the signer makes at its first
+  start. It is not in an archive. A database restored from before that start has no record of
+  the file: the signer moves it aside as `journal.keystore.bak.<time>` and makes a new key, and
+  the journal records the change, signed for by the system signing CA's key as the first was.
+  Nothing needs doing.
 
 ## Firewall and ports
 
@@ -1005,6 +1802,33 @@ refuses password sign-in for `Directory` accounts until they are set back to `Lo
 **Privileged ports** are granted by `AmbientCapabilities=CAP_NET_BIND_SERVICE` in the unit. Do
 not also `setcap` the binary — the unit already covers it, and a stale file capability survives
 upgrades in ways the unit does not.
+
+### The password blocklist
+
+When the password policy has **Check the bundled blocklist** on (it is on for a new install, and
+off after an upgrade until an administrator turns it on or applies the NIST SP 800-63B preset), a
+new password is refused when it is on the list in
+`/opt/modularca/password-blocklist/bundled-blocklist.txt`. The check happens in the service's own
+process: no password and no hash of one leaves the host, and nothing is fetched.
+
+- **What ships is a starter list**, about 2,600 of the most common choices (number and keyboard
+  runs, "password" and its variants, account names and defaults, seasons and years, the product's
+  name, stock phrases). It is not a corpus of compromised passwords.
+- **Matching** ignores case and Unicode compatibility forms. A password is refused when it equals
+  an entry, or is one entry, or any one or two characters, repeated end to end.
+- **The file is read once**, on first use after a start, into memory. It is a program file:
+  root-owned, replaced by every upgrade. Do not edit it; your edits would be lost and a restart
+  would be needed to see them.
+- **To add your own list**, put a file in `/opt/modularca/config/password-dictionaries/` (one
+  password per line, or one hex SHA-256 per line with `dictionaryIsHashed`), readable by the
+  service account, and name it with `PUT /api/v1/admin/password-policy` (`dictionaryPath`, the
+  file name only). It is checked **in addition to** the bundled list, not instead of it, and it
+  survives upgrades and travels in backups with the rest of `config/`. This is the place for a
+  large list of compromised passwords.
+- **To use only your own list**, turn "Check the bundled blocklist" off and keep `dictionaryPath`.
+- **If the bundled file is missing** (a damaged install), passwords can still be set, nothing is
+  checked against it, and the console says so on the password policy card and under System
+  Health. Reinstalling the release puts it back.
 
 ## Two units: the signer apart from the node
 
@@ -1474,6 +2298,7 @@ The volumes are the security division, not housekeeping:
 | `modularca-config` | the node; the init containers | `config.yaml`, `db.yaml` and the node's client certificate. Bootstrap leaves `keystore.yaml` here too, and `node-identity` removes it at the first start once the signer holds its copy. The node writes here while it runs: `config.yaml` when settings are saved or moved into the database (each time with a `config.yaml.pre-settings-*.bak` copy), the web TLS certificate (`api-tls.pfx`) when it is provisioned or renewed, the Data Protection key ring (`dp-keys/`), made at start and rotated, and `signer-audit-cursor.json`, its note of how far it has read the signer's keystore events. Copy it as often as anything else that changes. |
 | `modularca-signer-config` | the signer; the init containers | `signer.yaml`, the signer's `db.yaml` and `keystore.yaml`, the identity CA and the server certificate. **The node never mounts it**, so it cannot change what the signer loads (`Hsm.ModulePath`, `Signer.PinnedClientSpki`, `Signer.Listen`). Only the init containers write its settings; the signer's logs go to an `emptyDir` mounted over its `logs/`. The signer writes one thing here, `audit-journal/`: its keystore events (loaded, created, a key appended, a verification failure) wait there, across restarts of the pod, until the node has read them over the signer channel and written them into the audit trail (see "Two units"). **It MUST be in your volume backups**: after the first start the keystore passphrases (`keystore.yaml`) live in this volume and nowhere else, and no backup archive carries them, so losing it loses every keystore. |
 | `modularca-keystores` | the signer; bootstrap | The keystores. **The node never sees them**, which is the whole point of the split. |
+| `modularca-journal` | the signer | The signer's issuance journal, mounted on `/opt/modularca/signer/journal`. **Never roll it back or restore it with the others**: it is what remembers the revocations a roll-back loses. |
 | `modularca-data` | the node | Its backup archives. |
 
 The signer listens on the pod's loopback, publishes no port, and cannot be reached from outside
@@ -1829,6 +2654,88 @@ The node accepts version 2 (TCP over IPv4 or IPv6, `LOCAL`, and UNSPEC, with TLV
 bytes in all, which it skips) and version 1 (`TCP4`, `TCP6`, `UNKNOWN`). A version 2 header for
 UDP or a UNIX socket is refused rather than treated as UNSPEC, since on a TCP listener it means
 the proxy is misconfigured and the client's address would be lost without a trace.
+
+## Under a ModularCA Hub: the local connection and the instance mode
+
+An instance with no hub needs none of this section. With none of the variables below set, the
+node opens nothing for a hub and its mode is full, as before.
+
+The full contract is in `docs/architecture/hub-local-connection.md`. This section is what to put
+in a unit or a pod.
+
+### The variables
+
+| Variable | Value | Default |
+|---|---|---|
+| `MODULARCA__HUB__SOCKET` | Path of a Unix domain socket the node's control role listens on for its hub. At most 100 bytes. | unset: no listener, no socket file |
+| `MODULARCA__HUB__SOCKETMODE` | The socket file's mode in octal, read and write bits only: `0660`, `0600`, `0666`. | `0660` |
+| `MODULARCA__HUB__STARTMODE` | `full`, `restricted` or `dr`: the mode of a node that has a hub socket and no recorded mode yet. | `restricted` |
+
+    Environment=MODULARCA__HUB__SOCKET=/run/modularca-hub/hub.sock
+    Environment=MODULARCA__HUB__STARTMODE=restricted
+
+- **Give the socket a directory of its own**, mounted into the node and nowhere else in the pod.
+  The node also keeps two small files there: `instance-mode.json` (the mode) and
+  `hub-requests.json` (the request identifiers already carried out). The directory must be
+  writable by the node's user and must not be shared between copies of an instance: a copy that a
+  failover starts is meant to find no mode there and begin in its start mode.
+- **Who may connect** is the socket file's owner and mode. The node creates it as its own user.
+  A process that connects needs write permission on the file and search permission on the
+  directory. A runner that connects from outside the pod's user namespace needs a user or group
+  that maps to one the mode admits; that mapping is the deployment's and has not been tested by
+  this project.
+- **A value that is not a mode, or a mode with other than read and write bits, stops the start**
+  with a message naming the variable. So does a socket that cannot be bound.
+- **Only the control role listens.** A process started with `--role validation` or
+  `--role enrollment` ignores `MODULARCA__HUB__SOCKET` for listening. It still reads the mode from
+  the file beside that socket, so give every process of one instance the same directory.
+
+### The affiliation token
+
+The hub proves itself with a token it makes and keeps. The instance holds only the token's
+SHA-256.
+
+    ModularCA.API --new-hub-token
+
+prints a token, its hash and these lines for `bootstrap.yaml`:
+
+    Hub:
+      AffiliationTokenSha256: "<64 hex digits>"
+
+For an instance that already exists, as the service user:
+
+    ModularCA.API --set-hub-token-hash <64 hex digits>
+    ModularCA.API --set-hub-token-hash none
+
+The second removes it. Restart the node afterwards: it reads the hash when it starts. The hub can
+also replace the token itself over the connection, which takes effect at once.
+
+While an instance holds no hash, the token check is off and anything that can reach the socket
+is taken for the hub. The node says so in its log at every start
+(`the token check on the hub's local connection is OFF`) and in the health answer it gives the
+hub.
+
+### The mode
+
+| Mode | What stops |
+|---|---|
+| `full` | Nothing. |
+| `restricted` | Users, groups, roles, grants, profiles, policy, settings, new CAs, key operations, ceremonies, releasing a hold and un-revoking. Issuing and revoking go on. |
+| `maintenance` | For an instance being updated or audited. Everything `restricted` stops, and issuing, renewing, approving requests, enrollment over every protocol and scheduled renewal. Revoking (a serial with no certificate included), signing CRLs and OCSP go on. |
+| `dr` | Everything `restricted` stops, and issuing, revoking, enrollment over every protocol, signing new CRLs and OCSP, which answers `tryLater`. Signing in, backups, a restore and changing the mode still work; CRLs already signed are still served, and so is what the enrollment protocols only read (the ACME directory, SCEP GetCACert and GetCACaps, EST `cacerts`, the MSAE policy), so a client still finds the CA and is told to try again when it asks for a certificate. |
+
+- The hub sets the mode over the connection. An administrator sets it in the console under
+  Settings, General, Instance mode. Whoever sets it last wins, and the console shows who that was.
+- **An instance whose hub has gone silent** stays in the mode it was last given. An administrator
+  with `system.manage` signs in and sets the mode by hand; that is allowed in every mode.
+- **A node with a hub socket and no recorded mode starts restricted** unless
+  `MODULARCA__HUB__STARTMODE` says otherwise. If you set `MODULARCA__HUB__SOCKET` on an instance by
+  hand to try the connection, expect the console to show "Restricted mode" until a mode is set.
+- **Without a hub** the mode can still be set by hand, for a maintenance window. It is then kept
+  in `config/instance-mode.json` and survives a restart. Deleting that file while the node is
+  stopped returns the instance to full mode.
+- `/health/ready` reports the mode under `checks.instanceMode`. It does not turn readiness
+  to 503: restricted and DR mode are states somebody chose.
 
 ## SSH servers: fetching the revocation list
 

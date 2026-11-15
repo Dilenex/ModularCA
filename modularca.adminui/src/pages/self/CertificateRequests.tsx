@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { displaySerial } from '@shared/serial';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet } from '../../api/client';
@@ -69,7 +70,7 @@ const CertificateRequests: React.FC = () => {
             key: 'issued', header: 'Issued Serial', defaultWidth: 180,
             exportValue: (r) => r.issuedCertificateSerial || '',
             render: (r) => r.issuedCertificateSerial
-                ? <span className="data-mono text-ok truncate">{r.issuedCertificateSerial}</span>
+                ? <span className="data-mono text-ok truncate">{displaySerial(r.issuedCertificateSerial)}</span>
                 : <span className="text-xs text-ink-muted">-</span>,
         },
         {
@@ -113,7 +114,7 @@ const CertificateRequests: React.FC = () => {
             {req.issuedCertificateSerial && (
                 <div className="pt-2 border-t border-line">
                     <span className="text-xs text-ink-muted">Issued Certificate</span>
-                    <p className="data-mono text-ok break-all">{req.issuedCertificateSerial}</p>
+                    <p className="data-mono text-ok break-all">{displaySerial(req.issuedCertificateSerial)}</p>
                     <Link to="/certificates" className="text-xs text-accent-ink hover:underline mt-1 inline-block">
                         View in My Certificates
                     </Link>

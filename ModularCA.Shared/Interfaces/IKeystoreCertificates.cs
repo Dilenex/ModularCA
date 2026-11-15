@@ -26,4 +26,14 @@ public interface IKeystoreCertificates
     /// one already present by serial is not added twice.
     /// </summary>
     void RegisterTrustedCert(X509Certificate cert);
+
+    /// <summary>
+    /// Makes a CA's renewed certificate, over a key the signer already holds, the certificate
+    /// that CA is known by from now on: it joins the trusted list, and <see cref="GetSigners"/>
+    /// names it before the certificate it renews, so a caller that takes the first signer that
+    /// matches a key or a name gets the current one. The earlier certificate stays in both
+    /// lists. No key is given or moved: the registry pairs certificates with keys by public
+    /// key, and a certificate whose key it does not hold only joins the trusted list.
+    /// </summary>
+    void RegisterRenewedCaCertificate(X509Certificate cert) => RegisterTrustedCert(cert);
 }

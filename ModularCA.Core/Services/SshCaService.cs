@@ -62,7 +62,8 @@ public class SshCaService : ISshCaService
     /// <summary>The longest comment written after a public key or a certificate.</summary>
     private const int MaxCommentLength = 256;
 
-    private static readonly int[] RsaSizes = [2048, 3072, 4096, 7680, 8192];
+    /// <summary>The RSA sizes a new SSH CA key may have: none under 3072 bits (<see cref="CaKeyPolicy"/>).</summary>
+    private static readonly int[] RsaSizes = [3072, 4096, 7680, 8192];
     private static readonly int[] EcdsaSizes = [256, 384, 521];
 
     private readonly ModularCADbContext _db;
@@ -71,14 +72,19 @@ public class SshCaService : ISshCaService
     private readonly ILogger<SshCaService> _logger;
     private readonly ISshLoginNameService _loginNames;
 
+    /// <summary>Asked before the signer generates an SSH CA key; null is an instance nobody set a mode on.</summary>
+    private readonly ModularCA.Shared.Modes.IInstanceModeGate? _modeGate;
+
     /// <summary>
     /// Creates the service over the application database, the signer and the audit.
     /// <paramref name="loginNames"/> decides whether a user may request from an SSH CA and
-    /// which login names they hold.
+    /// which login names they hold. <paramref name="modeGate"/> is the instance's mode, asked
+    /// before a key is generated; null allows everything.
     /// </summary>
     public SshCaService(ModularCADbContext db, ISigningService signer, IAuditService audit, ILogger<SshCaService> logger,
-        ISshLoginNameService loginNames)
+        ISshLoginNameService loginNames, ModularCA.Shared.Modes.IInstanceModeGate? modeGate = null)
     {
+        _modeGate = modeGate;
         ArgumentNullException.ThrowIfNull(loginNames);
         _db = db;
         _signer = signer;
@@ -158,6 +164,8 @@ public class SshCaService : ISshCaService
         bool isUserCa, bool isHostCa, int maxValidityHours, Guid? ceremonyId)
     {
         var generation = SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, spaceId: null, ceremonyId: ceremonyId);
+        // A key operation waits for full mode; asked here, at the node, before the signer is.
+        ModularCA.Shared.Modes.InstanceModeGate.ThrowIfRefused(_modeGate, ModularCA.Shared.Modes.ModeOperation.Frozen, "Generating an SSH CA key");
         GeneratedKey generated;
         try
         {
@@ -430,6 +438,8 @@ public class SshCaService : ISshCaService
             cert.Revoke(now);
 
         await _db.SaveChangesAsync();
+        if (activeCerts.Count > 0)
+            await QueueRevocationListFactAsync(_db, caKeyId, _logger);
 
         await _audit.LogAsync(AuditActionType.SshCaKeyDisabled, actor?.UserId, actor?.Username ?? "system",
             "SshCaKey", caKeyId.ToString(),
@@ -651,7 +661,16 @@ public class SshCaService : ISshCaService
         var request = new SshCertificateRequest(
             new KeyRef(caKey.Id, KeyRef.SshKeystore), subject.Blob, typeName, (ulong)serial, certKeyId, principals.ToList(),
             validAfter, endsAt, criticalOptions, certExtensions);
-        var context = SigningContext.ForCa(SignerCaller, SigningPurpose.SshCertificate, caKey.CertificateAuthorityId, spaceId: null);
+        var context = SigningContext.ForCa(SignerCaller, SigningPurpose.SshCertificate, caKey.CertificateAuthorityId, spaceId: null) with
+        {
+            // For the signer's journal record: who the certificate is for and who asked. An SSH
+            // certificate answers no request row and renews nothing the node tracks.
+            Issuance = new IssuanceOrigin(
+                Answers: new IssuanceAnswers(ModularCA.Journal.AnswersKind.None, null),
+                Belongs: subjectUser is { } owner ? new IssuanceBelongs(OwnerKind: ModularCA.Journal.OwnerKind.User, Owner: owner.Id.ToString("D")) : null,
+                Protocol: "SSH",
+                Requester: actor?.UserId?.ToString("D")),
+        };
 
         byte[] blob;
         try
@@ -792,10 +811,37 @@ public class SshCaService : ISshCaService
         if (requiredCaKeyId.HasValue && cert.SshCaKeyId != requiredCaKeyId.Value) return false;
         cert.Revoke(DateTime.UtcNow);
         await _db.SaveChangesAsync();
+        await QueueRevocationListFactAsync(_db, cert.SshCaKeyId, _logger);
 
         await _audit.LogAsync(AuditActionType.SshCertRevoked, actor?.UserId, actor?.Username,
             "SshCertificate", certId.ToString(), sourceIp: actor?.SourceIp);
         return true;
+    }
+
+    /// <summary>
+    /// Queues the SSH CA key's revocation list, as it stands after a revocation, for the
+    /// signer's journal. The list is built by the node and is not signed, so the record is the
+    /// node's assertion. A list that cannot be built or queued does not undo the revocation.
+    /// </summary>
+    internal static async Task QueueRevocationListFactAsync(ModularCADbContext _db, Guid caKeyId, ILogger _logger)
+    {
+        try
+        {
+            var key = await _db.SshCaKeys.AsNoTracking().Where(k => k.Id == caKeyId)
+                .Select(k => new { k.PublicKey, k.CertificateAuthorityId }).FirstOrDefaultAsync();
+            if (key == null || TryParseCaKey(key.PublicKey) is not { } publicKey)
+                return;
+            var list = (await BuildKrlAsync(_db, caKeyId)).Bytes;
+            if (list.Length == 0)
+                return;
+            await _db.QueueSignerFactNowAsync(ModularCA.Journal.RecordType.SshRevocationList,
+                new ModularCA.Journal.SshRevocationListPayload(key.CertificateAuthorityId.ToString("D"), SHA256.HashData(publicKey.Blob), list).Encode());
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            _logger.LogWarning("The SSH revocation list of key {CaKeyId} could not be queued for the signer's journal ({Kind}: {Message}).",
+                caKeyId, ex.GetType().Name, ex.Message);
+        }
     }
 
     /// <summary>
@@ -828,7 +874,10 @@ public class SshCaService : ISshCaService
     /// the rows this KRL was built from, so it never names bytes other than these.
     /// </summary>
     /// <exception cref="InvalidOperationException">There is no such key, or its public key cannot be read.</exception>
-    public async Task<SshKrlFile> BuildKrlAsync(Guid caKeyId)
+    public Task<SshKrlFile> BuildKrlAsync(Guid caKeyId) => BuildKrlAsync(_db, caKeyId);
+
+    /// <summary>As <see cref="BuildKrlAsync(Guid)"/>, over a context the caller names: for the services that revoke SSH certificates without this one.</summary>
+    internal static async Task<SshKrlFile> BuildKrlAsync(ModularCADbContext _db, Guid caKeyId)
     {
         var caKey = await _db.SshCaKeys.AsNoTracking().FirstOrDefaultAsync(k => k.Id == caKeyId)
             ?? throw new InvalidOperationException("SSH CA key not found");
@@ -959,7 +1008,9 @@ public class SshCaService : ISshCaService
     /// <summary>
     /// The algorithm of a new SSH CA key, from the key type and size a request names:
     /// <c>ed25519</c>; <c>ecdsa</c> on P-256, P-384 or P-521 (256 when no size is given); or
-    /// <c>rsa</c> of 2048, 3072, 4096, 7680 or 8192 bits (3072 when no size is given).
+    /// <c>rsa</c> of 3072, 4096, 7680 or 8192 bits (3072 when no size is given). RSA 2048 is
+    /// refused for a new SSH CA key as it is for an X.509 one (<see cref="CaKeyPolicy"/>); keys
+    /// that already exist keep signing.
     /// </summary>
     /// <exception cref="ArgumentException">The type is none of the three, or the size is not one of its sizes.</exception>
     private static SshCaAlgorithm AlgorithmOf(string keyType, int? keySize)
@@ -975,6 +1026,9 @@ public class SshCaService : ISshCaService
                 return new SshCaAlgorithm("ecdsa", curve, "ECDSA", $"P-{curve}", $"ecdsa-sha2-nistp{curve}");
             case "rsa":
                 var bits = keySize ?? 3072;
+                // RSA 2048 gets the sentence that says why and what to pick, not "not allowed".
+                if (bits == 2048 && CaKeyPolicy.RefusalForNewCa("RSA", bits) is { } refusal)
+                    throw new ArgumentException(refusal);
                 if (!RsaSizes.Contains(bits))
                     throw new ArgumentException($"Key size {keySize} is not allowed for rsa. Allowed: {string.Join(", ", RsaSizes)}");
                 return new SshCaAlgorithm("rsa", bits, "RSA", bits.ToString(), SshKeyTypes.Rsa);

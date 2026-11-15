@@ -27,22 +27,34 @@ interface ConfirmModalProps {
     confirmClass?: string;
     tone?: ConfirmTone;
     loading?: boolean;
+    /** Keeps the confirm button disabled until the caller's own condition holds, e.g. a name typed into the message. */
+    confirmDisabled?: boolean;
     onConfirm: () => void;
     onCancel: () => void;
 }
 
-const ConfirmModal: React.FC<ConfirmModalProps> = ({ isOpen, title, message, confirmLabel = 'Confirm', confirmClass, tone = 'crit', loading, onConfirm, onCancel }) => {
+const ConfirmModal: React.FC<ConfirmModalProps> = ({ isOpen, title, message, confirmLabel = 'Confirm', confirmClass, tone = 'crit', loading, confirmDisabled, onConfirm, onCancel }) => {
     const cancelRef = useRef<HTMLButtonElement | null>(null);
     const openerRef = useRef<Element | null>(null);
     const titleId = React.useId();
     const messageId = React.useId();
+
+    // Read through refs, so the effect below runs when the dialog opens and closes and at no
+    // other time. Depending on `onCancel` re-ran it on every render of a caller that passes an
+    // inline function: each run moved focus to the opener and back to Cancel. On a page that
+    // re-renders every second (Schedules), that pulled focus out of the step-up dialog shown
+    // above this one, and a TOTP code could not be typed.
+    const onCancelRef = useRef(onCancel);
+    onCancelRef.current = onCancel;
+    const loadingRef = useRef(loading);
+    loadingRef.current = loading;
 
     useEffect(() => {
         if (!isOpen) return;
         openerRef.current = document.activeElement;
         cancelRef.current?.focus();
         const onKey = (e: KeyboardEvent) => {
-            if (e.key === 'Escape' && !loading) { e.stopPropagation(); onCancel(); }
+            if (e.key === 'Escape' && !loadingRef.current) { e.stopPropagation(); onCancelRef.current(); }
         };
         document.addEventListener('keydown', onKey);
         return () => {
@@ -50,7 +62,7 @@ const ConfirmModal: React.FC<ConfirmModalProps> = ({ isOpen, title, message, con
             const opener = openerRef.current;
             if (opener instanceof HTMLElement && document.contains(opener)) opener.focus();
         };
-    }, [isOpen, loading, onCancel]);
+    }, [isOpen]);
 
     if (!isOpen) return null;
     return (
@@ -64,8 +76,8 @@ const ConfirmModal: React.FC<ConfirmModalProps> = ({ isOpen, title, message, con
                         className="px-4 py-2 text-sm font-medium bg-raised border border-line-strong text-ink rounded hover:bg-hover transition-colors">
                         Cancel
                     </button>
-                    <button onClick={onConfirm} disabled={loading}
-                        className={confirmClass || TONE_CLASS[tone]}>
+                    <button onClick={onConfirm} disabled={loading || confirmDisabled}
+                        className={`${confirmClass || TONE_CLASS[tone]} disabled:opacity-50 disabled:cursor-not-allowed`}>
                         {loading ? 'Processing...' : confirmLabel}
                     </button>
                 </div>

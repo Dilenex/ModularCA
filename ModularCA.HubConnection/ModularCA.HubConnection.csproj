@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      The hub's local connection: the contract a ModularCA Hub and an instance on the same
+      server speak over a Unix domain socket (Contract/), the client the hub's side uses
+      (Client/), and the listener the node's control role hosts (Server/). Shaped like
+      ModularCA.Signer, and smaller: it references no other project, so the hub can reference
+      it without taking anything else of the core. The node supplies what each request does
+      through IHubLocalOperations.
+    -->
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Kestrel, for the node's listener; the hub's side needs only the contract and the client. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+</Project>

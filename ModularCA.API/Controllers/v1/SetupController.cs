@@ -354,6 +354,7 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
     /// without a body keeps it. Refuses to run once <c>config.yaml</c> exists.
     /// </summary>
     /// <param name="request">Whether to drop the audit database as well; optional.</param>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("database/drop")]
     public IActionResult DropDatabases(
         [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] SetupDropDatabasesRequest? request = null)
@@ -488,6 +489,7 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
     /// with typed property assignment, host/username/port are validated before use, and the
     /// exception message is never returned to the unauthenticated caller.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("database/test")]
     public IActionResult TestDatabaseConnection([FromBody] SetupDatabase dbConfig)
     {
@@ -645,6 +647,7 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
     /// graceful shutdown and triggering a second bootstrap against attacker-supplied root
     /// credentials.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("database/save")]
     public IActionResult SaveDatabaseCredentials([FromBody] SetupDatabase dbConfig)
     {
@@ -763,6 +766,7 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
     /// instance and the first space and allows self-approval, true starts ceremonies on and
     /// self-approval off.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("initialize")]
     public IActionResult Initialize([FromBody] SetupRequest request)
     {
@@ -797,6 +801,10 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
             try
             {
                 ModularCA.Bootstrap.BootstrapCertCreator.EnsureRootLabelUsable(request.RootCa.CommonName);
+                // A new CA's RSA key is at least 3072 bits; refused before anything is built.
+                ModularCA.Bootstrap.BootstrapCertCreator.EnsureRootKeyAcceptable(
+                    request.RootCa.Algorithm,
+                    ModularCA.Shared.Models.Setup.SetupKeySizeParser.ParseToInt(request.RootCa.Algorithm, request.RootCa.KeySize));
             }
             catch (ModularCA.Shared.Errors.ConfigurationValidationException ex)
             {

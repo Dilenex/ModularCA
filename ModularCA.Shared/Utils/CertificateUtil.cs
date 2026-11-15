@@ -625,6 +625,45 @@ public static class CertificateUtil
     }
 
     /// <summary>
+    /// A serial number as people read it: whole octets, so with a leading zero when the stored
+    /// form (<see cref="FormatSerialNumber"/>, minimal hex) has an odd number of digits. This is
+    /// the form OpenSSL and most other tools print, and what the consoles show. It is for
+    /// display only: the Certificates table stores the minimal form, and a serial typed or
+    /// pasted in this form is taken back to it by <see cref="NormalizeSerialForLookup"/>.
+    /// </summary>
+    /// <param name="serial">A stored serial. Anything that is not plain hex is returned as it is.</param>
+    public static string DisplaySerial(string? serial)
+    {
+        if (string.IsNullOrEmpty(serial))
+            return serial ?? string.Empty;
+        foreach (var ch in serial)
+            if (!Uri.IsHexDigit(ch))
+                return serial;
+        return serial.Length % 2 == 1 ? "0" + serial : serial;
+    }
+
+    /// <summary>
+    /// What to match serial numbers against when a person types or pastes <paramref name="text"/>
+    /// into a search: the stored form of it (<see cref="NormalizeSerialForLookup"/>) when the
+    /// text is hex, with or without separators and leading zeros; null when it is not hex at
+    /// all, so the caller searches with the text as typed. Lets a serial copied from OpenSSL
+    /// (<c>02C0…</c>, <c>02:c0:…</c>) or from the console find the certificate.
+    /// </summary>
+    /// <param name="text">The search text.</param>
+    public static string? SerialSearchTerm(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+        var hex = 0;
+        foreach (var ch in text.Trim())
+        {
+            if (Uri.IsHexDigit(ch)) hex++;
+            else if (ch is not (':' or '-' or ' ')) return null;
+        }
+        return hex == 0 ? null : NormalizeSerialForLookup(text);
+    }
+
+    /// <summary>
     /// Parses all common X.509v3 extensions from a PEM-encoded certificate and returns
     /// a structured model containing Basic Constraints, Key Usage, Extended Key Usage,
     /// SANs, AIA (OCSP + CA Issuer URLs), CDP, SKI, AKI, and Certificate Policies.

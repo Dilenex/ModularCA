@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { displaySerial } from '@shared/serial';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { errorNotice } from '@shared-auth/api/notices';
@@ -127,7 +128,7 @@ const CurrentCertCard: React.FC<{
                         <div>
                             <dt className="text-xs text-ink-muted">Serial Number</dt>
                             <dd className="data-mono text-ink break-all">
-                                {status.serialNumber}
+                                {displaySerial(status.serialNumber)}
                             </dd>
                         </div>
                         <div>
@@ -313,9 +314,8 @@ const ReissueCard: React.FC<{
             <h3 className="text-ink font-semibold">Reissue Web TLS Certificate</h3>
 
             <div className="bg-info-soft border border-info/40 rounded p-3 text-sm text-info">
-                Reissuing the Web TLS certificate validates the new subject and SANs against the
-                "Web Server (ACME)" request profile and then hot-swaps the running certificate.
-                No restart is required if hot-reload succeeds; otherwise the UI will tell you to
+                Reissuing validates the new subject and SANs against the "Web Server (ACME)" request
+                profile, then swaps the running certificate. If the swap fails, this page tells you to
                 restart the API.
             </div>
 

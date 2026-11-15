@@ -114,6 +114,28 @@ public enum SigningRefusalReason
     /// not generate for the signing CA. A ceremony id on the context is not such evidence.
     /// </summary>
     EvidenceRequired,
+
+    /// <summary>
+    /// The signer's journal could not take the record of what was signed, so the signature is
+    /// not returned: the journal's directory is missing, unwritable or full, or a flush failed.
+    /// </summary>
+    JournalUnavailable,
+
+    /// <summary>
+    /// The CRL does not continue the newest CRL the signer journaled for that CA key: it does
+    /// not raise the CRL number, or it leaves out a serial that CRL listed, that is not expired
+    /// and was not on hold.
+    /// </summary>
+    CrlNotContinuous,
+
+    /// <summary>
+    /// An OCSP response would say "good" for a serial that the newest CRL the signer journaled
+    /// for that CA key lists as revoked.
+    /// </summary>
+    RevokedOnJournaledCrl,
+
+    /// <summary>A fact offered to the journal is not one the node may assert, or its payload is not that fact's.</summary>
+    FactNotAccepted,
 }
 
 /// <summary>

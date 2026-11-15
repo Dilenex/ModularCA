@@ -49,6 +49,9 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             // Otherwise the scope is null and the hint over-matches every space.
             var ca = await _db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(a => a.CertificateId == cert.CertificateId)
                 ?? (cert.IssuerCertificateId != null ? await _db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(a => a.CertificateId == cert.IssuerCertificateId) : null);
+            // A CA whose certificate was renewed: the certificate, or its issuer, may be an earlier one of that CA.
+            if (ca == null && ModularCA.Core.Helpers.IssuerChainResolver.OwnerOf(_db, cert.IssuerCertificateId ?? cert.CertificateId) is { } owner)
+                ca = await _db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(a => a.Id == owner.CaId);
 
             // A certificate of no CA is shown only to an instance-wide caller.
             var fence = SpaceFence.From(HttpContext, Capabilities.CertRevoke);
@@ -154,6 +157,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// "Manage" grants revoke/reissue rights; "View" (default) grants read-only. Granting View when
         /// the user currently has Manage is a downgrade; granting Manage is an upgrade.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("serial/{serial}/set")]
         [Authorize(Policy = "CaOperator")]
         [RequireStepUp(StepUpOps.UpdateCertAcl, "serial")]
@@ -184,6 +188,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
 
         /// <summary>Removes a user's ACL entry on a certificate (by serial). Implicit access via RBAC or
         /// being the original requestor is unaffected.</summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("serial/{serial}/revoke-user")]
         [Authorize(Policy = "CaOperator")]
         [RequireStepUp(StepUpOps.UpdateCertAcl, "serial")]
@@ -214,6 +219,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// existing Manage entry to View. Needs cert.revoke on the certificate's CA and step-up MFA. A
         /// certId or userId that is not a GUID is 400, as is an unknown user.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("allow/view")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
@@ -259,6 +265,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// existing View entry. Needs cert.revoke on the certificate's CA and step-up MFA. A certId or
         /// userId that is not a GUID is 400, as is an unknown user.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("allow/manage")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
@@ -300,6 +307,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// as it is. Needs cert.revoke on the certificate's CA and step-up MFA. 400 when either id is not a
         /// GUID or the user has no entry.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("downgrade")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]
@@ -341,6 +349,7 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
         /// CA-scoped capabilities, or as the requester, is unaffected. Needs cert.revoke on the
         /// certificate's CA and step-up MFA. 400 when either id is not a GUID or the user has no entry.
         /// </summary>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
         [HttpPost("revoke")]
         [Authorize]
         [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Certificate, "request.CertId")]

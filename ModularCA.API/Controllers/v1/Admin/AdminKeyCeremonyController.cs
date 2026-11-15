@@ -87,6 +87,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// few other accounts could approve is refused with 409 and nothing is opened
     /// (<see cref="ModularCA.API.Services.CeremonyRefusalResponse"/>).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [Authorize]
     public async Task<IActionResult> Initiate(
@@ -179,6 +180,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// <summary>
     /// Null when CA-creation parameters would pass the checks execution applies, else the response
     /// to send now, before anyone approves: 400 for a control character in a text field, an
+    /// RSA key under 3072 bits (<see cref="ModularCA.Shared.Utils.CaKeyPolicy"/>), an
     /// invalid or reserved label, or a name constraint <see cref="ModularCA.Shared.Utils.NameConstraintRules"/> refuses,
     /// 409 for a label or name another CA has, 404 for a CA certificate profile outside the new
     /// CA's scope.
@@ -187,6 +189,8 @@ public class AdminKeyCeremonyController : ControllerBase
     {
         if (parameters.ControlCharacterError() is string controlError)
             return new BadRequestObjectResult(new { error = controlError });
+        if (ModularCA.Shared.Utils.CaKeyPolicy.RefusalForNewCa(parameters.KeyAlgorithm, parameters.KeySize) is { } keyRefusal)
+            return new BadRequestObjectResult(new { error = keyRefusal });
         if ((ModularCA.Shared.Utils.NameConstraintRules.ListError(parameters.NameConstraintsPermitted, nameof(parameters.NameConstraintsPermitted))
             ?? ModularCA.Shared.Utils.NameConstraintRules.ListError(parameters.NameConstraintsExcluded, nameof(parameters.NameConstraintsExcluded))) is string ncError)
             return new BadRequestObjectResult(new { error = ncError });
@@ -435,6 +439,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// policy-change ceremony needs admin rank at its scope (403 for an operator of that scope).
     /// When approvals reach the quorum threshold, the ceremony transitions to Approved status.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("{id:guid}/approve")]
     public async Task<IActionResult> Approve(
         Guid id,
@@ -501,6 +506,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// approval rule, <see cref="PolicyApprovalRefusalAsync"/> (403 for an operator of its scope),
     /// except by its initiator, who may withdraw it.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("{id:guid}/reject")]
     public async Task<IActionResult> Reject(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
@@ -556,6 +562,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// Step-up gated to block session-hijack cancellations of
     /// in-progress ceremonies.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Cancel(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
@@ -607,6 +614,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// is expired, audited and refused with 409 (<c>ceremonyExpired: true</c>).
     /// Requires step-up MFA verification.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("{id:guid}/execute")]
     public async Task<IActionResult> Execute(Guid id, [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
@@ -802,6 +810,52 @@ public class AdminKeyCeremonyController : ControllerBase
                 return Ok(new { ceremony.Id, Status = "Executed",
                     message = $"SSH CA '{sshParams.Name}' disabled. All certificates revoked." });
             }
+            else if (ceremony.OperationType == ModularCA.Shared.Models.RenewCaCertificateCeremonyParameters.OperationType)
+            {
+                // The approved renewal of a CA's certificate over its key. The ceremony's id goes
+                // to the signer, which checks the approval, the CA and the expiry it agreed to
+                // itself before it signs.
+                var renewParams = CeremonyParametersJson.Read<ModularCA.Shared.Models.RenewCaCertificateCeremonyParameters>(ceremony.ParametersJson);
+                if (renewParams == null || renewParams.CaId == Guid.Empty)
+                    return BadRequest(new { error = "CA ID missing from RenewCaCertificate ceremony parameters." });
+
+                var renewal = HttpContext.RequestServices.GetRequiredService<ModularCA.Core.Services.CaCertificateRenewalService>();
+                // A refusal names the parent CA only to an executor whose fence admits the parent's space.
+                var renewed = await renewal.RenewAsync(renewParams.CaId, renewParams.NotAfter, ceremony.Id, _currentUser.User.Username, HttpContext.RequestAborted,
+                    SpaceFence.From(HttpContext, Capabilities.CertView).Allows);
+
+                await _ceremonySvc.MarkExecutedAsync(id);
+
+                await _audit.LogAsync(
+                    AuditActionType.CaCertificateRenewed,
+                    _currentUser.User.Id, _currentUser.User.Username,
+                    "CertificateAuthority", renewed.Ca.Id.ToString(),
+                    new
+                    {
+                        CeremonyId = id, renewed.Ca.Name, renewed.Ca.Label,
+                        PreviousSerial = renewed.Previous.SerialNumber, NewSerial = renewed.Renewed.SerialNumber,
+                        renewed.Renewed.NotBefore, renewed.Renewed.NotAfter, SameKey = true,
+                    },
+                    HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    certificateAuthorityId: renewed.Ca.Id, spaceId: renewed.Ca.SpaceId);
+                await _audit.LogAsync(
+                    AuditActionType.KeyCeremonyExecuted,
+                    _currentUser.User.Id, _currentUser.User.Username,
+                    "KeyCeremony", id.ToString(),
+                    new { CeremonyId = id, ceremony.OperationType, CaId = renewed.Ca.Id, NewSerial = renewed.Renewed.SerialNumber });
+
+                return Ok(new
+                {
+                    ceremony.Id,
+                    Status = "Executed",
+                    message = $"The certificate of CA '{renewed.Ca.Name}' was renewed. The earlier certificate (serial {renewed.Previous.SerialNumber}) stays valid until it expires and was not revoked.",
+                    caId = renewed.Ca.Id,
+                    certificateId = renewed.Renewed.CertificateId,
+                    serialNumber = renewed.Renewed.SerialNumber,
+                    previousSerialNumber = renewed.Previous.SerialNumber,
+                    notAfter = renewed.Renewed.NotAfter,
+                });
+            }
             else if (ceremony.OperationType == "RevokeCa")
             {
                 // KC-06: execute the ceremony-gated CA certificate revocation.
@@ -813,7 +867,9 @@ public class AdminKeyCeremonyController : ControllerBase
                     reason = RevocationReason.Unspecified;
 
                 var revokeResult = await _revocationSvc.RevokeCertificateAsync(
-                    revokeParams.CertificateId, null, reason);
+                    revokeParams.CertificateId, null, reason, null,
+                    new ModularCA.Shared.Interfaces.RevocationActor(_currentUser.User.Id, _currentUser.User.Username,
+                        HttpContext.Connection.RemoteIpAddress?.ToString(), ceremony.Id));
 
                 await _ceremonySvc.MarkExecutedAsync(id);
 
@@ -833,6 +889,7 @@ public class AdminKeyCeremonyController : ControllerBase
                     newStatus = revokeResult.NewStatus,
                     reason = revokeResult.Reason?.ToString(),
                     crlNumber = revokeResult.CrlNumber,
+                    alsoSerialNumbers = revokeResult.AlsoSerialNumbers,
                 });
             }
             else if (ceremony.OperationType is nameof(CeremonyType.SpacePolicyChange) or nameof(CeremonyType.InstancePolicyChange))

@@ -120,7 +120,15 @@ public class FoldSystemTenantMigrationTests
         var values = valuesText.Split(',').Select(v => v.Trim()).ToList();
         Assert.Equal(columns.Count, values.Count);
 
-        var defaults = new SecurityPolicyEntity();
+        // The fold is frozen at the 0.4.0 schema. One column has been renamed since: 0.4.5's
+        // TighterDefaults turns MaxSessionLifetimeDays into MaxSessionLifetimeHours, times 24. The
+        // fold's 14 days are what an install of that time ran on, not today's default of 12 hours.
+        var sessionColumn = columns.IndexOf("MaxSessionLifetimeDays");
+        Assert.True(sessionColumn >= 0, "the fold inserts MaxSessionLifetimeDays");
+        Assert.Equal("14", values[sessionColumn]);
+        columns[sessionColumn] = nameof(SecurityPolicyEntity.MaxSessionLifetimeHours);
+
+        var defaults = new SecurityPolicyEntity { MaxSessionLifetimeHours = 14 };
         var properties = typeof(SecurityPolicyEntity).GetProperties(BindingFlags.Public | BindingFlags.Instance)
             .Where(p => p.CanWrite).Select(p => p.Name).ToHashSet();
         Assert.Equal(properties.OrderBy(p => p), columns.OrderBy(c => c));

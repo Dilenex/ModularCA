@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ALL_SCOPE, MINE_SCOPE, scopeCaId, scopeKey, type Scope } from '@adminui/scope';
-import { caIdForRef, parentsOutside, rowsInScope, sshSigningProfileCaRef } from '@adminui/pages/scopedRows';
+import { caIdForRef, parentsOutside, rowsInScope, sshCaNames, sshSigningProfileCaRef } from '@adminui/pages/scopedRows';
 import { msaeScopeFollow, msaeSelectedCa, msaeSetupPath } from '@adminui/pages/msaeScope';
 
 /**
@@ -372,5 +372,34 @@ describe('Windows Autoenrollment and the scope switcher', () => {
 
     it('builds the page path for a CA', () => {
         expect(msaeSetupPath('b')).toBe('/authorities/windows/b');
+    });
+});
+
+/**
+ * An SSH CA is not in the X.509 hierarchy, so the Groups page had no name for one and showed the
+ * first eight characters of its id in the CA column.
+ */
+describe('the name of an SSH CA, from its keys', () => {
+    it('is the name of its key, by the CA id', () => {
+        const names = sshCaNames([
+            { certificateAuthorityId: '28b343af-0000', name: 'Test Host SSH CA' },
+            { certificateAuthorityId: '9980817f-0000', name: 'Test SSH CA' },
+        ]);
+        expect(names.get('28b343af-0000')).toBe('Test Host SSH CA');
+        expect(names.get('9980817f-0000')).toBe('Test SSH CA');
+        expect(names.get('unknown')).toBeUndefined();
+    });
+
+    it('names a CA with several keys by each name once, and skips a key without a CA or a name', () => {
+        const names = sshCaNames([
+            { certificateAuthorityId: 'a', name: 'Users' },
+            { certificateAuthorityId: 'a', name: 'Hosts' },
+            { certificateAuthorityId: 'a', name: 'Users' },
+            { certificateAuthorityId: null, name: 'Orphan' },
+            { certificateAuthorityId: 'b', name: '  ' },
+        ]);
+        expect(names.get('a')).toBe('Users, Hosts');
+        expect(names.has('b')).toBe(false);
+        expect(names.size).toBe(1);
     });
 });

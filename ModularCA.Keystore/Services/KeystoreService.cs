@@ -316,6 +316,95 @@ public class KeystoreService : IDisposable
     }
 
     /// <summary>
+    /// Loads the keys of <c>journal.keystore</c>, oldest first: the last is the journal's
+    /// checkpoint key in use. It is read through the same verify-and-decrypt path as the other
+    /// keystores, under the secondary passphrase of <c>ca-certs.keystore</c>, and its pin and
+    /// pin MAC must both be there. An install that has not made the key yet has neither the
+    /// file nor its <c>Keystores</c> row, and that returns nothing. Unlike a CA key, the
+    /// checkpoint key can be replaced, so one without the other does not stop the signer:
+    /// <list type="bullet">
+    /// <item>
+    /// a file with no row, which is what a database from before the key leaves after a restore,
+    /// cannot be decrypted; it is moved aside as <c>journal.keystore.bak.&lt;timestamp&gt;</c>
+    /// and nothing is returned, so the caller makes a new key;
+    /// </item>
+    /// <item>
+    /// a row with no file is removed, for the same outcome;
+    /// </item>
+    /// <item>
+    /// a file that does not verify against the row's pin, or does not decrypt, is another
+    /// database's file: what a host is left with when an archive is restored onto a host that
+    /// had made a checkpoint key of its own. The failure is recorded as a keystore audit event,
+    /// as for any keystore; then the file is moved aside, the row is removed, and the caller
+    /// makes a new key. A file somebody put there is thereby never loaded.
+    /// </item>
+    /// </list>
+    /// Each is reported through <paramref name="log"/>.
+    /// </summary>
+    internal static List<CertKey> LoadJournalKeys(string keystorePath, string yamlPath, ModularCADbContext db, Action<string> log)
+    {
+        const string keystoreName = ModularCA.Shared.Signing.KeyRef.JournalKeystore;
+        var fileLock = GetFileLock(keystorePath);
+        fileLock.Wait();
+        try
+        {
+            var row = db.Keystores.FirstOrDefault(k => k.Name == keystoreName);
+            CompleteInterruptedCreation(keystorePath, row != null);
+            var hasFile = File.Exists(keystorePath);
+            if (!hasFile && row == null)
+                return new List<CertKey>();
+            if (hasFile && row == null)
+            {
+                var aside = $"{keystorePath}.bak.{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}";
+                File.Move(keystorePath, aside);
+                log($"'{keystoreName}' exists and the database has no Keystores row for it, so it cannot be opened: the database is from before "
+                    + $"the journal's checkpoint key was made. The file was moved aside as '{Path.GetFileName(aside)}' and a new checkpoint key is made.");
+                return new List<CertKey>();
+            }
+            if (!hasFile)
+            {
+                db.Keystores.Remove(row!);
+                db.SaveChanges();
+                log($"The database records the keystore '{keystoreName}' and its file is missing. The row was removed and a new checkpoint key is made.");
+                return new List<CertKey>();
+            }
+
+            Exception failure;
+            try
+            {
+                return LoadCertKeysInner(keystorePath, yamlPath, db, keystoreName, requireAuthenticatedPin: true);
+            }
+            catch (SecurityException ex)
+            {
+                var action = ex.Message.Contains("SPKI pin MAC", StringComparison.OrdinalIgnoreCase)
+                    ? AuditActionType.KeystorePinMacFailed
+                    : AuditActionType.KeystoreSignatureFailed;
+                EmitKeystoreAudit(action, keystoreName, success: false, detail: ex.Message);
+                failure = ex;
+            }
+            catch (Exception ex) when (IsUnlockDecryptFailure(ex) || ex is InvalidDataException or CryptographicException)
+            {
+                EmitKeystoreUnlockFailed(keystoreName, ex);
+                failure = ex;
+            }
+
+            // Not this database's file. The checkpoint key is replaceable and the system key
+            // signs for the next one, so the file is kept aside, never loaded, and a new key made.
+            var setAside = $"{keystorePath}.bak.{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}";
+            File.Move(keystorePath, setAside);
+            db.Keystores.Remove(row!);
+            db.SaveChanges();
+            log($"'{keystoreName}' does not verify or open against this database ({failure.GetType().Name}: {failure.Message}): it was made by another instance or before a restore. "
+                + $"The file was moved aside as '{Path.GetFileName(setAside)}' and a new checkpoint key is made.");
+            return new List<CertKey>();
+        }
+        finally
+        {
+            fileLock.Release();
+        }
+    }
+
+    /// <summary>
     /// Refuses a keystore whose pin cannot be authenticated: no pinned signer, or a pin with no
     /// MAC. Older keystores are allowed both, with a warning; a keystore created after pins and
     /// their MACs existed never legitimately has either.

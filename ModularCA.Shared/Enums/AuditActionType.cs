@@ -9,6 +9,54 @@ public static class AuditActionType
     public const string CertificateUnheld = "CertificateUnheld";
     public const string CertificateReissued = "CertificateReissued";
     public const string CertificateExported = "CertificateExported";
+    /// <summary>
+    /// A serial was recorded as revoked for a CA with no certificate row behind it (a tombstone).
+    /// Details name the serial, the reason, the administrator's note and until when the CRL lists it.
+    /// </summary>
+    public const string RevokedSerialRecorded = "RevokedSerialRecorded";
+    /// <summary>
+    /// A revocation the signer's journal holds and the database had lost (it had gone back in
+    /// time) was made again by the node, without an administrator. Details name the CA, the
+    /// serial, the date and reason as the journal has them, what was made (a certificate
+    /// revoked, or a serial recorded with no certificate), and where the entry comes from: a
+    /// CRL's number and its journal sequence, or the sequence of a revocation the node recorded.
+    /// </summary>
+    public const string RevocationMergedFromJournal = "RevocationMergedFromJournal";
+    /// <summary>
+    /// Many revocations the signer's journal holds and the database had lost were made again by
+    /// the node in one save: the form the merge uses for a CA and pass that has more to make than
+    /// its limit for records of their own (1,000). The target is the CA. Details name the CA, the
+    /// batch's number in the pass and its count, and under <c>Revocations</c> each serial with
+    /// its date, reason, what was made, the certificate where one was revoked, and its source.
+    /// It is never mixed with <see cref="RevocationMergedFromJournal"/> in one pass.
+    /// </summary>
+    public const string RevocationsMergedFromJournalBatch = "RevocationsMergedFromJournalBatch";
+    /// <summary>
+    /// One pass of the merge made revocations again for a CA: how many, from which journaled
+    /// CRL, and in which form they are audited (<c>AuditForm</c> "individual": a
+    /// <see cref="RevocationMergedFromJournal"/> row for each; "batch": <c>BatchRecords</c>
+    /// <see cref="RevocationsMergedFromJournalBatch"/> rows). One row for each CA and pass.
+    /// </summary>
+    public const string JournalRevocationMergeCompleted = "JournalRevocationMergeCompleted";
+    /// <summary>
+    /// An administrator revoked, in one act, every serial the signer reports missing from a
+    /// CA's refused CRL that the CA holds no certificate for. Details name the CA, the count
+    /// and the journaled CRL number the administrator confirmed, how many were recorded and
+    /// refused, the note, and in which form the serials are audited beside it.
+    /// </summary>
+    public const string AllMissingSerialsRevoked = "AllMissingSerialsRevoked";
+    /// <summary>
+    /// Many serials were recorded as revoked with no certificate in one save, as part of an
+    /// <see cref="AllMissingSerialsRevoked"/> act above the limit for records of their own.
+    /// Details carry the serials under <c>Serials</c>, each with its reason.
+    /// </summary>
+    public const string RevokedSerialsRecordedBatch = "RevokedSerialsRecordedBatch";
+    /// <summary>
+    /// A certificate supplied from outside was verified under a CA's key and adopted as a
+    /// certificate row with no known requester. Details name the serial and subject, the note,
+    /// and whether it was adopted revoked (and whether that came from a tombstone).
+    /// </summary>
+    public const string CertificateAdopted = "CertificateAdopted";
 
     // Authentication
     public const string UserLogin = "UserLogin";
@@ -221,6 +269,8 @@ public static class AuditActionType
     // CA management
     public const string CaUpdated = "CaUpdated";
     public const string CaCreated = "CaCreated";
+    /// <summary>A CA's certificate was renewed over the same key: a new serial and validity; the earlier certificate stays valid.</summary>
+    public const string CaCertificateRenewed = "CaCertificateRenewed";
     // Placeholder constants for the future CA decommissioning
     // workflow. Adding them now means any later [HttpDelete] handler that forgets
     // the audit call has a compile-time candidate to reach for. CA removal is a
@@ -249,12 +299,39 @@ public static class AuditActionType
     public const string TrustAnchorDeleted = "TrustAnchorDeleted";
     public const string TrustAnchorToggled = "TrustAnchorToggled";
 
+    // The instance's mode and the hub's local connection
+    /// <summary>The instance's mode was set, by the hub or by an administrator; the record names who, the old and new mode, and the reason.</summary>
+    public const string InstanceModeChanged = "InstanceModeChanged";
+    /// <summary>An operation was refused because the instance's mode does not allow its class.</summary>
+    public const string InstanceModeRefused = "InstanceModeRefused";
+    /// <summary>A request on the hub's local connection was served. The actor is the hub; the operator name it claimed is in the details.</summary>
+    public const string HubRequestServed = "HubRequestServed";
+    /// <summary>A request on the hub's local connection was refused: a wrong or missing token, an operation outside the list, a version this instance does not speak, or a request that was not valid.</summary>
+    public const string HubRequestRefused = "HubRequestRefused";
+    /// <summary>The hash of the hub's affiliation token was set or replaced, over the local connection or on the host.</summary>
+    public const string HubAffiliationTokenReplaced = "HubAffiliationTokenReplaced";
+
     // Backup and restore
     public const string BackupCreated = "BackupCreated";
     public const string BackupRestored = "BackupRestored";
     public const string BackupListed = "BackupListed";
+    /// <summary>Old backup archives were deleted from the backup directory at the hub's request; the details list them.</summary>
+    public const string BackupsPruned = "BackupsPruned";
     /// <summary>A restore raised the CRL number counters so no number already published is reused (RFC 5280 §5.2.3).</summary>
     public const string CrlNumbersRaisedOnRestore = "CrlNumbersRaisedOnRestore";
+
+    // Rollback continuity
+    /// <summary>
+    /// A start found the instance running from an earlier or copied state: its incarnation
+    /// differs from the one the database last saw, or a CRL it published carries a higher number
+    /// than the database knows. Details name the detector, the old and new tag, the newest record
+    /// the database holds, and what was done (the CRL number floor; no journal was replayed).
+    /// </summary>
+    public const string InstanceIncarnationChanged = "InstanceIncarnationChanged";
+    /// <summary>The machine stopped reporting an incarnation the database held one for; "none" was stored. Written once.</summary>
+    public const string InstanceIncarnationSourceLost = "InstanceIncarnationSourceLost";
+    /// <summary>An administrator acknowledged a continuity event with step-up, which ends its standing notice.</summary>
+    public const string InstanceContinuityAcknowledged = "InstanceContinuityAcknowledged";
 
     // ACME EAB keys
     public const string AcmeEabKeyCreated = "AcmeEabKeyCreated";

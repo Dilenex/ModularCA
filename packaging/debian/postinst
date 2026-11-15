@@ -22,7 +22,8 @@ DB_OWNERSHIP=/usr/share/modularca/db-ownership.sh
 # modularca.service names the same directories.
 RUNTIME_DIRS="config keystores logs backups"
 # The split signer's own directory (--signer-dir in modularca-signer.service). The operator creates
-# it for modularca-signer; this script never creates, chowns or chmods it. The package ships nothing
+# it for modularca-signer; this script never chowns or chmods it, and on a split install never
+# creates it (prepare_journal_home makes the journal's home in it where one process holds the keys). The package ships nothing
 # there, so set_program_ownership never reaches it either.
 SIGNER_DIR=signer
 SIGNER_USER=modularca-signer
@@ -100,6 +101,27 @@ seed_config() {
     done
 }
 
+# True on a split install: the signer's account exists and owns keystores/.
+is_split_install() {
+    getent passwd "$SIGNER_USER" >/dev/null 2>&1 \
+        && [ -d "$APP_DIR/keystores" ] && [ "$(stat -c %U "$APP_DIR/keystores")" = "$SIGNER_USER" ]
+}
+
+# Where one process holds the keys, makes the home of the signer's issuance journal,
+# $APP_DIR/signer/journal, for the service account, owner-only; the unit lists it in
+# ReadWritePaths=. signer/ around it is made root's. A home that exists, whoever owns it, is left
+# exactly as it is: a volume may be mounted on it. On a split install nothing is made: signer/ is
+# the signer's own directory, and its signer makes journal/ in it.
+prepare_journal_home() {
+    parent=$APP_DIR/$SIGNER_DIR
+    home=$parent/journal
+    if is_split_install; then return 0; fi
+    if [ -L "$parent" ] || [ -L "$home" ]; then return 0; fi
+    [ -e "$parent" ] || install -d -o root -g root -m 0755 "$parent"
+    [ -d "$parent" ] || return 0
+    [ -e "$home" ] || install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0700 "$home"
+}
+
 # Says what it finds of the signer's own directory, and changes nothing in it: one that is not
 # $SIGNER_USER's is warned about, since whoever owns it can change what the signer reads.
 check_signer_dir() {
@@ -110,6 +132,10 @@ check_signer_dir() {
         return 0
     fi
     owner=$(stat -c %U "$path")
+    # Where one process holds the keys, signer/ is root's and holds only the journal's home.
+    if [ "$owner" = root ] && ! is_split_install; then
+        return 0
+    fi
     if [ "$owner" != "$SIGNER_USER" ]; then
         echo "ModularCA: WARNING: $path belongs to $owner, not $SIGNER_USER: $owner can change what the signer reads; left as it is." >&2
         echo "ModularCA:   fix: chown -R $SIGNER_USER:$SIGNER_USER $path && chmod 0700 $path" >&2
@@ -119,6 +145,7 @@ check_signer_dir() {
 set_ownership() {
     set_program_ownership
     prepare_runtime_dirs
+    prepare_journal_home
     seed_config
     check_signer_dir
 }

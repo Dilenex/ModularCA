@@ -72,7 +72,7 @@ public class CmpService : ICmpService, IEnrollmentProtocol
     /// <summary>
     /// Audit message type recorded for an issued certificate: the request that was made, <c>IR</c>,
     /// <c>CR</c> or <c>KUR</c>. Every issuance was recorded as <c>IR</c>, so a key update could not
-    /// be told from a first enrolment on the CMP tab.
+    /// be told from a first enrollment on the CMP tab.
     /// </summary>
     /// <param name="reqCtx">Per-request CMP state; a request type not read yet counts as <c>ir</c>.</param>
     internal static string IssueOperation(CmpRequestContext reqCtx) => reqCtx.RequestType switch

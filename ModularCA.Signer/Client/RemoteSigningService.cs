@@ -361,6 +361,89 @@ public sealed class RemoteSigningService : ISigningService, ISignerEventJournal,
     /// rather than thrown: the callers of this are the readiness checks and the enrollment
     /// filter, which need a state to show, not an exception to explain.
     /// </remarks>
+    public async Task<ulong> RecordFactAsync(ushort type, byte[] payload, SigningContext context, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        ArgumentNullException.ThrowIfNull(context);
+        try
+        {
+            return await CallAsync(async options =>
+            {
+                var response = await _client.RecordFactAsync(new Wire.RecordFactRequest
+                {
+                    Type = type,
+                    Payload = Google.Protobuf.ByteString.CopyFrom(payload),
+                    Context = Wire.WireMapping.ToWire(context),
+                }, options);
+                return response.Seq;
+            }, _options.CallTimeout, cancellationToken);
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.Unimplemented)
+        {
+            throw new SigningRefusedException(SigningRefusalReason.OperationUnsupported,
+                $"The signer at {_options.Endpoint} predates the issuance journal: it has no call that records a fact. Upgrade the signer; the fact stays queued.");
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// A signer that predates the call answers null, as one that keeps no journal does. A signer
+    /// that cannot be reached is a refusal (<see cref="SigningRefusalReason.SignerUnavailable"/>)
+    /// and not an answer: the caller must be able to tell "no journal" from "not known yet", and
+    /// the node's health check reports the second as <c>not_known</c>.
+    /// </remarks>
+    public async Task<SignerJournalInfo?> JournalInfoAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await CallAsync(async options =>
+                Wire.WireMapping.FromWire(await _client.JournalInfoAsync(new Wire.JournalInfoRequest(), options)),
+                _options.CallTimeout, cancellationToken);
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.Unimplemented)
+        {
+            return null;
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>A signer that predates the call, and one that cannot be reached, answer as one with no refusal standing: null.</remarks>
+    public async Task<SignerJournalMissingRevocations?> JournalMissingRevocationsAsync(Guid caId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await CallAsync(async options =>
+                Wire.WireMapping.FromWire(caId, await _client.JournalMissingRevocationsAsync(new Wire.JournalMissingRevocationsRequest { CaId = caId.ToString("D") }, options)),
+                _options.CallTimeout, cancellationToken);
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.Unimplemented)
+        {
+            return null;
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// A signer that predates the call answers as one whose journal holds nothing: null. One
+    /// that cannot be reached is a refusal (<see cref="SigningRefusalReason.SignerUnavailable"/>),
+    /// which the caller tries again: "none" must not be read from silence.
+    /// </remarks>
+    public async Task<SignerJournaledRevocations?> JournaledRevocationsAsync(Guid caId, int skip, int take, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await CallAsync(async options =>
+                Wire.WireMapping.FromWire(caId, await _client.JournaledRevocationsAsync(
+                    new Wire.JournaledRevocationsRequest { CaId = caId.ToString("D"), Skip = skip, Take = take }, options)),
+                _options.CallTimeout, cancellationToken);
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.Unimplemented)
+        {
+            return null;
+        }
+    }
+
+    /// <inheritdoc />
     public async Task<SignerHealth> HealthAsync(CancellationToken cancellationToken = default)
     {
         try

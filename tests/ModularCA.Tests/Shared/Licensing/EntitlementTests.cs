@@ -39,6 +39,19 @@ internal static class LicenseMint
         return LicenseVerifier.Encode(json, signer.GenerateSignature());
     }
 
+    /// <summary>Signs a claims document written out by hand, as an issuer other than this build would produce it.</summary>
+    internal static string SignJson(string claimsJson, Ed25519PrivateKeyParameters key)
+    {
+        var json = Encoding.UTF8.GetBytes(claimsJson);
+        var input = LicenseVerifier.SigningInput(json);
+
+        var signer = new Ed25519Signer();
+        signer.Init(true, key);
+        signer.BlockUpdate(input, 0, input.Length);
+
+        return LicenseVerifier.Encode(json, signer.GenerateSignature());
+    }
+
     internal static LicenseClaims Claims(
         DateOnly maintenanceThrough,
         IReadOnlyList<string>? entitlements = null,
@@ -49,7 +62,7 @@ internal static class LicenseMint
             LicenseId = "LIC-0001",
             IssuedOn = new DateOnly(2026, 1, 1),
             MaintenanceThrough = maintenanceThrough,
-            Entitlements = entitlements ?? new[] { FeatureKeys.MultiTenancy },
+            Entitlements = entitlements ?? new[] { FeatureKeys.BackupOrchestration },
             Limits = limits ?? new Dictionary<string, int>(StringComparer.Ordinal),
         };
 }
@@ -71,7 +84,7 @@ public class LicenseVerifierTests
         Assert.True(result.IsValid);
         Assert.Equal("Example MSP Ltd", result.Claims!.Licensee);
         Assert.Equal(new DateOnly(2027, 6, 30), result.Claims.MaintenanceThrough);
-        Assert.Contains(FeatureKeys.MultiTenancy, result.Claims.Entitlements);
+        Assert.Contains(FeatureKeys.BackupOrchestration, result.Claims.Entitlements);
     }
 
     [Fact]
@@ -279,10 +292,10 @@ public class FeatureCatalogTests
         // Boundary: a customer whose maintenance ended the day a feature shipped gets it. The
         // inclusive reading is the one that favours the customer, which is the right default for
         // a boundary nobody will remember the reasoning for later.
-        var introduced = FeatureCatalog.IntroducedOn(FeatureKeys.MultiTenancy)!.Value;
+        var introduced = FeatureCatalog.IntroducedOn(FeatureKeys.BackupOrchestration)!.Value;
 
-        Assert.True(FeatureCatalog.CoveredByMaintenance(FeatureKeys.MultiTenancy, introduced));
-        Assert.False(FeatureCatalog.CoveredByMaintenance(FeatureKeys.MultiTenancy, introduced.AddDays(-1)));
+        Assert.True(FeatureCatalog.CoveredByMaintenance(FeatureKeys.BackupOrchestration, introduced));
+        Assert.False(FeatureCatalog.CoveredByMaintenance(FeatureKeys.BackupOrchestration, introduced.AddDays(-1)));
     }
 
     [Fact]
@@ -306,9 +319,12 @@ public class FeatureCatalogTests
         // already implemented in the open tree, so unenforceable against a fork of this commit,
         // and all of them table stakes the free tier is better for including). Once a licence
         // has been issued naming a key, that window is closed and this test is the reminder.
+        //
+        // "tenancy.multi" (more than four spaces) was removed on 2026-11-13 inside that same
+        // window: the vendor key is still the placeholder, so no licence naming it ever verified.
+        // Spaces are not counted, limited or licensed in any edition.
         var expected = new[]
         {
-            "tenancy.multi",
             "backup.orchestration",
             "compliance.reporting",
             "identity.federation",
@@ -319,6 +335,20 @@ public class FeatureCatalogTests
         Assert.Equal(
             expected.OrderBy(k => k, StringComparer.Ordinal),
             FeatureCatalog.AllKeys.OrderBy(k => k, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void No_feature_or_display_name_is_about_spaces()
+    {
+        // The free edition is one instance with unlimited spaces. What is licensed is a fleet of
+        // instances, high availability, backup orchestration and auditor evidence.
+        foreach (var key in FeatureCatalog.AllKeys)
+        {
+            Assert.DoesNotContain("tenancy", key, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("space", key, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("tenancy", FeatureCatalog.DisplayName(key), StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("space", FeatureCatalog.DisplayName(key), StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     [Fact]
@@ -338,7 +368,7 @@ public class FeatureCatalogTests
 }
 
 /// <summary>
-/// Covers entitlement resolution and the space-creation gate.
+/// Covers entitlement resolution, and that a licence written for the retired space keys still loads.
 /// </summary>
 public class EntitlementServiceTests
 {
@@ -359,11 +389,11 @@ public class EntitlementServiceTests
     {
         var free = Free();
 
-        Assert.False(free.IsEntitled(FeatureKeys.MultiTenancy));
-        Assert.False(free.IsAvailable(FeatureKeys.MultiTenancy));
+        Assert.False(free.IsEntitled(FeatureKeys.BackupOrchestration));
+        Assert.False(free.IsAvailable(FeatureKeys.BackupOrchestration));
         Assert.Equal(LicenseStatus.Absent, free.License.Status);
 
-        var denial = free.Explain(FeatureKeys.MultiTenancy);
+        var denial = free.Explain(FeatureKeys.BackupOrchestration);
         Assert.NotNull(denial);
         Assert.Equal(EntitlementDenialReason.NotEntitled, denial!.Reason);
     }
@@ -373,7 +403,7 @@ public class EntitlementServiceTests
     {
         var service = new EntitlementService("garbage-without-a-dot");
 
-        Assert.False(service.IsAvailable(FeatureKeys.MultiTenancy));
+        Assert.False(service.IsAvailable(FeatureKeys.BackupOrchestration));
         Assert.NotEqual(LicenseStatus.Valid, service.License.Status);
     }
 
@@ -382,15 +412,15 @@ public class EntitlementServiceTests
     {
         var svc = Licensed(new DateOnly(2099, 1, 1));
 
-        Assert.True(svc.IsEntitled(FeatureKeys.MultiTenancy));
-        Assert.True(svc.IsAvailable(FeatureKeys.MultiTenancy));
-        Assert.Null(svc.Explain(FeatureKeys.MultiTenancy));
+        Assert.True(svc.IsEntitled(FeatureKeys.BackupOrchestration));
+        Assert.True(svc.IsAvailable(FeatureKeys.BackupOrchestration));
+        Assert.Null(svc.Explain(FeatureKeys.BackupOrchestration));
     }
 
     [Fact]
     public void A_feature_the_licence_never_granted_reports_not_entitled()
     {
-        var svc = Licensed(new DateOnly(2099, 1, 1), new[] { FeatureKeys.MultiTenancy });
+        var svc = Licensed(new DateOnly(2099, 1, 1), new[] { FeatureKeys.BackupOrchestration });
 
         var denial = svc.Explain(FeatureKeys.HsmFleet);
 
@@ -402,13 +432,13 @@ public class EntitlementServiceTests
     {
         // The heart of the perpetual model: entitled forever, available only up to the
         // maintenance date. A feature introduced after it is withheld; the entitlement is not.
-        var beforeAnythingShipped = FeatureCatalog.IntroducedOn(FeatureKeys.MultiTenancy)!.Value.AddDays(-1);
+        var beforeAnythingShipped = FeatureCatalog.IntroducedOn(FeatureKeys.BackupOrchestration)!.Value.AddDays(-1);
         var svc = Licensed(beforeAnythingShipped);
 
-        Assert.True(svc.IsEntitled(FeatureKeys.MultiTenancy), "entitlements are perpetual");
-        Assert.False(svc.IsAvailable(FeatureKeys.MultiTenancy));
+        Assert.True(svc.IsEntitled(FeatureKeys.BackupOrchestration), "entitlements are perpetual");
+        Assert.False(svc.IsAvailable(FeatureKeys.BackupOrchestration));
 
-        var denial = svc.Explain(FeatureKeys.MultiTenancy);
+        var denial = svc.Explain(FeatureKeys.BackupOrchestration);
         Assert.Equal(EntitlementDenialReason.MaintenanceLapsed, denial!.Reason);
         Assert.Contains("does not expire", denial.Detail, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("security updates", denial.Remediation, StringComparison.OrdinalIgnoreCase);
@@ -421,39 +451,47 @@ public class EntitlementServiceTests
         // whose maintenance ended years ago still covers what it covered. This codebase has
         // already lost a day to a host whose CMOS clock had drifted; entitlement must not be
         // the next thing NTP can break.
-        var longExpired = FeatureCatalog.IntroducedOn(FeatureKeys.MultiTenancy)!.Value;
+        var longExpired = FeatureCatalog.IntroducedOn(FeatureKeys.BackupOrchestration)!.Value;
         var svc = Licensed(longExpired);
 
-        Assert.True(svc.IsAvailable(FeatureKeys.MultiTenancy));
+        Assert.True(svc.IsAvailable(FeatureKeys.BackupOrchestration));
     }
 
     [Fact]
     public void Limits_are_read_from_the_licence_and_absent_when_unset()
     {
+        // No limit name is defined today; the dictionary is still read by name.
+        const string someLimit = "some.limit";
         var unlimited = Licensed(new DateOnly(2099, 1, 1));
-        Assert.Null(unlimited.GetLimit(LicenseLimits.MaxTenants));
+        Assert.Null(unlimited.GetLimit(someLimit));
 
         var capped = Licensed(new DateOnly(2099, 1, 1), null,
-            new Dictionary<string, int>(StringComparer.Ordinal) { [LicenseLimits.MaxTenants] = 10 });
-        Assert.Equal(10, capped.GetLimit(LicenseLimits.MaxTenants));
+            new Dictionary<string, int>(StringComparer.Ordinal) { [someLimit] = 10 });
+        Assert.Equal(10, capped.GetLimit(someLimit));
     }
 
-    // ---- SpaceCreationGate ------------------------------------------------------------------
+    // ---- The retired space keys ---------------------------------------------------------------
 
     [Fact]
-    public void The_free_edition_is_recommended_a_licence_from_the_fifth_space()
+    public void A_licence_written_for_the_retired_space_keys_still_verifies_and_they_are_ignored()
     {
-        Assert.Equal(SpaceCreationGate.LicenceRecommendation,
-            SpaceCreationGate.Recommendation(Free(), SpaceCreationGate.SpacesWithoutLicence));
-    }
+        // The wire format as it was written down while "tenancy.multi" and a space count existed.
+        // Nothing reads either now, and neither may stop the document loading or take a feature away.
+        const string claims =
+            "{\"licensee\":\"Example MSP Ltd\",\"licenseId\":\"LIC-0001\",\"issuedOn\":\"2026-01-01\","
+            + "\"maintenanceThrough\":\"2099-01-01\","
+            + "\"entitlements\":[\"tenancy.multi\",\"backup.orchestration\"],"
+            + "\"limits\":{\"maxTenants\":2}}";
+        var (pub, priv) = LicenseMint.NewSigner();
 
-    [Theory]
-    [InlineData(0)]
-    [InlineData(2)]
-    [InlineData(3)]
-    public void Up_to_four_spaces_nothing_is_said(int existing)
-    {
-        Assert.Null(SpaceCreationGate.Recommendation(Free(), existing));
+        var svc = new EntitlementService(LicenseMint.SignJson(claims, priv), null, pub);
+
+        Assert.Equal(LicenseStatus.Valid, svc.License.Status);
+        Assert.Equal(["tenancy.multi", "backup.orchestration"], svc.License.Claims!.Entitlements);
+        Assert.True(svc.IsAvailable(FeatureKeys.BackupOrchestration));
+        Assert.False(svc.IsAvailable("tenancy.multi"), "an unknown key is not a feature of this build");
+        Assert.DoesNotContain("tenancy.multi", FeatureCatalog.AllKeys);
+        Assert.Null(FeatureCatalog.IntroducedOn("tenancy.multi"));
     }
 
     [Fact]
@@ -461,37 +499,15 @@ public class EntitlementServiceTests
     {
         // The name tells the reader whether this concerns them; the key is what they quote in a
         // ticket. An identifier alone makes them decode it first to find out if it is relevant.
-        var refusal = FeatureGate.Require(Free(), FeatureKeys.MultiTenancy, "Creating additional spaces", "Existing spaces are unaffected.");
+        var refusal = FeatureGate.Require(Free(), FeatureKeys.BackupOrchestration, "Scheduling off-host backups", "Manual backup and restore are unaffected.");
 
         Assert.NotNull(refusal);
-        var nameAt = refusal!.Message.IndexOf("multi-tenancy", StringComparison.Ordinal);
-        var keyAt = refusal.Message.IndexOf(FeatureKeys.MultiTenancy, StringComparison.Ordinal);
+        var nameAt = refusal!.Message.IndexOf("backup orchestration", StringComparison.Ordinal);
+        var keyAt = refusal.Message.IndexOf(FeatureKeys.BackupOrchestration, StringComparison.Ordinal);
 
         Assert.True(nameAt >= 0, $"refusal does not name the feature: {refusal.Message}");
         Assert.True(keyAt >= 0, $"refusal does not carry the key: {refusal.Message}");
         Assert.True(nameAt < keyAt, $"the key precedes the name: {refusal.Message}");
     }
 
-    [Fact]
-    public void A_lapsed_licence_is_still_recommended_one()
-    {
-        var lapsed = Licensed(FeatureCatalog.IntroducedOn(FeatureKeys.MultiTenancy)!.Value.AddDays(-1));
-
-        Assert.NotNull(SpaceCreationGate.Recommendation(lapsed, SpaceCreationGate.SpacesWithoutLicence));
-    }
-
-    [Fact]
-    public void An_entitled_installation_is_never_recommended_a_licence()
-    {
-        Assert.Null(SpaceCreationGate.Recommendation(Licensed(new DateOnly(2099, 1, 1)), 500));
-    }
-
-    [Fact]
-    public void A_licence_ceiling_no_longer_refuses_creation()
-    {
-        var capped = Licensed(new DateOnly(2099, 1, 1), null,
-            new Dictionary<string, int>(StringComparer.Ordinal) { [LicenseLimits.MaxTenants] = 2 });
-
-        Assert.Null(SpaceCreationGate.Recommendation(capped, 7));
-    }
 }

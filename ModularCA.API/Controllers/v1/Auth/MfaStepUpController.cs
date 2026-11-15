@@ -122,6 +122,7 @@ public class MfaStepUpController : ControllerBase
     /// so one code issues one step-up token even when presented by concurrent requests, and a code
     /// already used to sign in is refused.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("verify-stepup/totp")]
     public async Task<IActionResult> VerifyStepUpTotp([FromBody] StepUpTotpRequest request)
     {
@@ -196,6 +197,7 @@ public class MfaStepUpController : ControllerBase
     /// The challenge is cached under a step-up-specific key for the configured
     /// <c>SecurityPolicyEntity.WebAuthnChallengeTtlSeconds</c> window.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("verify-stepup/webauthn-options")]
     public async Task<IActionResult> StepUpWebAuthnOptions()
     {
@@ -239,6 +241,7 @@ public class MfaStepUpController : ControllerBase
     /// <see cref="ModularCA.Auth.Utils.MfaSingleUse.TryClaimWebAuthnChallengeAsync"/> once the
     /// assertion verifies, so one signed assertion issues one token under concurrency.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("verify-stepup/webauthn")]
     public async Task<IActionResult> VerifyStepUpWebAuthn()
     {
@@ -377,6 +380,7 @@ public class MfaStepUpController : ControllerBase
     /// unexpired credentials, its certificate must not be revoked or on hold, and it must chain to
     /// the credential's signing CA; a revoked certificate is refused and audited.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost("verify-stepup/mtls")]
     public async Task<IActionResult> VerifyStepUpMtls([FromBody] StepUpMtlsRequest request)
     {

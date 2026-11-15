@@ -239,6 +239,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// a signing profile binds it to an SSH CA key whose material can mint host/user certs.
     /// SourceAddressRestrictions must be a JSON array of addresses or CIDR networks sshd accepts (400).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("signing")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SshCaKey, "request.SshCaKeyId")]
@@ -293,6 +294,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// because mutations alter validity, extensions, or CA-key binding for SSH issuance.
     /// SourceAddressRestrictions, when sent, must be a JSON array of addresses or CIDR networks sshd accepts (400).
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("signing/{id:guid}")]
     [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.UpdateSshProfile, "id")]
@@ -358,6 +360,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// Failure paths emit a failure audit row. Step-up MFA is required because deletion
     /// permanently removes issuance constraints tied to a live SSH CA key.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("signing/{id:guid}")]
     [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.DeleteSshProfile, "id")]
@@ -460,6 +463,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// <c>certificateType</c> is <c>user</c>, <c>host</c> or <c>either</c>; omitted, either.
     /// Anything else is 400.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("cert")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.AnyCa)]
@@ -512,6 +516,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// <c>certificateType</c>, when sent, is <c>user</c>, <c>host</c> or <c>either</c>, which
     /// clears the type; anything else is 400.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("cert/{id:guid}")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.AnyCa)]
@@ -559,6 +564,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// Non-admin callers receive 404 and a failure audit row is emitted. Step-up MFA is
     /// required because deletion strips SSH issuance constraints spaces may depend on.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("cert/{id:guid}")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.AnyCa)]
@@ -684,6 +690,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// <c>certificateType</c> is <c>user</c>, <c>host</c> or <c>either</c>; omitted, either.
     /// Anything else is 400.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("request")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Ca, "request.CertificateAuthorityId")]
@@ -748,6 +755,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// <c>certificateType</c>, when sent, is <c>user</c>, <c>host</c> or <c>either</c>, which
     /// clears the type; anything else is 400.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("request/{id:guid}")]
     [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.UpdateSshProfile, "id")]
@@ -813,6 +821,7 @@ public class AdminSshProfileController(ModularCADbContext db, IAuditService audi
     /// emit a failure audit row. Step-up MFA is required because deletion withdraws the
     /// allow-list of SSH signing/cert bundles available to a space.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("request/{id:guid}")]
     [Authorize(Policy = "CaOperator")]
     [RequireStepUp(StepUpOps.DeleteSshProfile, "id")]

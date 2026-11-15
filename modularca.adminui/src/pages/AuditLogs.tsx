@@ -44,7 +44,7 @@ const TABS = ['General', 'EST', 'SCEP', 'CMP', 'ACME', 'MSAE', 'Network'] as con
 export type Tab = typeof TABS[number];
 
 /** What the audit list keeps in the URL. Defaults stay out of the link. */
-const QUERY_DEFAULTS: TableQueryValues = { page: '1', pageSize: '25', sort: '-timestamp', tab: 'General', from: '', to: '', caId: '', actionType: '', user: '', outcome: '' };
+const QUERY_DEFAULTS: TableQueryValues = { page: '1', pageSize: '25', sort: '-timestamp', tab: 'General', from: '', to: '', caId: '', actionType: '', user: '', outcome: '', serial: '' };
 const PAGE_SIZES = [25, 50, 100];
 
 type Category = 'general' | 'protocol' | 'network';
@@ -178,6 +178,14 @@ const AuditLogs: React.FC = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [filterUser]);
     useEffect(() => { setFilterUser(q.user); }, [q.user]);
+    // A revoked serial, looked for among the records that carry serials, also inside a batch record.
+    const [filterSerial, setFilterSerial] = useState(q.serial);
+    useEffect(() => {
+        const t = setTimeout(() => { if (filterSerial !== q.serial) setQ({ serial: filterSerial }); }, 700);
+        return () => clearTimeout(t);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [filterSerial]);
+    useEffect(() => { setFilterSerial(q.serial); }, [q.serial]);
     // The sidebar scope pins the CA filter; the select below is locked while it does.
     const { caId: scopeCaId, caQuery, scope } = useScope();
     const scopeLocked = !!scopeCaId;
@@ -237,6 +245,7 @@ const AuditLogs: React.FC = () => {
             if (filterActionType) params.set('actionType', filterActionType);
             if (q.user) params.set('actorUsername', q.user);
             if (q.outcome) params.set('success', q.outcome === 'ok' ? 'true' : 'false');
+            if (q.serial.trim()) params.set('revokedSerial', q.serial.trim());
         }
         if (activeTab === 'General' && q.sort) params.set('sort', q.sort);
 
@@ -263,7 +272,7 @@ const AuditLogs: React.FC = () => {
             });
 
         return () => { cancelled = true; };
-    }, [activeTab, page, pageSize, dateFrom, dateTo, filterCaId, filterActionType, q.user, q.sort, caQuery, refreshTick]);
+    }, [activeTab, page, pageSize, dateFrom, dateTo, filterCaId, filterActionType, q.user, q.serial, q.sort, caQuery, refreshTick]);
 
     const handleTabChange = (tab: Tab) => setQ({ tab, sort: QUERY_DEFAULTS.sort });
 
@@ -337,11 +346,16 @@ const AuditLogs: React.FC = () => {
                         <FilterField label="User">
                             <input type="text" value={filterUser} onChange={(e) => setFilterUser(e.target.value)} placeholder="Exact username" className={`${filterControlClass} w-40`} />
                         </FilterField>
+                        <FilterField label="Revoked serial">
+                            <input type="text" value={filterSerial} onChange={(e) => setFilterSerial(e.target.value)} placeholder="Hex serial"
+                                title="Finds the records that restored a revocation from the signer's journal or recorded a serial without its certificate, also where one record carries many serials."
+                                className={`${filterControlClass} w-44 data-mono`} />
+                        </FilterField>
                     </>
                 )}
-                {(dateFrom || dateTo || (!scopeLocked && filterCaId) || filterActionType || filterUser || q.outcome) && (
+                {(dateFrom || dateTo || (!scopeLocked && filterCaId) || filterActionType || filterUser || filterSerial || q.outcome) && (
                     <button
-                        onClick={() => { setFilterUser(''); setQ({ from: '', to: '', caId: scopeCaId ?? '', actionType: '', user: '', outcome: '' }); }}
+                        onClick={() => { setFilterUser(''); setFilterSerial(''); setQ({ from: '', to: '', caId: scopeCaId ?? '', actionType: '', user: '', outcome: '', serial: '' }); }}
                         className="px-3 py-2 text-sm text-ink-muted hover:text-ink transition-colors"
                     >
                         Clear filters

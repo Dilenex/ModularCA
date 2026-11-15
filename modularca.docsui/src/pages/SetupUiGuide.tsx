@@ -147,7 +147,7 @@ export default function SetupUiGuide() {
                 <h3 className="text-lg font-semibold text-ink mb-2">Key Algorithm</h3>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li><strong>ECDSA:</strong> P-256, P-384, P-521 (recommended: P-384)</li>
-                    <li><strong>RSA:</strong> 2048, 3072, 4096, 7680, 8192</li>
+                    <li><strong>RSA:</strong> 3072, 4096, 7680, 8192. A CA&apos;s RSA key is at least 3072 bits: NIST SP 800-57 accepts RSA 2048 only through 2030, and a root made today is relied on well beyond that</li>
                     <li><strong>Ed25519:</strong> Fixed key size (no size selection)</li>
                     <li><strong>ML-DSA (FIPS 204):</strong> ML-DSA-44, ML-DSA-65, ML-DSA-87 (post-quantum lattice-based, formerly CRYSTALS-Dilithium)</li>
                     <li><strong>SLH-DSA (FIPS 205):</strong> 128f, 128s, 192f, 192s, 256f, 256s (post-quantum hash-based, formerly SPHINCS+)</li>
@@ -183,15 +183,12 @@ export default function SetupUiGuide() {
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li><strong>Username:</strong> Admin login name (default: admin)</li>
                     <li><strong>Email:</strong> Administrator email address</li>
-                    <li><strong>Password:</strong> Must meet all of the following requirements:</li>
+                    <li><strong>Password:</strong> Must meet the password policy a new install starts with (NIST SP 800-63B):</li>
                 </ul>
                 <div className="bg-raised rounded p-4 text-sm mb-3 ml-6">
                     <ul className="list-disc list-inside space-y-1 text-ink">
-                        <li>At least 16 characters</li>
-                        <li>At least one uppercase letter</li>
-                        <li>At least one lowercase letter</li>
-                        <li>At least one digit</li>
-                        <li>At least one special character</li>
+                        <li>At least 15 characters. Length is the requirement: a phrase of several words is fine, and no particular kinds of character are required</li>
+                        <li>Not a commonly used password. The server checks it against the bundled blocklist when setup runs and refuses a match (a keyboard run, &ldquo;password&rdquo; and its variants, the product&apos;s name)</li>
                     </ul>
                 </div>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">

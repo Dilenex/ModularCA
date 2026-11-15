@@ -32,6 +32,7 @@ public class OcspController(IOcspService ocspService) : ControllerBase
     /// Body capped at 8 KB — legitimate DER OCSP requests
     /// are under 1 KB, anything larger is an amplification attempt.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact, AnsweredByAction = true)]
     [HttpPost]
     [Consumes(OcspRequestContentType)]
     [RequestSizeLimit(8 * 1024)]
@@ -56,6 +57,7 @@ public class OcspController(IOcspService ocspService) : ControllerBase
     /// OCSP GET endpoint (RFC 6960 §A.1).
     /// The path segment is a base64url-encoded DER OCSPRequest.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact, AnsweredByAction = true)]
     [HttpGet("{encodedRequest}")]
     [RequestSizeLimit(8 * 1024)]
     public async Task<IActionResult> Get(string encodedRequest, string? caLabel = null)

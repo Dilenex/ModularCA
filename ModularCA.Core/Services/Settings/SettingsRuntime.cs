@@ -159,7 +159,8 @@ public static class SettingsRuntime
     /// out of the configuration file, the file no longer decides a covered setting: each goes
     /// back to its default before the stored values are applied, and one the file still sets
     /// differently is reported. Before the move, the file's values stand and stored ones are
-    /// applied over them.
+    /// applied over them. A row under a reserved key (<see cref="ReservedSettingKeys"/>) is not
+    /// a setting: it is neither applied nor reported.
     /// </summary>
     public static SettingsLoadReport Apply(SystemConfig config, SettingsSnapshot snapshot, IReadOnlySet<string> environmentPaths)
     {
@@ -206,8 +207,9 @@ public static class SettingsRuntime
             SettingsCatalog.Apply(config, definition, value);
         }
 
+        // A reserved key (the instance's identifier) is a row of the store that is not a setting.
         foreach (var key in snapshot.Settings.Keys.OrderBy(k => k, StringComparer.Ordinal))
-            if (SettingsCatalog.Find(key) == null)
+            if (SettingsCatalog.Find(key) == null && !ReservedSettingKeys.IsReserved(key))
                 problems.Add($"{key} is not a setting this build knows.");
 
         return new SettingsLoadReport(snapshot.Revision, applied, ignored, problems);

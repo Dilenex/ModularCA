@@ -31,6 +31,20 @@ namespace ModularCA.Shared.Utils
             public FeaturesConfig Features { get; set; } = new();
             public AdministrationConfig Administration { get; set; } = new();
             public AcmeBootstrapConfig Acme { get; set; } = new();
+            public HubBootstrapConfig Hub { get; set; } = new();
+        }
+
+        /// <summary>What a ModularCA Hub gives the instance it makes. Absent on an instance with no hub.</summary>
+        public class HubBootstrapConfig
+        {
+            /// <summary>
+            /// The SHA-256 of the hub's affiliation token, as 64 hex digits; never the token. The
+            /// hub makes the token and keeps it. The bootstrap stores this hash with the
+            /// instance's settings, and from then on every request on the hub's local connection
+            /// must carry the token. Absent or empty, the instance holds none and that check is
+            /// off until one is given (<c>--set-hub-token-hash</c>, or over the connection).
+            /// </summary>
+            public string? AffiliationTokenSha256 { get; set; }
         }
 
         /// <summary>ACME settings applied to the first CA at bootstrap.</summary>

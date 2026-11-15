@@ -109,7 +109,12 @@ SystemCallErrorNumber=EPERM
 # program files around them stay read-only. A Backup.OutputPath, AuditRetention.ArchivePath,
 # SshCa.KeyStoragePath or Logging.FilePath configured outside these needs its own entry in a
 # drop-in, and must be owned by this user.
-ReadWritePaths=/opt/modularca/config /opt/modularca/keystores /opt/modularca/logs /opt/modularca/backups
+# signer/journal is the home of the signer's issuance journal where this one process holds the
+# keys: install.sh and postinst make it for this user, owner-only, and a volume may be mounted on
+# it. The leading "-" lets the unit start where it does not exist. Nothing else under signer/ is
+# writable here: on a split install signer/ is the signer's own directory, its journal is the
+# signer account's alone, and this unit cannot write either.
+ReadWritePaths=/opt/modularca/config /opt/modularca/keystores /opt/modularca/logs /opt/modularca/backups -/opt/modularca/signer/journal
 
 # Every file and directory the service creates is its own alone, whatever the code path: keys,
 # configuration, backups and logs. A file it rewrites in place keeps the mode it had. Members of

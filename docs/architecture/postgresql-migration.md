@@ -689,7 +689,13 @@ Schema:
   WaitSeconds: 900
   MigrationCommandTimeoutSeconds: 3600
   MigrationLockTimeoutSeconds: 30
+  RestoreWaitSeconds: 60
 ```
+
+`RestoreWaitSeconds` belongs to the step that now comes before this whole sequence: the process
+takes its restore lock in the application database, and while a restore holds it the process
+waits that long and then exits with status 75. No migration is rehearsed or applied beside a
+running restore. See `restore-exclusion.md`.
 
 Take a dump before every upgrade (`pg_dump -Fc` of both databases). It is the recovery path.
 
@@ -713,7 +719,7 @@ that `VerifyAsync` finds no break in any chain and that `CheckRetiredChainAsync`
 retired chain `Sealed`. `AuditHashGoldenVectorTests` pins the canonical input itself with
 hard-coded hashes. It also pins the persisted strings recorded rows carry: the lock key, the chain
 action and target types, the fold migration id, the seal text and its member names, the retired
-`AuditActionType` values, the licence keys and the signer audit scope tokens.
+`AuditActionType` values and the signer audit scope tokens.
 
 ```bash
 MODULARCA_TEST_PG="Host=localhost;Username=postgres;Password=...;Database=postgres" \

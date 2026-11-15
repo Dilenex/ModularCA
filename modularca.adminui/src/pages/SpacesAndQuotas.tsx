@@ -11,14 +11,11 @@ import { DataTable, DataTableColumn } from '@shared/components/DataTable';
 import { NewButton } from '@shared/components/NewButton';
 import { labelClass as labelCls } from '@shared/components/forms';
 import type { ValidityCeilingBehavior } from '@shared/generated';
-import { SPACE_INTERSTITIAL, recommendationBeforeCreate, recommendationFromResponse } from './spaceCreation';
+import { SPACE_INTERSTITIAL } from './spaceCreation';
 import { INSTANCE_REALMS_ANCHOR } from './msaeRefusals';
 import { useScrollToHash } from '../hooks/useScrollToHash';
 import { StepUpOps } from '@shared/generated';
 import { useStepUp } from '../components/StepUpMfaContext';
-
-/** The recommendation the server returned for the last space created in this page load. */
-let lastServerRecommendation: string | null = null;
 
 /* ── shared helpers (re-used by SpaceDetail) ─────────────────────────────── */
 export function formatDate(d: string | null) {
@@ -156,9 +153,6 @@ const SpacesAndQuotas: React.FC = () => {
     const [showCreate, setShowCreate] = useState(false);
     const [createForm, setCreateForm] = useState({ name: '', description: '', maxValidityDays: 0, validityCeilingBehavior: 'Shorten' as ValidityCeilingBehavior });
     const [creating, setCreating] = useState(false);
-    // The licence recommendation the server returned for the space just created.
-    const [createdRecommendation, setCreatedRecommendation] = useState<string | null>(null);
-    const [serverRecommendation, setServerRecommendation] = useState<string | null>(lastServerRecommendation);
 
     const load = useCallback(() => {
         setLoading(true);
@@ -176,22 +170,16 @@ const SpacesAndQuotas: React.FC = () => {
     useEffect(() => { load(); }, [load]);
     useScrollToHash(!!instance);
 
-    const recommendation = recommendationBeforeCreate(spaces.length, serverRecommendation);
-
     const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault();
         setCreating(true);
         try {
-            const created = await apiPostWithMfa<any>('/api/v1/admin/spaces', {
+            await apiPostWithMfa<any>('/api/v1/admin/spaces', {
                 name: createForm.name,
                 description: createForm.description,
                 maxValidityDays: createForm.maxValidityDays,
                 validityCeilingBehavior: createForm.validityCeilingBehavior,
             }, requireStepUp, StepUpOps.CreateSpace);
-            const said = recommendationFromResponse(created);
-            lastServerRecommendation = said;
-            setServerRecommendation(said);
-            setCreatedRecommendation(said);
             showToast('success', `Space '${createForm.name}' created`);
             setShowCreate(false);
             setCreateForm({ name: '', description: '', maxValidityDays: 0, validityCeilingBehavior: 'Shorten' });
@@ -239,13 +227,6 @@ const SpacesAndQuotas: React.FC = () => {
                 </div>
             </div>
 
-            {createdRecommendation && (
-                <div role="status" className="flex items-start justify-between gap-3 bg-warn-soft border border-warn/40 rounded p-3 text-xs text-warn">
-                    <span>The space was created. {createdRecommendation}</span>
-                    <button type="button" onClick={() => setCreatedRecommendation(null)} className="text-warn hover:underline">Dismiss</button>
-                </div>
-            )}
-
             {/* summary tiles */}
             {totals && (
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -267,11 +248,6 @@ const SpacesAndQuotas: React.FC = () => {
                 <form onSubmit={handleCreate} className="bg-raised border border-line rounded-lg p-4 space-y-3">
                     <h3 className="text-sm font-semibold text-ink">New Space</h3>
                     <p className="bg-info-soft border border-info/40 rounded p-3 text-xs text-info">{SPACE_INTERSTITIAL}</p>
-                    {recommendation && (
-                        <p className="bg-warn-soft border border-warn/40 rounded p-3 text-xs text-warn">
-                            This will be space {spaces.length + 1}. {recommendation} The space is created either way.
-                        </p>
-                    )}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <input type="text" placeholder="Space Name" required value={createForm.name}
                             onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })}

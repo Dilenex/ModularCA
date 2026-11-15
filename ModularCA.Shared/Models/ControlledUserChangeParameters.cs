@@ -166,7 +166,7 @@ public sealed record ControlledAccountState(
 
 /// <summary>
 /// An account's credential state: its security stamp, which rotates on every password and identity
-/// change, and a digest of its second factors and their enrolment, which self-service enrolment
+/// change, and a digest of its second factors and their enrollment, which self-service enrollment
 /// and removal change without rotating the stamp.
 /// </summary>
 public sealed record ControlledCredentialSnapshot(Guid UserId, string SecurityStamp, string MfaMarker);

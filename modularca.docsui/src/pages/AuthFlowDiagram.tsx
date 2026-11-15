@@ -142,8 +142,10 @@ export default function AuthFlowDiagram() {
                 <p className="text-ink leading-relaxed mb-3">
                     Local passwords are hashed using
                     PBKDF2-SHA256 with a minimum of 600,000 iterations (auto-rehashed from legacy 100k hashes on
-                    successful login). The password policy requires a minimum of 16 characters with uppercase,
-                    lowercase, digit, and special character requirements.
+                    successful login). The password policy of a new install is the NIST SP 800-63B preset: at least 15
+                    characters, no required character classes, no scheduled expiry, and a check of every new password
+                    against the bundled blocklist. An install made before 0.4.5 keeps the policy it has stored. The
+                    policy applies when a password is set or changed, never at sign-in.
                 </p>
                 <div className="bg-sunken rounded p-4 data-mono mb-4">
                     POST /auth/login<br />
@@ -282,7 +284,7 @@ export default function AuthFlowDiagram() {
                         </tr>
                         <tr className="border-b border-line">
                             <td className="py-2 pr-4">Refresh Token</td>
-                            <td className="py-2 pr-4">Configurable; capped by SecurityPolicy.MaxSessionLifetimeDays</td>
+                            <td className="py-2 pr-4">Configurable (Tokens.RefreshTokenDays); never past SecurityPolicy.MaxSessionLifetimeHours from the sign-in, which wins</td>
                             <td className="py-2">Stored SHA-256 hashed in DB; plaintext sent to client</td>
                         </tr>
                         <tr className="border-b border-line">
@@ -344,8 +346,9 @@ export default function AuthFlowDiagram() {
                     <li><strong>Stored hashed:</strong> Refresh tokens are stored as SHA-256 hashes; only the plaintext is sent to the client once</li>
                     <li><strong>Family tracking:</strong> Each rotation chain shares a <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">FamilyId</code>;
                         reuse of any revoked sibling revokes the entire family</li>
-                    <li><strong>Absolute session cap:</strong> <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">SecurityPolicy.MaxSessionLifetimeDays</code> limits
-                        how long a rotation chain can extend from the original login</li>
+                    <li><strong>Maximum session lifetime:</strong> <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">SecurityPolicy.MaxSessionLifetimeHours</code> limits
+                        how long a rotation chain can extend from the original login (12 hours on a new install). It wins over the refresh
+                        token lifetime: every refresh token, and the access token issued with it, expires at that horizon at the latest</li>
                     <li><strong>Idle timeout:</strong> <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">SecurityPolicy.SessionIdleTimeoutMinutes</code> revokes
                         tokens that have been inactive too long</li>
                     <li><strong>IP binding:</strong> Optional

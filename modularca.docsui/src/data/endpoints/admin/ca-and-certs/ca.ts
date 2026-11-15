@@ -10,7 +10,7 @@ export const adminCa: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Array of CAs with name, label, type, status, and certificate summary.',
+        responseDescription: 'Array of CAs with name, label, type, status, and certificate summary. A parent CA outside the caller\'s spaces is not identified: parentCaId is null and parentHidden is true.',
     },
     {
         method: 'GET',
@@ -66,7 +66,7 @@ export const adminCa: ApiEndpoint[] = [
         headers: [
             { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
         ],
-        responseDescription: 'Hierarchical CA tree with certificates, protocol configurations, and service URLs. Each CA carries ocspResponder: mode (delegated, direct, none or off) and problem, the reason every OCSP request for that CA is answered unauthorized, or null when it is answered. responderSerial, responderSubject and responderNotAfter describe the responder certificate the CA points at, and are null when it has none. ocspResponder is null for a CA that is disabled or has no certificate. certificate.carriesDigitalSignature says whether the CA certificate\'s key usage includes digitalSignature; a CA without it and without a CMP signing certificate signs CMP responses that OpenSSL-based clients reject. Each of protocolConfigs carries advisories, a reason code and sentence for each reason the protocol cannot run on this CA (SCEP on a CA whose key is not RSA), or an empty array.',
+        responseDescription: 'Hierarchical CA tree with certificates, protocol configurations, and service URLs. Each CA carries ocspResponder: mode (delegated, direct, none or off) and problem, the reason every OCSP request for that CA is answered unauthorized, or null when it is answered. responderSerial, responderSubject and responderNotAfter describe the responder certificate the CA points at, and are null when it has none. ocspResponder is null for a CA that is disabled or has no certificate. certificate.carriesDigitalSignature says whether the CA certificate\'s key usage includes digitalSignature; a CA without it and without a CMP signing certificate signs CMP responses that OpenSSL-based clients reject. Each of protocolConfigs carries advisories, a reason code and sentence for each reason the protocol cannot run on this CA (SCEP on a CA whose key is not RSA), or an empty array. keyAdvisories and cryptoperiod carry the notices and facts about the CA\'s key and certificate over time. A parent CA outside the caller\'s spaces is not identified anywhere in the answer: parentCaId is null and parentHidden is true, cryptoperiod.parentName and cryptoperiod.parentCertificateNotAfter are null, and the CaCertificateOutlivesParent notice says only that the parent\'s certificate expires earlier or has expired.',
     },
     {
         method: 'PUT',
@@ -103,7 +103,7 @@ export const adminCa: ApiEndpoint[] = [
             { name: 'spaceId', type: 'guid', required: false, description: 'Space that owns this CA. Required unless scope is "instance"; an empty GUID counts as none' },
             { name: 'scope', type: 'string', required: false, description: '"instance" to create an instance CA (no space). Omit when spaceId is sent; a body with neither, or both, is refused with 400' },
             { name: 'keyAlgorithm', type: 'string', required: true, description: 'Key algorithm (ECDSA, RSA, Ed25519, Ed448, ML-DSA, SLH-DSA). Default: ECDSA' },
-            { name: 'keySize', type: 'int', required: false, description: 'Key size/curve. RSA: 2048/3072/4096/7680/8192. ECDSA: 256/384/521. Default: 384' },
+            { name: 'keySize', type: 'int', required: false, description: 'Key size/curve. RSA: 3072/4096/7680/8192 (a new CA may not have an RSA key under 3072 bits). ECDSA: 256/384/521. Default: 384' },
             { name: 'validityYears', type: 'int', required: false, description: 'Validity in years (default: 10)' },
             { name: 'label', type: 'string', required: false, description: 'Optional CA label (max 255 chars)' },
             { name: 'certProfileId', type: 'guid', required: false, description: 'CA certificate profile ID. Defaults to "Main CA Certificate Profile" when not specified' },
@@ -116,7 +116,7 @@ export const adminCa: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup' },
         ],
         responseDescription: 'Created intermediate CA with ID, name, label, type, and certificate ID. If ceremony required: { requiresCeremony, ceremonyId, status, requiredApprovals, message }.',
-        notes: 'Key algorithm policy enforced: RSA 2048/3072/4096/7680/8192, ECDSA P-256/P-384/P-521, Ed25519, Ed448, ML-DSA-44/65/87, SLH-DSA-*. If the space has RequireKeyCeremony enabled, returns a ceremony object instead of creating the CA directly. When the ceremony could never reach its quorum, because too few accounts other than the caller can approve it, nothing is opened and the answer is 409 (code MCA-CFG-020 when nobody else can approve, MCA-CFG-021 when some can but too few); the key ceremony endpoints describe the body.',
+        notes: 'Key algorithm policy enforced: RSA 3072/4096/7680/8192, ECDSA P-256/P-384/P-521, Ed25519, Ed448, ML-DSA-44/65/87, SLH-DSA-*. From 0.4.5 an RSA key under 3072 bits is refused with 400 for a new CA, before any ceremony is opened and again when one is executed: NIST SP 800-57 accepts RSA 2048 only through 2030. Existing CAs are not affected. If the space has RequireKeyCeremony enabled, returns a ceremony object instead of creating the CA directly. When the ceremony could never reach its quorum, because too few accounts other than the caller can approve it, nothing is opened and the answer is 409 (code MCA-CFG-020 when nobody else can approve, MCA-CFG-021 when some can but too few); the key ceremony endpoints describe the body.',
     },
     {
         method: 'POST',
@@ -134,7 +134,7 @@ export const adminCa: ApiEndpoint[] = [
             { name: 'spaceId', type: 'guid', required: false, description: 'Space that owns this CA. Required unless scope is "instance"; an empty GUID counts as none' },
             { name: 'scope', type: 'string', required: false, description: '"instance" to create an instance CA (no space). Omit when spaceId is sent; a body with neither, or both, is refused with 400' },
             { name: 'keyAlgorithm', type: 'string', required: true, description: 'Key algorithm (ECDSA, RSA, Ed25519, Ed448, ML-DSA, SLH-DSA). Default: ECDSA' },
-            { name: 'keySize', type: 'int', required: false, description: 'Key size/curve. RSA: 2048/3072/4096/7680/8192. ECDSA: 256/384/521. Default: 384' },
+            { name: 'keySize', type: 'int', required: false, description: 'Key size/curve. RSA: 3072/4096/7680/8192 (a new CA may not have an RSA key under 3072 bits). ECDSA: 256/384/521. Default: 384' },
             { name: 'validityYears', type: 'int', required: false, description: 'Validity in years (default: 25)' },
             { name: 'label', type: 'string', required: false, description: 'Optional CA label (max 255 chars)' },
             { name: 'certProfileId', type: 'guid', required: false, description: 'CA certificate profile ID. Defaults to "Main CA Certificate Profile" when not specified' },
@@ -147,6 +147,47 @@ export const adminCa: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token from /api/v1/auth/mfa/verify-stepup' },
         ],
         responseDescription: 'Created root CA with ID, name, label, type, and certificate ID. If ceremony required: { requiresCeremony, ceremonyId, status, requiredApprovals, message }.',
-        notes: 'Key algorithm policy enforced. Triggers a security alert when a root CA is created. If the space has RequireKeyCeremony enabled, returns a ceremony object instead of creating the CA directly. When the ceremony could never reach its quorum, because too few accounts other than the caller can approve it, nothing is opened and the answer is 409 (code MCA-CFG-020 when nobody else can approve, MCA-CFG-021 when some can but too few); the key ceremony endpoints describe the body.',
+        notes: 'Key algorithm policy enforced; from 0.4.5 an RSA key under 3072 bits is refused with 400 for a new CA (NIST SP 800-57 accepts RSA 2048 only through 2030), before any ceremony is opened and again when one is executed. Existing CAs are not affected. Triggers a security alert when a root CA is created. If the space has RequireKeyCeremony enabled, returns a ceremony object instead of creating the CA directly. When the ceremony could never reach its quorum, because too few accounts other than the caller can approve it, nothing is opened and the answer is 409 (code MCA-CFG-020 when nobody else can approve, MCA-CFG-021 when some can but too few); the key ceremony endpoints describe the body.',
+    },
+    {
+        method: 'POST',
+        path: '/api/v1/admin/authorities/{caId}/renew-certificate',
+        summary: 'Renew a CA\'s certificate over the key it has: the same key, subject and extensions, a new serial and a new validity. The earlier certificate stays valid and is not revoked.',
+        auth: 'Authorize (system administrator for a root CA; ca.manage for the space of an intermediate CA)',
+        category: 'CA Management',
+        requestBody: [
+            { name: 'validityYears', type: 'int', required: false, description: 'Validity of the new certificate in years from now, 1 to 50 (default 10). An intermediate\'s is shortened to end with its parent CA\'s certificate.' },
+            { name: 'acknowledge', type: 'string[]', required: false, description: 'Reason codes of the validity warnings the administrator accepts, e.g. ["CaRsaKeyBelow3072Past2030"].' },
+        ],
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token scoped to renew-ca-certificate and bound to the CA id' },
+        ],
+        responseDescription: 'When renewed: { requiresCeremony: false, caId, certificateId, serialNumber, previousSerialNumber, notBefore, notAfter, shortenedToParent, message }. When the CA\'s scope requires a key ceremony: { requiresCeremony: true, ceremonyId, status, requiredApprovals, notAfter, shortenedToParent, message }; the renewal happens when the approved RenewCaCertificate ceremony is executed.',
+        notes: 'Added in 0.4.5. A root signs its own new certificate; an intermediate\'s is signed by its parent CA of this instance. Nothing but the validity is chosen. The system signing CA is renewed like any root. A validity warning that has to be acknowledged (today CaRsaKeyBelow3072Past2030: an RSA key under 3072 bits past 2030) answers 409 with requiresAcknowledgement and the advisories until its reason is sent in acknowledge; a validity longer than common practice (25 years for a root, 10 for an intermediate) is returned in advisories and refuses nothing. Refused with 400 for a revoked CA certificate, an intermediate whose issuer is not a CA of this instance, a parent that is disabled, revoked or outside its validity, a validity that would not end after the current certificate\'s, and whatever the signer refuses (it checks the key, the subject, the extensions, the path length, the validity and the ceremony itself). A refusal names the parent CA only to a caller who may see it; to anyone else it says "the parent CA". 403 without the right, 404 for an unknown CA, 503 outside full mode (restricted and DR modes). The CRL and OCSP addresses do not change, and one CRL covers certificates issued under either certificate. After a root renewal, the new root certificate has to be given to everyone who trusts the old one. Not built: a new key, a changed subject, cross-certificates, renewal on a schedule.',
+    },
+    {
+        method: 'GET',
+        path: '/api/v1/admin/certificates/serial/{serial}/revocation-scope',
+        summary: 'What revoking, holding or releasing this certificate will reach: for a CA certificate, every certificate that CA has over the same key.',
+        auth: 'Authorize (the caller\'s space fence must admit the CA)',
+        category: 'CA Management',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: '{ isCaCertificate, caId, caName, isRoot, certificates: [{ certificateId, serialNumber, subjectDN, notBefore, notAfter, isCurrent, isRequested, onHold, revoked }] }. For a certificate that is not a CA\'s, the list holds that certificate alone.',
+        notes: 'Added in 0.4.5. Reads only. From 0.4.5 revoking a CA certificate (POST .../revoke, or an executed RevokeCa ceremony) revokes every certificate of that CA over the same key with one reason and date, and a hold and its release reach all of them; the answers of those calls list the others in alsoSerialNumbers. The console shows this list before the administrator confirms.',
+    },
+    {
+        method: 'GET',
+        path: '/api/v1/admin/authorities/{caId}/certificates',
+        summary: 'List the certificates a CA has had: the current one first, then every earlier one a renewal superseded.',
+        auth: 'Authorize (CaAuditor)',
+        category: 'CA Management',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: 'An array of { certificateId, serialNumber, subjectDN, issuer, notBefore, notAfter, sha256, keyId, isCurrent, origin (Initial or Renewal), activatedAt, supersededAt, ceremonyId, actor, revoked, expired, pem }.',
+        notes: 'Added in 0.4.5. keyId is the SHA-256 of the certificate\'s public key; it is the same for every certificate of a CA renewed over its key. An earlier certificate is also served publicly at /ca/{serial}.',
     },
 ];

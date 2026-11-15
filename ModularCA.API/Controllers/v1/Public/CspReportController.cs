@@ -31,6 +31,7 @@ public class CspReportController : ControllerBase
     /// Accepts a CSP violation report. Always returns 204 regardless of body
     /// shape so a misbehaving browser cannot retry-spam the endpoint.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Manage)]
     [HttpPost]
     [Consumes("application/csp-report", "application/json", "application/reports+json")]
     public async Task<IActionResult> ReportAsync()

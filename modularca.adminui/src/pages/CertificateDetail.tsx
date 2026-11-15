@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { displaySerial } from '@shared/serial';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
@@ -109,6 +110,19 @@ const CertificateDetail: React.FC = () => {
     const [revokeError, setRevokeError] = useState<NoticeInput | null>(null);
     // Revoking a CA was refused because nobody else could approve its ceremony.
     const [revokeRefusal, setRevokeRefusal] = useState<CeremonyRefusal | null>(null);
+    // For a CA certificate: every certificate of that CA over the same key, which the revocation reaches.
+    const [revokeScope, setRevokeScope] = useState<any[] | null>(null);
+    // Releasing a hold on a CA certificate asks first, with the list of certificates it releases.
+    const [liftOpen, setLiftOpen] = useState(false);
+    useEffect(() => {
+        if ((!revokeOpen && !liftOpen) || !serial) return;
+        let cancelled = false;
+        setRevokeScope(null);
+        apiGet<any>(`/api/v1/admin/certificates/serial/${serial}/revocation-scope`, { toast: false })
+            .then((scope) => { if (!cancelled) setRevokeScope(Array.isArray(scope?.certificates) ? scope.certificates : null); })
+            .catch(() => { if (!cancelled) setRevokeScope(null); });
+        return () => { cancelled = true; };
+    }, [revokeOpen, liftOpen, serial]);
 
     const [reissueOpen, setReissueOpen] = useState(false);
 
@@ -200,7 +214,7 @@ const CertificateDetail: React.FC = () => {
             downloadBlob(await resp.text(), `${getCertName(cert)}-fullchain.pem`, 'application/x-pem-file');
         } catch (err: any) { showToast('error', err.message || 'Download failed'); }
     };
-    const handleCopySerial = () => navigator.clipboard.writeText(cert?.serialNumber || '').then(() => showToast('success', 'Serial copied')).catch(() => {});
+    const handleCopySerial = () => navigator.clipboard.writeText(displaySerial(cert?.serialNumber)).then(() => showToast('success', 'Serial copied')).catch(() => {});
 
     const changeExpiryHandling = async (call: () => Promise<unknown>, done: string) => {
         setHandlingBusy(true); setHandlingError(null);
@@ -296,7 +310,7 @@ const CertificateDetail: React.FC = () => {
             breadcrumbs={[{ label: 'Certificates', to: '/certificates' }, { label: cn }]}
             title={cn}
             status={status === 'expired' && cert.replaced ? <StatusBadge status="disabled" label="expired" /> : <StatusBadge status={status} />}
-            subtitle={<span className="font-mono">{cert.serialNumber}</span>}
+            subtitle={<span className="font-mono">{displaySerial(cert.serialNumber)}</span>}
             backTo="/certificates"
             actions={
                 <div className="flex items-center gap-2 flex-wrap">
@@ -320,7 +334,7 @@ const CertificateDetail: React.FC = () => {
                         {cert.revocationReason && <span className="text-sm text-crit">Reason: {cert.revocationReason}</span>}
                         {cert.revokedAt && <span className="text-xs text-crit ml-auto">{formatDate(cert.revokedAt)}</span>}
                         {isOnHold && (
-                            <button onClick={liftHold} disabled={holdBusy} className="px-2.5 py-1 text-xs rounded border border-crit text-crit hover:bg-crit-soft disabled:opacity-50">
+                            <button onClick={() => (cert.isCA ? setLiftOpen(true) : liftHold())} disabled={holdBusy} className="px-2.5 py-1 text-xs rounded border border-crit text-crit hover:bg-crit-soft disabled:opacity-50">
                                 {holdBusy ? 'Lifting…' : 'Lift hold'}
                             </button>
                         )}
@@ -335,7 +349,7 @@ const CertificateDetail: React.FC = () => {
                             <span className="text-sm text-ink">
                                 {cert.replaced
                                     ? (cert.replacedBySerial
-                                        ? <>Replaced by <Link to={`/certificates/${cert.replacedBySerial}`} className="font-mono text-accent-ink hover:underline">{cert.replacedBySerial}</Link></>
+                                        ? <>Replaced by <Link to={`/certificates/${cert.replacedBySerial}`} className="font-mono text-accent-ink hover:underline">{displaySerial(cert.replacedBySerial)}</Link></>
                                         : 'Replaced')
                                     : 'Not replaced'}
                             </span>
@@ -375,7 +389,10 @@ const CertificateDetail: React.FC = () => {
                             {sans && sans.length > 0
                                 ? <DetailField label="SANs" value={sans.join(', ')} />
                                 : <DetailField label="SANs" value={cert.subjectAlternativeNames?.join?.(', ') || '-'} />}
-                            <DetailField label="Serial" value={cert.serialNumber} mono />
+                            <DetailField label="Serial" value={displaySerial(cert.serialNumber)} mono />
+                            {cert.adoptedAt && (
+                                <DetailField label="Adopted" value={`From outside, requester unknown. Adopted ${formatDate(cert.adoptedAt)}${cert.adoptedBy ? ` by ${cert.adoptedBy}` : ''}${cert.adoptionNote ? `: ${cert.adoptionNote}` : ''}`} />
+                            )}
                         </div>
                         <div>
                             <DetailField label="Not Before" value={formatDate(cert.notBefore)} />
@@ -482,7 +499,7 @@ const CertificateDetail: React.FC = () => {
                         <div className="bg-raised border border-line rounded-lg shadow-xl w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
                             <div className="px-6 py-4 border-b border-line"><h2 className="text-lg font-semibold text-ink">Revoke Certificate</h2></div>
                             <div className="px-6 py-4 space-y-4">
-                                <div className="space-y-1"><div className="text-xs text-ink-muted">Serial Number</div><div className="data-mono text-ink break-all">{cert.serialNumber}</div></div>
+                                <div className="space-y-1"><div className="text-xs text-ink-muted">Serial Number</div><div className="data-mono text-ink break-all">{displaySerial(cert.serialNumber)}</div></div>
                                 <div className="space-y-1"><div className="text-xs text-ink-muted">Subject</div><div className="text-sm text-ink break-all">{cert.subjectDN}</div></div>
                                 <div className="space-y-1">
                                     <label htmlFor="revoke-reason" className="block text-xs text-ink-muted">Revocation Reason</label>
@@ -491,12 +508,65 @@ const CertificateDetail: React.FC = () => {
                                     </select>
                                     <RevocationReasonHint reason={revokeReason} />
                                 </div>
+                                {cert.isCA && revokeScope && revokeScope.length > 1 && (
+                                    <div className="rounded border border-warn/40 bg-warn-soft p-3 space-y-1">
+                                        <p className="text-xs text-warn">
+                                            {revokeReason === 'CertificateHold' ? (
+                                                <><strong>This puts {revokeScope.length} certificates on hold.</strong> This CA has more than one certificate over the same key,
+                                                and a hold on the CA holds every one of them, with one date. Releasing the hold releases them together:</>
+                                            ) : (
+                                                <><strong>This revokes {revokeScope.length} certificates.</strong> This CA has more than one certificate over the same key,
+                                                and a key that is no longer trusted is not trusted under any of them. All are revoked together, with this reason and one date:</>
+                                            )}
+                                        </p>
+                                        <ul className="text-xs text-ink space-y-0.5">
+                                            {revokeScope.map((c) => (
+                                                <li key={c.serialNumber} className="data-mono break-all">
+                                                    {displaySerial(c.serialNumber)}
+                                                    <span className="font-sans text-ink-muted"> {c.isCurrent ? '(current' : '(earlier'}, valid until {String(c.notAfter).slice(0, 10)}{c.revoked ? ', already revoked' : c.onHold ? ', on hold' : ''})</span>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                )}
                                 {revokeRefusal && <CeremonyRefusalNotice refusal={revokeRefusal} />}
                                 {revokeError && <InlineNotice notice={revokeError} />}
                             </div>
                             <div className="px-6 py-4 border-t border-line flex justify-end gap-3">
                                 <button onClick={() => setRevokeOpen(false)} disabled={revokeLoading} className="px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover transition-colors disabled:opacity-50">Cancel</button>
                                 <button onClick={handleRevokeConfirm} disabled={revokeLoading} className="px-4 py-2 text-sm bg-crit text-on-accent rounded hover:bg-crit-hover transition-colors disabled:opacity-50">{revokeLoading ? 'Revoking...' : 'Revoke'}</button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Release-hold modal, for a CA certificate: the release reaches every certificate of the CA over the key */}
+                {liftOpen && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim" onClick={() => !holdBusy && setLiftOpen(false)}>
+                        <div className="bg-raised border border-line rounded-lg shadow-xl w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
+                            <div className="px-6 py-4 border-b border-line"><h2 className="text-lg font-semibold text-ink">Release Hold</h2></div>
+                            <div className="px-6 py-4 space-y-3">
+                                <p className="text-sm text-ink">Release the hold on this CA certificate? It is valid again from the next CRL and OCSP update.</p>
+                                {revokeScope && revokeScope.filter((c) => c.onHold).length > 1 && (
+                                    <div className="rounded border border-warn/40 bg-warn-soft p-3 space-y-1">
+                                        <p className="text-xs text-warn">
+                                            <strong>This releases {revokeScope.filter((c) => c.onHold).length} certificates.</strong> A hold on a CA holds every
+                                            certificate it has over the same key, and the release releases them together. One that is revoked for good stays revoked.
+                                        </p>
+                                        <ul className="text-xs text-ink space-y-0.5">
+                                            {revokeScope.map((c) => (
+                                                <li key={c.serialNumber} className="data-mono break-all">
+                                                    {displaySerial(c.serialNumber)}
+                                                    <span className="font-sans text-ink-muted"> {c.isCurrent ? '(current' : '(earlier'}, valid until {String(c.notAfter).slice(0, 10)}{c.revoked ? ', revoked: stays revoked' : c.onHold ? ', on hold: released' : ', not on hold'})</span>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                )}
+                            </div>
+                            <div className="px-6 py-4 border-t border-line flex justify-end gap-3">
+                                <button onClick={() => setLiftOpen(false)} disabled={holdBusy} className="px-4 py-2 text-sm bg-sunken text-ink rounded hover:bg-hover transition-colors disabled:opacity-50">Cancel</button>
+                                <button onClick={async () => { await liftHold(); setLiftOpen(false); }} disabled={holdBusy} className="px-4 py-2 text-sm bg-accent text-on-accent rounded hover:bg-accent-hover transition-colors disabled:opacity-50">{holdBusy ? 'Releasing...' : 'Release hold'}</button>
                             </div>
                         </div>
                     </div>

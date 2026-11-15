@@ -179,7 +179,7 @@ public sealed class PendingMfaTokenTests
 
     private sealed class FixedPolicy : ISecurityPolicyService
     {
-        private readonly SecurityPolicyEntity _policy = new() { SessionIdleTimeoutMinutes = 0, MaxSessionLifetimeDays = 0, LoginResponseDelayMs = 0 };
+        private readonly SecurityPolicyEntity _policy = new() { SessionIdleTimeoutMinutes = 0, MaxSessionLifetimeHours = 0, LoginResponseDelayMs = 0 };
         public Task<SecurityPolicyEntity> GetAsync() => Task.FromResult(_policy);
         public void InvalidateCache() { }
     }

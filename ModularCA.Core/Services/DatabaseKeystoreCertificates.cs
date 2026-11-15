@@ -75,6 +75,18 @@ public sealed class DatabaseKeystoreCertificates : IKeystoreCertificates
         }
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// The signers here are read from the CA rows, so the renewed certificate is the CA's
+    /// signer certificate at the next read: the cache is dropped so that read is the next call.
+    /// </remarks>
+    public void RegisterRenewedCaCertificate(X509Certificate cert)
+    {
+        RegisterTrustedCert(cert);
+        lock (_lock)
+            _loadedAt = DateTime.MinValue;
+    }
+
     /// <summary>
     /// Reloads both lists from the database once the cache has aged out. A read that fails
     /// keeps what was loaded before, so a database blip does not empty the node's view of its

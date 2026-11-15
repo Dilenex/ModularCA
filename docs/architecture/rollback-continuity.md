@@ -1,6 +1,9 @@
 # Rollback continuity
 
-Status: draft, for owner review (2026-11-11). Nothing here is built.
+Status: partly built (0.4.5, 2026-11-11). Steps 1, 2 and 4 of "Order of work" are built; steps
+3, 5 and 6 and everything about the hub are not. "What is built" at the end says exactly what
+exists and where it departs from the text below, which is otherwise the draft as written and
+still describes the parts that are not built as proposals.
 
 ## Why
 
@@ -259,14 +262,14 @@ between "we cannot revoke it" and "tell us the serial".
 
 ## Order of work
 
-| Step | What | Depends on | Helps |
-|---|---|---|---|
-| 1 | Tombstone revocation, and adoption of a supplied certificate | nothing | both |
-| 2 | Incarnation ID: the injected source, the comparison at start, the CRL floor, the audit row and the notice | nothing | hub at once; home lab once step 3 lands |
-| 3 | The VM generation ID source and its boot unit | step 2, and the open questions below | home lab |
-| 4 | The published-CRL check at start | nothing | both, where CRLs are published elsewhere |
-| 5 | One serial generator; timestamp and tag in new serials; OCSP's precise answer for the lost time | step 2 for the tag | both |
-| 6 | The journal and its replay | `signer-hardening.md` Item 2 | hub and split installs; one machine only with a second location |
+| Step | What | Depends on | Helps | State |
+|---|---|---|---|---|
+| 1 | Tombstone revocation, and adoption of a supplied certificate | nothing | both | built |
+| 2 | Incarnation ID: the injected source, the comparison at start, the CRL floor, the audit row and the notice | nothing | hub at once; home lab once step 3 lands | built |
+| 3 | The VM generation ID source and its boot unit | step 2, and the open questions below | home lab | not built |
+| 4 | The published-CRL check at start | nothing | both, where CRLs are published elsewhere | built for the LDAP publisher; the read-back is not yet run against a directory |
+| 5 | One serial generator; timestamp and tag in new serials; OCSP's precise answer for the lost time | step 2 for the tag | both | not built |
+| 6 | The journal and its replay | `signer-hardening.md` Item 2 | hub and split installs; one machine only with a second location | the journal is written (`signer-journal.md`); its replay is not built |
 
 Steps 1, 2 and 4 are each small. Step 5 changes the format of every new serial and wants its own
 review. Step 6 is the large one and is already designed elsewhere.
@@ -308,3 +311,147 @@ review. Step 6 is the large one and is already designed elsewhere.
   state.
 - **Detecting a rollback from the clock.** A gap between the newest record and now is also what
   a machine that was switched off looks like.
+
+## What is built
+
+As of 0.4.5. The operator's view is in `packaging/README-DEPLOY.md`, "Snapshots, rollbacks and
+copies of the machine" and "Revoking a certificate the CA does not hold".
+
+### Step 1: tombstones and adoption (section 5)
+
+- **Code.** `RevokedSerialService` (Core), `AdminRevokedSerialController`
+  (`/api/v1/admin/authorities/{caId}/revoked-serials` and `/adopted-certificates`), the table
+  `RevokedSerialTombstones`, and three columns on `Certificates` (`AdoptedAt`, `AdoptedBy`,
+  `AdoptionNote`). `CrlService` lists tombstones on the full and the delta CRL;
+  `OcspResponderService` answers a tombstone with its date and reason.
+- **Scope.** A tombstone and an adopted certificate belong to the CA's current certificate and
+  are matched through the same same-key scope the CRL and OCSP already use
+  (`IssuerChainResolver.SameKeyCaCertificateIdsAsync`).
+- **Authorization.** `cert.revoke` on the CA in the route, step-up bound to that CA, audited
+  (`RevokedSerialRecorded`, `CertificateAdopted`), refusals included.
+
+Choices the text above left open:
+
+- **The revocation date of a tombstone is the moment it is recorded.** The administrator gives
+  no date; an invalidity date can be given, as for any revocation.
+- **A tombstone is permanent.** `CertificateHold` is refused, and there is no endpoint that
+  removes one. A mistyped serial leaves an entry for a serial nobody holds, which OCSP already
+  answered "revoked" for.
+- **Pruning (open question 8).** The default of section 5: the entry is listed until its date
+  plus the longest `ValidityPeriodMax` among the certificate profiles the CA can issue with
+  (its own, its space's, the instance-wide ones; one year where none states one), and not past
+  the end of the CA's certificate. It is computed when the tombstone is recorded and stored
+  (`ListedUntil`), so a later change of profiles does not move it. The administrator cannot set
+  it. Serials carry no timestamp yet (step 5), so it always counts from the tombstone's date.
+  OCSP keeps answering from a tombstone after it has left the CRL.
+- **Adoption verifies under the CA's current key only.** A certificate signed by a key the CA
+  has since replaced is refused, because the CA's CRL no longer covers it; its serial can still
+  be tombstoned.
+- **A CA certificate is not adopted.** A subordinate CA's row takes part in chain and owner
+  resolution, and adopting one from outside was not thought through. Its serial can be
+  tombstoned.
+- **Adopting a tombstoned serial** writes the row revoked with the tombstone's date and reason
+  and removes the tombstone, in one save: a serial never has both.
+- **Adoption can revoke in the same step** (`revokeReason`), which section 5 puts as "then
+  revokes it or not as the administrator chooses".
+- **An adopted row has no signing profile**, which is how every other certificate names its CA
+  for the CA-scoped revocation endpoints. `AdoptedCertificateScope` gives an adopted row the CA
+  whose certificate verified it, for the revoke, hold and release endpoints only. The other
+  per-certificate actions and lists resolve a certificate's CA in their own ways and were not
+  changed; how each treats a row with an issuer and no profile has not been gone through.
+
+### Step 2: the incarnation (sections 1 and 2)
+
+- **Code.** `IIncarnationSource`, `InjectedIncarnationSource` and `IncarnationSources`
+  (the seam for step 3 is the list in `IncarnationSources.Default`), `InstanceContinuity`
+  (Core), `ContinuityStartup` (API, run from `StartModularCA.cs` after the settings step and
+  before the web host is built), `ContinuityHealthCheck`, `AdminContinuityController`, the
+  tables `InstanceIncarnation` (one row) and `InstanceContinuityEvents`.
+- **The table of section 1** is followed, with one row added: the database holds "none" and
+  the machine now reports a value. That is stored without an event, since nothing can be said
+  about a timeline that was never identified.
+- **Two nodes starting together** take a PostgreSQL advisory lock in turn inside one
+  transaction: one compares, repairs and stores; the other finds the stored value current.
+
+Choices the text above left open:
+
+- **Only the SHA-256 of the value is stored**, and the audit row, the notice and the health
+  payload show its first 16 hex digits as the tag. This is not the keyed tag of section 4,
+  which belongs to step 5 and will need its own decision (open question 6).
+- **Only the control role compares.** It applies the migrations and runs the scheduled CRL
+  generation, and one role doing it keeps the processes of a split install from each storing
+  their own view. The variable must be set for that process. In a split install an enrollment
+  process that starts before the control process could still generate a CRL (after an ACME
+  revocation) before the floor is applied.
+- **A failed comparison does not stop the start.** A database fault at that moment is logged as
+  an error and shown in `/health/ready` (`checks.continuity.status` = `check_failed`); nothing
+  is stored, so the next start compares again.
+- **The notice does not make the node unhealthy.** `/health/ready` stays 200 with
+  `checks.continuity.status` = `notice`. A 503 would take a rolled-back CA out of rotation,
+  which section 2 rules out.
+- **`checks.continuity` keeps this start and the open events apart.** `incarnationCheck` and
+  `incarnationCheckedAt` are the comparison this process made at its own start. `events` are
+  the events nobody has acknowledged, whichever start recorded them; each has `detectedAt` and
+  `recordedAtThisStart`, true only for an event this process recorded at this start (its
+  incarnation comparison or its published-CRL check), and `eventsFromThisStart` and
+  `eventsFromEarlierStarts` count the two. Before this, `incarnationCheck: "Same"` beside an
+  event of an earlier start read as a contradiction. Example, at the start after the one that
+  found a change:
+
+      "continuity": { "status": "notice", "unacknowledged": 1, "incarnationCheck": "Same",
+        "incarnationCheckedAt": "2026-11-13T09:12:04.1Z", "eventsFromThisStart": 0, "eventsFromEarlierStarts": 1,
+        "events": [ { "id": "…", "kind": "IncarnationChanged", "detectedAt": "2026-11-12T22:40:17.5Z",
+                      "recordedAtThisStart": false, "oldTag": "…", "newTag": "…", "message": "…" } ] }
+- **A restore and a running node keep each other out** (`restore-exclusion.md`): the notice that
+  led to it was raised by a node that started while its database was being restored and wrote
+  over the incarnation the restore had just stored. A restore also says in its last line when it
+  could not store the incarnation, after four attempts.
+- **"Source went away"** writes its own audit action (`InstanceIncarnationSourceLost`), does
+  not raise the CRL numbers, and shows a notice that also needs acknowledging. That is the
+  "warn once": the next start finds "none" stored and says nothing.
+- **Acknowledging** needs a system administrator (`SystemAdmin`) and step-up bound to the
+  event; reading the notice needs `SystemAuditor`, as `/health/ready` does. Each event is
+  acknowledged on its own. It is audited as `InstanceContinuityAcknowledged`.
+- **Open question 5** is done as proposed: `--restore`, and the restore from the console, store
+  the machine's incarnation in the restored database after raising the CRL numbers.
+- **Journal replay** (item 2 of section 2) exists for revocations only, from 0.4.5: the node
+  makes again the revocations the signer's journal holds and the database has lost
+  (`signer-journal.md`, section 16), audits each, and leaves a notice of its own kind,
+  `RevocationsMergedFromJournal`, to be acknowledged like the others. Nothing else is
+  replayed: the log line, the audit row, the event and the notice of a changed incarnation say
+  so. The journal itself is written from 0.4.5: a changed incarnation is in it as a
+  `ContinuityEvent` and a restore as a `RestoreMarker`, and the signer holds a CRL to the
+  newest one it journaled, so a database that went back cannot quietly drop a revocation.
+
+Where the build departs from the text above:
+
+- **The edge of memory (section 3) is taken from the application database only**, and the
+  audit trail's newest row is reported beside it, not folded into it. The audit trail is a
+  separate database: when a rollback leaves it alone, its newest row is from just before the
+  rollback, and "the latest of them" would then name a time after which almost nothing was
+  lost. Kept apart, a newest audit row well past the edge says the audit trail survived, and
+  the console then points at it as the list of what the lost time did.
+- **The edge also reads the scheduler's last lease renewal and job run, and the newest stored
+  CRL.** The scheduler renews its lease at every tick, so on an instance that was running this
+  is within a tick of the last write, where the newest certificate may be days older.
+  `CreatedAt` is read for certificates, not the time in the id; they agree.
+
+### Step 4: the published-CRL check (section 3)
+
+- **Code.** `IPublishedCrlReader`, `LdapPublishedCrlReader`,
+  `InstanceContinuity.CheckPublishedCrlsAsync`, and `PublishedCrlCheckService`, a hosted
+  service registered before the scheduler so that it has finished before the scheduler ticks.
+- **What counts.** For each CA, the highest CRL number read back among CRLs that name the CA
+  and verify under its key, against the highest number the database holds for that CA (its
+  configurations' counters and its stored CRLs). Higher means the database went back: the
+  counters are raised to the larger of the time-derived floor and the published number, and one
+  event (`PublishedCrlAhead`) and one `InstanceIncarnationChanged` audit row are written, as
+  for a changed incarnation. The stored incarnation is not touched.
+- **The only publisher that can be read back is LDAP.** The instance's own distribution point
+  serves from the database, so it proves nothing; there is no file or HTTP publisher.
+- **Not verified:** the LDAP read itself (`LdapPublishedCrlReader`: a base-scope search for
+  `certificateRevocationList` on the publisher's base DN) has not been run against a
+  directory. The comparison and everything after it are covered by tests with CRLs signed by a
+  test CA. The LDAP publisher writes full and delta CRLs to the same attribute, so what is
+  read back may be either; the highest number is taken.
+- **A directory that does not answer** within ten seconds is skipped with a warning.

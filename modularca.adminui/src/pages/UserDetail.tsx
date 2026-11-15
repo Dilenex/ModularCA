@@ -143,7 +143,7 @@ const UserDetail: React.FC = () => {
     });
 
     const resetMfa = () => setConfirm({
-        title: 'Reset MFA', message: `Remove every MFA method of "${user.username}"? They must enrol again at next sign-in. If they hold an admin / operator / CA-admin tier, this opens an approval ceremony.`, confirmLabel: 'Reset MFA',
+        title: 'Reset MFA', message: `Remove every MFA method of "${user.username}"? They must enroll again at next sign-in. If they hold an admin / operator / CA-admin tier, this opens an approval ceremony.`, confirmLabel: 'Reset MFA',
         action: async () => {
             const res: any = await apiPostWithMfa(`/api/v1/admin/users/${id}/reset-mfa`, {}, requireStepUp, StepUpOps.ResetMfa, id!);
             if (!ceremonyStarted(res)) showToast('success', 'MFA reset');

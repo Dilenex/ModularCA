@@ -261,7 +261,7 @@ const CertificateRequests: React.FC = () => {
                         {STATUS_FILTERS.map((f) => (
                             <button key={f} onClick={() => setStatusFilter(f)}
                                 className={`px-3 py-1.5 text-xs font-medium transition-colors ${statusFilter === f ? 'bg-accent text-on-accent' : 'bg-sunken text-ink hover:bg-hover'}`}>
-                                {f}
+                                {f === 'Cancelled' ? 'Canceled' : f}
                             </button>
                         ))}
                     </div>

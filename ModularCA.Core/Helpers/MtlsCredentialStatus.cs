@@ -70,7 +70,7 @@ public readonly record struct MtlsCredentialMatch(MtlsCredentialEntity? Credenti
 /// Reading the certificate's own status covers every path, present and future.
 /// </para>
 /// <para>
-/// A credential with no certificate record does not authenticate. Enrolment always records the
+/// A credential with no certificate record does not authenticate. Enrollment always records the
 /// certificate; the link is null only when that row was deleted, and then nothing can show that the
 /// certificate is still good.
 /// </para>
@@ -201,9 +201,13 @@ public static class MtlsCredentialStatus
         if (issuerId is not Guid issuerCertificateId)
             return null;
 
+        // The issuer in the chain is whichever certificate of the CA the validator holds. A CA
+        // whose certificate was renewed has issued under each of them, so the record is looked
+        // for under every certificate the CA has had over that key.
+        var issuerScope = await IssuerChainResolver.SameKeyScopeAsync(db, issuerCertificateId, ct);
         var serial = CertificateUtil.NormalizeSerialForLookup(certificate.SerialNumber);
         var rows = await db.Certificates.AsNoTracking()
-            .Where(c => c.SerialNumber == serial && (c.IssuerCertificateId == issuerCertificateId || c.IssuerCertificateId == null))
+            .Where(c => c.SerialNumber == serial && (c.IssuerCertificateId == null || issuerScope.Contains(c.IssuerCertificateId.Value)))
             .Select(c => new { c.Revoked })
             .ToListAsync(ct);
         if (rows.Count == 0)
@@ -211,7 +215,8 @@ public static class MtlsCredentialStatus
         if (rows.Any(r => r.Revoked))
             return MtlsCredentialRefusal.CertificateRevoked;
 
-        return (await MtlsIssuerStanding.LoadAsync(db, ct)).RefusalFor(null, issuerCertificateId);
+        // The CA's standing is read through its current certificate.
+        return (await MtlsIssuerStanding.LoadAsync(db, ct)).RefusalFor(null, await IssuerChainResolver.CurrentSameKeyCertificateIdAsync(db, issuerCertificateId, ct));
     }
 
     /// <summary>The DER of a stored PEM certificate, or null when it does not parse.</summary>

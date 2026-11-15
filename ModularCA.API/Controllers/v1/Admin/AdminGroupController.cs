@@ -196,6 +196,7 @@ public class AdminGroupController(
     /// "instance" together with a CA or space, or an unknown scope is a 400, so an omitted space
     /// can no longer make a system group by accident.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [Authorize(Policy = "SystemAdmin")]
     [RequireStepUp(StepUpOps.CreateGroup)]
@@ -315,6 +316,7 @@ public class AdminGroupController(
     /// Updates a group's display name, quorum setting, or mTLS signing CA. Requires step-up MFA
     /// because group rename and quorum changes can shift effective authorization for every member.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut("{id:guid}")]
     [Authorize(Policy = "SystemAdmin")]
     [RequireStepUp(StepUpOps.UpdateGroup, "id")]
@@ -376,6 +378,7 @@ public class AdminGroupController(
     /// it, and the SSH certificates of its members that carried one are revoked, as are those of
     /// a member who could request from an SSH CA only through the group.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id:guid}")]
     [Authorize(Policy = "SystemAdmin")]
     [RequireStepUp(StepUpOps.DeleteGroup, "id")]
@@ -449,6 +452,7 @@ public class AdminGroupController(
     /// a non-super opens a ceremony (202); 409 when the caller reset the user's password or MFA in
     /// the last 30 days.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("{id:guid}/members")]
     [Authorize(Policy = "SystemAdmin")]
     [RequireStepUp(StepUpOps.AddGroupMember, "id")]
@@ -543,6 +547,7 @@ public class AdminGroupController(
     /// single user's failure. A promotion the caller may not open, or that nobody else could
     /// approve, is reported as <c>refused</c>.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("{id:guid}/members/bulk")]
     [Authorize(Policy = "SystemAdmin")]
     [RequireStepUp(StepUpOps.AddGroupMember, "id")]
@@ -635,6 +640,7 @@ public class AdminGroupController(
     /// through the group, and all of the member's on an SSH CA they could request from only
     /// through it.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpDelete("{id:guid}/members/{userId:guid}")]
     [Authorize(Policy = "SystemAdmin")]
     [RequireStepUp(StepUpOps.RemoveGroupMember, "id")]
@@ -716,6 +722,7 @@ public class AdminGroupController(
     /// held through the group, and all of the member's on an SSH CA they could request from only
     /// through it. Returns a per-user result summary.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("{id:guid}/members/bulk-remove")]
     [Authorize(Policy = "SystemAdmin")]
     [RequireStepUp(StepUpOps.RemoveGroupMember, "id")]

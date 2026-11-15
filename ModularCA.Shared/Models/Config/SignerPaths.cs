@@ -63,6 +63,43 @@ public sealed class SignerPaths
     /// <summary>The keystore files, <c>keystores/</c> under the application directory in either layout.</summary>
     public string KeystoresDirectory => Path.Combine(BaseDirectory, "keystores");
 
+    /// <summary>The journal's home when no setting names another: <c>signer/journal</c> under the application directory.</summary>
+    public const string DefaultJournalDirectory = "signer/journal";
+
+    private const string SignerDirectoryPrefix = "signer/";
+
+    /// <summary>
+    /// The home of the signer's issuance journal (<c>docs/architecture/signer-journal.md</c>,
+    /// section 1): the directory that holds <c>current/</c> and the set-aside journals. It is
+    /// never inside the keystores directory, because a journal that goes back in time with the
+    /// keystores protects nothing.
+    /// <list type="bullet">
+    /// <item>A rooted <c>Signer.Journal.Directory</c> is used as it is.</item>
+    /// <item>In the shared layout a relative one resolves against the application directory,
+    /// so the default is <c>&lt;base&gt;/signer/journal</c>.</item>
+    /// <item>With the signer's own directory (<c>--signer-dir</c>) a relative one resolves
+    /// against that directory, and a leading <c>signer/</c> names the directory itself, so the
+    /// default is <c>&lt;signer-dir&gt;/journal</c>. For the packaged split install and the pod,
+    /// whose signer directory is <c>/opt/modularca/signer</c>, that is the same path as in the
+    /// shared layout: <c>/opt/modularca/signer/journal</c>.</item>
+    /// </list>
+    /// </summary>
+    public string JournalDirectory(SignerConfig signer)
+    {
+        ArgumentNullException.ThrowIfNull(signer);
+        var configured = string.IsNullOrWhiteSpace(signer.Journal?.Directory) ? DefaultJournalDirectory : signer.Journal.Directory.Trim();
+        if (Path.IsPathRooted(configured))
+            return Path.GetFullPath(configured);
+        if (SignerDirectory is not { } dir)
+            return Path.GetFullPath(Path.Combine(BaseDirectory, configured));
+        var relative = configured.Replace('\\', '/');
+        while (relative.StartsWith("./", StringComparison.Ordinal))
+            relative = relative[2..];
+        if (relative.StartsWith(SignerDirectoryPrefix, StringComparison.OrdinalIgnoreCase))
+            relative = relative[SignerDirectoryPrefix.Length..];
+        return Path.GetFullPath(Path.Combine(dir, relative));
+    }
+
     /// <summary>
     /// Where the file logs go: <c>&lt;dir&gt;/logs</c>, or <c>logs/</c>. In the shared layout the
     /// keystore events go there too, as <c>bootstrap-audit-*.jsonl</c>, which the node replays.

@@ -37,7 +37,7 @@ public class WhitelistEntity
 
     /// <summary>
     /// Optional free-text description explaining the intent of the rule
-    /// (e.g. "Corporate VPN range" or "Partner network for SCEP enrolment").
+    /// (e.g. "Corporate VPN range" or "Partner network for SCEP enrollment").
     /// </summary>
     [MaxLength(500)]
     public string? Description { get; set; }

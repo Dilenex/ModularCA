@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { displaySerial } from '@shared/serial';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
@@ -61,6 +62,18 @@ function formatDateShort(d: string | null): string {
         hour: '2-digit',
         minute: '2-digit',
     });
+}
+
+/** When a certificate's validity starts: `notBefore` as the list API names it, or the older `validFrom`. */
+export function issuedOn(cert: { notBefore?: string | null; validFrom?: string | null }): string | null {
+    return cert.notBefore || cert.validFrom || null;
+}
+
+/** The same as a time to sort by; a certificate with no date sorts last. */
+function issuedAt(cert: { notBefore?: string | null; validFrom?: string | null }): number {
+    const on = issuedOn(cert);
+    const at = on ? new Date(on).getTime() : NaN;
+    return Number.isNaN(at) ? 0 : at;
 }
 
 function monthKey(d: Date): string {
@@ -334,10 +347,11 @@ const CertInventory: React.FC = () => {
         return Object.entries(m).sort((a, b) => b[1].total - a[1].total);
     }, [certs, now]);
 
-    // Recently issued (last 10 by validFrom)
+    // Recently issued: the last 10 by the start of validity. The list API names it notBefore;
+    // validFrom is read as well for an answer that carries the older name.
     const recentlyIssued = useMemo(() => {
         return [...filtered]
-            .sort((a, b) => new Date(b.validFrom).getTime() - new Date(a.validFrom).getTime())
+            .sort((a, b) => issuedAt(b) - issuedAt(a))
             .slice(0, 10);
     }, [filtered]);
 
@@ -569,10 +583,10 @@ const CertInventory: React.FC = () => {
                             empty="No certificates"
                             sort={{ key: 'total', dir: 'desc' }}
                             columns={[
-                                { key: 'ca', header: 'CA Name', flex: true, sortable: true, exportValue: ([issuer]) => issuer, render: ([issuer]) => <span className={`text-ink truncate ${caFilter === issuer ? 'font-semibold' : ''}`} title={issuer}>{issuer}</span> },
+                                { key: 'ca', header: 'CA Name', defaultWidth: 360, minWidth: 200, sortable: true, exportValue: ([issuer]) => issuer, render: ([issuer]) => <span className={`text-ink truncate ${caFilter === issuer ? 'font-semibold' : ''}`} title={issuer}>{issuer}</span> },
                                 { key: 'total', header: 'Total', defaultWidth: 90, align: 'right', sortable: true, sortValue: ([, d]) => d.total, exportValue: ([, d]) => d.total, render: ([, d]) => <span className="text-ink tabular-nums">{d.total}</span> },
                                 { key: 'active', header: 'Active', defaultWidth: 90, align: 'right', sortable: true, sortValue: ([, d]) => d.active, exportValue: ([, d]) => d.active, render: ([, d]) => <span className="text-ok tabular-nums">{d.active}</span> },
-                                { key: 'expiring', header: 'In Expiry Warning', defaultWidth: 140, align: 'right', sortable: true, sortValue: ([, d]) => d.expiring, exportValue: ([, d]) => d.expiring, render: ([, d]) => <span className={`tabular-nums ${d.expiring > 0 ? 'text-warn' : 'text-ink-muted'}`}>{d.expiring}</span> },
+                                { key: 'expiring', header: 'In Expiry Warning', defaultWidth: 170, align: 'right', sortable: true, sortValue: ([, d]) => d.expiring, exportValue: ([, d]) => d.expiring, render: ([, d]) => <span className={`tabular-nums ${d.expiring > 0 ? 'text-warn' : 'text-ink-muted'}`}>{d.expiring}</span> },
                                 { key: 'revoked', header: 'Revoked', defaultWidth: 100, align: 'right', sortable: true, sortValue: ([, d]) => d.revoked, exportValue: ([, d]) => d.revoked, render: ([, d]) => <span className={`tabular-nums ${d.revoked > 0 ? 'text-crit' : 'text-ink-muted'}`}>{d.revoked}</span> },
                                 { key: 'filter', header: '', defaultWidth: 80, align: 'right', truncate: false, hideable: false, exportValue: () => '', render: ([issuer]) => (
                                     <button onClick={() => setCaFilter(caFilter === issuer ? null : issuer)} className="text-accent-ink hover:underline text-[10px] underline">
@@ -585,7 +599,9 @@ const CertInventory: React.FC = () => {
                 )}
             </Section>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* One table to a row, as on the certificates page: side by side each had half the width,
+                which left the subject no room. */}
+            <div className="grid grid-cols-1 gap-6">
                 {/* 6. Recently Issued */}
                 <Section title="Recently Issued">
                     {recentlyIssued.length === 0 ? (
@@ -599,10 +615,10 @@ const CertInventory: React.FC = () => {
                                 empty="Nothing issued recently"
                                 detailPath={(c) => `/certificates/${c.serialNumber}`}
                                 columns={[
-                                    { key: 'subject', header: 'Subject', flex: true, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-ink truncate" title={c.subjectDN}>{c.subjectDN}</span> },
-                                    { key: 'serial', header: 'Serial', defaultWidth: 150, exportValue: (c) => c.serialNumber, render: (c) => <span className="font-mono text-ink-muted truncate" title={c.serialNumber}>{c.serialNumber.substring(0, 16)}...</span> },
-                                    { key: 'issuer', header: 'Issuer', defaultWidth: 180, sortable: true, exportValue: (c) => c.issuer, render: (c) => <span className="text-ink-muted truncate" title={c.issuer}>{c.issuer}</span> },
-                                    { key: 'issued', header: 'Issued', defaultWidth: 120, align: 'right', sortable: true, sortValue: (c) => c.validFrom ? new Date(c.validFrom) : null, exportValue: (c) => formatDateShort(c.validFrom), render: (c) => <span className="text-ink-muted whitespace-nowrap">{formatDateShort(c.validFrom)}</span> },
+                                    { key: 'subject', header: 'Subject', defaultWidth: 280, minWidth: 160, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-ink truncate" title={c.subjectDN}>{c.subjectDN}</span> },
+                                    { key: 'serial', header: 'Serial', defaultWidth: 280, exportValue: (c) => displaySerial(c.serialNumber), render: (c) => <span className="data-mono text-ink-muted truncate" title={displaySerial(c.serialNumber)}>{displaySerial(c.serialNumber)}</span> },
+                                    { key: 'issuer', header: 'Issuer', defaultWidth: 240, sortable: true, exportValue: (c) => c.issuer, render: (c) => <span className="text-ink-muted truncate" title={c.issuer}>{c.issuer}</span> },
+                                    { key: 'issued', header: 'Issued', defaultWidth: 150, align: 'right', sortable: true, sortValue: (c) => issuedOn(c) ? new Date(issuedOn(c)!) : null, exportValue: (c) => formatDateShort(issuedOn(c)), render: (c) => <span className="text-ink-muted whitespace-nowrap">{formatDateShort(issuedOn(c))}</span> },
                                 ] as DataTableColumn<any>[]}
                             />
                         </div>
@@ -622,10 +638,10 @@ const CertInventory: React.FC = () => {
                                 empty="Nothing revoked recently"
                                 detailPath={(c) => `/certificates/${c.serialNumber}`}
                                 columns={[
-                                    { key: 'subject', header: 'Subject', flex: true, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-ink truncate" title={c.subjectDN}>{c.subjectDN}</span> },
-                                    { key: 'serial', header: 'Serial', defaultWidth: 150, exportValue: (c) => c.serialNumber, render: (c) => <span className="font-mono text-ink-muted truncate" title={c.serialNumber}>{c.serialNumber.substring(0, 16)}...</span> },
-                                    { key: 'reason', header: 'Reason', defaultWidth: 160, sortable: true, exportValue: (c) => c.revocationReason || 'Unspecified', render: (c) => <span className="text-crit">{c.revocationReason || 'Unspecified'}</span> },
-                                    { key: 'revoked', header: 'Revoked', defaultWidth: 120, align: 'right', sortable: true, sortValue: (c) => c.revocationDate ? new Date(c.revocationDate) : null, exportValue: (c) => formatDateShort(c.revocationDate), render: (c) => <span className="text-ink-muted whitespace-nowrap">{formatDateShort(c.revocationDate)}</span> },
+                                    { key: 'subject', header: 'Subject', defaultWidth: 280, minWidth: 160, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-ink truncate" title={c.subjectDN}>{c.subjectDN}</span> },
+                                    { key: 'serial', header: 'Serial', defaultWidth: 280, exportValue: (c) => displaySerial(c.serialNumber), render: (c) => <span className="data-mono text-ink-muted truncate" title={displaySerial(c.serialNumber)}>{displaySerial(c.serialNumber)}</span> },
+                                    { key: 'reason', header: 'Reason', defaultWidth: 180, sortable: true, exportValue: (c) => c.revocationReason || 'Unspecified', render: (c) => <span className="text-crit">{c.revocationReason || 'Unspecified'}</span> },
+                                    { key: 'revoked', header: 'Revoked', defaultWidth: 150, align: 'right', sortable: true, sortValue: (c) => c.revocationDate ? new Date(c.revocationDate) : null, exportValue: (c) => formatDateShort(c.revocationDate), render: (c) => <span className="text-ink-muted whitespace-nowrap">{formatDateShort(c.revocationDate)}</span> },
                                 ] as DataTableColumn<any>[]}
                             />
                         </div>

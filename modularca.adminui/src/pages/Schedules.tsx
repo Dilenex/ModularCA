@@ -240,7 +240,7 @@ const SystemJobsSection: React.FC<SystemJobsSectionProps> = ({ jobs, health, loa
                 ),
             },
             {
-                key: 'failures', header: 'Failures', defaultWidth: 90, sortable: true, sortValue: (j) => j.consecutiveFailureCount, exportValue: (j) => j.consecutiveFailureCount,
+                key: 'failures', header: 'Failures', defaultWidth: 110, sortable: true, sortValue: (j) => j.consecutiveFailureCount, exportValue: (j) => j.consecutiveFailureCount,
                 render: (j) => {
                     const over = j.consecutiveFailureCount >= alertThreshold;
                     return (
@@ -413,8 +413,8 @@ const SchedulesSection: React.FC<SchedulesSectionProps> = ({ schedules, loading,
 
     const crlColumns: DataTableColumn<CrlScheduleEntry>[] = [
         { key: 'ca', header: 'CA', defaultWidth: 160, minWidth: 120, truncate: false, exportValue: (c) => c.caLabel, render: (c) => <span className="text-ink truncate">{c.caLabel || 'Unknown CA'}</span> },
-        { key: 'name', header: 'Name', defaultWidth: 200, exportValue: (c) => c.name, render: (c) => <span className="text-ink truncate">{c.name}</span> },
-        { key: 'update', header: 'Update', defaultWidth: 110, exportValue: (c) => c.updateInterval, render: (c) => <span className="data-mono text-ink">{c.updateInterval}</span> },
+        { key: 'name', header: 'Name', defaultWidth: 300, exportValue: (c) => c.name, render: (c) => <span className="text-ink truncate">{c.name}</span> },
+        { key: 'update', header: 'Update', defaultWidth: 130, exportValue: (c) => c.updateInterval, render: (c) => <span className="data-mono text-ink">{c.updateInterval}</span> },
         { key: 'delta', header: 'Delta', defaultWidth: 100, exportValue: (c) => c.deltaInterval || '', render: (c) => <span className="data-mono text-ink">{c.deltaInterval || '-'}</span> },
         { key: 'last', header: 'Last', defaultWidth: 140, exportValue: (c) => formatAbsoluteUtc(c.lastGenerated || c.lastUpdatedUtc), render: (c) => <TimeCell iso={c.lastGenerated || c.lastUpdatedUtc} now={now} /> },
         { key: 'next', header: 'Next', defaultWidth: 140, exportValue: (c) => formatAbsoluteUtc(c.nextUpdateUtc), render: (c) => <TimeCell iso={c.nextUpdateUtc} now={now} /> },
@@ -430,7 +430,7 @@ const SchedulesSection: React.FC<SchedulesSectionProps> = ({ schedules, loading,
         { key: 'ca', header: 'CA', defaultWidth: 150, minWidth: 120, truncate: false, exportValue: (l) => l.caLabel, render: (l) => <span className="text-ink truncate">{l.caLabel || 'Unknown CA'}</span> },
         { key: 'host', header: 'Host', defaultWidth: 170, exportValue: (l) => `${l.host}:${l.port}`, render: (l) => <span className="text-ink truncate">{l.host}:{l.port}</span> },
         { key: 'baseDn', header: 'Base DN', defaultWidth: 240, exportValue: (l) => l.baseDn, render: (l) => <span className="data-mono text-ink truncate">{l.baseDn}</span> },
-        { key: 'update', header: 'Update', defaultWidth: 100, exportValue: (l) => l.updateInterval, render: (l) => <span className="data-mono text-ink">{l.updateInterval}</span> },
+        { key: 'update', header: 'Update', defaultWidth: 130, exportValue: (l) => l.updateInterval, render: (l) => <span className="data-mono text-ink">{l.updateInterval}</span> },
         { key: 'last', header: 'Last', defaultWidth: 130, exportValue: (l) => formatAbsoluteUtc(l.lastUpdatedUtc), render: (l) => <TimeCell iso={l.lastUpdatedUtc} now={now} /> },
         { key: 'next', header: 'Next', defaultWidth: 130, exportValue: (l) => formatAbsoluteUtc(l.nextUpdateUtc), render: (l) => <TimeCell iso={l.nextUpdateUtc} now={now} /> },
         { key: 'publishes', header: 'Publishes', defaultWidth: 120, exportValue: (l) => ldapFlags(l), render: (l) => <span className="text-xs text-ink">{ldapFlags(l) || '-'}</span> },

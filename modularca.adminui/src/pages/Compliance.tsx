@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { displaySerial } from '@shared/serial';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
@@ -522,7 +523,7 @@ const Compliance: React.FC = () => {
                                             <span className="text-xs font-semibold text-ink-muted">Certificate</span>
                                             <p className="text-sm mt-1">
                                                 <a href={`/admin/certificates?search=${encodeURIComponent(v.certificateSerial || v.certificateId)}`} className="text-accent-ink hover:underline underline font-mono">
-                                                    {v.certificateSerial || v.certificateId}
+                                                    {displaySerial(v.certificateSerial) || v.certificateId}
                                                 </a>
                                             </p>
                                         </div>
@@ -531,10 +532,10 @@ const Compliance: React.FC = () => {
                             )}
                             columns={[
                                 { key: 'severity', header: 'Severity', defaultWidth: 100, truncate: false, sortable: true, exportValue: (v) => v.severity, render: (v) => <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${severityColor(v.severity)}`}>{v.severity}</span> },
-                                { key: 'type', header: 'Type', defaultWidth: 150, sortable: true, exportValue: (v) => v.type, render: (v) => <span className={`text-ink whitespace-nowrap ${v.resolved ? 'opacity-60' : ''}`}>{v.type}</span> },
-                                { key: 'description', header: 'Description', flex: true, exportValue: (v) => v.description, render: (v) => <span className={`text-ink-muted truncate ${v.resolved ? 'opacity-60' : ''}`} title={v.description}>{truncate(v.description, 80)}</span> },
-                                { key: 'certificate', header: 'Certificate', defaultWidth: 150, exportValue: (v) => v.certificateSerial || '', render: (v) => <span className="font-mono text-ink-muted truncate" title={v.certificateSerial}>{v.certificateSerial ? v.certificateSerial.substring(0, 16) + '…' : '—'}</span> },
-                                { key: 'detected', header: 'Detected', defaultWidth: 160, sortable: true, sortValue: (v) => v.detectedAt ? new Date(v.detectedAt) : null, exportValue: (v) => formatDateTime(v.detectedAt), render: (v) => <span className="text-ink-muted whitespace-nowrap">{formatDateTime(v.detectedAt)}</span> },
+                                { key: 'type', header: 'Type', defaultWidth: 160, sortable: true, exportValue: (v) => v.type, render: (v) => <span className={`text-ink whitespace-nowrap ${v.resolved ? 'opacity-60' : ''}`}>{v.type}</span> },
+                                { key: 'description', header: 'Description', defaultWidth: 300, minWidth: 200, exportValue: (v) => v.description, render: (v) => <span className={`text-ink-muted truncate ${v.resolved ? 'opacity-60' : ''}`} title={v.description}>{truncate(v.description, 80)}</span> },
+                                { key: 'certificate', header: 'Certificate', defaultWidth: 280, exportValue: (v) => displaySerial(v.certificateSerial), render: (v) => <span className="data-mono text-ink-muted truncate" title={displaySerial(v.certificateSerial)}>{displaySerial(v.certificateSerial) || '—'}</span> },
+                                { key: 'detected', header: 'Detected', defaultWidth: 180, sortable: true, sortValue: (v) => v.detectedAt ? new Date(v.detectedAt) : null, exportValue: (v) => formatDateTime(v.detectedAt), render: (v) => <span className="text-ink-muted whitespace-nowrap">{formatDateTime(v.detectedAt)}</span> },
                                 { key: 'actions', header: '', defaultWidth: 110, align: 'right', truncate: false, hideable: false, exportValue: (v) => (v.resolved ? 'Resolved' : ''), render: (v) => v.resolved
                                     ? <span className="text-[10px] text-ok">✓ Resolved</span>
                                     : <button onClick={() => handleResolve(v.id)} disabled={resolvingIds.has(v.id)} className="px-2 py-1 text-[10px] font-medium text-ok bg-ok-soft border border-ok/40 rounded hover:bg-ok/15 transition-colors disabled:opacity-50">{resolvingIds.has(v.id) ? 'Resolving…' : 'Resolve'}</button> },
@@ -545,7 +546,9 @@ const Compliance: React.FC = () => {
             </div>
 
             {/* Issuance / Revocation history (last 30 days) */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* One table to a row, as on the certificates page: side by side each had half the width,
+                which left the subject no room. */}
+            <div className="grid grid-cols-1 gap-6">
                 <Section title="Recent Issuances (30d)">
                     {reportLoading ? (
                         <span className="text-sm text-ink-muted">Loading...</span>
@@ -556,13 +559,13 @@ const Compliance: React.FC = () => {
                             <DataTable<any>
                                 tableId="compliance-issuance-history"
                                 rows={report.issuanceHistory}
-                                rowKey={(c, ) => `${c.serialNumber || ''}-${c.notBefore || ''}-${c.subjectDN || ''}`}
+                                rowKey={(c, ) => `${displaySerial(c.serialNumber)}-${c.notBefore || ''}-${c.subjectDN || ''}`}
                                 empty="No issuance in this period"
                                 columns={[
-                                    { key: 'subject', header: 'Subject', flex: true, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-ink truncate" title={c.subjectDN}>{c.subjectDN}</span> },
-                                    { key: 'serial', header: 'Serial', defaultWidth: 150, exportValue: (c) => c.serialNumber || '', render: (c) => <span className="font-mono text-ink-muted truncate" title={c.serialNumber}>{c.serialNumber ? c.serialNumber.substring(0, 16) + '...' : '-'}</span> },
-                                    { key: 'issuer', header: 'Issuer', defaultWidth: 180, sortable: true, exportValue: (c) => c.issuer, render: (c) => <span className="text-ink-muted truncate" title={c.issuer}>{c.issuer}</span> },
-                                    { key: 'validFrom', header: 'Valid From', defaultWidth: 160, align: 'right', sortable: true, sortValue: (c) => c.notBefore ? new Date(c.notBefore) : null, exportValue: (c) => formatDateTime(c.notBefore), render: (c) => <span className="text-ink-muted whitespace-nowrap">{formatDateTime(c.notBefore)}</span> },
+                                    { key: 'subject', header: 'Subject', defaultWidth: 280, minWidth: 160, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-ink truncate" title={c.subjectDN}>{c.subjectDN}</span> },
+                                    { key: 'serial', header: 'Serial', defaultWidth: 280, exportValue: (c) => displaySerial(c.serialNumber), render: (c) => <span className="data-mono text-ink-muted truncate" title={displaySerial(c.serialNumber)}>{displaySerial(c.serialNumber) || '-'}</span> },
+                                    { key: 'issuer', header: 'Issuer', defaultWidth: 240, sortable: true, exportValue: (c) => c.issuer, render: (c) => <span className="text-ink-muted truncate" title={c.issuer}>{c.issuer}</span> },
+                                    { key: 'validFrom', header: 'Valid From', defaultWidth: 190, align: 'right', sortable: true, sortValue: (c) => c.notBefore ? new Date(c.notBefore) : null, exportValue: (c) => formatDateTime(c.notBefore), render: (c) => <span className="text-ink-muted whitespace-nowrap">{formatDateTime(c.notBefore)}</span> },
                                 ] as DataTableColumn<any>[]}
                             />
                         </div>
@@ -579,13 +582,13 @@ const Compliance: React.FC = () => {
                             <DataTable<any>
                                 tableId="compliance-revocation-history"
                                 rows={report.revocationHistory}
-                                rowKey={(c) => `${c.serialNumber || ''}-${c.revocationDate || ''}-${c.subjectDN || ''}`}
+                                rowKey={(c) => `${displaySerial(c.serialNumber)}-${c.revocationDate || ''}-${c.subjectDN || ''}`}
                                 empty="No revocations in this period"
                                 columns={[
-                                    { key: 'subject', header: 'Subject', flex: true, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-ink truncate" title={c.subjectDN}>{c.subjectDN}</span> },
-                                    { key: 'serial', header: 'Serial', defaultWidth: 150, exportValue: (c) => c.serialNumber || '', render: (c) => <span className="font-mono text-ink-muted truncate" title={c.serialNumber}>{c.serialNumber ? c.serialNumber.substring(0, 16) + '...' : '-'}</span> },
-                                    { key: 'reason', header: 'Reason', defaultWidth: 160, sortable: true, exportValue: (c) => c.revocationReason || 'Unspecified', render: (c) => <span className="text-crit">{c.revocationReason || 'Unspecified'}</span> },
-                                    { key: 'revoked', header: 'Revoked', defaultWidth: 160, align: 'right', sortable: true, sortValue: (c) => c.revocationDate ? new Date(c.revocationDate) : null, exportValue: (c) => formatDateTime(c.revocationDate), render: (c) => <span className="text-ink-muted whitespace-nowrap">{formatDateTime(c.revocationDate)}</span> },
+                                    { key: 'subject', header: 'Subject', defaultWidth: 280, minWidth: 160, sortable: true, exportValue: (c) => c.subjectDN, render: (c) => <span className="text-ink truncate" title={c.subjectDN}>{c.subjectDN}</span> },
+                                    { key: 'serial', header: 'Serial', defaultWidth: 280, exportValue: (c) => displaySerial(c.serialNumber), render: (c) => <span className="data-mono text-ink-muted truncate" title={displaySerial(c.serialNumber)}>{displaySerial(c.serialNumber) || '-'}</span> },
+                                    { key: 'reason', header: 'Reason', defaultWidth: 180, sortable: true, exportValue: (c) => c.revocationReason || 'Unspecified', render: (c) => <span className="text-crit">{c.revocationReason || 'Unspecified'}</span> },
+                                    { key: 'revoked', header: 'Revoked', defaultWidth: 190, align: 'right', sortable: true, sortValue: (c) => c.revocationDate ? new Date(c.revocationDate) : null, exportValue: (c) => formatDateTime(c.revocationDate), render: (c) => <span className="text-ink-muted whitespace-nowrap">{formatDateTime(c.revocationDate)}</span> },
                                 ] as DataTableColumn<any>[]}
                             />
                         </div>

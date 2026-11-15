@@ -1,8 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { legacySpacePath } from '@adminui/legacyPaths';
-import {
-    LICENCE_RECOMMENDATION, SPACE_INTERSTITIAL, SPACES_WITHOUT_LICENCE, recommendationBeforeCreate, recommendationFromResponse,
-} from '@adminui/pages/spaceCreation';
+import * as spaceCreation from '@adminui/pages/spaceCreation';
+import { SPACE_INTERSTITIAL } from '@adminui/pages/spaceCreation';
 
 /**
  * The console said "tenant" before 0.4.0. Its pages moved to /spaces with client-side redirects
@@ -28,10 +29,9 @@ describe('the /tenants redirects', () => {
 });
 
 /**
- * The Create Space dialog: what a space is (and is not) before every create, and the licence
- * recommendation from the fifth space on. Only the server knows the licence and no endpoint
- * reports it, so the dialog says it in advance only when the server's last create said it.
- * Creation is never refused.
+ * The Create Space dialog: what a space is (and is not) before every create. Spaces are not
+ * counted, limited or licensed, so the dialog and the page say nothing about a license at any
+ * number of spaces.
  */
 describe('the Create Space dialog', () => {
     it('says what a space shares and that a separate customer is a separate instance', () => {
@@ -39,25 +39,17 @@ describe('the Create Space dialog', () => {
             'Spaces delegate administration within one organisation. They share sign-in, backups, the audit trail and instance administrators. For a separate customer, create a separate instance.');
     });
 
-    it('repeats the server\'s last recommendation from the fifth space on, and not before', () => {
-        expect(SPACES_WITHOUT_LICENCE).toBe(4);
-        expect(LICENCE_RECOMMENDATION).toBe('A licence is recommended for more than four spaces.');
-        for (const existing of [0, 1, 2, 3]) expect(recommendationBeforeCreate(existing, LICENCE_RECOMMENDATION)).toBeNull();
-        expect(recommendationBeforeCreate(4, LICENCE_RECOMMENDATION)).toBe(LICENCE_RECOMMENDATION);
-        expect(recommendationBeforeCreate(9, LICENCE_RECOMMENDATION)).toBe(LICENCE_RECOMMENDATION);
+    it('has no license hint: the dialog module exports only what a space is', () => {
+        expect(Object.keys(spaceCreation)).toEqual(['SPACE_INTERSTITIAL']);
     });
 
-    it('says nothing in advance when the server returned no recommendation (a licence carries multi-tenancy) or has not answered yet', () => {
-        expect(recommendationBeforeCreate(4, null)).toBeNull();
-        expect(recommendationBeforeCreate(12, null)).toBeNull();
-        expect(recommendationBeforeCreate(5, recommendationFromResponse({ id: 'x', name: 'Sixth', recommendation: null }))).toBeNull();
-    });
-
-    it('shows the recommendation the server returned, and nothing when it returned none', () => {
-        expect(recommendationFromResponse({ id: 'x', name: 'Fifth', recommendation: LICENCE_RECOMMENDATION })).toBe(LICENCE_RECOMMENDATION);
-        expect(recommendationFromResponse({ id: 'x', name: 'Fifth', recommendation: null })).toBeNull();
-        expect(recommendationFromResponse({ id: 'x', name: 'Second' })).toBeNull();
-        expect(recommendationFromResponse(null)).toBeNull();
-        expect(recommendationFromResponse({ recommendation: '  ' })).toBeNull();
+    it('says nothing about a license or a number of spaces, in the dialog module or on the page', () => {
+        for (const file of ['spaceCreation.ts', 'SpacesAndQuotas.tsx']) {
+            const source = readFileSync(fileURLToPath(new URL(`../../../../modularca.adminui/src/pages/${file}`, import.meta.url)), 'utf8');
+            expect(source, file).not.toMatch(/recommend/i);
+            expect(source, file).not.toMatch(/licen[cs]e (is|was) /i);
+            expect(source, file).not.toMatch(/more than four|fifth space/i);
+        }
+        expect(SPACE_INTERSTITIAL).not.toMatch(/licen[cs]e/i);
     });
 });

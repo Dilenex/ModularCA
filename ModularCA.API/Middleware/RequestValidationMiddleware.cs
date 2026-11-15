@@ -36,6 +36,32 @@ public sealed class RequestValidationMiddleware(
         {
             await next(context);
         }
+        catch (ModularCA.Shared.Modes.InstanceModeException ex) when (!context.Response.HasStarted)
+        {
+            // The instance's mode refused below the request filter (the CRL signer, a key
+            // operation). Same answer as the filter gives: 503, the mode, and what still works.
+            logger.LogInformation(
+                "Request refused by the instance's mode on {Method} {Path}: {Message}",
+                context.Request.Method, context.Request.Path, ex.Message);
+            context.Response.Clear();
+            context.Response.StatusCode = ex.Status;
+            context.Response.Headers.RetryAfter = "60";
+            context.Response.ContentType = "application/problem+json";
+            await context.Response.WriteAsync(JsonSerializer.Serialize(new
+            {
+                type = "about:blank",
+                title = ex.Title,
+                status = ex.Status,
+                detail = ex.Message,
+                error = ex.Message,
+                code = ex.Code,
+                mode = ModularCA.Shared.Modes.InstanceModeGate.NameOf(ex.Mode),
+                remediation = ex.Remediation,
+                correlationId = context.Items.TryGetValue("CorrelationId", out var modeCid) && modeCid is string modeCorrelation
+                    ? modeCorrelation
+                    : context.TraceIdentifier,
+            }));
+        }
         catch (RequestValidationException ex)
         {
             var correlationId =

@@ -54,12 +54,22 @@ public class AdminAuditController : ControllerBase
     [HttpGet("action-types")]
     public IActionResult GetActionTypes() => Ok(AuditActionType.All);
 
+    /// <summary>The actions whose records carry revoked serials in their details, for the <c>revokedSerial</c> filter.</summary>
+    private static readonly string[] RevokedSerialActions =
+    [
+        AuditActionType.RevocationMergedFromJournal, AuditActionType.RevocationsMergedFromJournalBatch,
+        AuditActionType.RevokedSerialRecorded, AuditActionType.RevokedSerialsRecordedBatch,
+    ];
+
     /// <summary>
     /// Returns paginated general audit log entries, optionally filtered by date range, action type, actor, CA, outcome,
     /// target, and space (records stamped with the space, its CAs, the space itself and its groups, or
     /// records of its retired chain from before 0.4.0). Each entry carries its <c>SpaceId</c>.
     /// System admins/auditors see all logs. CA-scoped auditors only see logs for their assigned CAs.
     /// The pre-0.4.0 <c>tenantId</c> query key is refused (400) rather than ignored.
+    /// <c>revokedSerial</c> finds the records that name one serial among those that restored
+    /// revocations from the signer's journal or recorded serials with no certificate, whether
+    /// the record is for that serial alone or for a batch that carries it in its details.
     /// </summary>
     [HttpGet]
     [RefuseQueryKey("tenantId", "spaceId")]
@@ -75,12 +85,26 @@ public class AdminAuditController : ControllerBase
         [FromQuery] string? sort = null,
         [FromQuery] string? targetEntityType = null,
         [FromQuery] string? targetEntityId = null,
-        [FromQuery] bool? success = null)
+        [FromQuery] bool? success = null,
+        [FromQuery] string? revokedSerial = null)
     {
         if (_auditDb == null)
             return StatusCode(503, new { error = "Audit database is not configured" });
 
         var query = _auditDb.AuditLogs.AsQueryable();
+
+        // One serial among the records that carry serials in their details: the records of the
+        // merge from the signer's journal and of serials recorded with no certificate, each in
+        // its single form and in its batch form. A batch record's target is the CA, so the
+        // serial is looked for in the details text, among those action types only.
+        if (!string.IsNullOrWhiteSpace(revokedSerial))
+        {
+            var serial = revokedSerial.Replace(":", string.Empty).Replace(" ", string.Empty).Replace("-", string.Empty).TrimStart('0').ToUpperInvariant();
+            if (serial.Length == 0 || serial.Length > 40 || !serial.All(Uri.IsHexDigit))
+                return BadRequest(new { error = "revokedSerial must be a serial number in hexadecimal." });
+            var quoted = "\"" + serial + "\"";
+            query = query.Where(a => RevokedSerialActions.Contains(a.ActionType) && a.DetailsJson != null && a.DetailsJson.Contains(quoted));
+        }
         if (success.HasValue)
             query = query.Where(a => a.Success == success.Value);
 
@@ -678,6 +702,7 @@ public class AdminAuditController : ControllerBase
     /// make something disappear. Records before it keep their link checks.
     /// </para>
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("verify/restart")]
     [Authorize(Policy = "SystemAdmin")]
     [RefuseQueryKey("tenantId", "chainId")]

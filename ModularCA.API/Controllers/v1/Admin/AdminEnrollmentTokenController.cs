@@ -180,6 +180,7 @@ public class AdminEnrollmentTokenController(
     /// the token. Replaces the per-CA <c>CmpSharedSecret</c> single-secret-for-everyone
     /// model.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("cmp-secret")]
     [Authorize]
     [RequireCaCapability(Capabilities.CertRevoke, CaTarget.SigningProfile, "request.SigningProfileId")]
@@ -240,6 +241,7 @@ public class AdminEnrollmentTokenController(
     /// or SAN restriction <see cref="ModularCA.Shared.Utils.EnrollmentNameRestriction.RestrictionError"/>
     /// refuses is a 400.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     [Authorize]
     [RequireStepUp(StepUpOps.CreateEnrollmentSecret)]
@@ -313,6 +315,7 @@ public class AdminEnrollmentTokenController(
     /// <c>CaOperator</c> policy; a token outside the caller's <see cref="SpaceFence"/>, or a
     /// system-wide token for a caller who is not instance-wide, answers 404 like a missing one.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpDelete("{id:guid}")]
     [Authorize(Policy = "CaOperator")]
     public async Task<IActionResult> RevokeToken(Guid id)
@@ -351,7 +354,7 @@ public class GenerateCmpSharedSecretRequest
     public string ReferenceValue { get; set; } = string.Empty;
     /// <summary>Lifetime of the secret in hours; null means 30 days.</summary>
     public double? ExpiresInHours { get; set; }
-    /// <summary>How many enrolments the secret allows; null or zero means unlimited.</summary>
+    /// <summary>How many enrollments the secret allows; null or zero means unlimited.</summary>
     public int? MaxUses { get; set; }
     /// <summary>Signing profile used to resolve the target CA for space enforcement.</summary>
     public Guid? SigningProfileId { get; set; }
@@ -362,7 +365,7 @@ public class GenerateEnrollmentTokenRequest
 {
     /// <summary>Lifetime of the token in hours; null means 24.</summary>
     public double? ExpiresInHours { get; set; }
-    /// <summary>How many enrolments the token allows; null means one, zero or less means unlimited.</summary>
+    /// <summary>How many enrollments the token allows; null means one, zero or less means unlimited.</summary>
     public int? MaxUses { get; set; }
     /// <summary>
     /// Patterns the CSR subject must match, at most 255 characters: a DN component such as

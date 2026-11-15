@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { displaySerial } from '@shared/serial';
 import type { NoticeInput } from '@shared/notifications/notice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { useNavigate, Link } from 'react-router-dom';
@@ -21,7 +22,7 @@ import { MySshCertificatesTab } from './MySshCertificates';
 /** "Replaced by <serial>", "Replaced" or "Not replaced". */
 function replacementText(cert: any): string {
     if (!cert.replaced) return 'Not replaced';
-    return cert.replacedBySerial ? `Replaced by ${cert.replacedBySerial}` : 'Replaced';
+    return cert.replacedBySerial ? `Replaced by ${displaySerial(cert.replacedBySerial)}` : 'Replaced';
 }
 
 // Revocation reasons a user may select when self-revoking an owned certificate. Must stay in
@@ -291,7 +292,7 @@ const MyX509Certificates: React.FC = () => {
         return (
             <div className="space-y-3">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    <DetailField label="Serial Number" value={serial} mono />
+                    <DetailField label="Serial Number" value={displaySerial(serial)} mono />
                     <DetailField label="Subject" value={cert.subjectDN} />
                     <DetailField label="Issuer" value={cert.issuer} />
                     <DetailField label="Not Before" value={formatDate(cert.notBefore)} />

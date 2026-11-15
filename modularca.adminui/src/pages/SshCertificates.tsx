@@ -14,6 +14,7 @@ import { NewButton } from '@shared/components/NewButton';
 import { Capabilities, StepUpOps } from '@shared/generated';
 import { useAuth } from '../context/AuthContext';
 import { FieldHint } from '@shared/components/forms';
+import { CA_RSA_FLOOR_HINT, CA_RSA_KEY_SIZES } from './tighterDefaults';
 import { actionButton } from '@shared/components/actionButtons';
 import { type CeremonyRefusal, readCeremonyRefusal } from './ceremonyRefusal';
 import { CeremonyRefusalNotice } from '../components/CeremonyRefusalNotice';
@@ -281,11 +282,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
                                 {genForm.keyType === 'rsa' ? (
                                     <>
                                         <option value="">Default (3072)</option>
-                                        <option value="2048">2048 bits</option>
-                                        <option value="3072">3072 bits</option>
-                                        <option value="4096">4096 bits</option>
-                                        <option value="7680">7680 bits (high compute)</option>
-                                        <option value="8192">8192 bits (high compute)</option>
+                                        {CA_RSA_KEY_SIZES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
                                     </>
                                 ) : (
                                     <>
@@ -296,6 +293,7 @@ const SshCaKeys: React.FC<{ refreshTrigger: number; onRefresh: () => void }> = (
                                     </>
                                 )}
                             </select>
+                            {genForm.keyType === 'rsa' && <p className="text-xs text-ink-muted mt-1">{CA_RSA_FLOOR_HINT}</p>}
                             {genForm.keyType === 'rsa' && (genForm.keySize === '7680' || genForm.keySize === '8192') && (
                                 <p className="text-xs text-warn mt-1">
                                     ⚠ High-compute RSA — key generation may take 30+ seconds.

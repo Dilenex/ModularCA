@@ -87,6 +87,7 @@ export const CARD_FIELDS: Record<string, readonly string[]> = {
     ],
     certPolicy: ['certPolicy.enabled', 'certPolicy.minRsaKeySize', 'certPolicy.requireSans', 'certPolicy.forbiddenAlgorithms'],
     autoRenewal: ['autoRenewal.enabled', 'autoRenewal.renewDaysBeforeExpiry', 'autoRenewal.autoApprove'],
+    caLifecycle: ['caLifecycle.rootExpiryNoticeDays', 'caLifecycle.intermediateExpiryNoticeDays', 'caLifecycle.keyUsagePeriodDays'],
     certExpiryNotification: ['certExpiryNotification.enabled', 'certExpiryNotification.warningDaysBeforeExpiry'],
     complianceScan: [
         'complianceScan.enabled', 'complianceScan.minRsaKeySize', 'complianceScan.warnOverValidityDays', 'complianceScan.deprecatedAlgorithms',

@@ -86,11 +86,23 @@ namespace ModularCA.Core.Services
         /// Triggers a full CRL regeneration after persistence and an
         /// opportunistic delta CRL regen if a delta config exists.
         /// </summary>
-        public async Task<RevocationResult> RevokeCertificateAsync(
+        public Task<RevocationResult> RevokeCertificateAsync(
             Guid? certificateId,
             string? certificateSerialNumber,
             RevocationReason reason,
             DateTime? invalidityDate = null)
+            => RevokeCertificateAsync(certificateId, certificateSerialNumber, reason, invalidityDate, NoActor);
+
+        /// <summary>The actor of a call that names none: an internal caller (a reissue, a protocol). Its rows say so.</summary>
+        private static readonly RevocationActor NoActor = new(null, "system");
+
+        /// <inheritdoc />
+        public async Task<RevocationResult> RevokeCertificateAsync(
+            Guid? certificateId,
+            string? certificateSerialNumber,
+            RevocationReason reason,
+            DateTime? invalidityDate,
+            RevocationActor actor)
         {
             var certEntity = await ResolveCertificateEntityAsync(certificateId, certificateSerialNumber);
 
@@ -111,6 +123,29 @@ namespace ModularCA.Core.Services
                 certEntity.InvalidityDate = invalidityDate.Value.ToUniversalTime();
             else if (holdDate.HasValue && certEntity.InvalidityDate == null)
                 certEntity.InvalidityDate = holdDate.Value;
+
+            // A CA's certificates over one key stand or fall together: what revokes one revokes
+            // each of the others that is not already permanently revoked, with the same reason
+            // and date, in this same save.
+            var siblings = await SameKeyCaSiblingsAsync(certEntity);
+            var alsoRevoked = new List<CertificateEntity>();
+            foreach (var sibling in siblings)
+            {
+                var siblingOnHold = RevocationStatus.IsOnHold(sibling.Revoked, sibling.RevocationReason);
+                if (sibling.Revoked && !siblingOnHold)
+                    continue;
+                if (reason == RevocationReason.CertificateHold && siblingOnHold)
+                    continue;
+                var siblingHoldDate = siblingOnHold ? sibling.RevocationDate : null;
+                sibling.Revoked = true;
+                sibling.RevocationReason = reason.ToString();
+                sibling.RevocationDate = now;
+                if (invalidityDate.HasValue)
+                    sibling.InvalidityDate = invalidityDate.Value.ToUniversalTime();
+                else if (siblingHoldDate.HasValue && sibling.InvalidityDate == null)
+                    sibling.InvalidityDate = siblingHoldDate.Value;
+                alsoRevoked.Add(sibling);
+            }
             var holders = await MtlsCredentialStatus.HoldersOfCertificateAsync(_db, certEntity.CertificateId);
             var ended = await UserSessionTermination.EndAllSessionsAsync(_db, holders, now);
             var mtlsRevoked = await MtlsCredentialStatus.MarkRevokedForCertificateAsync(_db, certEntity.CertificateId, now);
@@ -126,6 +161,7 @@ namespace ModularCA.Core.Services
             catch (Exception notifyEx) { _logger.LogWarning(notifyEx, "Revocation notification failed for cert {CertId}", certEntity.SerialNumber); }
 
             var crlNumber = await TryRegenerateCrlAsync(certEntity);
+            await AuditSiblingsAsync(AuditActionType.CertificateRevoked, certEntity, alsoRevoked, reason.ToString(), actor);
 
             return new RevocationResult(
                 certEntity.CertificateId,
@@ -134,7 +170,53 @@ namespace ModularCA.Core.Services
                 reason,
                 now,
                 crlNumber,
-                wasOnHold ? RevocationReason.CertificateHold : null);
+                wasOnHold ? RevocationReason.CertificateHold : null)
+            { AlsoSerialNumbers = alsoRevoked.Select(s => s.SerialNumber).ToList() };
+        }
+
+        /// <summary>
+        /// The other certificates the CA of <paramref name="certificate"/> has over the same key,
+        /// tracked for change: empty unless <paramref name="certificate"/> is a CA certificate that
+        /// a CA owns, current or earlier (<see cref="IssuerChainResolver.SameKeyScopeAsync"/>). A CA
+        /// whose certificate was renewed has more than one, and a compromised key compromises each.
+        /// </summary>
+        private async Task<List<CertificateEntity>> SameKeyCaSiblingsAsync(CertificateEntity certificate)
+        {
+            if (!certificate.IsCA || IssuerChainResolver.OwnerOf(_db, certificate) == null)
+                return [];
+            var scope = await IssuerChainResolver.SameKeyScopeAsync(_db, certificate.CertificateId);
+            scope.Remove(certificate.CertificateId);
+            return scope.Count == 0 ? [] : await _db.Certificates.Where(c => scope.Contains(c.CertificateId)).ToListAsync();
+        }
+
+        /// <summary>
+        /// One audit row for each other certificate of the CA that the action on
+        /// <paramref name="primary"/> also changed, naming <paramref name="actor"/> with the address
+        /// and ceremony of the request, as the caller's own row for the primary does. A failure
+        /// to audit is logged and does not undo the change, which is committed.
+        /// </summary>
+        private async Task AuditSiblingsAsync(string action, CertificateEntity primary, IReadOnlyList<CertificateEntity> siblings, string? reason, RevocationActor actor)
+        {
+            if (siblings.Count == 0)
+                return;
+            _logger.LogWarning("{Action} of CA certificate {Serial} also applied to {Count} other certificate(s) of the same CA and key: {Serials}",
+                action, primary.SerialNumber, siblings.Count, string.Join(", ", siblings.Select(s => s.SerialNumber)));
+            if (_audit == null)
+                return;
+            var owner = IssuerChainResolver.OwnerOf(_db, primary);
+            foreach (var sibling in siblings)
+            {
+                try
+                {
+                    await _audit.LogAsync(action, actor.UserId, actor.Username, "Certificate", sibling.CertificateId.ToString(),
+                        new { sibling.SerialNumber, Reason = reason, SameKeyAs = primary.SerialNumber, actor.CeremonyId, Because = "Every certificate of a CA over one key is revoked, held and released together." },
+                        sourceIp: actor.SourceIp, certificateAuthorityId: owner?.CaId, spaceId: owner?.SpaceId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not audit {Action} of certificate {Serial}", action, sibling.SerialNumber);
+                }
+            }
         }
 
         /// <summary>
@@ -144,7 +226,11 @@ namespace ModularCA.Core.Services
         /// An mTLS sign-in credential issued as the certificate stays unrevoked, so a release
         /// restores it, but every session of the accounts holding one is ended in the same save.
         /// </summary>
-        public async Task<RevocationResult> HoldCertificateAsync(Guid? certificateId, string? certificateSerialNumber)
+        public Task<RevocationResult> HoldCertificateAsync(Guid? certificateId, string? certificateSerialNumber)
+            => HoldCertificateAsync(certificateId, certificateSerialNumber, NoActor);
+
+        /// <inheritdoc />
+        public async Task<RevocationResult> HoldCertificateAsync(Guid? certificateId, string? certificateSerialNumber, RevocationActor actor)
         {
             var certEntity = await ResolveCertificateEntityAsync(certificateId, certificateSerialNumber);
 
@@ -168,26 +254,40 @@ namespace ModularCA.Core.Services
             certEntity.Revoked = true;
             certEntity.RevocationReason = nameof(RevocationReason.CertificateHold);
             certEntity.RevocationDate = now;
+            // A hold on a CA certificate holds every certificate of that CA over the same key.
+            var alsoHeld = (await SameKeyCaSiblingsAsync(certEntity)).Where(s => !s.Revoked).ToList();
+            foreach (var sibling in alsoHeld)
+            {
+                sibling.Revoked = true;
+                sibling.RevocationReason = nameof(RevocationReason.CertificateHold);
+                sibling.RevocationDate = now;
+            }
             var holders = await MtlsCredentialStatus.HoldersOfCertificateAsync(_db, certEntity.CertificateId);
             var ended = await UserSessionTermination.EndAllSessionsAsync(_db, holders, now);
             await _db.SaveChangesAsync();
             await RecordEndedSessionsAsync(certEntity, ended, "mtls_certificate_on_hold");
 
             var crlNumber = await TryRegenerateCrlAsync(certEntity);
+            await AuditSiblingsAsync(AuditActionType.CertificateHeld, certEntity, alsoHeld, nameof(RevocationReason.CertificateHold), actor);
             return new RevocationResult(
                 certEntity.CertificateId,
                 certEntity.SerialNumber,
                 "OnHold",
                 RevocationReason.CertificateHold,
                 now,
-                crlNumber);
+                crlNumber)
+            { AlsoSerialNumbers = alsoHeld.Select(s => s.SerialNumber).ToList() };
         }
 
         /// <summary>
         /// Releases a certificate from hold, so it is good again. A certificate that is not
         /// revoked, or is revoked permanently, throws <see cref="CertificateRevocationStateException"/> (409).
         /// </summary>
-        public async Task<RevocationResult> UnholdCertificateAsync(Guid? certificateId, string? certificateSerialNumber)
+        public Task<RevocationResult> UnholdCertificateAsync(Guid? certificateId, string? certificateSerialNumber)
+            => UnholdCertificateAsync(certificateId, certificateSerialNumber, NoActor);
+
+        /// <inheritdoc />
+        public async Task<RevocationResult> UnholdCertificateAsync(Guid? certificateId, string? certificateSerialNumber, RevocationActor actor)
         {
             var certEntity = await ResolveCertificateEntityAsync(certificateId, certificateSerialNumber);
 
@@ -203,16 +303,28 @@ namespace ModularCA.Core.Services
             certEntity.RevocationReason = null;
             certEntity.RevocationDate = null;
             certEntity.InvalidityDate = null;
+            // Releasing a CA certificate releases every certificate of that CA over the same key
+            // that is on hold. One that is permanently revoked stays revoked.
+            var alsoReleased = (await SameKeyCaSiblingsAsync(certEntity)).Where(s => RevocationStatus.IsOnHold(s.Revoked, s.RevocationReason)).ToList();
+            foreach (var sibling in alsoReleased)
+            {
+                sibling.Revoked = false;
+                sibling.RevocationReason = null;
+                sibling.RevocationDate = null;
+                sibling.InvalidityDate = null;
+            }
             await _db.SaveChangesAsync();
 
             var crlNumber = await TryRegenerateCrlAsync(certEntity);
+            await AuditSiblingsAsync(AuditActionType.CertificateUnheld, certEntity, alsoReleased, null, actor);
             return new RevocationResult(
                 certEntity.CertificateId,
                 certEntity.SerialNumber,
                 "Good",
                 null,
                 now,
-                crlNumber);
+                crlNumber)
+            { AlsoSerialNumbers = alsoReleased.Select(s => s.SerialNumber).ToList() };
         }
 
         /// <summary>
@@ -271,6 +383,10 @@ namespace ModularCA.Core.Services
             try
             {
                 var caId = await ResolveIssuerCaIdAsync(cert);
+                // The CRL is kept under the issuing CA's current certificate; a certificate issued
+                // before that CA's certificate was renewed names an earlier one.
+                if (caId is Guid named)
+                    caId = await IssuerChainResolver.CurrentSameKeyCertificateIdAsync(_db, named);
                 if (caId == null)
                 {
                     _logger.LogWarning(

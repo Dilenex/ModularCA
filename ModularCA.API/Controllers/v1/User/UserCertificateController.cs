@@ -262,6 +262,7 @@ public class UserCertificateController(
     /// <param name="request">Export request containing the password to protect the PFX file.</param>
     /// <param name="mfaToken">Step-up MFA token from X-MFA-Token header.</param>
     /// <returns>The PKCS#12 file as a download, or an error if the certificate is not found or not exportable.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Fact)]
     [HttpPost("{serial}/export")]
     public async Task<IActionResult> ExportCertificate(string serial, [FromBody] UserCertExportRequest request,
         [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
@@ -368,6 +369,7 @@ public class UserCertificateController(
     /// pre-filled with the same subject, SANs, cert profile, and signing profile.
     /// The user must own the certificate and it must not be revoked.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("{serial}/renew")]
     public async Task<IActionResult> RenewCertificate(string serial)
     {
@@ -457,7 +459,7 @@ public class UserCertificateController(
     /// are not permitted through this self-service path.
     /// <para>
     /// A certificate an administrator has put on hold can be revoked permanently here, under the
-    /// same rules as the admin revoke (RFC 5280 §5.3.1, <see cref="ICertificateRevocationService.RevokeCertificateAsync"/>):
+    /// same rules as the admin revoke (RFC 5280 §5.3.1, <see cref="ICertificateRevocationService.RevokeCertificateAsync(Guid?, string?, RevocationReason, DateTime?)"/>):
     /// the reason changes in place and the response carries <c>previousReason</c> =
     /// <c>CertificateHold</c>. A certificate already revoked permanently answers 409 with
     /// <see cref="ModularCA.Shared.Errors.ErrorCodes.CertificateRevocationState"/>.
@@ -469,6 +471,7 @@ public class UserCertificateController(
     /// <param name="request">Revocation request containing the reason and optional invalidity date.</param>
     /// <param name="mfaToken">Step-up MFA token from the X-MFA-Token header.</param>
     /// <returns>The revocation result, or an error if the certificate is not found or not revocable by this user.</returns>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
     [HttpPost("{serial}/revoke")]
     public async Task<IActionResult> RevokeOwnCertificate(string serial, [FromBody] UserCertRevokeRequest request,
         [FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)

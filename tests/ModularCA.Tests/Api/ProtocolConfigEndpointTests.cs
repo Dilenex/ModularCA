@@ -235,7 +235,7 @@ public sealed class ProtocolConfigEndpointTests
     /// A protocol configuration may name only a signing profile that issues from its own CA's
     /// certificate; another CA's, one issuing from no CA or from a superseded certificate of this CA,
     /// or a missing one is refused with a message saying where it issues from, re-saving a stored
-    /// legacy row unchanged is refused with what to change, and resolution at enrolment refuses a
+    /// legacy row unchanged is refused with what to change, and resolution at enrollment refuses a
     /// stale row that names another CA's profile.
     /// </summary>
     [Fact]

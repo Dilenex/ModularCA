@@ -331,7 +331,11 @@ check "signer dir owned by the node: warned about and left as it is" 'printf "%s
 
 reset; make_src
 OUT=$(run_install)
-check "no signer dir: none is created" '[ ! -e "$A/signer" ] && ! printf "%s" "$OUT" | grep -q "signer directory"'
+check "no signer dir: only the journal's home is made, for modularca, in a signer/ that is root's" 'is "$A/signer" "root root 0755" && is "$A/signer/journal" "modularca modularca 0700" && ! printf "%s" "$OUT" | grep -q -e "signer directory" -e WARNING'
+
+reset; make_src; split_state
+OUT=$(run_install)
+check "split with no signer dir: none is created, nor a journal home" '[ ! -e "$A/signer" ]'
 
 # ── install.sh: a run that stopped part way, and a symlinked runtime directory ──────────────────
 reset; make_src

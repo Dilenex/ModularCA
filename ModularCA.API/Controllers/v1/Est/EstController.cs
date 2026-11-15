@@ -140,6 +140,7 @@ public class EstController(IEstService estService, ModularCADbContext db) : Cont
     /// and returns it wrapped in a PKCS#7 certs-only message (base64).
     /// Enforces request size limits and returns protocol-appropriate errors.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("simpleenroll")]
     [Consumes("application/pkcs10")]
     [RequestSizeLimit(MaxCsrBodySize)]
@@ -216,6 +217,7 @@ public class EstController(IEstService estService, ModularCADbContext db) : Cont
     /// was issued by the target CA, is within its renewal window, and that the CSR
     /// subject matches the original certificate subject before re-issuing.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Issue)]
     [HttpPost("simplereenroll")]
     [Consumes("application/pkcs10")]
     [RequestSizeLimit(MaxCsrBodySize)]
@@ -351,6 +353,18 @@ public class EstController(IEstService estService, ModularCADbContext db) : Cont
             MetricsService.EstRequestsTotal.WithLabels("auth_precondition", "error").Inc();
             MetricsService.ProtocolRequestsTotal.WithLabels("EST", "error").Inc();
             MetricsService.ProtocolErrorsTotal.WithLabels("EST", "auth_not_configured").Inc();
+
+            // On the EST tab too, under the CA: the refusal reached only the log file, so an
+            // administrator who had left both switches off saw nothing of the attempts.
+            if (HttpContext.RequestServices.GetService(typeof(ModularCA.Shared.Interfaces.IProtocolAuditService))
+                is ModularCA.Shared.Interfaces.IProtocolAuditService protocolAudit)
+            {
+                await protocolAudit.LogEstAsync("EstEnrollRejected", null, null, null, null,
+                    protocolConfig.Ca?.Label ?? caLabel, HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    success: false,
+                    errorMessage: "EST is enabled for this CA with neither client-certificate nor HTTP authentication switched on, so every enrollment is refused.",
+                    certificateAuthorityId: protocolConfig.Ca?.Id, spaceId: protocolConfig.Ca?.SpaceId);
+            }
 
             var problem = new ValidationProblemDetails
             {

@@ -59,6 +59,8 @@ namespace ModularCA.Shared.Models.Config
         public CertExpiryNotificationConfig CertExpiryNotification { get; set; } = new();
         public ComplianceScanConfig ComplianceScan { get; set; } = new();
         public CertPolicyConfig CertPolicy { get; set; } = new();
+        /// <summary>When the notices about a CA's certificate and key over time are shown.</summary>
+        public CaLifecycleConfig CaLifecycle { get; set; } = new();
         public AutoRenewalConfig AutoRenewal { get; set; } = new();
 
         public IntegrationApiConfig IntegrationApi { get; set; } = new();
@@ -97,6 +99,9 @@ namespace ModularCA.Shared.Models.Config
         /// (<c>--check-ready</c>); off by default.
         /// </summary>
         public HealthConfig Health { get; set; } = new();
+
+        /// <summary>What the instance holds about its ModularCA Hub. See <see cref="HubConfig"/>.</summary>
+        public HubConfig Hub { get; set; } = new();
     }
 
     /// <summary>
@@ -116,6 +121,26 @@ namespace ModularCA.Shared.Models.Config
         /// </summary>
         [Setting(SettingClass.HostLocal, SettingReload.Restart)]
         public int LoopbackPort { get; set; } = 0;
+    }
+
+    /// <summary>
+    /// What the instance holds about the ModularCA Hub that made it. The hub's socket itself is
+    /// not here: it is per host, named by the environment variable <c>MODULARCA__HUB__SOCKET</c>.
+    /// </summary>
+    public class HubConfig
+    {
+        /// <summary>
+        /// The SHA-256 of the hub's affiliation token, as 64 hex digits; empty when the instance
+        /// has been given none. The hub makes the token and keeps it; the instance holds only
+        /// this hash, with its data, so it follows the instance to every hub in its placement and
+        /// into its backups. Every request on the hub's local connection must carry the token
+        /// this is the hash of. While it is empty that check is off and reaching the socket is
+        /// the only proof. It comes from <c>Hub.AffiliationTokenSha256</c> in bootstrap.yaml, the
+        /// host command <c>--set-hub-token-hash</c>, or the hub replacing it over the connection.
+        /// It is a hash of a random token, not a secret: reading it lets nobody act as the hub.
+        /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        public string AffiliationTokenSha256 { get; set; } = "";
     }
 
     /// <summary>
@@ -146,6 +171,15 @@ namespace ModularCA.Shared.Models.Config
         /// </summary>
         [Setting(SettingClass.Bootstrap, SettingReload.Restart)]
         public int MigrationLockTimeoutSeconds { get; set; } = 30;
+
+        /// <summary>
+        /// How long a starting process waits, in seconds, for a restore that holds the
+        /// application database to finish, before it exits with status 75 so its supervisor
+        /// starts it again. A restore that ends within the wait lets the start go on; 0 means do
+        /// not wait at all. The process never starts beside a running restore, whatever the value.
+        /// </summary>
+        [Setting(SettingClass.Bootstrap, SettingReload.Restart)]
+        public int RestoreWaitSeconds { get; set; } = 60;
     }
 
     /// <summary>
@@ -688,6 +722,13 @@ namespace ModularCA.Shared.Models.Config
         /// </summary>
         public const int MaxRefreshTokenDays = 30;
 
+        /// <summary>
+        /// Days a refresh token lasts from the refresh that issued it. The security policy's
+        /// maximum session lifetime wins over it: a token never expires later than the sign-in
+        /// time plus that maximum (<see cref="ModularCA.Shared.Utils.SessionLifetime.RefreshTokenExpiry"/>),
+        /// so with the default 12-hour maximum this setting only matters once it is shorter than
+        /// the maximum, or the maximum is turned off.
+        /// </summary>
         [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int RefreshTokenDays { get; set; } = 7;
     }
@@ -1648,6 +1689,44 @@ namespace ModularCA.Shared.Models.Config
 
         // ExpiringWithinDays was retired in 0.4.3: the scan's ExpiringWithoutRenewal finding uses
         // each certificate's expiry warning, which its certificate profile sets.
+    }
+
+    /// <summary>
+    /// When the notices about a CA's certificate and key over time are shown
+    /// (<see cref="ModularCA.Shared.Utils.CaCryptoperiod"/>): on the CA's page, on System Health
+    /// and, once pressing, on the dashboard. These settings decide when a notice appears and
+    /// nothing else: no CA stops issuing and no node becomes not ready because of one. A new
+    /// install and an upgraded one start with the same values.
+    /// </summary>
+    public class CaLifecycleConfig
+    {
+        /// <summary>
+        /// How many days before a root CA certificate expires its notice starts. Default 730
+        /// (two years): the new root certificate has to reach everyone who trusts the old one.
+        /// 0 gives no early notice; the certificate's own expiry warning (30 days, alert at 7,
+        /// unless its profile says otherwise) is shown in every case.
+        /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        public int RootExpiryNoticeDays { get; set; } = ModularCA.Shared.Utils.CaCryptoperiodSettings.DefaultRootExpiryNoticeDays;
+
+        /// <summary>
+        /// How many days before an intermediate CA certificate expires its notice starts.
+        /// Default 365. 0 gives no early notice.
+        /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        public int IntermediateExpiryNoticeDays { get; set; } = ModularCA.Shared.Utils.CaCryptoperiodSettings.DefaultIntermediateExpiryNoticeDays;
+
+        /// <summary>
+        /// How many days a CA key may have been signing before a notice says so. Default 0: no
+        /// notice. NIST SP 800-57 Part 1 suggests an originator-usage period for a private
+        /// signature key and leaves the number to the organization's policy; this setting is
+        /// where that policy is written down. It refuses nothing.
+        /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        public int KeyUsagePeriodDays { get; set; } = 0;
+
+        /// <summary>The three values as the rule reads them.</summary>
+        public ModularCA.Shared.Utils.CaCryptoperiodSettings ToSettings() => new(RootExpiryNoticeDays, IntermediateExpiryNoticeDays, KeyUsagePeriodDays);
     }
 
     /// <summary>

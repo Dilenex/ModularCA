@@ -18,7 +18,7 @@
  * SHARED. adminui and userui had unrelated implementations: this one, backed by the
  * `qrcode-generator` package, and a 308-line hand-rolled encoder in userui carrying its own
  * Reed-Solomon arithmetic. The hand-rolled one had none of the review below and was generating
- * the TOTP provisioning code users scan to enrol a second factor. The library version wins.
+ * the TOTP provisioning code users scan to enroll a second factor. The library version wins.
  * It lives in shared/authenticated rather than shared/common for a mechanical reason: it is
  * the only shared file with a third-party dependency, and all three anonymous SPAs list
  * ../shared/common/src in their tsconfig include, so every file there is typechecked by apps

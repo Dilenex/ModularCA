@@ -55,11 +55,19 @@ public class ModuleBoundaryTests
         // project, so it can be lifted out whole. Shared does not reference it either: the
         // signing contract speaks of SSH certificates in its own plain types.
         "ModularCA.Ssh",
+        // The signer's issuance journal: its record format, writer, verifier and head reader.
+        // It references no project, so a verifier can take it alone. Shared does not reference
+        // it: the signing contract carries an issuance's origin and a fact in its own plain
+        // types, and the database and the keystore projects encode and write the records.
+        "ModularCA.Journal",
         "ModularCA.Shared",
         // The signer's wire: the gRPC contract, the remote client and the signer role's host.
         // It references Shared alone, so the node's client holds no keystore type; the API
         // composes it with the keystore project, which is why it sits below Keystore.
         "ModularCA.Signer",
+        // The hub's local connection: its contract, the hub's client and the node's listener.
+        // It references no project at all, so a hub can reference it and take nothing else.
+        "ModularCA.HubConnection",
         "ModularCA.Database",
         "ModularCA.Keystore",
         "ModularCA.Core",

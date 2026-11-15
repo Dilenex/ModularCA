@@ -209,7 +209,7 @@ const EnrollmentManagement: React.FC = () => {
                 render: (t) => <span className="data-mono">{tokenColumnLabel(t)}</span> },
             { key: 'uses', header: 'Uses', defaultWidth: 110, exportValue: (t) => `${t.usesRemaining}/${t.maxUses || 'unlimited'}`,
                 render: (t) => <span className="text-ink-muted">{t.usesRemaining}/{t.maxUses || '∞'}</span> },
-            { key: 'protocol', header: 'Protocol', defaultWidth: 100, truncate: false, sortable: true, exportValue: (t) => t.protocol || '',
+            { key: 'protocol', header: 'Protocol', defaultWidth: 120, truncate: false, sortable: true, exportValue: (t) => t.protocol || '',
                 render: (t) => (t.protocol ? <Tag label={t.protocol} /> : <span className="text-ink-muted">Any</span>) },
             { key: 'acceptedAt', header: 'Accepted at', defaultWidth: 180, sortable: true, sortValue: (t) => tokenAcceptedAt(t, cas, spaces),
                 exportValue: (t) => tokenAcceptedAt(t, cas, spaces), render: (t) => tokenAcceptedAt(t, cas, spaces) },

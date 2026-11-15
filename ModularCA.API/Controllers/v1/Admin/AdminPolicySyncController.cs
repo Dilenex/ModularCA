@@ -37,6 +37,7 @@ public class AdminPolicySyncController(
     /// Profiles are never deleted by sync (additive only).
     /// Requires step-up MFA verification via the X-MFA-Token header.
     /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost]
     public async Task<IActionResult> SyncFromDirectory([FromHeader(Name = "X-MFA-Token")] string? mfaToken = null)
     {
@@ -99,6 +100,7 @@ public class AdminPolicySyncController(
     /// <param name="profileType">The profile type: "cert", "signing", or "request".</param>
     /// <param name="file">The YAML file to import.</param>
     /// <param name="mfaToken">Step-up MFA token from the X-MFA-Token header.</param>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPost("/api/v1/admin/policy/import")]
     [RequestSizeLimit(MaxYamlUploadBytes)]
     public async Task<IActionResult> ImportYaml(

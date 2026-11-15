@@ -26,11 +26,16 @@ public static class AcmeEabKeyClaim
     public static async Task<bool> TryClaimAsync(ModularCADbContext db, Guid eabKeyId, DateTime nowUtc, CancellationToken ct = default)
     {
         if (db.Database.IsRelational())
-            return await db.AcmeEabKeys
+        {
+            var claimed = await db.AcmeEabKeys
                 .Where(k => k.Id == eabKeyId && !k.IsUsed)
                 .ExecuteUpdateAsync(s => s
                     .SetProperty(k => k.IsUsed, true)
                     .SetProperty(k => k.UsedAt, (DateTime?)nowUtc), ct) == 1;
+            if (claimed)
+                await QueueSpentFactAsync(db, eabKeyId, nowUtc, ct);
+            return claimed;
+        }
 
         var key = await db.AcmeEabKeys.FirstOrDefaultAsync(k => k.Id == eabKeyId, ct);
         if (key == null || key.IsUsed)
@@ -39,6 +44,26 @@ public static class AcmeEabKeyClaim
         key.UsedAt = nowUtc;
         await db.SaveChangesAsync(ct);
         return true;
+    }
+
+    /// <summary>
+    /// Queues the fact that the key was spent for the signer's journal: a one-time token used
+    /// with no certificate issued. The bulk statement above is not seen by the change tracker,
+    /// which queues this fact for the tracked path. A fact that cannot be queued does not undo
+    /// the claim.
+    /// </summary>
+    private static async Task QueueSpentFactAsync(ModularCADbContext db, Guid eabKeyId, DateTime nowUtc, CancellationToken ct)
+    {
+        try
+        {
+            await db.QueueSignerFactNowAsync(ModularCA.Journal.RecordType.SpentWithoutCertificate,
+                new ModularCA.Journal.SpentWithoutCertificatePayload(ModularCA.Journal.TokenKind.AcmeExternalAccountBinding, eabKeyId.ToString("D"),
+                    ModularCA.Journal.JournalFormat.ToMicros(new DateTimeOffset(DateTime.SpecifyKind(nowUtc, DateTimeKind.Utc)))).Encode(), ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The key is spent either way; the journal goes without this one fact.
+        }
     }
 
     /// <summary>

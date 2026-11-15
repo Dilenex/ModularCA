@@ -36,6 +36,40 @@ public sealed class UpgradeCheckNoConfigMessageTests
         Assert.DoesNotContain("sudo", message);
     }
 
+    /// <summary>
+    /// The same distinction for a backup archive and its key file (the hub met both under
+    /// SELinux): absent says "not found"; and the probe never mistakes an absent file, or one
+    /// that opens, for an unreadable one.
+    /// </summary>
+    [Fact]
+    public void A_file_that_is_absent_or_opens_is_not_called_unreadable()
+    {
+        var dir = Directory.CreateTempSubdirectory("probe-");
+        try
+        {
+            var absent = Path.Combine(dir.FullName, "archive.enc");
+            Assert.False(ModularCA.Shared.Utils.FileAccessProbe.IsUnreadable(absent));
+            Assert.Equal($"Backup archive not found: {absent}", ModularCA.Shared.Utils.FileAccessProbe.Describe("Backup archive", absent));
+
+            var present = Path.Combine(dir.FullName, "backup.key");
+            File.WriteAllBytes(present, new byte[32]);
+            Assert.False(ModularCA.Shared.Utils.FileAccessProbe.IsUnreadable(present));
+
+            // Where the platform lets a test take its own read permission away, the message changes.
+            if (!OperatingSystem.IsWindows() && Environment.UserName != "root")
+            {
+                File.SetUnixFileMode(present, UnixFileMode.None);
+                Assert.True(ModularCA.Shared.Utils.FileAccessProbe.IsUnreadable(present));
+                Assert.Contains("cannot be read by", ModularCA.Shared.Utils.FileAccessProbe.Describe("Backup archive", present));
+                File.SetUnixFileMode(present, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+        }
+        finally
+        {
+            dir.Delete(true);
+        }
+    }
+
     /// <summary>A file that is absent, in a directory that can be read, is not "unreadable".</summary>
     [Fact]
     public void A_missing_file_in_a_readable_directory_is_not_unreadable()
