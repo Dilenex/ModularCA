@@ -12,6 +12,7 @@ import { DetailField } from '@shared/components/cards/DetailField';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { ocspStatus } from './ocspReadiness';
 import { advisoriesOf, openEnrollmentNotice } from './protocolAdvisories';
+import { keyAdvisoriesOf } from './tighterDefaults';
 import InfrastructureProfiles from '../components/InfrastructureProfiles';
 import RevokedSerialsPanel from '../components/RevokedSerialsPanel';
 import { useAuth } from '../context/AuthContext';
@@ -147,6 +148,14 @@ const CaDetail: React.FC = () => {
                         <DetailField label="Default" value={ca.isDefault ? 'Yes' : 'No'} />
                         {ca.parentCaId && <DetailField label="Parent CA" value={ca.parentCaId} mono />}
                     </div>
+                    {keyAdvisoriesOf(ca).map((a) => (
+                        <InlineNotice
+                            key={a.reason}
+                            severity="warning"
+                            className="mt-2"
+                            notice={{ title: "This CA's key should be replaced", detail: a.message, code: a.reason }}
+                        />
+                    ))}
                 </DetailSection>
 
                 <DetailSection title="Certificate Details">

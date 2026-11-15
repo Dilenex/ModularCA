@@ -43,7 +43,9 @@ public interface IPasswordPolicyService
 
 /// <summary>
 /// EF Core implementation of <see cref="IPasswordPolicyService"/>. Loads the password policy from the database
-/// and validates passwords against length, complexity, optional dictionary/breach list checks, and the
+/// and validates passwords against length, complexity, the bundled and the administrator's blocklists, and the
+/// password history. The policy applies when a password is set or changed; sign-in never re-checks a
+/// stored password against it, so a stricter policy locks nobody out.
 /// </summary>
 public class PasswordPolicyService : IPasswordPolicyService
 {
@@ -152,8 +154,15 @@ public class PasswordPolicyService : IPasswordPolicyService
     }
 
     /// <summary>
-    /// Validates a password against a policy's length, complexity and dictionary rules and
+    /// Validates a password against a policy's length, complexity and blocklist rules and
     /// returns one message per violation. Empty means the password is acceptable.
+    /// <para>
+    /// Two blocklists, each on its own switch, and a password on either is refused with the same
+    /// message: the list shipped with the product (<see cref="BundledPasswordBlocklist"/>) when
+    /// <c>UseBundledBlocklist</c> is on, and the administrator's own file when
+    /// <c>DictionaryPath</c> names one that exists. The administrator's list adds to the bundled
+    /// one; it does not replace it. Both are checked on this host and nothing is sent anywhere.
+    /// </para>
     /// <para>
     /// Public and static because it is the ONLY implementation of these rules. A second one used
     /// to live in <c>BootstrapProfileSeeder.MeetsPolicy</c>, and the drift showed: the bootstrap
@@ -206,15 +215,18 @@ public class PasswordPolicyService : IPasswordPolicyService
         if (policy.MinSpecial > 0 && specialCount < policy.MinSpecial)
             errors.Add($"Password must contain at least {policy.MinSpecial} special character(s) (found {specialCount})");
 
-        // Dictionary check
-        if (!string.IsNullOrWhiteSpace(policy.DictionaryPath) && File.Exists(policy.DictionaryPath))
-        {
-            if (IsInDictionary(password, policy.DictionaryPath, policy.DictionaryIsHashed))
-                errors.Add("Password matches a known weak or compromised password");
-        }
+        // Blocklists: the bundled one, then the administrator's own. One message whichever matched.
+        var blocked = policy.UseBundledBlocklist && BundledPasswordBlocklist.Contains(password);
+        if (!blocked && !string.IsNullOrWhiteSpace(policy.DictionaryPath) && File.Exists(policy.DictionaryPath))
+            blocked = IsInDictionary(password, policy.DictionaryPath, policy.DictionaryIsHashed);
+        if (blocked)
+            errors.Add(BlocklistedMessage);
 
         return errors;
     }
+
+    /// <summary>The violation reported for a password found on a blocklist.</summary>
+    public const string BlocklistedMessage = "Password matches a known weak or compromised password";
 
     private static bool IsInDictionary(string password, string dictionaryPath, bool isHashed)
     {

@@ -11,6 +11,7 @@ Self-contained `linux-x64` build. No .NET runtime is required on the target.
 | `ModularCA.API` | The service. Native ELF apphost; the systemd unit runs it directly. |
 | `ModularCA.Keystore.Unlocker` | Break-glass keystore CLI. Separate binary on purpose — it exists for when the service will not start, so it must not depend on the service's hosting or configuration. |
 | `wwwroot/` | The five built SPAs: admin, user, public, setup, docs. |
+| `password-blocklist/bundled-blocklist.txt` | The password blocklist shipped with the product: a starter list of the most common passwords, checked when the password policy has "Check the bundled blocklist" on. A program file: installed root-owned into `/opt/modularca` and replaced by every upgrade. See "The password blocklist". |
 | `config/*.example` | Templates. `install.sh` copies them in only on a first install and never over a real config. |
 | `deploy/` | systemd units, per-role unit drop-ins (`dropins/`), plus nginx and nftables templates. `install.sh` installs both units in `/etc/systemd/system/` (`modularca-signer.service` is not enabled); the rest are examples to apply by hand from the extracted archive. |
 | `share/sql/adopt-ownership.sql` | The one-time schema-ownership repair for installs made before 0.4.0, run as the PostgreSQL superuser. `install.sh` installs it root-owned to `/usr/share/modularca/sql/`, never into `/opt/modularca`. |
@@ -228,6 +229,38 @@ To check schema ownership read-only at any time, as the service user and never a
     sudo -u modularca /opt/modularca/ModularCA.API --db-ownership check
 
 It exits 0 when both databases are sound and 3 when not, and prints what it found and the repair.
+
+### Upgrading to 0.4.5
+
+0.4.5 tightens three sets of defaults (session lifetime, password policy, CA key size) for **new
+installs**. An upgraded instance keeps every setting it has stored: nobody is signed out or locked
+out, and no password that worked before is refused at sign-in.
+
+- **Session lifetime.** The maximum session lifetime is now stored in hours. The `TighterDefaults`
+  migration keeps your value at the same length (the default 14 days becomes 336 hours; 0 stays
+  "no maximum"). A new install starts with 12 hours. To adopt that: Settings, Security, Security
+  Policy, "Set to 12 hours", then save. The maximum wins over the refresh token lifetime, so with
+  12 hours the 7-day refresh token lifetime no longer decides anything. Scripts that send
+  `maxSessionLifetimeDays` to `PUT /api/v1/admin/security-policy` keep working; the value is stored
+  as hours.
+- **Password policy.** Your stored policy is unchanged and the bundled blocklist is off for it. A
+  new install starts with the NIST SP 800-63B preset (15 characters, no character classes, no
+  expiry, bundled blocklist on). To adopt it: Settings, Security, Password Policy, "Apply NIST SP
+  800-63B preset". Passwords already in use keep working; the policy applies when a password is
+  next set or changed.
+- **"Never expires" is now honored everywhere.** With a maximum password age of 0, no account is
+  treated as expired, including one whose expiry date was stamped earlier. Before 0.4.5 such an
+  account, and every account an administrator created or reset (stamped with a fixed 90 days),
+  could still be asked to change its password. If you rely on rotation, check that the maximum age
+  in your policy is the number you mean.
+- **CA keys.** A new CA, X.509 or SSH, can no longer be created with an RSA key under 3072 bits,
+  in the console, the API, a key ceremony (including one approved before the upgrade and executed
+  after it), the setup wizard or `bootstrap.yaml`. Existing CAs are untouched and keep issuing. One
+  with an RSA 2048 key shows a notice on its page and under System Health, Security Baseline: plan
+  its replacement before 2031. Automation that creates RSA 2048 CAs must ask for 3072 or larger,
+  or ECDSA.
+- **Going back to 0.4.4** means restoring the backup taken before the upgrade, as for any release
+  that adds a migration. 0.4.4 cannot run on a database this release has migrated.
 
 ### Upgrading to 0.4.4
 
@@ -1364,6 +1397,33 @@ refuses password sign-in for `Directory` accounts until they are set back to `Lo
 **Privileged ports** are granted by `AmbientCapabilities=CAP_NET_BIND_SERVICE` in the unit. Do
 not also `setcap` the binary — the unit already covers it, and a stale file capability survives
 upgrades in ways the unit does not.
+
+### The password blocklist
+
+When the password policy has **Check the bundled blocklist** on (it is on for a new install, and
+off after an upgrade until an administrator turns it on or applies the NIST SP 800-63B preset), a
+new password is refused when it is on the list in
+`/opt/modularca/password-blocklist/bundled-blocklist.txt`. The check happens in the service's own
+process: no password and no hash of one leaves the host, and nothing is fetched.
+
+- **What ships is a starter list**, about 2,600 of the most common choices (number and keyboard
+  runs, "password" and its variants, account names and defaults, seasons and years, the product's
+  name, stock phrases). It is not a corpus of compromised passwords.
+- **Matching** ignores case and Unicode compatibility forms. A password is refused when it equals
+  an entry, or is one entry, or any one or two characters, repeated end to end.
+- **The file is read once**, on first use after a start, into memory. It is a program file:
+  root-owned, replaced by every upgrade. Do not edit it; your edits would be lost and a restart
+  would be needed to see them.
+- **To add your own list**, put a file in `/opt/modularca/config/password-dictionaries/` (one
+  password per line, or one hex SHA-256 per line with `dictionaryIsHashed`), readable by the
+  service account, and name it with `PUT /api/v1/admin/password-policy` (`dictionaryPath`, the
+  file name only). It is checked **in addition to** the bundled list, not instead of it, and it
+  survives upgrades and travels in backups with the rest of `config/`. This is the place for a
+  large list of compromised passwords.
+- **To use only your own list**, turn "Check the bundled blocklist" off and keep `dictionaryPath`.
+- **If the bundled file is missing** (a damaged install), passwords can still be set, nothing is
+  checked against it, and the console says so on the password policy card and under System
+  Health. Reinstalling the release puts it back.
 
 ## Two units: the signer apart from the node
 

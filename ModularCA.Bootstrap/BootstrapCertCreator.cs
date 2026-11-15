@@ -277,6 +277,19 @@ public static class BootstrapCertCreator
 
     /// <summary>
     /// Throws <see cref="ModularCA.Shared.Errors.ConfigurationValidationException"/> when the root CA
+    /// may not have the key <paramref name="algorithm"/> / <paramref name="keySize"/>: an RSA key
+    /// under 3072 bits (<see cref="CaKeyPolicy.RefusalForNewCa(string, int)"/>). The system signing
+    /// CA gets the same algorithm and size, so this covers it too. Called by the setup wizard and
+    /// the <c>bootstrap.yaml</c> path before any setup work, and again where the key is requested.
+    /// </summary>
+    public static void EnsureRootKeyAcceptable(string? algorithm, int keySize)
+    {
+        if (CaKeyPolicy.RefusalForNewCa(algorithm, keySize) is { } refusal)
+            throw new ModularCA.Shared.Errors.ConfigurationValidationException("The root CA key: " + refusal);
+    }
+
+    /// <summary>
+    /// Throws <see cref="ModularCA.Shared.Errors.ConfigurationValidationException"/> when the root CA
     /// common name <paramref name="commonName"/> would give an invalid label, or one with a reserved
     /// prefix (system- / space- / org-), under <see cref="ModularCA.Core.Services.CaLabelRules"/>. Called
     /// before any setup work so the operator can pick another name while nothing is built yet.

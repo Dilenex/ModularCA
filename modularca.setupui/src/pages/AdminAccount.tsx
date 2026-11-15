@@ -37,12 +37,10 @@ interface PasswordRule {
     test: (pw: string) => boolean;
 }
 
+// The password policy a new install starts with (NIST SP 800-63B): length is the requirement,
+// with no rules about which characters. Keep in step with passwordRules in App.tsx.
 const passwordRules: PasswordRule[] = [
-    { label: '16 or more characters', test: pw => pw.length >= 16 },
-    { label: 'At least one uppercase letter', test: pw => /[A-Z]/.test(pw) },
-    { label: 'At least one lowercase letter', test: pw => /[a-z]/.test(pw) },
-    { label: 'At least one digit', test: pw => /\d/.test(pw) },
-    { label: 'At least one symbol', test: pw => /[^A-Za-z0-9]/.test(pw) },
+    { label: '15 or more characters', test: pw => pw.length >= 15 },
 ];
 
 const AdminAccount: React.FC<AdminAccountProps> = ({ data, onChange }) => {
@@ -200,6 +198,10 @@ const AdminAccount: React.FC<AdminAccountProps> = ({ data, onChange }) => {
                         </span>
                     </li>
                 </ul>
+                <p className="text-xs text-ink-muted mt-3">
+                    Length is what counts: a phrase of several words is fine, and no particular kinds of character are required.
+                    A commonly used password (a keyboard run, "password" and its variants, the product's name) is refused when setup runs.
+                </p>
             </div>
 
             <div role="radiogroup" aria-labelledby="administrators-question" aria-describedby="administrators-help" aria-required="true"

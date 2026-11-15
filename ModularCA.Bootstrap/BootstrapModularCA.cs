@@ -391,6 +391,7 @@ public class BootstrapModularCA
         {
             BootstrapInputSections.EnsureBootstrapSectionsPresent(bootstrapConfig);
             BootstrapCertCreator.EnsureRootLabelUsable(bootstrapConfig.CA.Subject.CN ?? "ModularCA");
+            BootstrapCertCreator.EnsureRootKeyAcceptable(bootstrapConfig.CA.Algorithm, bootstrapConfig.CA.KeySize);
             BootstrapCertCreator.EnsureWebTlsSansSupported(bootstrapConfig.HttpsApi.SANs);
             BootstrapServiceUrlBuilder.EnsurePublicDomainUsable(bootstrapConfig.HttpsApi.PublicDomain);
             BootstrapInputSections.EnsureClaimTokenUsable(bootstrapConfig.Administration);

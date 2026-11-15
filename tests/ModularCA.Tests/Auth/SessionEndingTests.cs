@@ -53,7 +53,7 @@ public sealed class SessionEndingTests
     {
         private readonly SecurityPolicyEntity _policy = new()
         {
-            SessionIdleTimeoutMinutes = 0, MaxSessionLifetimeDays = 0, LoginResponseDelayMs = 0,
+            SessionIdleTimeoutMinutes = 0, MaxSessionLifetimeHours = 0, LoginResponseDelayMs = 0,
             MaxFailedLoginAttempts = 5, LockoutMinutes = 15,
         };
         public Task<SecurityPolicyEntity> GetAsync() => Task.FromResult(_policy);
@@ -128,7 +128,7 @@ public sealed class SessionEndingTests
         public string Login(Guid userId)
         {
             using var db = Db();
-            var rt = new JwtTokenService(Config).GenerateRefreshToken(userId, "127.0.0.1", null, null);
+            var rt = new JwtTokenService(Config).GenerateRefreshToken(userId, "127.0.0.1", 0, null, null);
             db.RefreshTokens.Add(rt);
             db.SaveChanges();
             return rt.PlaintextTokenForClient!;

@@ -333,7 +333,10 @@ namespace ModularCA.API.Controllers.v1.Auth
                 return StatusCode(403, new { error = "Password change required", requirePasswordChange = true });
             }
 
-            if (!ldapAuthenticated && !user.PasswordNeverExpires && user.PasswordExpirationDate.HasValue && user.PasswordExpirationDate < DateTime.UtcNow)
+            // Expiry follows the password policy as it stands: with no maximum age, no account is
+            // expired, whatever date an earlier policy stamped on it.
+            if (!ldapAuthenticated && ModularCA.Shared.Utils.PasswordExpiry.StampedDatePassed(user, DateTime.UtcNow)
+                && ModularCA.Shared.Utils.PasswordExpiry.IsExpired(user, await _passwordPolicy.GetPolicyAsync(), DateTime.UtcNow))
             {
                 MetricsService.AuthLoginFailures.WithLabels("password_expired").Inc();
                 user.FailedLoginAttempts = 0;
@@ -489,7 +492,7 @@ namespace ModularCA.API.Controllers.v1.Auth
             var defaultBadge = await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeService>().GetDefaultClaimAsync(user.Id);
             var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired, badge: defaultBadge);
             var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
-            var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash,
+            var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, (await _securityPolicy.GetAsync()).MaxSessionLifetimeHours, userAgentHash,
                 await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Services.IDpopProofService>().GetValidatedJktAsync(HttpContext));
             refreshToken.AccessBadgeId = defaultBadge?.Id;
             var refreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
@@ -571,6 +574,10 @@ namespace ModularCA.API.Controllers.v1.Auth
         /// <summary>
         /// Rotates a refresh token. The DPoP proof is validated once, up front. Presenting a token
         /// that is already revoked revokes the whole family and returns 401.
+        /// A session past the security policy's maximum session lifetime, counted from its sign-in
+        /// (<see cref="ModularCA.Shared.Utils.SessionLifetime"/>), is refused with 401 and its token
+        /// revoked; the successor of any other never expires later than that horizon, and neither
+        /// does the access token returned with it.
         /// The presented token is revoked by a conditional update in the same transaction that
         /// inserts its successor, so a concurrent request that loses the race is treated as reuse.
         /// <para>
@@ -635,19 +642,19 @@ namespace ModularCA.API.Controllers.v1.Auth
                 return Unauthorized(new { error = "Invalid or expired refresh token" });
             }
 
-            // Absolute session lifetime cap based on the original family's
-            // CreatedAt. Refresh rotation must not extend a session beyond this horizon.
-            var maxSessionDays = (await _securityPolicy.GetAsync()).MaxSessionLifetimeDays;
-            if (maxSessionDays > 0 && stored.FamilyCreatedAt.HasValue)
+            // The maximum session lifetime, counted from the sign-in that began the family (a row
+            // from before families recorded it counts from its own creation). The setting as it
+            // stands now decides, so a shortened maximum ends sessions already past it, and no
+            // rotation carries a session beyond this horizon.
+            var maxSessionHours = (await _securityPolicy.GetAsync()).MaxSessionLifetimeHours;
+            var sessionStartedAt = stored.FamilyCreatedAt ?? stored.CreatedAt;
+            var sessionHorizon = ModularCA.Shared.Utils.SessionLifetime.Horizon(sessionStartedAt, maxSessionHours);
+            if (ModularCA.Shared.Utils.SessionLifetime.IsOver(DateTime.UtcNow, sessionStartedAt, maxSessionHours))
             {
-                var sessionHorizon = stored.FamilyCreatedAt.Value.AddDays(maxSessionDays);
-                if (DateTime.UtcNow > sessionHorizon)
-                {
-                    stored.IsRevoked = true;
-                    stored.RevokedAt = DateTime.UtcNow;
-                    await _db.SaveChangesAsync();
-                    return Unauthorized(new { error = "Session lifetime exceeded. Please log in again." });
-                }
+                stored.IsRevoked = true;
+                stored.RevokedAt = DateTime.UtcNow;
+                await _db.SaveChangesAsync();
+                return Unauthorized(new { error = "Session lifetime exceeded. Please log in again." });
             }
 
             var user = stored.User;
@@ -761,17 +768,18 @@ namespace ModularCA.API.Controllers.v1.Auth
                 var carried = await _db.AccessBadges.AsNoTracking().FirstOrDefaultAsync(b => b.Id == carriedBadgeId && b.UserId == user.Id);
                 carriedBadge = carried == null ? null : new ModularCA.Auth.Interfaces.AccessBadgeClaim(carried.Id, carried.Name);
             }
-            var newAccessToken = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupNeeded, badge: carriedBadge);
+            // Neither token outlives the session: the access token stops at the horizon too.
+            var newAccessToken = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupNeeded, badge: carriedBadge, notAfter: sessionHorizon);
             var currentUaHashForNew = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
             // Bind the rotated token to the key the client just proved possession of (or keep the
             // existing binding when this refresh carried no proof). This also upgrades legacy unbound
             // sessions, and — in observe mode — lets the binding settle on the client's actual key.
-            var newRefreshToken = _jwt.GenerateRefreshToken(stored.UserId, sourceIp, currentUaHashForNew, proofJkt ?? stored.CnfJkt);
+            // The successor carries the ORIGINAL sign-in time, so the maximum session lifetime is
+            // measured from the first login, not from each rotation, and it expires no later than
+            // the session's horizon.
+            var newRefreshToken = _jwt.GenerateRefreshToken(stored.UserId, sourceIp, maxSessionHours, currentUaHashForNew, proofJkt ?? stored.CnfJkt, sessionStartedAt);
             newRefreshToken.FamilyId = stored.FamilyId;
             newRefreshToken.AccessBadgeId = carriedBadge?.Id;
-            // Propagate the ORIGINAL family creation timestamp so the
-            // absolute session cap is measured from the first login, not from each rotation.
-            newRefreshToken.FamilyCreatedAt = stored.FamilyCreatedAt ?? stored.CreatedAt;
             newRefreshToken.LastActivityAt = DateTime.UtcNow;
 
             // The returned plaintext goes to the client; the entity's Token column stores
@@ -938,9 +946,8 @@ namespace ModularCA.API.Controllers.v1.Auth
             // step-up MFA. Without this gate, a phished password alone rotated the password and
             // locked the real owner out of an MFA-protected account. Evaluated after the old
             // password verified, so it reveals nothing to a caller who has not proved it.
-            var passwordExpired = !user.PasswordNeverExpires
-                && user.PasswordExpirationDate.HasValue
-                && user.PasswordExpirationDate < DateTime.UtcNow;
+            var passwordExpired = ModularCA.Shared.Utils.PasswordExpiry.StampedDatePassed(user, DateTime.UtcNow)
+                && ModularCA.Shared.Utils.PasswordExpiry.IsExpired(user, await _passwordPolicy.GetPolicyAsync(), DateTime.UtcNow);
             if (!user.PasswordChangeOnNextLogon && !passwordExpired)
             {
                 await _audit.LogAsync(AuditActionType.UserLoginFailed, user.Id, user.Username,
@@ -970,10 +977,8 @@ namespace ModularCA.API.Controllers.v1.Auth
             await _passwordPolicy.RecordPasswordHistoryAsync(user.Id, newHash);
             user.PasswordChangeOnNextLogon = false;
 
-            // Reset password expiration based on policy
-            var policy = await _passwordPolicy.GetPolicyAsync();
-            if (!user.PasswordNeverExpires && policy.MaxAgeDays > 0)
-                user.PasswordExpirationDate = DateTime.UtcNow.AddDays(policy.MaxAgeDays);
+            // The expiry follows the policy: MaxAgeDays from now, or none when passwords never expire.
+            ModularCA.Shared.Utils.PasswordExpiry.Stamp(user, await _passwordPolicy.GetPolicyAsync(), DateTime.UtcNow);
 
             _db.Users.Update(user);
 
@@ -1309,7 +1314,7 @@ namespace ModularCA.API.Controllers.v1.Auth
             var defaultBadge = await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeService>().GetDefaultClaimAsync(user.Id);
             var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired, badge: defaultBadge);
             var certUserAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
-            var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, certUserAgentHash,
+            var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, (await _securityPolicy.GetAsync()).MaxSessionLifetimeHours, certUserAgentHash,
                 await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Services.IDpopProofService>().GetValidatedJktAsync(HttpContext));
             refreshToken.AccessBadgeId = defaultBadge?.Id;
             var certRefreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;

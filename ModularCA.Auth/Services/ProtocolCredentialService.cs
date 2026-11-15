@@ -113,9 +113,13 @@ public class ProtocolCredentialService(
         // below only when the local hash answered; a password the directory accepted is the
         // directory's to rotate and expire.
         var mustChangePassword = user.PasswordChangeOnNextLogon;
-        var passwordExpired = !user.PasswordNeverExpires
-            && user.PasswordExpirationDate.HasValue
-            && user.PasswordExpirationDate < DateTime.UtcNow;
+        // Expiry follows the password policy as it stands: with no maximum age, no account is
+        // expired, whatever date an earlier policy stamped on it. The policy is read only when a
+        // stamped date has passed.
+        var passwordExpired = ModularCA.Shared.Utils.PasswordExpiry.StampedDatePassed(user, DateTime.UtcNow)
+            && ModularCA.Shared.Utils.PasswordExpiry.IsExpired(user,
+                await db.PasswordPolicies.AsNoTracking().FirstOrDefaultAsync() ?? new ModularCA.Shared.Entities.PasswordPolicyEntity(),
+                DateTime.UtcNow);
 
         var check = await PasswordCredentialCheck.VerifyAsync(config, ldapAuth, username, password, user.PasswordHash, user.PasswordSource);
         var viaLdap = check == PasswordCheckResult.ValidViaLdap;

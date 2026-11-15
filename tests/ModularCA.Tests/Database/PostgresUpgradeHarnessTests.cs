@@ -922,6 +922,201 @@ public class PostgresUpgradeHarnessTests
         }
     }
 
+    /// <summary>
+    /// <c>TighterDefaults</c> (0.4.5): an installed instance keeps every setting it has stored, and
+    /// only a new install gets the new defaults.
+    /// </summary>
+    [Trait("Category", "PostgreSQL")]
+    [Trait(TestTier.Name, TestTier.Slow)]
+    [Collection(PostgresLane.Two)]
+    public sealed class TighterDefaults
+    {
+        /// <summary>The migration before <c>TighterDefaults</c>: where a 0.4.4 install stands.</summary>
+        private const string Before = "InstanceIncarnation";
+        private const string Migration = "TighterDefaults";
+
+        /// <summary>A security policy row as 0.4.4 stores it, with the maximum session lifetime in days.</summary>
+        private static string SecurityPolicy(int maxSessionLifetimeDays) => $"""
+            INSERT INTO "SecurityPolicy" (
+                "Id", "MaxFailedLoginAttempts", "LockoutMinutes", "SessionIdleTimeoutMinutes", "MaxConcurrentSessions",
+                "MaxSessionLifetimeDays", "LoginResponseDelayMs", "LoginBanner", "LoginBannerTitle",
+                "AllowSystemSuperSelfApproval", "RequireMtlsOcspCheck", "StepUpTokenTtlSeconds", "MfaSessionTtlSeconds",
+                "WebAuthnChallengeTtlSeconds", "RequireWebAuthnUserVerification", "StepUpFailureThreshold",
+                "StepUpFailureWindowSeconds", "AllowCaDirectSigning", "RequireNoCheckExtension", "RequireSignedRequests",
+                "DefaultGoodResponseTtlMinutes", "DefaultRevokedResponseTtlMinutes", "MaxSingleRequestsPerRequest",
+                "KeystoreScryptN", "KeystoreScryptR", "KeystoreScryptP", "UserQuorum", "RequireKeyCeremony",
+                "CeremonyRequiredApprovals", "MaxValidityDays", "ValidityCeilingBehavior", "UserCeremonyRequiredApprovals",
+                "UpdatedAt")
+            VALUES (gen_random_uuid(), 7, 20, 45, 3,
+                {maxSessionLifetimeDays}, 500, 'banner', NULL,
+                false, false, 90, 300,
+                120, true, 5,
+                300, false, false, false,
+                60, 15, 4,
+                65536, 8, 1, 1, true,
+                2, 0, 0, NULL,
+                now());
+            """;
+
+        /// <summary>A password policy row as 0.4.4 stores it: no <c>UseBundledBlocklist</c> column yet.</summary>
+        private static string PasswordPolicy(int minLength, int maxAgeDays, bool classes, string? dictionaryPath) => $"""
+            INSERT INTO "PasswordPolicy" (
+                "Id", "MinLength", "MaxLength", "RequireUppercase", "RequireLowercase", "RequireDigit", "RequireSymbol",
+                "MinUppercase", "MinLowercase", "MinDigits", "MinSpecial", "MaxAgeDays", "HistoryCount",
+                "DictionaryPath", "DictionaryIsHashed", "UpdatedAt")
+            VALUES (gen_random_uuid(), {minLength}, 128, {classes}, {classes}, {classes}, {classes},
+                1, 0, 2, 0, {maxAgeDays}, 4,
+                {(dictionaryPath == null ? "NULL" : $"'{dictionaryPath}'")}, false, now());
+            """;
+
+        private const string AUser =
+            "INSERT INTO \"Users\" (\"Id\",\"Username\",\"Email\",\"PasswordHash\",\"PasswordNeverExpires\",\"PasswordChangeOnNextLogon\",\"FirstName\","
+            + "\"LastName\",\"IsActive\",\"IsServiceIdentity\",\"IsLocked\",\"FailedLoginAttempts\",\"CreatedAt\",\"SecurityStamp\",\"IsDeleted\") "
+            + "VALUES (gen_random_uuid(),'superadmin','superadmin@acme.example','not-a-hash',false,false,'','',true,false,false,0,now(),'stamp',false); ";
+
+        private const string PasswordPolicyRow =
+            "SELECT \"MinLength\" || '|' || \"MaxLength\" || '|' || \"RequireUppercase\" || '|' || \"RequireLowercase\" || '|' || \"RequireDigit\" || '|' || "
+            + "\"RequireSymbol\" || '|' || \"MinUppercase\" || '|' || \"MinLowercase\" || '|' || \"MinDigits\" || '|' || \"MinSpecial\" || '|' || \"MaxAgeDays\" || '|' || "
+            + "\"HistoryCount\" || '|' || coalesce(\"DictionaryPath\", '-') || '|' || \"DictionaryIsHashed\" || '|' || \"UseBundledBlocklist\" FROM \"PasswordPolicy\"";
+
+        /// <summary>Runs <paramref name="act"/> over a database migrated to 0.4.4 and seeded with <paramref name="seedSql"/>.</summary>
+        private static async Task UpgradeAsync(string seedSql, Func<ModularCADbContext, Task> act)
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                await using var app = CreateApp(WithDatabase(server, appName));
+                await MigrateThroughAsync(app, Before);
+                if (seedSql.Length > 0) await ExecAsync(app, seedSql);
+                await MigrateThroughAsync(app, Migration);
+                await act(app);
+                await MigrateToLatestAsync(app, "application");
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+        }
+
+        /// <summary>
+        /// The stored 14 days become 336 hours, which is 14 days; every other column of the row is
+        /// as it was, and the entity reads the value in hours.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task The_stored_session_maximum_keeps_its_length_in_hours()
+        {
+            await UpgradeAsync(SecurityPolicy(14) + AUser, async app =>
+            {
+                Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"SecurityPolicy\""));
+                Assert.Equal(14 * 24, await ScalarAsync(app, "SELECT \"MaxSessionLifetimeHours\" FROM \"SecurityPolicy\""));
+                Assert.Equal(0, await ScalarAsync(app,
+                    "SELECT count(*) FROM information_schema.columns WHERE table_name = 'SecurityPolicy' AND column_name = 'MaxSessionLifetimeDays'"));
+                Assert.Equal("7|20|45|3|banner", await TextAsync(app,
+                    "SELECT \"MaxFailedLoginAttempts\" || '|' || \"LockoutMinutes\" || '|' || \"SessionIdleTimeoutMinutes\" || '|' || \"MaxConcurrentSessions\" || '|' || \"LoginBanner\" FROM \"SecurityPolicy\""));
+                var stored = await app.SecurityPolicies.AsNoTracking().SingleAsync();
+                Assert.Equal(336, stored.MaxSessionLifetimeHours);
+                Assert.Equal(TimeSpan.FromDays(14), TimeSpan.FromHours(stored.MaxSessionLifetimeHours));
+            });
+        }
+
+        [RequiresEnvironmentTheory(ServerVariable)]
+        [InlineData(0, 0)]          // no maximum stays no maximum
+        [InlineData(1, 24)]
+        [InlineData(30, 720)]
+        [InlineData(365, 8760)]
+        public async Task Any_stored_number_of_days_becomes_that_many_times_24_hours(int days, int hours)
+        {
+            await UpgradeAsync(SecurityPolicy(days) + AUser, async app =>
+                Assert.Equal(hours, await ScalarAsync(app, "SELECT \"MaxSessionLifetimeHours\" FROM \"SecurityPolicy\"")));
+        }
+
+        /// <summary>
+        /// The stored password policy is untouched, whatever it holds, and the bundled blocklist is
+        /// off for it: an install that did not check it before does not start to.
+        /// </summary>
+        [RequiresEnvironmentTheory(ServerVariable)]
+        [InlineData(12, 90, true, null, "12|128|true|true|true|true|1|0|2|0|90|4|-|false|false")]
+        [InlineData(8, 0, false, "/opt/modularca/config/password-dictionaries/ours.txt",
+            "8|128|false|false|false|false|1|0|2|0|0|4|/opt/modularca/config/password-dictionaries/ours.txt|false|false")]
+        public async Task The_stored_password_policy_is_kept_and_the_bundled_blocklist_stays_off(
+            int minLength, int maxAgeDays, bool classes, string? dictionaryPath, string expected)
+        {
+            await UpgradeAsync(SecurityPolicy(14) + PasswordPolicy(minLength, maxAgeDays, classes, dictionaryPath) + AUser, async app =>
+            {
+                Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"PasswordPolicy\""));
+                Assert.Equal(expected, await TextAsync(app, PasswordPolicyRow));
+                var stored = await app.PasswordPolicies.AsNoTracking().SingleAsync();
+                Assert.False(stored.UseBundledBlocklist);
+                Assert.Equal(minLength, stored.MinLength);
+            });
+        }
+
+        /// <summary>
+        /// An installed instance with no password policy row has been running on the old entity
+        /// defaults; it gets them as a row, so the new defaults do not reach it through the
+        /// missing-row fallback.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task An_installed_instance_without_a_password_policy_row_gets_the_defaults_it_ran_on()
+        {
+            await UpgradeAsync(SecurityPolicy(14) + AUser, async app =>
+            {
+                Assert.Equal("12|128|true|true|true|true|0|0|0|0|90|0|-|false|false", await TextAsync(app, PasswordPolicyRow));
+                var policy = await new ModularCA.Auth.Services.PasswordPolicyService(app).GetPolicyAsync();
+                Assert.Equal((12, 90, true, false), (policy.MinLength, policy.MaxAgeDays, policy.RequireSymbol, policy.UseBundledBlocklist));
+            });
+        }
+
+        /// <summary>
+        /// A fresh database gets no row from the migration, so bootstrap seeds the new defaults:
+        /// 12 hours, and the NIST SP 800-63B password policy with the bundled blocklist on.
+        /// </summary>
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task A_new_install_is_seeded_with_the_new_defaults()
+        {
+            await UpgradeAsync("", async app =>
+            {
+                Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"SecurityPolicy\""));
+                Assert.Equal(0, await ScalarAsync(app, "SELECT count(*) FROM \"PasswordPolicy\""));
+
+                ModularCA.Bootstrap.BootstrapProfileSeeder.SeedSecurityPolicy(app);
+                ModularCA.Bootstrap.BootstrapProfileSeeder.SeedPasswordPolicy(app);
+
+                Assert.Equal(12, await ScalarAsync(app, "SELECT \"MaxSessionLifetimeHours\" FROM \"SecurityPolicy\""));
+                Assert.Equal(30, await ScalarAsync(app, "SELECT \"SessionIdleTimeoutMinutes\" FROM \"SecurityPolicy\""));
+                Assert.Equal("15|128|false|false|false|false|0|0|0|0|0|0|-|false|true", await TextAsync(app, PasswordPolicyRow));
+            });
+        }
+
+        /// <summary>
+        /// Rolling the migration back turns hours into days, rounded up so that the 12 hours of a
+        /// new install become one day and not "no maximum".
+        /// </summary>
+        [RequiresEnvironmentTheory(ServerVariable)]
+        [InlineData(14, null, 14)]      // an upgraded install, untouched since
+        [InlineData(14, 12, 1)]         // lowered to 12 hours after the upgrade
+        [InlineData(14, 25, 2)]
+        [InlineData(14, 0, 0)]
+        public async Task Rolling_back_gives_days_again_rounded_up(int daysBefore, int? hoursSetAfter, int daysAfter)
+        {
+            await UpgradeAsync(SecurityPolicy(daysBefore) + PasswordPolicy(12, 90, true, null) + AUser, async app =>
+            {
+                if (hoursSetAfter is int hours)
+                    await ExecAsync(app, $"UPDATE \"SecurityPolicy\" SET \"MaxSessionLifetimeHours\" = {hours}");
+
+                await app.GetService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>().MigrateAsync(MigrationId(app, Before));
+
+                Assert.Equal(daysAfter, await ScalarAsync(app, "SELECT \"MaxSessionLifetimeDays\" FROM \"SecurityPolicy\""));
+                Assert.Equal(0, await ScalarAsync(app,
+                    "SELECT count(*) FROM information_schema.columns WHERE table_name = 'PasswordPolicy' AND column_name = 'UseBundledBlocklist'"));
+                Assert.Equal(1, await ScalarAsync(app, "SELECT count(*) FROM \"PasswordPolicy\" WHERE \"MinLength\" = 12 AND \"MaxAgeDays\" = 90"));
+            });
+        }
+    }
+
     /// <summary>What each later migration adds or backfills on rows written before it.</summary>
     [Trait("Category", "PostgreSQL")]
     [Trait(TestTier.Name, TestTier.Slow)]

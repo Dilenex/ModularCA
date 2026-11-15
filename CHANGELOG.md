@@ -6,6 +6,25 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### 0.4.5-dev.1.4 — 2026-11-12
+
+The fifth test build of 0.4.5. The hub ran 0.4.5-dev.1.3 in pods under SELinux: the restore lock
+held in every case it tried. Since 0.4.5-dev.1.3:
+
+- **Tighter defaults for a new install**, after NIST SP 800-63B and SP 800-57: sessions end after
+  12 hours, the password policy asks for length and a blocklist and nothing else, and a new CA's
+  RSA key is at least 3072 bits. **An installed instance keeps every setting it has** and is
+  offered the change in the console. See Security, and the upgrade notes.
+- **A node or signer that finds a restore ran beside it exits with status 75**, where
+  0.4.5-dev.1.3 answered 503 and waited to be restarted.
+- **One migration, `TighterDefaults`.** It is the first of 0.4.5 that is not purely additive: it
+  renames a column.
+
+To check after installing on a host that already runs: nobody is signed out, the session maximum
+reads 336 hours where it read 14 days, the password policy is as it was, and System Health shows
+a Security Baseline card. Nothing in this build has been looked at in a browser, and the wizard
+and `bootstrap.yaml` refusals of a small RSA key were not run end to end.
+
 ### 0.4.5-dev.1.3 — 2026-11-12
 
 The fourth test build of 0.4.5. The hub's restore test showed a node starting beside a restore,
@@ -76,6 +95,29 @@ what the build is for.
 
 **Upgrade notes**
 
+- **A third migration, `TighterDefaults`, and this one renames a column.** The maximum session
+  lifetime is stored in hours: `SecurityPolicy.MaxSessionLifetimeDays` becomes
+  `MaxSessionLifetimeHours` and the stored value is multiplied by 24, so 14 days reads 336 hours
+  and 0 stays "no maximum". It also adds a switch for the bundled blocklist, off, and writes the
+  earlier password defaults as a row where an installed instance had none. A backup taken before
+  the upgrade is the way back.
+- **No setting changes on an installed instance.** Nobody is signed out, the password policy is
+  as it was, the bundled blocklist is off, and no password that worked is refused at sign-in. The
+  console offers each tighter default, in Settings and under System Health, Security Baseline.
+- **`GET /api/v1/admin/security-policy` answers `maxSessionLifetimeHours`** in place of
+  `maxSessionLifetimeDays`. `PUT` still accepts days.
+- **The session maximum now wins over the refresh token lifetime.** A refresh past the maximum
+  is refused and the user signs in again. With the stored 14 days and a 7-day refresh token
+  nothing changes; it matters once the maximum is set lower.
+- **A new CA cannot be given an RSA key under 3072 bits.** Automation that creates RSA 2048 CAs
+  must ask for 3072 or more, or ECDSA. A ceremony approved before the upgrade for an RSA 2048 CA
+  is refused when it is executed. The setup wizard and `bootstrap.yaml` with RSA and no size now
+  mean 3072.
+- **With a maximum password age of 0, no account is treated as expired**, including one whose
+  expiry date was stamped earlier. If you rely on rotation, check that the maximum age in the
+  policy is the number you mean.
+- **The setup wizard's rule for the first administrator's password** is 15 characters with no
+  character-class rules, where it was 16 with all four.
 - **A start can exit 75 because a restore is running.** A node, or a signer-only process, that
   finds a restore using its application database waits up to `Schema.RestoreWaitSeconds`
   (new, 60 seconds, in `config.yaml`; 0 means do not wait) and starts when the restore has
@@ -264,6 +306,32 @@ what the build is for.
 
 **Security**
 
+- **Tighter defaults for a new install, offered to an installed one.** After NIST SP 800-63B
+  and SP 800-57. An installed instance keeps what it has stored; the console shows where it
+  differs and offers the change, and never applies it by itself.
+  - **Sessions end after 12 hours.** The maximum session lifetime is set in hours, and no
+    refresh token or access token outlives the session it belongs to: the maximum wins over the
+    refresh token lifetime, at every sign-in and every refresh. The console says which of the
+    two decides. For an installed instance: Settings, Security, Security Policy, "Set to 12
+    hours".
+  - **The password policy asks for length, not composition.** At least 15 characters, no
+    required character classes, no expiry, and every new password checked against a blocklist.
+    For an installed instance: Settings, Security, Password Policy, "Apply NIST SP 800-63B
+    preset", one action with step-up. Every setting stays editable afterwards, for an
+    organization that must keep composition rules or rotation.
+  - **A bundled password blocklist** ships with the product
+    (`password-blocklist/bundled-blocklist.txt`). It is a starter list of about 2,600 of the
+    choices people reach for first, written for the product; it is not a corpus of breached
+    passwords. A password that equals an entry, or repeats one end to end, is refused when it is
+    set. A list of your own in `config/password-dictionaries` is checked in addition. Nothing
+    leaves the host.
+  - **A new CA's RSA key is at least 3072 bits**, X.509 and SSH, in the console, the API, a key
+    ceremony, the setup wizard and `bootstrap.yaml`. RSA 2048 is acceptable only through 2030
+    and a CA key made today outlives that. New CAs already default to ECDSA P-384. An existing CA
+    with a smaller RSA key keeps issuing and shows a notice to replace it before 2031, which
+    today means a new CA.
+  - **System Health has a Security Baseline card** listing where the instance differs from
+    these defaults.
 - **No certificate is fetched while a chain is built.** A certificate names where its issuer's
   certificate can be fetched (authority information access, CA Issuers), and the chain engine
   follows that address when a chain is incomplete. Three places built chains that way: the check
@@ -283,6 +351,10 @@ what the build is for.
 
 **Fixed**
 
+- **"Passwords never expire" is honored everywhere.** With a maximum age of 0, an account
+  carrying an expiry date stamped earlier was still made to change its password.
+- **A new or reset account's password expiry follows the policy's maximum age.** It was a fixed
+  90 days whatever the policy said.
 - **A refused EST enrollment always leaves a row on the EST audit tab.** Two kinds left none: an
   enrollment at a CA whose EST had neither client-certificate nor HTTP authentication switched
   on (403), and any refusal the enrollment's own steps had not recorded, such as a certificate

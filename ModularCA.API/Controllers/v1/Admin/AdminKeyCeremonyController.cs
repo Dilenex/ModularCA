@@ -180,6 +180,7 @@ public class AdminKeyCeremonyController : ControllerBase
     /// <summary>
     /// Null when CA-creation parameters would pass the checks execution applies, else the response
     /// to send now, before anyone approves: 400 for a control character in a text field, an
+    /// RSA key under 3072 bits (<see cref="ModularCA.Shared.Utils.CaKeyPolicy"/>), an
     /// invalid or reserved label, or a name constraint <see cref="ModularCA.Shared.Utils.NameConstraintRules"/> refuses,
     /// 409 for a label or name another CA has, 404 for a CA certificate profile outside the new
     /// CA's scope.
@@ -188,6 +189,8 @@ public class AdminKeyCeremonyController : ControllerBase
     {
         if (parameters.ControlCharacterError() is string controlError)
             return new BadRequestObjectResult(new { error = controlError });
+        if (ModularCA.Shared.Utils.CaKeyPolicy.RefusalForNewCa(parameters.KeyAlgorithm, parameters.KeySize) is { } keyRefusal)
+            return new BadRequestObjectResult(new { error = keyRefusal });
         if ((ModularCA.Shared.Utils.NameConstraintRules.ListError(parameters.NameConstraintsPermitted, nameof(parameters.NameConstraintsPermitted))
             ?? ModularCA.Shared.Utils.NameConstraintRules.ListError(parameters.NameConstraintsExcluded, nameof(parameters.NameConstraintsExcluded))) is string ncError)
             return new BadRequestObjectResult(new { error = ncError });

@@ -2415,6 +2415,9 @@ namespace ModularCA.Database.Migrations
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<bool>("UseBundledBlocklist")
+                        .HasColumnType("boolean");
+
                     b.HasKey("Id");
 
                     b.ToTable("PasswordPolicy");
@@ -2926,7 +2929,7 @@ namespace ModularCA.Database.Migrations
                     b.Property<int>("MaxFailedLoginAttempts")
                         .HasColumnType("integer");
 
-                    b.Property<int>("MaxSessionLifetimeDays")
+                    b.Property<int>("MaxSessionLifetimeHours")
                         .HasColumnType("integer");
 
                     b.Property<int>("MaxSingleRequestsPerRequest")

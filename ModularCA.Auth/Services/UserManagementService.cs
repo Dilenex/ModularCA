@@ -96,6 +96,8 @@ namespace ModularCA.Auth.Services
                     IsLocked = request.IsLocked ?? false,
                     PasswordNeverExpires = request.PasswordNeverExpires ?? false,
                 };
+                // The first expiry follows the password policy, like every later change.
+                ModularCA.Shared.Utils.PasswordExpiry.Stamp(newUser, await _passwordPolicy.GetPolicyAsync(), DateTime.UtcNow);
                 _dbContext.Users.Add(newUser);
 
                 // Only the requested groups; an account created without groups has none.
@@ -363,15 +365,8 @@ namespace ModularCA.Auth.Services
                     .ThenInclude(gm => gm.Group)
                 .ToListAsync();
 
-            var result = new List<UserEntityDto>();
-            foreach (var user in users)
-            {
-                var userEntry = MapToDto(user);
-                if (user.PasswordExpirationDate != null)
-                    userEntry.PasswordExpiration = user.PasswordExpirationDate;
-                result.Add(userEntry);
-            }
-            return result;
+            var policy = await _passwordPolicy.GetPolicyAsync();
+            return users.Select(user => MapToDto(user, policy)).ToList();
         }
 
         /// <summary>
@@ -383,7 +378,7 @@ namespace ModularCA.Auth.Services
                 .Include(u => u.GroupMemberships)
                     .ThenInclude(gm => gm.Group)
                 .FirstOrDefaultAsync(u => u.Id == userId);
-            return user == null ? null : MapToDto(user);
+            return user == null ? null : MapToDto(user, await _passwordPolicy.GetPolicyAsync());
         }
 
         /// <summary>
@@ -395,7 +390,7 @@ namespace ModularCA.Auth.Services
                 .Include(u => u.GroupMemberships)
                     .ThenInclude(gm => gm.Group)
                 .FirstOrDefaultAsync(u => u.Username == username);
-            return user == null ? null : MapToDto(user);
+            return user == null ? null : MapToDto(user, await _passwordPolicy.GetPolicyAsync());
         }
 
         /// <summary>
@@ -407,7 +402,7 @@ namespace ModularCA.Auth.Services
                 .Include(u => u.GroupMemberships)
                     .ThenInclude(gm => gm.Group)
                 .FirstOrDefaultAsync(u => u.Email == email);
-            return user == null ? null : MapToDto(user);
+            return user == null ? null : MapToDto(user, await _passwordPolicy.GetPolicyAsync());
         }
 
         /// <summary>
@@ -606,8 +601,7 @@ namespace ModularCA.Auth.Services
             // Append to rotating history + prune.
             // No-op when HistoryCount <= 0.
             await _passwordPolicy.RecordPasswordHistoryAsync(userId, newHash);
-            if (!user.PasswordNeverExpires)
-                user.PasswordExpirationDate = DateTime.UtcNow.AddDays(90);
+            ModularCA.Shared.Utils.PasswordExpiry.Stamp(user, await _passwordPolicy.GetPolicyAsync(), DateTime.UtcNow);
             _dbContext.Users.Update(user);
             // The stamp rotates and every refresh token is revoked in the save that writes the new
             // password, so a compromised session cannot persist after the change.
@@ -645,7 +639,7 @@ namespace ModularCA.Auth.Services
             // bounce back to the admin-generated temporary password.
             await _passwordPolicy.RecordPasswordHistoryAsync(userId, newHash);
             user.PasswordChangeOnNextLogon = true;
-            user.PasswordExpirationDate = DateTime.UtcNow.AddDays(90);
+            ModularCA.Shared.Utils.PasswordExpiry.Stamp(user, await _passwordPolicy.GetPolicyAsync(), DateTime.UtcNow);
             _dbContext.Users.Update(user);
             // The stamp rotates and every refresh token is revoked in the save that writes the
             // temporary password.
@@ -683,7 +677,7 @@ namespace ModularCA.Auth.Services
         /// <summary>
         /// Maps a <see cref="UserEntity"/> with loaded GroupMemberships to a <see cref="UserEntityDto"/>.
         /// </summary>
-        private static UserEntityDto MapToDto(UserEntity user)
+        private static UserEntityDto MapToDto(UserEntity user, PasswordPolicyEntity policy)
         {
             var dto = new UserEntityDto
             {
@@ -714,8 +708,9 @@ namespace ModularCA.Auth.Services
                 }).ToList()
             };
 
-            if (user.PasswordExpirationDate != null)
-                dto.PasswordExpiration = user.PasswordExpirationDate;
+            // The date the password really expires under the policy as it stands: none when
+            // passwords never expire, whatever an earlier policy stamped on the account.
+            dto.PasswordExpiration = ModularCA.Shared.Utils.PasswordExpiry.ExpiresAt(user, policy);
 
             return dto;
         }

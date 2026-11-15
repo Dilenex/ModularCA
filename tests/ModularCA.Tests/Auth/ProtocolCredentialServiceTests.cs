@@ -502,11 +502,29 @@ public class ProtocolCredentialServiceTests
     {
         using var fixture = new TestDb();
         var db = fixture.Context;
+        // A policy that expires passwords: the stamped date counts only under one.
+        db.PasswordPolicies.Add(new PasswordPolicyEntity { MaxAgeDays = 90 });
         AddUser(db, "device1", "Correct-Horse-1", passwordExpires: DateTime.UtcNow.AddDays(-1));
         var (service, audit, _) = Build(db);
 
         Assert.Null(await service.VerifyAsync("device1", "Correct-Horse-1", "EST", null));
         Assert.Contains("password_expired", Assert.Single(audit.Entries).Details?.ToString());
+    }
+
+    /// <summary>
+    /// With no maximum age (the default of a new install) no password is expired, whatever date
+    /// an earlier policy stamped on the account.
+    /// </summary>
+    [Fact]
+    public async Task A_stamped_date_in_the_past_is_ignored_while_passwords_never_expire()
+    {
+        using var fixture = new TestDb();
+        var db = fixture.Context;
+        db.PasswordPolicies.Add(new PasswordPolicyEntity { MaxAgeDays = 0 });
+        AddUser(db, "device1", "Correct-Horse-1", passwordExpires: DateTime.UtcNow.AddDays(-400));
+        var (service, _, _) = Build(db);
+
+        Assert.Equal("device1", await service.VerifyAsync("device1", "Correct-Horse-1", "EST", null));
     }
 
     [Fact]

@@ -39,7 +39,7 @@ public sealed class RefreshTokenReuseTests
 
     private sealed class FixedPolicy : ISecurityPolicyService
     {
-        private readonly SecurityPolicyEntity _policy = new() { SessionIdleTimeoutMinutes = 0, MaxSessionLifetimeDays = 0, LoginResponseDelayMs = 0 };
+        private readonly SecurityPolicyEntity _policy = new() { SessionIdleTimeoutMinutes = 0, MaxSessionLifetimeHours = 0, LoginResponseDelayMs = 0 };
         public Task<SecurityPolicyEntity> GetAsync() => Task.FromResult(_policy);
         public void InvalidateCache() { }
     }
@@ -79,7 +79,7 @@ public sealed class RefreshTokenReuseTests
         public string Login(string? cnfJkt = null)
         {
             using var db = Db();
-            var rt = new JwtTokenService(Config).GenerateRefreshToken(UserId, "127.0.0.1", null, cnfJkt);
+            var rt = new JwtTokenService(Config).GenerateRefreshToken(UserId, "127.0.0.1", 0, null, cnfJkt);
             db.RefreshTokens.Add(rt);
             db.SaveChanges();
             return rt.PlaintextTokenForClient!;

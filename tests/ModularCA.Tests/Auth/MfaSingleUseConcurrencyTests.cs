@@ -47,7 +47,7 @@ public sealed class MfaSingleUseConcurrencyTests
     {
         private readonly SecurityPolicyEntity _policy = new()
         {
-            SessionIdleTimeoutMinutes = 0, MaxSessionLifetimeDays = 0, LoginResponseDelayMs = 0, MaxConcurrentSessions = 0,
+            SessionIdleTimeoutMinutes = 0, MaxSessionLifetimeHours = 0, LoginResponseDelayMs = 0, MaxConcurrentSessions = 0,
             RequireWebAuthnUserVerification = false, StepUpFailureThreshold = 100,
         };
         public Task<SecurityPolicyEntity> GetAsync() => Task.FromResult(_policy);

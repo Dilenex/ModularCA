@@ -59,6 +59,7 @@ export const adminConfiguration: ApiEndpoint[] = [
             { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token scoped to update-config.' },
         ],
         responseDescription: 'Update confirmation.',
+        notes: 'The security policy\'s maximum session lifetime (maxSessionLifetimeHours) wins over this setting: a refresh token expires RefreshTokenDays after it is issued or when its session reaches the maximum, whichever comes first. With the 12-hour maximum of a new install this setting has no effect until it is shorter than the maximum or the maximum is turned off. A value longer than the maximum is accepted, not refused.',
     },
     {
         method: 'PUT',

@@ -681,7 +681,7 @@ public class MtlsController : ControllerBase
         var defaultBadge = await GetDefaultBadgeAsync(user.Id);
         var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired, badge: defaultBadge);
         var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
-        var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash, await GetDpopJktAsync());
+        var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, (await _securityPolicy.GetAsync()).MaxSessionLifetimeHours, userAgentHash, await GetDpopJktAsync());
         refreshToken.AccessBadgeId = defaultBadge?.Id;
         // Plaintext is returned to the client; DB stores the hash.
         var refreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
@@ -952,7 +952,7 @@ public class MtlsController : ControllerBase
         var defaultBadge = await GetDefaultBadgeAsync(user.Id);
         var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired, badge: defaultBadge);
         var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
-        var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash);
+        var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, (await _securityPolicy.GetAsync()).MaxSessionLifetimeHours, userAgentHash);
         refreshToken.AccessBadgeId = defaultBadge?.Id;
         var refreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
 
@@ -1118,7 +1118,7 @@ public class MtlsController : ControllerBase
         var defaultBadge = await GetDefaultBadgeAsync(user.Id);
         var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, mfaSetupRequired: mfaSetupRequired, badge: defaultBadge);
         var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
-        var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash);
+        var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, (await _securityPolicy.GetAsync()).MaxSessionLifetimeHours, userAgentHash);
         refreshToken.AccessBadgeId = defaultBadge?.Id;
         var refreshPlaintext = refreshToken.PlaintextTokenForClient ?? refreshToken.Token;
 

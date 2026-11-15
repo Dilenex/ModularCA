@@ -206,8 +206,7 @@ public static class AccountClaims
         user.IsLocked = false;
         user.FailedLoginAttempts = 0;
         user.LockoutEndUtc = null;
-        if (!user.PasswordNeverExpires && policy.MaxAgeDays > 0)
-            user.PasswordExpirationDate = now.AddDays(policy.MaxAgeDays);
+        ModularCA.Shared.Utils.PasswordExpiry.Stamp(user, policy, now);
         // Saves the changes above with the rotated stamp and revokes the refresh tokens, inside tx.
         await UserSessionTermination.EndAllSessionsSetBasedAsync(db, user, now, ct);
         await tx.CommitAsync(ct);

@@ -36,9 +36,11 @@ namespace ModularCA.Auth.Services
         /// Generates a signed JWT for the given user and their group memberships.
         /// When <paramref name="mfaSetupRequired"/> is true, an <c>mfa_setup_required</c> claim
         /// is embedded so the MFA enrollment middleware can restrict access until setup is complete.
-        /// Group names are embedded as <c>groups</c> claims.
+        /// Group names are embedded as <c>groups</c> claims. The token expires after the configured
+        /// access-token lifetime, or at <paramref name="notAfter"/> (the session's horizon,
+        /// <see cref="ModularCA.Shared.Utils.SessionLifetime.Horizon"/>) when that comes first.
         /// </summary>
-        public (string Token, DateTime ExpiresAt) GenerateToken(UserEntity user, List<CaGroupEntity> groups, string? sourceIp = null, bool mfaSetupRequired = false, AccessBadgeClaim? badge = null)
+        public (string Token, DateTime ExpiresAt) GenerateToken(UserEntity user, List<CaGroupEntity> groups, string? sourceIp = null, bool mfaSetupRequired = false, AccessBadgeClaim? badge = null, DateTime? notAfter = null)
         {
             // The backstop behind every sign-in path: a service identity never becomes a session.
             if (user.IsServiceIdentity)
@@ -47,6 +49,8 @@ namespace ModularCA.Auth.Services
             var handler = new JwtSecurityTokenHandler();
             var key = Encoding.UTF8.GetBytes(_config.JWT.Secret);
             var expires = DateTime.UtcNow.AddMinutes(_config.JWT.ExpirationMinutes);
+            if (notAfter is { } horizon && horizon < expires)
+                expires = horizon;
 
             var claims = new List<Claim>
             {
@@ -133,9 +137,18 @@ namespace ModularCA.Auth.Services
         /// The plaintext is returned to the caller (via the hidden
         /// <see cref="RefreshTokenEntity.PlaintextTokenForClient"/> property) while the
         /// <see cref="RefreshTokenEntity.Token"/> field stores the SHA-256 hash.
+        /// <para>
+        /// The token expires after the configured refresh-token lifetime, or at the session's
+        /// horizon when that comes first (<see cref="ModularCA.Shared.Utils.SessionLifetime.RefreshTokenExpiry"/>):
+        /// <paramref name="maxSessionLifetimeHours"/> counted from <paramref name="sessionStartedAt"/>,
+        /// which is the sign-in time of the session being continued, or now for a new sign-in.
+        /// The returned entity starts a new family; a rotation overwrites the family id.
+        /// </para>
         /// </summary>
-        public RefreshTokenEntity GenerateRefreshToken(Guid userId, string? ip, string? userAgentHash = null, string? cnfJkt = null)
+        public RefreshTokenEntity GenerateRefreshToken(Guid userId, string? ip, int maxSessionLifetimeHours, string? userAgentHash = null, string? cnfJkt = null, DateTime? sessionStartedAt = null)
         {
+            var now = DateTime.UtcNow;
+            var started = sessionStartedAt ?? now;
             var plaintext = Convert.ToBase64String(RandomNumberGenerator.GetBytes(64));
             var entity = new RefreshTokenEntity
             {
@@ -145,8 +158,8 @@ namespace ModularCA.Auth.Services
                 UserAgentHash = userAgentHash,
                 CnfJkt = cnfJkt, // DPoP proof-of-possession binding (null = unbound / legacy)
                 FamilyId = Guid.NewGuid(),
-                FamilyCreatedAt = DateTime.UtcNow,
-                ExpiresAt = DateTime.UtcNow.AddDays(_config.Tokens.RefreshTokenDays)
+                FamilyCreatedAt = started,
+                ExpiresAt = ModularCA.Shared.Utils.SessionLifetime.RefreshTokenExpiry(now, started, _config.Tokens.RefreshTokenDays, maxSessionLifetimeHours)
             };
             // Stash plaintext on a non-persisted property so the controller can return it.
             entity.PlaintextTokenForClient = plaintext;

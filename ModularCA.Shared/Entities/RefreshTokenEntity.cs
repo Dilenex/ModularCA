@@ -51,8 +51,8 @@ namespace ModularCA.Shared.Entities
         public Guid? FamilyId { get; set; }
 
         /// <summary>
-        /// The original family issuance timestamp. Copied forward
-        /// on rotation so <see cref="Shared.Models.Config.SecurityConfig.MaxSessionLifetimeDays"/>
+        /// The original family issuance timestamp: the sign-in that began the session. Copied
+        /// forward on rotation so <see cref="SecurityPolicyEntity.MaxSessionLifetimeHours"/>
         /// can be enforced regardless of how many times the token has rotated.
         /// </summary>
         public DateTime? FamilyCreatedAt { get; set; }

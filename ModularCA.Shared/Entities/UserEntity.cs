@@ -17,7 +17,16 @@ namespace ModularCA.Shared.Entities
         [Required]
         public string PasswordHash { get; set; } = string.Empty;
 
+        /// <summary>When true, this account's password does not expire whatever the password policy says.</summary>
         public bool PasswordNeverExpires { get; set; } = false;
+
+        /// <summary>
+        /// When the local password expires, stamped at each change from the password policy's
+        /// <c>MaxAgeDays</c> (<see cref="ModularCA.Shared.Utils.PasswordExpiry.Stamp"/>). Read only
+        /// through <see cref="ModularCA.Shared.Utils.PasswordExpiry"/>: while the policy sets no
+        /// maximum age the date means nothing, including the 90 days a row created without a stamp
+        /// starts with.
+        /// </summary>
         public DateTime? PasswordExpirationDate { get; set; } = DateTime.UtcNow.AddDays(90);
         public bool PasswordChangeOnNextLogon { get; set; } = false;
 

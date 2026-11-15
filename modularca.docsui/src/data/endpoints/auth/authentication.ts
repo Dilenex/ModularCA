@@ -39,7 +39,7 @@ export const authentication: ApiEndpoint[] = [
             { name: 'DPoP', type: 'string', required: false, description: 'DPoP proof signed by the key the session was bound to. Required when the session is bound.' },
         ],
         responseDescription: 'New JWT access token and refresh token pair.',
-        notes: 'A session bound to a DPoP key at sign-in (any sign-in that carried a proof) is refused with 401 REFRESH_POP_INVALID unless the refresh carries a proof from that key; this is enforced by default from 0.4.3 (Security.EnforceRefreshTokenPoP). A session that was never bound is not checked. Rate limited per IP (120 requests per 5 minutes).',
+        notes: 'A session past the security policy\'s maximum session lifetime (maxSessionLifetimeHours, counted from the sign-in, 12 hours on a new install) is refused with 401 "Session lifetime exceeded" and its token revoked; the user signs in again. Until then each refresh returns a refresh token that expires after the refresh token lifetime or at that horizon, whichever comes first, and an access token that does not outlive the horizon either. A session bound to a DPoP key at sign-in (any sign-in that carried a proof) is refused with 401 REFRESH_POP_INVALID unless the refresh carries a proof from that key; this is enforced by default from 0.4.3 (Security.EnforceRefreshTokenPoP). A session that was never bound is not checked. Rate limited per IP (120 requests per 5 minutes).',
     },
     {
         method: 'POST',

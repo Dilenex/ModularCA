@@ -19,20 +19,41 @@ public class BootstrapPasswordPolicyTests
 {
     private static PasswordPolicyEntity Defaults() => new();
 
+    /// <summary>The composition rules an administrator can still turn on, as every install had them before 0.4.5.</summary>
+    private static PasswordPolicyEntity WithComposition() => new()
+    {
+        MinLength = 12, RequireUppercase = true, RequireLowercase = true, RequireDigit = true, RequireSymbol = true,
+    };
+
     [Fact]
     public void Default_policy_is_the_one_the_setup_wizard_enforces()
     {
         // SetupController validates the administrator password against `new PasswordPolicyEntity()`
         // because SeedPasswordPolicy has not run yet. If these defaults change, the wizard's
         // pre-check changes with them — which is the intent, but it should be a deliberate edit
-        // rather than a surprise.
+        // rather than a surprise. Since 0.4.5 they are the NIST SP 800-63B preset: length and the
+        // bundled blocklist, no composition rules.
         var policy = Defaults();
 
-        Assert.Equal(12, policy.MinLength);
-        Assert.True(policy.RequireUppercase);
-        Assert.True(policy.RequireLowercase);
-        Assert.True(policy.RequireDigit);
-        Assert.True(policy.RequireSymbol);
+        Assert.Equal(15, policy.MinLength);
+        Assert.False(policy.RequireUppercase);
+        Assert.False(policy.RequireLowercase);
+        Assert.False(policy.RequireDigit);
+        Assert.False(policy.RequireSymbol);
+        Assert.True(policy.UseBundledBlocklist);
+    }
+
+    [Theory]
+    [InlineData("short1!A", "at least 15")]                 // too short
+    [InlineData("Sh0rt-But-Mix!", "at least 15")]           // 14 characters, every class
+    [InlineData("passwordpassword", "known weak")]          // long enough, on the bundled blocklist
+    [InlineData("ModularCAadmin123", "known weak")]
+    public void Weak_passwords_are_rejected_with_a_reason(string password, string expectedFragment)
+    {
+        var errors = PasswordPolicyService.Validate(password, Defaults());
+
+        Assert.NotEmpty(errors);
+        Assert.Contains(errors, e => e.Contains(expectedFragment, StringComparison.OrdinalIgnoreCase));
     }
 
     [Theory]
@@ -41,9 +62,9 @@ public class BootstrapPasswordPolicyTests
     [InlineData("ALLUPPERCASE1!", "lowercase")]
     [InlineData("NoDigitsHere!!", "digit")]
     [InlineData("NoSymbolsHere1", "symbol")]
-    public void Weak_passwords_are_rejected_with_a_reason(string password, string expectedFragment)
+    public void Composition_rules_still_reject_with_a_reason_when_an_administrator_keeps_them(string password, string expectedFragment)
     {
-        var errors = PasswordPolicyService.Validate(password, Defaults());
+        var errors = PasswordPolicyService.Validate(password, WithComposition());
 
         Assert.NotEmpty(errors);
         Assert.Contains(errors, e => e.Contains(expectedFragment, StringComparison.OrdinalIgnoreCase));
@@ -60,7 +81,7 @@ public class BootstrapPasswordPolicyTests
     {
         // The wizard joins these into one message, so an operator fixing a password should not
         // have to submit five times to discover five problems.
-        var errors = PasswordPolicyService.Validate("aaaa", Defaults());
+        var errors = PasswordPolicyService.Validate("aaaa", WithComposition());
 
         Assert.True(errors.Count >= 4, $"expected length + uppercase + digit + symbol, got: {string.Join(" | ", errors)}");
     }

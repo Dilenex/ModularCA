@@ -23,6 +23,7 @@ import { caKey } from './CaDetail';
 import { Capabilities, StepUpOps } from '@shared/generated';
 import { FieldHint, inputClass, labelClass } from '@shared/components/forms';
 import { CEREMONY_UNKNOWN_HINT, INSTANCE_SCOPE, ceremonyRequiredFor, createCaButtonLabel } from './caCreation';
+import { CA_RSA_FLOOR_HINT, CA_RSA_KEY_SIZES } from './tighterDefaults';
 import { type CeremonyRefusal, readCeremonyRefusal } from './ceremonyRefusal';
 import { candidateSetKey, reconcileParent } from './caParent';
 import { CeremonyRefusalNotice } from '../components/CeremonyRefusalNotice';
@@ -413,7 +414,12 @@ const X509Authorities: React.FC = () => {
                             </div>
                             <div>
                                 <label className={labelClass}>Key Algorithm</label>
-                                <select value={formKeyAlg} onChange={(e) => setFormKeyAlg(e.target.value)} className={inputClass}>
+                                <select value={formKeyAlg} onChange={(e) => {
+                                    // The size list changes with the algorithm, so the size follows it.
+                                    setFormKeyAlg(e.target.value);
+                                    if (e.target.value === 'RSA') setFormKeySize(CA_RSA_KEY_SIZES[0].value);
+                                    else if (e.target.value === 'ECDSA') setFormKeySize('384');
+                                }} className={inputClass}>
                                     <option value="RSA">RSA</option>
                                     <option value="ECDSA">ECDSA</option>
                                     <option value="Ed25519">Ed25519</option>
@@ -434,13 +440,7 @@ const X509Authorities: React.FC = () => {
                                 <label className={labelClass}>Key Size</label>
                                 <select value={formKeySize} onChange={(e) => setFormKeySize(e.target.value)} className={inputClass}>
                                     {formKeyAlg === 'RSA' ? (
-                                        <>
-                                            <option value="2048">2048 bits</option>
-                                            <option value="3072">3072 bits</option>
-                                            <option value="4096">4096 bits</option>
-                                            <option value="7680">7680 bits (high compute)</option>
-                                            <option value="8192">8192 bits (high compute)</option>
-                                        </>
+                                        CA_RSA_KEY_SIZES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)
                                     ) : (
                                         <>
                                             <option value="256">P-256</option>
@@ -449,6 +449,7 @@ const X509Authorities: React.FC = () => {
                                         </>
                                     )}
                                 </select>
+                                {formKeyAlg === 'RSA' && <FieldHint>{CA_RSA_FLOOR_HINT}</FieldHint>}
                                 {formKeyAlg === 'RSA' && (formKeySize === '7680' || formKeySize === '8192') && (
                                     <p className="text-xs text-warn mt-1">
                                         ⚠ High-compute RSA — key generation may take 30+ seconds.

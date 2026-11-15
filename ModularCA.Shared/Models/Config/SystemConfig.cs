@@ -720,6 +720,13 @@ namespace ModularCA.Shared.Models.Config
         /// </summary>
         public const int MaxRefreshTokenDays = 30;
 
+        /// <summary>
+        /// Days a refresh token lasts from the refresh that issued it. The security policy's
+        /// maximum session lifetime wins over it: a token never expires later than the sign-in
+        /// time plus that maximum (<see cref="ModularCA.Shared.Utils.SessionLifetime.RefreshTokenExpiry"/>),
+        /// so with the default 12-hour maximum this setting only matters once it is shorter than
+        /// the maximum, or the maximum is turned off.
+        /// </summary>
         [Setting(SettingClass.InstanceWide, SettingReload.Live)]
         public int RefreshTokenDays { get; set; } = 7;
     }

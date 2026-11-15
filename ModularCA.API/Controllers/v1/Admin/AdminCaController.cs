@@ -220,6 +220,9 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// Each of <c>protocolConfigs</c> carries <c>advisories</c>: why that protocol cannot run on this
         /// CA (<see cref="ModularCA.Shared.Enrollment.ProtocolCompatibility"/>), empty when nothing is known
         /// to be wrong. System Health lists the enabled ones that carry any.
+        /// Each CA also carries <c>keyAdvisories</c> (<see cref="CaKeyPolicy.Advisories"/>): what an operator
+        /// should know about the CA's own key, today that an RSA key under 3072 bits should be replaced
+        /// before 2031; empty otherwise. The CA page and System Health show them.
         /// System admins see all CAs; other users see only CAs belonging to their accessible spaces.
         /// </summary>
         [HttpGet("hierarchy")]
@@ -328,6 +331,8 @@ namespace ModularCA.API.Controllers.v1.Admin
                     // The key algorithm the CA actually has, read from its certificate. The console
                     // needs it to say, before anything is saved, that SCEP cannot run here.
                     KeyAlgorithm = keyAlgorithm,
+                    // What to know about the CA's own key: an RSA key under 3072 bits should be replaced.
+                    KeyAdvisories = CaKeyPolicy.Advisories(ca.Certificate),
                     ProtocolConfigs = caProtocols,
                     ServiceUrls = urls != null ? new
                     {
@@ -530,7 +535,10 @@ namespace ModularCA.API.Controllers.v1.Admin
 
             // Enforce central key-algorithm policy before touching the service layer
             if (!KeyAlgorithmPolicy.IsAllowed(request.KeyAlgorithm, request.KeySize))
-                return BadRequest(new { error = $"Key algorithm '{request.KeyAlgorithm}' with size/curve '{request.KeySize}' is not permitted. Allowed: RSA 2048/3072/4096/7680/8192, ECDSA P-256/P-384/P-521, Ed25519, Ed448, ML-DSA-44/65/87, SLH-DSA-*." });
+                return BadRequest(new { error = $"Key algorithm '{request.KeyAlgorithm}' with size/curve '{request.KeySize}' is not permitted. Allowed: RSA 3072/4096/7680/8192, ECDSA P-256/P-384/P-521, Ed25519, Ed448, ML-DSA-44/65/87, SLH-DSA-*." });
+            // A new CA's RSA key is at least 3072 bits; refused before any ceremony is opened.
+            if (CaKeyPolicy.RefusalForNewCa(request.KeyAlgorithm, request.KeySize) is { } keyRefusal)
+                return BadRequest(new { error = keyRefusal });
 
             // Before any ceremony is opened, so approvers never vote on constraints that cannot build.
             if ((NameConstraintRules.ListError(request.NameConstraintsPermitted, nameof(request.NameConstraintsPermitted))
@@ -752,7 +760,10 @@ namespace ModularCA.API.Controllers.v1.Admin
 
             // Enforce central key-algorithm policy before touching the service layer
             if (!KeyAlgorithmPolicy.IsAllowed(request.KeyAlgorithm, request.KeySize))
-                return BadRequest(new { error = $"Key algorithm '{request.KeyAlgorithm}' with size/curve '{request.KeySize}' is not permitted. Allowed: RSA 2048/3072/4096/7680/8192, ECDSA P-256/P-384/P-521, Ed25519, Ed448, ML-DSA-44/65/87, SLH-DSA-*." });
+                return BadRequest(new { error = $"Key algorithm '{request.KeyAlgorithm}' with size/curve '{request.KeySize}' is not permitted. Allowed: RSA 3072/4096/7680/8192, ECDSA P-256/P-384/P-521, Ed25519, Ed448, ML-DSA-44/65/87, SLH-DSA-*." });
+            // A new CA's RSA key is at least 3072 bits; refused before any ceremony is opened.
+            if (CaKeyPolicy.RefusalForNewCa(request.KeyAlgorithm, request.KeySize) is { } keyRefusal)
+                return BadRequest(new { error = keyRefusal });
 
             // Before any ceremony is opened, so approvers never vote on constraints that cannot build.
             if ((NameConstraintRules.ListError(request.NameConstraintsPermitted, nameof(request.NameConstraintsPermitted))
@@ -1211,7 +1222,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         [Required, MaxLength(50)]
         public string KeyAlgorithm { get; set; } = "ECDSA";
 
-        /// <summary>RSA modulus length in bits (2048, 3072, 4096, 7680 or 8192) or ECDSA curve size (256, 384 or 521 for P-256, P-384, P-521). Ignored for EdDSA and post-quantum algorithms.</summary>
+        /// <summary>RSA modulus length in bits (3072, 4096, 7680 or 8192; a new CA may not have an RSA key under 3072) or ECDSA curve size (256, 384 or 521 for P-256, P-384, P-521). Ignored for EdDSA and post-quantum algorithms.</summary>
         public int KeySize { get; set; } = 384;
         /// <summary>Requested validity in years from issuance; clamped to the parent CA certificate's expiry.</summary>
         public int ValidityYears { get; set; } = 10;
@@ -1286,7 +1297,7 @@ namespace ModularCA.API.Controllers.v1.Admin
         [Required, MaxLength(50)]
         public string KeyAlgorithm { get; set; } = "ECDSA";
 
-        /// <summary>RSA modulus length in bits (2048, 3072, 4096, 7680 or 8192) or ECDSA curve size (256, 384 or 521 for P-256, P-384, P-521). Ignored for EdDSA and post-quantum algorithms.</summary>
+        /// <summary>RSA modulus length in bits (3072, 4096, 7680 or 8192; a new CA may not have an RSA key under 3072) or ECDSA curve size (256, 384 or 521 for P-256, P-384, P-521). Ignored for EdDSA and post-quantum algorithms.</summary>
         public int KeySize { get; set; } = 384;
         /// <summary>Validity of the self-signed certificate in years from issuance.</summary>
         public int ValidityYears { get; set; } = 25;

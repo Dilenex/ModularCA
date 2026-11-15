@@ -212,10 +212,17 @@ note "verifying payload"
 for required in ModularCA.API ModularCA.Keystore.Unlocker LICENSE THIRD-PARTY-NOTICES.md wwwroot/admin/index.html \
                 wwwroot/public/index.html \
                 wwwroot/setup/index.html wwwroot/docs/index.html share/sql/adopt-ownership.sql \
+                password-blocklist/bundled-blocklist.txt \
                 "${SSH_KRL_FILES[@]/#/share/ssh-krl/}" \
                 deploy/modularca.service deploy/modularca-signer.service; do
     [[ -e "$STAGE/$required" ]] || { echo "MISSING from payload: $required" >&2; exit 1; }
 done
+# The bundled password blocklist is published by ModularCA.API (a content file of ModularCA.Auth)
+# and read from beside the binaries. One carrying no entries would switch the check off silently.
+grep -qv -e '^#' -e '^[[:space:]]*$' "$STAGE/password-blocklist/bundled-blocklist.txt" || {
+    echo "REFUSING: password-blocklist/bundled-blocklist.txt has no entries" >&2
+    exit 1
+}
 # The interfaces bundle the vendored Plex fonts; SIL OFL 1.1 requires its text to travel with them.
 grep -q 'SIL OPEN FONT LICENSE' "$STAGE/THIRD-PARTY-NOTICES.md" || {
     echo "REFUSING: THIRD-PARTY-NOTICES.md lacks the vendored font licence. Regenerate with:" >&2

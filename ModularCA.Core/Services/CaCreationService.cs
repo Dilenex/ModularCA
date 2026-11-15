@@ -172,6 +172,17 @@ public class CaCreationService(
     }
 
     /// <summary>
+    /// Throws <see cref="ArgumentException"/> when a new CA may not have this key: today an RSA key
+    /// under 3072 bits (<see cref="CaKeyPolicy"/>). The last check before a CA key is generated,
+    /// behind the ones the admin API makes before it opens a ceremony.
+    /// </summary>
+    private static void EnsureNewCaKeyAllowed(string keyAlgorithm, int keySize)
+    {
+        if (CaKeyPolicy.RefusalForNewCa(keyAlgorithm, keySize) is { } refusal)
+            throw new ArgumentException(refusal);
+    }
+
+    /// <summary>
     /// Creates a new self-signed root CA. Generates a key pair, builds and self-signs the
     /// CA certificate, stores it in DB and keystore, creates the CertificateAuthorityEntity,
     /// seeds protocol configs, and registers the new CA in the runtime registry.
@@ -182,9 +193,33 @@ public class CaCreationService(
     /// <paramref name="ceremonyId"/> is the approved key ceremony this creation executes, when
     /// the space required one; the signer verifies it before it generates or commits a key.
     /// An invalid or reserved label, or a label or name another CA of the instance has
-    /// (soft-deleted CAs included), is refused before any key is generated.
+    /// (soft-deleted CAs included), is refused before any key is generated, and so is an RSA key
+    /// under 3072 bits (<see cref="CaKeyPolicy.RefusalForNewCa(string, int)"/>, an
+    /// <see cref="ArgumentException"/>).
     /// </summary>
     public async Task<CertificateAuthorityEntity> CreateRootAsync(
+        string subjectCN, string? subjectO, string? subjectOU,
+        string? subjectL, string? subjectST, string? subjectC,
+        string keyAlgorithm, int keySize, int validityYears, string? label,
+        Guid? spaceId,
+        string? publicBaseUrl = null,
+        string? nameConstraintsPermittedJson = null,
+        string? nameConstraintsExcludedJson = null,
+        Guid? ceremonyId = null)
+    {
+        EnsureNewCaKeyAllowed(keyAlgorithm, keySize);
+        return await CreateRootWithoutKeyRuleAsync(subjectCN, subjectO, subjectOU, subjectL, subjectST, subjectC,
+            keyAlgorithm, keySize, validityYears, label, spaceId, publicBaseUrl,
+            nameConstraintsPermittedJson, nameConstraintsExcludedJson, ceremonyId);
+    }
+
+    /// <summary>
+    /// <see cref="CreateRootAsync"/> without the rule for a new CA's key (<see cref="CaKeyPolicy"/>);
+    /// everything else is the same. Not reachable from the API: it exists so that tests can stand
+    /// up a CA as an install made before 0.4.5 may hold one, with an RSA 2048 key, without the
+    /// rule itself being loosened.
+    /// </summary>
+    internal async Task<CertificateAuthorityEntity> CreateRootWithoutKeyRuleAsync(
         string subjectCN, string? subjectO, string? subjectOU,
         string? subjectL, string? subjectST, string? subjectC,
         string keyAlgorithm, int keySize, int validityYears, string? label,
@@ -319,7 +354,8 @@ public class CaCreationService(
     /// creation executes, when the space required one; the signer verifies it before it
     /// generates or commits a key. A parent that is disabled, deleted, revoked or outside its
     /// validity is refused (see <see cref="Helpers.IssuingCaGuard"/>) before any key is generated,
-    /// as is an invalid or reserved label, or a label or name another CA of the instance has. A
+    /// as is an invalid or reserved label, or a label or name another CA of the instance has, and
+    /// an RSA key under 3072 bits (<see cref="CaKeyPolicy.RefusalForNewCa(string, int)"/>). A
     /// <paramref name="certProfileId"/> that <see cref="CertProfileScope"/> does not admit for the
     /// parent and the new CA's space is reported as not found, like a missing one.
     /// </summary>
@@ -335,6 +371,7 @@ public class CaCreationService(
         string? nameConstraintsExcludedJson = null,
         Guid? ceremonyId = null)
     {
+        EnsureNewCaKeyAllowed(keyAlgorithm, keySize);
         await EnsureNamingAsync(subjectCN, label);
 
         var parentBcCert = CertificateUtil.ParseFromPem(parentCert.Pem);

@@ -86,6 +86,10 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
             {
                 k.Id, k.Name, k.CertificateAuthorityId, k.KeyType, k.KeySize, k.PublicKey, k.IsUserCa, k.IsHostCa,
                 k.MaxValidityHours, k.IsEnabled, k.CreatedAt, k.ReviewBy,
+                // An existing RSA key under 3072 bits keeps signing and says it should be replaced.
+                KeyAdvisories = string.Equals(k.KeyType, "rsa", StringComparison.OrdinalIgnoreCase) && k.KeySize is int rsaBits
+                    ? ModularCA.Shared.Utils.CaKeyPolicy.AdvisoriesForRsa(rsaBits)
+                    : [],
                 KeyStorage = JsonNamingPolicy.CamelCase.ConvertName(k.KeyStorage),
                 SignerState = held?.State ?? SshKeyCustody.Unknown,
                 SignerStateCode = held?.ReasonCode,
@@ -159,6 +163,12 @@ public class AdminSshController(ISshCaService sshCaService, ICurrentUserService 
         if (ModularCA.Shared.Utils.DnComponentSanitizer.HasControlCharacter(request.Name)
             || ModularCA.Shared.Utils.DnComponentSanitizer.HasControlCharacter(request.KeyType))
             return BadRequest(new { error = "Name and KeyType must not contain control characters." });
+
+        // A new SSH CA's RSA key is at least 3072 bits, as an X.509 CA's is; refused here so no
+        // ceremony is opened for a key the service would refuse when the ceremony is executed.
+        if (string.Equals(request.KeyType?.Trim(), "rsa", StringComparison.OrdinalIgnoreCase)
+            && ModularCA.Shared.Utils.CaKeyPolicy.RefusalForNewCa("RSA", request.KeySize ?? ModularCA.Shared.Utils.CaKeyPolicy.MinRsaBitsForNewCa) is { } keyRefusal)
+            return BadRequest(new { error = keyRefusal });
 
         var sshLabel = request.Name.ToLowerInvariant().Replace(" ", "-");
         try
@@ -663,8 +673,8 @@ public class GenerateSshCaKeyRequest
     /// <summary><c>ed25519</c> (the default), <c>ecdsa</c> or <c>rsa</c>.</summary>
     public string? KeyType { get; set; }
     /// <summary>
-    /// Key size in bits. RSA: 2048/3072/4096/7680/8192 (default 3072). ECDSA: 256/384/521 (default 256).
-    /// Ignored for ed25519 (fixed size).
+    /// Key size in bits. RSA: 3072/4096/7680/8192 (default 3072; 2048 is refused for a new CA key).
+    /// ECDSA: 256/384/521 (default 256). Ignored for ed25519 (fixed size).
     /// </summary>
     public int? KeySize { get; set; }
     /// <summary>Whether the key signs user certificates; null means true.</summary>

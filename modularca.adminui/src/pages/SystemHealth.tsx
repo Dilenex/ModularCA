@@ -15,6 +15,7 @@ import { OCSP_REFUSED_CONSEQUENCE, ocspRows, ocspStatus, type CaOcspRow } from '
 import { protocolFindings, type ProtocolFinding } from './protocolAdvisories';
 import { sshKeyReadiness } from './sshKeyCustody';
 import { sshCaKeyPath } from './sshPlaces';
+import { caKeyFindings, sessionMaximumAdvice, type CaKeyFinding, type PasswordPolicyGuidance } from './tighterDefaults';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -619,6 +620,80 @@ const DrStatusCard: React.FC = () => {
     );
 };
 
+/* ─── Security Baseline Card ─── */
+/* The three sets of defaults a new install starts with (NIST SP 800-63B sessions and passwords,
+   SP 800-57 CA keys), where this instance differs. An install made before 0.4.5 keeps what it has
+   stored: this card says so and links to where the change is made; it changes nothing. The two
+   policies need a system administrator to read, so for anyone else those rows are left out. */
+const SecurityBaselineCard: React.FC<{ hierarchy: Fetched<any[]> | null }> = ({ hierarchy }) => {
+    const [securityPolicy, setSecurityPolicy] = useState<Fetched<any> | null>(null);
+    const [guidance, setGuidance] = useState<Fetched<PasswordPolicyGuidance> | null>(null);
+    const [sshKeys, setSshKeys] = useState<Fetched<any[]> | null>(null);
+
+    useEffect(() => {
+        fetched(apiGet<any>('/api/v1/admin/security-policy', { toast: false })).then(setSecurityPolicy);
+        fetched(apiGet<PasswordPolicyGuidance>('/api/v1/admin/password-policy/guidance', { toast: false })).then(setGuidance);
+        fetched(apiGet<any[]>('/api/v1/admin/ssh/ca-keys', { toast: false }).then((d) => (Array.isArray(d) ? d : []))).then(setSshKeys);
+    }, []);
+
+    const loading = !hierarchy || !securityPolicy || !guidance || !sshKeys;
+    const sessionAdvice = securityPolicy?.ok ? sessionMaximumAdvice(securityPolicy.value?.maxSessionLifetimeHours) : null;
+    const passwordDifferences = guidance?.ok && !guidance.value.nist80063B.meets ? guidance.value.nist80063B.differences : [];
+    const blocklistMissing = guidance?.ok && guidance.value.bundledBlocklist.inUse && !guidance.value.bundledBlocklist.available;
+    const keys: CaKeyFinding[] = hierarchy?.ok ? caKeyFindings(hierarchy.value, sshKeys?.ok ? sshKeys.value : []) : [];
+    const nothing = !loading && !sessionAdvice && passwordDifferences.length === 0 && !blocklistMissing && keys.length === 0;
+
+    return (
+        <div className="bg-raised border border-line rounded-lg p-4">
+            <h2 className="text-sm font-semibold text-ink mb-3">Security Baseline</h2>
+            {loading && <div className="text-sm text-ink-muted">Loading...</div>}
+            {hierarchy && !hierarchy.ok && <Unavailable what="certificate authorities" error={hierarchy.error} />}
+            {nothing && hierarchy?.ok && (
+                <div className="text-sm text-ink-muted">
+                    Session lifetime, password policy and CA keys are at the baseline a new install starts with (NIST SP 800-63B and SP 800-57).
+                </div>
+            )}
+            {!loading && !nothing && (
+                <div className="space-y-3 text-xs">
+                    <p className="text-ink-muted max-w-3xl">
+                        Where this instance differs from what a new install starts with. Nothing here was changed by an upgrade: each setting is as it was stored, and each change is yours to make.
+                    </p>
+                    {sessionAdvice && (
+                        <div>
+                            <div className="text-ink font-semibold">Session lifetime</div>
+                            <div className="text-ink-muted">{sessionAdvice} <Link to="/settings?tab=Security" className="text-ink underline hover:no-underline">Security Policy in Settings</Link></div>
+                        </div>
+                    )}
+                    {(passwordDifferences.length > 0 || blocklistMissing) && (
+                        <div>
+                            <div className="text-ink font-semibold">Password policy</div>
+                            <ul className="list-disc pl-5 text-ink-muted space-y-0.5">
+                                {passwordDifferences.map((d) => <li key={d}>{d}</li>)}
+                                {blocklistMissing && guidance?.ok && <li className="text-warn">The bundled blocklist is on but {guidance.value.bundledBlocklist.fileName} was not found on this node, so nothing is checked against it.</li>}
+                            </ul>
+                            {passwordDifferences.length > 0 && (
+                                <div className="text-ink-muted mt-1">The NIST SP 800-63B preset sets all of these in one action: <Link to="/settings?tab=Security" className="text-ink underline hover:no-underline">Password Policy in Settings</Link></div>
+                            )}
+                        </div>
+                    )}
+                    {keys.length > 0 && (
+                        <div className="space-y-1">
+                            <div className="text-ink font-semibold">CA keys</div>
+                            {keys.map((f) => (
+                                <div key={`${f.link}-${f.advisory.reason}`} className="flex items-baseline gap-2 flex-wrap">
+                                    <StatusBadge status="held" label="Replace before 2031" />
+                                    <Link to={f.link} className="text-ink hover:underline">{f.caName}</Link>
+                                    <span className="text-ink-muted">{f.advisory.message}</span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+};
+
 /* ─── System Health Page ─── */
 const SystemHealth: React.FC = () => {
     // One read of the CA hierarchy feeds both the OCSP and the enrollment-protocol findings.
@@ -636,6 +711,7 @@ const SystemHealth: React.FC = () => {
                 <OcspRespondersCard hierarchy={hierarchy} />
                 <ProtocolFindingsCard hierarchy={hierarchy} />
             </div>
+            <SecurityBaselineCard hierarchy={hierarchy} />
             <DrStatusCard />
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <SystemStatusCard />

@@ -537,7 +537,7 @@ public class TotpController : ControllerBase
         var defaultBadge = await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Authorization.AccessBadgeService>().GetDefaultClaimAsync(user.Id);
         var (Token, ExpiresAt) = _jwt.GenerateToken(user, groups, sourceIp, badge: defaultBadge);
         var userAgentHash = ModularCA.Auth.Utils.FingerprintUtil.ComputeUserAgentHash(Request.Headers.UserAgent.ToString());
-        var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, userAgentHash,
+        var refreshToken = _jwt.GenerateRefreshToken(user.Id, sourceIp, (await _securityPolicy.GetAsync()).MaxSessionLifetimeHours, userAgentHash,
             await HttpContext.RequestServices.GetRequiredService<ModularCA.Auth.Services.IDpopProofService>().GetValidatedJktAsync(HttpContext));
         refreshToken.AccessBadgeId = defaultBadge?.Id;
         // Hand the plaintext back to the client; the DB stores the hash.

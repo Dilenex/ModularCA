@@ -164,6 +164,13 @@ export default function AdminUiGuide() {
                     <li>Memory and resource utilization</li>
                 </ul>
                 <p className="text-ink leading-relaxed mb-3">
+                    The Security Baseline card lists where the instance differs from what a new install starts with: a maximum
+                    session lifetime over 12 hours (or none), a password policy that differs from NIST SP 800-63B, and every
+                    CA, X.509 or SSH, whose key is RSA under 3072 bits. An upgrade changes none of these: each is as it was
+                    stored, and the card links to where the change is made. The first two rows are shown to a system
+                    administrator, who alone can read those policies.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
                     The Health Checks card shows the readiness payload, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/health/ready</code>,
                     which answers only a caller the SystemAuditor policy admits. Its signer entry says whether the signer has unlocked its
                     keystore, and, on an install with SSH CAs, how many SSH CA keys the signer holds
@@ -376,6 +383,14 @@ export default function AdminUiGuide() {
                     <li>Enable/disable CAs</li>
                     <li>Configure CA-specific settings</li>
                 </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    A new CA&apos;s RSA key is at least 3072 bits, so the form offers 3072, 4096, 7680 and 8192, and the API
+                    refuses 2048 with a message that says why: NIST SP 800-57 accepts RSA 2048 only through 2030, and a CA key made
+                    today is relied on well beyond that. The default stays ECDSA P-384. A CA that already has an RSA 2048 key keeps
+                    issuing and shows a notice on its page and on System Health: it should be replaced before 2031, and because a
+                    CA&apos;s key cannot be changed, replacing it means creating a new CA now, moving issuance to it, and retiring
+                    the old one once what it issued has expired or been reissued. The same rule and notice apply to SSH CA keys.
+                </p>
                 <p className="text-ink leading-relaxed mb-3">
                     The page has two tabs, X.509 and SSH, for whoever can use both. The SSH tab
                     (<code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/admin/authorities/manage?tab=SSH</code>) lists the SSH
@@ -1162,7 +1177,7 @@ sshd -t && systemctl reload ssh`}</pre>
                 </p>
                 <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                     <li>General settings: system name, public base URL</li>
-                    <li>Security settings: password policy, session timeout, MFA requirements</li>
+                    <li>Security settings: password policy, session lifetime, MFA requirements (see below)</li>
                     <li>Email/SMTP configuration</li>
                     <li>Logging level configuration</li>
                     <li>Rate limiting settings</li>
@@ -1174,9 +1189,71 @@ sshd -t && systemctl reload ssh`}</pre>
                         in, backups and changing the mode. A banner stands on every page while the mode is not full.
                     </li>
                 </ul>
+                <h3 className="text-lg font-semibold text-ink mb-2">Session lifetime</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    On the Security tab, the Security Policy card holds two limits on a signed-in session. <strong>Session Idle
+                    Timeout</strong> (minutes, default 30) ends a session that makes no request. <strong>Max Session
+                    Lifetime</strong> is in hours, counted from the sign-in: after it the user signs in again however active
+                    they are. A new install starts with 12 hours, the most NIST SP 800-63B allows between sign-ins at AAL2 and
+                    AAL3 (with 30 idle minutes at AAL2 and 15 at AAL3). 0 means no maximum.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    The Token Binding &amp; Lifetime card holds the <strong>Refresh Token Lifetime</strong> in days: how long one
+                    refresh token stays usable when the session is not refreshed in the meantime. Of the two, the maximum session
+                    lifetime wins. A refresh token expires when its lifetime runs out or when its session reaches the maximum,
+                    whichever comes first, so no chain of refreshes outlives the maximum, and with a 12-hour maximum the
+                    refresh token lifetime has no effect until it is set shorter than that. The card says which of the two is
+                    deciding with the values as they stand. Lowering the maximum ends sessions already older than the new value
+                    at their next refresh.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    An install made before 0.4.5 stored the maximum in days, 14 by default. The upgrade keeps it as the same
+                    length in hours (336) and signs nobody out. The field then shows a line offering 12 hours with a button that
+                    fills it in; the change is made when you save the card.
+                </p>
+                <h3 className="text-lg font-semibold text-ink mb-2">Password policy</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    The Password Policy card sets what a local account&apos;s password must meet when it is set or changed. A
+                    password already stored is never checked again at sign-in, so a stricter policy locks nobody out. A new
+                    install starts with the <strong>NIST SP 800-63B</strong> preset: minimum length 15, no required character
+                    classes, no expiry, and the bundled blocklist on. The standard asks for length as the main requirement (15
+                    where a password can be the only factor, 8 where a second factor is always used), no composition rules, no
+                    scheduled expiry, and a check of every new password against a list of common and compromised values.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    An install made before 0.4.5 keeps the policy it has (by default 12 characters, all four character classes
+                    and 90 days). The card then lists how that policy differs from the standard and offers <strong>Apply NIST SP
+                    800-63B preset</strong>, which sets all of the above in one action after a confirmation and step-up MFA. A
+                    maximum length under 64 becomes 128; password history and your own blocklist are kept. Every setting stays
+                    editable afterwards, for organizations required to keep composition rules or rotation.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    <strong>Maximum password age</strong> of 0 means passwords never expire: nobody is asked to change one,
+                    including accounts whose expiry date was stamped while a maximum age was set, and a password change then
+                    clears the date.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    <strong>Check the bundled blocklist</strong> refuses a new password that is on the list shipped with
+                    ModularCA, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">password-blocklist/bundled-blocklist.txt</code> beside
+                    the program files. It is a starter list of the most common choices (number and keyboard runs,
+                    &ldquo;password&rdquo; and its variants, account names and defaults, seasons and years, the product&apos;s
+                    name), not a corpus of compromised passwords. Matching ignores case, and one entry, or any one or two
+                    characters, repeated end to end is refused too. <strong>Your own blocklist</strong> is a file you place in
+                    <code className="text-sm bg-sunken px-1.5 py-0.5 rounded"> config/password-dictionaries</code> and name through the
+                    API (<code className="text-sm bg-sunken px-1.5 py-0.5 rounded">dictionaryPath</code>); it is checked in addition to the
+                    bundled list, not instead of it. Both are checked on the server: no password and no hash of one is sent
+                    anywhere.
+                </p>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/admin/config<br />
                     PUT /api/v1/admin/config/security<br />
+                    PUT /api/v1/admin/config/tokens<br />
+                    GET /api/v1/admin/security-policy<br />
+                    PUT /api/v1/admin/security-policy<br />
+                    GET /api/v1/admin/password-policy<br />
+                    PUT /api/v1/admin/password-policy<br />
+                    GET /api/v1/admin/password-policy/guidance<br />
+                    POST /api/v1/admin/password-policy/presets/&#123;preset&#125;<br />
                     GET /api/v1/admin/instance-mode<br />
                     PUT /api/v1/admin/instance-mode
                 </div>

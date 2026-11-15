@@ -801,6 +801,10 @@ public class SetupController(ModularCADbContext db, IHostApplicationLifetime app
             try
             {
                 ModularCA.Bootstrap.BootstrapCertCreator.EnsureRootLabelUsable(request.RootCa.CommonName);
+                // A new CA's RSA key is at least 3072 bits; refused before anything is built.
+                ModularCA.Bootstrap.BootstrapCertCreator.EnsureRootKeyAcceptable(
+                    request.RootCa.Algorithm,
+                    ModularCA.Shared.Models.Setup.SetupKeySizeParser.ParseToInt(request.RootCa.Algorithm, request.RootCa.KeySize));
             }
             catch (ModularCA.Shared.Errors.ConfigurationValidationException ex)
             {

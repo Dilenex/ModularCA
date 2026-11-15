@@ -51,7 +51,7 @@ public sealed class LdapLocalFallbackTests
     {
         private readonly SecurityPolicyEntity _policy = new()
         {
-            SessionIdleTimeoutMinutes = 0, MaxSessionLifetimeDays = 0, LoginResponseDelayMs = 0,
+            SessionIdleTimeoutMinutes = 0, MaxSessionLifetimeHours = 0, LoginResponseDelayMs = 0,
             MaxFailedLoginAttempts = 5, LockoutMinutes = 15,
         };
         public Task<SecurityPolicyEntity> GetAsync() => Task.FromResult(_policy);

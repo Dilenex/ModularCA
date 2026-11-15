@@ -175,12 +175,10 @@ const initialData: WizardData = {
     },
 };
 
+// The password policy a new install starts with (NIST SP 800-63B): length is the requirement.
+// The server also refuses a commonly used password when setup runs; AdminAccount says so.
 const passwordRules = [
-    (pw: string) => pw.length >= 16,
-    (pw: string) => /[A-Z]/.test(pw),
-    (pw: string) => /[a-z]/.test(pw),
-    (pw: string) => /\d/.test(pw),
-    (pw: string) => /[^A-Za-z0-9]/.test(pw),
+    (pw: string) => pw.length >= 15,
 ];
 
 const WizardContent: React.FC = () => {

@@ -33,17 +33,25 @@ public class SecurityPolicyEntity
     /// <summary>Lockout duration in minutes. Default 15. 0 = permanent lock (admin unlock required).</summary>
     public int LockoutMinutes { get; set; } = 15;
 
-    /// <summary>Minutes of inactivity before a session is considered idle. 0 = no idle timeout. Default 30.</summary>
-    public int SessionIdleTimeoutMinutes { get; set; } = 30;
+    /// <summary>
+    /// Minutes of inactivity before a session is considered idle. 0 = no idle timeout. Default 30,
+    /// the most NIST SP 800-63B allows at AAL2 (15 at AAL3).
+    /// </summary>
+    public int SessionIdleTimeoutMinutes { get; set; } = ModularCA.Shared.Utils.SessionLifetime.RecommendedIdleMinutes;
 
     /// <summary>Maximum active refresh tokens per user. 0 = unlimited. Default 3.</summary>
     public int MaxConcurrentSessions { get; set; } = 3;
 
     /// <summary>
-    /// Absolute session lifetime cap in days. The original token family's creation time
-    /// plus this value is the hard horizon. Default 14. Set to 0 to disable.
+    /// Maximum session lifetime in hours, counted from the sign-in: after it a fresh sign-in is
+    /// required however active the user is. No refresh token and no access token is valid past
+    /// that horizon (<see cref="ModularCA.Shared.Utils.SessionLifetime"/>), so it also caps the
+    /// refresh-token lifetime. 0 disables the maximum. Default 12, the most NIST SP 800-63B
+    /// allows at AAL2 and AAL3, and what a new install gets. An install made before 0.4.5 stored
+    /// days (default 14); the <c>TighterDefaults</c> migration turned its value into the same
+    /// length in hours (14 days = 336), so nothing changed for it.
     /// </summary>
-    public int MaxSessionLifetimeDays { get; set; } = 14;
+    public int MaxSessionLifetimeHours { get; set; } = ModularCA.Shared.Utils.SessionLifetime.RecommendedMaxHours;
 
     // ── Login posture ───────────────────────────────────────────────
     /// <summary>

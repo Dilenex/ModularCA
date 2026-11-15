@@ -7,6 +7,8 @@ using ModularCA.Database;
 using ModularCA.Shared.Entities;
 using ModularCA.Shared.Enums;
 using ModularCA.Shared.Interfaces;
+using ModularCA.Shared.Utils;
+using ModularCA.Auth.Services;
 using ModularCA.API.Startup;
 
 namespace ModularCA.API.Controllers.v1.Admin;
@@ -14,7 +16,8 @@ namespace ModularCA.API.Controllers.v1.Admin;
 /// <summary>
 /// Admin endpoints for configuring password complexity and expiration policies. Reading and
 /// writing need a system administrator, and a write a step-up token: the policy decides how weak
-/// a password every account may have.
+/// a password every account may have. The policy applies when a password is set or changed; a
+/// stored password is never re-checked at sign-in, so no change here locks an account out.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/password-policy")]
@@ -36,11 +39,90 @@ public class AdminPasswordPolicyController(
     }
 
     /// <summary>
+    /// How the stored policy compares with NIST SP 800-63B and what the bundled blocklist holds:
+    /// <c>nist80063B</c> carries the preset's id and name, <c>meets</c>, and one sentence per
+    /// difference (<see cref="PasswordPolicyPresets.DifferencesFromNist80063B"/>);
+    /// <c>bundledBlocklist</c> says whether the shipped list was found, how many entries it has,
+    /// and its file name. Read-only: the console uses it to offer the preset, never to apply it.
+    /// 404 when no policy is configured.
+    /// </summary>
+    [HttpGet("guidance")]
+    public async Task<IActionResult> Guidance()
+    {
+        var policy = await db.PasswordPolicies.AsNoTracking().FirstOrDefaultAsync();
+        if (policy == null)
+            return NotFound(new { error = "No password policy configured" });
+        var differences = PasswordPolicyPresets.DifferencesFromNist80063B(policy);
+        var bundled = BundledPasswordBlocklist.Current;
+        return Ok(new
+        {
+            nist80063B = new
+            {
+                preset = PasswordPolicyPresets.Nist80063B,
+                name = PasswordPolicyPresets.Nist80063BName,
+                meets = differences.Count == 0,
+                differences,
+            },
+            bundledBlocklist = new
+            {
+                available = bundled.Available,
+                entries = bundled.Count,
+                fileName = $"{BundledPasswordBlocklist.DirectoryName}/{BundledPasswordBlocklist.FileName}",
+                inUse = policy.UseBundledBlocklist,
+            },
+        });
+    }
+
+    /// <summary>
+    /// Applies a named preset to the password policy in one action. One preset exists,
+    /// <c>nist-sp-800-63b</c> (<see cref="PasswordPolicyPresets.ApplyNist80063B"/>): minimum length
+    /// 15, no required character class or count, no expiry, the bundled blocklist on; a maximum
+    /// length under 64 becomes 128; history and the administrator's own blocklist are kept.
+    /// Every setting stays editable afterwards through <see cref="Update"/>. Requires step-up MFA
+    /// (<see cref="StepUpOps.UpdateConfig"/>). 404 for an unknown preset. Passwords already
+    /// stored keep working: the policy is applied when a password is next set or changed.
+    /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
+    [HttpPost("presets/{preset}")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
+    public async Task<IActionResult> ApplyPreset(string preset)
+    {
+        if (!string.Equals(preset, PasswordPolicyPresets.Nist80063B, StringComparison.OrdinalIgnoreCase))
+            return NotFound(new { error = $"No such password policy preset. Known presets: {PasswordPolicyPresets.Nist80063B}." });
+
+        var policy = await db.PasswordPolicies.FirstOrDefaultAsync();
+        if (policy == null)
+        {
+            policy = new PasswordPolicyEntity();
+            db.PasswordPolicies.Add(policy);
+        }
+        PasswordPolicyPresets.ApplyNist80063B(policy);
+        policy.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+
+        await currentUser.EnsureLoadedAsync();
+        await audit.LogAsync(AuditActionType.PasswordPolicyUpdated, currentUser.User?.Id, currentUser.User?.Username,
+            "PasswordPolicy", null,
+            new
+            {
+                Preset = PasswordPolicyPresets.Nist80063B,
+                policy.MinLength, policy.MaxLength, policy.RequireUppercase, policy.RequireLowercase, policy.RequireDigit,
+                policy.RequireSymbol, policy.MinUppercase, policy.MinLowercase, policy.MinDigits, policy.MinSpecial,
+                policy.MaxAgeDays, policy.UseBundledBlocklist,
+            },
+            HttpContext.Connection.RemoteIpAddress?.ToString());
+
+        return Ok(policy);
+    }
+
+    /// <summary>
     /// Applies a partial update to the password policy; null fields are left untouched. Requires
     /// step-up MFA (<see cref="StepUpOps.UpdateConfig"/>). The resulting policy must pass
     /// <see cref="PasswordPolicyBounds.Problem"/> (400 otherwise, nothing saved). A dictionary
     /// names a file in <see cref="PasswordPolicyBounds.DictionaryDirectory"/> by its file name;
     /// an empty string clears it, and the stored value sent back unchanged keeps it.
+    /// <c>UseBundledBlocklist</c> turns the check against the shipped blocklist on or off; the
+    /// dictionary, when set, is checked as well either way.
     /// </summary>
     [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
     [HttpPut]
@@ -90,6 +172,7 @@ public class AdminPasswordPolicyController(
         policy.MinSpecial = proposed.MinSpecial;
         policy.MaxAgeDays = proposed.MaxAgeDays;
         policy.HistoryCount = proposed.HistoryCount;
+        policy.UseBundledBlocklist = request.UseBundledBlocklist ?? policy.UseBundledBlocklist;
         policy.DictionaryPath = dictionaryPath;
         policy.DictionaryIsHashed = request.DictionaryIsHashed ?? policy.DictionaryIsHashed;
         policy.UpdatedAt = DateTime.UtcNow;
@@ -108,7 +191,7 @@ public class AdminPasswordPolicyController(
 /// <summary>The limits a password policy written through the admin API must stay within.</summary>
 public static class PasswordPolicyBounds
 {
-    /// <summary>The shortest minimum length accepted (NIST SP 800-63B §5.1.1.2); the default is 12.</summary>
+    /// <summary>The shortest minimum length accepted (what NIST SP 800-63B allows beside a second factor); a new install's default is 15.</summary>
     public const int MinLengthFloor = 8;
 
     /// <summary>The most prior passwords a policy may remember; each one is a hash verification on every change.</summary>
@@ -184,14 +267,24 @@ public class PasswordPolicyUpdateRequest
     public int? MinDigits { get; set; }
     /// <summary>Least number of characters that are neither letters nor digits; 0 sets no count.</summary>
     public int? MinSpecial { get; set; }
-    /// <summary>Days after a password change before the password expires; 0 means passwords do not expire.</summary>
+    /// <summary>
+    /// Days after a password change before the password expires; 0 means passwords never expire:
+    /// no account is then treated as expired, whatever date an earlier policy stamped on it.
+    /// </summary>
     public int? MaxAgeDays { get; set; }
     /// <summary>How many prior passwords a new one may not repeat, at most <see cref="PasswordPolicyBounds.MaxHistoryCount"/>; 0 keeps no history.</summary>
     public int? HistoryCount { get; set; }
 
     /// <summary>
+    /// Whether a new password is checked against the blocklist shipped with the product
+    /// (<c>password-blocklist/bundled-blocklist.txt</c> beside the binaries).
+    /// </summary>
+    public bool? UseBundledBlocklist { get; set; }
+
+    /// <summary>
     /// The file name of a dictionary in <see cref="PasswordPolicyBounds.DictionaryDirectory"/>;
-    /// empty clears it. A path is refused.
+    /// empty clears it. A path is refused. The administrator's own list: checked in addition to
+    /// the bundled blocklist, not instead of it.
     /// </summary>
     public string? DictionaryPath { get; set; }
     /// <summary>Whether the dictionary lists hex SHA-256 hashes (UTF-8, either case) of passwords rather than the passwords themselves.</summary>

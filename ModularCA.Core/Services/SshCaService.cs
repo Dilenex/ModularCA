@@ -62,7 +62,8 @@ public class SshCaService : ISshCaService
     /// <summary>The longest comment written after a public key or a certificate.</summary>
     private const int MaxCommentLength = 256;
 
-    private static readonly int[] RsaSizes = [2048, 3072, 4096, 7680, 8192];
+    /// <summary>The RSA sizes a new SSH CA key may have: none under 3072 bits (<see cref="CaKeyPolicy"/>).</summary>
+    private static readonly int[] RsaSizes = [3072, 4096, 7680, 8192];
     private static readonly int[] EcdsaSizes = [256, 384, 521];
 
     private readonly ModularCADbContext _db;
@@ -966,7 +967,9 @@ public class SshCaService : ISshCaService
     /// <summary>
     /// The algorithm of a new SSH CA key, from the key type and size a request names:
     /// <c>ed25519</c>; <c>ecdsa</c> on P-256, P-384 or P-521 (256 when no size is given); or
-    /// <c>rsa</c> of 2048, 3072, 4096, 7680 or 8192 bits (3072 when no size is given).
+    /// <c>rsa</c> of 3072, 4096, 7680 or 8192 bits (3072 when no size is given). RSA 2048 is
+    /// refused for a new SSH CA key as it is for an X.509 one (<see cref="CaKeyPolicy"/>); keys
+    /// that already exist keep signing.
     /// </summary>
     /// <exception cref="ArgumentException">The type is none of the three, or the size is not one of its sizes.</exception>
     private static SshCaAlgorithm AlgorithmOf(string keyType, int? keySize)
@@ -982,6 +985,9 @@ public class SshCaService : ISshCaService
                 return new SshCaAlgorithm("ecdsa", curve, "ECDSA", $"P-{curve}", $"ecdsa-sha2-nistp{curve}");
             case "rsa":
                 var bits = keySize ?? 3072;
+                // RSA 2048 gets the sentence that says why and what to pick, not "not allowed".
+                if (bits == 2048 && CaKeyPolicy.RefusalForNewCa("RSA", bits) is { } refusal)
+                    throw new ArgumentException(refusal);
                 if (!RsaSizes.Contains(bits))
                     throw new ArgumentException($"Key size {keySize} is not allowed for rsa. Allowed: {string.Join(", ", RsaSizes)}");
                 return new SshCaAlgorithm("rsa", bits, "RSA", bits.ToString(), SshKeyTypes.Rsa);
