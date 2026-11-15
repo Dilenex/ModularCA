@@ -1240,6 +1240,12 @@ export interface RecordRevokedSerialRequest {
     note: string;
 }
 
+/** From `ModularCA.Shared/Models/Revocation/RevokedSerialRequests.cs`. */
+export interface RecordRevokedSerialsRequest {
+    serials: RevokedSerialItem[];
+    note: string;
+}
+
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
 export interface RedisConfig {
     enabled: boolean;
@@ -1335,6 +1341,12 @@ export interface RevokeCertificateRequestByCertSerial {
     serialNumber: string;
     reason: E.RevocationReason;
     invalidityDate?: string | null;
+}
+
+/** From `ModularCA.Shared/Models/Revocation/RevokedSerialRequests.cs`. */
+export interface RevokedSerialItem {
+    serialNumber: string;
+    reason: E.RevocationReason;
 }
 
 /** From `ModularCA.Shared/Models/Csr/ParseCsrResponse.cs`. */
@@ -1583,6 +1595,15 @@ export interface SignerConfig {
     pinnedClientSpki: string;
     identityCa: string;
     identityCaPassword: string;
+    journal: SignerJournalConfig;
+}
+
+/** From `ModularCA.Shared/Models/Config/SignerConfig.cs`. */
+export interface SignerJournalConfig {
+    directory: string;
+    checks: string;
+    lowSpaceMiB: number;
+    criticalSpaceMiB: number;
 }
 
 /** From `ModularCA.Shared/Models/Config/SignerPaths.cs`. */

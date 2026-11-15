@@ -57,8 +57,12 @@ public class DeploymentFileTests
         var writable = Assert.Single(signer, d => d.StartsWith("ReadWritePaths=", StringComparison.Ordinal));
         Assert.Equal(new[] { "/opt/modularca/keystores", "-/opt/modularca/signer" }, writable["ReadWritePaths=".Length..].Split(' ', StringSplitOptions.RemoveEmptyEntries));
 
+        // The node's unit can write one thing under signer/: the home of the issuance journal,
+        // for an install where its one process holds the keys. Never the directory itself.
         var node = Directives("deploy/modularca.service");
-        Assert.DoesNotContain(node, d => d.StartsWith("ReadWritePaths=", StringComparison.Ordinal) && d.Contains("signer", StringComparison.Ordinal));
+        var nodeWritable = Assert.Single(node, d => d.StartsWith("ReadWritePaths=", StringComparison.Ordinal))["ReadWritePaths=".Length..]
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(new[] { "-/opt/modularca/signer/journal" }, nodeWritable.Where(p => p.Contains("signer", StringComparison.Ordinal)));
     }
 
     [Fact]

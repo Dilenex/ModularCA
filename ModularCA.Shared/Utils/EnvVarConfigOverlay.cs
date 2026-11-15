@@ -58,6 +58,13 @@ public class EnvVarConfigOverlay
     public const string ProxyProtocolTrustedCidrsVariable = "MODULARCA__HTTP__PROXYPROTOCOLTRUSTEDCIDRS";
 
     /// <summary>
+    /// The environment variable that names the directory of the signer's issuance journal,
+    /// overriding <c>Signer.Journal.Directory</c>: how a pod puts the journal on the signer's
+    /// own volume without a settings file.
+    /// </summary>
+    public const string SignerJournalDirectoryVariable = "MODULARCA__SIGNER__JOURNAL__DIRECTORY";
+
+    /// <summary>
     /// Per-host settings that are not secrets but may come from the environment, so that a
     /// container manifest can set them on every start without editing <c>config.yaml</c>: the
     /// health listener's port and the three PROXY protocol settings, which an orchestrator sets
@@ -75,6 +82,8 @@ public class EnvVarConfigOverlay
         (HttpsProxyProtocolVariable, "Https.ProxyProtocol", c => c.Https.ProxyProtocol, (c, v) => c.Https.ProxyProtocol = (bool)v, ParseSwitch),
         (HttpProxyProtocolVariable, "Http.ProxyProtocol", c => c.Http.ProxyProtocol, (c, v) => c.Http.ProxyProtocol = (bool)v, ParseSwitch),
         (ProxyProtocolTrustedCidrsVariable, "Http.ProxyProtocolTrustedCidrs", c => c.Http.ProxyProtocolTrustedCidrs, (c, v) => c.Http.ProxyProtocolTrustedCidrs = (string)v,
+            (_, value) => value.Trim()),
+        (SignerJournalDirectoryVariable, "Signer.Journal.Directory", c => c.Signer.Journal.Directory, (c, v) => c.Signer.Journal.Directory = (string)v,
             (_, value) => value.Trim()),
     ];
 

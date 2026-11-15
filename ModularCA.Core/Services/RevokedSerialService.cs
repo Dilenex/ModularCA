@@ -71,6 +71,60 @@ public sealed partial class RevokedSerialService(ModularCADbContext db, ICrlServ
     public async Task<TombstoneResult> RecordTombstoneAsync(Guid caId, string? serialNumber, RevocationReason reason,
         DateTime? invalidityDate, string? note, Guid? actorUserId, string? actorUsername, CancellationToken cancellationToken = default)
     {
+        var (tombstone, caCertificateId) = await AddTombstoneAsync(caId, serialNumber, reason, invalidityDate, note, actorUserId, actorUsername, cancellationToken);
+        return new TombstoneResult(tombstone, await TryRegenerateCrlAsync(caCertificateId));
+    }
+
+    /// <summary>What <see cref="RecordTombstonesAsync"/> did with one serial.</summary>
+    /// <param name="SerialNumber">The serial as it was given.</param>
+    /// <param name="Tombstone">The entry recorded; null when it was not.</param>
+    /// <param name="Refusal">Why it was not recorded: the CA holds a certificate with that serial, it is already recorded, or it is not a serial.</param>
+    public sealed record TombstoneOutcome(string SerialNumber, RevokedSerialTombstoneEntity? Tombstone, string? Refusal);
+
+    /// <summary>
+    /// Records several serials as revoked under CA <paramref name="caId"/> with no certificate
+    /// row, each as <see cref="RecordTombstoneAsync"/> records one, and regenerates the CA's CRL
+    /// once, after the last. A serial that cannot be recorded (the CA holds its certificate, it
+    /// is already recorded, it is not a serial, or its reason is a hold) is reported with the
+    /// reason and does not stop the others.
+    /// </summary>
+    /// <param name="caId">The certificate authority.</param>
+    /// <param name="serials">The serials with their reasons.</param>
+    /// <param name="note">Why they are revoked without their certificates. Required.</param>
+    /// <param name="actorUserId">The administrator recording them.</param>
+    /// <param name="actorUsername">That administrator's user name.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>What was done with each serial, in the order given, and the number of the CRL generated afterwards.</returns>
+    /// <exception cref="InvalidRequestException">The note is missing or too long (400).</exception>
+    /// <exception cref="ResourceNotFoundException">The CA does not exist or has no certificate (404).</exception>
+    public async Task<(IReadOnlyList<TombstoneOutcome> Outcomes, long? CrlNumber)> RecordTombstonesAsync(Guid caId,
+        IReadOnlyList<(string SerialNumber, RevocationReason Reason)> serials, string? note, Guid? actorUserId, string? actorUsername,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(serials);
+        RequireNote(note, "Say why the serials are revoked without their certificates.");
+        var ca = await LoadCaAsync(caId, cancellationToken);
+        var outcomes = new List<TombstoneOutcome>(serials.Count);
+        foreach (var (serialNumber, reason) in serials)
+        {
+            try
+            {
+                var (tombstone, _) = await AddTombstoneAsync(caId, serialNumber, reason, null, note, actorUserId, actorUsername, cancellationToken);
+                outcomes.Add(new TombstoneOutcome(serialNumber, tombstone, null));
+            }
+            catch (Exception ex) when (ex is InvalidRequestException or ResourceConflictException)
+            {
+                outcomes.Add(new TombstoneOutcome(serialNumber, null, ex.Message));
+            }
+        }
+        var crlNumber = outcomes.Any(o => o.Tombstone != null) ? await TryRegenerateCrlAsync(ca.CertificateId) : null;
+        return (outcomes, crlNumber);
+    }
+
+    /// <summary>Checks and saves one tombstone, without regenerating the CRL. Returns it with the CA's certificate id.</summary>
+    private async Task<(RevokedSerialTombstoneEntity Tombstone, Guid CaCertificateId)> AddTombstoneAsync(Guid caId, string? serialNumber, RevocationReason reason,
+        DateTime? invalidityDate, string? note, Guid? actorUserId, string? actorUsername, CancellationToken cancellationToken)
+    {
         var serial = NormalizeSerial(serialNumber);
         if (reason == RevocationReason.CertificateHold)
             throw new InvalidRequestException("A serial without a certificate cannot be put on hold: the revocation is permanent. Choose another reason.");
@@ -116,7 +170,41 @@ public sealed partial class RevokedSerialService(ModularCADbContext db, ICrlServ
         }
 
         MetricsService.CertsRevoked.WithLabels(ca.IssuerDn, reason.ToString()).Inc();
-        return new TombstoneResult(tombstone, await TryRegenerateCrlAsync(ca.CertificateId));
+        return (tombstone, ca.CertificateId);
+    }
+
+    /// <summary>
+    /// Of <paramref name="serials"/>, those for which CA <paramref name="caId"/> holds a
+    /// certificate row its CRL answers for: such a serial is revoked by revoking the
+    /// certificate, not by recording the serial alone. Serials are compared without leading
+    /// zeros and without case.
+    /// </summary>
+    public async Task<IReadOnlySet<string>> HeldAsync(Guid caId, IReadOnlyCollection<string> serials, CancellationToken cancellationToken = default)
+    {
+        var held = new HashSet<string>(StringComparer.Ordinal);
+        if (serials.Count == 0)
+            return held;
+        var ca = await LoadCaAsync(caId, cancellationToken);
+        var scope = await IssuerChainResolver.SameKeyCaCertificateIdsAsync(db, ca.CertificateId, ca.Certificate, cancellationToken);
+        foreach (var chunk in serials.Select(Plain).Distinct(StringComparer.Ordinal).Chunk(500))
+        {
+            var forms = chunk.SelectMany(x => new[] { x, "0" + x, "00" + x }).ToList();
+            var found = await db.Certificates.AsNoTracking()
+                .Where(c => forms.Contains(c.SerialNumber))
+                .Where(c => (c.IssuerCertificateId != null && scope.Contains(c.IssuerCertificateId.Value))
+                         || (c.IssuerCertificateId == null && c.Issuer == ca.IssuerDn))
+                .Select(c => c.SerialNumber)
+                .ToListAsync(cancellationToken);
+            foreach (var serial in found)
+                held.Add(Plain(serial));
+        }
+        return held;
+
+        static string Plain(string serial)
+        {
+            var trimmed = serial.Trim().TrimStart('0').ToUpperInvariant();
+            return trimmed.Length == 0 ? "0" : trimmed;
+        }
     }
 
     /// <summary>
@@ -256,11 +344,25 @@ public sealed partial class RevokedSerialService(ModularCADbContext db, ICrlServ
     /// </summary>
     public async Task<DateTime> ListedUntilAsync(Guid caId, DateTime from, CancellationToken cancellationToken = default)
     {
-        var ca = await db.CertificateAuthorities.AsNoTracking()
+        var caEndOf = await db.CertificateAuthorities.AsNoTracking()
             .Where(c => c.Id == caId)
-            .Select(c => new { c.SpaceId, NotAfter = c.Certificate == null ? (DateTime?)null : c.Certificate.NotAfter })
+            .Select(c => c.Certificate == null ? (DateTime?)null : c.Certificate.NotAfter)
             .FirstOrDefaultAsync(cancellationToken);
-        var spaceId = ca?.SpaceId;
+        var until = from.Add(await LongestValidityAsync(db, caId, cancellationToken));
+        return caEndOf is { } caEnd && caEnd > from && caEnd < until ? caEnd : until;
+    }
+
+    /// <summary>
+    /// The longest maximum validity among the certificate profiles CA <paramref name="caId"/> can
+    /// issue with (its own, its space's and the instance-wide ones; one year for a profile that
+    /// states none): how long after its revocation a serial with no certificate stays listed.
+    /// </summary>
+    public static async Task<TimeSpan> LongestValidityAsync(ModularCADbContext db, Guid caId, CancellationToken cancellationToken = default)
+    {
+        var spaceId = await db.CertificateAuthorities.AsNoTracking()
+            .Where(c => c.Id == caId)
+            .Select(c => c.SpaceId)
+            .FirstOrDefaultAsync(cancellationToken);
         var maxima = await db.CertProfiles.AsNoTracking()
             .Where(p => p.CertificateAuthorityId == caId
                 || (p.CertificateAuthorityId == null && (p.SpaceId == null || p.SpaceId == spaceId)))
@@ -282,8 +384,7 @@ public sealed partial class RevokedSerialService(ModularCADbContext db, ICrlServ
             }
         }
 
-        var until = from.Add(longest);
-        return ca?.NotAfter is { } caEnd && caEnd > from && caEnd < until ? caEnd : until;
+        return longest;
     }
 
     /// <summary>The serial in stored form, or a 400 when it is not a positive hex number of at most twenty octets.</summary>

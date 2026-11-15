@@ -438,6 +438,8 @@ public class SshCaService : ISshCaService
             cert.Revoke(now);
 
         await _db.SaveChangesAsync();
+        if (activeCerts.Count > 0)
+            await QueueRevocationListFactAsync(_db, caKeyId, _logger);
 
         await _audit.LogAsync(AuditActionType.SshCaKeyDisabled, actor?.UserId, actor?.Username ?? "system",
             "SshCaKey", caKeyId.ToString(),
@@ -659,7 +661,16 @@ public class SshCaService : ISshCaService
         var request = new SshCertificateRequest(
             new KeyRef(caKey.Id, KeyRef.SshKeystore), subject.Blob, typeName, (ulong)serial, certKeyId, principals.ToList(),
             validAfter, endsAt, criticalOptions, certExtensions);
-        var context = SigningContext.ForCa(SignerCaller, SigningPurpose.SshCertificate, caKey.CertificateAuthorityId, spaceId: null);
+        var context = SigningContext.ForCa(SignerCaller, SigningPurpose.SshCertificate, caKey.CertificateAuthorityId, spaceId: null) with
+        {
+            // For the signer's journal record: who the certificate is for and who asked. An SSH
+            // certificate answers no request row and renews nothing the node tracks.
+            Issuance = new IssuanceOrigin(
+                Answers: new IssuanceAnswers(ModularCA.Journal.AnswersKind.None, null),
+                Belongs: subjectUser is { } owner ? new IssuanceBelongs(OwnerKind: ModularCA.Journal.OwnerKind.User, Owner: owner.Id.ToString("D")) : null,
+                Protocol: "SSH",
+                Requester: actor?.UserId?.ToString("D")),
+        };
 
         byte[] blob;
         try
@@ -800,10 +811,37 @@ public class SshCaService : ISshCaService
         if (requiredCaKeyId.HasValue && cert.SshCaKeyId != requiredCaKeyId.Value) return false;
         cert.Revoke(DateTime.UtcNow);
         await _db.SaveChangesAsync();
+        await QueueRevocationListFactAsync(_db, cert.SshCaKeyId, _logger);
 
         await _audit.LogAsync(AuditActionType.SshCertRevoked, actor?.UserId, actor?.Username,
             "SshCertificate", certId.ToString(), sourceIp: actor?.SourceIp);
         return true;
+    }
+
+    /// <summary>
+    /// Queues the SSH CA key's revocation list, as it stands after a revocation, for the
+    /// signer's journal. The list is built by the node and is not signed, so the record is the
+    /// node's assertion. A list that cannot be built or queued does not undo the revocation.
+    /// </summary>
+    internal static async Task QueueRevocationListFactAsync(ModularCADbContext _db, Guid caKeyId, ILogger _logger)
+    {
+        try
+        {
+            var key = await _db.SshCaKeys.AsNoTracking().Where(k => k.Id == caKeyId)
+                .Select(k => new { k.PublicKey, k.CertificateAuthorityId }).FirstOrDefaultAsync();
+            if (key == null || TryParseCaKey(key.PublicKey) is not { } publicKey)
+                return;
+            var list = (await BuildKrlAsync(_db, caKeyId)).Bytes;
+            if (list.Length == 0)
+                return;
+            await _db.QueueSignerFactNowAsync(ModularCA.Journal.RecordType.SshRevocationList,
+                new ModularCA.Journal.SshRevocationListPayload(key.CertificateAuthorityId.ToString("D"), SHA256.HashData(publicKey.Blob), list).Encode());
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            _logger.LogWarning("The SSH revocation list of key {CaKeyId} could not be queued for the signer's journal ({Kind}: {Message}).",
+                caKeyId, ex.GetType().Name, ex.Message);
+        }
     }
 
     /// <summary>
@@ -836,7 +874,10 @@ public class SshCaService : ISshCaService
     /// the rows this KRL was built from, so it never names bytes other than these.
     /// </summary>
     /// <exception cref="InvalidOperationException">There is no such key, or its public key cannot be read.</exception>
-    public async Task<SshKrlFile> BuildKrlAsync(Guid caKeyId)
+    public Task<SshKrlFile> BuildKrlAsync(Guid caKeyId) => BuildKrlAsync(_db, caKeyId);
+
+    /// <summary>As <see cref="BuildKrlAsync(Guid)"/>, over a context the caller names: for the services that revoke SSH certificates without this one.</summary>
+    internal static async Task<SshKrlFile> BuildKrlAsync(ModularCADbContext _db, Guid caKeyId)
     {
         var caKey = await _db.SshCaKeys.AsNoTracking().FirstOrDefaultAsync(k => k.Id == caKeyId)
             ?? throw new InvalidOperationException("SSH CA key not found");

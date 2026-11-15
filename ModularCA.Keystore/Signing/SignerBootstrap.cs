@@ -115,6 +115,13 @@ public sealed class SignerBootstrap
     /// <param name="logger">Logger.</param>
     /// <param name="keyWrapping">The passphrase non-RSA key wraps are derived from, for unwrapping a stored end-entity key.</param>
     /// <param name="failClosedOnAuditFailure">Whether a decision the audit cannot record is refused; the signer role's setting, false in process.</param>
+    /// <param name="journal">
+    /// Where the signer's issuance journal is and how its checks behave, or null for a signer
+    /// that keeps none. A signer that is not unlocked keeps none either way: it has no system
+    /// key to sign a checkpoint key with, and it signs nothing to record. The journal is opened
+    /// here: a directory with no journal gets one, and one that holds a journal is read and
+    /// left as it is until the first record begins this start's segment.
+    /// </param>
     public ISigningService CreateSigner(
         string keystoresDirectory,
         string yamlPath,
@@ -122,8 +129,20 @@ public sealed class SignerBootstrap
         ISignerAuditSink audit,
         ILogger<InProcessSigningService> logger,
         IKeyWrappingPassphraseProvider? keyWrapping,
-        bool failClosedOnAuditFailure = false)
+        bool failClosedOnAuditFailure = false,
+        SignerJournalSettings? journal = null)
     {
+        SignerJournal? signerJournal = null;
+        if (journal != null && Unlocked)
+        {
+            signerJournal = new SignerJournal(() =>
+            {
+                using var scope = scopes.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ModularCADbContext>();
+                return SignerJournalKeys.Options(journal, _registry, keystoresDirectory, yamlPath, db,
+                    message => logger.LogWarning("Signer journal: {Message}", message));
+            }, journal, logger);
+        }
         return new InProcessSigningService(
             _registry,
             scopes,
@@ -134,6 +153,7 @@ public sealed class SignerBootstrap
             backend: _backend,
             keyWrapping: keyWrapping,
             failClosedOnAuditFailure: failClosedOnAuditFailure,
-            hsmKeyRefusals: _hsmRefusals);
+            hsmKeyRefusals: _hsmRefusals,
+            journal: signerJournal);
     }
 }

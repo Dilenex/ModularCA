@@ -467,6 +467,12 @@ namespace ModularCA.Core.Services
             // signing is the only ordering that cannot produce that outcome.
             EnsureSubjectDnIsStorable(subjectDn);
 
+            // What the signer is told about this issuance for its journal record: what the
+            // request answers, the tokens it spent, what it renews and what it belongs to.
+            var origin = await ModularCA.Core.Services.Journal.IssuanceNotes.TakeAsync(
+                _db, csrEntity, effectiveCertProfile.SourceProfileId, issuingCaEntity?.SpaceId ?? preResolvedCa?.Context.SpaceId,
+                cancellationToken: cancellationToken);
+
             // Build and sign the certificate
             var issuedCert = await BuildSignedAsync(
                 serialNumber, caMatch, refCACert, issuingCaEntity, preResolvedCa, subjectDn, subjectPublicKey,
@@ -474,7 +480,7 @@ namespace ModularCA.Core.Services
                 effectiveSans, csrEntity.SigningProfile,
                 effectiveCertProfile.IsCaProfile,
                 effectiveCertProfile.AllowWildcard,
-                RequestedExtension.FromJson(csrEntity.AdditionalExtensions));
+                RequestedExtension.FromJson(csrEntity.AdditionalExtensions), origin);
 
             // Stored cert.Pem is leaf-only. Chain endpoints rebuild the issuer chain on demand.
             var certPem = EncodeCertPem(issuedCert);
@@ -946,6 +952,12 @@ namespace ModularCA.Core.Services
             // signing is the only ordering that cannot produce that outcome.
             EnsureSubjectDnIsStorable(reissueSubjectDn);
 
+            // A reissue replaces the certificate the request last issued; the signer's journal
+            // record says so.
+            var origin = await ModularCA.Core.Services.Journal.IssuanceNotes.TakeAsync(
+                _db, csrEntity, effectiveCertProfile.SourceProfileId, reissueCaEntity.SpaceId,
+                replacesCertificateId: csrEntity.IssuedCertificateId ?? certId);
+
             // Build and sign the certificate
             var issuedCert = await BuildSignedAsync(
                 serialNumber, caMatch, refCACert, reissueCaEntity, null, reissueSubjectDn, csr.GetPublicKey(),
@@ -953,7 +965,7 @@ namespace ModularCA.Core.Services
                 reissueEffectiveSans, csrEntity.SigningProfile,
                 effectiveCertProfile.IsCaProfile,
                 effectiveCertProfile.AllowWildcard,
-                RequestedExtension.FromJson(csrEntity.AdditionalExtensions));
+                RequestedExtension.FromJson(csrEntity.AdditionalExtensions), origin);
 
             // Stored cert.Pem is leaf-only. Chain endpoints rebuild the issuer chain on demand.
             var certPem = EncodeCertPem(issuedCert);
@@ -1759,6 +1771,8 @@ namespace ModularCA.Core.Services
         /// the caller supplied, because the CA's row is not committed yet. A signer that has no
         /// key for the CA, or is locked, is reported as the same configuration error the keystore
         /// lookup used to raise; a policy refusal is a wiring bug and surfaces as itself.
+        /// <paramref name="origin"/> rides the context to the signer, which writes it into the
+        /// certificate's journal record; a context the caller supplied keeps what it carries.
         /// </summary>
         private async Task<X509Certificate> BuildSignedAsync(
             BigInteger serialNumber, X509Certificate caMatch, CertificateEntity refCACert,
@@ -1766,7 +1780,7 @@ namespace ModularCA.Core.Services
             X509Name subjectDn, AsymmetricKeyParameter subjectPublicKey,
             DateTime validFrom, DateTime validTo, List<string> standardOids, List<string> extendedOids,
             string? sans, SigningProfileEntity signingProfile, bool isCa, bool allowWildcardSans,
-            IReadOnlyList<RequestedExtension>? additionalExtensions)
+            IReadOnlyList<RequestedExtension>? additionalExtensions, IssuanceOrigin? origin = null)
         {
             KeyRef caKey;
             SigningContext context;
@@ -1784,6 +1798,9 @@ namespace ModularCA.Core.Services
                 caKey = new KeyRef(refCACert.CertificateId);
                 context = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, caEntity.Id, caEntity.SpaceId);
             }
+
+            if (origin != null)
+                context = context with { Issuance = origin };
 
             try
             {

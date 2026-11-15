@@ -120,6 +120,43 @@ public sealed class RevokedSerialServiceTests
 
     private static readonly BigInteger LostSerial = new("0A1B2C3D4E5F", 16);
 
+    [Fact]
+    public async Task Several_serials_are_recorded_under_one_note_and_the_crl_is_regenerated_once()
+    {
+        var w = new World();
+        var known = w.IssuedRow(new BigInteger("77AA", 16));
+        await w.Record("0C0C");
+        var generatedBefore = w.Crls.Generated.Count;
+
+        var (outcomes, _) = await w.Service.RecordTombstonesAsync(w.CaId,
+            [("0a:01", RevocationReason.KeyCompromise), ("77AA", RevocationReason.Superseded), ("0C0C", RevocationReason.Superseded),
+             ("not hex", RevocationReason.Superseded), ("0A02", RevocationReason.CertificateHold), ("0A03", RevocationReason.Superseded)],
+            "lost in the roll-back", Guid.NewGuid(), "admin");
+
+        // Two are recorded; the others are refused each for its own reason, and stop nothing.
+        Assert.Equal(new[] { "A01", "A03" }, outcomes.Where(o => o.Tombstone != null).Select(o => o.Tombstone!.SerialNumber));
+        Assert.Contains("belongs to a certificate this CA holds", outcomes[1].Refusal!, StringComparison.Ordinal);
+        Assert.Contains("already recorded", outcomes[2].Refusal!, StringComparison.Ordinal);
+        Assert.Contains("hexadecimal", outcomes[3].Refusal!, StringComparison.Ordinal);
+        Assert.Contains("cannot be put on hold", outcomes[4].Refusal!, StringComparison.Ordinal);
+        var rows = w.Db.RevokedSerialTombstones.AsNoTracking().OrderBy(t => t.SerialNumber).ToList();
+        Assert.Equal(new[] { "A01", "A03", "C0C" }, rows.Select(r => r.SerialNumber));
+        Assert.Equal(("KeyCompromise", "lost in the roll-back", "admin"), (rows[0].RevocationReason, rows[0].Note, rows[0].CreatedByUsername));
+        // One CRL for all of them, not one each.
+        Assert.Equal(generatedBefore + 1, w.Crls.Generated.Count);
+        Assert.False(w.Db.Certificates.AsNoTracking().Single(c => c.CertificateId == known.CertificateId).Revoked);
+
+        // With nothing recorded no CRL is generated; a missing note is refused before anything.
+        var (none, number) = await w.Service.RecordTombstonesAsync(w.CaId, [("77AA", RevocationReason.Superseded)], "note", null, "admin");
+        Assert.Null(none[0].Tombstone);
+        Assert.Null(number);
+        Assert.Equal(generatedBefore + 1, w.Crls.Generated.Count);
+        await Assert.ThrowsAsync<InvalidRequestException>(() => w.Service.RecordTombstonesAsync(w.CaId, [("0A09", RevocationReason.Superseded)], " ", null, "admin"));
+
+        // Which serials the CA holds a certificate for, whatever their leading zeros or case.
+        Assert.Equal(new[] { "77AA" }, await w.Service.HeldAsync(w.CaId, ["0077aa", "A01", "FFFF"]));
+    }
+
     // ── Tombstones ───────────────────────────────────────────────────────
 
     [Fact]
@@ -490,6 +527,8 @@ public sealed class RevokedSerialServiceTests
     [InlineData("List")]
     [InlineData("Record")]
     [InlineData("Adopt")]
+    [InlineData("MissingFromCrl")]
+    [InlineData("RecordMany")]
     public async Task Every_action_needs_cert_revoke_on_the_ca_in_the_route_and_on_no_other(string action)
     {
         var a = new AuthWorld();
@@ -512,6 +551,7 @@ public sealed class RevokedSerialServiceTests
 
     [Theory]
     [InlineData("Record", StepUpOps.RevokeSerial)]
+    [InlineData("RecordMany", StepUpOps.RevokeSerial)]
     [InlineData("Adopt", StepUpOps.AdoptCertificate)]
     public async Task The_mutations_need_a_step_up_token_issued_for_that_operation_and_that_ca(string action, string operation)
     {
@@ -548,7 +588,7 @@ public sealed class RevokedSerialServiceTests
     {
         var audit = new RecordingAuditService();
         var controller = (ControllerBase)Activator.CreateInstance(ApiAssembly.TypeNamed(ControllerName),
-            w.Service, w.Db, new CurrentUserStub(Guid.NewGuid()), audit, new RecordingAlertService())!;
+            w.Service, w.Db, new CurrentUserStub(Guid.NewGuid()), audit, new RecordingAlertService(), new UnaskedSigner())!;
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() };
         return (controller, audit);
     }

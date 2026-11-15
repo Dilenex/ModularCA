@@ -277,6 +277,14 @@ public class EnrollmentTokenService : IEnrollmentTokenService
         // The tracked copy is deliberately NOT updated. ExecuteUpdateAsync bypasses the change
         // tracker, so writing to the entity here would make a later SaveChanges re-issue a stale
         // absolute value and undo the atomicity this method exists to provide.
+        if (affected == 1)
+        {
+            // For the signer's journal: the issuance this request goes on to make records that
+            // it spent this token. The row id is noted, never the token.
+            ModularCA.Core.Services.Journal.IssuanceNotes.NoteSpent(db,
+                token.UsedForCmp ? ModularCA.Journal.TokenKind.CmpSharedSecret : ModularCA.Journal.TokenKind.EnrollmentToken,
+                token.Id.ToString("D"), (ulong)Math.Max(1, token.MaxUses - token.UsesRemaining + 1));
+        }
         return affected == 1;
     }
 

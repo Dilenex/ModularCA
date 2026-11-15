@@ -195,7 +195,7 @@ public sealed class InstanceContinuityTests
         Assert.Equal(floor, recorded.CrlNumberFloor);
         Assert.Equal(2, recorded.CrlCountersRaised);
         Assert.Null(recorded.AcknowledgedAt);
-        Assert.Contains("nothing was replayed", recorded.DetailsJson);
+        Assert.Contains("nothing else of the lost time is replayed", recorded.DetailsJson);
 
         var audit = Assert.Single(w.Audit.Entries);
         Assert.Equal(AuditActionType.InstanceIncarnationChanged, audit.Action);
@@ -205,14 +205,14 @@ public sealed class InstanceContinuityTests
         Assert.Contains(B.Tag!, details);
         Assert.Contains("2026-11-10T09:30:00", details);
         Assert.Contains($"\"Floor\":{floor}", details);
-        Assert.Contains("nothing was replayed", details);
+        Assert.Contains("nothing else of the lost time is replayed", details);
 
         Assert.Equal(B.ValueHash, w.Stored.ValueHash);
 
         var message = InstanceContinuity.MessageFor(recorded);
         Assert.StartsWith("This instance is running from an earlier or copied state.", message);
         Assert.Contains("after 2026-11-10 09:30:00 UTC on the earlier timeline are not known here", message);
-        Assert.Contains("nothing was replayed", message);
+        Assert.Contains("nothing else of the lost time is replayed", message);
     }
 
     [Fact]

@@ -1,7 +1,7 @@
 /** One continuity event of the standing notice, as `/api/v1/admin/continuity/notice` returns it. */
 export interface ContinuityEvent {
     id: string;
-    /** `IncarnationChanged`, `IncarnationSourceLost` or `PublishedCrlAhead`. */
+    /** `IncarnationChanged`, `IncarnationSourceLost`, `PublishedCrlAhead` or `RevocationsMergedFromJournal`. */
     kind: string;
     detectedAt: string;
     oldTag: string | null;
@@ -28,6 +28,7 @@ export function continuityTitle(kind: string): string {
     switch (kind) {
         case 'IncarnationSourceLost': return 'Rollback detection lost its source.';
         case 'PublishedCrlAhead': return 'The database was taken back in time.';
+        case 'RevocationsMergedFromJournal': return 'Revocations were restored from the signer’s journal.';
         default: return 'Running from an earlier or copied state.';
     }
 }

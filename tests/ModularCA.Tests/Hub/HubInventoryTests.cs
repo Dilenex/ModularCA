@@ -291,7 +291,7 @@ public sealed class HubInventoryTests : IDisposable
         static string[] Names(JsonElement e) => e.EnumerateObject().Select(p => p.Name).ToArray();
         var root = json.RootElement;
 
-        Assert.Equal(["instanceVersion", "schema", "signer", "webTlsCertificate", "newestBackup", "failingJobs", "certificateAuthorities"], Names(root));
+        Assert.Equal(["instanceVersion", "schema", "signer", "webTlsCertificate", "newestBackup", "failingJobs", "certificateAuthorities", "journal"], Names(root));
         Assert.Equal(["application", "audit"], Names(root.GetProperty("schema")));
         Assert.Equal(["state", "checkedAtUtc"], Names(root.GetProperty("signer")));
         Assert.Equal(["expiresAtUtc"], Names(root.GetProperty("webTlsCertificate")));
@@ -330,7 +330,7 @@ public sealed class HubInventoryTests : IDisposable
         Assert.Null(inventory.Schema.Audit);
         Assert.Equal(
             "{\"instanceVersion\":\"0.4.5-test\",\"schema\":{\"application\":null,\"audit\":null},\"signer\":null,"
-            + "\"webTlsCertificate\":null,\"newestBackup\":null,\"failingJobs\":[],\"certificateAuthorities\":[]}",
+            + "\"webTlsCertificate\":null,\"newestBackup\":null,\"failingJobs\":[],\"certificateAuthorities\":[],\"journal\":null}",
             json);
         // And the typed client reads the same thing back.
         Assert.Equivalent(inventory, JsonSerializer.Deserialize<HubInventory>(json, HubLocalContract.Json), strict: true);
@@ -543,6 +543,8 @@ public sealed class HubInventoryTests : IDisposable
             [
                 typeof(ModularCADbContext), typeof(AuditDbContext), typeof(SignerContactState), typeof(ApiCertificateProvider),
                 typeof(string), typeof(string), typeof(Microsoft.Extensions.Logging.ILogger), typeof(TimeProvider),
+                // What the readiness check last learned of the signer's journal: a reading kept in memory, not a signer.
+                typeof(ModularCA.Core.Services.Journal.SignerJournalState),
             ],
             parameters);
         Assert.DoesNotContain(typeof(NodeInventoryReader).GetFields(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public),

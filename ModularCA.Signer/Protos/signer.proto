@@ -34,6 +34,23 @@ service Signer {
   // signer's disk whatever the node does. A signer that predates it answers UNIMPLEMENTED,
   // which the client reads as "no events to hand over".
   rpc ReadKeystoreEvents (ReadKeystoreEventsRequest) returns (ReadKeystoreEventsResponse);
+  // Added in 0.4.5 with the signer's issuance journal (docs/architecture/signer-journal.md).
+  // RecordFact appends a fact the node asserts to the journal, flagged as the node's word. A
+  // signer that predates it answers UNIMPLEMENTED, which the client reports as a refusal; the
+  // node keeps the fact queued and offers it again.
+  rpc RecordFact (RecordFactRequest) returns (RecordFactResponse);
+  // Reads the journal's head and its room: nothing is signed or written. A signer that
+  // predates it answers UNIMPLEMENTED, which the client reads as "keeps no journal".
+  rpc JournalInfo (JournalInfoRequest) returns (JournalInfoResponse);
+  // Lists every serial the last full CRL the signer refused for a CA left out. Nothing is
+  // signed or written. A signer that predates it answers UNIMPLEMENTED, which the client reads
+  // as "no refusal stands".
+  rpc JournalMissingRevocations (JournalMissingRevocationsRequest) returns (JournalMissingRevocationsResponse);
+  // Reads a part of the revocations the journal holds for a CA: the newest journaled full CRL's
+  // entries, a newer delta's, and the revocation facts after it. The signer answers only from a
+  // journal it verified; otherwise trusted is false and there is no entry. Nothing is signed or
+  // written. A signer that predates it answers UNIMPLEMENTED, which the client reads as "none".
+  rpc JournaledRevocations (JournaledRevocationsRequest) returns (JournaledRevocationsResponse);
 }
 
 // A reference to a stored key: the certificate id and the keystore name. An SSH CA key has no
@@ -54,6 +71,163 @@ message SigningContext {
   // True only when the caller states the operation is for the instance (space_id empty).
   // An older client omits it, and an empty space_id alone is never read as the instance.
   bool instance_scope = 6;
+  // Added in 0.4.5: what the node knows about the issuance a signature is for. The signer
+  // writes it into the certificate's journal record and decides nothing from it. Absent from
+  // an older client and on every signature that issues no certificate.
+  IssuanceOrigin issuance = 7;
+}
+
+// What the node knows about an issuance and the signer does not. Identifiers only: never a
+// token, a secret or a hash of one. A member the node does not know is left out.
+message IssuanceOrigin {
+  repeated SpentToken spent = 1;
+  IssuanceAnswers answers = 2;      // absent when the node did not say
+  IssuanceReplaces replaces = 3;    // absent when the issuance renews nothing the node recognizes
+  IssuanceBelongs belongs = 4;
+  string protocol = 5;              // "ACME", "EST", "SCEP", "CMP", "MSAE", "Admin", ... ; empty for none
+  string requester = 6;             // the requesting account's id, when there is one
+}
+
+// A one-time token the issuance used: its kind (1 enrollment token, 2 CMP shared secret,
+// 3 ACME external account binding, 4 first administrator's claim), its identifier, and which
+// use of the token this was, counted from 1.
+message SpentToken {
+  uint64 kind = 1;
+  string id = 2;
+  uint64 use = 3;
+}
+
+// What was being answered: kind 0 none, 1 pending request, 2 ACME order, 3 enrollment
+// transaction; and its identifier.
+message IssuanceAnswers {
+  uint64 kind = 1;
+  string id = 2;
+}
+
+// The certificate this one renews or reissues: its serial (unsigned, big-endian) and the
+// SHA-256 of its issuing CA's public key.
+message IssuanceReplaces {
+  bytes serial = 1;
+  bytes ca_key = 2;
+}
+
+// What the certificate belongs to, by identifier; each empty when it does not apply.
+// owner_kind: 1 user, 2 badge, 3 infrastructure registration; 0 for no owner.
+message IssuanceBelongs {
+  string profile = 1;
+  string space = 2;
+  uint64 owner_kind = 3;
+  string owner = 4;
+  string template = 5;
+}
+
+// A fact for the journal. type is the journal's record type number (32 Revocation,
+// 33 Unrevocation, 34 SpentWithoutCertificate, 35 RestoreMarker, 36 ContinuityEvent,
+// 37 Disabled, 21 SshRevocationList); payload is that record's CBOR map. The signer decodes it
+// as that type, encodes it again and appends it with flag bit 0.
+message RecordFactRequest {
+  uint32 type = 1;
+  bytes payload = 2;
+  SigningContext context = 3;       // purpose JournalFact
+}
+
+message RecordFactResponse {
+  uint64 seq = 1;
+}
+
+message JournalInfoRequest {
+}
+
+// present is false from a signer that keeps no journal (locked, or setup mode); every other
+// field is then empty. last_checkpoint_unix_micros is 0 when this run has written none.
+// free_known says whether free_bytes could be read.
+message JournalInfoResponse {
+  bool present = 1;
+  bool available = 2;
+  string fault = 3;
+  uint64 seq = 4;
+  string hash = 5;                  // lower-case hex
+  int64 last_checkpoint_unix_micros = 6;
+  int64 uncheckpointed_records = 7;
+  int64 size_bytes = 8;
+  int64 free_bytes = 9;
+  bool free_known = 10;
+  // Not 0 while the journal waits for the node's restore marker to explain a changed system
+  // key: the time the wait ends. The signer signs and records during the wait.
+  int64 awaiting_restore_marker_until_unix_micros = 11;
+  // The signer's two free-space warning levels, 0 for "never"; meaningful only with
+  // space_levels_known, which a signer that predates them leaves false.
+  int64 low_space_bytes = 12;
+  int64 critical_space_bytes = 13;
+  bool space_levels_known = 17;
+  // Whether the journal on disk at the signer's start verified: 0 still being checked, 1 yes, 2 no.
+  int32 verified = 18;
+  string verification_fault = 19;
+  // How far that verification has got, in bytes of whole records, and the bytes of the journal;
+  // meaningful with verification_progress_known, and equal when it has read to the end.
+  int64 verified_bytes = 20;
+  int64 verify_total_bytes = 21;
+  bool verification_progress_known = 22;
+  // Journals of other instances set aside beside the journal directory, and their size.
+  int32 set_aside_journals = 14;
+  int64 set_aside_bytes = 15;
+  // The CAs whose last full CRL the signer refused for leaving out revoked serials.
+  repeated RefusedCrl refused_crls = 16;
+}
+
+message RefusedCrl {
+  string ca_id = 1;                 // empty when the key belongs to no registered CA
+  string ca_key = 2;                // SHA-256 of the CA key's SubjectPublicKeyInfo, lower-case hex
+  int32 missing_serials = 3;
+  int64 refused_at_unix_micros = 4;
+  int64 journaled_crl_number = 5;
+}
+
+message JournalMissingRevocationsRequest {
+  string ca_id = 1;
+}
+
+// present is false when no refusal stands for the CA.
+message JournalMissingRevocationsResponse {
+  bool present = 1;
+  int64 refused_at_unix_micros = 2;
+  int64 journaled_crl_number = 3;
+  repeated MissingSerial serials = 4;
+}
+
+message JournaledRevocationsRequest {
+  string ca_id = 1;
+  int32 skip = 2;
+  int32 take = 3;
+}
+
+// present is false when the journal holds nothing for the CA. trusted false: no entry, and
+// not_trusted_reason says why.
+message JournaledRevocationsResponse {
+  bool present = 1;
+  bool trusted = 2;
+  string not_trusted_reason = 3;
+  bool crl_known = 4;               // crl_number and crl_seq are of the full CRL the list starts from
+  int64 crl_number = 5;
+  uint64 crl_seq = 6;
+  int32 total = 7;
+  repeated JournaledRevocation entries = 8;
+}
+
+message JournaledRevocation {
+  string serial = 1;                // hex, upper case, no leading zeros
+  int32 reason = 2;                 // RFC 5280 reason code
+  int64 revoked_at_unix_micros = 3;
+  bool hold = 4;
+  string source = 5;                // crl | delta | fact
+  int64 source_number = 6;
+  uint64 source_seq = 7;
+}
+
+message MissingSerial {
+  string serial = 1;                // hex, upper case, no leading zeros
+  int32 reason = 2;                 // RFC 5280 reason code
+  int64 revoked_at_unix_micros = 3;
 }
 
 // The signer parses data before it signs: it must be one DER object of the structure the key

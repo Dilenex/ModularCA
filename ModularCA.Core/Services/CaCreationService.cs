@@ -60,6 +60,17 @@ public class CaCreationService(
         => ModularCA.Shared.Modes.InstanceModeGate.ThrowIfRefused(modeGate, ModularCA.Shared.Modes.ModeOperation.Frozen, what);
 
     /// <summary>The caller identity CA creation asks the signer under; the signer audits it with every decision.</summary>
+    /// <summary>
+    /// What the signer is told, for its journal, about a certificate signed while a CA is
+    /// created or its delegated signers are reissued: the space it belongs to and, when a
+    /// ceremony licensed it, that ceremony as what it answers. It rides the ceremony context
+    /// and is read only when that context signs a certificate.
+    /// </summary>
+    private static IssuanceOrigin CaCreationOrigin(Guid? spaceId, Guid? ceremonyId) => new(
+        Answers: new IssuanceAnswers(ModularCA.Journal.AnswersKind.None, ceremonyId?.ToString("D")),
+        Belongs: spaceId is Guid space ? new IssuanceBelongs(Space: space.ToString("D")) : null,
+        Protocol: "CaCreation");
+
     private const string SignerCaller = nameof(CaCreationService);
 
     /// <summary>
@@ -235,7 +246,7 @@ public class CaCreationService(
         // it signs only under it until it is committed to the certificate row, and is retired
         // if anything fails before then. The ceremony's id rides the context so the signer can
         // verify the approval itself.
-        var ceremony = SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, spaceId, ceremonyId: ceremonyId);
+        var ceremony = SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, spaceId, ceremonyId: ceremonyId) with { Issuance = CaCreationOrigin(spaceId, ceremonyId) };
         RequireFullModeForKeyOperation("Generating a CA key");
         var generated = await signer.GenerateKeyAsync(
             new KeySpec(keyAlgorithm, KeyAlgorithmPolicy.FormatKeySizeForProfile(keyAlgorithm, keySize)), ceremony);
@@ -429,7 +440,7 @@ public class CaCreationService(
         // ceremony context; it signs the CSR under it, and is retired if anything fails before
         // it is committed to the issued certificate. The ceremony's id rides the context so the
         // signer can verify the approval itself.
-        var ceremony = SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, spaceId, ceremonyId: ceremonyId);
+        var ceremony = SigningContext.ForScope(SignerCaller, SigningPurpose.Ceremony, spaceId, ceremonyId: ceremonyId) with { Issuance = CaCreationOrigin(spaceId, ceremonyId) };
         RequireFullModeForKeyOperation("Generating a CA key");
         var generated = await signer.GenerateKeyAsync(
             new KeySpec(keyAlgorithm, KeyAlgorithmPolicy.FormatKeySizeForProfile(keyAlgorithm, keySize)), ceremony);
@@ -1037,7 +1048,7 @@ public class CaCreationService(
         var caSigningContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, caEntity.Id, caEntity.SpaceId);
         // Reissuing a CA's delegated signers is an operator's action on an existing CA, not a
         // ceremony: the keys are generated under the infrastructure context and can never become CA keys.
-        var ceremony = SigningContext.ForCa(SignerCaller, SigningPurpose.Infrastructure, caEntity.Id, caEntity.SpaceId);
+        var ceremony = SigningContext.ForCa(SignerCaller, SigningPurpose.Infrastructure, caEntity.Id, caEntity.SpaceId) with { Issuance = CaCreationOrigin(caEntity.SpaceId, null) };
 
         // A CA's signing profile is linked by IssuerId pointing at the CA's certificate, the same
         // way the creation path resolves a parent's profile.

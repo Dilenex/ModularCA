@@ -44,7 +44,8 @@ namespace ModularCA.Keystore.Config
         public static string LoadSecondaryPassphrase(string yamlPath, string keystoreName)
         {
             var key = Path.GetFileName(keystoreName);
-            if (string.Equals(key, ModularCA.Shared.Signing.KeyRef.SshKeystore, StringComparison.Ordinal))
+            if (string.Equals(key, ModularCA.Shared.Signing.KeyRef.SshKeystore, StringComparison.Ordinal)
+                || string.Equals(key, ModularCA.Shared.Signing.KeyRef.JournalKeystore, StringComparison.Ordinal))
                 key = ModularCA.Shared.Signing.KeyRef.DefaultKeystore;
 
             // Source 1: environment variable

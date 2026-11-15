@@ -32,6 +32,8 @@ public static class ContinuityEventKind
     public const string IncarnationSourceLost = "IncarnationSourceLost";
     /// <summary>A published CRL carries a higher number than the database's counter.</summary>
     public const string PublishedCrlAhead = "PublishedCrlAhead";
+    /// <summary>Revocations the database had lost were made again from the signer's journal.</summary>
+    public const string RevocationsMergedFromJournal = "RevocationsMergedFromJournal";
 }
 
 /// <summary>The newest records the application database holds, and the latest of them.</summary>
@@ -65,9 +67,10 @@ public sealed record IncarnationCheckResult(IncarnationCase Case, InstanceContin
 /// product's own restore does, records one event and one audit row, and leaves the event as a
 /// standing notice until an administrator acknowledges it. It never stops a start.
 /// <para>
-/// There is no signer journal in this version, so nothing is replayed: certificates issued and
-/// revocations made in the lost time stay unknown until an administrator records them
-/// (<see cref="RevokedSerialService"/>). Every report says so.
+/// The revocations the signer's journal holds are made again by the merge
+/// (<see cref="ModularCA.Core.Services.Journal.JournalRevocationMerge"/>), which records an event
+/// of its own. Nothing else is replayed: certificates issued in the lost time stay unknown
+/// until an administrator adopts them (<see cref="RevokedSerialService"/>). Every report says so.
 /// </para>
 /// </summary>
 public static partial class InstanceContinuity
@@ -76,7 +79,7 @@ public static partial class InstanceContinuity
     public const string StartActor = "startup";
 
     /// <summary>What every report says about the signer's journal.</summary>
-    public const string JournalNote = "No signer journal exists in this version, so nothing was replayed.";
+    public const string JournalNote = "Revocations that the signer's journal holds are restored from it by the node; nothing else of the lost time is replayed.";
 
     /// <summary>
     /// The advisory lock two nodes starting against one database take in turn, so one of them
@@ -315,6 +318,8 @@ public static partial class InstanceContinuity
         var numbers = e.CrlNumberFloor is { } floor
             ? $" CRL numbers were raised to at least {floor} ({e.CrlCountersRaised} configuration(s) changed)."
             : string.Empty;
+        if (e.Kind == ContinuityEventKind.RevocationsMergedFromJournal)
+            return MergedMessage(e);
         return e.Kind switch
         {
             ContinuityEventKind.IncarnationSourceLost =>
@@ -326,6 +331,27 @@ public static partial class InstanceContinuity
             _ =>
                 "This instance is running from an earlier or copied state. " + edge + numbers + " " + JournalNote,
         };
+    }
+
+    private static string MergedMessage(InstanceContinuityEventEntity e)
+    {
+        var count = 0;
+        var name = "a certificate authority";
+        try
+        {
+            using var details = JsonDocument.Parse(e.DetailsJson ?? "{}");
+            if (details.RootElement.TryGetProperty("merged", out var merged) && merged.TryGetInt32(out var n))
+                count = n;
+            if (details.RootElement.TryGetProperty("caName", out var ca) && ca.ValueKind == JsonValueKind.String)
+                name = $"CA {ca.GetString()}";
+        }
+        catch (JsonException)
+        {
+            // The sentence stands without the figures.
+        }
+        return $"{count} revocation(s) were restored from the signer's journal for {name} after the database went back in time. "
+            + "The signer had them on a CRL it signed, or the node had recorded them with it, and the database no longer did. "
+            + $"Each is in the audit trail as {AuditActionType.RevocationMergedFromJournal}. Nothing else that was done in the lost time was restored.";
     }
 
     private static string FormatTime(DateTime? time)

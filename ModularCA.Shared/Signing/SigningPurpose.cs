@@ -72,4 +72,11 @@ public enum SigningPurpose
     /// <c>LegacyFile</c> and whose public key is the key's, and nothing else. It needs no ceremony.
     /// </summary>
     SshKeyMigration,
+
+    /// <summary>
+    /// Recording a fact the node asserts in the signer's journal (<c>RecordFact</c>): a
+    /// revocation, a released hold, a spent token, a restore, a changed incarnation, something
+    /// disabled. It permits that call and nothing else, and no key is used under it.
+    /// </summary>
+    JournalFact,
 }

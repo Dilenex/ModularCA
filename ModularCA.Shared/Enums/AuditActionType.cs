@@ -15,6 +15,20 @@ public static class AuditActionType
     /// </summary>
     public const string RevokedSerialRecorded = "RevokedSerialRecorded";
     /// <summary>
+    /// A revocation the signer's journal holds and the database had lost (it had gone back in
+    /// time) was made again by the node, without an administrator. Details name the CA, the
+    /// serial, the date and reason as the journal has them, what was made (a certificate
+    /// revoked, or a serial recorded with no certificate), and where the entry comes from: a
+    /// CRL's number and its journal sequence, or the sequence of a revocation the node recorded.
+    /// </summary>
+    public const string RevocationMergedFromJournal = "RevocationMergedFromJournal";
+    /// <summary>
+    /// One pass of the merge made revocations again for a CA: how many, and from which journaled
+    /// CRL. One row for each CA and pass, beside a <see cref="RevocationMergedFromJournal"/> row
+    /// for each revocation.
+    /// </summary>
+    public const string JournalRevocationMergeCompleted = "JournalRevocationMergeCompleted";
+    /// <summary>
     /// A certificate supplied from outside was verified under a CA's key and adopted as a
     /// certificate row with no known requester. Details name the serial and subject, the note,
     /// and whether it was adopted revoked (and whether that came from a tombstone).

@@ -890,6 +890,9 @@ public sealed class SshLoginNameService : ISshLoginNameService
         foreach (var (certificate, _) in certificates)
             certificate.Revoke(now);
         await _db.SaveChangesAsync(cancellationToken);
+        // For the signer's journal: each SSH CA key's revocation list as it now stands.
+        foreach (var caKeyId in certificates.Select(c => c.Certificate.SshCaKeyId).Distinct())
+            await SshCaService.QueueRevocationListFactAsync(_db, caKeyId, _logger);
 
         var keyIds = certificates.Select(c => c.Certificate.SshCaKeyId).Distinct().ToList();
         var cas = await _db.SshCaKeys.AsNoTracking().Where(k => keyIds.Contains(k.Id)).ToDictionaryAsync(k => k.Id, k => k.CertificateAuthorityId, cancellationToken);

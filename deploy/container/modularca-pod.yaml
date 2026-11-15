@@ -81,6 +81,9 @@
 #                  lost volume means keystores nobody can open.
 #   keystores      The signer's alone. The node never mounts it: a node that cannot read the
 #                  keystore cannot leak it, which is the entire point of the split.
+#   journal        The signer's alone, mounted at /opt/modularca/signer/journal: its issuance
+#                  journal (current/ and any journal set aside). Never rolled back or restored
+#                  with the other volumes; copy its sealed segments to keep them elsewhere.
 #   data           The node's alone: its backup archives, mounted at /opt/modularca/backups.
 #
 # The signer listens on the pod's loopback only. Nothing outside the pod can reach it, and the
@@ -136,6 +139,10 @@ spec:
       volumeMounts:
         - { name: signer-config, mountPath: /opt/modularca/signer }
         - { name: keystores, mountPath: /opt/modularca/keystores }
+        # The issuance journal's home, <dir>/journal, on a volume of its own, mounted on the
+        # directory itself. The signer alone mounts it. Do not put this volume back when the
+        # keystores or the database are put back: it is what remembers what they lost.
+        - { name: journal, mountPath: /opt/modularca/signer/journal }
         # With --signer-dir the signer's file logs go to <dir>/logs, which need not be kept. Its
         # keystore events do not go there: they wait in <dir>/audit-journal, in the signer-config
         # volume, until the node has recorded them.
@@ -245,6 +252,8 @@ spec:
       persistentVolumeClaim: { claimName: modularca-keystores }
     - name: data
       persistentVolumeClaim: { claimName: modularca-data }
+    - name: journal
+      persistentVolumeClaim: { claimName: modularca-journal }
     - name: signer-logs
       emptyDir: {}
     - name: signer-tmp

@@ -271,14 +271,14 @@ public static class HubLocalHost
                 HubLocalContract.Version, DateTime.UtcNow, report.Checks);
         }
 
-        /// <summary>The instance's side of <c>hello</c>: its version, operations, product version, token check and identifier.</summary>
+        /// <summary>The instance's side of <c>hello</c>: its version, operations, product version, token check, identifier and system key.</summary>
         private async Task<HubHello> HelloAsync(HubHello theirs, string tokenCheck, CancellationToken cancellationToken)
         {
             if (!HubLocalContract.IsCompatible(theirs.ContractVersion))
                 throw new Refused(400, HubLocalContract.Errors.ContractVersionUnsupported,
                     $"The hub states contract version '{theirs.ContractVersion}'; this instance speaks {HubLocalContract.Version}.", listOperations: true);
             return new HubHello(HubLocalContract.Version, HubLocalContract.Operations.All, operations.InstanceVersion, tokenCheck,
-                await operations.ReadInstanceIdAsync(cancellationToken));
+                await operations.ReadInstanceIdAsync(cancellationToken), await operations.ReadSystemKeyAsync(cancellationToken));
         }
 
         /// <summary>An operation that changes something: done once per request identifier.</summary>

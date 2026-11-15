@@ -60,6 +60,8 @@ public static class HubLocalConnection
             Inventory = cancellationToken => ReadInventoryAsync(node.Services, config, cancellationToken),
             // The identifier the start stored, read where a backup's manifest reads it.
             InstanceId = cancellationToken => InstanceIdentity.ReadAsync(ModularCA.Shared.Utils.PostgresConnection.Build(config.DB.App), cancellationToken),
+            // The system key's hash, as the keystore pin holds it: the anchor of the signer's journal.
+            SystemKey = cancellationToken => ReadSystemKeyAsync(node.Services, cancellationToken),
         };
 
         var host = HubLocalHost.Build(options, operations, builder => builder.Host.UseSerilog());
@@ -107,6 +109,18 @@ public static class HubLocalConnection
     }
 
     /// <summary>
+    /// The pin of the keystore the CA keys are in: SHA-256 of the system signing CA's public key,
+    /// hex, as the signer reads it to choose the key that signs its journal's checkpoint key.
+    /// </summary>
+    private static async Task<string?> ReadSystemKeyAsync(IServiceProvider services, CancellationToken cancellationToken)
+    {
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ModularCA.Database.ModularCADbContext>();
+        return await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.FirstOrDefaultAsync(
+            db.Keystores.Where(k => k.Name == ModularCA.Shared.Signing.KeyRef.DefaultKeystore).Select(k => k.SigningCaSpkiSha256), cancellationToken);
+    }
+
+    /// <summary>
     /// Reads the inventory in a scope of its own: rows, the state other checks keep in memory,
     /// and the backup directory's listing. Nothing is started for it. See <see cref="NodeInventoryReader"/>.
     /// </summary>
@@ -120,7 +134,8 @@ public static class HubLocalConnection
             scope.ServiceProvider.GetRequiredService<ModularCA.Core.Services.ApiCertificateProvider>(),
             BackupRestore.ResolveBackupDirectory(AppContext.BaseDirectory, config.Backup?.OutputPath),
             InstanceVersion(),
-            scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("ModularCA.HubConnection.Inventory"));
+            scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("ModularCA.HubConnection.Inventory"),
+            journal: scope.ServiceProvider.GetService<ModularCA.Core.Services.Journal.SignerJournalState>());
         return await reader.ReadAsync(cancellationToken);
     }
 

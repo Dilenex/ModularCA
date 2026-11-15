@@ -207,6 +207,11 @@ public static class AccountClaims
         user.FailedLoginAttempts = 0;
         user.LockoutEndUtc = null;
         ModularCA.Shared.Utils.PasswordExpiry.Stamp(user, policy, now);
+        // For the signer's journal: the claim token is spent, and no certificate came of it.
+        // The row id is recorded, never the token or its hash. Saved with the changes above.
+        db.QueueSignerFact(ModularCA.Journal.RecordType.SpentWithoutCertificate,
+            new ModularCA.Journal.SpentWithoutCertificatePayload(ModularCA.Journal.TokenKind.FirstAdministratorClaim, match.Id.ToString("D"),
+                ModularCA.Journal.JournalFormat.ToMicros(new DateTimeOffset(DateTime.SpecifyKind(now, DateTimeKind.Utc)))).Encode());
         // Saves the changes above with the rotated stamp and revokes the refresh tokens, inside tx.
         await UserSessionTermination.EndAllSessionsSetBasedAsync(db, user, now, ct);
         await tx.CommitAsync(ct);

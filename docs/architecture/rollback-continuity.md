@@ -269,7 +269,7 @@ between "we cannot revoke it" and "tell us the serial".
 | 3 | The VM generation ID source and its boot unit | step 2, and the open questions below | home lab | not built |
 | 4 | The published-CRL check at start | nothing | both, where CRLs are published elsewhere | built for the LDAP publisher; the read-back is not yet run against a directory |
 | 5 | One serial generator; timestamp and tag in new serials; OCSP's precise answer for the lost time | step 2 for the tag | both | not built |
-| 6 | The journal and its replay | `signer-hardening.md` Item 2 | hub and split installs; one machine only with a second location | not built |
+| 6 | The journal and its replay | `signer-hardening.md` Item 2 | hub and split installs; one machine only with a second location | the journal is written (`signer-journal.md`); its replay is not built |
 
 Steps 1, 2 and 4 are each small. Step 5 changes the format of every new serial and wants its own
 review. Step 6 is the large one and is already designed elsewhere.
@@ -414,8 +414,14 @@ Choices the text above left open:
   acknowledged on its own. It is audited as `InstanceContinuityAcknowledged`.
 - **Open question 5** is done as proposed: `--restore`, and the restore from the console, store
   the machine's incarnation in the restored database after raising the CRL numbers.
-- **Journal replay** (item 2 of section 2) does not exist. The log line, the audit row, the
-  event, the notice and the health payload all say that nothing was replayed.
+- **Journal replay** (item 2 of section 2) exists for revocations only, from 0.4.5: the node
+  makes again the revocations the signer's journal holds and the database has lost
+  (`signer-journal.md`, section 16), audits each, and leaves a notice of its own kind,
+  `RevocationsMergedFromJournal`, to be acknowledged like the others. Nothing else is
+  replayed: the log line, the audit row, the event and the notice of a changed incarnation say
+  so. The journal itself is written from 0.4.5: a changed incarnation is in it as a
+  `ContinuityEvent` and a restore as a `RestoreMarker`, and the signer holds a CRL to the
+  newest one it journaled, so a database that went back cannot quietly drop a revocation.
 
 Where the build departs from the text above:
 

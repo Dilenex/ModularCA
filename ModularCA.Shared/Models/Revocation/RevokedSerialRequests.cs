@@ -28,6 +28,37 @@ namespace ModularCA.Shared.Models.Revocation
     }
 
     /// <summary>
+    /// Records several serials as revoked with no certificate, under one note and one step-up:
+    /// for the serials a CRL the signer refused left out, which the console lists on the CA's
+    /// page. The CA comes from the route. Each serial is recorded as
+    /// <see cref="RecordRevokedSerialRequest"/> records one; the CRL is regenerated once, after
+    /// the last.
+    /// </summary>
+    public class RecordRevokedSerialsRequest
+    {
+        /// <summary>The serials, each with its reason. At most 5,000 in one request.</summary>
+        [Required, MinLength(1), MaxLength(5000)]
+        public List<RevokedSerialItem> Serials { get; set; } = new();
+
+        /// <summary>Why they are revoked without their certificates. Kept with each entry and in the audit trail.</summary>
+        [Required, MaxLength(1000)]
+        public string Note { get; set; } = string.Empty;
+    }
+
+    /// <summary>One serial of a <see cref="RecordRevokedSerialsRequest"/>.</summary>
+    public class RevokedSerialItem
+    {
+        /// <summary>The serial in hex. Separators and leading zeros are ignored.</summary>
+        [Required, MaxLength(200)]
+        public string SerialNumber { get; set; } = string.Empty;
+
+        /// <summary>The RFC 5280 reason. <c>CertificateHold</c> is refused.</summary>
+        [Required]
+        [EnumDataType(typeof(RevocationReason))]
+        public RevocationReason Reason { get; set; } = RevocationReason.Unspecified;
+    }
+
+    /// <summary>
     /// Adopts a certificate supplied from outside as a row of the CA in the route, after its
     /// signature is verified under that CA's key. The row has no profile and no known requester.
     /// </summary>

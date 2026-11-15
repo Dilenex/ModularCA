@@ -6,6 +6,32 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### 0.4.5-dev.1.5 — 2026-11-13
+
+The sixth test build of 0.4.5, and the first with the signer's journal. Since 0.4.5-dev.1.4:
+
+- **The signer keeps a journal** of every certificate, CRL and SSH certificate it signs, and of
+  the revocations and a few other facts the node tells it, in files the database's restore does
+  not touch. See "The signer's issuance journal" under Added.
+- **A database that goes back in time no longer loses revocations.** At every start the instance
+  makes again the revocations its journal holds and its database lacks, with their dates and
+  reasons, and says so.
+- **For the hub:** contract 1.2. `hello` answers `systemKey`; `inventory.read` and
+  `health.read` carry the journal.
+- **One migration, `SignerFactQueue`**, additive.
+
+**Before installing:** the journal's home is `signer/journal` under the install directory, and
+**the signer issues nothing while it cannot write there**. The installer and the package make
+it. In a pod or under compose it needs a volume of its own on the signer, which is never rolled
+back or restored with the others. A split install whose signer still reads the node's
+`config/` must be moved onto its own directory first, or given a home with
+`Signer.Journal.Directory`.
+
+To check after installing: `/health/ready` has `checks.journal` with the status `ok`, and
+`ModularCA.API --role signer --journal-head` prints one line. Nothing in this build has run on
+Linux, in a container or with an HSM, the installer's and the package's changed scripts have not
+been run, and the new console pieces have not been looked at in a browser.
+
 ### 0.4.5-dev.1.4 — 2026-11-12
 
 The fifth test build of 0.4.5. The hub ran 0.4.5-dev.1.3 in pods under SELinux: the restore lock
@@ -95,6 +121,35 @@ what the build is for.
 
 **Upgrade notes**
 
+- **A fourth migration, `SignerFactQueue`**, additive: one table, the queue of facts the node
+  hands to the signer.
+- **The signer's journal begins at the first start after the upgrade,** in `signer/journal`
+  under the install directory (`Signer.Journal.Directory`,
+  `MODULARCA__SIGNER__JOURNAL__DIRECTORY`). Nothing from before that start is in it.
+- **The signer issues nothing while the journal cannot be written.** A missing directory, a
+  full volume or a directory the service may not write stops certificates and CRLs, and
+  `checks.journal` says `unavailable` with the path. OCSP for certificates already issued goes
+  on. Give the directory disk space and watch that check.
+- **Where the directory comes from.** The installer and the `.deb` make
+  `/opt/modularca/signer/journal` for the service account. If you keep your own copy of
+  `modularca.service`, add `-/opt/modularca/signer/journal` to `ReadWritePaths=`. In a pod or
+  under compose, add a volume on `/opt/modularca/signer/journal` to the signer only.
+- **A split install whose signer still reads the node's `config/`** cannot make that
+  directory. Move the signer onto its own directory first (the deploy guide, "Two units"), or
+  set `Signer.Journal.Directory` to a directory the signer's account can write.
+- **Never put the journal back in time.** Leave its directory out of snapshots that are rolled
+  back, and do not copy an older one over it: it is what remembers when the database does not.
+  It is not in a backup archive, and a restore neither reads nor changes it.
+- **After a restore or a roll-back of the database, revocations come back by themselves.** Each
+  is audited (`RevocationMergedFromJournal`) and a notice stands until an administrator
+  acknowledges it. **Going back can no longer undo a revocation**, including one made by mistake.
+- **The signer now refuses** a CRL whose number does not rise or that leaves out a revocation it
+  signed before, and an OCSP "good" for a serial its journal has as revoked.
+  `Signer.Journal.Checks: warn` logs instead of refusing.
+- **A restore onto a host that ran another instance, and a factory reset, set the old journal
+  aside** inside the home (`set-aside-…`). Nothing removes it.
+- **The hub's contract is 1.2.** A hub that speaks 1.1 is served as before.
+- **New audit actions:** `RevocationMergedFromJournal`, `JournalRevocationMergeCompleted`.
 - **A third migration, `TighterDefaults`, and this one renames a column.** The maximum session
   lifetime is stored in hours: `SecurityPolicy.MaxSessionLifetimeDays` becomes
   `MaxSessionLifetimeHours` and the stored value is multiplied by 24, so 14 days reads 336 hours
@@ -169,6 +224,47 @@ what the build is for.
 
 **Added**
 
+- **The signer's issuance journal.** An append-only, hash-chained record, in files, of what
+  the signer signed and of certain facts the node tells it, so that a database that goes back
+  in time no longer takes the knowledge of what was issued and revoked with it. This is its
+  first version: it is written, checked and used to restore revocations. It does not yet bring
+  back certificates or anything else; that is replay, and is not built.
+  - **What is in it:** every certificate, whole; every CRL; every SSH certificate; and, as the
+    node tells it, revocations and released holds, one-time tokens spent, restores, and a CA,
+    space, account or sign-in credential being disabled. Never a key, a token or a hash of one.
+  - **Checkpoints.** About once a second the signer signs the head of the chain with a key kept
+    for that alone, which the instance's system key signs. Someone who holds only a copy of the
+    files cannot add to it unnoticed.
+  - **Where it is:** `signer/journal` under the install directory, with the live files in
+    `current/`. A volume may be mounted straight onto it. The signer only ever creates, appends
+    and renames there.
+  - **Lost revocations are made again.** After every start, and before a CA's first CRL, the
+    node asks the signer what its journal holds for that CA and makes again whatever the
+    database lacks: a certificate it knows is revoked with the original date and reason, a
+    serial it does not know is recorded as a revocation by serial alone. It only ever adds;
+    nothing is un-revoked, and a released hold or an expired certificate is not put back. It
+    believes only records a signed checkpoint covers, and only CRLs that carry the CA's own
+    signature. It runs in full, restricted and maintenance mode, and waits in DR mode until the
+    mode changes. The node is ready meanwhile.
+  - **Two checks only the signer can make.** It refuses a CRL whose number does not rise or
+    that leaves out a revocation without cause, and an OCSP "good" for a serial its journal has
+    as revoked. When a CRL stays refused because the revocations could not be restored,
+    `checks.journal` names the CA, the count and when the published CRL runs out, and the CA's
+    page lists every missing serial with an action to revoke them.
+  - **Two commands**, which need no running signer, no database and no credentials, and work on
+    a read-only copy: `--role signer --journal-head [--sealed | --sealed-from <sequence>]`
+    prints the head as one line of JSON, and `--role signer --journal-verify` checks the whole
+    chain and every signature.
+  - **Seen coming.** `checks.journal` in `/health/ready`, and "Needs attention" in the console,
+    report the journal's size, free space (`Signer.Journal.LowSpaceMiB`, `CriticalSpaceMiB`),
+    the age of the last checkpoint, verification and the merge.
+  - **For the hub, contract 1.2:** `hello.systemKey`; `journal` in `inventory.read`; the
+    journal's check in `health.read`. A backup's manifest carries the journal's head.
+  - **Cost, measured on a development machine:** at the signer alone, one caller signs 215
+    certificates a second with the journal where it signed 739 without. Verifying a journal of
+    1 GiB at start took about 7 seconds, during which the signer signs as usual. Restoring
+    100,000 lost revocations took 45 seconds of database work, and their audit records several
+    minutes more. See `docs/architecture/signer-journal.md`, "Measuring".
 - **A restore and a running node keep each other out.** A restore replaces the application
   database, and until now only the deploy guide said to stop the node first. The instance now
   enforces it, with a PostgreSQL advisory lock in the application database and no schema change.

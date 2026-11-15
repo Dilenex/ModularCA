@@ -109,6 +109,15 @@ if (ModularCA.Bootstrap.BackupManifestCommand.IsNamedIn(args))
     Environment.Exit(ModularCA.Bootstrap.BackupManifestCommand.Run(args, AppContext.BaseDirectory, Console.Out, Console.Error));
 }
 
+// --role signer --journal-head and --journal-verify: read the signer's issuance journal from its
+// files and exit. Before the startup logger for the same reasons: one line on standard output,
+// and nothing written anywhere. They open segment files for reading only and touch no database,
+// keystore or lock, so they run beside a signer that is appending and on a copy of the directory.
+if (ModularCA.API.Startup.JournalCommands.IsNamedIn(args))
+{
+    Environment.Exit(ModularCA.API.Startup.JournalCommands.Run(args, signerPaths, Console.Out, Console.Error));
+}
+
 var bootstrapConfig = new LoggerConfiguration().MinimumLevel.Information();
 switch (bootstrapConsoleFormat)
 {
@@ -1230,6 +1239,8 @@ builder.Services.AddSingleton(settingsPersistence);
 builder.Services.AddSingleton(signerSecretsState);
 // What the readiness check last learned of the signer, with its time; the hub's inventory reads it.
 builder.Services.AddSingleton<ModularCA.Core.Services.SignerContactState>();
+// What the readiness check last learned of the signer's issuance journal, for the hub's inventory.
+builder.Services.AddSingleton<ModularCA.Core.Services.Journal.SignerJournalState>();
 builder.Services.AddSingleton<ModularCA.Core.Services.AuditHashChainService>();
 
 // Entitlements are resolved once from a signed licence file and never change while the process
@@ -1320,6 +1331,15 @@ builder.Services.AddSingleton(continuityState);
 builder.Services.AddScoped<ModularCA.Core.Services.Continuity.IPublishedCrlReader, ModularCA.Core.Services.Continuity.LdapPublishedCrlReader>();
 if (!isSetupMode && controlActive)
     builder.Services.AddHostedService<ModularCA.API.Services.PublishedCrlCheckService>();
+
+// The merge of revocations from the signer's journal: after a database has gone back in time the
+// node makes again the revocations the journal holds and the database lacks. The CRL service
+// runs it for a CA before that CA's first CRL of this process; the control role also runs it for
+// every CA in the background after start, so the node is ready without waiting for it.
+builder.Services.AddSingleton<ModularCA.Core.Services.Journal.JournalMergeState>();
+builder.Services.AddSingleton<ModularCA.Core.Services.Journal.IJournalRevocationMerge, ModularCA.Core.Services.Journal.JournalRevocationMerge>();
+if (!isSetupMode && controlActive)
+    builder.Services.AddHostedService<ModularCA.Core.Services.Journal.JournalMergeService>();
 
 // The scheduler runs where a role that owns jobs runs: the control plane, or an enrollment
 // process for its protocol sweeps. A validation-only process hosts none. The lease is the
@@ -1873,7 +1893,11 @@ else
             sp.GetRequiredService<IServiceScopeFactory>(),
             sp.GetRequiredService<ModularCA.Keystore.Signing.ISignerAuditSink>(),
             sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ModularCA.Keystore.Signing.InProcessSigningService>>(),
-            sp.GetRequiredService<IKeyWrappingPassphraseProvider>()));
+            sp.GetRequiredService<IKeyWrappingPassphraseProvider>(),
+            // The issuance journal, beside the keystore files unless Signer.Journal.Directory says
+            // otherwise. In one process it survives a database restore, and it does not protect
+            // against the process itself: the same process holds the keys and the files.
+            journal: ModularCA.API.Startup.SignerRole.JournalSettings(signerPaths, config)));
 }
 
 // Key wrapping passphrase provider for HKDF-based non-RSA private key encryption. A node with
@@ -1969,6 +1993,11 @@ builder.Services.AddSingleton<SiemLogFormatter>();
 builder.Services.AddScoped<IEnrollmentTokenService, EnrollmentTokenService>();
 builder.Services.AddScoped<IEnrollmentAuthorizationService, EnrollmentAuthorizationService>();
 builder.Services.AddHostedService<ModularCA.API.Services.WhitelistRewarmService>();
+// The facts the node asserts in the signer's issuance journal (a revocation, a released hold,
+// something disabled, a restore) wait in a table, written in the same save as the change each
+// describes. Every process that has a signer offers them to it and removes what it took.
+if (!isSetupMode && !ingressOnly)
+    builder.Services.AddHostedService<ModularCA.Core.Services.Journal.SignerFactDrain>();
 builder.Services.AddScoped<ModularCA.Shared.Interfaces.IEnrollmentPrincipalAuthorizer, ModularCA.Auth.Authorization.EnrollmentPrincipalAuthorizer>();
 builder.Services.AddScoped<ModularCA.Auth.Services.ILdapAuthService, ModularCA.Auth.Services.LdapAuthService>();
 builder.Services.AddScoped<ICtSubmissionService, CtSubmissionService>();
@@ -2027,7 +2056,11 @@ var healthChecks = builder.Services.AddHealthChecks()
     .AddCheck<ModularCA.API.HealthChecks.ContinuityHealthCheck>("continuity")
     // The lock that keeps a restore and this node apart: unhealthy while a restore runs beside
     // this process, and after one has run until the process is restarted.
-    .AddCheck<ModularCA.API.HealthChecks.RestoreLockHealthCheck>("restore-lock");
+    .AddCheck<ModularCA.API.HealthChecks.RestoreLockHealthCheck>("restore-lock")
+    // The signer's issuance journal: its head, its size, the room on its volume and the age of
+    // its last checkpoint. Degraded when it cannot be written or its volume is nearly full,
+    // since issuance stops with it; never unhealthy.
+    .AddCheck<ModularCA.API.HealthChecks.JournalHealthCheck>("journal");
 // A node whose remote signer did not answer at start reads the wrapped secrets in the background
 // once it does, without a restart, and reports itself not ready until then.
 if (signerSecretsState.Pending)

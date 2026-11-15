@@ -36,8 +36,13 @@ RUNTIME_DIRS=(config keystores logs backups)
 # Parts of the archive that are not copied into $APP_DIR.
 NOT_INSTALLED=(deploy share install.sh README-DEPLOY.md)
 # The split signer's own directory (--signer-dir in modularca-signer.service). The operator creates
-# it for modularca-signer; this script never creates, copies into, chowns or chmods it.
+# it for modularca-signer; this script never copies into, chowns or chmods it, and on a split
+# install never creates it.
 SIGNER_DIR=signer
+# The home of the signer's issuance journal, under the signer's directory in every layout. On a
+# split install it is the signer's to make. Where one process holds the keys, prepare_journal_home
+# makes it for the service account.
+JOURNAL_HOME=$SIGNER_DIR/journal
 STAGE_PARENT=${APP_DIR%/*}
 SKIP_UPGRADE_CHECK=0
 STAGE=
@@ -173,6 +178,20 @@ prepare_runtime_dirs() {
     done
 }
 
+# Where one process holds the keys, makes the journal's home, $APP_DIR/signer/journal, for the
+# service account, owner-only; the unit lists it in ReadWritePaths=. signer/ around it is made
+# root's, so the service can write the journal's home and nothing else there. A home that exists,
+# whoever owns it, is left exactly as it is: a volume may be mounted on it. On a split install
+# nothing is made: signer/ is the signer's own directory, and its signer makes journal/ in it.
+prepare_journal_home() {
+    local parent=$APP_DIR/$SIGNER_DIR home=$APP_DIR/$JOURNAL_HOME
+    is_split_install && return 0
+    [[ -L $parent || -L $home ]] && return 0
+    [[ -e $parent ]] || install -d -o root -g root -m 0755 "$parent"
+    [[ -d $parent ]] || return 0
+    [[ -e $home ]] || install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0700 "$home"
+}
+
 # Config examples are only seeded where absent, never over an operator's real config.
 seed_examples() {
     local f dest
@@ -213,6 +232,10 @@ check_signer_dir() {
         return 0
     fi
     owner=$(stat -c %U "$path")
+    # Where one process holds the keys, signer/ is root's and holds only the journal's home.
+    if [[ $owner == root ]] && ! is_split_install; then
+        return 0
+    fi
     if [[ $owner == "$SIGNER_USER" ]]; then
         note "signer directory: $path belongs to $SIGNER_USER and is left as it is"
     else
@@ -228,6 +251,7 @@ set_ownership() {
     fi
     set_program_ownership
     prepare_runtime_dirs
+    prepare_journal_home
     seed_examples
     warn_leftovers
     check_signer_dir

@@ -210,7 +210,16 @@ public class MtlsController : ControllerBase
         // signer judges whether this CA's key signs a certificate for this CA and space, and
         // records the decision, before any bytes are signed.
         var caKey = new KeyRef(caCertEntity.CertificateId);
-        var signingContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, targetCa.Id, targetCa.SpaceId);
+        var signingContext = SigningContext.ForCa(SignerCaller, SigningPurpose.Certificate, targetCa.Id, targetCa.SpaceId) with
+        {
+            // For the signer's journal record: a sign-in certificate the account asked for itself.
+            Issuance = new IssuanceOrigin(
+                Answers: new IssuanceAnswers(ModularCA.Journal.AnswersKind.None, null),
+                Belongs: new IssuanceBelongs(Space: targetCa.SpaceId?.ToString("D"),
+                    OwnerKind: ModularCA.Journal.OwnerKind.User, Owner: userId.Value.ToString("D")),
+                Protocol: "MtlsCredential",
+                Requester: userId.Value.ToString("D")),
+        };
 
         // Generate RSA-2048 keypair for the client cert
         var keyGenParams = new Org.BouncyCastle.Crypto.Parameters.RsaKeyGenerationParameters(

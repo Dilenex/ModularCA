@@ -15,7 +15,7 @@ namespace ModularCA.Database;
 /// rows for a user apply <c>SpaceFence</c> explicitly.
 /// </para>
 /// </summary>
-public class ModularCADbContext : DbContext
+public partial class ModularCADbContext : DbContext
 {
     /// <summary>
     /// Name of the shadow property that carries the PostgreSQL <c>xmin</c> optimistic-concurrency
@@ -1214,20 +1214,44 @@ public class ModularCADbContext : DbContext
     // is identified.
     // ===========================================================================================
 
-    /// <summary>Saves, after <see cref="StampDefaultExpiryWarnings"/> and the CERT-FK-DIAG trace.</summary>
+    /// <summary>
+    /// Whether this context queues no facts for the signer's journal from its tracked changes.
+    /// Set by code that writes a database whose schema may be older than this build, which is
+    /// what a restore does to the database it has just restored: the queue's table may not be
+    /// there yet.
+    /// </summary>
+    public bool SuppressSignerFacts { get; set; }
+
+    /// <summary>
+    /// Saves, after <see cref="StampDefaultExpiryWarnings"/>, the CERT-FK-DIAG trace and the
+    /// facts the changes amount to for the signer's journal
+    /// (<see cref="QueueSignerFactsForTrackedChanges"/>), which are written in this same save.
+    /// </summary>
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         StampDefaultExpiryWarnings();
         LogCertFkCorruptionDiagnostics();
-        return base.SaveChanges(acceptAllChangesOnSuccess);
+        var queued = !SuppressSignerFacts && QueueSignerFactsForTrackedChanges();
+        var saved = base.SaveChanges(acceptAllChangesOnSuccess);
+        if (queued)
+            SignalSignerFactQueued();
+        return saved;
     }
 
-    /// <summary>Saves, after <see cref="StampDefaultExpiryWarnings"/> and the CERT-FK-DIAG trace.</summary>
-    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Saves, after <see cref="StampDefaultExpiryWarnings"/>, the CERT-FK-DIAG trace and the
+    /// facts the changes amount to for the signer's journal
+    /// (<see cref="QueueSignerFactsForTrackedChanges"/>), which are written in this same save.
+    /// </summary>
+    public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
         StampDefaultExpiryWarnings();
         LogCertFkCorruptionDiagnostics();
-        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        var queued = !SuppressSignerFacts && QueueSignerFactsForTrackedChanges();
+        var saved = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        if (queued)
+            SignalSignerFactQueued();
+        return saved;
     }
 
     /// <summary>

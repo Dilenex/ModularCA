@@ -171,6 +171,30 @@ public sealed class NodeHubOperations(
         return reading.Id;
     }
 
+    /// <summary>
+    /// Reads the SHA-256 of the system key's public key: the pin the instance keeps for the
+    /// keystore its CA keys are in, which names the key that signs the keystore files and, for
+    /// the signer's journal, the checkpoint key. Set by the node when it opens the connection;
+    /// while it is null <c>hello</c> carries no <c>systemKey</c>.
+    /// </summary>
+    public Func<CancellationToken, Task<string?>>? SystemKey { get; init; }
+
+    /// <inheritdoc/>
+    /// <remarks>Read from the database each time: a replaced system key is answered at the next <c>hello</c>.</remarks>
+    public async Task<string?> ReadSystemKeyAsync(CancellationToken cancellationToken)
+    {
+        if (SystemKey == null) return null;
+        try
+        {
+            var key = (await SystemKey(cancellationToken))?.Trim().ToLowerInvariant();
+            return key is { Length: 64 } && key.All(Uri.IsHexDigit) ? key : null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
     /// <inheritdoc/>
     public Task<HubHealthReport> ReadHealthAsync(CancellationToken cancellationToken) => health(cancellationToken);
 

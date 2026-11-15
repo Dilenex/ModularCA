@@ -125,6 +125,7 @@ public sealed class RestoreExclusionTests
     /// </summary>
     [Theory]
     [InlineData("BackupManifestCommand.Run(")]
+    [InlineData("JournalCommands.Run(")]
     [InlineData("RestoreCommand.RunAsync(")]
     [InlineData("SchemaStartup.CheckOwnershipAsync(")]
     [InlineData("UpgradeCheckCommand.RunAsync(")]

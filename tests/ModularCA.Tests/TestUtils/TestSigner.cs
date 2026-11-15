@@ -31,11 +31,12 @@ internal static class TestSigner
     /// An in-process signer over <paramref name="keystore"/>, classifying keys and writing its
     /// audit through the named in-memory database.
     /// </summary>
-    public static InProcessSigningService Over(ISignerKeyRegistry keystore, string databaseName, InMemorySignerKeyPersistence? persistence = null)
+    public static InProcessSigningService Over(ISignerKeyRegistry keystore, string databaseName, InMemorySignerKeyPersistence? persistence = null,
+        SignerJournal? journal = null)
     {
         var scopes = ScopesFor(databaseName);
         return new InProcessSigningService(keystore, scopes, new DatabaseSignerAuditSink(scopes),
-            persistence ?? new InMemorySignerKeyPersistence(), NullLogger<InProcessSigningService>.Instance);
+            persistence ?? new InMemorySignerKeyPersistence(), NullLogger<InProcessSigningService>.Instance, journal: journal);
     }
 
     /// <summary>

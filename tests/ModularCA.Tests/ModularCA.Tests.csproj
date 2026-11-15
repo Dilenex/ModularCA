@@ -62,6 +62,7 @@
          under test is reachable without per-suite csproj edits. ModularCA.API is intentionally
          omitted — it's the host executable, not a library; controller tests will get a separate
          ModularCA.IntegrationTests project with WebApplicationFactory<>. -->
+    <ProjectReference Include="..\..\ModularCA.Journal\ModularCA.Journal.csproj" />
     <ProjectReference Include="..\..\ModularCA.Ssh\ModularCA.Ssh.csproj" />
     <ProjectReference Include="..\..\ModularCA.Shared\ModularCA.Shared.csproj" />
     <ProjectReference Include="..\..\ModularCA.Database\ModularCA.Database.csproj" />

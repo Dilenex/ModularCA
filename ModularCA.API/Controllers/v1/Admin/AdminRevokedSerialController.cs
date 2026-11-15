@@ -30,8 +30,120 @@ public class AdminRevokedSerialController(
     ModularCADbContext db,
     ICurrentUserService currentUser,
     IAuditService audit,
-    ISecurityAlertService alerts) : ControllerBase
+    ISecurityAlertService alerts,
+    ModularCA.Shared.Signing.ISigningService signer) : ControllerBase
 {
+    /// <summary>
+    /// Lists every serial the signer found missing from the last full CRL it was offered for the
+    /// CA and therefore refused to sign: serials that the newest CRL in the signer's journal
+    /// lists as revoked, that the database now leaves out, and that nothing excuses (the serial
+    /// was not on hold, and it is not shown to be expired). That is what a database taken back
+    /// in time leaves: the revocations made in the lost time. Each entry is in the form
+    /// <c>POST revoked-serials</c> takes (<c>serialNumber</c>, <c>reason</c>), with the date the
+    /// journaled CRL gives; recording them there, or revoking the certificates where the
+    /// database still has them, lets the next CRL be signed.
+    /// </summary>
+    /// <remarks>
+    /// The list is the signer's, as of the last CRL it refused (<c>refusedAtUtc</c>). It is
+    /// empty, with <c>refused</c> false, when no refusal stands: the signer has signed a full
+    /// CRL for the CA since, never refused one, or has restarted since it did, in which case
+    /// the CA's next CRL generation brings the list back if it still holds.
+    /// </remarks>
+    [HttpGet("revoked-serials/missing-from-crl")]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Ca, "caId")]
+    public async Task<IActionResult> MissingFromCrl(Guid caId)
+    {
+        var missing = await signer.JournalMissingRevocationsAsync(caId, HttpContext.RequestAborted);
+        // Which of them the CA still has the certificate for: those are revoked on the certificate's own page.
+        IReadOnlySet<string> held = new HashSet<string>();
+        if (missing is { Serials.Count: > 0 } && revokedSerials != null)
+            held = await revokedSerials.HeldAsync(caId, missing.Serials.Select(s => s.Serial).ToList(), HttpContext.RequestAborted);
+        return Ok(new
+        {
+            caId,
+            refused = missing != null,
+            refusedAtUtc = missing?.RefusedAtUtc,
+            journaledCrlNumber = missing?.JournaledCrlNumber,
+            count = missing?.Serials.Count ?? 0,
+            consolePath = MissingFromCrlConsolePath(caId),
+            serials = (missing?.Serials ?? []).Select(s => new
+            {
+                serialNumber = s.Serial,
+                reason = Enum.IsDefined(typeof(RevocationReason), s.Reason) ? ((RevocationReason)s.Reason).ToString() : RevocationReason.Unspecified.ToString(),
+                reasonCode = s.Reason,
+                revocationDate = s.RevokedAtUtc,
+                certificateHeld = held.Contains(s.Serial),
+            }),
+        });
+    }
+
+    /// <summary>
+    /// The page of the console that lists the serials missing from a refused CRL of CA
+    /// <paramref name="caId"/> and offers to revoke them: the CA's own page, at the section
+    /// "Certificates This CA Does Not Hold". A path on this instance, for a link from elsewhere.
+    /// </summary>
+    public static string MissingFromCrlConsolePath(Guid caId) => $"/admin/authorities/manage/{caId:D}#missing-from-crl";
+
+    /// <summary>
+    /// Records several serials as revoked for the CA with no certificate row, under one note and
+    /// one step-up, and regenerates the CA's CRL once: the "revoke a serial number alone" action
+    /// for every serial a refused CRL left out. Each serial is recorded, audited and alerted as
+    /// <see cref="Record"/> does one. A serial the CA holds a certificate for, one already
+    /// recorded, and one that is not a serial are answered in <c>refused</c> with the reason and
+    /// do not stop the others; 400 for a missing note.
+    /// </summary>
+    [HttpPost("revoked-serials/bulk")]
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Restriction)]
+    [RequireCaCapability(Capabilities.CertRevoke, CaTarget.Ca, "caId")]
+    [RequireStepUp(StepUpOps.RevokeSerial, "caId")]
+    public async Task<IActionResult> RecordMany(Guid caId, [FromBody] RecordRevokedSerialsRequest request)
+    {
+        await currentUser.EnsureLoadedAsync();
+        if (currentUser.User == null) return Unauthorized();
+        var spaceId = await SpaceOfAsync(caId);
+
+        IReadOnlyList<RevokedSerialService.TombstoneOutcome> outcomes;
+        long? crlNumber;
+        try
+        {
+            (outcomes, crlNumber) = await revokedSerials.RecordTombstonesAsync(caId,
+                request.Serials.Select(s => (s.SerialNumber, s.Reason)).ToList(), request.Note,
+                currentUser.User.Id, currentUser.User.Username, HttpContext.RequestAborted);
+        }
+        catch (Exception ex)
+        {
+            await TryAuditFailureAsync(AuditActionType.RevokedSerialRecorded, "RevokedSerial", null, new { Count = request.Serials.Count }, ex, caId, spaceId);
+            throw;
+        }
+
+        foreach (var outcome in outcomes)
+        {
+            if (outcome.Tombstone is { } t)
+                await audit.LogAsync(AuditActionType.RevokedSerialRecorded, currentUser.User.Id, currentUser.User.Username,
+                    "RevokedSerial", t.SerialNumber,
+                    new { t.SerialNumber, t.IssuerDN, Reason = t.RevocationReason, t.InvalidityDate, t.ListedUntil, t.Note, CrlNumber = crlNumber, Bulk = true },
+                    HttpContext.Connection.RemoteIpAddress?.ToString(), certificateAuthorityId: caId, spaceId: spaceId);
+            else
+                await audit.LogAsync(AuditActionType.RevokedSerialRecorded, currentUser.User.Id, currentUser.User.Username,
+                    "RevokedSerial", outcome.SerialNumber, new { outcome.SerialNumber, Bulk = true },
+                    HttpContext.Connection.RemoteIpAddress?.ToString(), success: false, errorMessage: outcome.Refusal,
+                    certificateAuthorityId: caId, spaceId: spaceId);
+        }
+        var recorded = outcomes.Where(o => o.Tombstone != null).ToList();
+        if (recorded.Count > 0)
+            _ = alerts.RaiseAlertAsync("CertificateRevoked", AlertSeverity.Critical,
+                $"{recorded.Count} serial(s) recorded as revoked without a certificate by {currentUser.User.Username}",
+                new { CertificateAuthorityId = caId, Count = recorded.Count });
+
+        return Ok(new
+        {
+            message = $"{recorded.Count} serial(s) recorded as revoked.",
+            recorded = recorded.Select(o => new { serialNumber = o.Tombstone!.SerialNumber, reason = o.Tombstone.RevocationReason, listedUntil = o.Tombstone.ListedUntil }),
+            refused = outcomes.Where(o => o.Tombstone == null).Select(o => new { serialNumber = o.SerialNumber, reason = o.Refusal }),
+            crlNumber,
+        });
+    }
+
     /// <summary>
     /// Lists the serials recorded as revoked for the CA with no certificate row, newest first,
     /// each with its reason, dates, note, who recorded it and until when the CRL lists it.

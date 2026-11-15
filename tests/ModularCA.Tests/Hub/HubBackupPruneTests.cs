@@ -120,8 +120,8 @@ public sealed class HubBackupPruneTests : IAsyncLifetime
 
         var theirs = await client.HelloAsync();
 
-        Assert.Equal("1.1", HubLocalContract.Version);
-        Assert.Equal("1.1", theirs.ContractVersion);
+        Assert.Equal("1.2", HubLocalContract.Version);
+        Assert.Equal("1.2", theirs.ContractVersion);
         Assert.Contains("backup.prune", theirs.Operations);
         Assert.Equal("backup.prune", HubLocalContract.Operations.All[^1]);
         Assert.Equal("/hub/v1/backup/prune", HubLocalContract.Paths.BackupPrune);
@@ -157,7 +157,7 @@ public sealed class HubBackupPruneTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.OK, hello.StatusCode);
         var answer = JsonSerializer.Deserialize<HubHello>(await hello.Content.ReadAsStringAsync(), HubLocalContract.Json)!;
-        Assert.Equal("1.1", answer.ContractVersion);
+        Assert.Equal("1.2", answer.ContractVersion);
         Assert.Contains("backup.prune", answer.Operations);
         Assert.Equal(HttpStatusCode.OK, mode.StatusCode);
         Assert.Equal(HttpStatusCode.OK, pruned.StatusCode);

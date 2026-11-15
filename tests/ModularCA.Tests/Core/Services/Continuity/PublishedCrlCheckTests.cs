@@ -129,7 +129,7 @@ public sealed class PublishedCrlCheckTests
         var details = JsonSerializer.Serialize(audit.Details);
         Assert.Contains("published-crl", details);
         Assert.Contains("\"PublishedNumber\":64", details);
-        Assert.Contains("nothing was replayed", details);
+        Assert.Contains("nothing else of the lost time is replayed", details);
 
         // Reported once: the same directory read at the next start is no longer ahead.
         Assert.Empty(await w.Check(w.Published(64)));

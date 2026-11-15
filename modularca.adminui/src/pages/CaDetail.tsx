@@ -15,6 +15,7 @@ import { advisoriesOf, openEnrollmentNotice } from './protocolAdvisories';
 import { keyAdvisoriesOf } from './tighterDefaults';
 import InfrastructureProfiles from '../components/InfrastructureProfiles';
 import RevokedSerialsPanel from '../components/RevokedSerialsPanel';
+import MissingFromCrlPanel from '../components/MissingFromCrlPanel';
 import { useAuth } from '../context/AuthContext';
 
 function formatDate(d: string | null) {
@@ -385,7 +386,11 @@ const CaDetail: React.FC = () => {
                     a CRL to put a serial on, and only cert.revoke on this CA may do it. */}
                 {cert && ca.id && can(Capabilities.CertRevoke, ca.id) && (
                     <DetailSection title="Certificates This CA Does Not Hold">
-                        <RevokedSerialsPanel caId={ca.id} caName={ca.name || ca.subjectDN} />
+                        <div className="space-y-4">
+                            {/* Only while the signer refuses this CA's CRL: the serials it left out, to revoke again. */}
+                            <MissingFromCrlPanel caId={ca.id} caName={ca.name || ca.subjectDN} />
+                            <RevokedSerialsPanel caId={ca.id} caName={ca.name || ca.subjectDN} />
+                        </div>
                     </DetailSection>
                 )}
 

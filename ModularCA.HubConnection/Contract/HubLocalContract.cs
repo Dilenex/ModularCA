@@ -32,7 +32,7 @@ namespace ModularCA.HubConnection.Contract;
 public static class HubLocalContract
 {
     /// <summary>This build's contract version.</summary>
-    public const string Version = "1.1";
+    public const string Version = "1.2";
 
     /// <summary>The major version, which both sides must share.</summary>
     public const int MajorVersion = 1;
@@ -176,8 +176,16 @@ public static class HubLocalContract
 /// out, when the instance does not know it; that is "not known", never a mismatch. Null in the
 /// hub's request. An instance of a build before the field existed leaves it out as well.
 /// </param>
+/// <param name="SystemKey">
+/// SHA-256 of the public key (SubjectPublicKeyInfo) of the instance's system key, 64 lower-case
+/// hex digits (since <c>1.2</c>). It is the value the signer's journal carries beside each
+/// checkpoint key, and the anchor a verifier of the journal starts from. Unlike
+/// <paramref name="InstanceId"/> it follows the key: an instance whose system key was replaced
+/// answers the new key's hash. Null, which the wire leaves out, when the instance does not
+/// know it. Null in the hub's request.
+/// </param>
 public sealed record HubHello(string ContractVersion, IReadOnlyList<string> Operations, string? InstanceVersion = null, string? TokenCheck = null,
-    string? InstanceId = null);
+    string? InstanceId = null, string? SystemKey = null);
 
 /// <summary>The mode and who set it.</summary>
 /// <param name="Mode"><c>full</c>, <c>restricted</c> or <c>dr</c>.</param>
@@ -254,6 +262,11 @@ public sealed record HubError(string Error, string Message, string ContractVersi
 /// <param name="NewestBackup">The newest backup archive in the instance's backup directory; null when there is none or the directory cannot be read.</param>
 /// <param name="FailingJobs">Every scheduled job whose last run failed or timed out; empty when none did.</param>
 /// <param name="CertificateAuthorities">Every X.509 CA that is not deleted. SSH CAs are not listed.</param>
+/// <param name="Journal">
+/// The signer's issuance journal (since <c>1.2</c>): its size, the free space on its volume and
+/// the age of its last checkpoint, as the readiness check last read them. Null when the
+/// readiness check has not run since this process started, or the signer keeps no journal.
+/// </param>
 public sealed record HubInventory(
     string InstanceVersion,
     HubInventorySchema Schema,
@@ -261,7 +274,38 @@ public sealed record HubInventory(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] HubInventoryWebTlsCertificate? WebTlsCertificate,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] HubInventoryBackup? NewestBackup,
     IReadOnlyList<HubInventoryFailingJob> FailingJobs,
-    IReadOnlyList<HubInventoryCertificateAuthority> CertificateAuthorities);
+    IReadOnlyList<HubInventoryCertificateAuthority> CertificateAuthorities,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] HubInventoryJournal? Journal = null);
+
+/// <summary>
+/// The signer's issuance journal as the instance knew it the last time its readiness check
+/// asked the signer (since <c>1.2</c>): how large it is, how much room its volume has, and how
+/// old its last checkpoint is. Null in the inventory when the readiness check has not asked
+/// since this process started, or the signer keeps no journal.
+/// </summary>
+/// <param name="Available">Whether the journal could take a record. False means the signer issues no certificate and signs no CRL.</param>
+/// <param name="Seq">The sequence of the last record flushed.</param>
+/// <param name="SizeBytes">The bytes the journal's segments take.</param>
+/// <param name="FreeBytes">The free space on the journal's volume; null when the signer could not read it.</param>
+/// <param name="LastCheckpointAtUtc">When the newest checkpoint was written; null when this run of the signer has written none.</param>
+/// <param name="LastCheckpointAgeSeconds">Its age when the instance asked; null with <paramref name="LastCheckpointAtUtc"/>.</param>
+/// <param name="CheckedAtUtc">When the instance asked the signer: the values are as old as that.</param>
+/// <param name="SetAsideJournals">
+/// How many journals lie set aside in the journal's home: <c>set-aside-instance-…</c> (another
+/// instance's, after a restore of this instance's archive onto its host) and
+/// <c>set-aside-reset-…</c> (after a factory reset). Nothing prunes them.
+/// </param>
+/// <param name="SetAsideBytes">The bytes their files take, on the journal's volume.</param>
+public sealed record HubInventoryJournal(
+    bool Available,
+    ulong Seq,
+    long SizeBytes,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] long? FreeBytes,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] DateTime? LastCheckpointAtUtc,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.Never)] long? LastCheckpointAgeSeconds,
+    DateTime CheckedAtUtc,
+    int SetAsideJournals = 0,
+    long SetAsideBytes = 0);
 
 /// <summary>The schema version of the instance: the migrations applied to each of its databases.</summary>
 /// <param name="Application">The application database; null when its migration history could not be read.</param>

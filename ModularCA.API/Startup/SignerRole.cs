@@ -216,7 +216,15 @@ public static class SignerRole
                     sp.GetRequiredService<ISignerAuditSink>(),
                     sp.GetRequiredService<ILogger<InProcessSigningService>>(),
                     sp.GetRequiredService<IKeyWrappingPassphraseProvider>(),
-                    failClosedOnAuditFailure: true));
+                    failClosedOnAuditFailure: true,
+                    journal: JournalSettings(paths, config)));
+                // Made at start, not at the first request: the checkpoint key is loaded or made
+                // then, a new journal gets its Genesis, the wait for a restore marker is counted
+                // from the start, and a journal that cannot be opened (another instance's that
+                // cannot be set aside, a chain that does not hold) is said in the log before
+                // anything asks for a signature. Over an existing journal the start writes
+                // nothing to the directory: its segment begins with the first record.
+                builder.Services.AddHostedService<SignerAtStart>();
             });
         }
         catch (ArgumentException ex)
@@ -241,6 +249,36 @@ public static class SignerRole
         {
             hsm?.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Where the signer's issuance journal is and how its checks behave, from the signer's
+    /// settings: <c>Signer.Journal.Directory</c> (overridden by
+    /// <c>MODULARCA__SIGNER__JOURNAL__DIRECTORY</c>, which the environment overlay has applied
+    /// to <paramref name="config"/>) resolved against the installation directory,
+    /// <c>Signer.Journal.Checks</c>, the two free-space warning levels
+    /// (<c>Signer.Journal.LowSpaceMiB</c>, <c>Signer.Journal.CriticalSpaceMiB</c>), the product
+    /// version, and the hash of the incarnation value this process was started with.
+    /// </summary>
+    public static SignerJournalSettings JournalSettings(SignerPaths paths, SystemConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        ArgumentNullException.ThrowIfNull(config);
+        return new SignerJournalSettings(
+            paths.JournalDirectory(config.Signer),
+            config.Signer.Journal.Enforces,
+            ModularCA.Bootstrap.BackupManifestCommand.ProductVersion(),
+            InstanceIncarnationHash.FromEnvironment(),
+            LowSpaceBytes: Math.Max(0, (long)config.Signer.Journal.LowSpaceMiB) << 20,
+            CriticalSpaceBytes: Math.Max(0, (long)config.Signer.Journal.CriticalSpaceMiB) << 20);
+    }
+
+    /// <summary>Resolves the signer when the host starts, so that it and its journal exist before the first call.</summary>
+    private sealed class SignerAtStart(ISigningService signer) : IHostedService
+    {
+        public Task StartAsync(CancellationToken cancellationToken) => signer.HealthAsync(cancellationToken);
+
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     /// <summary>

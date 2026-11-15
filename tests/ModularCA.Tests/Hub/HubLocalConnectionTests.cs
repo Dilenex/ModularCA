@@ -62,6 +62,7 @@ public sealed class HubLocalConnectionTests : IAsyncLifetime
 
     /// <summary>What the stand-in for the identifier's reader answers: not known, until a test says otherwise.</summary>
     private InstanceIdReading _instanceId = new(null, false);
+    private string? _systemKey;
 
     /// <summary>The inventory the stand-in reader answers: every optional part has nothing to say.</summary>
     private static readonly HubInventory EmptyInventory = new(
@@ -102,6 +103,7 @@ public sealed class HubLocalConnectionTests : IAsyncLifetime
         {
             Inventory = _ => { Interlocked.Increment(ref _inventoryReads); return Task.FromResult(EmptyInventory); },
             InstanceId = _ => Task.FromResult(_instanceId),
+            SystemKey = _ => Task.FromResult(_systemKey),
         };
     }
 
@@ -455,7 +457,7 @@ public sealed class HubLocalConnectionTests : IAsyncLifetime
 
         var theirs = await client.HelloAsync();
 
-        Assert.Equal("1.1", theirs.ContractVersion);
+        Assert.Equal("1.2", theirs.ContractVersion);
         Assert.Equal(HubLocalContract.Operations.All, theirs.Operations);
         Assert.Equal("0.4.5-test", theirs.InstanceVersion);
     }
@@ -476,6 +478,40 @@ public sealed class HubLocalConnectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Hello_carries_the_system_key_since_contract_1_2()
+    {
+        const string systemKey = "0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e";
+        _instanceId = new InstanceIdReading(InstanceId, true);
+        _systemKey = systemKey.ToUpperInvariant();
+        await StartAsync();
+        using var client = Client();
+
+        var theirs = await client.HelloAsync();
+        // A hub that states 1.1 is served as before, and is answered the same members.
+        var wire = await RawHelloAsync();
+
+        Assert.Equal("1.2", HubLocalContract.Version);
+        Assert.Equal("1.2", theirs.ContractVersion);
+        Assert.Equal(systemKey, theirs.SystemKey);
+        Assert.Equal(systemKey, wire.GetProperty("systemKey").GetString());
+        // One member was added to the answer and nothing else; no operation was added.
+        Assert.Equal(["contractVersion", "instanceId", "instanceVersion", "operations", "systemKey", "tokenCheck"],
+            wire.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal));
+        Assert.Equal(["hello", "health.read", "mode.read", "mode.set", "backup.create", "affiliation-token.replace", "inventory.read", "backup.prune"], theirs.Operations);
+        // It follows the key: a replaced system key is answered at the next hello.
+        _systemKey = new string('b', 64);
+        Assert.Equal(new string('b', 64), (await client.HelloAsync()).SystemKey);
+        // Not known, or not a SHA-256: left out, never a guess.
+        _systemKey = null;
+        Assert.Null((await client.HelloAsync()).SystemKey);
+        Assert.False((await RawHelloAsync()).TryGetProperty("systemKey", out _));
+        _systemKey = "not a hash";
+        Assert.Null((await client.HelloAsync()).SystemKey);
+        // The hub's own hello does not carry one.
+        Assert.Null(new HubHello(HubLocalContract.Version, HubLocalContract.Operations.All).SystemKey);
+    }
+
+    [Fact]
     public async Task Hello_carries_the_instance_identifier_and_the_contract_stays_1_1()
     {
         _instanceId = new InstanceIdReading(InstanceId, true);
@@ -486,8 +522,8 @@ public sealed class HubLocalConnectionTests : IAsyncLifetime
         var wire = await RawHelloAsync();
 
         Assert.Equal(InstanceId, theirs.InstanceId);
-        Assert.Equal("1.1", theirs.ContractVersion);
-        Assert.Equal("1.1", HubLocalContract.Version);
+        Assert.Equal("1.2", theirs.ContractVersion);
+        Assert.Equal("1.2", HubLocalContract.Version);
         Assert.Equal(InstanceId, wire.GetProperty("instanceId").GetString());
         // One field was added to the answer and nothing else.
         Assert.Equal(["contractVersion", "instanceId", "instanceVersion", "operations", "tokenCheck"],
@@ -543,7 +579,7 @@ public sealed class HubLocalConnectionTests : IAsyncLifetime
         }
         Assert.StartsWith("HTTP/1.1 400", answer);
         Assert.Contains(HubLocalContract.Errors.ContractVersionUnsupported, answer);
-        Assert.Contains("\"contractVersion\":\"1.1\"", answer);
+        Assert.Contains("\"contractVersion\":\"1.2\"", answer);
         Assert.Equal(HubLocalContract.Errors.ContractVersionUnsupported, Assert.Single(_audit.Entries).Error);
     }
 
@@ -787,7 +823,7 @@ public sealed class HubLocalConnectionTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, raw.StatusCode);
         Assert.Equal(
             "{\"instanceVersion\":\"0.4.5-test\",\"schema\":{\"application\":{\"newestMigration\":\"20261101000000_Newest\",\"appliedCount\":3},\"audit\":null},"
-            + "\"signer\":null,\"webTlsCertificate\":null,\"newestBackup\":null,\"failingJobs\":[],\"certificateAuthorities\":[]}",
+            + "\"signer\":null,\"webTlsCertificate\":null,\"newestBackup\":null,\"failingJobs\":[],\"certificateAuthorities\":[],\"journal\":null}",
             await raw.Content.ReadAsStringAsync());
         Assert.Equal("inventory.read", HubLocalHost.OperationOf("GET", "/hub/v1/inventory"));
         // It is a read: it takes no request identifier and is never replayed from the ledger.
@@ -816,7 +852,7 @@ public sealed class HubLocalConnectionTests : IAsyncLifetime
         Assert.StartsWith("HTTP/1.1 200", inventory);
         Assert.Contains("\"certificateAuthorities\":[]", inventory);
         Assert.StartsWith("HTTP/1.1 200", answer);
-        Assert.Contains("\"contractVersion\":\"1.1\"", answer);
+        Assert.Contains("\"contractVersion\":\"1.2\"", answer);
         Assert.Contains("\"inventory.read\"", answer);
         Assert.DoesNotContain(_audit.Entries, e => e.Action == AuditActionType.HubRequestRefused);
     }
@@ -911,7 +947,7 @@ public sealed class HubLocalConnectionTests : IAsyncLifetime
         Assert.All(_audit.Entries, e => { Assert.Equal("hub", e.Actor); Assert.Null(e.ActorId); });
         Assert.All(requests, e => Assert.Equal("carol@hub", Detail(e, "ClaimedOperator")));
         Assert.Equal("all-1", Detail(requests[2], "RequestId"));
-        Assert.Equal("1.1", Detail(requests[0], "ContractVersion"));
+        Assert.Equal("1.2", Detail(requests[0], "ContractVersion"));
     }
 
     [Fact]

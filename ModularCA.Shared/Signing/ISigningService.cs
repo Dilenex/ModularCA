@@ -312,4 +312,64 @@ public interface ISigningService
     /// Reports whether the signer is unlocked, how many keys it holds and which backend holds them.
     /// </summary>
     Task<SignerHealth> HealthAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Records a fact the node asserts in the signer's journal: a revocation, a released hold, a
+    /// token spent without a certificate, a restore, a changed incarnation, something disabled.
+    /// The record carries flag bit 0, which says the signer did not see the fact happen. The
+    /// call returns once the record is flushed to the signer's disk. The node calls it after
+    /// the transaction that made the fact true has committed, and from a queue: a failure here
+    /// never undoes or stops what the fact describes.
+    /// </summary>
+    /// <param name="type">The journal's record type number for the fact: 32 revocation, 33 released hold, 34 token spent without a certificate, 35 restore, 36 changed incarnation, 37 disabled, 21 SSH revocation list.</param>
+    /// <param name="payload">The fact's payload, as the journal's payload classes encode it.</param>
+    /// <param name="context">Who is asking: purpose <see cref="SigningPurpose.JournalFact"/>.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <returns>The sequence the record took.</returns>
+    /// <exception cref="SigningRefusedException">
+    /// The purpose is not <see cref="SigningPurpose.JournalFact"/>, the type is not a fact the
+    /// node asserts or the payload is not that fact's (<see cref="SigningRefusalReason.FactNotAccepted"/>),
+    /// the journal could not take the record (<see cref="SigningRefusalReason.JournalUnavailable"/>),
+    /// or the signer keeps no journal or predates the call (<see cref="SigningRefusalReason.OperationUnsupported"/>).
+    /// </exception>
+    /// <remarks>The default refuses as a signer that keeps no journal does; a signer that keeps one overrides it.</remarks>
+    Task<ulong> RecordFactAsync(ushort type, byte[] payload, SigningContext context, CancellationToken cancellationToken = default)
+        => Task.FromException<ulong>(new SigningRefusedException(SigningRefusalReason.OperationUnsupported, "This signer keeps no journal."));
+
+    /// <summary>
+    /// Reports the signer's journal: its head, the age of its last checkpoint, its size and the
+    /// free space on its volume. It reads what the writer already holds and one figure from the
+    /// file system; nothing is signed or written. Null from a signer that keeps no journal (a
+    /// locked signer, setup mode) or predates the call.
+    /// </summary>
+    /// <remarks>The default answers null, as a signer that keeps no journal does.</remarks>
+    Task<SignerJournalInfo?> JournalInfoAsync(CancellationToken cancellationToken = default)
+        => Task.FromResult<SignerJournalInfo?>(null);
+
+    /// <summary>
+    /// Lists every serial the last full CRL the signer refused for <paramref name="caId"/> left
+    /// out: revoked on the newest CRL in the journal, absent from the CRL offered, and not
+    /// excused. Null when no refusal stands for that CA: the signer signed a full CRL for it
+    /// since, never refused one, restarted since it did, keeps no journal, or predates the call.
+    /// It reads what the signer holds in memory; nothing is signed or written.
+    /// </summary>
+    /// <remarks>The default answers null, as a signer that keeps no journal does.</remarks>
+    Task<SignerJournalMissingRevocations?> JournalMissingRevocationsAsync(Guid caId, CancellationToken cancellationToken = default)
+        => Task.FromResult<SignerJournalMissingRevocations?>(null);
+
+    /// <summary>
+    /// Reads, a part at a time, the revocations the signer's journal holds for
+    /// <paramref name="caId"/> (<see cref="SignerJournaledRevocations"/>), for a node that makes
+    /// again the revocations its database has lost. The signer answers only from a journal it
+    /// has verified; otherwise the answer says it is not trusted and carries no entry. Null when
+    /// the journal holds nothing for the CA, the signer keeps no journal, or it predates the
+    /// call. Nothing is signed or written.
+    /// </summary>
+    /// <param name="caId">The certificate authority.</param>
+    /// <param name="skip">How many entries of the list to pass over.</param>
+    /// <param name="take">The most entries to return; the signer returns at most 5,000.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <remarks>The default answers null, as a signer that keeps no journal does.</remarks>
+    Task<SignerJournaledRevocations?> JournaledRevocationsAsync(Guid caId, int skip, int take, CancellationToken cancellationToken = default)
+        => Task.FromResult<SignerJournaledRevocations?>(null);
 }

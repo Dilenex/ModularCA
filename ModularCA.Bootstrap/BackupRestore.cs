@@ -169,6 +169,16 @@ public static class BackupRestore
             if (!string.IsNullOrWhiteSpace(config.DB.Audit.Database))
                 BootstrapDatabaseSetup.ValidateIdentifier(config.DB.Audit.Database, "audit database name");
 
+            // 0. The head of the signer's issuance journal, read before the database is dumped:
+            // records the signer writes while the dump runs may then already be in the dump,
+            // never the other way about, so a reader that starts at this head misses nothing.
+            // The signer is made here for that reason and used again for the keystores below.
+            var signer = signerForAppDatabase(AppConnectionString(config));
+            var journalHead = await ReadJournalHeadAsync(signer, config);
+            Console.WriteLine(journalHead == null
+                ? "  Signer journal head: none (the signer keeps no journal, or it could not be read)"
+                : $"  Signer journal head: sequence {journalHead.Seq}");
+
             // 1. Database dumps
             //
             // pg_dump in its custom format, not a plain SQL script. The custom format is
@@ -191,7 +201,6 @@ public static class BackupRestore
             // encrypted and signed, and is written under keystores/ by name as before.
             var backupKeystores = Path.Combine(backupDir, "keystores");
             Console.Write("  Exporting keystores...");
-            var signer = signerForAppDatabase(AppConnectionString(config));
             var exported = await ExportKeystoresAsync(signer, BackupCaller);
             if (exported.Count > 0)
             {
@@ -303,6 +312,7 @@ public static class BackupRestore
                 KeystoreIntegrity = keystoreIntegrity,
                 DbIntegrity = dbIntegrity,
                 WrappedSecrets = wrapped,
+                JournalHead = journalHead,
                 BackupSizeBytes = 0L // placeholder, updated after archive creation
             };
             var manifestPath = Path.Combine(backupDir, "manifest.json");
@@ -374,6 +384,7 @@ public static class BackupRestore
                 KeystoreIntegrity = keystoreIntegrity,
                 DbIntegrity = dbIntegrity,
                 WrappedSecrets = wrapped,
+                JournalHead = journalHead,
                 BackupSizeBytes = archiveSize
             };
             using (var zipStream = new FileStream(archivePath, FileMode.Open, FileAccess.ReadWrite))
@@ -998,6 +1009,12 @@ public static class BackupRestore
             // A failure here does not fail the restore; the last line says so.
             var incarnationStored = await StoreIncarnationAfterRestoreAsync(AppConnectionString(target));
 
+            // The signer's journal is never written or removed by a restore. What a restore
+            // leaves for it is one fact in the restored database's queue: that this restore
+            // ran, with what the archive's manifest says of itself. The node offers it to the
+            // signer at its next start, and the signer writes the RestoreMarker.
+            await QueueRestoreMarkerAsync(AppConnectionString(target), archiveName, manifestJson);
+
             // 2. Restore keystores, through the signer. Each file from the archive is offered
             // under the restore context; the signer verifies its signature against the pinned
             // signer in the just-restored app database before it replaces the file in place, and
@@ -1453,7 +1470,12 @@ public static class BackupRestore
         store ??= async (_, r) =>
         {
             using var db = new ModularCA.Database.ModularCADbContext(
-                new DbContextOptionsBuilder<ModularCA.Database.ModularCADbContext>().UseNpgsql(appConnectionString).Options);
+                new DbContextOptionsBuilder<ModularCA.Database.ModularCADbContext>().UseNpgsql(appConnectionString).Options)
+            {
+                // The restored database may be from before the journal's fact queue, and the
+                // restore's own marker says what happened here; no fact rides on this save.
+                SuppressSignerFacts = true,
+            };
             await ModularCA.Core.Services.Continuity.InstanceContinuity.StoreIncarnationAsync(db, r, RestoreCaller);
         };
 
@@ -2462,6 +2484,106 @@ public static class BackupRestore
         {
             try { Directory.Delete(stagingDir, true); } catch { }
         }
+    }
+
+    /// <summary>The head of the signer's journal as a backup's manifest carries it: the sequence and the hash of the last record.</summary>
+    /// <param name="Seq">The sequence.</param>
+    /// <param name="Hash">The hash, lower-case hex.</param>
+    public sealed record ManifestJournalHead(ulong Seq, string Hash);
+
+    /// <summary>
+    /// Reads the head of the signer's issuance journal for a backup's manifest: from the signer
+    /// when it keeps a journal and answers, otherwise from the journal's files when this host
+    /// has them, which is the case of the command-line backup, whose own signer keeps none.
+    /// Null when neither gives one; a backup is taken all the same.
+    /// </summary>
+    internal static async Task<ManifestJournalHead?> ReadJournalHeadAsync(ISigningService signer, ModularCA.Shared.Models.Config.SystemConfig config)
+    {
+        try
+        {
+            if (await signer.JournalInfoAsync() is { Seq: > 0 } info)
+                return new ManifestJournalHead(info.Seq, info.Hash);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            // A signer that cannot say: the files are tried next.
+        }
+        try
+        {
+            var home = ModularCA.Shared.Models.Config.SignerPaths.Shared(AppContext.BaseDirectory).JournalDirectory(config.Signer);
+            var head = ModularCA.Journal.JournalHead.Read(ModularCA.Journal.JournalLayout.ReadDirectory(home));
+            if (head.ExitCode == ModularCA.Journal.JournalHead.ExitOk && head.Verification?.Head is { } state)
+                return new ManifestJournalHead(state.Seq, Convert.ToHexStringLower(state.Hash));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // No readable journal on this host.
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Queues, in the database a restore has just restored, the fact that the restore ran: the
+    /// archive's file name and, from its manifest, its instance identifier, its creation time
+    /// and the journal head it carries, if any. The node offers the fact to the signer at its
+    /// next start. A database from before the queue has no table for it; the restore then says
+    /// so and goes on, as it does for anything else here that fails.
+    /// </summary>
+    internal static async Task<bool> QueueRestoreMarkerAsync(string appConnectionString, string archiveName, string manifestJson)
+    {
+        try
+        {
+            var payload = RestoreMarkerPayload(archiveName, manifestJson, DateTimeOffset.UtcNow);
+            await using var connection = new Npgsql.NpgsqlConnection(appConnectionString);
+            await connection.OpenAsync();
+            await using (var exists = new Npgsql.NpgsqlCommand("""SELECT to_regclass('"SignerFactQueue"') IS NOT NULL""", connection))
+            {
+                if (await exists.ExecuteScalarAsync() is not true)
+                {
+                    Console.WriteLine("  (i) The restored database is from before the signer's journal: no restore marker is queued for it.");
+                    return false;
+                }
+            }
+            await using var insert = new Npgsql.NpgsqlCommand(
+                """INSERT INTO "SignerFactQueue" ("Type", "Payload", "CreatedAt", "Attempts") VALUES (@type, @payload, @now, 0)""", connection);
+            insert.Parameters.AddWithValue("type", (int)ModularCA.Journal.RecordType.RestoreMarker);
+            insert.Parameters.AddWithValue("payload", payload);
+            insert.Parameters.AddWithValue("now", DateTime.UtcNow);
+            await insert.ExecuteNonQueryAsync();
+            Console.WriteLine("  ✓ Restore marker queued for the signer's journal; the node hands it over at its next start.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  ⚠ The restore marker for the signer's journal could not be queued ({ex.GetType().Name}: {ex.Message}). The restore goes on.");
+            return false;
+        }
+    }
+
+    /// <summary>The <c>RestoreMarker</c> fact for a restore of <paramref name="archiveName"/>, from what its manifest says.</summary>
+    internal static byte[] RestoreMarkerPayload(string archiveName, string manifestJson, DateTimeOffset now)
+    {
+        string? instanceId = null;
+        long? createdAt = null;
+        ModularCA.Journal.HeadRef? head = null;
+        try
+        {
+            using var manifest = JsonDocument.Parse(manifestJson);
+            var root = manifest.RootElement;
+            if (root.TryGetProperty("InstanceId", out var id) && id.ValueKind == JsonValueKind.String)
+                instanceId = id.GetString();
+            if (root.TryGetProperty("Timestamp", out var taken) && taken.ValueKind == JsonValueKind.String && taken.TryGetDateTimeOffset(out var at))
+                createdAt = ModularCA.Journal.JournalFormat.ToMicros(at);
+            if (root.TryGetProperty("JournalHead", out var journal) && journal.ValueKind == JsonValueKind.Object
+                && journal.TryGetProperty("Seq", out var seq) && seq.TryGetUInt64(out var sequence)
+                && journal.TryGetProperty("Hash", out var hash) && hash.ValueKind == JsonValueKind.String)
+                head = new ModularCA.Journal.HeadRef(sequence, Convert.FromHexString(hash.GetString()!));
+        }
+        catch (Exception ex) when (ex is JsonException or FormatException)
+        {
+            // A manifest this cannot read still names its archive.
+        }
+        return new ModularCA.Journal.RestoreMarkerPayload(archiveName, instanceId, createdAt, head, ModularCA.Journal.JournalFormat.ToMicros(now)).Encode();
     }
 
     /// <summary>

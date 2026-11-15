@@ -84,8 +84,11 @@ services:
       - keystores:/opt/modularca/keystores
       - logs:/opt/modularca/logs
       - backups:/opt/modularca/backups
+      # The signer's issuance journal, on a volume of its own: never put it back with keystores
+      # or the database, or it no longer records what a roll-back lost.
+      - journal:/opt/modularca/signer/journal
 
-# Everything the instance is lives in these five volumes. "docker compose down" keeps them;
+# Everything the instance is lives in these six volumes. "docker compose down" keeps them;
 # "docker compose down -v" deletes the CA.
 volumes:
   db:
@@ -93,3 +96,4 @@ volumes:
   keystores:
   logs:
   backups:
+  journal:

@@ -259,8 +259,43 @@ out, and no password that worked before is refused at sign-in.
   with an RSA 2048 key shows a notice on its page and under System Health, Security Baseline: plan
   its replacement before 2031. Automation that creates RSA 2048 CAs must ask for 3072 or larger,
   or ECDSA.
+- **The signer's issuance journal.** The first start begins a journal of every certificate and
+  CRL the signer signs from then on, in `signer/journal/` under the install directory
+  (`/opt/modularca/signer/journal`). Nothing issued before that start is in it. The start also
+  makes a key for the journal's checkpoints, in `keystores/journal.keystore`. To know before
+  the upgrade:
+  - **The installer makes the journal's home.** Where one process holds the keys, `install.sh`
+    and the `.deb` create `/opt/modularca/signer/journal` for `modularca`, mode `0700`, in a
+    `signer/` that is root's, and the packaged `modularca.service` lists it in
+    `ReadWritePaths=`. **If you keep your own copy of the unit file, add
+    `-/opt/modularca/signer/journal` to its `ReadWritePaths=`**: without it the journal cannot
+    be written and the instance issues nothing.
+  - **On a split install the journal is in the signer's own directory**,
+    `/opt/modularca/signer/journal`, which the signer makes itself. **A split install whose
+    signer still reads the shared `config/` (no `/opt/modularca/signer` yet) must be moved onto
+    its own directory first** ("Moving an existing split install onto the signer's directory"): its signer cannot create
+    `signer/journal`, and refuses to issue until it can. Alternatively name another home with
+    `Signer.Journal.Directory`, created for `modularca-signer` and listed in the signer unit's
+    `ReadWritePaths=` with a drop-in.
+  - **It needs disk space, and a full volume stops issuance.** Give the home a volume of its
+    own when you can ("The signer's issuance journal"); it may be mounted on the directory.
+  - **On a split install, upgrade the signer first**, as for any release that adds to its
+    contract. A signer that cannot create its journal starts, and refuses to issue until it
+    can.
+  - **In a pod or under compose, add the journal's volume**: `modularca-journal` mounted on
+    `/opt/modularca/signer/journal` in the signer's container (the shipped
+    `modularca-pod.yaml` and `compose.yaml` have it). Without it the journal is lost with the
+    container.
+  - **After a restore or a roll-back, revocations come back by themselves.** The node makes
+    again the revocations the journal holds and the database has lost, and says so in a notice
+    ("After a database went back: the merge").
+  - **A hub must speak contract `1.2` only if it wants what `1.2` adds**; a hub that states
+    `1.0` or `1.1` is served as before.
+  The `SignerFactQueue` migration adds one empty table, the queue of facts that wait for the
+  journal.
 - **Going back to 0.4.4** means restoring the backup taken before the upgrade, as for any release
-  that adds a migration. 0.4.4 cannot run on a database this release has migrated.
+  that adds a migration. 0.4.4 cannot run on a database this release has migrated. 0.4.4 does not read
+  `signer/journal/`; leave it where it is.
 
 ### Upgrading to 0.4.4
 
@@ -825,7 +860,9 @@ A restored CA is the CA as it was when the archive was taken.
   revoke the old ones: see "Revoking a certificate the CA does not hold" below.
 - **Revocations made after the backup are forgotten.** Those certificates are valid again as far
   as the CA knows. Revoke them again; the old host's last CRL, if you still have it, lists them.
-  A kept audit database lists them too (`CertificateRevoked`).
+  A kept audit database lists them too (`CertificateRevoked`). On a host that kept its journal
+  ("The signer's issuance journal") the signer refuses the next CRL until they are revoked
+  again, and names them.
 - **The first start publishes a new CRL**, numbered above every CRL the old host published, so a
   client that has seen a later CRL does not treat the new one as a rollback.
 - **The web certificate is new.** Its key is in no archive, so the node issues itself a
@@ -1272,6 +1309,249 @@ own entry. A CA certificate is not adopted; revoke a subordinate CA's serial ins
 
 The API is `POST /api/v1/admin/authorities/{caId}/adopted-certificates` and
 `POST /api/v1/admin/authorities/{caId}/revoked-serials`.
+
+## The signer's issuance journal
+
+From 0.4.5 the process that holds the keys keeps a journal of what it signs: every certificate,
+every CRL and every SSH certificate, each chained to the one before, with what the node tells it
+of revocations, released holds, spent tokens, restores and things disabled. It is files in one
+directory. A database that goes back in time no longer takes the knowledge of what was issued
+and revoked with it: the journal still has it.
+
+**This version writes the journal and reads its head. It does not read it back into a
+database.** After a restore the CA still does not know the certificates issued since the
+archive; the journal is where they are. `docs/architecture/signer-journal.md` has the format and
+what is and is not built.
+
+### The home
+
+| | |
+|---|---|
+| Setting | `Signer.Journal.Directory`, in the settings of whichever process holds the keys: `config/config.yaml` on one process, `signer.yaml` on a split install |
+| Environment | `MODULARCA__SIGNER__JOURNAL__DIRECTORY` overrides it |
+| Default | `signer/journal`: `/opt/modularca/signer/journal` on a packaged install, whichever process holds the keys. A relative path is taken from the install directory, or from the signer's own directory when it has one (`--signer-dir`), where a leading `signer/` names that directory; an absolute path is used as it is |
+| Owner | the account that holds the keys: `modularca` on one process (the installer makes the home for it), `modularca-signer` on a split install (the signer makes it in its own directory). Mode `0700`, files `0600` |
+| Contents | `current/`, with the segment files `<20 digits>.mcaj` and one `<20 digits>.open.mcaj`; and any journal that was set aside, `set-aside-instance-<id>-<time>/` or `set-aside-reset-<time>/`. Nothing else belongs there |
+
+- **It is not in `keystores/`**, and must not go back in time with it: a journal that is rolled
+  back or copied back with the keystores or the database protects nothing.
+- **Give it a volume of its own when you can, mounted on the home itself.** The signer never
+  renames the home: it makes `current/` in an empty one, and sets a journal aside by renaming
+  `current` inside it. On one machine with one disk the journal survives `--restore` and a lost
+  database. It does not survive a snapshot roll-back of the whole machine, which takes it back
+  with everything else.
+- **A home elsewhere**: create it (or its parent) for the account that holds the keys, name it
+  with `Signer.Journal.Directory`, and on a packaged install add it to `ReadWritePaths=` with a
+  drop-in for the unit that holds the keys. To keep the journal already written, stop the
+  service and move the whole home; started over an empty home the signer begins a new journal
+  from sequence 1, which is a different journal.
+- **On a split install or a pod it belongs to the signer.** The node never needs the path, and
+  should not be able to reach it: that is what keeps a node that was taken over from rewriting
+  what the signer recorded. In a pod, keep it on the signer's volume and do not put that volume
+  back when the database's volume is put back.
+- **On one process it is no defense against the process itself**: the same process holds the
+  keys and the files.
+- **Do not edit, truncate, compress or delete the files.** The signer only ever creates,
+  appends and renames there. A file removed or changed is found by `--journal-verify`.
+- **It is not in a backup**, and a restore neither writes nor removes it. A backup's manifest
+  records the journal's head (sequence and hash) as it was just before the database was dumped.
+  To keep the journal off the host, copy the sealed segments (the files without `.open`): they
+  never change once they have their name.
+- **Size.** About 1.5 to 3 KB for a certificate, 132 bytes and its entries for a CRL whose
+  revoked set changed, some 300 bytes for one that did not, and about 250 bytes for a
+  checkpoint, of which there is at most one a second while something is being signed. An
+  instance issuing 10,000 certificates a day writes about 30 MB a day. Nothing prunes it yet.
+
+### A full volume stops issuance
+
+The signer returns no certificate, CRL or SSH certificate whose record it could not write and
+flush to disk. When the directory is missing, unwritable or full:
+
+- issuance and CRL signing are refused, with the reason in the answer and in the signer's log;
+- OCSP, timestamps, SCEP and CMP protection, sign-in and the console go on;
+- revocation goes on: the revocation is made, and its record waits in a queue in the database
+  until the journal takes it. The CRL that would publish it waits for the journal.
+
+It is seen coming. `/health/ready` reports the journal under `checks.journal`: its size, the free
+space on its volume and the age of its last checkpoint. The dashboard shows an entry under
+"Needs attention" for each of these:
+
+| `status` | When | The node |
+|---|---|---|
+| `low_space` | less free space than `Signer.Journal.LowSpaceMiB`: 1024 (1 GiB) by default | stays ready |
+| `critical_space` | less than `Signer.Journal.CriticalSpaceMiB`: 128 by default | stays ready |
+| `unavailable` | a record could not be written | degraded: `/health/ready` answers 503 |
+
+- **The two levels warn and do nothing else.** At `critical_space` the signer goes on issuing
+  until a write to the journal actually fails. 0 turns a warning off. They are settings of the
+  process that holds the keys, read at its start.
+- No status of the journal fails `--check-ready`, so the journal never takes a node out of a
+  load balancer or fails an upgrade's wait for ready; OCSP and CRL distribution go on.
+- Give the volume space; the signer goes on by itself with the next request.
+
+### What the signer now refuses
+
+- **A CRL that drops a revoked serial.** The signer holds each CRL to the newest one in its
+  journal for that CA key: the number must rise, and a serial may leave the list only when its
+  certificate has expired, when it was on hold and the hold was released, or when it was
+  revoked without a certificate and its listing has run out.
+- **"Good" for a revoked serial.** An OCSP response that says "good" for a serial on the newest
+  journaled CRL is refused; the client gets an error for that request.
+
+Neither is met in ordinary running. Both are met **after a database was taken back** on a host
+whose journal was not: the database has forgotten revocations the journal remembers, so the next
+CRL would drop them. **The instance cures that itself** ("After a database went back: the
+merge", below), and the CRL is signed. What follows is for when it cannot.
+
+**What you see when it cannot.** The instance goes on issuing, serving and answering OCSP. The
+CRL already published stays in force until its `nextUpdate`; no new one is signed for that CA.
+
+- The dashboard's "Needs attention" says that the signer refuses a CRL, with each CA, how many
+  serials are missing, and when its published CRL runs out. That time is the deadline.
+- `/health/ready` has the same under `checks.journal`: `status` is `crl_refused`, and
+  `refusedCrls` lists the CAs. The node stays ready.
+- The CRL job for that CA fails, and its error names the first five serials.
+
+**What to do.**
+
+1. Open the CA's page in the console (Certificate Authorities, the CA, "Certificates This CA
+   Does Not Hold"; the dashboard's entry links to it, and its address is
+   `/admin/authorities/manage/{caId}#missing-from-crl`). While the signer refuses the CA's CRL
+   it lists every missing serial with its reason and date. The same list is
+
+       GET /api/v1/admin/authorities/{caId}/revoked-serials/missing-from-crl
+
+   Both need the capability to revoke on that CA.
+2. Revoke each again. Where the CA still has the certificate, the page links to it: revoke it
+   there. Where it does not, use "Revoke serial" on its row, tick several and "Revoke the
+   selected serials", or "Revoke all … without a certificate": one note and one second-factor
+   prompt for all of them. By API: `POST …/revoked-serials` for one, or
+   `POST …/revoked-serials/bulk` with `{ "serials": [{ "serialNumber", "reason" }], "note" }`
+   for up to 5,000.
+3. Generate the CRL. When it lists every serial again, the signer signs it and the entry goes.
+   If some are still missing, the entry stays with the smaller number.
+
+- CRL numbers need nothing: the node raises its counters past the journal by itself.
+- The list is as of the last CRL the signer refused, and the signer holds it in memory: after a
+  restart of the signer it is empty until the CRL schedule next runs for that CA.
+- **If CRLs must be published before that is done**, set `Signer.Journal.Checks: warn` in the
+  signer's settings and restart it: both findings are then logged and signed, and the CRL
+  leaves out the lost revocations. Set it back to `enforce` afterwards. `enforce` is the
+  default, with or without a hub.
+
+### After a database went back: the merge
+
+When the database has gone back in time (a restore, a snapshot roll-back) and the journal has
+not, the instance makes again every revocation the journal holds and the database has lost.
+You do not have to do anything, and nothing asks for a second factor.
+
+- **What comes back.** Every revocation on the last CRL the signer signed for the CA, and
+  every revocation made after that CRL, each with its original date and reason. A hold that
+  still stood comes back as a hold. A certificate the database still has is revoked again; a
+  serial it no longer has (the certificate was issued in the lost time) is recorded as revoked
+  with no certificate.
+- **What does not.** A hold that was released, a certificate that has expired, and everything
+  that is not a revocation: certificates issued in the lost time, accounts, settings.
+- **A revocation cannot be undone by going back.** If a certificate was revoked by mistake,
+  restoring an older database does not un-revoke it.
+- **When.** In the background after every start, for every CA, and before a CA's next CRL. The
+  instance is ready meanwhile. Until a serial is restored, OCSP does not answer "good" for it:
+  the client gets an error for that request.
+- **It is recorded.** One audit entry for each revocation restored
+  (`RevocationMergedFromJournal`, by `journal-merge`, with the CRL or the journal record it
+  came from), one summary for each CA (`JournalRevocationMergeCompleted`), and a notice in the
+  console, "N revocation(s) were restored from the signer's journal for CA X after the database
+  went back in time", which stays until an administrator acknowledges it.
+- **In DR mode nothing is changed**, so the merge waits: `/health/ready` says `merge_pending`
+  with how many revocations wait, and they are made when the mode is changed.
+- **Why it needs no approval.** It only adds revocations, and only ones this CA's own signer
+  signed onto a CRL or the instance itself recorded at the time. It takes them from the signer,
+  and the signer believes a record of its journal only when a checkpoint signed with a key of
+  its own, one its system key signed for, follows it. What somebody wrote into the journal's
+  files without that key restores nothing.
+- **After the keystores were put back to another system key**, revocations recorded before
+  that are not restored from the journal (the signer's present key never signed for them);
+  those recorded afterwards are. You then have the list and the steps above for the CRL the
+  signer refuses.
+- **A large journal.** At every start the signer verifies its whole journal in the background.
+  It signs meanwhile; only the merge waits. `/health/ready` shows how far it is
+  (`verifiedBytes` of `verifyTotalBytes`).
+
+### Reading it: two commands
+
+Both read the files and nothing else. They need no database, no keystore, no settings and no
+running service, write nothing, and may be run beside a running signer, as any user that can
+read the directory, on a read-only mount or on a copy.
+
+    ./ModularCA.API --role signer --journal-head [--journal-directory <path>] [--sealed | --sealed-from <sequence>]
+
+prints the journal's head as one line of JSON: the sequence and hash of its last record, the
+open segment and how many bytes of it are whole records, the newest checkpoint with its
+signature, and the checkpoint key with the system public key and its signature over it. It
+reads the newest segment only, so it can be called every second. `--sealed` lists every sealed
+segment as well, and reads them all. `--sealed-from <sequence>` lists the sealed segments whose
+first sequence is at or after the one given and reads no older one: for a copy that already
+has the segments before it. Exit status **0** with the line, **3** when the directory holds no
+journal, **4** when what it read does not chain, with the reason on standard error, **1** for a
+command line it cannot read.
+
+    ./ModularCA.API --role signer --journal-verify [--journal-directory <path>] [--system-key <hex>]
+
+checks the whole journal: every record's hash, the chain from the first record, every
+checkpoint's signature and the system key's signature over each checkpoint key. It prints one
+line of JSON and exits **0**, or **4** naming the segment and sequence of the first fault,
+**3** when the directory holds no journal, **1** for a command line it cannot read. Like the
+head command it creates and locks nothing, and works on a read-only mount, on read-only files
+and on a bare copy of the directory. With `--system-key` (the `systemKey` of the hub's
+`hello`, or the SHA-256 of the system signing CA's public key) the journal must begin under
+that key. Without `--journal-directory` both read the directory the signer's settings name; on
+a split install add `--signer-dir`.
+
+`--journal-directory` takes the journal's home, which is read through its `current/`, or a
+directory that holds segment files itself: `current/`, a set-aside journal, or a copy of the
+segments. A home with no `current/`, or an empty one, has no journal (exit 3).
+
+Neither command, nor any other one-off command (`--upgrade-check`, `--check-ready`,
+`--backup-manifest`, `--backup`, `--restore`), writes to the journal directory. Only the
+running service does, and a start of it that signs nothing writes nothing either: a service
+that restarts in a loop leaves the directory as it was.
+
+### After a restore
+
+- The restore leaves a marker for the journal in the restored database; the node hands it to
+  the signer at its next start, and the journal records that a restore ran and from which
+  archive.
+- **Restoring onto a host that ran another instance** (a fresh install, then `--restore`):
+  the journal and the checkpoint key there are the other instance's. At its first start the
+  signer keeps both and sets them aside, and begins this instance's journal. It says so in
+  its log. Nothing needs doing.
+  - `current` in the journal's home is renamed, inside the home, to
+    `set-aside-instance-<first 16 letters and digits of that instance's identifier>-<yyyyMMdd-HHmmss-fff>`,
+    and a new `current/` is made. The checkpoint key becomes
+    `keystores/journal.keystore.bak.<time>`.
+  - **Nothing removes a set-aside journal.** It takes space on the journal's volume until you
+    delete it. `checks.journal` counts them (`setAsideJournals`, `setAsideBytes`).
+    `--journal-head --journal-directory <that directory>` reads one as the other instance's
+    journal, if you want to keep a copy elsewhere first.
+- A factory reset (`--reset`, or bootstrapping again) makes another instance. The old one's
+  journal is kept: `current` in `signer/journal` is renamed `set-aside-reset-<yyyyMMdd-HHmmss-fff>`
+  there, and the new instance begins its own. A home placed elsewhere with
+  `Signer.Journal.Directory`, or in a signer directory elsewhere, is not known to the reset: the
+  new instance's signer sets the old journal aside at its first start, as after a restore.
+- **A changed system key that no restore explains.** When the keystores are put back to a
+  state with another system signing CA key (a roll-back of the volume, not `--restore`), the
+  journal waits up to ten minutes for a restore's marker. The instance is ready and signs
+  throughout; `checks.journal` says `awaiting_restore_marker` with the time left. With no
+  marker the change is recorded unexplained, which `--journal-verify` reports as a fault: it
+  is yours to explain.
+- **A `keystores/` put back to an older state with the same system key** needs nothing: the
+  signer's checkpoint key is then not the journal's current one, and the journal records the
+  change, signed for by the system signing CA's key.
+- The checkpoint key is in `keystores/journal.keystore`, which the signer makes at its first
+  start. It is not in an archive. A database restored from before that start has no record of
+  the file: the signer moves it aside as `journal.keystore.bak.<time>` and makes a new key, and
+  the journal records the change, signed for by the system signing CA's key as the first was.
+  Nothing needs doing.
 
 ## Firewall and ports
 
@@ -1893,6 +2173,7 @@ The volumes are the security division, not housekeeping:
 | `modularca-config` | the node; the init containers | `config.yaml`, `db.yaml` and the node's client certificate. Bootstrap leaves `keystore.yaml` here too, and `node-identity` removes it at the first start once the signer holds its copy. The node writes here while it runs: `config.yaml` when settings are saved or moved into the database (each time with a `config.yaml.pre-settings-*.bak` copy), the web TLS certificate (`api-tls.pfx`) when it is provisioned or renewed, the Data Protection key ring (`dp-keys/`), made at start and rotated, and `signer-audit-cursor.json`, its note of how far it has read the signer's keystore events. Copy it as often as anything else that changes. |
 | `modularca-signer-config` | the signer; the init containers | `signer.yaml`, the signer's `db.yaml` and `keystore.yaml`, the identity CA and the server certificate. **The node never mounts it**, so it cannot change what the signer loads (`Hsm.ModulePath`, `Signer.PinnedClientSpki`, `Signer.Listen`). Only the init containers write its settings; the signer's logs go to an `emptyDir` mounted over its `logs/`. The signer writes one thing here, `audit-journal/`: its keystore events (loaded, created, a key appended, a verification failure) wait there, across restarts of the pod, until the node has read them over the signer channel and written them into the audit trail (see "Two units"). **It MUST be in your volume backups**: after the first start the keystore passphrases (`keystore.yaml`) live in this volume and nowhere else, and no backup archive carries them, so losing it loses every keystore. |
 | `modularca-keystores` | the signer; bootstrap | The keystores. **The node never sees them**, which is the whole point of the split. |
+| `modularca-journal` | the signer | The signer's issuance journal, mounted on `/opt/modularca/signer/journal`. **Never roll it back or restore it with the others**: it is what remembers the revocations a roll-back loses. |
 | `modularca-data` | the node | Its backup archives. |
 
 The signer listens on the pod's loopback, publishes no port, and cannot be reached from outside

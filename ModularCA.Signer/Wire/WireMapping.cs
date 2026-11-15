@@ -58,7 +58,174 @@ public static class WireMapping
         CaId = ToWire(context.CaId),
         CeremonyId = ToWire(context.CeremonyId),
         InstanceScope = context.InstanceScope,
+        Issuance = ToWire(context.Issuance),
     };
+
+    /// <summary>What the node knows about an issuance, for the wire; null when it passed nothing.</summary>
+    public static IssuanceOrigin? ToWire(Shared.Signing.IssuanceOrigin? origin)
+    {
+        if (origin == null) return null;
+        var wire = new IssuanceOrigin { Protocol = origin.Protocol ?? string.Empty, Requester = origin.Requester ?? string.Empty };
+        foreach (var token in origin.Spent ?? Array.Empty<IssuanceSpent>())
+            wire.Spent.Add(new SpentToken { Kind = token.Kind, Id = token.Id, Use = token.Use });
+        if (origin.Answers is { } answers)
+            wire.Answers = new IssuanceAnswers { Kind = answers.Kind, Id = answers.Id ?? string.Empty };
+        if (origin.Replaces is { } replaces)
+            wire.Replaces = new IssuanceReplaces { Serial = ByteString.CopyFrom(replaces.Serial), CaKey = ByteString.CopyFrom(replaces.CaKey) };
+        if (origin.Belongs is { IsEmpty: false } belongs)
+            wire.Belongs = new IssuanceBelongs
+            {
+                Profile = belongs.Profile ?? string.Empty,
+                Space = belongs.Space ?? string.Empty,
+                OwnerKind = belongs.OwnerKind ?? 0,
+                Owner = belongs.Owner ?? string.Empty,
+                Template = belongs.Template ?? string.Empty,
+            };
+        return wire;
+    }
+
+    /// <summary>What the node passed with an issuance, off the wire; null when it passed nothing. An empty string is an absent member.</summary>
+    public static Shared.Signing.IssuanceOrigin? FromWire(IssuanceOrigin? origin)
+    {
+        if (origin == null) return null;
+        static string? Text(string value) => string.IsNullOrEmpty(value) ? null : value;
+        var belongs = origin.Belongs == null ? null : new Shared.Signing.IssuanceBelongs(
+            Text(origin.Belongs.Profile), Text(origin.Belongs.Space),
+            origin.Belongs.OwnerKind == 0 ? null : origin.Belongs.OwnerKind, Text(origin.Belongs.Owner), Text(origin.Belongs.Template));
+        return new Shared.Signing.IssuanceOrigin(
+            origin.Spent.Count == 0 ? null : origin.Spent.Select(t => new IssuanceSpent(t.Kind, t.Id, t.Use == 0 ? 1 : t.Use)).ToList(),
+            origin.Answers == null ? null : new Shared.Signing.IssuanceAnswers(origin.Answers.Kind, Text(origin.Answers.Id)),
+            origin.Replaces == null ? null : new Shared.Signing.IssuanceReplaces(origin.Replaces.Serial.ToByteArray(), origin.Replaces.CaKey.ToByteArray()),
+            belongs is { IsEmpty: false } ? belongs : null,
+            Text(origin.Protocol),
+            Text(origin.Requester));
+    }
+
+    /// <summary>The signer's journal report for the wire; <c>present</c> is false for a signer that keeps none.</summary>
+    public static JournalInfoResponse ToWire(SignerJournalInfo? info)
+    {
+        if (info == null) return new JournalInfoResponse { Present = false };
+        var response = new JournalInfoResponse
+        {
+            Present = true,
+            Available = info.Available,
+            Fault = info.Fault ?? string.Empty,
+            Seq = info.Seq,
+            Hash = info.Hash,
+            LastCheckpointUnixMicros = info.LastCheckpointAtUtc is DateTime at ? (DateTime.SpecifyKind(at, DateTimeKind.Utc).Ticks - DateTime.UnixEpoch.Ticks) / 10 : 0,
+            UncheckpointedRecords = info.UncheckpointedRecords,
+            SizeBytes = info.SizeBytes,
+            FreeBytes = info.FreeBytes ?? 0,
+            FreeKnown = info.FreeBytes != null,
+            AwaitingRestoreMarkerUntilUnixMicros = info.AwaitingRestoreMarkerUntilUtc is DateTime until ? Micros(until) : 0,
+            LowSpaceBytes = info.LowSpaceBytes ?? 0,
+            CriticalSpaceBytes = info.CriticalSpaceBytes ?? 0,
+            SpaceLevelsKnown = info.LowSpaceBytes != null && info.CriticalSpaceBytes != null,
+            SetAsideJournals = info.SetAsideJournals,
+            SetAsideBytes = info.SetAsideBytes,
+            Verified = info.Verified switch { true => 1, false => 2, null => 0 },
+            VerificationFault = info.VerificationFault ?? string.Empty,
+            VerifiedBytes = info.VerifiedBytes ?? 0,
+            VerifyTotalBytes = info.VerifyTotalBytes ?? 0,
+            VerificationProgressKnown = info.VerifiedBytes != null && info.VerifyTotalBytes != null,
+        };
+        foreach (var refused in info.RefusedCrls ?? [])
+            response.RefusedCrls.Add(new RefusedCrl
+            {
+                CaId = refused.CaId?.ToString("D") ?? string.Empty,
+                CaKey = refused.CaKey,
+                MissingSerials = refused.MissingSerials,
+                RefusedAtUnixMicros = Micros(refused.RefusedAtUtc),
+                JournaledCrlNumber = refused.JournaledCrlNumber,
+            });
+        return response;
+    }
+
+    private static long Micros(DateTime utc) => (DateTime.SpecifyKind(utc, DateTimeKind.Utc).Ticks - DateTime.UnixEpoch.Ticks) / 10;
+
+    private static DateTime FromMicros(long micros) => new(DateTime.UnixEpoch.Ticks + micros * 10, DateTimeKind.Utc);
+
+    /// <summary>Writes the serials a refused CRL left out to the wire; <c>present</c> is false for none.</summary>
+    public static JournalMissingRevocationsResponse ToWire(SignerJournalMissingRevocations? missing)
+    {
+        if (missing == null) return new JournalMissingRevocationsResponse { Present = false };
+        var response = new JournalMissingRevocationsResponse
+        {
+            Present = true,
+            RefusedAtUnixMicros = Micros(missing.RefusedAtUtc),
+            JournaledCrlNumber = missing.JournaledCrlNumber,
+        };
+        foreach (var serial in missing.Serials)
+            response.Serials.Add(new MissingSerial { Serial = serial.Serial, Reason = serial.Reason, RevokedAtUnixMicros = Micros(serial.RevokedAtUtc) });
+        return response;
+    }
+
+    /// <summary>Reads the serials a refused CRL left out from the wire; null when no refusal stands.</summary>
+    public static SignerJournalMissingRevocations? FromWire(Guid caId, JournalMissingRevocationsResponse response)
+    {
+        if (!response.Present) return null;
+        return new SignerJournalMissingRevocations(caId, FromMicros(response.RefusedAtUnixMicros), response.JournaledCrlNumber,
+            response.Serials.Select(s => new SignerJournalMissingSerial(s.Serial, s.Reason, FromMicros(s.RevokedAtUnixMicros))).ToList());
+    }
+
+    /// <summary>The signer's journal report off the wire; null when the signer keeps none.</summary>
+    public static SignerJournalInfo? FromWire(JournalInfoResponse response)
+    {
+        if (!response.Present) return null;
+        return new SignerJournalInfo(
+            response.Available,
+            string.IsNullOrEmpty(response.Fault) ? null : response.Fault,
+            response.Seq,
+            response.Hash,
+            response.LastCheckpointUnixMicros == 0 ? null : new DateTime(DateTime.UnixEpoch.Ticks + response.LastCheckpointUnixMicros * 10, DateTimeKind.Utc),
+            response.UncheckpointedRecords,
+            response.SizeBytes,
+            response.FreeKnown ? response.FreeBytes : null,
+            response.AwaitingRestoreMarkerUntilUnixMicros == 0 ? null : FromMicros(response.AwaitingRestoreMarkerUntilUnixMicros),
+            response.SpaceLevelsKnown ? response.LowSpaceBytes : null,
+            response.SpaceLevelsKnown ? response.CriticalSpaceBytes : null,
+            response.SetAsideJournals,
+            response.SetAsideBytes,
+            response.RefusedCrls.Select(r => new SignerJournalRefusedCrl(
+                Guid.TryParse(r.CaId, out var id) ? id : null, r.CaKey, r.MissingSerials, FromMicros(r.RefusedAtUnixMicros), r.JournaledCrlNumber)).ToList(),
+            response.Verified switch { 1 => true, 2 => false, _ => null },
+            string.IsNullOrEmpty(response.VerificationFault) ? null : response.VerificationFault,
+            response.VerificationProgressKnown ? response.VerifiedBytes : null,
+            response.VerificationProgressKnown ? response.VerifyTotalBytes : null);
+    }
+
+    /// <summary>Writes a part of the journal's revocations to the wire; <c>present</c> is false for none.</summary>
+    public static JournaledRevocationsResponse ToWire(SignerJournaledRevocations? list)
+    {
+        if (list == null) return new JournaledRevocationsResponse { Present = false };
+        var response = new JournaledRevocationsResponse
+        {
+            Present = true,
+            Trusted = list.Trusted,
+            NotTrustedReason = list.NotTrustedReason ?? string.Empty,
+            CrlKnown = list.CrlNumber != null,
+            CrlNumber = list.CrlNumber ?? 0,
+            CrlSeq = list.CrlSeq ?? 0,
+            Total = list.Total,
+        };
+        foreach (var e in list.Entries)
+            response.Entries.Add(new JournaledRevocation
+            {
+                Serial = e.Serial, Reason = e.Reason, RevokedAtUnixMicros = Micros(e.RevokedAtUtc), Hold = e.Hold,
+                Source = e.Source, SourceNumber = e.SourceNumber, SourceSeq = e.SourceSeq,
+            });
+        return response;
+    }
+
+    /// <summary>Reads a part of the journal's revocations from the wire; null when the journal holds none for the CA.</summary>
+    public static SignerJournaledRevocations? FromWire(Guid caId, JournaledRevocationsResponse response)
+    {
+        if (!response.Present) return null;
+        return new SignerJournaledRevocations(caId, response.Trusted,
+            string.IsNullOrEmpty(response.NotTrustedReason) ? null : response.NotTrustedReason,
+            response.CrlKnown ? response.CrlNumber : null, response.CrlKnown ? response.CrlSeq : null, response.Total,
+            response.Entries.Select(e => new SignerJournaledRevocation(e.Serial, e.Reason, FromMicros(e.RevokedAtUnixMicros), e.Hold, e.Source, e.SourceNumber, e.SourceSeq)).ToList());
+    }
 
     /// <summary>
     /// Reads a context from the wire; an unknown purpose or a missing message is an argument
@@ -77,6 +244,7 @@ public static class WireMapping
             ToNullableGuid(context.CaId, "context.ca_id"),
             ToNullableGuid(context.CeremonyId, "context.ceremony_id"))
         {
+            Issuance = FromWire(context.Issuance),
             InstanceScope = context.InstanceScope,
         };
     }

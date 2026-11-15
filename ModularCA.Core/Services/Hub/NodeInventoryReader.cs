@@ -39,6 +39,7 @@ namespace ModularCA.Core.Services.Hub;
 /// <param name="instanceVersion">The product version.</param>
 /// <param name="logger">Where a part that could not be read is noted.</param>
 /// <param name="timeProvider">The clock the backup's age is measured with; the system's when null.</param>
+/// <param name="journal">What the readiness check last learned of the signer's issuance journal; null where nothing keeps it.</param>
 public sealed class NodeInventoryReader(
     ModularCADbContext db,
     AuditDbContext? auditDb,
@@ -47,7 +48,8 @@ public sealed class NodeInventoryReader(
     string backupDirectory,
     string instanceVersion,
     ILogger logger,
-    TimeProvider? timeProvider = null)
+    TimeProvider? timeProvider = null,
+    ModularCA.Core.Services.Journal.SignerJournalState? journal = null)
 {
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
 
@@ -66,7 +68,30 @@ public sealed class NodeInventoryReader(
             ReadWebTls(),
             ReadNewestBackup(),
             await ReadFailingJobsAsync(cancellationToken),
-            await ReadCertificateAuthoritiesAsync(cancellationToken));
+            await ReadCertificateAuthoritiesAsync(cancellationToken),
+            ReadJournal());
+    }
+
+    /// <summary>
+    /// The signer's issuance journal as the readiness check last saw it; null when it has not
+    /// asked yet or the signer keeps none. The signer is not called for this answer.
+    /// </summary>
+    private HubInventoryJournal? ReadJournal()
+    {
+        if (journal?.Last is not { Info: { } info } last)
+            return null;
+        var checkedAt = Utc(last.AtUtc);
+        DateTime? checkpointAt = info.LastCheckpointAtUtc is DateTime at ? Utc(at) : null;
+        return new HubInventoryJournal(
+            info.Available,
+            info.Seq,
+            info.SizeBytes,
+            info.FreeBytes,
+            checkpointAt,
+            checkpointAt is DateTime c ? Math.Max(0, (long)(checkedAt - c).TotalSeconds) : null,
+            checkedAt,
+            info.SetAsideJournals,
+            info.SetAsideBytes);
     }
 
     /// <summary>The migrations applied to <paramref name="context"/>'s database; null when its history cannot be read.</summary>

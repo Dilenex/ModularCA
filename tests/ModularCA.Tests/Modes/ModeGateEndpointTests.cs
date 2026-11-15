@@ -362,6 +362,8 @@ public sealed class ModeGateEndpointTests : IDisposable
     [InlineData(InstanceMode.Maintenance, "ModularCA.API.Controllers.v1.User.UserCertSignRequestController", "UploadCsrRequest", false)]
     [InlineData(InstanceMode.Maintenance, "AdminRevocationController", "RevokeByCertId", true)]
     [InlineData(InstanceMode.Maintenance, "AdminRevokedSerialController", "Record", true)]
+    [InlineData(InstanceMode.Maintenance, "AdminRevokedSerialController", "RecordMany", true)]
+    [InlineData(InstanceMode.DisasterRecovery, "AdminRevokedSerialController", "RecordMany", false)]
     [InlineData(InstanceMode.Maintenance, "AdminRevokedSerialController", "Adopt", true)]
     [InlineData(InstanceMode.Maintenance, "ModularCA.API.Controllers.v1.Acme.AcmeOrderController", "RevokeCert", true)]
     [InlineData(InstanceMode.Maintenance, "ModularCA.API.Controllers.v1.User.UserCertificateController", "RevokeOwnCertificate", true)]

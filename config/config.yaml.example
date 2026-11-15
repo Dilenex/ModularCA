@@ -274,6 +274,18 @@ Https:
 #   ServerCertificatePassword: ""
 #   PinnedClientSpki: ""                       # printed by --issue-node-identity
 #   IdentityCa: "config/signer-identity-ca.pfx"   # written by --init-identity; never read at runtime
+#   # --- the signer's issuance journal (read by whichever process holds the keys) ---
+#   Journal:
+#     Directory: "signer/journal"              # the journal's home: <install directory>/signer/journal, or journal/ in the
+#                                              # signer's own directory (--signer-dir). An absolute path puts it elsewhere,
+#                                              # and MODULARCA__SIGNER__JOURNAL__DIRECTORY overrides it. A volume may be
+#                                              # mounted on it. Never roll it back or restore it with the keystores or the
+#                                              # database. A full volume stops issuance.
+#     Checks: "enforce"                        # enforce (default) | warn: whether a CRL that drops a revoked serial,
+#                                              # and an OCSP "good" for a serial on the newest CRL, are refused or logged
+#     LowSpaceMiB: 1024                        # free space under which /health/ready says low_space; 0 = never
+#     CriticalSpaceMiB: 128                    # free space under which it says critical_space; 0 = never. Both only
+#                                              # warn: the signer issues until a write to the journal fails
 #   IdentityCaPassword: ""
 
 # Process roles. By default one process runs every role. A process may run any subset:

@@ -59,7 +59,7 @@ reach is the fallback, with the directory's own mode as the fence.
 
 ## The contract
 
-Version `1.1`. Within major version 1 the contract only grows: operations and optional fields
+Version `1.2`. Within major version 1 the contract only grows: operations and optional fields
 are added, none is removed or changes meaning. Both sides ignore fields they do not know.
 The minor version is raised when an operation is added. A hub that states any `1.x` is served,
 `1.0` included; it learns what the instance has from `hello`, and an operation the instance
@@ -69,8 +69,9 @@ does not have is answered `404 operation_not_listed`.
 |---|---|
 | `1.0` | `hello`, `health.read`, `mode.read`, `mode.set`, `backup.create`, `affiliation-token.replace` |
 | `1.1` | `inventory.read`, `backup.prune`; `instanceId` in the answer of `hello` |
+| `1.2` | `systemKey` in the answer of `hello`; `journal` in the inventory; `checks.journal` in `health.read`. No operation was added |
 
-A hub that states `1.0` is served as before: the header is checked for its major version only.
+A hub that states `1.0` or `1.1` is served as before: the header is checked for its major version only.
 A hub learns what an instance has from `hello`, not from the version number: an instance at `1.0`
 answers `inventory.read` and `backup.prune` with `404 operation_not_listed`.
 
@@ -79,7 +80,7 @@ answers `inventory.read` and `backup.prune` with `404 operation_not_listed`.
 | Header | Required | Meaning |
 |---|---|---|
 | `Authorization: Bearer <token>` | When the instance holds a hash | The affiliation token. |
-| `X-ModularCA-Hub-Contract: 1.1` | Always | The hub's contract version; any `1.x` is served. |
+| `X-ModularCA-Hub-Contract: 1.2` | Always | The hub's contract version; any `1.x` is served. |
 | `X-ModularCA-Hub-Request-Id` | On requests that change something | 1 to 128 of letters, digits, `.`, `_`, `:`, `-`. |
 | `X-ModularCA-Hub-Operator` | No | The name of the person at the hub. Recorded as the hub's claim; never trusted. Cut to 128 characters. |
 
@@ -87,7 +88,7 @@ answers `inventory.read` and `backup.prune` with `404 operation_not_listed`.
 
 | Operation | Request | Body | Answer |
 |---|---|---|---|
-| `hello` | `POST /hub/v1/hello` | `{ contractVersion, operations[] }` | `{ contractVersion, operations[], instanceVersion, tokenCheck, instanceId? }` |
+| `hello` | `POST /hub/v1/hello` | `{ contractVersion, operations[] }` | `{ contractVersion, operations[], instanceVersion, tokenCheck, instanceId?, systemKey? }` |
 | `health.read` | `GET /hub/v1/health` | none | `{ status, mode, tokenCheck, instanceVersion, contractVersion, timestampUtc, checks }` |
 | `mode.read` | `GET /hub/v1/mode` | none | `{ mode, source, setBy, reason, setAtUtc }` |
 | `mode.set` | `PUT /hub/v1/mode` | `{ mode, reason? }` | the mode record, as `mode.read` |
@@ -128,9 +129,10 @@ answers `inventory.read` and `backup.prune` with `404 operation_not_listed`.
 
 ### The instance identifier in `hello`
 
-    { "contractVersion": "1.1", "operations": [ "hello", "..." ], "instanceVersion": "0.4.5",
+    { "contractVersion": "1.2", "operations": [ "hello", "..." ], "instanceVersion": "0.4.5",
       "tokenCheck": "enforced",
-      "instanceId": "9f2c4a1b8e7d6350f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708" }
+      "instanceId": "9f2c4a1b8e7d6350f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708",
+      "systemKey": "0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e" }
 
 - **What it is.** The identifier of the instance: 64 lower-case hex digits. It names the
   instance, not the host or the process: every node of the instance answers the same value, and
@@ -157,6 +159,26 @@ answers `inventory.read` and `backup.prune` with `404 operation_not_listed`.
 - **Before the first store.** A node whose control role has started on this build has stored the
   identifier before the socket opens. Should the store have failed at that start (it never stops
   a start), `hello` answers the derived value, which is the value the next start stores.
+
+### The system key in `hello`
+
+Since `1.2`. `systemKey` is the SHA-256 of the public key (SubjectPublicKeyInfo, DER) of the
+instance's system key, 64 lower-case hex digits.
+
+- **What it is for.** The signer's journal (`signer-journal.md`) carries the same value beside
+  each checkpoint key, and the system key signs for every checkpoint key. A hub records it at
+  first contact and verifies an instance's journal from it.
+- **It follows the key.** Unlike `instanceId`, which is written once, an instance whose system
+  key was replaced answers the new key's hash at the next `hello`. A hub treats a different
+  value as something to explain: the journal's `CheckpointKeyChanged` record is signed by the
+  key before it, or says what explains it (a restore, or a changed incarnation), which the hub
+  matches against what it did itself.
+- **Where it is read.** The pin the instance keeps for the keystore its CA keys are in, in its
+  database. Read at each `hello`.
+- **Absent means not known**: an install from before keystore pins that has not been
+  backfilled, a stored value that is not a SHA-256, or a database that could not be read.
+- At the first start of a build that stores the identifier, `instanceId` and `systemKey` are the
+  same value.
 
 ### The inventory
 
@@ -213,7 +235,18 @@ instance already knows about itself.
       "crl": null,
       "ocspResponderCertificateExpiresAtUtc": null
     }
-  ]
+  ],
+  "journal": {
+    "available": true,
+    "seq": 18231,
+    "sizeBytes": 31457280,
+    "freeBytes": 52428800000,
+    "lastCheckpointAtUtc": "2026-11-12T08:59:28Z",
+    "lastCheckpointAgeSeconds": 2,
+    "checkedAtUtc": "2026-11-12T08:59:30Z",
+    "setAsideJournals": 1,
+    "setAsideBytes": 4194304
+  }
 }
 ```
 
@@ -234,6 +267,104 @@ instance already knows about itself.
 | `…crl` | The newest full CRL already signed for the CA: its CRL `number`, and `nextUpdateUtc`, the nextUpdate written in it, by which the next is due. Delta CRLs are not counted. | No full CRL has been signed for the CA. |
 | `…ocspResponderCertificateExpiresAtUtc` | The notAfter of the CA's delegated OCSP responder certificate. | The CA has none. |
 
+| `journal` | Since `1.2`. The signer's issuance journal as the instance knew it the last time its readiness check asked the signer (`/health/ready`, and so every `health.read`): `available` (false means the signer issues no certificate and signs no CRL until it can write), `seq` (the last record flushed), `sizeBytes` (what its segments take), `freeBytes` (the free space on its volume), `lastCheckpointAtUtc` and `lastCheckpointAgeSeconds` (its age when the instance asked), `checkedAtUtc`: the values are as old as that, and `setAsideJournals` and `setAsideBytes`: how many journals lie set aside in the journal's home (`set-aside-instance-…`, `set-aside-reset-…`), and what their files take. They are on the journal's volume, and nothing prunes them. No hash, key, serial or record is sent. | The readiness check has not run since this process started, or the signer keeps no journal (it is locked, or predates it). `freeBytes` alone is null when the signer could not read it; `lastCheckpointAtUtc` and its age are null when this run of the signer has written no checkpoint. |
+
+- **The journal in `health.read`.** `checks.journal` carries the same figures with a `status`
+  and a `message` for an administrator. One status, the first of these that holds:
+
+  | `status` | Means | Makes the instance |
+  |---|---|---|
+  | `none` | the signer keeps no journal | nothing |
+  | `unavailable` | the journal cannot be written; the signer issues nothing and signs no CRL | `degraded` |
+  | `not_verified` | the journal on disk did not verify when the signer started; nothing is restored from it | nothing |
+  | `crl_refused` | the signer refused the last full CRL of at least one CA, because it left out revoked serials, and the merge could not cure it | nothing |
+  | `merge_pending` | revocations the journal holds are missing from the database and wait for the instance to leave DR mode | nothing |
+  | `merge_running` | the node is making lost revocations again from the journal | nothing |
+  | `awaiting_restore_marker` | the journal waits, ten minutes at most, for a restore to explain a changed system key; the signer signs meanwhile | nothing |
+  | `critical_space` | free space under the signer's `Signer.Journal.CriticalSpaceMiB` (128 by default) | nothing |
+  | `low_space` | free space under `Signer.Journal.LowSpaceMiB` (1024 by default) | nothing |
+  | `stale_checkpoint` | records have waited more than a minute for a checkpoint | nothing |
+  | `ok` | none of these | nothing |
+
+  - **Only `unavailable` changes the instance's status**, to `degraded`, never `unhealthy`. No
+    status of the journal makes `--check-ready` fail: a runner that waits for ready after a
+    start, an upgrade or a roll-back is not held up by the journal, and reads the journal's
+    state here. A status this list does not have should be shown as not ok.
+  - **At `critical_space` the instance goes on issuing** until a write to the journal fails;
+    from then it is `unavailable`. The two levels are options of the signer; `lowSpaceBytes`
+    and `criticalSpaceBytes` in the check are the ones in force.
+  - **`awaiting_restore_marker`**: `awaitingRestoreMarkerUntilUtc` and
+    `awaitingRestoreMarkerSecondsLeft` say when the wait ends. The instance is ready and signs
+    throughout. After a roll-back that changed the system key this status is expected for up to
+    ten minutes; then the change is in the journal unexplained, which `--journal-verify`
+    reports as a fault for the hub to match against the roll-back it started.
+  - **`crl_refused`**: `refusedCrls` has one entry for each CA: `caId`, `caName`, `caKey`,
+    `missingSerials`, `refusedAtUtc`, `journaledCrlNumber`, `publishedCrlExpiresAtUtc` (the
+    `nextUpdate` of the CA's newest stored full CRL: the deadline, as `crlsExpireFromUtc` is in
+    `mode.read`), `consolePath` (the page of the instance's console that lists the missing
+    serials and offers to revoke them, `/admin/authorities/manage/{caId}#missing-from-crl`: a
+    path on the instance, for a link a person follows) and `serialsAt`, the path of the administrator's API that lists every missing
+    serial for that CA (`GET /api/v1/admin/authorities/{caId}/revoked-serials/missing-from-crl`,
+    not an operation of this socket). The list is present, and empty, in every other status.
+  - **The merge** (`signer-journal.md`, section 16). After a roll-back or a restore onto
+    volumes that kept the journal, the node makes again every revocation the journal holds and
+    its database lacks, in the background after it has started: it is ready without waiting.
+    `merge` lists each CA: `state` (`running`, `pending`, `done`, `not_trusted`, `failed`),
+    `merged`, `remaining`, `journalEntries`, `atUtc`, `message`. In DR mode nothing is made:
+    the CAs are `pending` with the count in `remaining`, and are merged once the mode is
+    changed. When it is done, a notice of kind `RevocationsMergedFromJournal` stands in
+    `checks.continuity` until an administrator acknowledges it. Until the merge reaches a
+    serial, OCSP does not answer "good" for it: the signer refuses, and the client gets an
+    error for that request.
+  - `verified` (null while the signer is still checking) and `verificationFault`: whether the
+    journal on disk verified at the signer's start, as `--journal-verify` would say.
+    `verifiedBytes` and `verifyTotalBytes` say how far that has got: both null before it
+    begins, equal when it has read to the end. The node is ready, the signer signs, and the
+    CRL and OCSP checks answer throughout; only the merge waits for it.
+  - **After a roll-back that put back an older system key**: what the journal recorded under
+    the keys before is not a merge source, and what the signer records under the key it holds
+    is. There is no lasting bar: a CA's revocations are merged again from the first full CRL
+    the signer signs for it after the change (`signer-journal.md`, section 16).
+  - Also: the head's `hash`; `uncheckpointedRecords`; `queuedFacts`, the facts that wait in the
+    instance's queue for the signer; `setAsideJournals` and `setAsideBytes`.
+  - With no activity the last checkpoint is as old as the last record: its age is a concern
+    only while `uncheckpointedRecords` is above zero.
+  - A signer that started over an existing journal and has recorded nothing yet has written
+    nothing and is `available`; an unwritable directory is found at its first record.
+- **The journal's head** itself is not read over the socket. The runner reads it from the
+  files with `--role signer --journal-head` (`packaging/README-DEPLOY.md`, "The signer's
+  issuance journal"). `--sealed-from <sequence>` lists the sealed segments that begin at or
+  after a sequence and reads no older one. The head's `checkpointKey.systemPublicKey` is the
+  key whose hash `hello` answers as `systemKey`, so `systemSignature` is checked from the head
+  alone.
+- **The journal's volume.** Mount it directly on the journal's home and name the home with
+  `MODULARCA__SIGNER__JOURNAL__DIRECTORY` (the default in the signer's container is
+  `/opt/modularca/signer/journal`). The home is never renamed. The signer makes `current/` in
+  an empty home and keeps the live segments there: copy from `<home>/current/<name>`. A journal
+  of another instance found in `current/` is set aside inside the home, as
+  `set-aside-instance-<16 letters and digits of its identifier>-<yyyyMMdd-HHmmss-fff>`; a
+  factory reset of a one-process install sets aside as `set-aside-reset-<yyyyMMdd-HHmmss-fff>`.
+  `current` can be set aside between a read of the head and a copy: read the head again when a
+  file is gone or the `instanceId` differs. The head command takes the home (it reads
+  `current/`) or a set-aside directory. Do not roll this volume back with the keystores or the
+  database.
+- **The key of a journal is `instanceId` and `genesisHash`** (with `term` and `incarnation`):
+  the head prints the hash of the journal's `Genesis` record, from the newest segment alone, so
+  the short head has it every second and a bare copy has it without its name. It is `null`
+  only for a journal the first test build wrote, and then `--sealed` or `--sealed-from` gives
+  it from the first segment.
+- **`instanceId`, `term` and `incarnation` alone do not identify a journal.** `term` is 0, and
+  `incarnation` is all zero where the variable is not set. A factory reset makes a new
+  identifier before the new `current/` begins, so a reset's set-aside journal differs from
+  what follows it. But an archive restored onto a host that ran another instance, or onto an
+  empty volume, begins a new journal with the identifier that instance always had: a set-aside
+  journal and a later `current`, or two set-aside journals, can carry the same three and be
+  different chains. Key a copy by the set-aside name as well, or by the hash of its first
+  records.
+- **A start that records nothing leaves no file.** A signer restarted in a loop makes no
+  segment per start. One-off containers of the signer's image (`--journal-head`,
+  `--journal-verify`, `--upgrade-check`, `--check-ready`, `--backup-manifest`, `--restore`)
+  write nothing to the journal directory; the restore's marker is a row in the database.
 - **SSH CAs are not listed.** An SSH CA has no certificate that expires, no CRL and no OCSP
   responder, so every field here would be null for it.
 - **The verification record.** The backup verification job writes what each run found to
@@ -260,7 +391,7 @@ instance already knows about itself.
 ### Errors
 
 Every refusal and failure has the body
-`{ "error": "<code>", "message": "...", "contractVersion": "1.1", "operations": [...]? }`.
+`{ "error": "<code>", "message": "...", "contractVersion": "1.2", "operations": [...]? }`.
 
 | Status | Code | When |
 |---|---|---|

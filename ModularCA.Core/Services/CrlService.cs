@@ -77,6 +77,13 @@ public class CrlService : ICrlService
     private readonly ModularCA.Shared.Modes.IInstanceModeGate? _modeGate;
 
     /// <summary>
+    /// The merge of revocations from the signer's journal, run for a CA before its CRL is
+    /// generated when it has not run yet in this process, and again when the signer refuses a
+    /// CRL for leaving out revoked serials. Null where nothing registers one (tests, tools).
+    /// </summary>
+    private readonly ModularCA.Core.Services.Journal.IJournalRevocationMerge? _merge;
+
+    /// <summary>
     /// Constructs the CRL service. The unused <c>IFeatureFlagService</c> dependency
     /// that was wired in but never referenced has been removed.
     /// Added <see cref="IAuditService"/> so each
@@ -86,9 +93,11 @@ public class CrlService : ICrlService
     /// </summary>
     public CrlService(ModularCADbContext dbContext, IKeystoreCertificates keystore, ILogger<CrlService> logger, IAuditService audit,
         ICaServiceUrlService caServiceUrls, ILdapSecretProtector ldapSecretProtector, ISigningService signer,
-        ModularCA.Shared.Modes.IInstanceModeGate? modeGate = null)
+        ModularCA.Shared.Modes.IInstanceModeGate? modeGate = null,
+        ModularCA.Core.Services.Journal.IJournalRevocationMerge? merge = null)
     {
         _modeGate = modeGate;
+        _merge = merge;
         _dbContext = dbContext;
         _keystore = keystore;
         _logger = logger;
@@ -110,7 +119,78 @@ public class CrlService : ICrlService
     /// <see cref="AuditActionType.CrlGenerated"/> audit record after successful persistence,
     /// with <c>IsDelta=false</c> in the details payload.
     /// </summary>
+    /// <remarks>
+    /// The signer holds a CRL to the newest one in its journal. When it refuses this one because
+    /// the number does not rise, the database's counter is behind the journal: a CRL was signed
+    /// and its save failed, or the database was taken back. The counters are then raised to
+    /// the time-derived floor a restore applies (<see cref="CrlNumberFloor"/>) and the CRL is
+    /// generated once more.
+    /// <para>
+    /// A database that has gone back in time has also lost revocations. Before the CA's first
+    /// CRL of this process the merge makes again every revocation the signer's journal holds and
+    /// the database lacks (<see cref="ModularCA.Core.Services.Journal.JournalRevocationMerge"/>).
+    /// When the signer still refuses the CRL for leaving out revoked serials, the merge runs
+    /// once more and the CRL is generated once more; a second refusal is the caller's, and
+    /// stands in the health answer.
+    /// </para>
+    /// </remarks>
     public async Task<string> GenerateCrlAsync(Guid caCertificateId, CancellationToken cancellationToken = default)
+    {
+        ModularCA.Shared.Modes.InstanceModeGate.ThrowIfRefused(_modeGate, ModularCA.Shared.Modes.ModeOperation.Fact, "Signing a new CRL");
+        if (_merge != null)
+            await _merge.EnsureMergedAsync(caCertificateId, cancellationToken);
+        try
+        {
+            return await GenerateCrlNumberedAsync(caCertificateId, cancellationToken);
+        }
+        catch (SigningRefusedException ex) when (_merge != null && ex.Reason == SigningRefusalReason.CrlNotContinuous && !IsNumberBehindJournal(ex))
+        {
+            // The signer's journal lists revocations this CRL left out. Make them again, once, and generate again.
+            _dbContext.ChangeTracker.Clear();
+            var merged = await _merge.MergeForCertificateAsync(caCertificateId, cancellationToken);
+            if (merged is not { Merged: > 0 })
+                throw;
+            _logger.LogWarning("The signer refused a CRL for CA certificate {CaId} because it left out revoked serials; {Count} revocation(s) were restored from the signer's journal and the CRL is generated again.",
+                caCertificateId, merged.Merged);
+            return await GenerateCrlNumberedAsync(caCertificateId, cancellationToken);
+        }
+    }
+
+    /// <summary>Generates the CRL, and once more after raising the counters when the signer says its number is behind the journal.</summary>
+    private async Task<string> GenerateCrlNumberedAsync(Guid caCertificateId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await GenerateCrlOnceAsync(caCertificateId, cancellationToken);
+        }
+        catch (SigningRefusedException ex) when (IsNumberBehindJournal(ex))
+        {
+            await RaiseNumbersPastJournalAsync(caCertificateId, ex, cancellationToken);
+            return await GenerateCrlOnceAsync(caCertificateId, cancellationToken);
+        }
+    }
+
+    /// <summary>Whether the signer refused a CRL because its number does not rise above the one in its journal.</summary>
+    internal static bool IsNumberBehindJournal(SigningRefusedException ex)
+        => ex.Reason == SigningRefusalReason.CrlNotContinuous && ex.Message.Contains("carries number", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Raises every CRL counter to the time-derived floor after the signer said a number was
+    /// behind its journal, and forgets what this context tracked of the attempt that was rolled
+    /// back, so the second attempt reads the counters as they now are.
+    /// </summary>
+    private async Task RaiseNumbersPastJournalAsync(Guid caCertificateId, SigningRefusedException refusal, CancellationToken cancellationToken)
+    {
+        _dbContext.ChangeTracker.Clear();
+        var floor = CrlNumberFloor.FloorAt(DateTimeOffset.UtcNow);
+        var raised = await CrlNumberFloor.ApplyAsync(_dbContext, floor, cancellationToken);
+        _logger.LogWarning(
+            "The signer refused a CRL for CA certificate {CaId} because its number is not above the one in the signer's journal ({Refusal}). "
+            + "The database's CRL counters were behind; {Count} were raised to {Floor} and the CRL is generated again.",
+            caCertificateId, refusal.Message, raised.Count, floor);
+    }
+
+    private async Task<string> GenerateCrlOnceAsync(Guid caCertificateId, CancellationToken cancellationToken)
     {
         ModularCA.Shared.Modes.InstanceModeGate.ThrowIfRefused(_modeGate, ModularCA.Shared.Modes.ModeOperation.Fact, "Signing a new CRL");
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -353,7 +433,21 @@ public class CrlService : ICrlService
     /// Audit findings #26: emits an <see cref="AuditActionType.CrlGenerated"/> audit record
     /// with <c>IsDelta=true</c> in the details payload after successful persistence.
     /// </summary>
+    /// <remarks>As for a full CRL, a number the signer says is behind its journal raises the counters and the delta is generated once more.</remarks>
     public async Task<string> GenerateDeltaCrlAsync(Guid caCertificateId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await GenerateDeltaCrlOnceAsync(caCertificateId, cancellationToken);
+        }
+        catch (SigningRefusedException ex) when (IsNumberBehindJournal(ex))
+        {
+            await RaiseNumbersPastJournalAsync(caCertificateId, ex, cancellationToken);
+            return await GenerateDeltaCrlOnceAsync(caCertificateId, cancellationToken);
+        }
+    }
+
+    private async Task<string> GenerateDeltaCrlOnceAsync(Guid caCertificateId, CancellationToken cancellationToken)
     {
         ModularCA.Shared.Modes.InstanceModeGate.ThrowIfRefused(_modeGate, ModularCA.Shared.Modes.ModeOperation.Fact, "Signing a new delta CRL");
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();

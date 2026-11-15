@@ -28,6 +28,14 @@ public interface IHubLocalOperations
     /// <param name="cancellationToken">Cancels the read.</param>
     Task<string?> ReadInstanceIdAsync(CancellationToken cancellationToken);
 
+    /// <summary>
+    /// SHA-256 of the system key's public key (SubjectPublicKeyInfo), lower-case hex, for
+    /// <c>hello</c>'s <c>systemKey</c>. Null when it is not known. Does not throw for a key that
+    /// cannot be read: that is null too.
+    /// </summary>
+    /// <param name="cancellationToken">Cancels the read.</param>
+    Task<string?> ReadSystemKeyAsync(CancellationToken cancellationToken) => Task.FromResult<string?>(null);
+
     /// <summary>Runs the instance's readiness checks.</summary>
     /// <param name="cancellationToken">Cancels the read.</param>
     Task<HubHealthReport> ReadHealthAsync(CancellationToken cancellationToken);

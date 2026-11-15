@@ -45,6 +45,16 @@ public sealed record SigningContext(string Caller, SigningPurpose Purpose, Guid?
     public bool InstanceScope { get; init; }
 
     /// <summary>
+    /// What the node knows about the issuance this signature is for and the signer does not:
+    /// the one-time tokens it spent, what it answers, the certificate it replaces, and what the
+    /// new certificate belongs to, with the protocol and the requester. The signer writes it
+    /// into the certificate's journal record and takes no decision from it. Token identifiers
+    /// only, never a token or a hash of one. Null on a signature that issues no certificate and
+    /// from a node older than the journal; a member the node does not know is absent.
+    /// </summary>
+    public IssuanceOrigin? Issuance { get; init; }
+
+    /// <summary>
     /// A context whose scope the caller states: <paramref name="spaceId"/>'s, or the instance's
     /// when it is null.
     /// </summary>

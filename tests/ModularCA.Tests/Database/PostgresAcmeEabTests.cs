@@ -64,6 +64,29 @@ public class PostgresAcmeEabTests
             var eab = await read.AcmeEabKeys.SingleAsync();
             Assert.True(eab.IsUsed);
             Assert.Equal(account.Id, eab.UsedByAccountId);
+
+            // The one claim that won queued one fact for the signer's journal, in a statement of
+            // its own beside the bulk update: the binding was spent, by its row id.
+            var fact = await read.SignerFacts.SingleAsync();
+            Assert.Equal(ModularCA.Journal.RecordType.SpentWithoutCertificate, fact.Type);
+            var spent = ModularCA.Journal.SpentWithoutCertificatePayload.Decode(fact.Payload);
+            Assert.Equal((ModularCA.Journal.TokenKind.AcmeExternalAccountBinding, eab.Id.ToString("D")), (spent.Kind, spent.Id));
+
+            // A restore leaves its marker in the same queue, and the queue is handed to the signer in order.
+            Assert.True(await ModularCA.Bootstrap.BackupRestore.QueueRestoreMarkerAsync(connection, "modularca-backup-test.enc",
+                "{\"Version\":\"1.0\",\"Timestamp\":\"2026-11-12T01:00:07Z\",\"InstanceId\":\"" + new string('9', 64) + "\"}"));
+            using var sandbox = new ModularCA.Tests.Journal.JournalSandbox();
+            await using var journal = new ModularCA.Keystore.Signing.SignerJournal(() => sandbox.Options(),
+                new ModularCA.Keystore.Signing.SignerJournalSettings(sandbox.Home, true, "test", new byte[32]), Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+            var world = ModularCA.Tests.Signer.SignerTestWorld.Create();
+            var signer = TestSigner.Over(world.Keystore, world.DatabaseName, world.Persistence, journal);
+            await using (var drain = Open())
+                Assert.Equal(2, await ModularCA.Core.Services.Journal.SignerFactDrain.DrainOnceAsync(drain, signer, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance));
+            await using (var after = Open())
+                Assert.Empty(await after.SignerFacts.ToListAsync());
+            var asserted = sandbox.Records().Where(r => r.Record.NodeAsserted).Select(r => r.Record).ToList();
+            Assert.Equal(new[] { ModularCA.Journal.RecordType.SpentWithoutCertificate, ModularCA.Journal.RecordType.RestoreMarker }, asserted.Select(r => r.Type));
+            Assert.Equal("modularca-backup-test.enc", ModularCA.Journal.RestoreMarkerPayload.Decode(asserted[1].Payload).Archive);
         }
         finally
         {

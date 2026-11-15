@@ -223,6 +223,7 @@ public class MsaeEnrollmentService(
             SourceIp = sourceIp,
             ResolvedContext = context,
             ProfileHint = audit.TemplateName,
+            TemplateId = templateRow?.Id,
             RequestorUserId = requestor,
             RequestedExtensions = requested,
             IssuanceRefusalIsRefusal = true,
@@ -400,7 +401,11 @@ public class MsaeEnrollmentService(
     }
 
     /// <summary>The identity of a template offered to Windows: its OID and version as stored.</summary>
-    private sealed record TemplateRow(string Oid, int Major, int Minor);
+    private sealed record TemplateRow(string Oid, int Major, int Minor)
+    {
+        /// <summary>The template's row id, for the certificate's record in the signer's journal.</summary>
+        public Guid Id { get; init; }
+    }
 
     /// <summary>
     /// The resolved template's OID and version, the same values the policy service advertises and
@@ -411,9 +416,9 @@ public class MsaeEnrollmentService(
         if (templateName == null) return null;
         var t = await db.CertificateTemplates.AsNoTracking()
             .Where(x => x.Name == templateName && x.MsaeTemplateOid != null)
-            .Select(x => new { x.MsaeTemplateOid, x.MsaeMajorVersion, x.MsaeMinorVersion })
+            .Select(x => new { x.Id, x.MsaeTemplateOid, x.MsaeMajorVersion, x.MsaeMinorVersion })
             .FirstOrDefaultAsync();
-        return t == null ? null : new TemplateRow(t.MsaeTemplateOid!, t.MsaeMajorVersion, t.MsaeMinorVersion);
+        return t == null ? null : new TemplateRow(t.MsaeTemplateOid!, t.MsaeMajorVersion, t.MsaeMinorVersion) { Id = t.Id };
     }
 
     /// <summary>

@@ -512,6 +512,25 @@ L overall:
 
 ## Item 2: a signer-local issuance journal
 
+**Partly built (0.4.5).** `signer-journal.md` states what is built and the format as it is on
+disk; where it and the text below differ, it is what the code does. The record layout was
+agreed with the hub and differs from the "Format" section below: a fixed part of 96 bytes with
+a two-byte type, flags, a term and the incarnation; one journal per instance, with no member in
+the path; a dedicated checkpoint key signed by the system key, not the member's system key;
+sealed segments that are renamed and never compressed.
+
+| Part of this item | State |
+|---|---|
+| The format, the writer, group commit, fail closed, checkpoints, sealing | built |
+| `Certificate`, `Crl`, `SshCertificate` records; the facts through `RecordFact` | built |
+| CRL monotonicity and OCSP consistency at the signer | built |
+| The head in a backup's manifest; `--journal-head`, `--journal-verify` | built |
+| `SignerAudit` | unchanged: still written for every decision, still fail-closed in the signer role |
+| OCSP summaries, `Sign` for SCEP, CMP and TSA, key operations, secret wraps, ceremonies, registry changes, refusals | not written |
+| `ReadJournal`, `JournalRead`, the console page, `--journal export` | not built |
+| Post-restore recovery, adoption after a failover, the comparison with `SignerAudit` | not built |
+| Retention and pruning, the sealed segments in the archive, off-host checkpoints in the log | not built |
+
 ### Where it stands
 
 - **One row per decision in the node's database.** `SignerAudit` (`SignerAuditEntity.cs`) holds

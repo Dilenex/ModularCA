@@ -12,6 +12,8 @@ Pod=modularca-node.pod
 Exec=--role signer
 Volume=modularca-node-config:/opt/modularca/config:Z
 Volume=modularca-node-keystores:/opt/modularca/keystores:Z
+# The issuance journal, on a volume of its own mounted on its home.
+Volume=modularca-node-journal:/opt/modularca/signer/journal:Z
 Volume=modularca-node-data:/var/lib/modularca:Z
 
 [Service]
