@@ -24,6 +24,8 @@ const TEXT: Record<string, string> = {
     'reject-request': "Reject a certificate request",
     'manage-kerberos-realm': 'Change a Kerberos realm binding or its keys',
     'revoke-cert': 'Revoke a certificate',
+    'revoke-serial': 'Revoke a serial number that has no certificate here',
+    'adopt-certificate': 'Adopt a certificate supplied from outside',
     'hold-cert': 'Place a certificate on hold',
     'unhold-cert': 'Lift the hold on a certificate',
     'retire-cert': 'Retire a certificate, so it is never renewed',

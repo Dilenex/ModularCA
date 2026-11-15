@@ -590,8 +590,10 @@ public class AdminRevocationController(
 
     /// <summary>
     /// Enforces space isolation for certificate operations. Resolves the certificate's CA
-    /// space via the signing profile linkage and checks that the caller's <see cref="SpaceFence"/>
-    /// admits it for cert.revoke. An instance-wide caller passes. Returns null on allow, NotFound on deny.
+    /// space via the signing profile linkage (or, for a certificate adopted from outside, the CA
+    /// that verified it: <see cref="AdoptedCertificateScope"/>) and checks that the caller's
+    /// <see cref="SpaceFence"/> admits it for cert.revoke. An instance-wide caller passes.
+    /// Returns null on allow, NotFound on deny.
     /// </summary>
     private async Task<IActionResult?> EnforceSpaceFenceForCertAsync(Guid? certId, string? serial)
     {
@@ -615,7 +617,9 @@ public class AdminRevocationController(
         if (cert == null)
             return NotFound();
 
-        if (cert.SigningProfileId == null) return NotFound();
+        // An adopted certificate has no signing profile: its space is that of the CA that verified it.
+        if (cert.SigningProfileId == null)
+            return await AdoptedCertificateScope.CaOfAsync(_dbContext, cert) is { } adopted && fence.Allows(adopted.SpaceId) ? null : NotFound();
         var config = await _dbContext.CaProtocolConfigs
             .Include(pc => pc.Ca)
             .AsNoTracking()
@@ -663,12 +667,13 @@ public class AdminRevocationController(
     }
 
     /// <summary>
-    /// Resolves the CA ID and space ID from a certificate ID via its signing profile linkage.
+    /// Resolves the CA ID and space ID from a certificate ID via its signing profile linkage,
+    /// or, for an adopted certificate, the CA that verified it.
     /// </summary>
     private async Task<(Guid CaId, Guid? SpaceId)?> ResolveCaFromCertIdAsync(Guid certId)
     {
         var cert = await _dbContext.Certificates.AsNoTracking().FirstOrDefaultAsync(c => c.CertificateId == certId);
-        if (cert?.SigningProfileId == null) return null;
+        if (cert?.SigningProfileId == null) return await AdoptedCertificateScope.CaOfAsync(_dbContext, cert);
         var config = await _dbContext.CaProtocolConfigs
             .Include(pc => pc.Ca)
             .AsNoTracking()
@@ -678,12 +683,13 @@ public class AdminRevocationController(
     }
 
     /// <summary>
-    /// Resolves the CA ID and space ID from a certificate serial number via its signing profile linkage.
+    /// Resolves the CA ID and space ID from a certificate serial number via its signing profile
+    /// linkage, or, for an adopted certificate, the CA that verified it.
     /// </summary>
     private async Task<(Guid CaId, Guid? SpaceId)?> ResolveCaFromSerialAsync(string serial)
     {
         var cert = await _dbContext.Certificates.AsNoTracking().ResolveBySerialOrNullAsync(serial);
-        if (cert?.SigningProfileId == null) return null;
+        if (cert?.SigningProfileId == null) return await AdoptedCertificateScope.CaOfAsync(_dbContext, cert);
         var config = await _dbContext.CaProtocolConfigs
             .Include(pc => pc.Ca)
             .AsNoTracking()

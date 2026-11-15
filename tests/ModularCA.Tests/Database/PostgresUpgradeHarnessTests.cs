@@ -1709,7 +1709,10 @@ public class PostgresUpgradeHarnessTests
                 // The rule gives the same instants, to the microsecond.
                 foreach (var serial in new[] { "leaf-90d", "leaf-10h", "ca-10y" })
                 {
-                    var row = await app.Certificates.AsNoTracking().SingleAsync(c => c.SerialNumber == serial);
+                    // Only the columns the rule reads: the schema here is at the migration under
+                    // test, and the entity has gained columns since.
+                    var row = await app.Certificates.AsNoTracking().Where(c => c.SerialNumber == serial)
+                        .Select(c => new { c.NotBefore, c.NotAfter, c.IsCA, c.ExpiryWarningAt, c.ExpiryAlertAt }).SingleAsync();
                     var (warningAt, alertAt) = ModularCA.Shared.Utils.ExpiryWarningRule.Compute(row.NotBefore, row.NotAfter, row.IsCA, null);
                     Assert.True(Math.Abs((warningAt - row.ExpiryWarningAt).TotalMilliseconds) < 1, serial);
                     Assert.True(Math.Abs((alertAt - row.ExpiryAlertAt).TotalMilliseconds) < 1, serial);

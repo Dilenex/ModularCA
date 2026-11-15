@@ -376,6 +376,9 @@ const CertificateDetail: React.FC = () => {
                                 ? <DetailField label="SANs" value={sans.join(', ')} />
                                 : <DetailField label="SANs" value={cert.subjectAlternativeNames?.join?.(', ') || '-'} />}
                             <DetailField label="Serial" value={cert.serialNumber} mono />
+                            {cert.adoptedAt && (
+                                <DetailField label="Adopted" value={`From outside, requester unknown. Adopted ${formatDate(cert.adoptedAt)}${cert.adoptedBy ? ` by ${cert.adoptedBy}` : ''}${cert.adoptionNote ? `: ${cert.adoptionNote}` : ''}`} />
+                            )}
                         </div>
                         <div>
                             <DetailField label="Not Before" value={formatDate(cert.notBefore)} />

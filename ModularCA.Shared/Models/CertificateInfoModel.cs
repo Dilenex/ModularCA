@@ -88,6 +88,19 @@ namespace ModularCA.Shared.Models
         /// <summary>Why it was retired.</summary>
         public string? RetiredReason { get; set; }
 
+        /// <summary>
+        /// When the certificate was adopted from outside, or null for one this instance issued.
+        /// An adopted certificate has no profile, no request and no known requester. Filled by
+        /// the certificate list and detail reads only.
+        /// </summary>
+        public DateTime? AdoptedAt { get; set; }
+
+        /// <summary>Who adopted it.</summary>
+        public string? AdoptedBy { get; set; }
+
+        /// <summary>Why it was adopted, as the administrator wrote it.</summary>
+        public string? AdoptionNote { get; set; }
+
         /// <summary>When its expiry warning was dismissed, or null. Filled by the certificate list and detail reads only.</summary>
         public DateTime? ExpiryWarningDismissedAt { get; set; }
 

@@ -22,6 +22,10 @@ public static class StepUpOps
     public const string RevokeCert = "revoke-cert";
     public const string HoldCert = "hold-cert";
     public const string UnholdCert = "unhold-cert";
+    /// <summary>Recording a serial as revoked for a CA with no certificate row behind it (a tombstone).</summary>
+    public const string RevokeSerial = "revoke-serial";
+    /// <summary>Adopting a certificate supplied from outside as a row of the CA whose key signed it.</summary>
+    public const string AdoptCertificate = "adopt-certificate";
 
     // User self-service revocation of an owned end-entity certificate
     public const string RevokeSelfCert = "revoke-self-cert";
@@ -275,6 +279,7 @@ public static class StepUpOps
         SwitchBadge,
         ManageKerberosRealm,
         RevokeCert, HoldCert, UnholdCert,
+        RevokeSerial, AdoptCertificate,
         RevokeSelfCert,
         ReissueCert,
         ExportCert,

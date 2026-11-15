@@ -190,6 +190,9 @@ public class ModularCADbContext : DbContext
     /// </summary>
     public DbSet<SignerAuditEntity> SignerAudit { get; set; }
 
+    /// <summary>Revoked serials with no certificate row: what the CRL and OCSP say about a certificate known only from outside.</summary>
+    public DbSet<RevokedSerialTombstoneEntity> RevokedSerialTombstones { get; set; }
+
     /// <summary>
     /// Applies the model-wide conventions that are not entity-specific.
     /// <para>
@@ -400,6 +403,19 @@ public class ModularCADbContext : DbContext
             .WithMany()
             .HasForeignKey(c => c.CaCertificateId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        // A tombstone belongs to the CA certificate whose CRL lists it. Restrict, as for the CRL
+        // configuration: deleting a CA certificate must not quietly take revocations off its CRL.
+        modelBuilder.Entity<RevokedSerialTombstoneEntity>(entity =>
+        {
+            entity.HasIndex(e => new { e.CaCertificateId, e.SerialNumber }).IsUnique();
+            entity.HasIndex(e => e.CertificateAuthorityId);
+            entity.HasOne(e => e.CaCertificate)
+                  .WithMany()
+                  .HasForeignKey(e => e.CaCertificateId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
+
 
         modelBuilder.Entity<CrlEntity>()
             .HasOne(c => c.Task)

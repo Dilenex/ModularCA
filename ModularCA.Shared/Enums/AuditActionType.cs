@@ -9,6 +9,17 @@ public static class AuditActionType
     public const string CertificateUnheld = "CertificateUnheld";
     public const string CertificateReissued = "CertificateReissued";
     public const string CertificateExported = "CertificateExported";
+    /// <summary>
+    /// A serial was recorded as revoked for a CA with no certificate row behind it (a tombstone).
+    /// Details name the serial, the reason, the administrator's note and until when the CRL lists it.
+    /// </summary>
+    public const string RevokedSerialRecorded = "RevokedSerialRecorded";
+    /// <summary>
+    /// A certificate supplied from outside was verified under a CA's key and adopted as a
+    /// certificate row with no known requester. Details name the serial and subject, the note,
+    /// and whether it was adopted revoked (and whether that came from a tombstone).
+    /// </summary>
+    public const string CertificateAdopted = "CertificateAdopted";
 
     // Authentication
     public const string UserLogin = "UserLogin";

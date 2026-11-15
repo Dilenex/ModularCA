@@ -95,7 +95,9 @@ public class CrlService : ICrlService
     /// monotonic CRL number atomically, and emits the <c>IssuingDistributionPoint</c>
     /// extension when the configuration scopes over a subset. Covers certificates issued under the
     /// CA's current certificate and any superseded certificate of the same CA with the same name and
-    /// key (see <see cref="IssuerChainResolver.SameKeyCaCertificateIdsAsync"/>). Emits an
+    /// key (see <see cref="IssuerChainResolver.SameKeyCaCertificateIdsAsync"/>), and the serials
+    /// revoked under them with no certificate row (<see cref="RevokedSerialTombstoneEntity"/>),
+    /// each until its <c>ListedUntil</c>. Emits an
     /// <see cref="AuditActionType.CrlGenerated"/> audit record after successful persistence,
     /// with <c>IsDelta=false</c> in the details payload.
     /// </summary>
@@ -195,15 +197,32 @@ public class CrlService : ICrlService
                 .ToListAsync(cancellationToken);
             revokedCount = revokedCerts.Count;
 
+            var listedSerials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var cert in revokedCerts)
             {
                 var revocationDate = cert.RevocationDate ?? now;
                 var reasonCode = GetCrlReasonCode(cert.RevocationReason);
-                var extensions = BuildEntryExtensions(cert);
+                var extensions = BuildEntryExtensions(cert.RevocationReason, cert.InvalidityDate);
                 if (extensions != null)
                     crlGen.AddCrlEntry(new BigInteger(cert.SerialNumber, 16), revocationDate, extensions);
                 else
                     crlGen.AddCrlEntry(new BigInteger(cert.SerialNumber, 16), revocationDate, reasonCode);
+                listedSerials.Add(cert.SerialNumber);
+            }
+
+            // Serials revoked with no certificate row (RevokedSerialService). A tombstone has no
+            // notAfter, so it is listed until its own ListedUntil. A serial a certificate row
+            // already lists is not listed twice.
+            var tombstones = await _dbContext.RevokedSerialTombstones
+                .Where(t => scope.Contains(t.CaCertificateId) && t.ListedUntil > now)
+                .AsNoTracking()
+                .ToListAsync(cancellationToken);
+            foreach (var tombstone in tombstones)
+            {
+                if (!listedSerials.Add(tombstone.SerialNumber))
+                    continue;
+                AddTombstoneEntry(crlGen, tombstone);
+                revokedCount++;
             }
 
             crlGen.AddExtension(X509Extensions.CrlNumber, false, new DerInteger(BigInteger.ValueOf(newCrlNumber)));
@@ -318,7 +337,8 @@ public class CrlService : ICrlService
     /// <summary>
     /// Generates a delta CRL containing only revocations since the last full CRL.
     /// RFC 5280 §5.2.4 — includes DeltaCRLIndicator and IssuingDistributionPoint extensions.
-    /// Scoped like the full CRL: the CA's certificates that share the signing key. Its base, and
+    /// Scoped like the full CRL: the CA's certificates that share the signing key, and the
+    /// tombstones recorded under them since the base. Its base, and
     /// the delta row it replaces, are this CA certificate's own (by configuration, not issuer DN).
     /// Audit findings #26: emits an <see cref="AuditActionType.CrlGenerated"/> audit record
     /// with <c>IsDelta=true</c> in the details payload after successful persistence.
@@ -421,14 +441,31 @@ public class CrlService : ICrlService
                 .ToListAsync(cancellationToken);
             revokedCount = revokedSinceBase.Count;
 
+            var listedSerials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var cert in revokedSinceBase)
             {
-                var extensions = BuildEntryExtensions(cert);
+                var extensions = BuildEntryExtensions(cert.RevocationReason, cert.InvalidityDate);
                 var revocationDate = cert.RevocationDate ?? cert.NotAfter;
                 if (extensions != null)
                     crlGen.AddCrlEntry(new BigInteger(cert.SerialNumber, 16), revocationDate, extensions);
                 else
                     crlGen.AddCrlEntry(new BigInteger(cert.SerialNumber, 16), revocationDate, GetCrlReasonCode(cert.RevocationReason));
+                listedSerials.Add(cert.SerialNumber);
+            }
+
+            // Tombstones recorded after the base, as the certificate rows above.
+            var tombstonesSinceBase = await _dbContext.RevokedSerialTombstones
+                .Where(t => scope.Contains(t.CaCertificateId)
+                    && t.ListedUntil > now
+                    && t.RevocationDate > baseFullCrl.GeneratedAt)
+                .AsNoTracking()
+                .ToListAsync(cancellationToken);
+            foreach (var tombstone in tombstonesSinceBase)
+            {
+                if (!listedSerials.Add(tombstone.SerialNumber))
+                    continue;
+                AddTombstoneEntry(crlGen, tombstone);
+                revokedCount++;
             }
 
             // Batched removeFromCRL lookup. Collect base CRL serials into a
@@ -630,22 +667,36 @@ public class CrlService : ICrlService
 
     /// <summary>
     /// Builds the per-entry CRL extension set — always the reason code,
-    /// plus the invalidity date when the cert carries one. Returns null when no extensions
+    /// plus the invalidity date when the entry carries one. Returns null when no extensions
     /// are needed so the caller can use the reason-only overload.
     /// </summary>
-    private static X509Extensions? BuildEntryExtensions(CertificateEntity cert)
+    private static X509Extensions? BuildEntryExtensions(string? revocationReason, DateTime? invalidityDate)
     {
-        if (cert.InvalidityDate == null)
+        if (invalidityDate == null)
             return null;
 
         var ext = new Dictionary<DerObjectIdentifier, X509Extension>
         {
             [X509Extensions.ReasonCode] = new X509Extension(false,
-                new DerOctetString(new CrlReason(GetCrlReasonCode(cert.RevocationReason)))),
+                new DerOctetString(new CrlReason(GetCrlReasonCode(revocationReason)))),
             [X509Extensions.InvalidityDate] = new X509Extension(false,
-                new DerOctetString(new Org.BouncyCastle.Asn1.X509.Time(cert.InvalidityDate.Value.ToUniversalTime()))),
+                new DerOctetString(new Org.BouncyCastle.Asn1.X509.Time(invalidityDate.Value.ToUniversalTime()))),
         };
         return new X509Extensions(ext);
+    }
+
+    /// <summary>
+    /// Adds the CRL entry of a serial revoked with no certificate row, with its recorded date,
+    /// reason and, when it has one, invalidity date: the same entry a certificate row gets.
+    /// </summary>
+    private static void AddTombstoneEntry(X509V2CrlGenerator crlGen, RevokedSerialTombstoneEntity tombstone)
+    {
+        var serial = new BigInteger(tombstone.SerialNumber, 16);
+        var extensions = BuildEntryExtensions(tombstone.RevocationReason, tombstone.InvalidityDate);
+        if (extensions != null)
+            crlGen.AddCrlEntry(serial, tombstone.RevocationDate, extensions);
+        else
+            crlGen.AddCrlEntry(serial, tombstone.RevocationDate, GetCrlReasonCode(tombstone.RevocationReason));
     }
 
     /// <summary>

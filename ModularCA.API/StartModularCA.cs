@@ -1343,6 +1343,8 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUserService, CurrentUserService>();
 
 builder.Services.AddScoped<ICertificateRevocationService, CertificateRevocationService>();
+// Revocation of what the database does not hold: tombstones and adoption of a supplied certificate.
+builder.Services.AddScoped<ModularCA.Core.Services.RevokedSerialService>();
 
 // ACME Protocol Services
 builder.Services.AddScoped<IAcmeNonceService, AcmeNonceService>();

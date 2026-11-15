@@ -21,7 +21,9 @@ namespace ModularCA.Core.Services.Ocsp;
 /// Enforces per-item policies — delegated-responder-only signing, validity
 /// and revocation checks on the signing chain, explicit thisUpdate/nextUpdate, extended-revoked
 /// for serials the CA never issued, issuer-scoped cert lookup, nonce length bounds, signed-request
-/// verification, hash-algorithm allowlist, and CA-label route binding.
+/// verification, hash-algorithm allowlist, and CA-label route binding. A serial revoked with no
+/// certificate row (<see cref="RevokedSerialTombstoneEntity"/>) is answered revoked with its
+/// recorded date and reason, not as never issued.
 /// </summary>
 public class OcspResponderService : IOcspService
 {
@@ -306,7 +308,20 @@ public class OcspResponderService : IOcspService
                 // RFC 6960 §4.4.8 extended revoked definition.
                 // Only respond "revoked at epoch" when we are authoritative for
                 // this issuer. Otherwise fall through to classic "unknown".
-                if (isOurIssuer)
+                // A serial revoked with no certificate row (a tombstone) is answered with its
+                // recorded date and reason, not as never issued: the administrator said what it is.
+                var tombstone = isOurIssuer && issuerScope.Count > 0
+                    ? await _db.RevokedSerialTombstones.AsNoTracking()
+                        .Where(t => t.SerialNumber == serialHex && issuerScope.Contains(t.CaCertificateId))
+                        .FirstOrDefaultAsync(cancellationToken)
+                    : null;
+                if (tombstone != null)
+                {
+                    var recorded = new RevokedStatus(tombstone.RevocationDate, MapRevocationReason(tombstone.RevocationReason));
+                    singleNextUpdate = now.AddMinutes(revokedTtlMinutes);
+                    respGen.AddResponse(certId, recorded, singleThisUpdate, singleNextUpdate, null);
+                }
+                else if (isOurIssuer)
                 {
                     var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
                     var neverIssued = new RevokedStatus(epoch, CrlReason.CertificateHold);

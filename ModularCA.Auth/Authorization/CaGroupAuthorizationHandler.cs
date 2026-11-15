@@ -445,7 +445,8 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
     private async Task<Guid?> ResolveCaFromCertIdAsync(Guid certId)
     {
         var cert = await _db.Certificates.AsNoTracking().FirstOrDefaultAsync(c => c.CertificateId == certId);
-        if (cert?.SigningProfileId == null) return null;
+        // An adopted certificate has no signing profile: its CA is the one that verified it.
+        if (cert?.SigningProfileId == null) return (await AdoptedCertificateScope.CaOfAsync(_db, cert))?.CaId;
         return await ResolveCaFromSigningProfileAsync(cert.SigningProfileId.Value);
     }
 
@@ -469,7 +470,7 @@ public class CaGroupAuthorizationHandler : AuthorizationHandler<CaGroupRequireme
             return null;
         }
         var cert = resolution.Certificate;
-        if (cert?.SigningProfileId == null) return null;
+        if (cert?.SigningProfileId == null) return (await AdoptedCertificateScope.CaOfAsync(_db, cert))?.CaId;
         return await ResolveCaFromSigningProfileAsync(cert.SigningProfileId.Value);
     }
 

@@ -117,6 +117,22 @@ public class CertificateEntity
     public string? RetiredReason { get; set; }
 
     /// <summary>
+    /// When an administrator adopted this certificate from outside, or null for a certificate
+    /// this instance issued or imported itself. An adopted certificate was supplied as its own
+    /// bytes, verified under the CA's key and stored with no request, no profile and no known
+    /// requester (<c>docs/architecture/rollback-continuity.md</c>, section 5).
+    /// </summary>
+    public DateTime? AdoptedAt { get; set; }
+
+    /// <summary>Who adopted the certificate.</summary>
+    [MaxLength(255)]
+    public string? AdoptedBy { get; set; }
+
+    /// <summary>Why it was adopted, as the administrator wrote it.</summary>
+    [MaxLength(1000)]
+    public string? AdoptionNote { get; set; }
+
+    /// <summary>
     /// FK to the CA certificate that issued this certificate. Preferred over the
     /// free-text <see cref="Issuer"/> DN for revocation lookup so two CAs that share a SubjectDN
     /// (renewal, cross-certification) can't have their revoked certs lumped together on the CRL.

@@ -6,13 +6,15 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { apiGet, apiPostWithMfa } from '../api/client';
 import { DataTable, type DataTableColumn } from '@shared/components/DataTable';
 import { useStepUp } from '../components/StepUpMfaContext';
-import { StepUpOps } from '@shared/generated';
+import { Capabilities, StepUpOps } from '@shared/generated';
 import { StatusBadge, Tag } from '@shared/components/cards/StatusBadge';
 import { DetailField } from '@shared/components/cards/DetailField';
 import { DetailPage, DetailSection } from '../components/DetailPage';
 import { ocspStatus } from './ocspReadiness';
 import { advisoriesOf, openEnrollmentNotice } from './protocolAdvisories';
 import InfrastructureProfiles from '../components/InfrastructureProfiles';
+import RevokedSerialsPanel from '../components/RevokedSerialsPanel';
+import { useAuth } from '../context/AuthContext';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -40,13 +42,16 @@ function flattenCas(cas: any[]): any[] {
 /// <summary>
 /// Read-only detail page for a single certificate authority: CA info, certificate details, protocol
 /// configurations, service URLs and OCSP responder. CAs aren't edited in place (creation lives on the
-/// CA Management page), so this page is View-only.
+/// CA Management page), so this page is View-only. Its actions are the reissue of the CA's
+/// infrastructure certificates and, for a caller with cert.revoke on the CA, revoking a serial or
+/// adopting a certificate the CA does not hold.
 /// </summary>
 const CaDetail: React.FC = () => {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
 
     const { requireStepUp } = useStepUp();
+    const { can } = useAuth();
 
     const [ca, setCa] = useState<any | null>(null);
     const [loading, setLoading] = useState(true);
@@ -366,6 +371,14 @@ const CaDetail: React.FC = () => {
                     </div>
                 </DetailSection>
 
+
+                {/* Revocation of what this CA does not hold. Only an X.509 CA with a certificate has
+                    a CRL to put a serial on, and only cert.revoke on this CA may do it. */}
+                {cert && ca.id && can(Capabilities.CertRevoke, ca.id) && (
+                    <DetailSection title="Certificates This CA Does Not Hold">
+                        <RevokedSerialsPanel caId={ca.id} caName={ca.name || ca.subjectDN} />
+                    </DetailSection>
+                )}
 
                 <DetailSection title="Quick Links">
                     <Link to={`/distribution?tab=ldap&caId=${caKey(ca)}`}

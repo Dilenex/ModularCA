@@ -190,6 +190,14 @@ export interface AcmeRevokeCertRequest {
     reason?: number | null;
 }
 
+/** From `ModularCA.Shared/Models/Revocation/RevokedSerialRequests.cs`. */
+export interface AdoptCertificateRequest {
+    certificate: string;
+    note: string;
+    revokeReason?: E.RevocationReason | null;
+    invalidityDate?: string | null;
+}
+
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
 export interface AlertConfig {
     enabled: boolean;
@@ -366,6 +374,9 @@ export interface CertificateInfoModel {
     retiredAt?: string | null;
     retiredBy?: string | null;
     retiredReason?: string | null;
+    adoptedAt?: string | null;
+    adoptedBy?: string | null;
+    adoptionNote?: string | null;
     expiryWarningDismissedAt?: string | null;
     expiryWarningDismissedBy?: string | null;
     expiryWarningAt?: string | null;
@@ -1202,6 +1213,14 @@ export interface ProfilePairConstraints {
 export interface ProtocolCleanupConfig {
     schedule: string;
     orphanRequestGraceMinutes: number;
+}
+
+/** From `ModularCA.Shared/Models/Revocation/RevokedSerialRequests.cs`. */
+export interface RecordRevokedSerialRequest {
+    serialNumber: string;
+    reason: E.RevocationReason;
+    invalidityDate?: string | null;
+    note: string;
 }
 
 /** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
