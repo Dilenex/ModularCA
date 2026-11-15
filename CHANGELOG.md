@@ -4,328 +4,74 @@ All notable changes to ModularCA are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to follow
 semantic versioning: a new capability is a minor release, a fix is a patch.
 
-## [Unreleased]
-
-### 0.4.5-rc.1.4 — 2026-11-15
-
-The fifth release candidate of 0.4.5, from the fourth on the test host. In the console only:
-
-- **Groups names the SSH CA a group belongs to.** The CA column showed the first eight
-  characters of the CA's id for a group of an SSH CA, because it took its names from the X.509
-  hierarchy, which holds no SSH CA. It shows the SSH CA's name.
-
-No migration is added, and nothing outside the console changed.
-
-### 0.4.5-rc.1.3 — 2026-11-15
-
-The fourth release candidate of 0.4.5, from a sweep of every page of the admin console on the
-third, on the test host. In the console only:
-
-- **The revoked-serials table shows its whole reason and its "Recorded by" header.** The table
-  fit its card, but "Cessation of Operation" and that header were cut at the default widths.
-- **Groups and CA Distribution fit a 1480-pixel window again.** Their name columns had been
-  widened and the tables scrolled sideways.
-- **A canceled request or ceremony reads "Canceled".** The status the server sends, and the
-  audit action's name, are unchanged.
-- **Three notices are under 40 words:** on Ceremonies, Certificate Templates and Web TLS.
-
-No migration is added, and nothing outside the console changed.
-
-### 0.4.5-rc.1.2 — 2026-11-14
-
-The third release candidate of 0.4.5, from running the second on the test host: CA
-certificates renewed, maintenance mode, revocation under an intermediate CA, and a look at the
-pages not seen before. Since 0.4.5-rc.1.1:
-
-- **A serial number is shown in whole octets.** A serial whose first octet is below 0x10 read
-  `2C06…` in the consoles where OpenSSL and most other tools print `02C06…`. The consoles
-  now show the second form wherever an X.509 serial is displayed, copied or exported. The
-  stored form, and what the API returns, did not change. SSH serials are decimal and untouched.
-- **A serial is found however it is written.** With a leading zero, in lower case or with
-  colons: a lookup by serial, and the search and the serial filter of the certificate list,
-  find the certificate. A lookup that matched as written before still does.
-- **The revoked-serials table fits its card.** "Revoked" shows its time, the day a serial
-  stops being listed is shown without the hour, and the table no longer scrolls sideways at
-  its default widths.
-- **Two warnings on the CA page are shorter.** The guidance to reissue infrastructure
-  certificates from the CA page is a notice in the informational tone; "No CMP signing
-  certificate" stays a warning.
-- **A request profile's rules show their whole headers** ("Requirement", "Max Length"), and
-  the email on My Account has a row of its own.
-
-No migration is added.
-
-### 0.4.5-rc.1.1 — 2026-11-14
-
-The second release candidate of 0.4.5, from the first on the test host. In the console only:
-
-- **A TOTP code can be typed after "Run now" on Schedules.** The confirm dialog under the
-  step-up dialog took focus back every second, so the code field lost it before a digit could
-  be entered. A security key still worked. The confirm dialog now moves focus when it opens
-  and closes, and at no other time; this holds on every page that confirms before a step-up.
-
-No migration is added, and nothing outside the console changed.
-
-### 0.4.5-rc.1.0 — 2026-11-14
-
-The first release candidate of 0.4.5, for test hosts. It is 0.4.5-dev.1.12 plus what a look at
-the compliance findings on the test host turned up. Since 0.4.5-dev.1.12:
-
-- **CA and infrastructure certificates are not judged by validity period or missing SANs.** The
-  compliance scan raised `OverLongValidity` against every CA certificate and every OCSP
-  responder, timestamp signer and CMP signer, and `MissingSANs` against OCSP responders
-  that list the TLS server usage. Nobody could act on those. The scan and the certificate health
-  score now leave both checks out for a CA certificate and for a certificate a CA issues to
-  itself; every other certificate is judged as before.
-- **The findings already raised against them are closed by the next scan.** Nothing has to be
-  resolved by hand. A count of unresolved findings will drop after the first scan on this build.
-- **The compliance findings table fits its card at the default widths** (type 160, description
-  300).
-
-No migration is added.
-
-### 0.4.5-dev.1.12 — 2026-11-14
-
-The thirteenth test build of 0.4.5, from what the hub's test of 0.4.5-dev.1.8 in containers
-showed. In the signer's journal and how the node reports it:
-
-- **A journal whose directory takes no new file is found at start.** A start that has nothing
-  to record begins no segment, so a journal that could not be written reported itself available
-  until the first record failed. The signer now makes and removes an empty file
-  (`write-probe.tmp`) when it opens such a journal, and reports the journal
-  unavailable when it cannot.
-- **A signer that cannot be reached is "not known", not "none".** Where the signer runs as its
-  own process, the node's journal check said `none` while the signer was starting.
-  It says `not_known`, as it already did where the signer runs in the node's process.
-- **No warning at every start of a split install.** The merge of revocations from the journal
-  logged a warning with a stack trace when the signer was not up yet. That case is one
-  information line; any other failure is still a warning.
-
-No migration is added.
-
-### 0.4.5-dev.1.11 — 2026-11-14
-
-The twelfth test build of 0.4.5, from a pass over every table of the console on
-0.4.5-dev.1.10 on the test host.
-
-- **The journal's last checkpoint is known after a restart.** A start that had recorded
-  nothing yet reported no last checkpoint at all, so the health check, the Signer Journal line
-  on System Health and the hub's inventory showed its age as unknown until the first record of
-  that start. Such a start now reports the newest checkpoint on disk.
-- **Recent-certificate tables have room for a whole serial and for the date with its time.**
-  On Cert Inventory and Compliance the serial column is 280 wide, the issuer 240 and the date
-  columns 150.
-- **Columns that cut their content at the default width are wider.** Thirteen columns on
-  Cert Inventory, Compliance, Enrollment, Whitelists, Schedules, Distribution, Groups and
-  Certificate Templates. A width saved in a browser is kept as it is.
-
-No migration is added.
-
-### 0.4.5-dev.1.10 — 2026-11-14
-
-The eleventh test build of 0.4.5, from looking at 0.4.5-dev.1.9 on the test host, where the
-tables now pack as the certificates table does. In the console only:
-
-- **A serial is shown whole.** The recent-certificate tables on Cert Inventory and Compliance,
-  and the certificate column of the compliance findings, cut every serial to sixteen characters
-  and added dots, however wide the column was.
-- **"Recently Issued" on Cert Inventory shows the date of issue and is in date order.** It read
-  a field the list does not carry, so the date was "-" on every row and the ten rows were not
-  the ten most recent.
-
-No migration is added, and nothing outside the console changed.
-
-### 0.4.5-dev.1.9 — 2026-11-14
-
-The tenth test build of 0.4.5, from looking at 0.4.5-dev.1.8 on the test host. In the console
-only:
-
-- **Every table is laid out as the certificates table is: no column takes "whatever is left".**
-  Ten tables had one flexible column that got only what the others did not use. On the Cert
-  Inventory and Compliance pages, where two tables stood side by side in half the page each,
-  that was nothing: the subject showed five characters ("CN=lo…") and the table scrolled
-  sideways. Each column now has a width of its own, the table packs to the left, and the spare
-  width is left after the last column.
-- **The recent-certificate tables on Cert Inventory and Compliance stand one to a row**, with
-  the subject and serial widths of the certificates page.
-
-No migration is added, and nothing outside the console changed. The widths were worked out by
-arithmetic; this build is for looking at them.
-
-### 0.4.5-dev.1.8 — 2026-11-14
-
-The ninth test build of 0.4.5. Since 0.4.5-dev.1.7:
-
-- **Spaces are not counted or licensed.** One instance may have any number of spaces; creating a
-  fifth no longer recommends a license. What is licensed is running a fleet of instances, high
-  availability, backup orchestration and auditor evidence, and nothing is enforced in the
-  product today.
-- **A parent CA outside your spaces is no longer identified.** A viewer fenced to their own
-  spaces learned the name of a parent CA in another; the CA list and the hierarchy also gave its
-  identifier, and four renewal refusals named it.
-- **Tables with a flexible column keep their other columns at their set widths**, so the
-  flexible one gets the spare width. Wide columns used to grow first and squeeze it.
-- **For the hub:** the journal's check says `not_known` when the signer has not answered yet,
-  where it said `none`, the same word as for a signer that keeps no journal.
-
-No migration is added, and the hub's contract is unchanged at 1.2. The table widths were worked
-out by arithmetic and have not been looked at in a browser.
-
-### 0.4.5-dev.1.7 — 2026-11-13
-
-The eighth test build of 0.4.5, from looking at 0.4.5-dev.1.6 on the test host: the journal
-worked on Linux at the first start, and nothing an upgrade should leave alone had changed. Since
-0.4.5-dev.1.6, in the console only:
-
-- **A new CA no longer carries a notice from its first day.** "Issued certificates are
-  shortened" counted the CA's own OCSP, timestamp and CMP profiles, and fired as soon as a
-  profile's maximum was a day longer than the CA had left. It now leaves those profiles out and
-  waits until a certificate issued now would lose a tenth of its profile's maximum.
-- **Every CA notice is 40 words or fewer**, and says what is so and what to do.
-- **A notice is blue, a warning amber, and what is critical red.** Notices were drawn amber, and
-  critical items on the Security Baseline card were too.
-- **The certificate history table packs its columns** as the console's other tables do; the
-  download and the public address were squeezed off its edge.
-- **A CA's page names its parent CA**, with a link, where it showed an identifier.
-- **System Health has a Signer Journal row**, so the journal can be seen to be healthy and not
-  only seen when it is not.
-
-No migration is added, and the hub's contract is unchanged at 1.2.
-
-### 0.4.5-dev.1.6 — 2026-11-13
-
-The seventh test build of 0.4.5. Since 0.4.5-dev.1.5:
-
-- **A CA's certificate can be renewed, keeping its key**, and each CA shows how long its key and
-  certificate have left. See "CA certificate renewal" and "CA lifetime notices" under Added.
-- **Revoking a CA revokes every certificate it has over that key.**
-- **An expiring or expired CA certificate no longer makes the node answer 503.** It is a notice
-  and a security alert. See the upgrade notes if monitoring relied on the 503.
-- **A large restore of revocations from the journal is audited in batches**: one record for each
-  500 above 1,000 for a CA. A record each did not finish 100,000 in 40 minutes in testing; in
-  batches it takes about a minute.
-- **"Revoke all" for the serials missing from a refused CRL is an act of its own**, confirmed by
-  typing the CA's name, with its own second-factor prompt.
-- **One migration, `CaCertificates`**, additive: one empty table.
-
-The hub's contract is unchanged at 1.2. Nothing in this build has run on Linux or been looked at
-in a browser. Not run at all: a backup and restore of an instance with a renewed CA, and a full
-EST re-enrollment after a renewal.
-
-### 0.4.5-dev.1.5 — 2026-11-13
-
-The sixth test build of 0.4.5, and the first with the signer's journal. Since 0.4.5-dev.1.4:
-
-- **The signer keeps a journal** of every certificate, CRL and SSH certificate it signs, and of
-  the revocations and a few other facts the node tells it, in files the database's restore does
-  not touch. See "The signer's issuance journal" under Added.
-- **A database that goes back in time no longer loses revocations.** At every start the instance
-  makes again the revocations its journal holds and its database lacks, with their dates and
-  reasons, and says so.
-- **For the hub:** contract 1.2. `hello` answers `systemKey`; `inventory.read` and
-  `health.read` carry the journal.
-- **One migration, `SignerFactQueue`**, additive.
-
-**Before installing:** the journal's home is `signer/journal` under the install directory, and
-**the signer issues nothing while it cannot write there**. The installer and the package make
-it. In a pod or under compose it needs a volume of its own on the signer, which is never rolled
-back or restored with the others. A split install whose signer still reads the node's
-`config/` must be moved onto its own directory first, or given a home with
-`Signer.Journal.Directory`.
-
-To check after installing: `/health/ready` has `checks.journal` with the status `ok`, and
-`ModularCA.API --role signer --journal-head` prints one line. Nothing in this build has run on
-Linux, in a container or with an HSM, the installer's and the package's changed scripts have not
-been run, and the new console pieces have not been looked at in a browser.
-
-### 0.4.5-dev.1.4 — 2026-11-12
-
-The fifth test build of 0.4.5. The hub ran 0.4.5-dev.1.3 in pods under SELinux: the restore lock
-held in every case it tried. Since 0.4.5-dev.1.3:
-
-- **Tighter defaults for a new install**, after NIST SP 800-63B and SP 800-57: sessions end after
-  12 hours, the password policy asks for length and a blocklist and nothing else, and a new CA's
-  RSA key is at least 3072 bits. **An installed instance keeps every setting it has** and is
-  offered the change in the console. See Security, and the upgrade notes.
-- **A node or signer that finds a restore ran beside it exits with status 75**, where
-  0.4.5-dev.1.3 answered 503 and waited to be restarted.
-- **One migration, `TighterDefaults`.** It is the first of 0.4.5 that is not purely additive: it
-  renames a column.
-
-To check after installing on a host that already runs: nobody is signed out, the session maximum
-reads 336 hours where it read 14 days, the password policy is as it was, and System Health shows
-a Security Baseline card. Nothing in this build has been looked at in a browser, and the wizard
-and `bootstrap.yaml` refusals of a small RSA key were not run end to end.
-
-### 0.4.5-dev.1.3 — 2026-11-12
-
-The fourth test build of 0.4.5. The hub's restore test showed a node starting beside a restore,
-on one database, with neither noticing. Since 0.4.5-dev.1.2:
-
-- **A restore and a running node keep each other out.** A restore beside a serving node exits 3
-  and changes nothing; a node that starts beside a restore waits, then exits 75. See "A restore
-  and a running node keep each other out" under Added, and the upgrade notes.
-- **The restore's last line says when the incarnation could not be stored**, and that step is
-  tried four times before it gives up.
-- **`/health/ready` says which start a continuity event came from**, and has a new entry,
-  `checks.restoreLock`.
-
-No migration is added: the schema is the one 0.4.5-dev.1.0 left. This build ran on Windows only
-before it was cut: nothing in it has run on Linux, in a container or under systemd.
-
-### 0.4.5-dev.1.2 — 2026-11-12
-
-The third test build of 0.4.5. 0.4.5-dev.1.1 proved on the test host that a certificate issued
-by an intermediate CA is accepted. Since 0.4.5-dev.1.1:
-
-- **A refused EST enrollment always leaves a row on the EST audit tab**, with the reason. On the
-  test host two kinds of refusal had left nothing in the console.
-- **A backup archive or key file that cannot be read is no longer called "not found"**, which
-  the hub met under SELinux.
-- **For the hub:** the mode record says when the CRLs in force run out while the mode is `dr`
-  (`crlsExpireFromUtc` in `mode.read`, the answer of `mode.set` and `health.read`). The
-  contract is still 1.1.
-- **The restore drill restores the same archive a second time** under the incarnation the host
-  already has, and the start after it reports no roll-back.
-
-No migration is added: the schema is the one 0.4.5-dev.1.0 left.
-
-### 0.4.5-dev.1.1 — 2026-11-12
-
-The second test build of 0.4.5, after 0.4.5-dev.1.0 ran on a test host and in the hub's pods.
-Since 0.4.5-dev.1.0:
-
-- **A certificate issued by an intermediate CA is accepted on a real host.** On the test host
-  every such certificate was refused as not chaining to its CA: EST re-enrollment, and with it
-  sign-in by client certificate and SCEP renewal under an intermediate. See "No certificate is
-  fetched while a chain is built" under Security. To check after installing: re-enroll over EST
-  with a certificate an intermediate CA issued.
-- **DR mode says when its CRLs run out**, on the mode card and in the banner.
-- **Refusals for the mode are counted for callers who are not signed in**, one audit record per
-  endpoint every five minutes.
-- **"Enrollment" is spelled one way** in the console and the documentation.
-- **For the hub:** nothing in the contract changed. Its text now says that `mode` in
-  `health.read` is the mode record, which is what 0.4.5-dev.1.0 already sent.
-
-No migration is added: the schema is the one 0.4.5-dev.1.0 left.
-
-### 0.4.5-dev.1.0 — 2026-11-12
-
-The first test build of 0.4.5, for a test host and for the hub's test bed. It carries everything
-below. None of it has run on Linux, in a container or in a browser before this build: that is
-what the build is for.
-
-- **For the hub.** The local connection (contract 1.1, eight operations), the affiliation token,
-  the four instance modes, the timeline variable with the CRL floor and the notice, the
-  inventory read, the unattended restore with `--backup-manifest` and `backup.prune`, and the
-  stored instance identifier.
-- **For a standalone install.** Revoking a certificate the CA has no record of, the instance
-  mode card in Settings, revocation checked under an intermediate CA when
-  "Require mTLS OCSP Check" is on, and the new exit statuses of `--restore`.
-- **Two migrations**, both additive: `RevokedSerialTombstones` and `InstanceIncarnation`.
-- **Built on the .NET 10.0.15 runtime**; the build scripts now refuse an older one.
-
-**Upgrade notes**
+## [0.4.5] — 2026-11-15
+
+A release about what an instance remembers and how long its CAs last. The signer keeps a journal
+of what it signed, so revocations lost when a database goes back in time are made again by
+themselves, and a start notices that it runs from an earlier or copied state. A CA's certificate
+can be renewed over the key it has, and each CA's page says when its certificate, its key and
+its profiles run out. A restore and a running node keep each other out, an instance has four
+modes (full, restricted, maintenance and DR), and a new install starts with tighter sessions and
+passwords. Revocation is checked under an intermediate CA, a serial can be revoked without its
+certificate, and the consoles show a serial as other tools print it. For a hub there is a local
+connection with its contract at 1.2. It is built on the .NET 10.0.15 runtime and adds five
+migrations.
+
+Eighteen test builds went to test hosts and were not published: `0.4.5-dev.1.0` to
+`0.4.5-dev.1.12` and `0.4.5-rc.1.0` to `0.4.5-rc.1.4`. They are listed at the end of this
+section, with what came after the last of them.
+
+### Upgrading from 0.4.4
+
+This is the checklist; "Every change that can need attention" under it says more.
+"Upgrading to 0.4.5" in `packaging/README-DEPLOY.md` has the same steps for a host.
+
+**Before installing**
+
+- **Take a backup.** The release adds five migrations: `RevokedSerialTombstones`,
+  `InstanceIncarnation`, `TighterDefaults`, `SignerFactQueue` and `CaCertificates`. The third
+  renames a column (the session maximum is stored in hours), so going back to 0.4.4 means
+  restoring the backup.
+- **Run the upgrade check with the new build, as the service account, and read what it prints**,
+  not only its last line: `sudo -u modularca <new build>/ModularCA.API --upgrade-check
+  --config-dir /opt/modularca/config`. `install.sh` runs the same check and stops on a refusal.
+  With `--read-only` it can run beside the serving node.
+- **Give the signer's journal a directory it can write, with disk space.** The installer and the
+  `.deb` make `/opt/modularca/signer/journal`. If you keep your own copy of `modularca.service`,
+  add `-/opt/modularca/signer/journal` to `ReadWritePaths=`. In a pod or under compose, add a
+  volume there to the signer only. The signer issues nothing while the journal cannot be
+  written.
+- **Split installs:** upgrade the signer with the node. A signer that still reads the node's
+  `config/` cannot make the journal's directory: move it onto its own directory first, or set
+  `Signer.Journal.Directory`.
+- **Stop the node before a restore, and let a runner try again on exit status 75.** A restore
+  beside a running node is refused, and a start beside a running restore waits, then exits 75.
+- **Scripts that read `--restore` exit statuses** must change: 0 done, 3 refused, 4 failed after
+  changes, 75 unreachable. 1 and 2 no longer mean what they did.
+- **Automation that creates CAs with RSA 2048 keys** must ask for 3072 or more, or ECDSA.
+
+**After the first start**
+
+- **No setting changed.** Nobody is signed out and the password policy is as it was. The console
+  offers each tighter default in Settings and under System Health, Security Baseline.
+- **`/health/ready` has new entries:** `checks.continuity`, `checks.instanceMode`,
+  `checks.restoreLock`, `checks.journal` and `checks.caLifecycle`. `checks.journal.status`
+  should read `ok`.
+- **An expiring CA certificate no longer makes `/health/ready` answer 503.** Monitoring that
+  relied on it reads `checks.caLifecycle.status`, or takes the new alerts
+  `CaCertificateExpiring` and `CaCertificateExpired`.
+- **Never put the journal back in time.** Leave `signer/journal` out of snapshots that are
+  rolled back. After a restore or a roll-back of the database, revocations come back by
+  themselves, so going back can no longer undo a revocation.
+- **`GET /api/v1/admin/security-policy` answers `maxSessionLifetimeHours`** in place of
+  `maxSessionLifetimeDays`.
+- **The compliance scan stops flagging CA and infrastructure certificates** for their validity
+  period or missing SANs; the first scan closes the findings it had raised against them.
+- **Serial numbers read differently in the consoles:** whole octets, as OpenSSL prints them
+  (`02C0…` where it was `2C0…`). The API and what is stored did not change, and a serial is
+  found in either form.
+
+**Every change that can need attention**
 
 - **Spaces are not counted or licensed.** The create-space response has no `recommendation`,
   its audit record no `LicenceRecommended`, and the console no hint. The `tenancy.multi` feature
@@ -765,6 +511,334 @@ what the build is for.
   revocation list cannot be reached does not stop a certificate that was checked. Where the root
   is not stored in the instance (an external root that was never imported), the certificate is
   still refused as undetermined. With the setting off, which is the default, nothing changes.
+
+### Test builds
+
+These builds went to test hosts between 0.4.4 and this release and were not published. Each block
+says what its build added to the one before; the release carries all of them.
+
+**After 0.4.5-rc.1.4**, the release changes one test and nothing in the product: the restore
+drill counts the sessions holding the node's restore lock in its own database only. No migration
+is added.
+
+### 0.4.5-rc.1.4 — 2026-11-15
+
+The fifth release candidate of 0.4.5, from the fourth on the test host. In the console only:
+
+- **Groups names the SSH CA a group belongs to.** The CA column showed the first eight
+  characters of the CA's id for a group of an SSH CA, because it took its names from the X.509
+  hierarchy, which holds no SSH CA. It shows the SSH CA's name.
+
+No migration is added, and nothing outside the console changed.
+
+### 0.4.5-rc.1.3 — 2026-11-15
+
+The fourth release candidate of 0.4.5, from a sweep of every page of the admin console on the
+third, on the test host. In the console only:
+
+- **The revoked-serials table shows its whole reason and its "Recorded by" header.** The table
+  fit its card, but "Cessation of Operation" and that header were cut at the default widths.
+- **Groups and CA Distribution fit a 1480-pixel window again.** Their name columns had been
+  widened and the tables scrolled sideways.
+- **A canceled request or ceremony reads "Canceled".** The status the server sends, and the
+  audit action's name, are unchanged.
+- **Three notices are under 40 words:** on Ceremonies, Certificate Templates and Web TLS.
+
+No migration is added, and nothing outside the console changed.
+
+### 0.4.5-rc.1.2 — 2026-11-14
+
+The third release candidate of 0.4.5, from running the second on the test host: CA
+certificates renewed, maintenance mode, revocation under an intermediate CA, and a look at the
+pages not seen before. Since 0.4.5-rc.1.1:
+
+- **A serial number is shown in whole octets.** A serial whose first octet is below 0x10 read
+  `2C06…` in the consoles where OpenSSL and most other tools print `02C06…`. The consoles
+  now show the second form wherever an X.509 serial is displayed, copied or exported. The
+  stored form, and what the API returns, did not change. SSH serials are decimal and untouched.
+- **A serial is found however it is written.** With a leading zero, in lower case or with
+  colons: a lookup by serial, and the search and the serial filter of the certificate list,
+  find the certificate. A lookup that matched as written before still does.
+- **The revoked-serials table fits its card.** "Revoked" shows its time, the day a serial
+  stops being listed is shown without the hour, and the table no longer scrolls sideways at
+  its default widths.
+- **Two warnings on the CA page are shorter.** The guidance to reissue infrastructure
+  certificates from the CA page is a notice in the informational tone; "No CMP signing
+  certificate" stays a warning.
+- **A request profile's rules show their whole headers** ("Requirement", "Max Length"), and
+  the email on My Account has a row of its own.
+
+No migration is added.
+
+### 0.4.5-rc.1.1 — 2026-11-14
+
+The second release candidate of 0.4.5, from the first on the test host. In the console only:
+
+- **A TOTP code can be typed after "Run now" on Schedules.** The confirm dialog under the
+  step-up dialog took focus back every second, so the code field lost it before a digit could
+  be entered. A security key still worked. The confirm dialog now moves focus when it opens
+  and closes, and at no other time; this holds on every page that confirms before a step-up.
+
+No migration is added, and nothing outside the console changed.
+
+### 0.4.5-rc.1.0 — 2026-11-14
+
+The first release candidate of 0.4.5, for test hosts. It is 0.4.5-dev.1.12 plus what a look at
+the compliance findings on the test host turned up. Since 0.4.5-dev.1.12:
+
+- **CA and infrastructure certificates are not judged by validity period or missing SANs.** The
+  compliance scan raised `OverLongValidity` against every CA certificate and every OCSP
+  responder, timestamp signer and CMP signer, and `MissingSANs` against OCSP responders
+  that list the TLS server usage. Nobody could act on those. The scan and the certificate health
+  score now leave both checks out for a CA certificate and for a certificate a CA issues to
+  itself; every other certificate is judged as before.
+- **The findings already raised against them are closed by the next scan.** Nothing has to be
+  resolved by hand. A count of unresolved findings will drop after the first scan on this build.
+- **The compliance findings table fits its card at the default widths** (type 160, description
+  300).
+
+No migration is added.
+
+### 0.4.5-dev.1.12 — 2026-11-14
+
+The thirteenth test build of 0.4.5, from what the hub's test of 0.4.5-dev.1.8 in containers
+showed. In the signer's journal and how the node reports it:
+
+- **A journal whose directory takes no new file is found at start.** A start that has nothing
+  to record begins no segment, so a journal that could not be written reported itself available
+  until the first record failed. The signer now makes and removes an empty file
+  (`write-probe.tmp`) when it opens such a journal, and reports the journal
+  unavailable when it cannot.
+- **A signer that cannot be reached is "not known", not "none".** Where the signer runs as its
+  own process, the node's journal check said `none` while the signer was starting.
+  It says `not_known`, as it already did where the signer runs in the node's process.
+- **No warning at every start of a split install.** The merge of revocations from the journal
+  logged a warning with a stack trace when the signer was not up yet. That case is one
+  information line; any other failure is still a warning.
+
+No migration is added.
+
+### 0.4.5-dev.1.11 — 2026-11-14
+
+The twelfth test build of 0.4.5, from a pass over every table of the console on
+0.4.5-dev.1.10 on the test host.
+
+- **The journal's last checkpoint is known after a restart.** A start that had recorded
+  nothing yet reported no last checkpoint at all, so the health check, the Signer Journal line
+  on System Health and the hub's inventory showed its age as unknown until the first record of
+  that start. Such a start now reports the newest checkpoint on disk.
+- **Recent-certificate tables have room for a whole serial and for the date with its time.**
+  On Cert Inventory and Compliance the serial column is 280 wide, the issuer 240 and the date
+  columns 150.
+- **Columns that cut their content at the default width are wider.** Thirteen columns on
+  Cert Inventory, Compliance, Enrollment, Whitelists, Schedules, Distribution, Groups and
+  Certificate Templates. A width saved in a browser is kept as it is.
+
+No migration is added.
+
+### 0.4.5-dev.1.10 — 2026-11-14
+
+The eleventh test build of 0.4.5, from looking at 0.4.5-dev.1.9 on the test host, where the
+tables now pack as the certificates table does. In the console only:
+
+- **A serial is shown whole.** The recent-certificate tables on Cert Inventory and Compliance,
+  and the certificate column of the compliance findings, cut every serial to sixteen characters
+  and added dots, however wide the column was.
+- **"Recently Issued" on Cert Inventory shows the date of issue and is in date order.** It read
+  a field the list does not carry, so the date was "-" on every row and the ten rows were not
+  the ten most recent.
+
+No migration is added, and nothing outside the console changed.
+
+### 0.4.5-dev.1.9 — 2026-11-14
+
+The tenth test build of 0.4.5, from looking at 0.4.5-dev.1.8 on the test host. In the console
+only:
+
+- **Every table is laid out as the certificates table is: no column takes "whatever is left".**
+  Ten tables had one flexible column that got only what the others did not use. On the Cert
+  Inventory and Compliance pages, where two tables stood side by side in half the page each,
+  that was nothing: the subject showed five characters ("CN=lo…") and the table scrolled
+  sideways. Each column now has a width of its own, the table packs to the left, and the spare
+  width is left after the last column.
+- **The recent-certificate tables on Cert Inventory and Compliance stand one to a row**, with
+  the subject and serial widths of the certificates page.
+
+No migration is added, and nothing outside the console changed. The widths were worked out by
+arithmetic; this build is for looking at them.
+
+### 0.4.5-dev.1.8 — 2026-11-14
+
+The ninth test build of 0.4.5. Since 0.4.5-dev.1.7:
+
+- **Spaces are not counted or licensed.** One instance may have any number of spaces; creating a
+  fifth no longer recommends a license. What is licensed is running a fleet of instances, high
+  availability, backup orchestration and auditor evidence, and nothing is enforced in the
+  product today.
+- **A parent CA outside your spaces is no longer identified.** A viewer fenced to their own
+  spaces learned the name of a parent CA in another; the CA list and the hierarchy also gave its
+  identifier, and four renewal refusals named it.
+- **Tables with a flexible column keep their other columns at their set widths**, so the
+  flexible one gets the spare width. Wide columns used to grow first and squeeze it.
+- **For the hub:** the journal's check says `not_known` when the signer has not answered yet,
+  where it said `none`, the same word as for a signer that keeps no journal.
+
+No migration is added, and the hub's contract is unchanged at 1.2. The table widths were worked
+out by arithmetic and have not been looked at in a browser.
+
+### 0.4.5-dev.1.7 — 2026-11-13
+
+The eighth test build of 0.4.5, from looking at 0.4.5-dev.1.6 on the test host: the journal
+worked on Linux at the first start, and nothing an upgrade should leave alone had changed. Since
+0.4.5-dev.1.6, in the console only:
+
+- **A new CA no longer carries a notice from its first day.** "Issued certificates are
+  shortened" counted the CA's own OCSP, timestamp and CMP profiles, and fired as soon as a
+  profile's maximum was a day longer than the CA had left. It now leaves those profiles out and
+  waits until a certificate issued now would lose a tenth of its profile's maximum.
+- **Every CA notice is 40 words or fewer**, and says what is so and what to do.
+- **A notice is blue, a warning amber, and what is critical red.** Notices were drawn amber, and
+  critical items on the Security Baseline card were too.
+- **The certificate history table packs its columns** as the console's other tables do; the
+  download and the public address were squeezed off its edge.
+- **A CA's page names its parent CA**, with a link, where it showed an identifier.
+- **System Health has a Signer Journal row**, so the journal can be seen to be healthy and not
+  only seen when it is not.
+
+No migration is added, and the hub's contract is unchanged at 1.2.
+
+### 0.4.5-dev.1.6 — 2026-11-13
+
+The seventh test build of 0.4.5. Since 0.4.5-dev.1.5:
+
+- **A CA's certificate can be renewed, keeping its key**, and each CA shows how long its key and
+  certificate have left. See "CA certificate renewal" and "CA lifetime notices" under Added.
+- **Revoking a CA revokes every certificate it has over that key.**
+- **An expiring or expired CA certificate no longer makes the node answer 503.** It is a notice
+  and a security alert. See the upgrade notes if monitoring relied on the 503.
+- **A large restore of revocations from the journal is audited in batches**: one record for each
+  500 above 1,000 for a CA. A record each did not finish 100,000 in 40 minutes in testing; in
+  batches it takes about a minute.
+- **"Revoke all" for the serials missing from a refused CRL is an act of its own**, confirmed by
+  typing the CA's name, with its own second-factor prompt.
+- **One migration, `CaCertificates`**, additive: one empty table.
+
+The hub's contract is unchanged at 1.2. Nothing in this build has run on Linux or been looked at
+in a browser. Not run at all: a backup and restore of an instance with a renewed CA, and a full
+EST re-enrollment after a renewal.
+
+### 0.4.5-dev.1.5 — 2026-11-13
+
+The sixth test build of 0.4.5, and the first with the signer's journal. Since 0.4.5-dev.1.4:
+
+- **The signer keeps a journal** of every certificate, CRL and SSH certificate it signs, and of
+  the revocations and a few other facts the node tells it, in files the database's restore does
+  not touch. See "The signer's issuance journal" under Added.
+- **A database that goes back in time no longer loses revocations.** At every start the instance
+  makes again the revocations its journal holds and its database lacks, with their dates and
+  reasons, and says so.
+- **For the hub:** contract 1.2. `hello` answers `systemKey`; `inventory.read` and
+  `health.read` carry the journal.
+- **One migration, `SignerFactQueue`**, additive.
+
+**Before installing:** the journal's home is `signer/journal` under the install directory, and
+**the signer issues nothing while it cannot write there**. The installer and the package make
+it. In a pod or under compose it needs a volume of its own on the signer, which is never rolled
+back or restored with the others. A split install whose signer still reads the node's
+`config/` must be moved onto its own directory first, or given a home with
+`Signer.Journal.Directory`.
+
+To check after installing: `/health/ready` has `checks.journal` with the status `ok`, and
+`ModularCA.API --role signer --journal-head` prints one line. Nothing in this build has run on
+Linux, in a container or with an HSM, the installer's and the package's changed scripts have not
+been run, and the new console pieces have not been looked at in a browser.
+
+### 0.4.5-dev.1.4 — 2026-11-12
+
+The fifth test build of 0.4.5. The hub ran 0.4.5-dev.1.3 in pods under SELinux: the restore lock
+held in every case it tried. Since 0.4.5-dev.1.3:
+
+- **Tighter defaults for a new install**, after NIST SP 800-63B and SP 800-57: sessions end after
+  12 hours, the password policy asks for length and a blocklist and nothing else, and a new CA's
+  RSA key is at least 3072 bits. **An installed instance keeps every setting it has** and is
+  offered the change in the console. See Security, and the upgrade notes.
+- **A node or signer that finds a restore ran beside it exits with status 75**, where
+  0.4.5-dev.1.3 answered 503 and waited to be restarted.
+- **One migration, `TighterDefaults`.** It is the first of 0.4.5 that is not purely additive: it
+  renames a column.
+
+To check after installing on a host that already runs: nobody is signed out, the session maximum
+reads 336 hours where it read 14 days, the password policy is as it was, and System Health shows
+a Security Baseline card. Nothing in this build has been looked at in a browser, and the wizard
+and `bootstrap.yaml` refusals of a small RSA key were not run end to end.
+
+### 0.4.5-dev.1.3 — 2026-11-12
+
+The fourth test build of 0.4.5. The hub's restore test showed a node starting beside a restore,
+on one database, with neither noticing. Since 0.4.5-dev.1.2:
+
+- **A restore and a running node keep each other out.** A restore beside a serving node exits 3
+  and changes nothing; a node that starts beside a restore waits, then exits 75. See "A restore
+  and a running node keep each other out" under Added, and the upgrade notes.
+- **The restore's last line says when the incarnation could not be stored**, and that step is
+  tried four times before it gives up.
+- **`/health/ready` says which start a continuity event came from**, and has a new entry,
+  `checks.restoreLock`.
+
+No migration is added: the schema is the one 0.4.5-dev.1.0 left. This build ran on Windows only
+before it was cut: nothing in it has run on Linux, in a container or under systemd.
+
+### 0.4.5-dev.1.2 — 2026-11-12
+
+The third test build of 0.4.5. 0.4.5-dev.1.1 proved on the test host that a certificate issued
+by an intermediate CA is accepted. Since 0.4.5-dev.1.1:
+
+- **A refused EST enrollment always leaves a row on the EST audit tab**, with the reason. On the
+  test host two kinds of refusal had left nothing in the console.
+- **A backup archive or key file that cannot be read is no longer called "not found"**, which
+  the hub met under SELinux.
+- **For the hub:** the mode record says when the CRLs in force run out while the mode is `dr`
+  (`crlsExpireFromUtc` in `mode.read`, the answer of `mode.set` and `health.read`). The
+  contract is still 1.1.
+- **The restore drill restores the same archive a second time** under the incarnation the host
+  already has, and the start after it reports no roll-back.
+
+No migration is added: the schema is the one 0.4.5-dev.1.0 left.
+
+### 0.4.5-dev.1.1 — 2026-11-12
+
+The second test build of 0.4.5, after 0.4.5-dev.1.0 ran on a test host and in the hub's pods.
+Since 0.4.5-dev.1.0:
+
+- **A certificate issued by an intermediate CA is accepted on a real host.** On the test host
+  every such certificate was refused as not chaining to its CA: EST re-enrollment, and with it
+  sign-in by client certificate and SCEP renewal under an intermediate. See "No certificate is
+  fetched while a chain is built" under Security. To check after installing: re-enroll over EST
+  with a certificate an intermediate CA issued.
+- **DR mode says when its CRLs run out**, on the mode card and in the banner.
+- **Refusals for the mode are counted for callers who are not signed in**, one audit record per
+  endpoint every five minutes.
+- **"Enrollment" is spelled one way** in the console and the documentation.
+- **For the hub:** nothing in the contract changed. Its text now says that `mode` in
+  `health.read` is the mode record, which is what 0.4.5-dev.1.0 already sent.
+
+No migration is added: the schema is the one 0.4.5-dev.1.0 left.
+
+### 0.4.5-dev.1.0 — 2026-11-12
+
+The first test build of 0.4.5, for a test host and for the hub's test bed. It carries everything
+below. None of it has run on Linux, in a container or in a browser before this build: that is
+what the build is for.
+
+- **For the hub.** The local connection (contract 1.1, eight operations), the affiliation token,
+  the four instance modes, the timeline variable with the CRL floor and the notice, the
+  inventory read, the unattended restore with `--backup-manifest` and `backup.prune`, and the
+  stored instance identifier.
+- **For a standalone install.** Revoking a certificate the CA has no record of, the instance
+  mode card in Settings, revocation checked under an intermediate CA when
+  "Require mTLS OCSP Check" is on, and the new exit statuses of `--restore`.
+- **Two migrations**, both additive: `RevokedSerialTombstones` and `InstanceIncarnation`.
+- **Built on the .NET 10.0.15 runtime**; the build scripts now refuse an older one.
 
 ## [0.4.4] — 2026-11-11
 

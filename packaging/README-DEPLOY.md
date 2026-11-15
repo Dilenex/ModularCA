@@ -327,6 +327,30 @@ out, and no password that worked before is refused at sign-in.
   that adds a migration. 0.4.4 cannot run on a database this release has migrated. 0.4.4 does not read
   `signer/journal/`; leave it where it is.
 
+### Upgrading to 0.4.5
+
+0.4.5 adds five migrations. One of them renames a column (the session maximum is stored in
+hours), so going back to 0.4.4 means restoring the backup: take it first.
+
+1. **Run the upgrade check with the new build** and read its notes, not only its last line (see
+   "Checking an upgrade before installing it" above). `install.sh` runs the same check and stops
+   on a refusal.
+2. **The signer's journal needs a directory it can write, with disk space.** The installer and
+   the `.deb` make `/opt/modularca/signer/journal`. A unit file of your own needs
+   `-/opt/modularca/signer/journal` in `ReadWritePaths=`; a pod or a compose file needs a volume
+   there on the signer only. The signer issues nothing while the journal cannot be written.
+   **Split installs** upgrade the signer with the node, and a signer that still reads the node's
+   `config/` is moved onto its own directory first ("Two units").
+3. **Stop the node before a restore.** A restore beside a running node is refused (exit status
+   3), and a node started beside a running restore waits, then exits 75; the packaged units start
+   it again. A script that reads `--restore` exit statuses must change: 0 done, 3 refused, 4
+   failed after changes, 75 unreachable.
+4. **After it starts,** check that `/health/ready` shows `checks.journal.status` `ok`. No setting
+   changed: the console offers the tighter session and password defaults under System Health,
+   Security Baseline. An expiring CA certificate no longer makes `/health/ready` answer 503; read
+   `checks.caLifecycle.status`. Leave `signer/journal` out of snapshots that are rolled back. The
+   changelog's "Upgrading from 0.4.4" lists the rest.
+
 ### Upgrading to 0.4.4
 
 0.4.4 adds four migrations. One of them drops two setting columns that nothing read, so going back

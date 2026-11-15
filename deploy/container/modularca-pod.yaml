@@ -100,7 +100,7 @@ spec:
 
   initContainers:
     - name: bootstrap
-      image: ghcr.io/dilenex/modularca:0.4.4
+      image: ghcr.io/dilenex/modularca:0.4.5
       # The entrypoint bootstraps when there is no config.yaml and, told --bootstrap-only, stops
       # there instead of serving. A configured install makes this a no-op.
       args: ["--bootstrap-only"]
@@ -109,7 +109,7 @@ spec:
         - { name: keystores, mountPath: /opt/modularca/keystores }
 
     - name: signer-dir
-      image: ghcr.io/dilenex/modularca:0.4.4
+      image: ghcr.io/dilenex/modularca:0.4.5
       command: ["/opt/modularca/ModularCA.API"]
       args: ["--role", "signer", "--signer-dir", "/opt/modularca/signer", "--migrate-signer-dir"]
       volumeMounts:
@@ -117,14 +117,14 @@ spec:
         - { name: signer-config, mountPath: /opt/modularca/signer }
 
     - name: signer-init
-      image: ghcr.io/dilenex/modularca:0.4.4
+      image: ghcr.io/dilenex/modularca:0.4.5
       command: ["/opt/modularca/ModularCA.API"]
       args: ["--role", "signer", "--signer-dir", "/opt/modularca/signer", "--init-identity"]
       volumeMounts:
         - { name: signer-config, mountPath: /opt/modularca/signer }
 
     - name: node-identity
-      image: ghcr.io/dilenex/modularca:0.4.4
+      image: ghcr.io/dilenex/modularca:0.4.5
       command: ["/opt/modularca/ModularCA.API"]
       args: ["--role", "signer", "--signer-dir", "/opt/modularca/signer",
              "--issue-node-identity", "--apply", "/opt/modularca/config/config.yaml"]
@@ -134,7 +134,7 @@ spec:
 
   containers:
     - name: signer
-      image: ghcr.io/dilenex/modularca:0.4.4
+      image: ghcr.io/dilenex/modularca:0.4.5
       args: ["--role", "signer", "--signer-dir", "/opt/modularca/signer"]
       volumeMounts:
         - { name: signer-config, mountPath: /opt/modularca/signer }
@@ -182,7 +182,7 @@ spec:
     # it asks again in the background (2 s, doubling to 60 s) and reads them, without a restart,
     # once the signer answers. README-DEPLOY.md, "A node that starts before its signer listens".
     - name: node
-      image: ghcr.io/dilenex/modularca:0.4.4
+      image: ghcr.io/dilenex/modularca:0.4.5
       args: ["--role", "node"]
       # The loopback-only health listener (Health.LoopbackPort), which the probes below ask:
       # plain HTTP on 127.0.0.1:8081, /health, /health/live and /health/ready only (404 for any
