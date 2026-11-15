@@ -274,6 +274,13 @@ export interface BulkUserGroupsRequest {
     removeGroupIds: string[];
 }
 
+/** From `ModularCA.Shared/Models/Config/SystemConfig.cs`. */
+export interface CaLifecycleConfig {
+    rootExpiryNoticeDays: number;
+    intermediateExpiryNoticeDays: number;
+    keyUsagePeriodDays: number;
+}
+
 /** From `ModularCA.Shared/Models/SpacePolicyChangeCeremonyParameters.cs`. */
 export interface CaUserQuorumChange {
     caId: string;
@@ -1280,6 +1287,26 @@ export interface ReissueCertificateRequestByCsrId {
     newSans?: string[] | null;
 }
 
+/** From `ModularCA.Shared/Models/RenewCaCertificateCeremonyParameters.cs`. */
+export interface RenewalAdvisory {
+    reason: string;
+    severity: string;
+    title?: string | null;
+    message: string;
+}
+
+/** From `ModularCA.Shared/Models/RenewCaCertificateCeremonyParameters.cs`. */
+export interface RenewCaCertificateCeremonyParameters {
+    caId: string;
+    caName: string;
+    currentCertificateId: string;
+    currentSerialNumber: string;
+    notAfter: string;
+    advisories: RenewalAdvisory[];
+    acknowledged: string[];
+    spaceId?: string | null;
+}
+
 /** From `ModularCA.Shared/Models/RequestedExtension.cs`. */
 export interface RequestedExtension {
     oid: string;
@@ -1319,6 +1346,13 @@ export interface RetainedAccountDto {
     deletedAt?: string | null;
     requests: number;
     approvals: number;
+}
+
+/** From `ModularCA.Shared/Models/Revocation/RevokedSerialRequests.cs`. */
+export interface RevokeAllMissingSerialsRequest {
+    confirmedCount: number;
+    journaledCrlNumber: number;
+    note: string;
 }
 
 /** From `ModularCA.Shared/Models/RevokeCaCeremonyParameters.cs`. */
@@ -1734,6 +1768,7 @@ export interface SystemConfig {
     certExpiryNotification: CertExpiryNotificationConfig;
     complianceScan: ComplianceScanConfig;
     certPolicy: CertPolicyConfig;
+    caLifecycle: CaLifecycleConfig;
     autoRenewal: AutoRenewalConfig;
     integrationApi: IntegrationApiConfig;
     policySync: PolicySyncConfig;

@@ -137,6 +137,9 @@ public class CrlService : ICrlService
     public async Task<string> GenerateCrlAsync(Guid caCertificateId, CancellationToken cancellationToken = default)
     {
         ModularCA.Shared.Modes.InstanceModeGate.ThrowIfRefused(_modeGate, ModularCA.Shared.Modes.ModeOperation.Fact, "Signing a new CRL");
+        // A CA whose certificate was renewed has one CRL, kept under its current certificate. A
+        // caller that names an earlier certificate over the same key (a leaf's issuer row) gets it.
+        caCertificateId = await IssuerChainResolver.CurrentSameKeyCertificateIdAsync(_dbContext, caCertificateId, cancellationToken);
         if (_merge != null)
             await _merge.EnsureMergedAsync(caCertificateId, cancellationToken);
         try
@@ -436,6 +439,9 @@ public class CrlService : ICrlService
     /// <remarks>As for a full CRL, a number the signer says is behind its journal raises the counters and the delta is generated once more.</remarks>
     public async Task<string> GenerateDeltaCrlAsync(Guid caCertificateId, CancellationToken cancellationToken = default)
     {
+        // The mode is asked before anything is read, as for a full CRL.
+        ModularCA.Shared.Modes.InstanceModeGate.ThrowIfRefused(_modeGate, ModularCA.Shared.Modes.ModeOperation.Fact, "Signing a new delta CRL");
+        caCertificateId = await IssuerChainResolver.CurrentSameKeyCertificateIdAsync(_dbContext, caCertificateId, cancellationToken);
         try
         {
             return await GenerateDeltaCrlOnceAsync(caCertificateId, cancellationToken);
@@ -963,8 +969,15 @@ public class CrlService : ICrlService
     /// every public CRL fetch. The CRL is the one whose configuration names
     /// <paramref name="caCertificateId"/>, never one matched by issuer DN.
     /// </summary>
+    /// <remarks>
+    /// An earlier certificate of a CA whose certificate was renewed over the same key is answered
+    /// with the CA's one CRL (<see cref="IssuerChainResolver.CurrentSameKeyCertificateIdAsync"/>):
+    /// it names the same issuer, is signed by the same key and lists what was issued under either
+    /// certificate, so a URL that carries the old serial keeps serving a CRL that is current.
+    /// </remarks>
     public async Task<CrlBlob?> GetLatestCrlRawAsync(Guid caCertificateId, CancellationToken cancellationToken = default)
     {
+        caCertificateId = await IssuerChainResolver.CurrentSameKeyCertificateIdAsync(_dbContext, caCertificateId, cancellationToken);
         var ca = await _dbContext.Certificates
             .AsNoTracking()
             .FirstOrDefaultAsync(c => c.CertificateId == caCertificateId, cancellationToken);
@@ -994,6 +1007,7 @@ public class CrlService : ICrlService
     /// </summary>
     public async Task<CrlBlob?> GetLatestDeltaCrlRawAsync(Guid caCertificateId, CancellationToken cancellationToken = default)
     {
+        caCertificateId = await IssuerChainResolver.CurrentSameKeyCertificateIdAsync(_dbContext, caCertificateId, cancellationToken);
         var ca = await _dbContext.Certificates
             .AsNoTracking()
             .FirstOrDefaultAsync(c => c.CertificateId == caCertificateId, cancellationToken);

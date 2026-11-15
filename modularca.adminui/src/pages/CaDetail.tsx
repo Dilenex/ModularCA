@@ -13,9 +13,11 @@ import { DetailPage, DetailSection } from '../components/DetailPage';
 import { ocspStatus } from './ocspReadiness';
 import { advisoriesOf, openEnrollmentNotice } from './protocolAdvisories';
 import { keyAdvisoriesOf } from './tighterDefaults';
+import { advisoryTitle, advisoryTone, cryptoperiodRows } from './caLifecycle';
 import InfrastructureProfiles from '../components/InfrastructureProfiles';
 import RevokedSerialsPanel from '../components/RevokedSerialsPanel';
 import MissingFromCrlPanel from '../components/MissingFromCrlPanel';
+import CaCertificateRenewal from '../components/CaCertificateRenewal';
 import { useAuth } from '../context/AuthContext';
 
 function formatDate(d: string | null) {
@@ -58,6 +60,8 @@ const CaDetail: React.FC = () => {
     const [ca, setCa] = useState<any | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<NoticeInput | null>(null);
+    // Raised after a renewal, so the page shows the CA's new certificate.
+    const [reload, setReload] = useState(0);
 
     // Infrastructure certificate reissue. OCSP defaults on because a broken responder is the
     // reason to be here; TSA defaults off because reissuing it is rarer and not free.
@@ -108,7 +112,7 @@ const CaDetail: React.FC = () => {
             })
             .catch((err) => { if (!cancelled) { setError(errorNotice(err, 'Failed to load CA')); setLoading(false); } });
         return () => { cancelled = true; };
-    }, [id]);
+    }, [id, reload]);
 
     if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
     if (error) return <InlineNotice notice={error} />;
@@ -152,12 +156,27 @@ const CaDetail: React.FC = () => {
                     {keyAdvisoriesOf(ca).map((a) => (
                         <InlineNotice
                             key={a.reason}
-                            severity="warning"
+                            severity={advisoryTone(a) === 'crit' ? 'error' : 'warning'}
                             className="mt-2"
-                            notice={{ title: "This CA's key should be replaced", detail: a.message, code: a.reason }}
+                            notice={{ title: a.reason === 'CaRsaKeyBelow3072' ? "This CA's key should be replaced" : advisoryTitle(a), detail: a.message, code: a.reason }}
                         />
                     ))}
                 </DetailSection>
+
+                {cryptoperiodRows(ca.cryptoperiod).length > 0 && (
+                    <DetailSection title="Key and Certificate Lifetime">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
+                            {cryptoperiodRows(ca.cryptoperiod).map((row) => (
+                                <div key={row.label} title={row.hint}>
+                                    <DetailField label={row.label} value={row.value} />
+                                </div>
+                            ))}
+                        </div>
+                        <p className="mt-2 text-xs text-ink-muted max-w-3xl">
+                            When these raise a notice is set under <Link to="/settings?tab=Security" className="text-accent-ink underline">CA Lifecycle Notices in Settings</Link>. A notice is information: it stops nothing.
+                        </p>
+                    </DetailSection>
+                )}
 
                 <DetailSection title="Certificate Details">
                     {!cert ? (
@@ -177,6 +196,12 @@ const CaDetail: React.FC = () => {
                         </div>
                     )}
                 </DetailSection>
+
+                {cert && (
+                    <DetailSection title="Certificate History and Renewal">
+                        <CaCertificateRenewal ca={ca} onRenewed={() => setReload((n) => n + 1)} />
+                    </DetailSection>
+                )}
 
                 {ca.protocolConfigs && ca.protocolConfigs.length > 0 && (
                     <DetailSection title="Protocol Configurations">

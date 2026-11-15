@@ -206,8 +206,10 @@ public static class IssuerChainResolver
 
     /// <summary>
     /// The CA that owns <paramref name="certificateId"/> as a CA certificate: the CA whose current
-    /// certificate it is, or, for a superseded CA certificate, the CA it was superseded within
-    /// (see <see cref="PickSupersededOwner"/>). Null for a certificate no CA owns. This is the
+    /// certificate it is, or, for a superseded CA certificate, the CA it was superseded within:
+    /// the one <c>CaCertificates</c> records for it (every certificate a renewal superseded has a
+    /// row), else the one <see cref="PickSupersededOwner"/> works out for a row older than that
+    /// table. Null for a certificate no CA owns. This is the
     /// single definition of "a certificate belonging to a CA" that certificate access scoping and
     /// the console's scope filters share.
     /// </summary>
@@ -229,6 +231,10 @@ public static class IssuerChainResolver
         if (current.Count > 0)
             return current.Count == 1 ? current[0] : null;
 
+        // A certificate the CA's history names is that CA's, with no guessing.
+        if (RecordedOwner(db, certificateId) is { } recorded)
+            return recorded;
+
         var cert = loaded ?? db.Certificates.AsNoTracking().FirstOrDefault(c => c.CertificateId == certificateId);
         if (cert == null || !cert.IsCA || string.IsNullOrEmpty(cert.SubjectDN))
             return null;
@@ -248,6 +254,50 @@ public static class IssuerChainResolver
                 .Where(ca => ca.CertificateId != null && hintIds.Contains(ca.CertificateId.Value))
                 .Select(ca => new { ca.SpaceId }).FirstOrDefault();
         return PickSupersededOwner(cert, candidates, hintRow != null, hintRow?.SpaceId);
+    }
+
+    /// <summary>
+    /// The CA that <c>CaCertificates</c> records <paramref name="certificateId"/> under: a
+    /// certificate a renewal superseded, or the first certificate of a CA created since that
+    /// table exists. Null when no row names it, or the CA is deleted.
+    /// </summary>
+    private static CaOwner? RecordedOwner(ModularCADbContext db, Guid certificateId)
+        => (from history in db.CaCertificates.AsNoTracking()
+            join ca in db.CertificateAuthorities.AsNoTracking() on history.CertificateAuthorityId equals ca.Id
+            where history.CertificateId == certificateId
+            select new CaOwner(ca.Id, ca.SpaceId)).FirstOrDefault();
+
+    /// <summary>
+    /// The certificate id under which the CA that owns <paramref name="caCertificateId"/> keeps
+    /// what belongs to its key: its CRL schedule and CRLs, its service URLs, its signing
+    /// profiles. That is the CA's current certificate when <paramref name="caCertificateId"/> is
+    /// that certificate or an earlier one over the same key; a renewal moves those rows to the
+    /// new certificate, and a caller that still holds the earlier id (a leaf's
+    /// <c>IssuerCertificateId</c>, a serial in an old URL) is brought to it here. Any other id
+    /// is returned as it is: a certificate no CA owns, or one over a different key, has its own.
+    /// </summary>
+    public static async Task<Guid> CurrentSameKeyCertificateIdAsync(ModularCADbContext db, Guid caCertificateId, CancellationToken ct = default)
+    {
+        if (await db.CertificateAuthorities.AsNoTracking().AnyAsync(ca => ca.CertificateId == caCertificateId, ct))
+            return caCertificateId;
+        if (OwnerOf(db, caCertificateId) is not { } owner)
+            return caCertificateId;
+
+        var currentId = await db.CertificateAuthorities.AsNoTracking()
+            .Where(ca => ca.Id == owner.CaId)
+            .Select(ca => ca.CertificateId)
+            .FirstOrDefaultAsync(ct);
+        if (currentId is not Guid current)
+            return caCertificateId;
+        var pems = await db.Certificates.AsNoTracking()
+            .Where(c => c.CertificateId == current || c.CertificateId == caCertificateId)
+            .Select(c => new { c.CertificateId, c.Pem })
+            .ToListAsync(ct);
+        var mine = pems.FirstOrDefault(p => p.CertificateId == caCertificateId)?.Pem;
+        var theirs = pems.FirstOrDefault(p => p.CertificateId == current)?.Pem;
+        return mine != null && theirs != null && PublicKey(mine) is { } a && PublicKey(theirs) is { } b && a.AsSpan().SequenceEqual(b)
+            ? current
+            : caCertificateId;
     }
 
     /// <summary>
@@ -279,8 +329,9 @@ public static class IssuerChainResolver
     /// <summary>
     /// The CA certificates CA <paramref name="caId"/> signs under: its current certificate first,
     /// then every superseded CA certificate with the same subject that
-    /// <see cref="OwnerOf(ModularCADbContext, Guid)"/> assigns to it. Empty for an unknown CA or one
-    /// without an X.509 certificate.
+    /// <see cref="OwnerOf(ModularCADbContext, Guid)"/> assigns to it, and every certificate
+    /// <c>CaCertificates</c> records for it. Empty for an unknown CA or one without an X.509
+    /// certificate.
     /// </summary>
     public static async Task<List<Guid>> CaCertificateIdsAsync(ModularCADbContext db, Guid caId, CancellationToken ct = default)
     {
@@ -300,6 +351,11 @@ public static class IssuerChainResolver
                 .ToListAsync(ct);
             owned.AddRange(siblings.Where(id => OwnerOf(db, id)?.CaId == caId));
         }
+        var recorded = await db.CaCertificates.AsNoTracking()
+            .Where(h => h.CertificateAuthorityId == caId)
+            .Select(h => h.CertificateId)
+            .ToListAsync(ct);
+        owned.AddRange(recorded.Where(id => !owned.Contains(id)));
         return owned;
     }
 
@@ -358,6 +414,14 @@ public static class IssuerChainResolver
             .ToListAsync();
         if (orphans.Count == 0)
             return owners;
+
+        // What the CA's history records comes first; the rest is worked out below.
+        var recorded = await (from history in db.CaCertificates.AsNoTracking()
+                              join ca in db.CertificateAuthorities.AsNoTracking() on history.CertificateAuthorityId equals ca.Id
+                              select new { history.CertificateId, ca.Id, ca.SpaceId }).ToListAsync();
+        foreach (var row in recorded)
+            owners.TryAdd(row.CertificateId, new CaOwner(row.Id, row.SpaceId));
+        orphans = orphans.Where(o => !owners.ContainsKey(o.CertificateId)).ToList();
 
         var profileIds = orphans.Where(c => c.SigningProfileId != null).Select(c => c.SigningProfileId!.Value).Distinct().ToList();
         var profileIssuers = await db.SigningProfiles.AsNoTracking()
@@ -423,6 +487,27 @@ public static class IssuerChainResolver
                 ids.Add(sibling.CertificateId);
         }
         return ids;
+    }
+
+    /// <summary>
+    /// <see cref="SameKeyCaCertificateIdsAsync(ModularCADbContext, Guid, Org.BouncyCastle.X509.X509Certificate, CancellationToken)"/>
+    /// for a caller that holds only the id: the certificate is read from its row. This is the set
+    /// to compare a certificate's <c>IssuerCertificateId</c> with wherever "issued by this CA" is
+    /// asked: after a renewal the CA has issued under more than one certificate of the same key.
+    /// An unknown or unreadable certificate is a scope of itself alone.
+    /// </summary>
+    public static async Task<List<Guid>> SameKeyScopeAsync(ModularCADbContext db, Guid caCertificateId, CancellationToken ct = default)
+    {
+        var pem = await db.Certificates.AsNoTracking()
+            .Where(c => c.CertificateId == caCertificateId)
+            .Select(c => c.Pem)
+            .FirstOrDefaultAsync(ct);
+        if (string.IsNullOrWhiteSpace(pem))
+            return [caCertificateId];
+        Org.BouncyCastle.X509.X509Certificate parsed;
+        try { parsed = CertificateUtil.ParseFromPem(pem); }
+        catch { return [caCertificateId]; }
+        return await SameKeyCaCertificateIdsAsync(db, caCertificateId, parsed, ct);
     }
 
     /// <summary>

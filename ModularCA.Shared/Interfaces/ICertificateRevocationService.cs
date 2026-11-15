@@ -7,6 +7,9 @@ namespace ModularCA.Shared.Interfaces
     /// response can surface the post-action cert state plus the newly issued CRL number without
     /// a second round-trip. <see cref="PreviousReason"/> is <see cref="RevocationReason.CertificateHold"/>
     /// when a revoke turned a hold into a permanent revocation, and null otherwise.
+    /// <see cref="AlsoSerialNumbers"/> lists the other certificates the same action reached: for a
+    /// CA certificate, every other certificate that CA has over the same key, which is revoked,
+    /// held or released with it. Empty for any other certificate.
     /// </summary>
     public sealed record RevocationResult(
         Guid CertificateId,
@@ -15,7 +18,11 @@ namespace ModularCA.Shared.Interfaces
         RevocationReason? Reason,
         DateTime EffectiveAt,
         long? CrlNumber,
-        RevocationReason? PreviousReason = null);
+        RevocationReason? PreviousReason = null)
+    {
+        /// <summary>Serials of the other certificates of the same CA and key that the action also changed.</summary>
+        public IReadOnlyList<string> AlsoSerialNumbers { get; init; } = [];
+    }
 
     /// <summary>
     /// Handles certificate revocation, hold, unhold, and reissuance operations.
@@ -69,5 +76,35 @@ namespace ModularCA.Shared.Interfaces
         /// A missing or ambiguous certificate is refused as on <see cref="RevokeCertificateAsync"/>.
         /// </summary>
         Task<RevocationResult> UnholdCertificateAsync(Guid? certificateId, string? certificateSerialNumber);
+
+        /// <summary>
+        /// <see cref="RevokeCertificateAsync(Guid?, string?, RevocationReason, DateTime?)"/> on behalf of
+        /// <paramref name="actor"/>. Revoking a CA certificate also revokes every other certificate
+        /// that CA has over the same key; the audit row the service writes for each of those names
+        /// this actor and carries the same address and ceremony as the caller's own row for the
+        /// certificate it named. The default ignores the actor, for an implementation that audits nothing.
+        /// </summary>
+        Task<RevocationResult> RevokeCertificateAsync(Guid? certificateId, string? certificateSerialNumber, RevocationReason reason,
+            DateTime? invalidityDate, RevocationActor actor)
+            => RevokeCertificateAsync(certificateId, certificateSerialNumber, reason, invalidityDate);
+
+        /// <summary><see cref="HoldCertificateAsync(Guid?, string?)"/> on behalf of <paramref name="actor"/>, who is named on the audit row of each other certificate the hold reaches.</summary>
+        Task<RevocationResult> HoldCertificateAsync(Guid? certificateId, string? certificateSerialNumber, RevocationActor actor)
+            => HoldCertificateAsync(certificateId, certificateSerialNumber);
+
+        /// <summary><see cref="UnholdCertificateAsync(Guid?, string?)"/> on behalf of <paramref name="actor"/>, who is named on the audit row of each other certificate the release reaches.</summary>
+        Task<RevocationResult> UnholdCertificateAsync(Guid? certificateId, string? certificateSerialNumber, RevocationActor actor)
+            => UnholdCertificateAsync(certificateId, certificateSerialNumber);
     }
+
+    /// <summary>
+    /// Who asked for a revocation, a hold or a release, and from where: what the audit row of
+    /// every certificate the action reaches says, so that a row never names "system" for
+    /// something a person did.
+    /// </summary>
+    /// <param name="UserId">The account.</param>
+    /// <param name="Username">Its name.</param>
+    /// <param name="SourceIp">The address the request came from.</param>
+    /// <param name="CeremonyId">The key ceremony the action executes, when there is one.</param>
+    public sealed record RevocationActor(Guid? UserId, string? Username, string? SourceIp = null, Guid? CeremonyId = null);
 }

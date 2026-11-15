@@ -10,7 +10,11 @@ import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPostWithMfa } from '../api/client';
 import { useStepUp } from './StepUpMfaContext';
 import { REVOCATION_REASONS } from '../pages/CertificateDetail';
-import { bulkBody, missingRows, missingSummary, recordable, MISSING_FROM_CRL_ANCHOR, type MissingFromCrl, type MissingSerialRow } from './missingFromCrl';
+import ConfirmModal from './ConfirmModal';
+import {
+    bulkBody, missingRows, missingSummary, recordable, revokeAllBody, revokeAllConfirmation, selectionIsWholeList,
+    MISSING_FROM_CRL_ANCHOR, type MissingFromCrl, type MissingSerialRow,
+} from './missingFromCrl';
 
 function formatDate(d: string | null | undefined) {
     if (!d) return '-';
@@ -24,9 +28,12 @@ const confirmDanger = 'px-4 py-2 text-sm bg-crit text-on-accent rounded hover:bg
 /// <summary>
 /// On a CA's page, only while the signer refuses the CA's CRL for leaving out revoked serials:
 /// every serial the refused CRL left out, with the reason and date the last signed CRL gives, and
-/// the "revoke a serial number alone" action for one, for those selected, or for all. A serial the
-/// CA still holds a certificate for links to that certificate, where it is revoked. Recording asks
-/// for the same step-up as revoking one serial does. Shown to a caller with cert.revoke on the CA.
+/// the "revoke a serial number alone" action for one or for those selected. A serial the CA still
+/// holds a certificate for links to that certificate, where it is revoked. Recording asks for the
+/// same step-up as revoking one serial does. Revoking all of them is an act of its own, set apart
+/// below the list: it asks for the CA's name to be typed and for its own step-up, and the server
+/// refuses it when the list is no longer the one that was confirmed. Shown to a caller with
+/// cert.revoke on the CA.
 /// </summary>
 const MissingFromCrlPanel: React.FC<{ caId: string; caName: string; onChanged?: () => void }> = ({ caId, caName, onChanged }) => {
     const { requireStepUp } = useStepUp();
@@ -38,6 +45,9 @@ const MissingFromCrlPanel: React.FC<{ caId: string; caName: string; onChanged?: 
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<NoticeInput | null>(null);
     const [done, setDone] = useState<string | null>(null);
+    // Revoke all: its own dialog, with the CA's name typed in.
+    const [allOpen, setAllOpen] = useState(false);
+    const [typedName, setTypedName] = useState('');
 
     useEffect(() => {
         let cancelled = false;
@@ -63,8 +73,41 @@ const MissingFromCrlPanel: React.FC<{ caId: string; caName: string; onChanged?: 
         return () => window.removeEventListener('keydown', onKey);
     }, [pending, busy]);
 
+    const defaultNote = 'Revoked again after the database was taken back: the signer\'s last CRL lists it.';
+
+    const askAll = () => {
+        setNote(defaultNote); setTypedName('');
+        setError(null); setDone(null); setAllOpen(true);
+    };
+
+    const submitAll = async () => {
+        if (!answer || !revokeAllConfirmation(answer, caName, typedName, note)?.canConfirm) return;
+        setBusy(true); setError(null);
+        try {
+            const res = await apiPostWithMfa<any>(`/api/v1/admin/authorities/${caId}/revoked-serials/missing-from-crl/revoke-all`,
+                revokeAllBody(answer, note), requireStepUp, StepUpOps.RevokeAllMissingSerials, caId);
+            const recorded = typeof res?.recorded === 'number' ? res.recorded : 0;
+            const refused = typeof res?.refusedCount === 'number' ? res.refusedCount : 0;
+            setDone(`All ${recorded} serial${recorded === 1 ? '' : 's'} recorded as revoked${res?.crlNumber ? ` and listed on CRL ${res.crlNumber}` : '; the next CRL lists them'}.`
+                + (refused > 0 ? ` ${refused} could not be recorded: ${res.refused?.[0]?.reason ?? ''}` : ''));
+            setAllOpen(false);
+            setRefresh((r) => r + 1);
+            onChanged?.();
+        } catch (err: any) {
+            if (err?.message !== 'Step-up MFA cancelled') {
+                setError(errorNotice(err, 'The serials were not revoked'));
+                // The list may be what changed: read it again, so the dialog shows what is there now.
+                setRefresh((r) => r + 1);
+            }
+        } finally {
+            setBusy(false);
+        }
+    };
+
     const ask = (selected: MissingSerialRow[]) => {
-        setNote('Revoked again after the database was taken back: the signer\'s last CRL lists it.');
+        // Every serial on the list is not a selection: that is revoke-all, and the server says the same.
+        if (selectionIsWholeList(selected, rows)) { askAll(); return; }
+        setNote(defaultNote);
         setError(null); setDone(null); setPending(recordable(selected));
     };
 
@@ -132,12 +175,57 @@ const MissingFromCrlPanel: React.FC<{ caId: string; caName: string; onChanged?: 
                     selectable
                     rowSelectable={(r) => !r.certificateHeld}
                     bulkActions={[{ label: 'Revoke the selected serials', variant: 'danger', onClick: (selected) => ask(selected) }]}
-                    toolbarAction={open.length > 0
-                        ? <button type="button" onClick={() => ask(rows)} className={actionButtonDanger}>Revoke all {open.length} without a certificate</button>
-                        : undefined}
                     empty="No serial is missing from the CRL"
                 />
             </div>
+
+            {/* Set apart from the list and its row actions: revoking everything is not a slip away from revoking a selection. */}
+            {open.length > 1 && (
+                <div className="mt-6 pt-4 border-t border-line max-w-3xl flex flex-wrap items-center gap-3">
+                    <div className="flex-1 min-w-[16rem]">
+                        <div className="text-sm font-medium text-ink">Revoke all {open.length} serials</div>
+                        <p className="text-xs text-ink-muted">
+                            Revokes every serial on this list that has no certificate here, in one act. It asks for the name of the
+                            certificate authority and cannot be undone.
+                        </p>
+                    </div>
+                    <button type="button" onClick={askAll} className={actionButtonDanger}>Revoke all…</button>
+                </div>
+            )}
+
+            {(() => {
+                const confirmation = allOpen ? revokeAllConfirmation(answer, caName, typedName, note) : null;
+                if (!confirmation) return null;
+                return (
+                    <ConfirmModal
+                        isOpen
+                        title={confirmation.title}
+                        tone="crit"
+                        confirmLabel={confirmation.confirmLabel}
+                        loading={busy}
+                        confirmDisabled={!confirmation.canConfirm}
+                        onConfirm={submitAll}
+                        onCancel={() => { if (!busy) setAllOpen(false); }}
+                        message={(
+                            <div className="space-y-3">
+                                <div className="space-y-1"><div className="text-xs text-ink-muted">Certificate authority</div><div className="text-sm text-ink break-all">{confirmation.caName}</div></div>
+                                <div className="space-y-1"><div className="text-xs text-ink-muted">Serials to revoke</div><div className="text-sm text-ink">{confirmation.count}</div></div>
+                                {confirmation.statements.map((s) => <p key={s} className="text-xs text-ink">{s}</p>)}
+                                <div className="space-y-1">
+                                    <label htmlFor="revoke-all-note" className="block text-xs text-ink-muted">Why are they revoked without their certificates?</label>
+                                    <textarea id="revoke-all-note" value={note} onChange={(e) => setNote(e.target.value)} disabled={busy} rows={2} maxLength={1000} className={field} />
+                                </div>
+                                <div className="space-y-1">
+                                    <label htmlFor="revoke-all-name" className="block text-xs text-ink-muted">{confirmation.prompt}</label>
+                                    <input id="revoke-all-name" type="text" value={typedName} onChange={(e) => setTypedName(e.target.value)} disabled={busy}
+                                        autoComplete="off" spellCheck={false} className={field} />
+                                </div>
+                                {error && <InlineNotice notice={error} />}
+                            </div>
+                        )}
+                    />
+                );
+            })()}
 
             {pending && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim" onClick={() => !busy && setPending(null)}>

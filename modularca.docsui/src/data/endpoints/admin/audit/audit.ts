@@ -17,6 +17,7 @@ export const adminAudit: ApiEndpoint[] = [
             { name: 'targetEntityType', type: 'string', required: false, description: 'Target type of one entity\'s activity' },
             { name: 'targetEntityId', type: 'string', required: false, description: 'Target id of one entity\'s activity' },
             { name: 'success', type: 'bool', required: false, description: 'Only records of actions that succeeded (true) or failed (false)' },
+            { name: 'revokedSerial', type: 'string', required: false, description: 'A serial in hexadecimal (separators, case and leading zeros are ignored). Only the records that name it among those that restored revocations from the signer\'s journal (RevocationMergedFromJournal, RevocationsMergedFromJournalBatch) or recorded serials with no certificate (RevokedSerialRecorded, RevokedSerialsRecordedBatch). A batch record carries up to 500 serials in its details and has the CA as its target, so targetEntityId does not find it; this does. 400 when it is not a serial.' },
             { name: 'sort', type: 'string', required: false, description: 'Sort column and direction' },
             { name: 'page', type: 'int', required: false, description: 'Page number (default 1)' },
             { name: 'pageSize', type: 'int', required: false, description: 'Page size (default 50)' },

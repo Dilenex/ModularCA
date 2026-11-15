@@ -144,6 +144,7 @@ public class AdminConfigController(
             NetworkAudit = _config.NetworkAudit,
             Backup = _config.Backup,
             CertPolicy = _config.CertPolicy,
+            CaLifecycle = new { _config.CaLifecycle.RootExpiryNoticeDays, _config.CaLifecycle.IntermediateExpiryNoticeDays, _config.CaLifecycle.KeyUsagePeriodDays },
             Mtls = _config.Mtls,
             AutoRenewal = _config.AutoRenewal,
             ComplianceScan = _config.ComplianceScan,
@@ -750,6 +751,31 @@ public class AdminConfigController(
     }
 
     /// <summary>
+    /// Updates when the notices about a CA's certificate and key over time are shown
+    /// (<see cref="ModularCA.Shared.Utils.CaCryptoperiod"/>): the notice window of a root CA
+    /// certificate and of an intermediate one, and the usage period of a CA key, each in days
+    /// from 0 (off) to 36500. A value outside that is refused with 400 and nothing is saved. The
+    /// settings change when a notice appears and nothing else. They apply at once.
+    /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
+    /// </summary>
+    [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
+    [HttpPut("ca-lifecycle")]
+    [RequireStepUp(StepUpOps.UpdateConfig)]
+    public async Task<IActionResult> UpdateCaLifecycle([FromBody] CaLifecycleUpdateRequest request)
+    {
+        var settings = new ModularCA.Shared.Utils.CaCryptoperiodSettings(request.RootExpiryNoticeDays, request.IntermediateExpiryNoticeDays, request.KeyUsagePeriodDays);
+        if (ModularCA.Shared.Utils.CaCryptoperiod.Problem(settings) is { } problem)
+            return BadRequest(new { error = problem });
+
+        _config.CaLifecycle.RootExpiryNoticeDays = request.RootExpiryNoticeDays;
+        _config.CaLifecycle.IntermediateExpiryNoticeDays = request.IntermediateExpiryNoticeDays;
+        _config.CaLifecycle.KeyUsagePeriodDays = request.KeyUsagePeriodDays;
+        if (await TryPersistOrErrorAsync() is { } __persistErr) return __persistErr;
+        await AuditConfigChange("CaLifecycle", new { request.RootExpiryNoticeDays, request.IntermediateExpiryNoticeDays, request.KeyUsagePeriodDays });
+        return Ok(new { message = "CA lifecycle notices updated", config = new { _config.CaLifecycle.RootExpiryNoticeDays, _config.CaLifecycle.IntermediateExpiryNoticeDays, _config.CaLifecycle.KeyUsagePeriodDays } });
+    }
+
+    /// <summary>
     /// Updates the automatic certificate renewal configuration.
     /// Requires step-up MFA (<see cref="StepUpOps.UpdateConfig"/>).
     /// </summary>
@@ -1074,6 +1100,17 @@ public class MtlsUpdateRequest
 
     /// <summary>Trust-anchor certificate file paths; null keeps, empty clears.</summary>
     public List<string>? TrustedCaCertPaths { get; set; }
+}
+
+/// <summary>Request body for PUT /config/ca-lifecycle. Every value is in days, from 0 (off) to 36500.</summary>
+public class CaLifecycleUpdateRequest
+{
+    /// <summary>How many days before a root CA certificate expires its notice starts; 0 for no early notice.</summary>
+    public int RootExpiryNoticeDays { get; set; }
+    /// <summary>How many days before an intermediate CA certificate expires its notice starts; 0 for no early notice.</summary>
+    public int IntermediateExpiryNoticeDays { get; set; }
+    /// <summary>How many days a CA key may have been signing before a notice says so; 0 for never.</summary>
+    public int KeyUsagePeriodDays { get; set; }
 }
 
 /// <summary>Request body for PUT /config/auto-renewal.</summary>

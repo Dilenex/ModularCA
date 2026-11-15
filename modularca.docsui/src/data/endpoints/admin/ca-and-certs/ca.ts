@@ -149,4 +149,45 @@ export const adminCa: ApiEndpoint[] = [
         responseDescription: 'Created root CA with ID, name, label, type, and certificate ID. If ceremony required: { requiresCeremony, ceremonyId, status, requiredApprovals, message }.',
         notes: 'Key algorithm policy enforced; from 0.4.5 an RSA key under 3072 bits is refused with 400 for a new CA (NIST SP 800-57 accepts RSA 2048 only through 2030), before any ceremony is opened and again when one is executed. Existing CAs are not affected. Triggers a security alert when a root CA is created. If the space has RequireKeyCeremony enabled, returns a ceremony object instead of creating the CA directly. When the ceremony could never reach its quorum, because too few accounts other than the caller can approve it, nothing is opened and the answer is 409 (code MCA-CFG-020 when nobody else can approve, MCA-CFG-021 when some can but too few); the key ceremony endpoints describe the body.',
     },
+    {
+        method: 'POST',
+        path: '/api/v1/admin/authorities/{caId}/renew-certificate',
+        summary: 'Renew a CA\'s certificate over the key it has: the same key, subject and extensions, a new serial and a new validity. The earlier certificate stays valid and is not revoked.',
+        auth: 'Authorize (system administrator for a root CA; ca.manage for the space of an intermediate CA)',
+        category: 'CA Management',
+        requestBody: [
+            { name: 'validityYears', type: 'int', required: false, description: 'Validity of the new certificate in years from now, 1 to 50 (default 10). An intermediate\'s is shortened to end with its parent CA\'s certificate.' },
+            { name: 'acknowledge', type: 'string[]', required: false, description: 'Reason codes of the validity warnings the administrator accepts, e.g. ["CaRsaKeyBelow3072Past2030"].' },
+        ],
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token scoped to renew-ca-certificate and bound to the CA id' },
+        ],
+        responseDescription: 'When renewed: { requiresCeremony: false, caId, certificateId, serialNumber, previousSerialNumber, notBefore, notAfter, shortenedToParent, message }. When the CA\'s scope requires a key ceremony: { requiresCeremony: true, ceremonyId, status, requiredApprovals, notAfter, shortenedToParent, message }; the renewal happens when the approved RenewCaCertificate ceremony is executed.',
+        notes: 'Added in 0.4.5. A root signs its own new certificate; an intermediate\'s is signed by its parent CA of this instance. Nothing but the validity is chosen. The system signing CA is renewed like any root. A validity warning that has to be acknowledged (today CaRsaKeyBelow3072Past2030: an RSA key under 3072 bits past 2030) answers 409 with requiresAcknowledgement and the advisories until its reason is sent in acknowledge; a validity longer than common practice (25 years for a root, 10 for an intermediate) is returned in advisories and refuses nothing. Refused with 400 for a revoked CA certificate, an intermediate whose issuer is not a CA of this instance, a parent that is disabled, revoked or outside its validity, a validity that would not end after the current certificate\'s, and whatever the signer refuses (it checks the key, the subject, the extensions, the path length, the validity and the ceremony itself). 403 without the right, 404 for an unknown CA, 503 outside full mode (restricted and DR modes). The CRL and OCSP addresses do not change, and one CRL covers certificates issued under either certificate. After a root renewal, the new root certificate has to be given to everyone who trusts the old one. Not built: a new key, a changed subject, cross-certificates, renewal on a schedule.',
+    },
+    {
+        method: 'GET',
+        path: '/api/v1/admin/certificates/serial/{serial}/revocation-scope',
+        summary: 'What revoking, holding or releasing this certificate will reach: for a CA certificate, every certificate that CA has over the same key.',
+        auth: 'Authorize (the caller\'s space fence must admit the CA)',
+        category: 'CA Management',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: '{ isCaCertificate, caId, caName, isRoot, certificates: [{ certificateId, serialNumber, subjectDN, notBefore, notAfter, isCurrent, isRequested, onHold, revoked }] }. For a certificate that is not a CA\'s, the list holds that certificate alone.',
+        notes: 'Added in 0.4.5. Reads only. From 0.4.5 revoking a CA certificate (POST .../revoke, or an executed RevokeCa ceremony) revokes every certificate of that CA over the same key with one reason and date, and a hold and its release reach all of them; the answers of those calls list the others in alsoSerialNumbers. The console shows this list before the administrator confirms.',
+    },
+    {
+        method: 'GET',
+        path: '/api/v1/admin/authorities/{caId}/certificates',
+        summary: 'List the certificates a CA has had: the current one first, then every earlier one a renewal superseded.',
+        auth: 'Authorize (CaAuditor)',
+        category: 'CA Management',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: 'An array of { certificateId, serialNumber, subjectDN, issuer, notBefore, notAfter, sha256, keyId, isCurrent, origin (Initial or Renewal), activatedAt, supersededAt, ceremonyId, actor, revoked, expired, pem }.',
+        notes: 'Added in 0.4.5. keyId is the SHA-256 of the certificate\'s public key; it is the same for every certificate of a CA renewed over its key. An earlier certificate is also served publicly at /ca/{serial}.',
+    },
 ];

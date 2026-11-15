@@ -227,20 +227,35 @@ public partial class ModularCADbContext
         var tracked = ChangeTracker.Entries<CertificateEntity>().FirstOrDefault(e => e.Entity.CertificateId == caCertificateId)?.Entity;
         var raw = tracked?.RawCertificate ?? Certificates.AsNoTracking().Where(c => c.CertificateId == caCertificateId).Select(c => c.RawCertificate).FirstOrDefault();
         var key = KeyOf(raw);
-        var ca = CertificateAuthorities.AsNoTracking().Where(a => a.CertificateId == caCertificateId).Select(a => (Guid?)a.Id).FirstOrDefault();
+        var ca = CertificateAuthorities.AsNoTracking().Where(a => a.CertificateId == caCertificateId).Select(a => (Guid?)a.Id).FirstOrDefault()
+            // An earlier certificate of a CA whose certificate was renewed: the CA its history names.
+            ?? CaCertificates.AsNoTracking().Where(h => h.CertificateId == caCertificateId).Select(h => (Guid?)h.CertificateAuthorityId).FirstOrDefault();
         var found = (key, ca);
         if (key != null && ca != null)
             IssuerKeys[caCertificateId] = found;
         return found;
     }
 
-    /// <summary>For a row from before issuer links: the CA certificate whose subject is the certificate's issuer name, when exactly one has it.</summary>
+    /// <summary>
+    /// For a row from before issuer links: the CA certificate whose subject is the certificate's
+    /// issuer name, when exactly one has it, or when every one that has it is a certificate of
+    /// the same CA over the same key (a CA whose certificate was renewed).
+    /// </summary>
     private (byte[]? CaKey, Guid? CaId) IssuerByName(string? issuerName)
     {
         if (string.IsNullOrWhiteSpace(issuerName))
             return (null, null);
-        var ids = Certificates.AsNoTracking().Where(c => c.IsCA && c.SubjectDN == issuerName).Select(c => c.CertificateId).Take(2).ToList();
-        return ids.Count == 1 ? IssuerOf(ids[0]) : (null, null);
+        var ids = Certificates.AsNoTracking().Where(c => c.IsCA && c.SubjectDN == issuerName).Select(c => c.CertificateId).Take(16).ToList();
+        if (ids.Count == 1)
+            return IssuerOf(ids[0]);
+        if (ids.Count == 0)
+            return (null, null);
+        var issuers = ids.Select(IssuerOf).ToList();
+        var first = issuers[0];
+        return first.CaKey != null && first.CaId != null
+               && issuers.All(i => i.CaId == first.CaId && i.CaKey != null && i.CaKey.AsSpan().SequenceEqual(first.CaKey))
+            ? first
+            : (null, null);
     }
 
     private static void SignalSignerFactQueued()

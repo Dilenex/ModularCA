@@ -303,7 +303,8 @@ instance already knows about itself.
     `nextUpdate` of the CA's newest stored full CRL: the deadline, as `crlsExpireFromUtc` is in
     `mode.read`), `consolePath` (the page of the instance's console that lists the missing
     serials and offers to revoke them, `/admin/authorities/manage/{caId}#missing-from-crl`: a
-    path on the instance, for a link a person follows) and `serialsAt`, the path of the administrator's API that lists every missing
+    path on the instance, for a link a person follows; revoking all of them there is an act of
+    its own, with the CA's name typed and its own step-up, `signer-journal.md` section 9) and `serialsAt`, the path of the administrator's API that lists every missing
     serial for that CA (`GET /api/v1/admin/authorities/{caId}/revoked-serials/missing-from-crl`,
     not an operation of this socket). The list is present, and empty, in every other status.
   - **The merge** (`signer-journal.md`, section 16). After a roll-back or a restore onto

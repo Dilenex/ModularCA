@@ -259,6 +259,32 @@ out, and no password that worked before is refused at sign-in.
   with an RSA 2048 key shows a notice on its page and under System Health, Security Baseline: plan
   its replacement before 2031. Automation that creates RSA 2048 CAs must ask for 3072 or larger,
   or ECDSA.
+- **CA lifetime notices.** Each CA now shows, on its page and under System Health, Security
+  Baseline, when its certificate nears its end: two years ahead for a root and one year ahead for
+  an intermediate, becoming a warning 30 days before and critical 7 days before (the windows the
+  certificate itself already had). It also says when its certificate profiles allow a longer
+  validity than its own certificate has left, in which case issued certificates are shortened to
+  end with it, as they always were. The dashboard lists a CA under Needs attention once its
+  certificate is within its 30-day warning or has expired. These are notices: nothing is refused,
+  and `/health/ready` reports them under `checks.caLifecycle` without becoming not ready. The
+  windows are under Settings, Security, CA Lifecycle Notices, and are the same on a new install
+  and an upgraded one. A third setting there, the CA key usage period, is off: NIST SP 800-57
+  Part 1 leaves how long a CA key may sign to your policy, so set the number of days your policy
+  names if you want a notice when a key passes it.
+- **An expiring CA certificate no longer answers 503.** Until 0.4.5 a CA certificate within 30
+  days of its end made `/health/ready` answer 503 (`checks.keystore.status` was `degraded`). It
+  no longer does, and an expired one does not either: the node still serves the CRLs and OCSP
+  answers that everything the CA issued depends on, and a load balancer that removed it would
+  take those away. **Monitoring that relied on the 503 must read the data instead:**
+  `checks.caLifecycle.status` is `attention` when a CA is within its 30-day warning, within its
+  7-day alert or expired (`casNeedingAttention` counts them, and each CA's `keyAdvisories` carry
+  a `severity` of `warning` or `critical`), and `checks.keystore.expiringCaCerts` and
+  `expiredCaCerts` count the certificates. The expiry notification job also raises a security
+  alert for each such CA on every run (`CaCertificateExpiring`, a warning from 30 days and
+  critical from 7; `CaCertificateExpired`, critical), through the channels security alerts
+  already use. What an expired CA certificate stops: that CA issues nothing, and what it issued
+  no longer validates. What goes on: every other CA, sign-in, revocation, CRLs and OCSP for the
+  expired CA too, and the renewal that mends it.
 - **The signer's issuance journal.** The first start begins a journal of every certificate and
   CRL the signer signs from then on, in `signer/journal/` under the install directory
   (`/opt/modularca/signer/journal`). Nothing issued before that start is in it. The start also
@@ -1283,6 +1309,64 @@ After a rollback: read the notice, look in the audit trail for `CertificateIssue
 `CertificateRevoked` after the time it names (the audit database is a separate database and may
 not have gone back), revoke what must be revoked, then acknowledge the notice.
 
+### Renewing a CA certificate
+
+A CA certificate that nears its end is renewed from the CA's page in the console (Certificate
+History and Renewal, Renew certificate), or with
+`POST /api/v1/admin/authorities/{caId}/renew-certificate`. The CA keeps its key, its subject and
+every extension; it gets a new serial and a new validity, which is the only thing you choose.
+The design is in `docs/architecture/ca-certificate-renewal.md`.
+
+- **Who and how.** A system administrator for a root, `ca.manage` in the space for an
+  intermediate, with step-up. Where the CA's scope requires a key ceremony the action opens one,
+  and the renewal happens when the approved ceremony is executed. It is refused outside full
+  mode.
+- **What stays.** The earlier certificate is not revoked: it stays valid until it expires and is
+  still served at `/ca/{serial}`. Certificates issued before and after the renewal validate
+  under either CA certificate. The CRL and OCSP addresses are the same, and one CRL covers both.
+  Subordinate CAs are untouched. Nothing is written to the keystore files, so no new backup is
+  needed for the keys; the new certificate is in the database, so take a backup as after any
+  change you would not want to lose.
+- **A root: distribute the new certificate.** Everyone who trusts the old root certificate has
+  to be given the new one before the old one expires: operating system and browser trust
+  stores, devices, anything that pins the root. The product cannot do this. Download both from the CA's page. Until a
+  relying party has the new one, it keeps validating everything under the old one.
+- **An intermediate.** Its parent signs the new certificate, which cannot end after the
+  parent's: renew the parent first when it is the one running out. Nothing has to be
+  redistributed to those who trust the root.
+- **Afterwards.** Reissue the CA's OCSP responder, TSA and CMP certificates (Infrastructure
+  Certificates on the CA's page): they were issued to end no later than the earlier certificate.
+  The instance's own TLS certificate keeps the chain it was issued with until it next renews.
+- **Revoking a renewed CA.** Revoking a CA certificate revokes every certificate that CA has over
+  the same key, with one reason and one date, and the console lists them before you confirm: a
+  key that is no longer trusted is not trusted under any of them. A hold, and its release, reach
+  all of them too. An intermediate's certificates are listed on its parent's CRL; a root's on
+  its own CRL, which is all a self-signed certificate can have, so a relying party learns of a
+  revoked root by having it removed from its trust store, as before.
+- **The system signing CA** is renewed the same way, by a system administrator. Nothing else
+  changes: the keystore files are not rewritten, their pins and signatures, the instance
+  identifier, the key the hub knows the instance by, the signer journal's checkpoint key and the
+  wrapped settings are all tied to its key, which stays. No restart is needed, on a single host
+  or with a separate signer. The certificate bootstrap gives it is valid for 100 years and a
+  renewal has to end after the current certificate, so on an install as bootstrap made it there
+  is nothing to renew yet, and its page says so with the date instead of offering the action.
+- **The certificate history after an upgrade.** Each CA made before 0.4.5 gets the first entry
+  of its certificate history in the background after the first start, not during it. In DR mode
+  nothing is written: it is written when the mode is left. Until then the CA's page shows its
+  one certificate as before.
+- **Restoring an archive taken before a renewal** brings the database back to the earlier
+  certificate; the key is the same, so the CA signs under it as it did, and the renewal can be
+  made again. The renewed certificate is gone from the database (it stays in the signer's
+  journal); anything issued under it between the backup and the restore still validates, since
+  the earlier certificate has the same name and key.
+- **Validity.** 1 to 50 years. No standard that binds a private PKI caps a CA certificate's
+  validity; common practice is a root of 10 to 25 years and an intermediate of 5 to 10, and the
+  dialogs say so when you go beyond that, without refusing. Renewing a CA whose key is RSA under
+  3072 bits to past 2030 needs an acknowledgment, because NIST SP 800-57 accepts such keys only
+  through 2030. These are notices of practice, not a claim of compliance with any standard.
+- **Not in this version.** A new key for an existing CA (create a new CA instead), a changed
+  subject, cross-certificates, renewal by a CA outside this instance, and renewal on a schedule.
+
 ### Revoking a certificate the CA does not hold
 
 A certificate that the CA signed but has no record of cannot be revoked from the certificate
@@ -1423,11 +1507,20 @@ CRL already published stays in force until its `nextUpdate`; no new one is signe
 
    Both need the capability to revoke on that CA.
 2. Revoke each again. Where the CA still has the certificate, the page links to it: revoke it
-   there. Where it does not, use "Revoke serial" on its row, tick several and "Revoke the
-   selected serials", or "Revoke all … without a certificate": one note and one second-factor
-   prompt for all of them. By API: `POST …/revoked-serials` for one, or
-   `POST …/revoked-serials/bulk` with `{ "serials": [{ "serialNumber", "reason" }], "note" }`
-   for up to 5,000.
+   there. Where it does not, use "Revoke serial" on its row, or tick several and "Revoke the
+   selected serials": one note and one second-factor prompt for them. By API:
+   `POST …/revoked-serials` for one, or `POST …/revoked-serials/bulk` with
+   `{ "serials": [{ "serialNumber", "reason" }], "note" }` for up to 5,000.
+
+   **"Revoke all" is a separate, heavier action**, below the list. It shows the certificate
+   authority and the exact number of serials, and its button stays disabled until you type
+   the certificate authority's name. It asks for a second-factor prompt of its own. If the
+   list changed after you read it, nothing is revoked and you are told to read it again. By
+   API: `POST …/revoked-serials/missing-from-crl/revoke-all` with
+   `{ "confirmedCount", "journaledCrlNumber", "note" }` (the number of listed serials with
+   `certificateHeld` false, and the list's `journaledCrlNumber`), under the step-up
+   operation `revoke-all-missing-serials`. The bulk call refuses a request that names the
+   whole list.
 3. Generate the CRL. When it lists every serial again, the signer signs it and the entry goes.
    If some are still missing, the entry stays with the smaller number.
 
@@ -1459,7 +1552,11 @@ You do not have to do anything, and nothing asks for a second factor.
   the client gets an error for that request.
 - **It is recorded.** One audit entry for each revocation restored
   (`RevocationMergedFromJournal`, by `journal-merge`, with the CRL or the journal record it
-  came from), one summary for each CA (`JournalRevocationMergeCompleted`), and a notice in the
+  came from). When more than 1,000 are restored for a CA at once, one entry for each 500
+  instead (`RevocationsMergedFromJournalBatch`), which carries the serials with their dates,
+  reasons and sources in its details: find a serial with the audit list's "Revoked serial"
+  filter, or `GET /api/v1/admin/audit?revokedSerial=<hex>`. One summary for each CA
+  (`JournalRevocationMergeCompleted`), which says which of the two forms was used, and a notice in the
   console, "N revocation(s) were restored from the signer's journal for CA X after the database
   went back in time", which stays until an administrator acknowledges it.
 - **In DR mode nothing is changed**, so the merge waits: `/health/ready` says `merge_pending`

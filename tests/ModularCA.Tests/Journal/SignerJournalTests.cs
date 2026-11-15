@@ -548,10 +548,12 @@ public class SignerJournalTests
         var one = (BigInteger.ValueOf(101), CrlReason.KeyCompromise);
         var two = (BigInteger.ValueOf(102), CrlReason.Superseded);
 
-        var first = SignCrl(bench.Signer, ca, 1, [one]);
-        var second = SignCrl(bench.Signer, ca, 2, [one]);
-        var third = SignCrl(bench.Signer, ca, 3, [two, one]);
-        var fourth = SignCrl(bench.Signer, ca, 4, [one, two]);
+        // One time for all four: the entries carry it, and a revoked set is the same set only with the same dates.
+        var at = DateTime.UtcNow;
+        var first = SignCrl(bench.Signer, ca, 1, [one], thisUpdate: at);
+        var second = SignCrl(bench.Signer, ca, 2, [one], thisUpdate: at);
+        var third = SignCrl(bench.Signer, ca, 3, [two, one], thisUpdate: at);
+        var fourth = SignCrl(bench.Signer, ca, 4, [one, two], thisUpdate: at);
 
         var records = bench.Records(RecordType.Crl);
         var payloads = records.Select(r => CrlPayload.Decode(r.Payload)).ToList();

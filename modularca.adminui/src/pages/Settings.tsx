@@ -28,6 +28,7 @@ import { ApiKeysPanel } from '../components/ApiKeysPanel';
 import { CARD_FIELDS, type SettingsIndex, describeField, fieldBadges, fieldLocked, fieldsApply, indexSettings, secretState } from './settingsMeta';
 import { actionButton } from '@shared/components/actionButtons';
 import { hsmCardView } from './settingsHsm';
+import { caLifecycleBody, caLifecycleProblem, caLifecycleSummary } from './caLifecycle';
 import { InstanceModeCard } from '../components/InstanceModeCard';
 import {
     NIST_PASSWORD_PRESET, NIST_PRESET_SUMMARY, RECOMMENDED_SESSION_HOURS, hoursPhrase, refreshTokenRule, sessionMaximumAdvice,
@@ -1486,6 +1487,29 @@ const ConfigTab: React.FC<{ tab: Tab }> = ({ tab }) => {
                                 </div>
                                 <SaveButton saving={saving === 'ldapAuth'} onClick={() => saveSection('ldap-auth', config.ldapAuth, 'ldapAuth')}
                                     blockedReason={ldapMappingsInvalid ? 'Fix the group mappings marked in red before saving.' : null} />
+                            </div>
+                        )}
+                    </div>
+
+                    {/* CA lifecycle notices: when a CA's certificate and key raise a notice. They change nothing a CA does. */}
+                    <div className={cardClass}>
+                        <SectionHeader fields={CARD_FIELDS.caLifecycle} title="CA Lifecycle Notices" expanded={expanded === 'caLifecycle'} onToggle={() => toggle('caLifecycle')}
+                            description={caLifecycleSummary(config.caLifecycle)} tag="live" />
+                        {expanded === 'caLifecycle' && (
+                            <div className="p-4 border-t border-line space-y-4">
+                                <div className="bg-info-soft border border-info/40 rounded p-3 text-xs text-info">
+                                    These settings decide when a notice about a CA appears on its page, on System Health and, once pressing, on the dashboard.
+                                    They change nothing a CA does: no CA stops issuing and no node becomes not ready because of a notice.
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    <ConfigNumber label="Root CA Expiry Notice (days)" value={config.caLifecycle?.rootExpiryNoticeDays} path="caLifecycle.rootExpiryNoticeDays" onChange={(v) => update('caLifecycle', 'rootExpiryNoticeDays', v)} fallback={0}
+                                        hint="A root CA certificate raises a notice this many days before it expires. The default is 730 (two years): a renewed root certificate has to reach everyone who trusts the old one. 0 gives no early notice; the certificate's own expiry warning still appears." />
+                                    <ConfigNumber label="Intermediate CA Expiry Notice (days)" value={config.caLifecycle?.intermediateExpiryNoticeDays} path="caLifecycle.intermediateExpiryNoticeDays" onChange={(v) => update('caLifecycle', 'intermediateExpiryNoticeDays', v)} fallback={0}
+                                        hint="The same for a CA certificate that another CA issued. The default is 365. 0 gives no early notice." />
+                                    <ConfigNumber label="CA Key Usage Period (days, 0 = off)" value={config.caLifecycle?.keyUsagePeriodDays} path="caLifecycle.keyUsagePeriodDays" onChange={(v) => update('caLifecycle', 'keyUsagePeriodDays', v)} fallback={0}
+                                        hint="A CA whose key has been signing longer than this raises a notice. Off by default: NIST SP 800-57 Part 1 suggests a usage period for a signing key and leaves the number to your organization's policy, so write that policy's number here (for example 3650 for ten years). The key keeps working either way." />
+                                </div>
+                                <SaveButton saving={saving === 'caLifecycle'} onClick={() => saveSection('ca-lifecycle', caLifecycleBody(config.caLifecycle), 'caLifecycle')} blockedReason={caLifecycleProblem(config.caLifecycle)} />
                             </div>
                         )}
                     </div>

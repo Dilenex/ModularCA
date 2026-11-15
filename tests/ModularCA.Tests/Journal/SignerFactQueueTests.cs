@@ -403,6 +403,7 @@ public class SignerFactQueueTests
         ["AdminRevocationController.RevokeByCertSerial"] = "Revocation",
         ["AdminRevokedSerialController.Record"] = "Revocation",
         ["AdminRevokedSerialController.RecordMany"] = "Revocation",
+        ["AdminRevokedSerialController.RevokeAllMissing"] = "Revocation",
         ["AdminSpaceController.Disable"] = "Disabled:" + DisabledKind.Space,
         ["AdminSshController.DisableSshCaKey"] = "Disabled:" + DisabledKind.SshCaKey,
         ["AdminSshController.RevokeCertificate"] = "SshRevocationList",

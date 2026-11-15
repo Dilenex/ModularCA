@@ -144,7 +144,12 @@ public class CaCreationService(
         }
     }
 
-    private static void AddCdpAndAiaFromResolved(X509V3CertificateGenerator certGen, ResolvedCaServiceUrls resolved)
+    /// <summary>
+    /// Adds the CRL distribution points and the authority information access (OCSP and CA
+    /// issuers) that <paramref name="resolved"/> holds to a CA certificate being built; an
+    /// extension with no URL is left out. Shared with the renewal of a CA certificate.
+    /// </summary>
+    internal static void AddCdpAndAiaFromResolved(X509V3CertificateGenerator certGen, ResolvedCaServiceUrls resolved)
     {
         var cdpUrls = resolved.CdpUrls.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var ocspUrls = resolved.OcspUrls.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
@@ -682,6 +687,9 @@ public class CaCreationService(
                 SpaceId = spaceId,
             };
             db.CertificateAuthorities.Add(caEntity);
+            // The first entry of the CA's certificate history, in the transaction that creates it.
+            if (CaCertificateHistory.InitialRow(caEntity.Id, certEntity, DateTime.UtcNow, ceremony.CeremonyId) is { } firstCertificate)
+                db.CaCertificates.Add(firstCertificate);
             await db.SaveChangesAsync();
 
             // Auto-generate per-CA authorization groups for all capability templates
@@ -943,7 +951,7 @@ public class CaCreationService(
     /// Builds a CertificateEntity for a CA certificate (root or intermediate).
     /// Does NOT add to DB — caller is responsible for persisting.
     /// </summary>
-    private static CertificateEntity BuildCaCertEntity(X509Certificate cert, Guid? parentCertificateId)
+    internal static CertificateEntity BuildCaCertEntity(X509Certificate cert, Guid? parentCertificateId)
     {
         byte[] sha1hash = SHA1.HashData(cert.GetEncoded());
         byte[] sha256hash = SHA256.HashData(cert.GetEncoded());

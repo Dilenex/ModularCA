@@ -101,6 +101,30 @@ public sealed class MultiCARegistry : ISignerKeyRegistry
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The certificate is placed ahead of the signer entry that holds its key, with the same
+    /// handle. A certificate already among the signers (same serial and subject) is not added
+    /// twice, and one whose key the registry does not hold becomes trusted only.
+    /// </remarks>
+    public void RegisterRenewedCaCertificate(X509Certificate cert)
+    {
+        ArgumentNullException.ThrowIfNull(cert);
+        lock (_lock)
+        {
+            if (!_trusted.Any(t => t.SerialNumber.Equals(cert.SerialNumber) && t.SubjectDN.Equivalent(cert.SubjectDN)))
+                _trusted.Add(cert);
+            if (_signers.Any(s => s.Certificate.SerialNumber.Equals(cert.SerialNumber) && s.Certificate.SubjectDN.Equivalent(cert.SubjectDN)))
+                return;
+            var targetSpki = TryComputeSpkiHash(cert);
+            if (targetSpki == null)
+                return;
+            var index = _signers.FindIndex(s => TryComputeSpkiHash(s.Certificate) is { } spki && spki.AsSpan().SequenceEqual(targetSpki));
+            if (index >= 0)
+                _signers.Insert(index, (cert, _signers[index].Handle));
+        }
+    }
+
+    /// <inheritdoc />
     public SshKeyBinding? GetSshKey(Guid sshCaKeyId)
     {
         lock (_lock) return _sshKeys.FirstOrDefault(k => k.KeyId == sshCaKeyId);

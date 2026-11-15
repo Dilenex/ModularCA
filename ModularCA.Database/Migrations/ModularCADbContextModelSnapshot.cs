@@ -434,6 +434,51 @@ namespace ModularCA.Database.Migrations
                     b.ToTable("ApiKeys");
                 });
 
+            modelBuilder.Entity("ModularCA.Shared.Entities.CaCertificateEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("ActivatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Actor")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<Guid?>("CeremonyId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CertificateAuthorityId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CertificateId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("KeyId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Origin")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<DateTime?>("SupersededAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CertificateAuthorityId");
+
+                    b.HasIndex("CertificateId")
+                        .IsUnique();
+
+                    b.ToTable("CaCertificates");
+                });
+
             modelBuilder.Entity("ModularCA.Shared.Entities.CaGroupEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4399,6 +4444,17 @@ namespace ModularCA.Database.Migrations
                     b.Navigation("CertProfile");
 
                     b.Navigation("SigningProfile");
+                });
+
+            modelBuilder.Entity("ModularCA.Shared.Entities.CaCertificateEntity", b =>
+                {
+                    b.HasOne("ModularCA.Shared.Entities.CertificateEntity", "Certificate")
+                        .WithMany()
+                        .HasForeignKey("CertificateId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Certificate");
                 });
 
             modelBuilder.Entity("ModularCA.Shared.Entities.CaGroupEntity", b =>

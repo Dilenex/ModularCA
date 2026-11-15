@@ -26,6 +26,7 @@ export default function AdminUiGuide() {
                     <h3 className="text-lg font-semibold text-ink mb-2">Operations Requiring Step-Up</h3>
                     <ul className="list-disc list-inside space-y-1 text-ink mb-3">
                         <li>Certificate revocation, hold, and unhold (via the Certificates page and Dashboard)</li>
+                        <li>Revoking a serial with no certificate, and, as a separate operation, revoking every serial missing from a CA&apos;s refused CRL</li>
                         <li>Certificate export (PEM with private key)</li>
                         <li>Profile deletion (certificate profiles, signing profiles, request profiles)</li>
                         <li>Protocol configuration updates</li>
@@ -88,7 +89,7 @@ export default function AdminUiGuide() {
                     <li>CA status cards showing each authority's health, key algorithm, and certificate count</li>
                     <li>Recently issued certificates with quick links to details</li>
                     <li>Pending request count with approve/reject shortcuts</li>
-                    <li>Needs attention: certificates in their expiry warning or alert, and recently expired ones, with no replacement</li>
+                    <li>Needs attention: certificates in their expiry warning or alert, and recently expired ones, with no replacement; and each CA whose own certificate is in its expiry warning (30 days by default) or has expired</li>
                     <li>System health summary (scheduler, database, OCSP responder)</li>
                     <li>Quick-action buttons for common tasks (issue certificate, create CA)</li>
                 </ul>
@@ -171,6 +172,19 @@ export default function AdminUiGuide() {
                     administrator, who alone can read those policies.
                 </p>
                 <p className="text-ink leading-relaxed mb-3">
+                    The same card lists what each CA's certificate and key have to say over time: a CA certificate
+                    that expires within its notice window (two years for a root and one year for an intermediate by
+                    default), certificate profiles that allow a longer validity than the CA certificate has left (a
+                    certificate issued then is shortened to end five minutes before the CA certificate, with a
+                    warning to the requester), a CA whose certificate outlives its parent's, and, when a usage period
+                    is set, a key that has been signing longer than it. The windows and the period are under CA
+                    Lifecycle Notices on the Security tab of Settings; NIST SP 800-57 Part 1 leaves the usage period
+                    of a CA key to your organization's policy, so that notice is off until you set a number. The
+                    CA's page shows the same notices with the facts behind them under Key and Certificate Lifetime.
+                    A notice is information: no CA stops issuing and <code>/health/ready</code> stays ready
+                    (<code>checks.caLifecycle</code> carries the list).
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
                     The Health Checks card shows the readiness payload, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/health/ready</code>,
                     which answers only a caller the SystemAuditor policy admits. Its signer entry says whether the signer has unlocked its
                     keystore, and, on an install with SSH CAs, how many SSH CA keys the signer holds
@@ -199,6 +213,18 @@ export default function AdminUiGuide() {
                     A certificate from the lost time can be revoked from its CA&apos;s page, by its serial alone or by supplying
                     the certificate.
                 </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    Revocations are the one thing the instance gives back to itself. At start each node asks the signer for the
+                    revocations its journal holds for every CA and makes again the ones the database has lost; a notice says
+                    how many were restored for which CA. Where it cannot (the signer does not vouch for its journal for that
+                    CA), the signer refuses the CA&apos;s next CRL, and the CA&apos;s page lists every serial that CRL would have
+                    left out, under &ldquo;Certificates This CA Does Not Hold&rdquo;:
+                </p>
+                <ul className="list-disc list-inside space-y-1 text-ink mb-3">
+                    <li><span className="font-semibold">Revoke serial</span> on a row, or <span className="font-semibold">Revoke the selected serials</span> for the rows you tick: one step-up and one note. A serial whose certificate the CA still holds is revoked on the certificate&apos;s page, which the row links to.</li>
+                    <li><span className="font-semibold">Revoke all</span> is set apart below the list, because it is a heavier act than revoking the rows you chose. Its dialog names the certificate authority and the exact number of serials, says that they are revocations the signer already published on a CRL for this CA and that revoking cannot be undone, and its button stays disabled until you type the name of the certificate authority. It asks for a step-up of its own (&ldquo;Revoke every serial missing from a certificate authority&apos;s CRL&rdquo;): the step-up for revoking a serial does not open it.</li>
+                    <li>If the list changes between the moment you read it and the moment you confirm (another administrator revoked some, or the signer refused a newer CRL), nothing is revoked and the dialog says so; read the list again and confirm what it shows now. Ticking every row is treated as Revoke all.</li>
+                </ul>
                 <p className="text-ink leading-relaxed mb-3">
                     The Enrollment Protocols card lists every enabled protocol configuration that cannot run on its CA, with the
                     reason: today, SCEP on a CA whose key is not RSA. Such a configuration could be saved before the console
@@ -391,6 +417,36 @@ export default function AdminUiGuide() {
                     CA&apos;s key cannot be changed, replacing it means creating a new CA now, moving issuance to it, and retiring
                     the old one once what it issued has expired or been reissued. The same rule and notice apply to SSH CA keys.
                 </p>
+                <h3 className="text-lg font-semibold text-ink mt-4 mb-2">Renewing a CA certificate</h3>
+                <p className="text-ink leading-relaxed mb-3">
+                    A CA&apos;s page lists every certificate the CA has had under Certificate History and Renewal, and offers
+                    Renew certificate. A renewal gives the CA a new certificate over the key it already has: the key, the subject
+                    and every extension stay; the serial and the validity change. You choose the new validity in years and nothing
+                    else. A root signs its own new certificate; an intermediate&apos;s is signed by its parent CA, and cannot end
+                    after the parent&apos;s certificate. Where the CA&apos;s scope requires a key ceremony, the action opens one
+                    that records the exact expiry, and the renewal happens when the approved ceremony is executed.
+                </p>
+                <ul className="list-disc list-inside text-ink space-y-1 mb-3">
+                    <li>The earlier certificate is not revoked. It stays valid until it expires and stays downloadable from the history and at <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/ca/&#123;serial&#125;</code>.</li>
+                    <li>Certificates issued before and after validate under either CA certificate: both have one name and one key. One CRL and one OCSP responder cover both, at the same addresses.</li>
+                    <li>Subordinate CAs are not renewed and keep validating.</li>
+                    <li><strong>A root:</strong> give the new root certificate to everyone who trusts the old one (trust stores, devices, clients that pin it) before the old one expires. The product cannot do this for you.</li>
+                    <li><strong>An intermediate:</strong> nothing has to be redistributed to those who trust the root.</li>
+                    <li>Afterwards, reissue the CA&apos;s OCSP responder, TSA and CMP certificates under Infrastructure Certificates: they were issued to end no later than the earlier certificate.</li>
+                </ul>
+                <p className="text-ink leading-relaxed mb-3">
+                    Revoking a CA certificate revokes every certificate that CA has over the same key, with one reason and one
+                    date; the confirmation lists them. A hold and its release reach all of them too. The system signing CA is
+                    renewed the same way and nothing else changes with it: what depends on it depends on its key. The dialogs
+                    say when a validity is longer than common practice (25 years for a root, 10 for an intermediate), which
+                    is practice and not a standard&apos;s requirement, and ask for an acknowledgment before a CA whose key is
+                    RSA under 3072 bits is renewed to past 2030. A CA certificate that is close to its end or past it is
+                    listed under Needs attention and raises a security alert; it does not make the node answer not ready.
+                </p>
+                <p className="text-ink leading-relaxed mb-3">
+                    Not in this version: renewal with a new key, a changed subject, cross-certificates, renewal by a CA outside
+                    this instance, and renewal on a schedule. A CA gets a new key only by creating a new CA.
+                </p>
                 <p className="text-ink leading-relaxed mb-3">
                     The page has two tabs, X.509 and SSH, for whoever can use both. The SSH tab
                     (<code className="text-sm bg-sunken px-1.5 py-0.5 rounded">/admin/authorities/manage?tab=SSH</code>) lists the SSH
@@ -402,7 +458,9 @@ export default function AdminUiGuide() {
                     POST /api/v1/admin/authorities/create-root<br />
                     POST /api/v1/admin/authorities/create-intermediate<br />
                     GET /api/v1/admin/authorities/&#123;serial&#125;<br />
-                    PUT /api/v1/admin/authorities/&#123;id&#125;
+                    PUT /api/v1/admin/authorities/&#123;id&#125;<br />
+                    GET /api/v1/admin/authorities/&#123;caId&#125;/certificates<br />
+                    POST /api/v1/admin/authorities/&#123;caId&#125;/renew-certificate
                 </div>
             </section>
 
@@ -1109,6 +1167,16 @@ sshd -t && systemctl reload ssh`}</pre>
                     <li>Protocol audit tab: ACME, EST, SCEP, CMP protocol-level events</li>
                     <li>Filter by user, action type, date range, and resource</li>
                     <li>Export audit logs</li>
+                    <li>
+                        <span className="font-semibold">Revoked serial</span> (General tab): finds the records that restored a revocation from the
+                        signer&apos;s journal or recorded a serial with no certificate, by the serial. When more than 1,000 revocations
+                        are made at once (a large merge after a database was taken back, or Revoke all), they are not written one
+                        record each: one record carries up to 500 serials in its details
+                        (<code className="text-sm bg-sunken px-1.5 py-0.5 rounded">RevocationsMergedFromJournalBatch</code>, <code className="text-sm bg-sunken px-1.5 py-0.5 rounded">RevokedSerialsRecordedBatch</code>),
+                        and its target is the certificate authority. This filter finds such a record by a serial inside it; the
+                        row&apos;s drawer shows the first fifty serials and the raw JSON holds them all. On a CA&apos;s page,
+                        &ldquo;Recorded by&rdquo; beside a serial recorded without its certificate opens this search for that serial.
+                    </li>
                 </ul>
                 <div className="bg-sunken rounded p-4 data-mono">
                     GET /api/v1/admin/audit<br />

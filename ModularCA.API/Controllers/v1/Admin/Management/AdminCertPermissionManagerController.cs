@@ -49,6 +49,9 @@ namespace ModularCA.API.Controllers.v1.Admin.Management
             // Otherwise the scope is null and the hint over-matches every space.
             var ca = await _db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(a => a.CertificateId == cert.CertificateId)
                 ?? (cert.IssuerCertificateId != null ? await _db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(a => a.CertificateId == cert.IssuerCertificateId) : null);
+            // A CA whose certificate was renewed: the certificate, or its issuer, may be an earlier one of that CA.
+            if (ca == null && ModularCA.Core.Helpers.IssuerChainResolver.OwnerOf(_db, cert.IssuerCertificateId ?? cert.CertificateId) is { } owner)
+                ca = await _db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(a => a.Id == owner.CaId);
 
             // A certificate of no CA is shown only to an instance-wide caller.
             var fence = SpaceFence.From(HttpContext, Capabilities.CertRevoke);

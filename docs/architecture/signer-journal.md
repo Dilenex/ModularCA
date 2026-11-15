@@ -551,15 +551,47 @@ that fact for the CA key until it signs a full CRL for it:
 - **A page for it.** The CA's page in the console,
   `/admin/authorities/manage/{caId}#missing-from-crl`, lists the serials under "Certificates
   This CA Does Not Hold" while a refusal stands: serial, reason and date, a link to the
-  certificate where the CA holds it, and "Revoke serial" for one, for those selected, or for
-  all that have no certificate. The path is `consolePath` in the list's answer and beside
-  `serialsAt` in `refusedCrls`, for a link from another system. Revoking several asks for one
-  step-up (the one revoking a single serial asks for) and one note, and goes to
+  certificate where the CA holds it, and "Revoke serial" for one or for those selected. The
+  path is `consolePath` in the list's answer and beside `serialsAt` in `refusedCrls`, for a
+  link from another system.
+- **Revoking the selected ones** asks for one step-up (the one revoking a single serial asks
+  for, `revoke-serial`) and one note, and goes to
   `POST /api/v1/admin/authorities/{caId}/revoked-serials/bulk` with
   `{ "serials": [{ "serialNumber", "reason" }], "note" }`, at most 5,000 a request: each is
   recorded and audited as a single one is, the CRL is generated once after the last, and the
   answer lists `recorded` and `refused` (a serial the CA holds a certificate for, one already
   recorded) with the reason.
+- **Revoking all of them is a heavier act and is guarded as one.**
+  - In the console it is set apart below the list, not beside the row actions. Its dialog (the
+    console's confirmation dialog for destructive actions) names the CA and the exact number
+    of serials, says that they are revocations the signer already published on a CRL for this
+    CA and that revoking cannot be undone, and its button stays disabled until the
+    administrator has typed the CA's name and given a note. The console had no confirmation
+    by typing before this one; it is the confirmation dialog with a condition on its button.
+  - It goes to `POST …/revoked-serials/missing-from-crl/revoke-all` with
+    `{ "confirmedCount", "journaledCrlNumber", "note" }` and no serial: the count of serials
+    with no certificate held that the administrator was shown, and the journaled CRL number
+    of that list.
+  - The server reads the list again. **409, and nothing is revoked**, when no refusal stands,
+    when the CA holds a certificate for every missing serial, and when the count or the CRL
+    number confirmed is not the list's now; the message gives both pairs. 400 without a note.
+  - It has its own step-up operation, `revoke-all-missing-serials`. A step-up for
+    `revoke-serial` does not open it.
+  - `revoked-serials/bulk` refuses (409) a request that names every missing serial that has
+    no certificate, when there is more than one. In the console, ticking every row opens the
+    revoke-all dialog. (Someone set on it can still send the list in two parts; each part is
+    then a selection they chose and stepped up for.)
+  - The server records a list of any length itself, in sets of 500, each set checked with two
+    queries and saved in one transaction, and generates the CRL once. The console does not
+    loop over the 5,000 of the other endpoint.
+  - Mode gate (a restriction: allowed in full, restricted and maintenance mode, refused in DR
+    mode) and capability (`cert.revoke` on that CA) as the other two.
+  - **Audited as one act**, `AllMissingSerialsRevoked`: what was confirmed, how many were
+    recorded and refused, the note, and the form of the records beside it. A refusal is the
+    same action with `success` false. Beside it, up to and including 1,000 serials each has a
+    `RevokedSerialRecorded` record of its own; above that each set has one
+    `RevokedSerialsRecordedBatch` record with its serials and reasons in its details (the
+    rule of the merge's records, section 16, for the same reason).
 - The refusal's own message names the first five serials, counts them all, and gives that
   path.
 - The list is the signer's, as of the last CRL it refused. It shrinks as serials are revoked
@@ -776,8 +808,6 @@ holds:
 - Pruning of set-aside journals.
 - A verification at start of only what was written since the last one: the whole journal is
   read at every start (section 17 has the time).
-- One audit row for a batch in place of one for each revocation when a merge is large
-  (section 17: proposed, for the owner to decide).
 - A flush of the directory after a rename.
 - On Linux: nothing was run. The suite ran on Windows. The owner-only modes of the directory
   and its files, a rename under a reader, and free space read through `statvfs` are written for
@@ -903,7 +933,49 @@ too.
 - One audit row for each revocation made, `RevocationMergedFromJournal`, actor
   `journal-merge`: the CA, the serial, the date and reason, what was made, and the source: a
   CRL's number and its journal sequence, or the sequence of the fact.
-- One `JournalRevocationMergeCompleted` row for each CA and pass that made any.
+- **Above 1,000 revocations to make for one CA in one pass, a record for each batch.** The
+  pass first goes through the list without writing and counts what is missing. Up to and
+  including 1,000 it writes the records above. Above 1,000 it writes, for each save of 500,
+  one `RevocationsMergedFromJournalBatch` record: target the CA; details the batch's number in
+  the pass, its count, and under `Revocations` every serial with its date, reason (a hold is
+  the reason `CertificateHold`), what was made (`certificate`, `serial without a
+  certificate`, `hold made permanent`, `earlier date`), the certificate's id where one was
+  revoked, and the source (`crl`, `delta` or `fact`, the CRL's number, the journal sequence).
+  - A pass is in one form throughout, decided before its first write; the two actions are
+    never mixed in a pass, and a reader cannot take a batch record for a single one: the
+    action's name differs.
+  - Why: a record of the audit trail is a link of its hash chain, appended one at a time
+    under the chain's lock. A hundred thousand take hours and about a hundred megabytes;
+    in batches, about a minute and three megabytes (section 17).
+  - 1,000 is a constant (`JournalRevocationMerge.DefaultIndividualAuditLimit`), not a
+    setting: the journal's settings are the signer's and this is the node's.
+  - **A pass that was interrupted** (the process stopped part-way) is not continued in its
+    form. The next pass counts what is still missing and decides again, so a merge of 1,040
+    that stopped after 500 has 500 in one batch record and 540 in records of their own.
+    Only a pass that reaches its end writes a summary; an interrupted one leaves its
+    records and no summary.
+  - The size of a batch record: 500 serials are about 95,000 characters of details (about
+    110,000 with serials of twenty octets). The details column is unbounded text, the hash
+    chain hashes the text whole, and the console's viewer shows the first fifty entries as a
+    table and all of them as raw JSON. 500 was kept because it is the merge's save: one
+    record for one transaction. A page of the audit list that is all batch records is
+    large (25 of them about 2.4 MB).
+  - **Finding one serial.** `GET /api/v1/admin/audit?revokedSerial=<hex>` returns the records
+    that name the serial among the four actions that carry serials
+    (`RevocationMergedFromJournal`, `RevocationsMergedFromJournalBatch`,
+    `RevokedSerialRecorded`, `RevokedSerialsRecordedBatch`), whether it is the record's own
+    or inside a batch; it matches a whole serial, never a part of one. The console's audit
+    list has the same as the filter "Revoked serial", and on a CA's page "Recorded by"
+    beside a serial recorded without its certificate opens that search. A certificate's own
+    Audit tab asks by target and does not show a batch record that revoked it: use the
+    filter.
+  - **The journal is unchanged**: each revocation made still queues its own `Revocation`
+    fact, and the journal holds each one.
+- One `JournalRevocationMergeCompleted` row for each CA and pass that made any. It says which
+  form the pass used (`AuditForm`: `individual` or `batch`; `AuditAction`), how many batch
+  records it wrote (`BatchRecords`) and the limit (`IndividualAuditLimit`). The continuity
+  event's details carry `auditForm` and `batchRecords` too, and the notice names the action
+  to look for.
 - One continuity event, kind `RevocationsMergedFromJournal`, which stands as a notice in the
   console and in `checks.continuity` until an administrator acknowledges it, as the continuity
   notice does: "N revocation(s) were restored from the signer's journal for CA X after the
@@ -1065,32 +1137,40 @@ background, once for each CA at each start of the node.
 One transaction for every 500 revocations and one for the summary and the notice. Afterwards
 the CRL lists every serial again and is signed (0.4 s for 10,000, 4.5 s for 100,000).
 
-**The audit trail is what the cure really costs.** The table above was taken with the audit
-rows kept in memory. In the product each row is appended to the audit hash chain: a lock on
-the chain, a read of its head, an insert and a commit, one row at a time. Measured apart
-(`MODULARCA_MEASURE_AUDIT_ROWS=10000`, test `Measure_the_audit_rows_of_a_merge`): 186 rows a
-second and 981 bytes a row with its indexes, on a test server that does not wait for the disk.
-So in an installed instance:
+**The audit trail is what the cure really costs**, and why a large cure is audited a record
+for each batch (section 16). The table above was taken with the audit records kept in
+memory. In the product each record is appended to the audit hash chain: a lock on the chain,
+a read of its head, an insert and a commit, one record at a time, through one database
+context for the whole pass. Measured through that real path, on an audit schema of the test
+server (which does not wait for the disk):
 
-| Missing | Audit rows | Time for them alone | Added to the audit database |
-|---|---|---|---|
-| 1,000 | 1,001 | about 5 s | about 1 MiB |
-| 10,000 | 10,001 | about 1 minute | about 9 MiB |
-| 100,000 | 100,001 | about 9 minutes | about 94 MiB |
+```
+MODULARCA_TEST_PG="$(cat <file with the test server's connection string>)" \
+MODULARCA_MEASURE_CURE_AUDIT="10000,100000" MODULARCA_MEASURE_CURE_MINUTES=40 \
+dotnet test tests/ModularCA.Tests -c Debug \
+  --filter "FullyQualifiedName~Measure_the_cure_through_the_audit_chain" --logger "console;verbosity=detailed"
+```
 
-and more where a commit waits for the disk. The chain stays one chain and stays verifiable; it
-grows by that many links, which a later verification of the chain has to walk, and every other
-audit row written in that time takes its turn at the same lock (each turn is one row long).
-The revocations of a batch are in the database before their audit rows are written, so the
-CRL does not wait for the audit trail more than one batch at a time.
+| Missing | Form | Time of the cure | Audit records | The audit table grew by |
+|---|---|---|---|---|
+| 10,000 | a record for each revocation (before) | 187 s | 10,000 + 1 | 9.55 MiB |
+| 10,000 | a record for each batch (now) | 8.6 s | 20 + 1 | 0.42 MiB |
+| 100,000 | a record for each revocation (before) | stopped at 40 minutes with 38,000 written | | 35.9 MiB by then |
+| 100,000 | a record for each batch (now) | 64 s | 200 + 1 | 2.88 MiB |
 
-*Proposed, not built: nothing about the audit rows was changed.* Above some count for one CA
-and pass (1,000 is suggested), write one `RevocationMergedFromJournal` row for each batch of
-500 that carries the batch's serials with their dates, reasons and sources, in place of one
-row for each revocation. 100,000 revocations would then be 200 rows and under a minute, with
-the same facts in the trail. It changes what a query for one serial's audit history finds
-(the serial is inside a row's details, not the row's target), and the details column must
-take a batch (about 60 KB). That is a change of audit semantics and is the owner's to decide.
+- A record for each revocation does not hold its speed: 74 a second for 2,000, 53 a second
+  for 10,000, 16 a second over the first 38,000 of 100,000. At that falling rate 100,000
+  would take hours. That form is now used only up to 1,000, which is seconds.
+- A batch record's details are about 95,000 characters; the database stores them compressed,
+  about 15 KiB a record with its indexes.
+- The chain verified without a break after each run (201 records in 0.3 s; 10,001 in 0.2 s).
+- Every other audit record written meanwhile takes its turn at the same lock; a turn is one
+  record long, in either form.
+- The revocations of a batch are in the database before their audit record is written, so
+  the CRL does not wait for the audit trail more than one batch at a time.
+- A measurement of the records alone, with a new unit of work every 500
+  (`MODULARCA_MEASURE_AUDIT_ROWS=10000`, test `Measure_the_audit_rows_of_a_merge`), gave 186
+  records a second and 981 bytes a record: what a record for each revocation costs at best.
 
 **The queue of facts for the journal.** Each revocation made queues one `Revocation` fact, in
 the transaction that makes it. The drain takes 500 at a time and offers them to the signer
@@ -1116,11 +1196,12 @@ signer, and it holds no lock longer than one batch's transaction.
 - The signer signs throughout. Its answer to the merge is worked out once for a CA (about a
   second for 100,000 entries) and kept while nothing it was made from changes.
 - OCSP: for a serial the merge has not reached yet the signer refuses a "good" (section 16).
-- The CA's first CRL of the process waits for that CA's pass: for 100,000 missing, the time in
-  (b) plus the audit rows.
+- The CA's first CRL of the process waits for that CA's pass: for 100,000 missing, about a
+  minute with its audit records.
 
-**What remains.** The audit rows of a large cure (above), and the 7 s that an ordinary start
-spends comparing a list of 100,000 for one CA, in the background.
+**What remains.** The 7 s that an ordinary start spends comparing a list of 100,000 for one
+CA, in the background; and the cure itself goes through the list twice (once to count, once
+to write), which adds that comparison once more to a pass that has something to make.
 
 ### Many revoked serials on a test instance
 

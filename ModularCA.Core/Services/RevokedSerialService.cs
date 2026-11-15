@@ -121,6 +121,137 @@ public sealed partial class RevokedSerialService(ModularCADbContext db, ICrlServ
         return (outcomes, crlNumber);
     }
 
+    /// <summary>How many serials <see cref="RecordTombstonesInSetsAsync"/> checks and saves together.</summary>
+    public const int SetSize = 500;
+
+    /// <summary>
+    /// Records any number of serials as revoked under CA <paramref name="caId"/> with no
+    /// certificate row, <see cref="SetSize"/> at a time: each set is checked with two queries
+    /// (the certificates the CA holds among them, the serials already recorded) and saved in
+    /// one transaction, and the CA's CRL is regenerated once, after the last. What
+    /// <see cref="RecordTombstonesAsync"/> does one serial at a time, for a list of any length.
+    /// </summary>
+    /// <param name="caId">The certificate authority.</param>
+    /// <param name="serials">The serials with their reasons.</param>
+    /// <param name="note">Why they are revoked without their certificates. Required.</param>
+    /// <param name="actorUserId">The administrator recording them.</param>
+    /// <param name="actorUsername">That administrator's user name.</param>
+    /// <param name="saved">Called after each set is saved, with what it recorded, so the caller can audit it.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>How many were recorded, each one that was not with the reason, and the number of the CRL generated afterwards.</returns>
+    /// <exception cref="InvalidRequestException">The note is missing or too long (400).</exception>
+    /// <exception cref="ResourceNotFoundException">The CA does not exist or has no certificate (404).</exception>
+    public async Task<(int Recorded, IReadOnlyList<TombstoneOutcome> Refused, long? CrlNumber)> RecordTombstonesInSetsAsync(Guid caId,
+        IReadOnlyList<(string SerialNumber, RevocationReason Reason)> serials, string? note, Guid? actorUserId, string? actorUsername,
+        Func<IReadOnlyList<RevokedSerialTombstoneEntity>, Task>? saved = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(serials);
+        var why = RequireNote(note, "Say why the serials are revoked without their certificates.");
+        var ca = await LoadCaAsync(caId, cancellationToken);
+        var scope = await IssuerChainResolver.SameKeyCaCertificateIdsAsync(db, ca.CertificateId, ca.Certificate, cancellationToken);
+        var refused = new List<TombstoneOutcome>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var recorded = 0;
+        DateTime? listedUntil = null;
+
+        foreach (var set in serials.Chunk(SetSize))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var wanted = new List<(string Serial, RevocationReason Reason)>(set.Length);
+            foreach (var (given, reason) in set)
+            {
+                string serial;
+                try
+                {
+                    serial = NormalizeSerial(given);
+                }
+                catch (InvalidRequestException ex)
+                {
+                    refused.Add(new TombstoneOutcome(given, null, ex.Message));
+                    continue;
+                }
+                if (reason == RevocationReason.CertificateHold)
+                    refused.Add(new TombstoneOutcome(given, null, "A serial without a certificate cannot be put on hold: the revocation is permanent."));
+                else if (!seen.Add(serial))
+                    refused.Add(new TombstoneOutcome(given, null, $"Serial {serial} is named twice."));
+                else
+                    wanted.Add((serial, reason));
+            }
+            if (wanted.Count == 0)
+                continue;
+
+            var plain = wanted.Select(w => w.Serial).ToList();
+            var forms = plain.SelectMany(x => new[] { x, "0" + x, "00" + x }).ToList();
+            var held = (await db.Certificates.AsNoTracking()
+                    .Where(c => EF.Parameter(forms).Contains(c.SerialNumber))
+                    .Where(c => (c.IssuerCertificateId != null && scope.Contains(c.IssuerCertificateId.Value))
+                             || (c.IssuerCertificateId == null && c.Issuer == ca.IssuerDn))
+                    .Select(c => c.SerialNumber)
+                    .ToListAsync(cancellationToken))
+                .Select(s => { var t = s.TrimStart('0'); return t.Length == 0 ? "0" : t; })
+                .ToHashSet(StringComparer.Ordinal);
+            var already = (await db.RevokedSerialTombstones.AsNoTracking()
+                    .Where(t => scope.Contains(t.CaCertificateId) && EF.Parameter(plain).Contains(t.SerialNumber))
+                    .Select(t => t.SerialNumber)
+                    .ToListAsync(cancellationToken))
+                .ToHashSet(StringComparer.Ordinal);
+
+            var now = DateTime.UtcNow;
+            listedUntil ??= await ListedUntilAsync(ca.Id, now, cancellationToken);
+            var added = new List<RevokedSerialTombstoneEntity>(wanted.Count);
+            foreach (var (serial, reason) in wanted)
+            {
+                if (held.Contains(serial))
+                    refused.Add(new TombstoneOutcome(serial, null, $"Serial {serial} belongs to a certificate this CA holds. Revoke the certificate instead."));
+                else if (already.Contains(serial))
+                    refused.Add(new TombstoneOutcome(serial, null, $"Serial {serial} is already recorded as revoked for this CA."));
+                else
+                    added.Add(new RevokedSerialTombstoneEntity
+                    {
+                        CaCertificateId = ca.CertificateId,
+                        CertificateAuthorityId = ca.Id,
+                        IssuerDN = ca.IssuerDn,
+                        SerialNumber = serial,
+                        RevocationDate = now,
+                        RevocationReason = reason.ToString(),
+                        ListedUntil = listedUntil.Value,
+                        Note = why,
+                        CreatedByUserId = actorUserId,
+                        CreatedByUsername = actorUsername ?? string.Empty,
+                        CreatedAt = now,
+                    });
+            }
+            if (added.Count == 0)
+                continue;
+
+            db.RevokedSerialTombstones.AddRange(added);
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateException ex) when (PostgresErrorUtil.IsUniqueViolation(ex))
+            {
+                // Someone recorded one of these serials at the same moment: nothing of this set was saved.
+                foreach (var tombstone in added)
+                    db.Entry(tombstone).State = EntityState.Detached;
+                refused.AddRange(added.Select(t => new TombstoneOutcome(t.SerialNumber, null,
+                    "Not recorded: another request recorded one of the same serials at the same moment. Run the action again.")));
+                continue;
+            }
+            foreach (var tombstone in added)
+            {
+                db.Entry(tombstone).State = EntityState.Detached;
+                MetricsService.CertsRevoked.WithLabels(ca.IssuerDn, tombstone.RevocationReason).Inc();
+            }
+            recorded += added.Count;
+            if (saved != null)
+                await saved(added);
+        }
+
+        var crlNumber = recorded > 0 ? await TryRegenerateCrlAsync(ca.CertificateId) : null;
+        return (recorded, refused, crlNumber);
+    }
+
     /// <summary>Checks and saves one tombstone, without regenerating the CRL. Returns it with the CA's certificate id.</summary>
     private async Task<(RevokedSerialTombstoneEntity Tombstone, Guid CaCertificateId)> AddTombstoneAsync(Guid caId, string? serialNumber, RevocationReason reason,
         DateTime? invalidityDate, string? note, Guid? actorUserId, string? actorUsername, CancellationToken cancellationToken)

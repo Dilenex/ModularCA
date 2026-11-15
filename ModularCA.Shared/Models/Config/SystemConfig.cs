@@ -59,6 +59,8 @@ namespace ModularCA.Shared.Models.Config
         public CertExpiryNotificationConfig CertExpiryNotification { get; set; } = new();
         public ComplianceScanConfig ComplianceScan { get; set; } = new();
         public CertPolicyConfig CertPolicy { get; set; } = new();
+        /// <summary>When the notices about a CA's certificate and key over time are shown.</summary>
+        public CaLifecycleConfig CaLifecycle { get; set; } = new();
         public AutoRenewalConfig AutoRenewal { get; set; } = new();
 
         public IntegrationApiConfig IntegrationApi { get; set; } = new();
@@ -1687,6 +1689,44 @@ namespace ModularCA.Shared.Models.Config
 
         // ExpiringWithinDays was retired in 0.4.3: the scan's ExpiringWithoutRenewal finding uses
         // each certificate's expiry warning, which its certificate profile sets.
+    }
+
+    /// <summary>
+    /// When the notices about a CA's certificate and key over time are shown
+    /// (<see cref="ModularCA.Shared.Utils.CaCryptoperiod"/>): on the CA's page, on System Health
+    /// and, once pressing, on the dashboard. These settings decide when a notice appears and
+    /// nothing else: no CA stops issuing and no node becomes not ready because of one. A new
+    /// install and an upgraded one start with the same values.
+    /// </summary>
+    public class CaLifecycleConfig
+    {
+        /// <summary>
+        /// How many days before a root CA certificate expires its notice starts. Default 730
+        /// (two years): the new root certificate has to reach everyone who trusts the old one.
+        /// 0 gives no early notice; the certificate's own expiry warning (30 days, alert at 7,
+        /// unless its profile says otherwise) is shown in every case.
+        /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        public int RootExpiryNoticeDays { get; set; } = ModularCA.Shared.Utils.CaCryptoperiodSettings.DefaultRootExpiryNoticeDays;
+
+        /// <summary>
+        /// How many days before an intermediate CA certificate expires its notice starts.
+        /// Default 365. 0 gives no early notice.
+        /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        public int IntermediateExpiryNoticeDays { get; set; } = ModularCA.Shared.Utils.CaCryptoperiodSettings.DefaultIntermediateExpiryNoticeDays;
+
+        /// <summary>
+        /// How many days a CA key may have been signing before a notice says so. Default 0: no
+        /// notice. NIST SP 800-57 Part 1 suggests an originator-usage period for a private
+        /// signature key and leaves the number to the organization's policy; this setting is
+        /// where that policy is written down. It refuses nothing.
+        /// </summary>
+        [Setting(SettingClass.InstanceWide, SettingReload.Live)]
+        public int KeyUsagePeriodDays { get; set; } = 0;
+
+        /// <summary>The three values as the rule reads them.</summary>
+        public ModularCA.Shared.Utils.CaCryptoperiodSettings ToSettings() => new(RootExpiryNoticeDays, IntermediateExpiryNoticeDays, KeyUsagePeriodDays);
     }
 
     /// <summary>

@@ -175,7 +175,7 @@ public class InfraController(
     /// <see cref="ErrorCodes.RequestInvalid"/>.
     /// <para>
     /// A certificate on hold is revoked permanently with the reason given, under the same rules as
-    /// the admin revoke (RFC 5280 §5.3.1, <see cref="ICertificateRevocationService.RevokeCertificateAsync"/>);
+    /// the admin revoke (RFC 5280 §5.3.1, <see cref="ICertificateRevocationService.RevokeCertificateAsync(Guid?, string?, ModularCA.Shared.Enums.RevocationReason, DateTime?)"/>);
     /// the response carries <c>previousReason</c> = <c>CertificateHold</c>. Asking for
     /// <c>certificateHold</c> on a certificate already on hold returns success and changes nothing,
     /// in keeping with the endpoint's idempotence. A revocation state that changed under the request

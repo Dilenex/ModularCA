@@ -223,10 +223,12 @@ namespace ModularCA.Core.Services.SchedulerJobs
                 .OrderByDescending(c => c.CrlNumber)
                 .FirstOrDefaultAsync(cancellationToken);
 
-            // Get all revoked certs for this CA
+            // Get all revoked certs for this CA: issued under this certificate or an earlier
+            // one of the same CA over the same key, as the CRL itself lists them.
+            var scope = await ModularCA.Core.Helpers.IssuerChainResolver.SameKeyScopeAsync(_db, caCertificate.CertificateId, cancellationToken);
             var revokedCerts = await _db.Certificates
                 .Where(c => c.Revoked
-                    && (c.IssuerCertificateId == caCertificate.CertificateId
+                    && ((c.IssuerCertificateId != null && scope.Contains(c.IssuerCertificateId.Value))
                         || (c.IssuerCertificateId == null && c.Issuer == caCertificate.SubjectDN)))
                 .AsNoTracking()
                 .ToListAsync(cancellationToken);

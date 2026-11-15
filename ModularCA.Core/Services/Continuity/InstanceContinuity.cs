@@ -337,11 +337,15 @@ public static partial class InstanceContinuity
     {
         var count = 0;
         var name = "a certificate authority";
+        var where = $"Each is in the audit trail as {AuditActionType.RevocationMergedFromJournal}.";
         try
         {
             using var details = JsonDocument.Parse(e.DetailsJson ?? "{}");
             if (details.RootElement.TryGetProperty("merged", out var merged) && merged.TryGetInt32(out var n))
                 count = n;
+            if (details.RootElement.TryGetProperty("auditForm", out var form) && form.ValueKind == JsonValueKind.String
+                && form.GetString() == "batch")
+                where = $"They are in the audit trail in {AuditActionType.RevocationsMergedFromJournalBatch} records, which carry the serials in their details.";
             if (details.RootElement.TryGetProperty("caName", out var ca) && ca.ValueKind == JsonValueKind.String)
                 name = $"CA {ca.GetString()}";
         }
@@ -351,7 +355,7 @@ public static partial class InstanceContinuity
         }
         return $"{count} revocation(s) were restored from the signer's journal for {name} after the database went back in time. "
             + "The signer had them on a CRL it signed, or the node had recorded them with it, and the database no longer did. "
-            + $"Each is in the audit trail as {AuditActionType.RevocationMergedFromJournal}. Nothing else that was done in the lost time was restored.";
+            + $"{where} Nothing else that was done in the lost time was restored.";
     }
 
     private static string FormatTime(DateTime? time)

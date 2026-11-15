@@ -529,6 +529,7 @@ public sealed class RevokedSerialServiceTests
     [InlineData("Adopt")]
     [InlineData("MissingFromCrl")]
     [InlineData("RecordMany")]
+    [InlineData("RevokeAllMissing")]
     public async Task Every_action_needs_cert_revoke_on_the_ca_in_the_route_and_on_no_other(string action)
     {
         var a = new AuthWorld();
@@ -552,6 +553,7 @@ public sealed class RevokedSerialServiceTests
     [Theory]
     [InlineData("Record", StepUpOps.RevokeSerial)]
     [InlineData("RecordMany", StepUpOps.RevokeSerial)]
+    [InlineData("RevokeAllMissing", StepUpOps.RevokeAllMissingSerials)]
     [InlineData("Adopt", StepUpOps.AdoptCertificate)]
     public async Task The_mutations_need_a_step_up_token_issued_for_that_operation_and_that_ca(string action, string operation)
     {
@@ -574,6 +576,202 @@ public sealed class RevokedSerialServiceTests
         http = a.Http(cache);
         http.Request.Headers["X-MFA-Token"] = "token";
         Assert.True((await RunFilterAsync(action, "RequireStepUpAttribute", http, a.W.CaId)).Reached);
+    }
+
+    [Fact]
+    public async Task A_step_up_for_revoking_serials_does_not_reach_revoke_all()
+    {
+        var a = new AuthWorld();
+        IDistributedCache cache = new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions()));
+        cache.SetString($"mfa-stepup:{a.UserId}:{StepUpOps.RevokeSerial}:{a.W.CaId}", "token");
+        var http = a.Http(cache);
+        http.Request.Headers["X-MFA-Token"] = "token";
+
+        Assert.True((await RunFilterAsync("RecordMany", "RequireStepUpAttribute", http, a.W.CaId)).Reached);
+        var second = a.Http(cache);
+        second.Request.Headers["X-MFA-Token"] = "token";
+        var refused = await RunFilterAsync("RevokeAllMissing", "RequireStepUpAttribute", second, a.W.CaId);
+        Assert.False(refused.Reached);
+        Assert.Equal(403, Assert.IsType<ObjectResult>(refused.Result).StatusCode);
+        Assert.Contains(StepUpOps.RevokeAllMissingSerials, StepUpOps.All);
+        Assert.NotEqual(StepUpOps.RevokeSerial, StepUpOps.RevokeAllMissingSerials);
+    }
+
+    // ── Revoke all the serials missing from a refused CRL ────────────────
+
+    private static readonly DateTime MissingAt = new(2026, 11, 12, 17, 45, 0, DateTimeKind.Utc);
+
+    /// <summary>The controller over a signer that reports <paramref name="serials"/> as missing from CRL number 12.</summary>
+    private static (ControllerBase Controller, RecordingAuditService Audit, ModularCA.Tests.Journal.JournalHubReviewTests.JournalAnswers Answers) MissingController(World w, IEnumerable<(string Serial, int Reason)>? serials)
+    {
+        var (signer, answers) = ModularCA.Tests.Journal.JournalHubReviewTests.JournalAnswers.Create();
+        if (serials != null)
+            answers.Missing = new ModularCA.Shared.Signing.SignerJournalMissingRevocations(w.CaId, MissingAt, 12,
+                serials.Select(s => new ModularCA.Shared.Signing.SignerJournalMissingSerial(s.Serial, s.Reason, MissingAt)).ToList());
+        var audit = new RecordingAuditService();
+        var controller = (ControllerBase)Activator.CreateInstance(ApiAssembly.TypeNamed(ControllerName),
+            w.Service, w.Db, new CurrentUserStub(Guid.NewGuid()), audit, new RecordingAlertService(), signer)!;
+        controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() };
+        return (controller, audit, answers);
+    }
+
+    private static Task<IActionResult> RevokeAll(ControllerBase controller, Guid caId, int count, long crl, string note = "the database was taken back")
+        => (Task<IActionResult>)controller.GetType().GetMethod("RevokeAllMissing")!.Invoke(controller,
+            [caId, new RevokeAllMissingSerialsRequest { ConfirmedCount = count, JournaledCrlNumber = crl, Note = note }])!;
+
+    [Fact]
+    public async Task Revoke_all_records_every_missing_serial_without_a_certificate_as_one_audited_act()
+    {
+        var w = new World();
+        w.IssuedRow(new BigInteger("B002", 16));
+        var generatedBefore = w.Crls.Generated.Count;
+        // Six are missing; the CA holds the certificate of one. A hold cannot be recorded for a serial alone.
+        var (controller, audit, _) = MissingController(w, [("B001", 1), ("B002", 4), ("B003", 4), ("B004", 6), ("B005", 99), ("B006", 5)]);
+
+        var body = await OkBodyAsync(RevokeAll(controller, w.CaId, 5, 12));
+
+        Assert.Equal((5, 0, "individual"), (body.GetProperty("recorded").GetInt32(), body.GetProperty("refusedCount").GetInt32(), body.GetProperty("auditForm").GetString()));
+        var rows = w.Db.RevokedSerialTombstones.AsNoTracking().OrderBy(t => t.SerialNumber).ToList();
+        Assert.Equal(new[] { "B001", "B003", "B004", "B005", "B006" }, rows.Select(r => r.SerialNumber));
+        Assert.Equal(new[] { "KeyCompromise", "Superseded", "Unspecified", "Unspecified", "CessationOfOperation" }, rows.Select(r => r.RevocationReason));
+        Assert.All(rows, r => Assert.Equal(("the database was taken back", "operator"), (r.Note, r.CreatedByUsername)));
+        // One CRL after the last.
+        Assert.Equal(generatedBefore + 1, w.Crls.Generated.Count);
+
+        // A record for each serial, and one for the act, which says what was confirmed.
+        Assert.Equal(new[] { "B001", "B003", "B004", "B005", "B006" },
+            audit.Entries.Where(e => e.Action == AuditActionType.RevokedSerialRecorded).Select(e => e.TargetId));
+        var act = JsonSerializer.SerializeToElement(Assert.Single(audit.Entries, e => e.Action == AuditActionType.AllMissingSerialsRevoked).Details);
+        Assert.Equal((5, 12L, 5, 0, "individual", AuditActionType.RevokedSerialRecorded, 0),
+            (act.GetProperty("ConfirmedCount").GetInt32(), act.GetProperty("JournaledCrlNumber").GetInt64(), act.GetProperty("Recorded").GetInt32(),
+             act.GetProperty("Refused").GetInt32(), act.GetProperty("AuditForm").GetString(), act.GetProperty("AuditAction").GetString(), act.GetProperty("BatchRecords").GetInt32()));
+        Assert.Equal(AuditActionType.AllMissingSerialsRevoked, audit.Entries[^1].Action);
+    }
+
+    [Theory]
+    [InlineData(4, 12L, "5 serial(s) from CRL number 12 are missing now")]   // the count shown is no longer the count
+    [InlineData(6, 12L, "5 serial(s) from CRL number 12 are missing now")]
+    [InlineData(5, 11L, "5 serial(s) from CRL number 12 are missing now")]   // the list is of another CRL
+    public async Task Revoke_all_is_refused_when_what_was_confirmed_is_no_longer_the_list(int confirmedCount, long confirmedCrl, string says)
+    {
+        var w = new World();
+        w.IssuedRow(new BigInteger("B002", 16));
+        var generatedBefore = w.Crls.Generated.Count;
+        var (controller, audit, _) = MissingController(w, [("B001", 1), ("B002", 4), ("B003", 4), ("B004", 6), ("B005", 99), ("B006", 5)]);
+
+        var refused = await Assert.ThrowsAsync<ResourceConflictException>(() => RevokeAll(controller, w.CaId, confirmedCount, confirmedCrl));
+
+        Assert.Equal(409, refused.Status);
+        Assert.Contains(says, refused.Message, StringComparison.Ordinal);
+        Assert.Contains("Nothing was revoked", refused.Message, StringComparison.Ordinal);
+        Assert.Empty(w.Db.RevokedSerialTombstones);
+        Assert.Equal(generatedBefore, w.Crls.Generated.Count);
+        // The attempt is in the trail, as a failure of the act, with what was confirmed.
+        var entry = Assert.Single(audit.Entries);
+        Assert.Equal(AuditActionType.AllMissingSerialsRevoked, entry.Action);
+        Assert.Equal(confirmedCount, JsonSerializer.SerializeToElement(entry.Details).GetProperty("ConfirmedCount").GetInt32());
+    }
+
+    [Fact]
+    public async Task Revoke_all_is_refused_when_nothing_is_missing_when_every_serial_has_a_certificate_and_without_a_note()
+    {
+        var w = new World();
+        w.IssuedRow(new BigInteger("B002", 16));
+
+        // No refusal stands.
+        var (none, _, _) = MissingController(w, null);
+        Assert.Contains("nothing to revoke", (await Assert.ThrowsAsync<ResourceConflictException>(() => RevokeAll(none, w.CaId, 1, 12))).Message, StringComparison.Ordinal);
+
+        // The CA holds the certificate of the only one.
+        var (held, _, _) = MissingController(w, [("B002", 4)]);
+        Assert.Contains("holds a certificate for every serial", (await Assert.ThrowsAsync<ResourceConflictException>(() => RevokeAll(held, w.CaId, 1, 12))).Message, StringComparison.Ordinal);
+
+        // No note.
+        var (open, _, _) = MissingController(w, [("B001", 4)]);
+        Assert.Equal(400, (await Assert.ThrowsAsync<InvalidRequestException>(() => RevokeAll(open, w.CaId, 1, 12, " "))).Status);
+        Assert.Empty(w.Db.RevokedSerialTombstones);
+    }
+
+    [Fact]
+    public async Task Revoke_all_goes_past_the_cap_of_one_request_in_sets_and_audits_each_set_with_one_record()
+    {
+        var w = new World();
+        const int count = 5200;
+        var generatedBefore = w.Crls.Generated.Count;
+        var (controller, audit, _) = MissingController(w, Enumerable.Range(1, count).Select(i => ((0xC00000 + i).ToString("X"), 4)));
+
+        var body = await OkBodyAsync(RevokeAll(controller, w.CaId, count, 12));
+
+        Assert.Equal((count, "batch"), (body.GetProperty("recorded").GetInt32(), body.GetProperty("auditForm").GetString()));
+        Assert.Equal(count, w.Db.RevokedSerialTombstones.AsNoTracking().Select(t => t.SerialNumber).Distinct().Count());
+        Assert.Equal(generatedBefore + 1, w.Crls.Generated.Count);
+
+        // Above the limit for records of their own: one record for each set of 500, none for a single serial, and the act.
+        Assert.DoesNotContain(audit.Entries, e => e.Action == AuditActionType.RevokedSerialRecorded);
+        var batches = audit.Entries.Where(e => e.Action == AuditActionType.RevokedSerialsRecordedBatch).Select(e => JsonSerializer.SerializeToElement(e.Details)).ToList();
+        Assert.Equal(11, batches.Count);
+        Assert.Equal(count, batches.Sum(b => b.GetProperty("Serials").GetArrayLength()));
+        Assert.Equal(count, batches.SelectMany(b => b.GetProperty("Serials").EnumerateArray()).Select(s => s.GetProperty("Serial").GetString()).Distinct().Count());
+        Assert.Equal("Superseded", batches[0].GetProperty("Serials")[0].GetProperty("Reason").GetString());
+        var act = JsonSerializer.SerializeToElement(Assert.Single(audit.Entries, e => e.Action == AuditActionType.AllMissingSerialsRevoked).Details);
+        Assert.Equal(("batch", AuditActionType.RevokedSerialsRecordedBatch, 11, count),
+            (act.GetProperty("AuditForm").GetString(), act.GetProperty("AuditAction").GetString(), act.GetProperty("BatchRecords").GetInt32(), act.GetProperty("Recorded").GetInt32()));
+    }
+
+    [Fact]
+    public async Task The_selected_serials_endpoint_refuses_a_request_that_names_the_whole_missing_list()
+    {
+        var w = new World();
+        w.IssuedRow(new BigInteger("B002", 16));
+        var (controller, audit, answers) = MissingController(w, [("B001", 1), ("B002", 4), ("B003", 4), ("B004", 6)]);
+        Task<IActionResult> Bulk(params string[] serials) => (Task<IActionResult>)controller.GetType().GetMethod("RecordMany")!.Invoke(controller,
+            [w.CaId, new RecordRevokedSerialsRequest { Serials = serials.Select(s => new RevokedSerialItem { SerialNumber = s, Reason = RevocationReason.Superseded }).ToList(), Note = "n" }])!;
+
+        // Every missing serial without a certificate, however written, with or without others: that is revoke-all.
+        var refused = await Assert.ThrowsAsync<ResourceConflictException>(() => Bulk("b001", "00B003", "B004"));
+        Assert.Contains("Revoking all of them is a separate action", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("revoke-all", refused.Remediation!, StringComparison.Ordinal);
+        await Assert.ThrowsAsync<ResourceConflictException>(() => Bulk("B001", "B003", "B004", "D001"));
+        Assert.Empty(w.Db.RevokedSerialTombstones);
+        Assert.All(audit.Entries, e => Assert.Equal(AuditActionType.RevokedSerialRecorded, e.Action));
+
+        // Some of them are the selected ones.
+        var body = await OkBodyAsync(Bulk("B001", "B003"));
+        Assert.Equal(2, body.GetProperty("recorded").GetArrayLength());
+
+        // With no refusal standing, and with a single missing serial, the endpoint is as it was.
+        answers.Missing = null;
+        Assert.Equal(1, (await OkBodyAsync(Bulk("B004"))).GetProperty("recorded").GetArrayLength());
+        var (one, _, _) = MissingController(w, [("E001", 4)]);
+        Assert.Equal(1, (await OkBodyAsync((Task<IActionResult>)one.GetType().GetMethod("RecordMany")!.Invoke(one,
+            [w.CaId, new RecordRevokedSerialsRequest { Serials = [new RevokedSerialItem { SerialNumber = "E001", Reason = RevocationReason.Superseded }], Note = "n" }])!)).GetProperty("recorded").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Serials_recorded_in_sets_are_checked_as_single_ones_are()
+    {
+        var w = new World();
+        w.IssuedRow(new BigInteger("77AA", 16));
+        await w.Record("0C0C");
+        var generatedBefore = w.Crls.Generated.Count;
+        var sets = new List<int>();
+
+        var (recorded, refused, _) = await w.Service.RecordTombstonesInSetsAsync(w.CaId,
+            [("0a:01", RevocationReason.KeyCompromise), ("77AA", RevocationReason.Superseded), ("0C0C", RevocationReason.Superseded),
+             ("not hex", RevocationReason.Superseded), ("0A02", RevocationReason.CertificateHold), ("0A03", RevocationReason.Superseded), ("A01", RevocationReason.Superseded)],
+            "lost in the roll-back", Guid.NewGuid(), "admin", set => { sets.Add(set.Count); return Task.CompletedTask; });
+
+        Assert.Equal(2, recorded);
+        Assert.Equal(new[] { 2 }, sets);
+        Assert.Equal(new[] { "A01", "A03", "C0C" }, w.Db.RevokedSerialTombstones.AsNoTracking().OrderBy(t => t.SerialNumber).Select(t => t.SerialNumber));
+        Assert.Equal(5, refused.Count);
+        Assert.Contains(refused, r => r.Refusal!.Contains("belongs to a certificate this CA holds", StringComparison.Ordinal));
+        Assert.Contains(refused, r => r.Refusal!.Contains("already recorded", StringComparison.Ordinal));
+        Assert.Contains(refused, r => r.Refusal!.Contains("hexadecimal", StringComparison.Ordinal));
+        Assert.Contains(refused, r => r.Refusal!.Contains("cannot be put on hold", StringComparison.Ordinal));
+        Assert.Contains(refused, r => r.Refusal!.Contains("named twice", StringComparison.Ordinal));
+        Assert.Equal(generatedBefore + 1, w.Crls.Generated.Count);
+        await Assert.ThrowsAsync<InvalidRequestException>(() => w.Service.RecordTombstonesInSetsAsync(w.CaId, [("0A09", RevocationReason.Superseded)], " ", null, "admin"));
     }
 
     private sealed class CurrentUserStub(Guid id) : ICurrentUserService

@@ -3,6 +3,7 @@ import { InlineNotice } from '@shared/components/InlineNotice';
 import { errorNotice } from '@shared-auth/api/notices';
 import { Link, useNavigate } from 'react-router-dom';
 import { journalAttention, type JournalAttentionItem } from '../components/journalAttention';
+import { caLifecycleAttention, type CaAttentionItem } from './caLifecycle';
 import { apiGet, apiPost, apiPostWithMfa, getToken } from '../api/client';
 import { useScope } from '../context/ScopeContext';
 import { scopeKey } from '../scope';
@@ -258,13 +259,15 @@ const Dashboard: React.FC = () => {
     // while it waits for a restore marker. A viewer who may not read the readiness answer sees
     // no entry.
     const [journalItem, setJournalItem] = useState<JournalAttentionItem | null>(null);
+    // From the same answer: each CA whose certificate is in its expiry warning or has expired.
+    const [caItems, setCaItems] = useState<CaAttentionItem[]>([]);
     useEffect(() => {
         let cancelled = false;
         const token = getToken();
         fetch('/health/ready', { headers: token ? { Authorization: `Bearer ${token}` } : {} })
             .then((res) => res.json())
-            .then((body) => { if (!cancelled) setJournalItem(journalAttention(body)); })
-            .catch(() => { if (!cancelled) setJournalItem(null); });
+            .then((body) => { if (!cancelled) { setJournalItem(journalAttention(body)); setCaItems(caLifecycleAttention(body)); } })
+            .catch(() => { if (!cancelled) { setJournalItem(null); setCaItems([]); } });
         return () => { cancelled = true; };
     }, []);
 
@@ -491,8 +494,18 @@ const Dashboard: React.FC = () => {
                         <Link to="/health" className={actionButton}>System health</Link>
                     </div>
                 )}
+                {caItems.map((item) => (
+                    <div key={item.caId} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 border-b border-line">
+                        <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${toneDotClass(item.tone)}`} aria-hidden="true" />
+                        <div className="min-w-0 flex-1">
+                            <div className={`text-sm font-medium ${toneTextClass(item.tone)}`}>{item.title}</div>
+                            <div className="text-xs text-ink-muted">{item.message}</div>
+                        </div>
+                        <Link to={item.to} className={actionButton}>Open CA</Link>
+                    </div>
+                ))}
                 {certStatsLoading && <div className="p-4 text-sm text-ink-muted text-center">Loading...</div>}
-                {!certStatsLoading && summary && attention.length === 0 && !journalItem && (
+                {!certStatsLoading && summary && attention.length === 0 && !journalItem && caItems.length === 0 && (
                     <div className="px-4 py-6 text-center">
                         <div className="text-sm text-ink font-medium">Nothing needs attention</div>
                         <div className="text-xs text-ink-muted mt-1">No certificate expired in the last 30 days or is in its expiry warning without a replacement.</div>

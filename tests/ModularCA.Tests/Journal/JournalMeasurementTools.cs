@@ -380,6 +380,154 @@ public class JournalMeasurementTools(ITestOutputHelper output)
         });
     }
 
+    /// <summary>N revocations in the database: half certificates the CA holds, half serials with no certificate.</summary>
+    private static async Task SeedRevokedAsync(string connection, PostgresCaFixture.SeededCa ca, int n)
+    {
+        var revokedAt = DateTime.UtcNow.AddHours(-3);
+        for (var from = 0; from < n; from += 5000)
+        {
+            await using var db = PostgresCaFixture.Open(connection);
+            db.SuppressSignerFacts = true;
+            for (var i = from; i < Math.Min(n, from + 5000); i++)
+            {
+                var serial = CertificateUtil.FormatSerialNumber(BigInteger.ValueOf(0x10000000L + i));
+                if (i % 2 == 0)
+                    db.Certificates.Add(new CertificateEntity
+                    {
+                        CertificateId = Guid.NewGuid(), SerialNumber = serial, SubjectDN = $"CN=measured-{i}", Issuer = ca.Material.SubjectDn, IssuerCertificateId = ca.CaCertificateId,
+                        Pem = "x", NotBefore = DateTime.UtcNow.AddDays(-1), NotAfter = DateTime.UtcNow.AddDays(300), Revoked = true, RevocationReason = "Superseded", RevocationDate = revokedAt,
+                    });
+                else
+                    db.RevokedSerialTombstones.Add(new RevokedSerialTombstoneEntity
+                    {
+                        CaCertificateId = ca.CaCertificateId, CertificateAuthorityId = ca.CaId, IssuerDN = ca.Material.SubjectDn, SerialNumber = serial.TrimStart('0'),
+                        RevocationDate = revokedAt, RevocationReason = "Superseded", ListedUntil = DateTime.UtcNow.AddYears(1), Note = "measure", CreatedByUsername = "measure", CreatedAt = DateTime.UtcNow,
+                    });
+            }
+            await db.SaveChangesAsync();
+        }
+    }
+
+    /// <summary>
+    /// The cure with its audit records written through the real audit trail (the hash chain of
+    /// an audit schema on the test server), in both forms: a record for each revocation, and a
+    /// record for each batch. Runs when <c>MODULARCA_MEASURE_CURE_AUDIT</c> lists the numbers
+    /// of missing revocations to try (for example "10000,100000") and
+    /// <c>MODULARCA_TEST_PG</c> names the server. The form with a record for each is the one
+    /// the product used for every size before batching, and is forced here for the comparison.
+    /// It is given <c>MODULARCA_MEASURE_CURE_MINUTES</c> (60) and is stopped then, with what it
+    /// had made. Each line is also appended to the file <c>MODULARCA_MEASURE_OUT</c> names.
+    /// </summary>
+    [Fact]
+    public async Task Measure_the_cure_through_the_audit_chain()
+    {
+        var sizes = Environment.GetEnvironmentVariable("MODULARCA_MEASURE_CURE_AUDIT");
+        if (string.IsNullOrWhiteSpace(sizes) || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(PostgresCaFixture.ServerVariable)))
+            return;
+        foreach (var n in sizes.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(int.Parse))
+            foreach (var batched in new[] { true, false })
+                await PostgresCaFixture.WithDatabaseAsync("modularca_mcure", async connection =>
+                {
+                    var pooled = new Npgsql.NpgsqlConnectionStringBuilder(connection) { Pooling = true }.ConnectionString;
+                    try
+                    {
+                        await MeasureCureAsync(pooled, n, batched);
+                    }
+                    finally
+                    {
+                        Npgsql.NpgsqlConnection.ClearAllPools();
+                    }
+                });
+    }
+
+    private async Task MeasureCureAsync(string connection, int n, bool batched)
+    {
+        PostgresCaFixture.SeededCa ca;
+        await using (var seed = PostgresCaFixture.Open(connection))
+        {
+            ca = await PostgresCaFixture.SeedCaAsync(seed, "cure-measure");
+            await seed.Database.ExecuteSqlRawAsync("CREATE SCHEMA audit_measure");
+        }
+        var auditConnection = new Npgsql.NpgsqlConnectionStringBuilder(connection) { SearchPath = "audit_measure" }.ConnectionString;
+        var auditOptions = new DbContextOptionsBuilder<AuditDbContext>().UseNpgsql(auditConnection).Options;
+        await using (var create = new AuditDbContext(auditOptions))
+            await create.GetService<Microsoft.EntityFrameworkCore.Storage.IRelationalDatabaseCreator>().CreateTablesAsync();
+
+        using var sandbox = new JournalSandbox();
+        var services = new ServiceCollection();
+        services.AddDbContext<ModularCADbContext>(o => o.UseNpgsql(connection));
+        services.AddDbContext<AuditDbContext>(o => o.UseNpgsql(auditConnection));
+        services.AddSingleton(new AuditHashChainService());
+        services.AddScoped<IAuditService>(sp => new AuditService(NullLogger<AuditService>.Instance, sp.GetRequiredService<AuditDbContext>(), hashChain: sp.GetRequiredService<AuditHashChainService>()));
+        var scopes = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+        var keystore = new TestKeystore(ca.Material.AsSigner());
+        await using var journal = new SignerJournal(() => sandbox.Options(), new SignerJournalSettings(sandbox.Home, true, "measure", new byte[32]), NullLogger.Instance);
+        var signer = new InProcessSigningService(keystore, scopes, new DatabaseSignerAuditSink(scopes),
+            new InMemorySignerKeyPersistence(), NullLogger<InProcessSigningService>.Instance, journal: journal);
+
+        await SeedRevokedAsync(connection, ca, n);
+        await using (var db = PostgresCaFixture.Open(connection))
+        {
+            await db.Database.ExecuteSqlRawAsync("ANALYZE");
+            await new CrlService(db, keystore, NullLogger<CrlService>.Instance, new RecordingAuditService(), new NoServiceUrls(),
+                InstanceCeremonyEndpointTests.Fake<ILdapSecretProtector>.Create(), signer).GenerateCrlAsync(ca.CaCertificateId);
+            // The database goes back.
+            await db.Database.ExecuteSqlRawAsync("""UPDATE "Certificates" SET "Revoked" = false, "RevocationReason" = NULL, "RevocationDate" = NULL WHERE "IssuerCertificateId" IS NOT NULL""");
+            await db.Database.ExecuteSqlRawAsync("""DELETE FROM "RevokedSerialTombstones" """);
+        }
+        long before;
+        await using (var read = new AuditDbContext(auditOptions))
+            before = await read.Database.SqlQueryRaw<long>("""SELECT pg_total_relation_size('"AuditLogs"') AS "Value" """).SingleAsync();
+
+        var merge = new JournalRevocationMerge(scopes, signer, new JournalMergeState(), FullInstanceModeGate.Instance, NullLogger<JournalRevocationMerge>.Instance)
+        {
+            IndividualAuditLimit = batched ? JournalRevocationMerge.DefaultIndividualAuditLimit : int.MaxValue,
+        };
+        void Say(string line)
+        {
+            output.WriteLine(line);
+            if (Environment.GetEnvironmentVariable("MODULARCA_MEASURE_OUT") is { Length: > 0 } file)
+                File.AppendAllText(file, line + Environment.NewLine);
+        }
+        var form = batched ? "a record for each batch" : "a record for each revocation";
+        var minutes = int.TryParse(Environment.GetEnvironmentVariable("MODULARCA_MEASURE_CURE_MINUTES"), out var m) && m > 0 ? m : 60;
+        using var limit = new CancellationTokenSource(TimeSpan.FromMinutes(minutes));
+        var clock = Stopwatch.StartNew();
+        JournalMergeResult cured;
+        try
+        {
+            cured = await merge.MergeAsync(ca.CaId, limit.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            await using var partAudit = new AuditDbContext(auditOptions);
+            var written = await partAudit.AuditLogs.CountAsync();
+            var grown = await partAudit.Database.SqlQueryRaw<long>("""SELECT pg_total_relation_size('"AuditLogs"') AS "Value" """).SingleAsync() - before;
+            Say($"CURE n={n} {form}: STOPPED after {clock.Elapsed.TotalMinutes:0.0} minutes with {written} audit records written ({written / clock.Elapsed.TotalSeconds:0} a second), audit table grew by {grown / 1048576.0:0.00} MiB");
+            return;
+        }
+        var took = clock.Elapsed;
+        Assert.Equal((JournalMergeState.Done, n), (cured.State, cured.Merged));
+
+        await using var audit = new AuditDbContext(auditOptions);
+        var single = await audit.AuditLogs.CountAsync(a => a.ActionType == AuditActionType.RevocationMergedFromJournal);
+        var batches = await audit.AuditLogs.CountAsync(a => a.ActionType == AuditActionType.RevocationsMergedFromJournalBatch);
+        var summaries = await audit.AuditLogs.CountAsync(a => a.ActionType == AuditActionType.JournalRevocationMergeCompleted);
+        var largest = await audit.AuditLogs.Where(a => a.DetailsJson != null).MaxAsync(a => a.DetailsJson!.Length);
+        var bytes = await audit.Database.SqlQueryRaw<long>("""SELECT pg_total_relation_size('"AuditLogs"') AS "Value" """).SingleAsync() - before;
+        clock.Restart();
+        var chain = await new AuditHashChainService().VerifyAsync(audit, null, limit: n + 100);
+        long facts;
+        await using (var db = PostgresCaFixture.Open(connection))
+            facts = await db.SignerFacts.LongCountAsync();
+        Say($"CURE n={n} {form}: merged {cured.Merged} in {took.TotalSeconds:0.0} s ({cured.Merged / took.TotalSeconds:0} revocations/s); "
+            + $"audit records: {single} single, {batches} batch, {summaries} summary; audit table grew by {bytes} bytes ({bytes / 1048576.0:0.00} MiB); largest details {largest} characters; "
+            + $"the chain of {chain.RecordsVerified} records verified in {clock.Elapsed.TotalSeconds:0.00} s with {chain.Breaks.Count} break(s); {facts} facts queued for the journal");
+        Assert.Empty(chain.Breaks);
+        Assert.Equal(n, facts);
+        Assert.Equal(batched && n > JournalRevocationMerge.DefaultIndividualAuditLimit ? 0 : n, single);
+    }
+
     private async Task MeasureMergeAsync(string connection, int n)
     {
         PostgresCaFixture.SeededCa ca;
@@ -405,31 +553,8 @@ public class JournalMeasurementTools(ITestOutputHelper output)
                 InstanceCeremonyEndpointTests.Fake<ILdapSecretProtector>.Create(), signer).GenerateCrlAsync(ca.CaCertificateId);
         }
 
-        // N revocations: half certificates the database holds, half serials with no certificate.
-        var revokedAt = DateTime.UtcNow.AddHours(-3);
         var clock = Stopwatch.StartNew();
-        for (var from = 0; from < n; from += 5000)
-        {
-            await using var db = PostgresCaFixture.Open(connection);
-            db.SuppressSignerFacts = true;
-            for (var i = from; i < Math.Min(n, from + 5000); i++)
-            {
-                var serial = CertificateUtil.FormatSerialNumber(BigInteger.ValueOf(0x10000000L + i));
-                if (i % 2 == 0)
-                    db.Certificates.Add(new CertificateEntity
-                    {
-                        CertificateId = Guid.NewGuid(), SerialNumber = serial, SubjectDN = $"CN=measured-{i}", Issuer = ca.Material.SubjectDn, IssuerCertificateId = ca.CaCertificateId,
-                        Pem = "x", NotBefore = DateTime.UtcNow.AddDays(-1), NotAfter = DateTime.UtcNow.AddDays(300), Revoked = true, RevocationReason = "Superseded", RevocationDate = revokedAt,
-                    });
-                else
-                    db.RevokedSerialTombstones.Add(new RevokedSerialTombstoneEntity
-                    {
-                        CaCertificateId = ca.CaCertificateId, CertificateAuthorityId = ca.CaId, IssuerDN = ca.Material.SubjectDn, SerialNumber = serial.TrimStart('0'),
-                        RevocationDate = revokedAt, RevocationReason = "Superseded", ListedUntil = DateTime.UtcNow.AddYears(1), Note = "measure", CreatedByUsername = "measure", CreatedAt = DateTime.UtcNow,
-                    });
-            }
-            await db.SaveChangesAsync();
-        }
+        await SeedRevokedAsync(connection, ca, n);
         var seeded = clock.Elapsed;
         // A database that has run for a while has statistics; one seeded a moment ago has none.
         await using (var db = PostgresCaFixture.Open(connection))

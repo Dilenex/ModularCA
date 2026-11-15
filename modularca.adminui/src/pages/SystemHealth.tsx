@@ -16,6 +16,7 @@ import { protocolFindings, type ProtocolFinding } from './protocolAdvisories';
 import { sshKeyReadiness } from './sshKeyCustody';
 import { sshCaKeyPath } from './sshPlaces';
 import { caKeyFindings, sessionMaximumAdvice, type CaKeyFinding, type PasswordPolicyGuidance } from './tighterDefaults';
+import { advisoryTitle, advisoryTone } from './caLifecycle';
 
 function formatDate(d: string | null) {
     if (!d) return '-';
@@ -650,13 +651,13 @@ const SecurityBaselineCard: React.FC<{ hierarchy: Fetched<any[]> | null }> = ({ 
             {hierarchy && !hierarchy.ok && <Unavailable what="certificate authorities" error={hierarchy.error} />}
             {nothing && hierarchy?.ok && (
                 <div className="text-sm text-ink-muted">
-                    Session lifetime, password policy and CA keys are at the baseline a new install starts with (NIST SP 800-63B and SP 800-57).
+                    Session lifetime, password policy and CA keys are at the baseline a new install starts with (NIST SP 800-63B and SP 800-57), and no CA's certificate or key raises a notice.
                 </div>
             )}
             {!loading && !nothing && (
                 <div className="space-y-3 text-xs">
                     <p className="text-ink-muted max-w-3xl">
-                        Where this instance differs from what a new install starts with. Nothing here was changed by an upgrade: each setting is as it was stored, and each change is yours to make.
+                        Where this instance differs from what a new install starts with, and what its CAs' certificates and keys have to say over time. Nothing here was changed by an upgrade: each setting is as it was stored, and each change is yours to make.
                     </p>
                     {sessionAdvice && (
                         <div>
@@ -678,10 +679,10 @@ const SecurityBaselineCard: React.FC<{ hierarchy: Fetched<any[]> | null }> = ({ 
                     )}
                     {keys.length > 0 && (
                         <div className="space-y-1">
-                            <div className="text-ink font-semibold">CA keys</div>
+                            <div className="text-ink font-semibold">CA keys and certificates</div>
                             {keys.map((f) => (
                                 <div key={`${f.link}-${f.advisory.reason}`} className="flex items-baseline gap-2 flex-wrap">
-                                    <StatusBadge status="held" label="Replace before 2031" />
+                                    <StatusBadge status={advisoryTone(f.advisory) === 'crit' ? 'expired' : 'held'} label={advisoryTitle(f.advisory)} />
                                     <Link to={f.link} className="text-ink hover:underline">{f.caName}</Link>
                                     <span className="text-ink-muted">{f.advisory.message}</span>
                                 </div>

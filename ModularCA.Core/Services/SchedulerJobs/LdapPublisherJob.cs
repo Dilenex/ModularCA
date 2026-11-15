@@ -329,10 +329,11 @@ public class LdapPublisherJob : PerRowScheduledJob<LdapConfigurationEntity>
             return;
         }
 
-        var caCertId = caEntity.CertificateId.Value;
+        // Issued by this CA under its current certificate or an earlier one over the same key.
+        var caCertIds = await ModularCA.Core.Helpers.IssuerChainResolver.SameKeyScopeAsync(_dbContext, caEntity.CertificateId.Value, cancellationToken);
 
         var recentCerts = await _dbContext.Certificates
-            .Where(c => c.IssuerCertificateId == caCertId
+            .Where(c => c.IssuerCertificateId != null && caCertIds.Contains(c.IssuerCertificateId.Value)
                 && !c.IsCA
                 && !c.Revoked
                 && c.CreatedAt > since

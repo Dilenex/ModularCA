@@ -243,7 +243,41 @@ const CeremonyDrawer: React.FC<{ ceremony: any; isInitiator: boolean; onCancel: 
                 </div>
             )}
 
-            {params && family === 'CaCreation' && (
+            {params && ceremony?.operationType === 'RenewCaCertificate' && (
+                <div>
+                    <span className="text-xs font-semibold text-ink-muted">CA Certificate Renewal</span>
+                    <DetailField label="CA" value={param(params, 'caName') || '-'} />
+                    <DetailField label="CA ID" value={param(params, 'caId') || '-'} mono />
+                    <DetailField label="Certificate to Renew (Serial)" value={param(params, 'currentSerialNumber') || '-'} mono />
+                    <DetailField label="New Certificate Valid Until" value={param(params, 'notAfter') ? String(param(params, 'notAfter')).replace('T', ' ').replace(/\.\d+/, '') : '-'} />
+                    <DetailField label="Key" value="Unchanged: the CA's existing key" />
+                    <DetailField label="Subject and Extensions" value="Unchanged: copied from the current certificate" />
+                    {(Array.isArray(param(params, 'advisories')) ? param(params, 'advisories') : []).map((a: any) => {
+                        const reason = a?.reason ?? a?.Reason;
+                        const warning = (a?.severity ?? a?.Severity) !== 'notice';
+                        const acknowledged = (Array.isArray(param(params, 'acknowledged')) ? param(params, 'acknowledged') : []).includes(reason);
+                        return (
+                            <div key={reason} className={`mt-2 rounded border p-3 ${warning ? 'border-warn/40 bg-warn-soft' : 'border-line bg-sunken'}`}>
+                                <p className={`text-xs ${warning ? 'text-warn' : 'text-ink-muted'}`}>
+                                    <strong>{a?.title ?? a?.Title ?? reason}.</strong> {a?.message ?? a?.Message}
+                                </p>
+                                {warning && (
+                                    <p className="mt-1 text-xs text-ink">
+                                        {acknowledged
+                                            ? `Acknowledged by ${ceremony?.initiatedByUsername || 'the initiator'} when this ceremony was opened. Approving it approves the renewal with this warning.`
+                                            : 'Not acknowledged by the initiator.'}
+                                    </p>
+                                )}
+                            </div>
+                        );
+                    })}
+                    <p className="mt-1 text-xs text-ink-muted">
+                        The signer signs only a certificate for this CA that ends at exactly this time and repeats the current certificate in everything but its serial and validity. The earlier certificate stays valid and is not revoked.
+                    </p>
+                </div>
+            )}
+
+            {params && family === 'CaCreation' && ceremony?.operationType !== 'RenewCaCertificate' && (
                 <div>
                     <span className="text-xs font-semibold text-ink-muted">CA Parameters</span>
                     <DetailField label="Common Name" value={params.subjectCN || params.SubjectCN || '-'} />
@@ -406,7 +440,9 @@ const Ceremonies: React.FC = () => {
                     <CeremonyWarnings warnings={warnings} className="mb-2" />
                     <p>Execute &ldquo;{text}&rdquo;?</p>
                     <p className="mt-2">
-                        {isCa
+                        {ceremony.operationType === 'RenewCaCertificate'
+                            ? 'This signs the CA’s new certificate over its existing key now. The earlier certificate stays valid and is not revoked. It cannot be re-run; a mistake means a new ceremony.'
+                            : isCa
                             ? 'This generates the CA’s key pair now. It cannot be re-run; a mistake means a new ceremony.'
                             : 'This applies the approved change now. It cannot be re-run; a mistake means a new ceremony.'}
                     </p>

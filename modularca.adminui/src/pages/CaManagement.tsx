@@ -24,6 +24,7 @@ import { Capabilities, StepUpOps } from '@shared/generated';
 import { FieldHint, inputClass, labelClass } from '@shared/components/forms';
 import { CEREMONY_UNKNOWN_HINT, INSTANCE_SCOPE, ceremonyRequiredFor, createCaButtonLabel } from './caCreation';
 import { CA_RSA_FLOOR_HINT, CA_RSA_KEY_SIZES } from './tighterDefaults';
+import { validityNotes } from './caRenewal';
 import { type CeremonyRefusal, readCeremonyRefusal } from './ceremonyRefusal';
 import { candidateSetKey, reconcileParent } from './caParent';
 import { CeremonyRefusalNotice } from '../components/CeremonyRefusalNotice';
@@ -467,6 +468,9 @@ const X509Authorities: React.FC = () => {
                                 ) : formCaType === 'intermediate' && parentNotAfter ? (
                                     <FieldHint id="ca-validity-hint">Parent expires {formatDate(parentNotAfter)}; this CA must not outlive it.</FieldHint>
                                 ) : null}
+                                {validityNotes(formCaType !== 'intermediate', requestedYears).map((note) => (
+                                    <FieldHint key={note.reason}>{note.message}</FieldHint>
+                                ))}
                             </div>
                             <div>
                                 <label className={labelClass}>Label (optional, auto-generated from CN if empty)</label>

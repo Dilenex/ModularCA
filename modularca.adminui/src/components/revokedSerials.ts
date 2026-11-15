@@ -24,6 +24,15 @@ export function normalizeSerial(serial: string): string {
     return cleaned.length > 0 ? cleaned : (serial.trim() ? '0' : '');
 }
 
+/**
+ * The audit list filtered to the records that name one revoked serial: the record of the serial
+ * itself, or a batch record that carries it among many (a large merge from the signer's journal,
+ * a revoke-all).
+ */
+export function auditPathForSerial(serial: string): string {
+    return `/audit?serial=${encodeURIComponent(normalizeSerial(serial))}`;
+}
+
 /** Why the serial as typed cannot be recorded, or null when it can. The server checks the same. */
 export function serialProblem(serial: string): string | null {
     const normalized = normalizeSerial(serial);

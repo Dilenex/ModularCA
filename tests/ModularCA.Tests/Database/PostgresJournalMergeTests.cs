@@ -102,7 +102,12 @@ public class PostgresJournalMergeTests
             Assert.Equal((JournalMergeState.Done, count), (result.State, result.Merged));
             await using (var db = PostgresCaFixture.Open(connection))
                 Assert.Equal(inserted, await db.RevokedSerialTombstones.AsNoTracking().Select(t => t.SerialNumber).OrderBy(x => x).ToListAsync());
-            Assert.Equal(count, audit.Entries.Count(e => e.Action == AuditActionType.RevocationMergedFromJournal));
+            // 3,000 is above the limit for a record each: one record for each save of 500, with the serials in it.
+            Assert.DoesNotContain(audit.Entries, e => e.Action == AuditActionType.RevocationMergedFromJournal);
+            var batches = audit.Entries.Where(e => e.Action == AuditActionType.RevocationsMergedFromJournalBatch)
+                .Select(e => System.Text.Json.JsonSerializer.SerializeToElement(e.Details)).ToList();
+            Assert.Equal(count / JournalRevocationMerge.BatchSize, batches.Count);
+            Assert.Equal(inserted, batches.SelectMany(b => b.GetProperty("Revocations").EnumerateArray()).Select(r => r.GetProperty("Serial").GetString()!).OrderBy(x => x).ToList());
             Assert.Equal(count, (await GenerateAsync()).GetRevokedCertificates().Count);
         });
 

@@ -222,7 +222,14 @@ namespace ModularCA.API.Controllers.v1.Admin
         /// to be wrong. System Health lists the enabled ones that carry any.
         /// Each CA also carries <c>keyAdvisories</c> (<see cref="CaKeyPolicy.Advisories"/>): what an operator
         /// should know about the CA's own key, today that an RSA key under 3072 bits should be replaced
-        /// before 2031; empty otherwise. The CA page and System Health show them.
+        /// before 2031, and the notices of <see cref="CaCryptoperiod.Advisories"/> about its certificate
+        /// and key over time (its certificate nearing its end, profiles asking for more time than it has
+        /// left, a key past the configured usage period, a certificate that outlives its parent's); each
+        /// has a <c>reason</c>, a <c>message</c>, a <c>severity</c> (<c>notice</c>, <c>warning</c>,
+        /// <c>critical</c>) and a short <c>title</c>. Empty otherwise. The CA page and System Health show
+        /// them. <c>cryptoperiod</c> carries the facts behind them (<see cref="CaCryptoperiodFacts"/>):
+        /// since when the key has signed, the certificate's validity, the latest end of validity among
+        /// the certificates it issued, and the longest validity its profiles allow.
         /// System admins see all CAs; other users see only CAs belonging to their accessible spaces.
         /// </summary>
         [HttpGet("hierarchy")]
@@ -258,6 +265,12 @@ namespace ModularCA.API.Controllers.v1.Admin
                 .ToListAsync();
 
             var ocspStates = await _ocspReadiness.AssessAsync(caIds, HttpContext.RequestAborted);
+            var utcNow = DateTime.UtcNow;
+            // Asked of the request's services, like the OCSP service on the public controller: the
+            // feed still answers, without the lifetime facts, where the service is not registered.
+            var lifecycle = HttpContext.RequestServices?.GetService<CaLifecycleService>() is { } caLifecycle
+                ? await caLifecycle.DescribeAsync(cas, utcNow, HttpContext.RequestAborted)
+                : new Dictionary<Guid, CaLifecycleReport>();
 
             // Guard against a malformed parent chain (a ParentCaId cycle) causing unbounded
             // recursion → StackOverflowException → 500 that would blank the entire CA tree (and with
@@ -332,7 +345,25 @@ namespace ModularCA.API.Controllers.v1.Admin
                     // needs it to say, before anything is saved, that SCEP cannot run here.
                     KeyAlgorithm = keyAlgorithm,
                     // What to know about the CA's own key: an RSA key under 3072 bits should be replaced.
-                    KeyAdvisories = CaKeyPolicy.Advisories(ca.Certificate),
+                    // and what its certificate and key have to say over time (CaCryptoperiod).
+                    KeyAdvisories = CaKeyPolicy.Advisories(ca.Certificate)
+                        .Concat(lifecycle.TryGetValue(ca.Id, out var period) ? period.Advisories : []).ToList(),
+                    Cryptoperiod = lifecycle.TryGetValue(ca.Id, out var report) ? new
+                    {
+                        report.Facts.IsRoot,
+                        report.Facts.KeyInUseSince,
+                        KeyInUseSinceSource = CaCryptoperiodFacts.KeyInUseSinceSource,
+                        KeyInUseDays = report.Facts.KeyInUseSince is DateTime since ? (int?)Math.Max(0, (int)(utcNow - since).TotalDays) : null,
+                        report.Facts.CertificateCount,
+                        report.Facts.CertificateNotBefore,
+                        report.Facts.CertificateNotAfter,
+                        DaysRemaining = report.Facts.CertificateNotAfter is DateTime end ? (int?)(int)Math.Floor((end - utcNow).TotalDays) : null,
+                        report.Facts.LatestIssuedNotAfter,
+                        LongestProfileValidityDays = report.Facts.LongestProfileValidity is TimeSpan longest ? (int?)(int)longest.TotalDays : null,
+                        report.Facts.LongestProfileName,
+                        report.Facts.ParentName,
+                        report.Facts.ParentCertificateNotAfter,
+                    } : null,
                     ProtocolConfigs = caProtocols,
                     ServiceUrls = urls != null ? new
                     {
@@ -661,6 +692,233 @@ namespace ModularCA.API.Controllers.v1.Admin
             }
         }
 
+        /// <summary>Request body for POST /authorities/{caId}/renew-certificate.</summary>
+        public class RenewCaCertificateRequest
+        {
+            /// <summary>Validity of the new certificate in years from now, 1 to 50. An intermediate's is shortened to its parent's certificate.</summary>
+            [Range(1, CaCertificateRenewalService.MaxValidityYears)]
+            public int ValidityYears { get; set; } = 10;
+
+            /// <summary>
+            /// The reason codes of the validity warnings the administrator has read and accepts
+            /// (<see cref="CaKeyPolicy.ValidityAdvisories"/>). Today one warning has to be
+            /// acknowledged: <c>CaRsaKeyBelow3072Past2030</c>. Without it the call answers 409 with
+            /// the warnings and renews nothing.
+            /// </summary>
+            public List<string>? Acknowledge { get; set; }
+        }
+
+        /// <summary>
+        /// Renews a CA's certificate over the key it has
+        /// (<c>docs/architecture/ca-certificate-renewal.md</c>): the same key, subject and
+        /// extensions, a new serial and a new validity of <c>validityYears</c> from now (1 to 50; an
+        /// intermediate's is shortened to its parent's certificate, and the response says so). A root
+        /// signs its own; an intermediate's is signed by its parent CA of this instance. The earlier
+        /// certificate stays valid and served and is not revoked. A root needs a system
+        /// administrator; an intermediate, <c>ca.manage</c> for its space. Where the CA's scope
+        /// requires a key ceremony the call opens a <c>RenewCaCertificate</c> ceremony instead
+        /// (<c>requiresCeremony: true</c>) that records the exact expiry, and the renewal happens
+        /// when the approved ceremony is executed. The system signing CA is renewed like any root.
+        /// A validity warning that has to be acknowledged answers 409 until its reason is sent in
+        /// <c>acknowledge</c>; a notice travels in <c>advisories</c>. Refused with 400 for a
+        /// revoked CA certificate, an intermediate whose issuer is not a CA of this instance, a
+        /// parent that cannot sign, and a validity that would not end after the current
+        /// certificate's. Requires step-up MFA bound to the CA.
+        /// </summary>
+        /// <param name="caId">The CA whose certificate is renewed.</param>
+        /// <param name="request">The validity asked for.</param>
+        [ModularCA.Shared.Modes.ModeGate(ModularCA.Shared.Modes.ModeOperation.Frozen)]
+        [HttpPost("{caId:guid}/renew-certificate")]
+        [Authorize]
+        [RequireStepUp(StepUpOps.RenewCaCertificate, "caId")]
+        public async Task<IActionResult> RenewCertificate(Guid caId, [FromBody] RenewCaCertificateRequest request)
+        {
+            await _currentUser.EnsureLoadedAsync();
+            if (_currentUser.User == null) return Unauthorized();
+
+            var ca = await _db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(c => c.Id == caId && !c.IsSshCa);
+            if (ca == null) return NotFound(new { error = "Certificate authority not found." });
+
+            // As creation: a root is a system administrator's; an intermediate, its space's ca.manage.
+            var userId = _currentUser.User.Id;
+            var allowed = await _groupAuth.IsSystemAdminAsync(userId)
+                || (ca.ParentCaId != null && await _groupAuth.HasScopeCapabilityAsync(userId, ca.SpaceId, Capabilities.CaManage));
+            if (!allowed)
+            {
+                Log.Warning("Authorization denied for user {UserId} ({Username}) renewing the certificate of CA {CaId}", userId, _currentUser.User.Username, caId);
+                return StatusCode(403, new { error = ca.ParentCaId == null
+                    ? "Renewing a root CA's certificate needs a system administrator."
+                    : "You need ca.manage for the CA's space to renew its certificate." });
+            }
+
+            var renewal = HttpContext.RequestServices.GetRequiredService<CaCertificateRenewalService>();
+            var plan = await renewal.PlanAsync(caId, request.ValidityYears, DateTime.UtcNow, HttpContext.RequestAborted);
+
+            // What to know about the validity chosen. A warning has to be acknowledged before
+            // anything is signed or any ceremony opened; a notice only travels with the answer.
+            var validityAdvisories = CaKeyPolicy.ValidityAdvisories(plan.IsRoot, DateTime.UtcNow, plan.NotAfter, CaKeyPolicy.RsaBitsOf(plan.CurrentRow));
+            var unacknowledged = validityAdvisories
+                .Where(a => a.Severity != CaKeyAdvisory.Notice && request.Acknowledge?.Contains(a.Reason, StringComparer.Ordinal) != true)
+                .ToList();
+            if (unacknowledged.Count > 0)
+                return Conflict(new
+                {
+                    error = "This renewal carries a warning that has to be acknowledged. Send its reason in 'acknowledge' to go ahead.",
+                    requiresAcknowledgement = true,
+                    advisories = unacknowledged,
+                    notAfter = plan.NotAfter,
+                });
+            var policy = await new EffectivePolicyResolver(_db).ResolveAsync(ca.SpaceId);
+            if (policy.RequireKeyCeremony)
+            {
+                var parametersJson = System.Text.Json.JsonSerializer.Serialize(new ModularCA.Shared.Models.RenewCaCertificateCeremonyParameters
+                {
+                    CaId = ca.Id,
+                    CaName = ca.Name,
+                    CurrentCertificateId = plan.CurrentRow.CertificateId,
+                    CurrentSerialNumber = plan.CurrentRow.SerialNumber,
+                    NotAfter = plan.NotAfter,
+                    SpaceId = ca.SpaceId,
+                    // What the initiator was told, and what they acknowledged, for the approvers.
+                    Advisories = validityAdvisories.Select(a => new ModularCA.Shared.Models.RenewalAdvisory
+                        { Reason = a.Reason, Severity = a.Severity, Title = a.Title, Message = a.Message }).ToList(),
+                    Acknowledged = validityAdvisories.Where(a => a.Severity != CaKeyAdvisory.Notice).Select(a => a.Reason).ToList(),
+                }, ModularCA.Shared.Utils.SafeJsonOptions.Stored);
+                var ceremony = await _ceremonySvc.InitiateAsync(
+                    ModularCA.Shared.Models.RenewCaCertificateCeremonyParameters.OperationType,
+                    $"Renew the certificate of CA '{ca.Name}' over the same key, valid until {plan.NotAfter:yyyy-MM-dd}",
+                    ca.Id.ToString(),
+                    userId,
+                    _currentUser.User.Username ?? string.Empty,
+                    parametersJson);
+                _ = _alertService.RaiseAlertAsync("KeyCeremonyInitiated", AlertSeverity.Critical,
+                    $"CA certificate renewal ceremony created for {ca.Name} by {_currentUser.User.Username}",
+                    new { CeremonyId = ceremony.Id, CaId = ca.Id, plan.NotAfter });
+                return Ok(new
+                {
+                    requiresCeremony = true,
+                    ceremonyId = ceremony.Id,
+                    ceremony.Status,
+                    ceremony.RequiredApprovals,
+                    notAfter = plan.NotAfter,
+                    shortenedToParent = plan.ShortenedToParent,
+                    advisories = validityAdvisories,
+                    message = $"Key ceremony required for {policy.Describe()}. A ceremony has been created and requires {ceremony.RequiredApprovals} approval(s).",
+                });
+            }
+
+            try
+            {
+                var result = await renewal.RenewAsync(caId, plan.NotAfter, ceremonyId: null, _currentUser.User.Username, HttpContext.RequestAborted);
+                await _audit.LogAsync(AuditActionType.CaCertificateRenewed, userId, _currentUser.User.Username,
+                    "CertificateAuthority", caId.ToString(),
+                    new
+                    {
+                        result.Ca.Name, result.Ca.Label,
+                        PreviousSerial = result.Previous.SerialNumber, NewSerial = result.Renewed.SerialNumber,
+                        result.Renewed.NotBefore, result.Renewed.NotAfter, SameKey = true,
+                    },
+                    HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    certificateAuthorityId: ca.Id, spaceId: ca.SpaceId);
+                return Ok(new
+                {
+                    requiresCeremony = false,
+                    caId = result.Ca.Id,
+                    certificateId = result.Renewed.CertificateId,
+                    serialNumber = result.Renewed.SerialNumber,
+                    previousSerialNumber = result.Previous.SerialNumber,
+                    notBefore = result.Renewed.NotBefore,
+                    notAfter = result.Renewed.NotAfter,
+                    shortenedToParent = plan.ShortenedToParent,
+                    advisories = validityAdvisories,
+                    message = $"The certificate of CA '{result.Ca.Name}' was renewed. The earlier certificate (serial {result.Previous.SerialNumber}) stays valid until it expires and was not revoked.",
+                });
+            }
+            catch (Exception ex) when (ex is RequestValidationException or ModularCA.Shared.Signing.SigningRefusedException)
+            {
+                // A refused renewal leaves a trail too; the rendering is the middleware's or, for
+                // a signer refusal, the message the signer gave.
+                await _audit.LogAsync(AuditActionType.CaCertificateRenewed, userId, _currentUser.User.Username,
+                    "CertificateAuthority", caId.ToString(), new { ca.Name, ca.Label, request.ValidityYears },
+                    HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    success: false, errorMessage: ex.Message,
+                    certificateAuthorityId: ca.Id, spaceId: ca.SpaceId);
+                if (ex is ModularCA.Shared.Signing.SigningRefusedException refused)
+                    return refused.Reason is ModularCA.Shared.Signing.SigningRefusalReason.SignerLocked or ModularCA.Shared.Signing.SigningRefusalReason.SignerUnavailable
+                        ? StatusCode(503, new { error = refused.Message })
+                        : BadRequest(new { error = $"The signer refused the renewal: {refused.Message}", reason = refused.Reason.ToString() });
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// The certificates a CA has had, newest first: the current one and every earlier one a
+        /// renewal superseded. Each carries its serial, validity, SHA-256 thumbprint, the id of its
+        /// key (<c>keyId</c>, SHA-256 of the public key, the same for every certificate of a CA
+        /// renewed over its key), whether it is the current one, how it became the CA's
+        /// (<c>origin</c>: <c>Initial</c> or <c>Renewal</c>), when, by whom and under which
+        /// ceremony when recorded, whether it is revoked or expired, and its PEM for download. An
+        /// earlier certificate is also served publicly at <c>/ca/{serial}</c>.
+        /// </summary>
+        /// <param name="caId">The CA.</param>
+        [HttpGet("{caId:guid}/certificates")]
+        [Authorize(Policy = "CaAuditor")]
+        public async Task<IActionResult> GetCertificateHistory(Guid caId)
+        {
+            var ca = await _db.CertificateAuthorities.AsNoTracking().FirstOrDefaultAsync(c => c.Id == caId && !c.IsSshCa);
+            if (ca == null) return NotFound(new { error = "Certificate authority not found." });
+            var fence = SpaceFence.From(HttpContext, Capabilities.CertView);
+            if (!fence.InstanceWide && !fence.Allows(ca.SpaceId))
+                return NotFound(new { error = "Certificate authority not found." });
+
+            var ids = await IssuerChainResolver.CaCertificateIdsAsync(_db, caId, HttpContext.RequestAborted);
+            var rows = await _db.Certificates.AsNoTracking().Where(c => ids.Contains(c.CertificateId)).ToListAsync();
+            var history = await _db.CaCertificates.AsNoTracking().Where(h => h.CertificateAuthorityId == caId).ToListAsync();
+            var now = DateTime.UtcNow;
+
+            var result = rows
+                .Select(row =>
+                {
+                    var recorded = history.FirstOrDefault(h => h.CertificateId == row.CertificateId);
+                    string? keyId = recorded?.KeyId;
+                    string? sha256 = null;
+                    try
+                    {
+                        var parsed = CertificateUtil.ParseFromPem(row.Pem);
+                        keyId ??= Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+                            Org.BouncyCastle.X509.SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(parsed.GetPublicKey()).GetDerEncoded()));
+                        sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(parsed.GetEncoded()));
+                    }
+                    catch (Exception)
+                    {
+                        // An unreadable row is listed with what the row itself says.
+                    }
+                    return new
+                    {
+                        row.CertificateId,
+                        row.SerialNumber,
+                        row.SubjectDN,
+                        row.Issuer,
+                        row.NotBefore,
+                        row.NotAfter,
+                        Sha256 = sha256,
+                        KeyId = keyId,
+                        IsCurrent = row.CertificateId == ca.CertificateId,
+                        Origin = recorded?.Origin ?? ModularCA.Shared.Entities.CaCertificateEntity.OriginInitial,
+                        ActivatedAt = recorded?.ActivatedAt ?? row.CreatedAt,
+                        recorded?.SupersededAt,
+                        recorded?.CeremonyId,
+                        recorded?.Actor,
+                        row.Revoked,
+                        Expired = row.NotAfter <= now,
+                        row.Pem,
+                    };
+                })
+                .OrderByDescending(c => c.IsCurrent).ThenByDescending(c => c.ActivatedAt)
+                .ToList();
+            return Ok(result);
+        }
+
         /// <summary>
         /// Chooses the response for a failed CA creation: the exception's own message when the
         /// operator can act on it, and the sanitized 500 otherwise.
@@ -731,12 +989,9 @@ namespace ModularCA.API.Controllers.v1.Admin
 
             // If the certificate is not bound to any CertificateAuthorities row, fall back
             // to denying — admin callers should never reach here through an unbound cert.
-            var ca = await _db.CertificateAuthorities
-                .AsNoTracking()
-                .Where(c => c.CertificateId == certificateId)
-                .Select(c => new { c.SpaceId })
-                .FirstOrDefaultAsync();
-            return ca != null && fence.Allows(ca.SpaceId);
+            // The CA whose certificate it is, current or an earlier one a renewal superseded.
+            var owner = IssuerChainResolver.OwnerOf(_db, certificateId);
+            return owner != null && fence.Allows(owner.SpaceId);
         }
 
         /// <summary>

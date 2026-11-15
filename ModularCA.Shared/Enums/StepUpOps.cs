@@ -24,6 +24,12 @@ public static class StepUpOps
     public const string UnholdCert = "unhold-cert";
     /// <summary>Recording a serial as revoked for a CA with no certificate row behind it (a tombstone).</summary>
     public const string RevokeSerial = "revoke-serial";
+    /// <summary>
+    /// Revoking, in one act, every serial the signer reports missing from a CA's refused CRL.
+    /// Not the operation of revoking one serial or the ones selected: a token for those does
+    /// not reach it.
+    /// </summary>
+    public const string RevokeAllMissingSerials = "revoke-all-missing-serials";
     /// <summary>Adopting a certificate supplied from outside as a row of the CA whose key signed it.</summary>
     public const string AdoptCertificate = "adopt-certificate";
     /// <summary>Acknowledging the standing notice that the instance runs from an earlier or copied state.</summary>
@@ -98,6 +104,12 @@ public static class StepUpOps
     /// answers unauthorized for every request, which is exactly how this operation came to exist.
     /// </summary>
     public const string ReissueInfrastructureCerts = "reissue-infrastructure-certs";
+
+    /// <summary>
+    /// Renewing a CA's own certificate over the key it has: a new certificate that everything the
+    /// CA issues from then on names as its issuer. Gated like creating the CA, and bound to the CA.
+    /// </summary>
+    public const string RenewCaCertificate = "renew-ca-certificate";
 
     // Profile management
     public const string UpdateSigningProfile = "update-signing-profile";
@@ -283,7 +295,7 @@ public static class StepUpOps
         SwitchBadge,
         ManageKerberosRealm,
         RevokeCert, HoldCert, UnholdCert,
-        RevokeSerial, AdoptCertificate, AcknowledgeContinuityEvent,
+        RevokeSerial, RevokeAllMissingSerials, AdoptCertificate, AcknowledgeContinuityEvent,
         RevokeSelfCert,
         ReissueCert,
         ExportCert,
@@ -296,7 +308,7 @@ public static class StepUpOps
         AssignRole, UnassignRole,
         ResetPassword, ResetMfa, ChangePassword, ChangeEmail,
         CreateBackup, RestoreBackup, SetBackupPassword, ChangeBackupEncryptionMode,
-        CreateCa, UpdateCa, RevokeCa, ReissueInfrastructureCerts, CreateSshCa, DisableSshCa,
+        CreateCa, UpdateCa, RevokeCa, ReissueInfrastructureCerts, RenewCaCertificate, CreateSshCa, DisableSshCa,
         UpdateSigningProfile, DeleteSigningProfile,
         UpdateCertProfile, DeleteCertProfile,
         UpdateRequestProfile, DeleteRequestProfile,

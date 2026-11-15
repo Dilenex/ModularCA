@@ -176,6 +176,8 @@ public sealed partial class InProcessSigningService : ISigningService, IAsyncDis
         else
             resolved = await ResolveAsync(key, context, JudgeSign, JudgePending, cancellationToken);
         var refusal = resolved.Refusal ?? JudgeData(resolved, key, algorithm, data, context);
+        if (refusal == null && context.Purpose == SigningPurpose.CaCertificateRenewal)
+            refusal = await JudgeCaCertificateRenewalAsync(resolved.Owner!, algorithm, data, context, cancellationToken);
         Func<byte[], Task>? journalRecord = null;
         if (refusal == null && _journal != null)
             (journalRecord, refusal) = await JudgeJournalAsync(resolved, data, context, cancellationToken);
@@ -253,7 +255,7 @@ public sealed partial class InProcessSigningService : ISigningService, IAsyncDis
         {
             var certificate = pending != null
                 ? (SignedDataTypes.CertificationRequestInfo(data) == null ? SignedDataTypes.TbsCertificate(data) : null)
-                : owner!.Kind == KeyKind.Ca && context.Purpose == SigningPurpose.Certificate ? SignedDataTypes.TbsCertificate(data) : null;
+                : owner!.Kind == KeyKind.Ca && context.Purpose is SigningPurpose.Certificate or SigningPurpose.CaCertificateRenewal ? SignedDataTypes.TbsCertificate(data) : null;
             if (certificate != null)
             {
                 journal.EnsureAvailable();
@@ -1070,7 +1072,7 @@ public sealed partial class InProcessSigningService : ISigningService, IAsyncDis
         var permitted = owner.Kind switch
         {
             KeyKind.Ca => context.Purpose is SigningPurpose.Certificate or SigningPurpose.Crl or SigningPurpose.Ocsp
-                                             or SigningPurpose.Scep or SigningPurpose.Cmp,
+                                             or SigningPurpose.Scep or SigningPurpose.Cmp or SigningPurpose.CaCertificateRenewal,
             KeyKind.OcspResponder => context.Purpose is SigningPurpose.Ocsp,
             KeyKind.Tsa => context.Purpose is SigningPurpose.Tsa,
             KeyKind.CmpSigner => context.Purpose is SigningPurpose.Cmp,
@@ -1135,6 +1137,8 @@ public sealed partial class InProcessSigningService : ISigningService, IAsyncDis
         return (owner.Kind, context.Purpose) switch
         {
             (KeyKind.Ca, SigningPurpose.Certificate) => JudgeCertificate(owner, algorithm, data),
+            // Typed by JudgeCaCertificateRenewalAsync, which reads the CA being renewed.
+            (KeyKind.Ca, SigningPurpose.CaCertificateRenewal) => null,
             (KeyKind.Ca, SigningPurpose.Crl) => JudgeCrl(owner, algorithm, data),
             (KeyKind.Ca or KeyKind.OcspResponder, SigningPurpose.Ocsp) => JudgeOcspResponse(owner, data),
             (KeyKind.Ca, SigningPurpose.Scep) => SignedDataTypes.SignedAttributes(data, SignedDataTypes.IdData, SignedDataTypes.ScepMessageType) != null

@@ -6,6 +6,26 @@ semantic versioning: a new capability is a minor release, a fix is a patch.
 
 ## [Unreleased]
 
+### 0.4.5-dev.1.6 — 2026-11-13
+
+The seventh test build of 0.4.5. Since 0.4.5-dev.1.5:
+
+- **A CA's certificate can be renewed, keeping its key**, and each CA shows how long its key and
+  certificate have left. See "CA certificate renewal" and "CA lifetime notices" under Added.
+- **Revoking a CA revokes every certificate it has over that key.**
+- **An expiring or expired CA certificate no longer makes the node answer 503.** It is a notice
+  and a security alert. See the upgrade notes if monitoring relied on the 503.
+- **A large restore of revocations from the journal is audited in batches**: one record for each
+  500 above 1,000 for a CA. A record each did not finish 100,000 in 40 minutes in testing; in
+  batches it takes about a minute.
+- **"Revoke all" for the serials missing from a refused CRL is an act of its own**, confirmed by
+  typing the CA's name, with its own second-factor prompt.
+- **One migration, `CaCertificates`**, additive: one empty table.
+
+The hub's contract is unchanged at 1.2. Nothing in this build has run on Linux or been looked at
+in a browser. Not run at all: a backup and restore of an instance with a renewed CA, and a full
+EST re-enrollment after a renewal.
+
 ### 0.4.5-dev.1.5 — 2026-11-13
 
 The sixth test build of 0.4.5, and the first with the signer's journal. Since 0.4.5-dev.1.4:
@@ -121,6 +141,30 @@ what the build is for.
 
 **Upgrade notes**
 
+- **A CA certificate within 30 days of its end, or past it, no longer makes `/health/ready`
+  answer 503.** An expiring CA should not take a node out of a load balancer. Monitoring that
+  relied on the 503 must read `checks.caLifecycle.status` (`attention`), or
+  `checks.keystore.expiringCaCerts` and `expiredCaCerts`, or take the new security alerts
+  `CaCertificateExpiring` and `CaCertificateExpired`. No alert was raised for a CA certificate
+  before; one now is, at 30 days, at 7 and when it has expired.
+- **A fifth migration, `CaCertificates`**, additive: one empty table, the history of each CA's
+  certificates. Each existing CA's certificate is recorded in it shortly after the first start,
+  in any mode but DR, where it waits.
+- **Revoking, holding or releasing a CA certificate now reaches every certificate that CA has
+  over the same key.** Before a CA has been renewed there is only one, so nothing changes until
+  then.
+- **Three new settings** under Settings, Security, "CA Lifecycle Notices", with the same
+  defaults on every install. `/health/ready` gains `checks.caLifecycle`, which is always
+  healthy.
+- **Upgrade the signer with the node.** An older signer refuses a CA certificate renewal.
+- **The audit trail of a large restore of revocations is in batches.** A search for one serial
+  finds its batch record with the new "Revoked serial" filter on the audit list
+  (`GET /api/v1/admin/audit?revokedSerial=`); the certificate's own audit tab does not show it.
+- **`POST …/revoked-serials/bulk` refuses a request that names every missing serial.** Use the
+  new `…/revoked-serials/missing-from-crl/revoke-all`, which has its own second-factor prompt
+  (`revoke-all-missing-serials`).
+- **New audit actions:** `CaCertificateRenewed`, `RevocationsMergedFromJournalBatch`,
+  `AllMissingSerialsRevoked`, `RevokedSerialsRecordedBatch`.
 - **A fourth migration, `SignerFactQueue`**, additive: one table, the queue of facts the node
   hands to the signer.
 - **The signer's journal begins at the first start after the upgrade,** in `signer/journal`
@@ -224,6 +268,39 @@ what the build is for.
 
 **Added**
 
+- **CA certificate renewal.** A CA's certificate can be renewed keeping its key: the same key,
+  subject and extensions, a new serial and a new validity. A root renews itself; an intermediate
+  is renewed by its parent in this instance.
+  - **Guarded like creating a CA:** step-up, a key ceremony where the CA's scope requires one,
+    an audit record, and a check at the signer, which refuses another key, another subject, a
+    widened path length, a changed extension, or a validity outside the parent's. One approval
+    renews once.
+  - **What does not change:** the key, the name, and every CRL, OCSP and CA-issuer address in
+    certificates already issued. The earlier certificate stays valid until it expires and is
+    not revoked. A certificate issued before the renewal validates under the new CA certificate
+    and one issued after validates under the old.
+  - **What is yours to do after renewing a root:** give the new root certificate to everyone
+    who trusts the old one, before the old one expires. The product cannot do that. Both are on
+    the CA's page. Then reissue the CA's OCSP, timestamp and CMP certificates, which were made
+    to end with the old CA certificate.
+  - **The system signing CA** can be renewed the same way. Its bootstrap certificate runs for a
+    century, so there is nothing to renew for a long time, and its page says so.
+  - **Validity:** 1 to 50 years. Beyond 25 for a root or 10 for an intermediate the dialog
+    says it is longer than common practice; that is practice, not a standard's requirement.
+    Renewing an RSA key under 3072 bits to past 2030 needs an acknowledgment, which a
+    ceremony's approvers see.
+  - **Not included:** a new key for an existing CA, a changed subject, cross-certificates,
+    renewal by a CA outside this instance, and renewal on a schedule.
+- **CA lifetime notices.** Each CA's page shows how long its key has been signing, when its
+  certificate ends, the latest expiry among the certificates it has issued, and the longest
+  validity its profiles allow. A notice is raised when the certificate nears its end (two years
+  ahead for a root and one for an intermediate, then a warning at 30 days and critical at 7),
+  when its profiles ask for more time than it has left (issued certificates are shortened, as
+  before), when its certificate outlives its parent's, and, if a usage period is set, when its
+  key has signed for longer than that. They appear on the CA's page, under System Health and,
+  once pressing, on the dashboard and as a security alert. Nothing is refused.
+- **Revoking a CA revokes every certificate it has over the same key**, and so do a hold and
+  its release. The console lists them before the action is confirmed.
 - **The signer's issuance journal.** An append-only, hash-chained record, in files, of what
   the signer signed and of certain facts the node tells it, so that a database that goes back
   in time no longer takes the knowledge of what was issued and revoked with it. This is its
@@ -263,8 +340,15 @@ what the build is for.
   - **Cost, measured on a development machine:** at the signer alone, one caller signs 215
     certificates a second with the journal where it signed 739 without. Verifying a journal of
     1 GiB at start took about 7 seconds, during which the signer signs as usual. Restoring
-    100,000 lost revocations took 45 seconds of database work, and their audit records several
-    minutes more. See `docs/architecture/signer-journal.md`, "Measuring".
+    100,000 lost revocations took about a minute and 3 MiB of audit trail, in batch records.
+    See `docs/architecture/signer-journal.md`, "Measuring".
+  - **A large restore is audited in batches.** Up to 1,000 revocations restored for a CA in one
+    pass, a `RevocationMergedFromJournal` record each. Above that, one
+    `RevocationsMergedFromJournalBatch` record for each 500, with every serial, date, reason and
+    source in it. The audit list's "Revoked serial" filter finds either.
+  - **"Revoke all" for the serials missing from a refused CRL** is set apart from the list,
+    confirmed by typing the CA's name, has its own second-factor prompt, and is refused when
+    the list changed after it was read.
 - **A restore and a running node keep each other out.** A restore replaces the application
   database, and until now only the deploy guide said to stop the node first. The instance now
   enforces it, with a PostgreSQL advisory lock in the application database and no schema change.

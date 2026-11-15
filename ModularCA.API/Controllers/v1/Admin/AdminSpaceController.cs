@@ -116,9 +116,14 @@ public partial class AdminSpaceController(
             .Distinct()
             .CountAsync();
 
+        // The CA certificates of the space: each CA's current one, and the earlier ones a renewal superseded.
         var certCount = await _db.Certificates
             .Where(c => c.CertificateAuthority != null && c.CertificateAuthority.SpaceId == id)
             .CountAsync();
+        certCount += await (from history in _db.CaCertificates
+                            join ca in _db.CertificateAuthorities on history.CertificateAuthorityId equals ca.Id
+                            where ca.SpaceId == id && ca.CertificateId != history.CertificateId
+                            select history.Id).CountAsync();
 
         return Ok(new
         {

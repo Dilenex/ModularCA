@@ -91,6 +91,7 @@ public sealed class SpaceFenceGuardTests
         ["AdminCaController.GetHierarchy"] = "SpaceFence.Predicate",
         ["AdminCaController.GetSystemCaCertificates"] = "public: the system signing CA's certificate, shown to every CA auditor",
         ["AdminCaServiceUrlController.GetAll"] = "SpaceFence.Predicate over the owning CA",
+        ["AdminRevocationController.GetRevocationScope"] = "SpaceFence.Allows on the CA that owns the certificate; any other certificate through EnforceSpaceFenceForCertAsync",
         ["AdminCertPermissionManagerController.GetBySerial"] = "SpaceFence.Allows on the certificate's CA; no CA needs instance-wide",
         ["AdminCertProfileController.GetAll"] = "SpaceFence.ProfilePredicate, then profile.* grants",
         ["AdminCertProfileController.GetById"] = "SpaceFence.AllowsProfile (N1)",

@@ -923,6 +923,70 @@ public class PostgresUpgradeHarnessTests
     }
 
     /// <summary>
+    /// <c>CaCertificates</c> (0.4.5): the table of the certificates a CA has had starts empty and
+    /// nothing else moves, so a CA that was never renewed is what it was before the upgrade.
+    /// </summary>
+    [Trait("Category", "PostgreSQL")]
+    [Trait(TestTier.Name, TestTier.Slow)]
+    [Collection(PostgresLane.Three)]
+    public sealed class CaCertificates
+    {
+        /// <summary>The migration before <c>CaCertificates</c>.</summary>
+        private const string Before = "SignerFactQueue";
+        private const string Migration = "CaCertificates";
+
+        [RequiresEnvironmentFact(ServerVariable)]
+        public async Task An_existing_ca_keeps_its_certificate_and_the_history_table_starts_empty()
+        {
+            var server = Environment.GetEnvironmentVariable(ServerVariable)!;
+            var appName = $"modularca_upgrade_app_{Guid.NewGuid().ToString("N")[..12]}";
+            await CreateDatabaseAsync(server, appName);
+            try
+            {
+                await using var app = CreateApp(WithDatabase(server, appName));
+                await MigrateThroughAsync(app, Before);
+
+                // A CA as an install made before the table holds it: a certificate row and the CA row that names it.
+                var material = ModularCA.Tests.TestUtils.TestCaMaterial.CreateCa("CN=Upgraded Root, O=ModularCA");
+                var certificateId = Guid.NewGuid();
+                var caId = Guid.NewGuid();
+                app.Certificates.Add(new ModularCA.Shared.Entities.CertificateEntity
+                {
+                    CertificateId = certificateId,
+                    SerialNumber = ModularCA.Shared.Utils.CertificateUtil.FormatSerialNumber(material.Certificate.SerialNumber),
+                    SubjectDN = material.SubjectDn, Issuer = material.SubjectDn, IsCA = true,
+                    Pem = ModularCA.Shared.Utils.CertificateUtil.ConvertDerToPem(material.Certificate.GetEncoded(), "CERTIFICATE"),
+                    RawCertificate = material.Certificate.GetEncoded(),
+                    NotBefore = material.Certificate.NotBefore, NotAfter = material.Certificate.NotAfter,
+                });
+                await app.SaveChangesAsync();
+                app.CertificateAuthorities.Add(new ModularCA.Shared.Entities.CertificateAuthorityEntity
+                {
+                    Id = caId, Name = "Upgraded Root", Label = "upgraded-root", CertificateId = certificateId, IsEnabled = true,
+                });
+                await app.SaveChangesAsync();
+                app.ChangeTracker.Clear();
+                Assert.Equal("0", await TextAsync(app, "SELECT count(*)::text FROM information_schema.tables WHERE table_name = 'CaCertificates'"));
+
+                await MigrateThroughAsync(app, Migration);
+
+                Assert.Equal("0", await TextAsync(app, "SELECT count(*)::text FROM \"CaCertificates\""));
+                Assert.Equal(certificateId, (await app.CertificateAuthorities.AsNoTracking().SingleAsync(c => c.Id == caId)).CertificateId);
+                // With no row, the CA's one certificate is the one its row names, and it owns it.
+                Assert.Equal(caId, ModularCA.Core.Helpers.IssuerChainResolver.OwnerOf(app, certificateId)?.CaId);
+                Assert.Equal(new[] { certificateId }, await ModularCA.Core.Helpers.IssuerChainResolver.CaCertificateIdsAsync(app, caId));
+
+                await MigrateToLatestAsync(app, "application");
+            }
+            finally
+            {
+                NpgsqlConnection.ClearAllPools();
+                await DropDatabaseAsync(server, appName);
+            }
+        }
+    }
+
+    /// <summary>
     /// <c>TighterDefaults</c> (0.4.5): an installed instance keeps every setting it has stored, and
     /// only a new install gets the new defaults.
     /// </summary>

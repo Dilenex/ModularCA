@@ -459,7 +459,7 @@ public class UserCertificateController(
     /// are not permitted through this self-service path.
     /// <para>
     /// A certificate an administrator has put on hold can be revoked permanently here, under the
-    /// same rules as the admin revoke (RFC 5280 §5.3.1, <see cref="ICertificateRevocationService.RevokeCertificateAsync"/>):
+    /// same rules as the admin revoke (RFC 5280 §5.3.1, <see cref="ICertificateRevocationService.RevokeCertificateAsync(Guid?, string?, RevocationReason, DateTime?)"/>):
     /// the reason changes in place and the response carries <c>previousReason</c> =
     /// <c>CertificateHold</c>. A certificate already revoked permanently answers 409 with
     /// <see cref="ModularCA.Shared.Errors.ErrorCodes.CertificateRevocationState"/>.

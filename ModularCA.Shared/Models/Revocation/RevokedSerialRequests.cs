@@ -45,6 +45,26 @@ namespace ModularCA.Shared.Models.Revocation
         public string Note { get; set; } = string.Empty;
     }
 
+    /// <summary>
+    /// Body of <c>POST /api/v1/admin/authorities/{caId}/revoked-serials/missing-from-crl/revoke-all</c>:
+    /// what the administrator was shown and confirmed. The server works the list out again and
+    /// refuses when either figure no longer matches, so nobody revokes a list that changed
+    /// after they read it. The request names no serial.
+    /// </summary>
+    public class RevokeAllMissingSerialsRequest
+    {
+        /// <summary>How many serials the administrator was shown as missing with no certificate held: the number that will be recorded.</summary>
+        [Range(1, int.MaxValue)]
+        public int ConfirmedCount { get; set; }
+
+        /// <summary>The number of the journaled CRL the list was taken from (<c>journaledCrlNumber</c> of the list).</summary>
+        public long JournaledCrlNumber { get; set; }
+
+        /// <summary>Why they are revoked without their certificates. Required.</summary>
+        [Required, MaxLength(1000)]
+        public string Note { get; set; } = string.Empty;
+    }
+
     /// <summary>One serial of a <see cref="RecordRevokedSerialsRequest"/>.</summary>
     public class RevokedSerialItem
     {

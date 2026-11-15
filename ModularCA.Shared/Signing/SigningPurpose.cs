@@ -79,4 +79,18 @@ public enum SigningPurpose
     /// disabled. It permits that call and nothing else, and no key is used under it.
     /// </summary>
     JournalFact,
+
+    /// <summary>
+    /// Sign a new certificate for an existing CA over the key it already has
+    /// (<c>docs/architecture/ca-certificate-renewal.md</c>): a root's key signs its own new
+    /// certificate, a parent's key signs its child's. It permits that signature and nothing else.
+    /// The signer finds the CA being renewed from the subject key, which must be the key of that
+    /// CA's current certificate and a key it holds, and signs only a certificate that repeats the
+    /// current one in everything but its serial, its validity and, for an intermediate, where its
+    /// issuer is found (authority key identifier, CRL distribution points, authority information
+    /// access). The context names the CA whose key signs; a ceremony it names must be an approved
+    /// <c>RenewCaCertificate</c> ceremony for the CA being renewed, and one is required where the
+    /// CA's scope requires a key ceremony.
+    /// </summary>
+    CaCertificateRenewal,
 }

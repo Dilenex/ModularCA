@@ -27,11 +27,13 @@ interface ConfirmModalProps {
     confirmClass?: string;
     tone?: ConfirmTone;
     loading?: boolean;
+    /** Keeps the confirm button disabled until the caller's own condition holds, e.g. a name typed into the message. */
+    confirmDisabled?: boolean;
     onConfirm: () => void;
     onCancel: () => void;
 }
 
-const ConfirmModal: React.FC<ConfirmModalProps> = ({ isOpen, title, message, confirmLabel = 'Confirm', confirmClass, tone = 'crit', loading, onConfirm, onCancel }) => {
+const ConfirmModal: React.FC<ConfirmModalProps> = ({ isOpen, title, message, confirmLabel = 'Confirm', confirmClass, tone = 'crit', loading, confirmDisabled, onConfirm, onCancel }) => {
     const cancelRef = useRef<HTMLButtonElement | null>(null);
     const openerRef = useRef<Element | null>(null);
     const titleId = React.useId();
@@ -64,8 +66,8 @@ const ConfirmModal: React.FC<ConfirmModalProps> = ({ isOpen, title, message, con
                         className="px-4 py-2 text-sm font-medium bg-raised border border-line-strong text-ink rounded hover:bg-hover transition-colors">
                         Cancel
                     </button>
-                    <button onClick={onConfirm} disabled={loading}
-                        className={confirmClass || TONE_CLASS[tone]}>
+                    <button onClick={onConfirm} disabled={loading || confirmDisabled}
+                        className={`${confirmClass || TONE_CLASS[tone]} disabled:opacity-50 disabled:cursor-not-allowed`}>
                         {loading ? 'Processing...' : confirmLabel}
                     </button>
                 </div>

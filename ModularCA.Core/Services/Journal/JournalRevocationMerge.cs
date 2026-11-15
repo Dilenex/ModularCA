@@ -118,7 +118,9 @@ public interface IJournalRevocationMerge
 /// <b>How.</b> In batches of <see cref="BatchSize"/>, each its own save, so a CA with very many
 /// entries holds no long transaction and a pass that is interrupted goes on where the database
 /// then stands: an entry already made again is found revoked and passed over. Each revocation
-/// made is audited (<see cref="AuditActionType.RevocationMergedFromJournal"/>), each pass that
+/// made is audited (<see cref="AuditActionType.RevocationMergedFromJournal"/>; above
+/// <see cref="IndividualAuditLimit"/> for the CA and pass, each batch with one
+/// <see cref="AuditActionType.RevocationsMergedFromJournalBatch"/>), each pass that
 /// made any writes one summary (<see cref="AuditActionType.JournalRevocationMergeCompleted"/>)
 /// and one continuity event that stands as a notice until an administrator acknowledges it. The
 /// save queues a <c>Revocation</c> fact for each, as for any revocation.
@@ -142,6 +144,31 @@ public sealed class JournalRevocationMerge(
 
     /// <summary>How many entries are looked up and written in one save.</summary>
     public const int BatchSize = 500;
+
+    /// <summary>
+    /// Up to and including this many revocations to make for one CA in one pass, each is audited
+    /// with a record of its own (<see cref="AuditActionType.RevocationMergedFromJournal"/>).
+    /// Above it, each save of <see cref="BatchSize"/> is audited with one record that carries
+    /// its serials (<see cref="AuditActionType.RevocationsMergedFromJournalBatch"/>): a record
+    /// of the audit trail is a link of its hash chain, written one at a time, and a hundred
+    /// thousand of them take minutes and close to a hundred megabytes.
+    /// </summary>
+    /// <remarks>
+    /// A constant and not a setting: the journal's settings are the signer's, and this is the
+    /// node's. The pass decides from what it counted missing before it wrote anything. A pass
+    /// that was interrupted is not continued in its form: the next pass counts what is still
+    /// missing and decides again, and only a pass that reached its end writes a summary.
+    /// </remarks>
+    public const int DefaultIndividualAuditLimit = 1000;
+
+    /// <summary>The limit in force; <see cref="DefaultIndividualAuditLimit"/> unless a test sets another.</summary>
+    public int IndividualAuditLimit { get; init; } = DefaultIndividualAuditLimit;
+
+    /// <summary>The summary's <c>AuditForm</c> when each revocation has a record of its own.</summary>
+    public const string AuditFormIndividual = "individual";
+
+    /// <summary>The summary's <c>AuditForm</c> when each batch has one record.</summary>
+    public const string AuditFormBatch = "batch";
 
     /// <summary>How many entries are asked of the signer in one call.</summary>
     public const int PageSize = 2000;
@@ -255,168 +282,217 @@ public sealed class JournalRevocationMerge(
         TimeSpan? longestValidity = null;
         state.Set(new CaMergeStatus(caId, ca.Name, deferred ? JournalMergeState.Pending : JournalMergeState.Running, 0, total, total, DateTime.UtcNow, null));
 
-        var page = first;
-        while (true)
+        // The list is gone through twice when anything is missing: once to count, writing
+        // nothing, and once to write. The count decides, before the first write, in which form
+        // the pass is audited, so a pass is audited in one form throughout.
+        var batched = false;
+        var batchRecords = 0;
+        async Task RunAsync(bool counting)
         {
-            foreach (var batch in page.Entries.Chunk(BatchSize))
+            looked = 0;
+            pending = 0;
+            passedOverHolds = 0;
+            var page = first;
+            while (true)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var now = DateTime.UtcNow;
-                // One query for the certificates of a whole batch and one for its tombstones, each by
-                // the serials as the tables store them (upper-case hex; with one or two leading zeros
-                // for a row an older build wrote), so that the serial indexes answer them.
-                var forms = batch.SelectMany(e => new[] { e.Serial, "0" + e.Serial, "00" + e.Serial }).ToList();
-                // Only the columns the comparison needs are read, and nothing is tracked: at an
-                // ordinary start every entry is found as it should be and no row is loaded whole.
-                var known = await db.Certificates.AsNoTracking()
-                    .Where(c => EF.Parameter(forms).Contains(c.SerialNumber))
-                    .Where(c => (c.IssuerCertificateId != null && scope.Contains(c.IssuerCertificateId.Value))
-                             || (c.IssuerCertificateId == null && c.Issuer == issuerDn))
-                    .Select(c => new KnownCertificate(c.CertificateId, c.SerialNumber, c.Revoked, c.RevocationReason, c.RevocationDate, c.NotAfter))
-                    .ToListAsync(cancellationToken);
-                var bySerial = known.GroupBy(c => Plain(c.SerialNumber)).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
-                var changes = new List<(Guid CertificateId, bool Revoke, string? Reason, DateTime? Date)>();
-                var tombstoned = (await db.RevokedSerialTombstones.AsNoTracking()
-                        .Where(t => scope.Contains(t.CaCertificateId) && EF.Parameter(forms).Contains(t.SerialNumber))
-                        .Select(t => t.SerialNumber)
-                        .ToListAsync(cancellationToken))
-                    .Select(Plain).ToHashSet(StringComparer.Ordinal);
-
-                var made = new List<(SignerJournaledRevocation Entry, string What, Guid? CertificateId)>();
-                foreach (var entry in batch)
+                foreach (var batch in page.Entries.Chunk(BatchSize))
                 {
-                    var reason = ReasonName(entry);
-                    if (bySerial.TryGetValue(entry.Serial, out var rows))
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var now = DateTime.UtcNow;
+                    // One query for the certificates of a whole batch and one for its tombstones, each by
+                    // the serials as the tables store them (upper-case hex; with one or two leading zeros
+                    // for a row an older build wrote), so that the serial indexes answer them.
+                    var forms = batch.SelectMany(e => new[] { e.Serial, "0" + e.Serial, "00" + e.Serial }).ToList();
+                    // Only the columns the comparison needs are read, and nothing is tracked: at an
+                    // ordinary start every entry is found as it should be and no row is loaded whole.
+                    var known = await db.Certificates.AsNoTracking()
+                        .Where(c => EF.Parameter(forms).Contains(c.SerialNumber))
+                        .Where(c => (c.IssuerCertificateId != null && scope.Contains(c.IssuerCertificateId.Value))
+                                 || (c.IssuerCertificateId == null && c.Issuer == issuerDn))
+                        .Select(c => new KnownCertificate(c.CertificateId, c.SerialNumber, c.Revoked, c.RevocationReason, c.RevocationDate, c.NotAfter))
+                        .ToListAsync(cancellationToken);
+                    var bySerial = known.GroupBy(c => Plain(c.SerialNumber)).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+                    var changes = new List<(Guid CertificateId, bool Revoke, string? Reason, DateTime? Date)>();
+                    var tombstoned = (await db.RevokedSerialTombstones.AsNoTracking()
+                            .Where(t => scope.Contains(t.CaCertificateId) && EF.Parameter(forms).Contains(t.SerialNumber))
+                            .Select(t => t.SerialNumber)
+                            .ToListAsync(cancellationToken))
+                        .Select(Plain).ToHashSet(StringComparer.Ordinal);
+
+                    var made = new List<(SignerJournaledRevocation Entry, string What, Guid? CertificateId)>();
+                    foreach (var entry in batch)
                     {
-                        foreach (var row in rows)
+                        var reason = ReasonName(entry);
+                        if (bySerial.TryGetValue(entry.Serial, out var rows))
                         {
-                            if (!row.Revoked)
+                            foreach (var row in rows)
                             {
-                                // An expired certificate is on no CRL: there is nothing to give back.
-                                if (row.NotAfter <= now)
-                                    continue;
-                                if (deferred) { pending++; continue; }
-                                changes.Add((row.CertificateId, true, reason, entry.RevokedAtUtc));
-                                made.Add((entry, "certificate", row.CertificateId));
+                                if (!row.Revoked)
+                                {
+                                    // An expired certificate is on no CRL: there is nothing to give back.
+                                    if (row.NotAfter <= now)
+                                        continue;
+                                    if (counting) { pending++; continue; }
+                                    changes.Add((row.CertificateId, true, reason, entry.RevokedAtUtc));
+                                    made.Add((entry, "certificate", row.CertificateId));
+                                }
+                                else
+                                {
+                                    // Revoked stays revoked. The earlier date stands, and a hold the journal has as permanent becomes permanent.
+                                    var permanent = !entry.Hold && string.Equals(row.RevocationReason, HoldReason, StringComparison.OrdinalIgnoreCase);
+                                    var earlier = row.RevocationDate is not DateTime at || entry.RevokedAtUtc < at.AddSeconds(-1);
+                                    if (!permanent && !earlier)
+                                        continue;
+                                    if (row.NotAfter <= now)
+                                        continue;
+                                    if (counting) { pending++; continue; }
+                                    changes.Add((row.CertificateId, false, permanent ? reason : null, earlier ? entry.RevokedAtUtc : null));
+                                    made.Add((entry, permanent ? "hold made permanent" : "earlier date", row.CertificateId));
+                                }
                             }
-                            else
-                            {
-                                // Revoked stays revoked. The earlier date stands, and a hold the journal has as permanent becomes permanent.
-                                var permanent = !entry.Hold && string.Equals(row.RevocationReason, HoldReason, StringComparison.OrdinalIgnoreCase);
-                                var earlier = row.RevocationDate is not DateTime at || entry.RevokedAtUtc < at.AddSeconds(-1);
-                                if (!permanent && !earlier)
-                                    continue;
-                                if (row.NotAfter <= now)
-                                    continue;
-                                if (deferred) { pending++; continue; }
-                                changes.Add((row.CertificateId, false, permanent ? reason : null, earlier ? entry.RevokedAtUtc : null));
-                                made.Add((entry, permanent ? "hold made permanent" : "earlier date", row.CertificateId));
-                            }
-                        }
-                        continue;
-                    }
-
-                    if (tombstoned.Contains(entry.Serial))
-                        continue;
-                    if (entry.Hold)
-                    {
-                        // A hold on a certificate the database does not hold: a tombstone cannot be released, so none is made.
-                        passedOverHolds++;
-                        continue;
-                    }
-                    if (deferred) { pending++; continue; }
-                    longestValidity ??= await RevokedSerialService.LongestValidityAsync(db, caId, cancellationToken);
-                    listedUntilBase ??= ca.Row.NotAfter;
-                    var until = entry.RevokedAtUtc.Add(longestValidity.Value);
-                    if (listedUntilBase is DateTime caEnd && caEnd > entry.RevokedAtUtc && caEnd < until)
-                        until = caEnd;
-                    db.RevokedSerialTombstones.Add(new RevokedSerialTombstoneEntity
-                    {
-                        CaCertificateId = caCertificateId,
-                        CertificateAuthorityId = caId,
-                        IssuerDN = issuerDn,
-                        SerialNumber = entry.Serial,
-                        RevocationDate = entry.RevokedAtUtc,
-                        RevocationReason = reason,
-                        ListedUntil = until,
-                        Note = $"Restored from the signer's journal after the database went back in time ({SourceText(entry)}).",
-                        CreatedByUserId = null,
-                        CreatedByUsername = Actor,
-                        CreatedAt = now,
-                    });
-                    tombstoned.Add(entry.Serial);
-                    made.Add((entry, "serial without a certificate", null));
-                }
-
-                if (changes.Count > 0)
-                {
-                    // The rows to change, and only those, are loaded to be changed.
-                    var ids = changes.Select(c => c.CertificateId).Distinct().ToList();
-                    var rows = await db.Certificates.Where(c => ids.Contains(c.CertificateId)).ToDictionaryAsync(c => c.CertificateId, cancellationToken);
-                    foreach (var change in changes)
-                    {
-                        if (!rows.TryGetValue(change.CertificateId, out var row))
                             continue;
-                        if (change.Revoke)
-                            row.Revoked = true;
-                        if (change.Reason != null)
-                            row.RevocationReason = change.Reason;
-                        if (change.Date is DateTime date)
-                            row.RevocationDate = date;
-                    }
-                }
+                        }
 
-                if (made.Count > 0)
-                {
-                    try
-                    {
-                        await db.SaveChangesAsync(cancellationToken);
-                    }
-                    catch (DbUpdateException ex) when (PostgresErrorUtil.IsUniqueViolation(ex))
-                    {
-                        // Another process made one of them at the same moment. Nothing of this batch was saved; the next pass sees what is there.
-                        db.ChangeTracker.Clear();
-                        throw;
-                    }
-                    db.ChangeTracker.Clear();
-                    foreach (var (entry, what, certificateId) in made)
-                    {
-                        MetricsService.CertsRevoked.WithLabels(issuerDn, ReasonName(entry)).Inc();
-                        var details = new
+                        if (tombstoned.Contains(entry.Serial))
+                            continue;
+                        if (entry.Hold)
                         {
+                            // A hold on a certificate the database does not hold: a tombstone cannot be released, so none is made.
+                            passedOverHolds++;
+                            continue;
+                        }
+                        if (counting) { pending++; continue; }
+                        longestValidity ??= await RevokedSerialService.LongestValidityAsync(db, caId, cancellationToken);
+                        listedUntilBase ??= ca.Row.NotAfter;
+                        var until = entry.RevokedAtUtc.Add(longestValidity.Value);
+                        if (listedUntilBase is DateTime caEnd && caEnd > entry.RevokedAtUtc && caEnd < until)
+                            until = caEnd;
+                        db.RevokedSerialTombstones.Add(new RevokedSerialTombstoneEntity
+                        {
+                            CaCertificateId = caCertificateId,
                             CertificateAuthorityId = caId,
-                            CaName = ca.Name,
+                            IssuerDN = issuerDn,
                             SerialNumber = entry.Serial,
                             RevocationDate = entry.RevokedAtUtc,
-                            Reason = ReasonName(entry),
-                            ReasonCode = entry.Reason,
-                            entry.Hold,
-                            Made = what,
-                            CertificateId = certificateId,
-                            entry.Source,
-                            SourceCrlNumber = entry.Source == "fact" ? (long?)null : entry.SourceNumber,
-                            entry.SourceSeq,
-                            JournaledCrlNumber = page.CrlNumber,
-                            JournaledCrlSeq = page.CrlSeq,
-                        };
-                        if (merged.Count < 200)
-                            merged.Add(new { entry.Serial, entry.Source, entry.SourceSeq, Made = what });
-                        await TryAuditAsync(audit, AuditActionType.RevocationMergedFromJournal, certificateId == null ? "RevokedSerial" : "Certificate",
-                            certificateId?.ToString() ?? entry.Serial, details, caId, ca.SpaceId);
+                            RevocationReason = reason,
+                            ListedUntil = until,
+                            Note = $"Restored from the signer's journal after the database went back in time ({SourceText(entry)}).",
+                            CreatedByUserId = null,
+                            CreatedByUsername = Actor,
+                            CreatedAt = now,
+                        });
+                        tombstoned.Add(entry.Serial);
+                        made.Add((entry, "serial without a certificate", null));
                     }
-                    mergedCount += made.Count;
-                }
-                looked += batch.Length;
-                state.Set(new CaMergeStatus(caId, ca.Name, deferred ? JournalMergeState.Pending : JournalMergeState.Running,
-                    mergedCount, deferred ? pending : Math.Max(0, total - looked), total, DateTime.UtcNow, null));
-            }
 
-            if (page.Entries.Count == 0 || looked >= page.Total)
-                break;
-            page = await signer.JournaledRevocationsAsync(caId, looked, PageSize, cancellationToken)
-                   ?? throw new InvalidOperationException("The signer no longer answers for this CA's journaled revocations.");
-            if (!page.Trusted)
-                throw new InvalidOperationException($"The signer stopped answering from its journal: {page.NotTrustedReason}");
+                    if (changes.Count > 0)
+                    {
+                        // The rows to change, and only those, are loaded to be changed.
+                        var ids = changes.Select(c => c.CertificateId).Distinct().ToList();
+                        var rows = await db.Certificates.Where(c => ids.Contains(c.CertificateId)).ToDictionaryAsync(c => c.CertificateId, cancellationToken);
+                        foreach (var change in changes)
+                        {
+                            if (!rows.TryGetValue(change.CertificateId, out var row))
+                                continue;
+                            if (change.Revoke)
+                                row.Revoked = true;
+                            if (change.Reason != null)
+                                row.RevocationReason = change.Reason;
+                            if (change.Date is DateTime date)
+                                row.RevocationDate = date;
+                        }
+                    }
+
+                    if (made.Count > 0)
+                    {
+                        try
+                        {
+                            await db.SaveChangesAsync(cancellationToken);
+                        }
+                        catch (DbUpdateException ex) when (PostgresErrorUtil.IsUniqueViolation(ex))
+                        {
+                            // Another process made one of them at the same moment. Nothing of this batch was saved; the next pass sees what is there.
+                            db.ChangeTracker.Clear();
+                            throw;
+                        }
+                        db.ChangeTracker.Clear();
+                        foreach (var (entry, what, _) in made)
+                        {
+                            MetricsService.CertsRevoked.WithLabels(issuerDn, ReasonName(entry)).Inc();
+                            if (merged.Count < 200)
+                                merged.Add(new { entry.Serial, entry.Source, entry.SourceSeq, Made = what });
+                        }
+                        if (batched)
+                        {
+                            // One record for what this save made. The serials are in its details, each with
+                            // its date, its reason (a hold is the reason CertificateHold), what was made and
+                            // its source; the record's target is the CA.
+                            batchRecords++;
+                            await TryAuditAsync(audit, AuditActionType.RevocationsMergedFromJournalBatch, "CertificateAuthority", caId.ToString(), new
+                            {
+                                CertificateAuthorityId = caId,
+                                CaName = ca.Name,
+                                Batch = batchRecords,
+                                Count = made.Count,
+                                JournaledCrlNumber = page.CrlNumber,
+                                JournaledCrlSeq = page.CrlSeq,
+                                Revocations = made.Select(m => new
+                                {
+                                    m.Entry.Serial,
+                                    Date = m.Entry.RevokedAtUtc,
+                                    Reason = ReasonName(m.Entry),
+                                    Made = m.What,
+                                    m.CertificateId,
+                                    m.Entry.Source,
+                                    SourceCrlNumber = m.Entry.Source == "fact" ? (long?)null : m.Entry.SourceNumber,
+                                    m.Entry.SourceSeq,
+                                }).ToList(),
+                            }, caId, ca.SpaceId);
+                        }
+                        else foreach (var (entry, what, certificateId) in made)
+                        {
+                            var details = new
+                            {
+                                CertificateAuthorityId = caId,
+                                CaName = ca.Name,
+                                SerialNumber = entry.Serial,
+                                RevocationDate = entry.RevokedAtUtc,
+                                Reason = ReasonName(entry),
+                                ReasonCode = entry.Reason,
+                                entry.Hold,
+                                Made = what,
+                                CertificateId = certificateId,
+                                entry.Source,
+                                SourceCrlNumber = entry.Source == "fact" ? (long?)null : entry.SourceNumber,
+                                entry.SourceSeq,
+                                JournaledCrlNumber = page.CrlNumber,
+                                JournaledCrlSeq = page.CrlSeq,
+                            };
+                            await TryAuditAsync(audit, AuditActionType.RevocationMergedFromJournal, certificateId == null ? "RevokedSerial" : "Certificate",
+                                certificateId?.ToString() ?? entry.Serial, details, caId, ca.SpaceId);
+                        }
+                        mergedCount += made.Count;
+                    }
+                    looked += batch.Length;
+                    state.Set(new CaMergeStatus(caId, ca.Name, deferred ? JournalMergeState.Pending : JournalMergeState.Running,
+                        mergedCount, deferred ? pending : Math.Max(0, total - looked), total, DateTime.UtcNow, null));
+                }
+
+                if (page.Entries.Count == 0 || looked >= page.Total)
+                    break;
+                page = await signer.JournaledRevocationsAsync(caId, looked, PageSize, cancellationToken)
+                       ?? throw new InvalidOperationException("The signer no longer answers for this CA's journaled revocations.");
+                if (!page.Trusted)
+                    throw new InvalidOperationException($"The signer stopped answering from its journal: {page.NotTrustedReason}");
+            }
+        }
+
+        await RunAsync(counting: true);
+        var missing = pending;
+        if (!deferred && missing > 0)
+        {
+            batched = missing > IndividualAuditLimit;
+            await RunAsync(counting: false);
         }
 
         if (deferred)
@@ -431,13 +507,21 @@ public sealed class JournalRevocationMerge(
 
         if (mergedCount > 0)
         {
-            logger.LogWarning("Journal merge, CA {Ca}: {Count} revocation(s) that the signer's journal holds were missing from the database and were made again. "
-                + "The database had gone back in time. Each is in the audit trail as {Action}.", ca.Name, mergedCount, AuditActionType.RevocationMergedFromJournal);
+            if (batched)
+                logger.LogWarning("Journal merge, CA {Ca}: {Count} revocation(s) that the signer's journal holds were missing from the database and were made again. "
+                    + "The database had gone back in time. They are in the audit trail in {Records} {Action} record(s).", ca.Name, mergedCount, batchRecords, AuditActionType.RevocationsMergedFromJournalBatch);
+            else
+                logger.LogWarning("Journal merge, CA {Ca}: {Count} revocation(s) that the signer's journal holds were missing from the database and were made again. "
+                    + "The database had gone back in time. Each is in the audit trail as {Action}.", ca.Name, mergedCount, AuditActionType.RevocationMergedFromJournal);
             var summary = new
             {
                 CertificateAuthorityId = caId,
                 CaName = ca.Name,
                 Merged = mergedCount,
+                AuditForm = batched ? AuditFormBatch : AuditFormIndividual,
+                AuditAction = batched ? AuditActionType.RevocationsMergedFromJournalBatch : AuditActionType.RevocationMergedFromJournal,
+                BatchRecords = batchRecords,
+                IndividualAuditLimit,
                 JournalEntries = total,
                 JournaledCrlNumber = first.CrlNumber,
                 JournaledCrlSeq = first.CrlSeq,
@@ -455,6 +539,9 @@ public sealed class JournalRevocationMerge(
                     caId,
                     caName = ca.Name,
                     merged = mergedCount,
+                    auditForm = batched ? AuditFormBatch : AuditFormIndividual,
+                    auditAction = batched ? AuditActionType.RevocationsMergedFromJournalBatch : AuditActionType.RevocationMergedFromJournal,
+                    batchRecords,
                     journalEntries = total,
                     journaledCrlNumber = first.CrlNumber,
                     journaledCrlSeq = first.CrlSeq,

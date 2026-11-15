@@ -1837,6 +1837,12 @@ namespace ModularCA.Core.Services
                 caMatch = trustedCAs.Find(ca =>
                     ca.GetEncoded().AsSpan().SequenceEqual(refCACert.RawCertificate));
             }
+            // A CA certificate the registry has not been told of yet (one just renewed, on a node
+            // that has not refreshed) is read from its own row. Without this the name match below
+            // would pick an earlier certificate of the same CA, with its earlier validity.
+            if (caMatch == null && refCACert.RawCertificate is { Length: > 0 }
+                && await _db.CertificateAuthorities.AsNoTracking().AnyAsync(a => a.CertificateId == refCACert.CertificateId))
+                caMatch = new X509Certificate(refCACert.RawCertificate);
             caMatch ??= trustedCAs.Find(ca =>
                 ca.SubjectDN.ToString().Contains(refCACert.SubjectDN, StringComparison.OrdinalIgnoreCase));
             if (caMatch == null)

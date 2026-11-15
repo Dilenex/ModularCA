@@ -133,6 +133,53 @@ export const adminRevocation: ApiEndpoint[] = [
         notes: 'The CRL of the CA lists the serial at once, and OCSP answers for it with the recorded date and reason instead of the generic answer for a serial the CA does not know. The entry has no certificate expiry to be pruned by, so it stays on the CRL until listedUntil: the revocation date plus the longest maximum validity among the certificate profiles the CA can issue with (one year when none states one), and never past the end of the CA certificate. Refused with 409 when the CA holds a certificate with that serial (revoke the certificate instead) or the serial is already recorded; 400 for a serial that is not hexadecimal, for CertificateHold, and for a missing note. Audited as RevokedSerialRecorded, refusals included. If the certificate turns up later, adopting it moves the revocation onto the certificate and removes this entry.',
     },
     {
+        method: 'GET',
+        path: '/api/v1/admin/authorities/{caId}/revoked-serials/missing-from-crl',
+        summary: 'List every serial the signer found missing from the last full CRL it was offered for the CA and therefore refused to sign.',
+        auth: 'Authorize (cert.revoke on the CA)',
+        category: 'Admin Revocation',
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+        ],
+        responseDescription: 'caId, refused (false when no refusal stands), refusedAtUtc, journaledCrlNumber (the CRL in the signer\'s journal that lists them), count, consolePath (the page of the console that lists them) and serials: serialNumber, reason, reasonCode, revocationDate, certificateHeld (the CA still holds a certificate with that serial, which is then revoked as a certificate).',
+        notes: 'These are revocations the signer published on a CRL and the database no longer has, after it was taken back in time and the merge from the signer\'s journal could not restore them. The list is the signer\'s, as of the last CRL it refused; it is empty after a restart of the signer until the next CRL is offered.',
+    },
+    {
+        method: 'POST',
+        path: '/api/v1/admin/authorities/{caId}/revoked-serials/bulk',
+        summary: 'Record several named serials as revoked for a CA with no certificate behind them, under one note. The selected rows of the missing list. Requires step-up MFA.',
+        auth: 'Authorize (cert.revoke on the CA)',
+        category: 'Admin Revocation',
+        requestBody: [
+            { name: 'serials', type: 'array', required: true, description: 'Up to 5,000 of { serialNumber, reason }, as the single endpoint takes them' },
+            { name: 'note', type: 'string', required: true, description: 'Why they are revoked without their certificates (at most 1000 characters)' },
+        ],
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token (operation: revoke-serial, target: the CA id)' },
+        ],
+        responseDescription: 'recorded (serialNumber, reason, listedUntil), refused (serialNumber and why: the CA holds its certificate, it is already recorded, it is not a serial) and crlNumber. The CRL is generated once, after the last.',
+        notes: 'Each serial is recorded and audited as the single endpoint does one (RevokedSerialRecorded). Refused with 409 when the request names every serial that is missing from the CA\'s refused CRL and has no certificate there, and there is more than one: that is the revoke-all action, which has its own endpoint, confirmation and step-up.',
+    },
+    {
+        method: 'POST',
+        path: '/api/v1/admin/authorities/{caId}/revoked-serials/missing-from-crl/revoke-all',
+        summary: 'Revoke, in one act, every serial missing from the CA\'s refused CRL that the CA holds no certificate for. The request names no serial: it carries what the administrator confirmed. Requires its own step-up MFA.',
+        auth: 'Authorize (cert.revoke on the CA)',
+        category: 'Admin Revocation',
+        requestBody: [
+            { name: 'confirmedCount', type: 'int', required: true, description: 'How many serials the administrator was shown as missing with no certificate held: the entries of the list with certificateHeld false' },
+            { name: 'journaledCrlNumber', type: 'long', required: true, description: 'journaledCrlNumber of the list that was shown' },
+            { name: 'note', type: 'string', required: true, description: 'Why they are revoked without their certificates (at most 1000 characters)' },
+        ],
+        headers: [
+            { name: 'Authorization', type: 'Bearer token', required: true, description: 'JWT access token from /api/v1/auth/login' },
+            { name: 'X-MFA-Token', type: 'string', required: true, description: 'Step-up MFA token (operation: revoke-all-missing-serials, target: the CA id). A token for revoke-serial is refused.' },
+        ],
+        responseDescription: 'recorded (a count), refused (up to 200 of serialNumber and why), refusedCount, crlNumber and auditForm ("individual" or "batch").',
+        notes: 'The server reads the missing list again and compares. 409, with nothing revoked, when no refusal stands; when the CA holds a certificate for every missing serial; and when confirmedCount or journaledCrlNumber is not what the list is now (the message gives both). 400 for a missing note. Each serial is recorded with the reason the journaled CRL gives (unspecified for a hold, which a serial alone cannot have). A list of any length is recorded by the server in sets of 500, and the CRL is generated once. Audited as one act, AllMissingSerialsRevoked (a refusal too, with success false), and beside it: a RevokedSerialRecorded record for each serial up to 1,000 serials; above that one RevokedSerialsRecordedBatch record for each set, with the serials in its details.',
+    },
+    {
         method: 'POST',
         path: '/api/v1/admin/authorities/{caId}/adopted-certificates',
         summary: 'Adopt a certificate supplied from outside as a certificate of the CA, after its signature is verified under the CA key. Requires step-up MFA.',

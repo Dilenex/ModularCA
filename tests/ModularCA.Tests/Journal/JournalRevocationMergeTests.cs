@@ -786,6 +786,96 @@ public class JournalRevocationMergeTests
         Assert.Equal(count - partial, bench.Audits(AuditActionType.RevocationMergedFromJournal).Count);
         var done = bench.State.Of(bench.CaId)!;
         Assert.Equal((JournalMergeState.Done, 0, count), (done.State, done.Remaining, done.Total));
+        // The pass that went on counted what was still missing and chose its own form: under the limit, a record for each.
+        Assert.Empty(bench.Audits(AuditActionType.RevocationsMergedFromJournalBatch));
+        Assert.Equal(JournalRevocationMerge.AuditFormIndividual,
+            Assert.Single(bench.Audits(AuditActionType.JournalRevocationMergeCompleted)).Details.GetProperty("AuditForm").GetString());
+    }
+
+    /// <summary>A serial of twenty octets, the longest a certificate has.</summary>
+    private static BigInteger Long(int i) => BigInteger.One.ShiftLeft(158).Add(BigInteger.ValueOf(i));
+
+    [Fact]
+    public async Task Above_the_limit_a_pass_is_audited_with_one_record_for_each_batch_that_carries_its_serials()
+    {
+        await using var bench = new Bench();
+        var count = JournalRevocationMerge.DefaultIndividualAuditLimit + 1;
+        var row = bench.Row(Long(1));
+        bench.SignCrl(7, Enumerable.Range(1, count).Select(i => (Long(i), i == 2 ? CrlReason.KeyCompromise : CrlReason.Superseded, T0.AddMinutes(i))).ToArray());
+        await bench.RestartAsync();
+
+        var result = await bench.Merge.MergeAsync(bench.CaId);
+
+        Assert.Equal((JournalMergeState.Done, count), (result.State, result.Merged));
+        Assert.True(bench.Reload(row).Revoked);
+        Assert.Equal(count - 1, bench.Tombstones().Count);
+
+        // Never mixed: no record for a single revocation, and one for each save.
+        Assert.Empty(bench.Audits(AuditActionType.RevocationMergedFromJournal));
+        var batches = bench.Audits(AuditActionType.RevocationsMergedFromJournalBatch);
+        Assert.Equal(3, batches.Count);
+        Assert.All(batches, b => Assert.Equal(bench.CaId.ToString(), b.TargetId));
+        Assert.Equal(new[] { 1, 2, 3 }, batches.Select(b => b.Details.GetProperty("Batch").GetInt32()));
+        Assert.Equal(new[] { JournalRevocationMerge.BatchSize, JournalRevocationMerge.BatchSize, 1 }, batches.Select(b => b.Details.GetProperty("Count").GetInt32()));
+        var entries = batches.SelectMany(b => b.Details.GetProperty("Revocations").EnumerateArray()).ToList();
+        Assert.Equal(count, entries.Select(e => e.GetProperty("Serial").GetString()).Distinct().Count());
+
+        // Each serial with its date, reason, what was made and its source.
+        var ofRow = entries.Single(e => e.GetProperty("Serial").GetString() == row.SerialNumber);
+        Assert.Equal(("certificate", row.CertificateId), (ofRow.GetProperty("Made").GetString(), ofRow.GetProperty("CertificateId").GetGuid()));
+        var second = entries.Single(e => e.GetProperty("Serial").GetString() == CertificateUtil.FormatSerialNumber(Long(2)));
+        Assert.Equal(("KeyCompromise", "serial without a certificate", "crl", 7L, T0.AddMinutes(2)),
+            (second.GetProperty("Reason").GetString(), second.GetProperty("Made").GetString(), second.GetProperty("Source").GetString(),
+             second.GetProperty("SourceCrlNumber").GetInt64(), second.GetProperty("Date").GetDateTime()));
+        Assert.Equal(JsonValueKind.Null, second.GetProperty("CertificateId").ValueKind);
+        // Eight members: the console shows a list of such objects as a table.
+        Assert.Equal(8, second.EnumerateObject().Count());
+
+        // A full batch of the longest serials, as the audit trail stores it: well under 128 KiB, and nothing in it scrubbed.
+        var stored = ModularCA.Core.Services.AuditJsonScrubber.SerializeAndScrub(bench.Audit.Entries.First(e => e.Action == AuditActionType.RevocationsMergedFromJournalBatch).Details)!;
+        Assert.InRange(stored.Length, 50_000, 128 * 1024);
+        Assert.DoesNotContain("***", stored, StringComparison.Ordinal);
+        Assert.Contains("\"" + CertificateUtil.FormatSerialNumber(Long(2)) + "\"", stored, StringComparison.Ordinal);
+
+        // The summary says which form the pass used and how many records it wrote; so does the notice.
+        var summary = Assert.Single(bench.Audits(AuditActionType.JournalRevocationMergeCompleted)).Details;
+        Assert.Equal((JournalRevocationMerge.AuditFormBatch, AuditActionType.RevocationsMergedFromJournalBatch, 3, count),
+            (summary.GetProperty("AuditForm").GetString(), summary.GetProperty("AuditAction").GetString(), summary.GetProperty("BatchRecords").GetInt32(), summary.GetProperty("Merged").GetInt32()));
+        using var notice = JsonDocument.Parse(Assert.Single(bench.Notices()).DetailsJson!);
+        Assert.Equal(("batch", 3), (notice.RootElement.GetProperty("auditForm").GetString(), notice.RootElement.GetProperty("batchRecords").GetInt32()));
+    }
+
+    [Theory]
+    [InlineData(3, false)]
+    [InlineData(4, true)]
+    public async Task The_form_is_decided_once_from_what_the_pass_counts_missing_before_it_writes(int missing, bool batch)
+    {
+        await using var bench = new Bench();
+        // Two of the journaled entries are in the database already and do not count.
+        bench.SignCrl(1, Enumerable.Range(1, missing + 2).Select(i => (S(0x300000 + i), CrlReason.Superseded, T0)).ToArray());
+        using (var db = bench.Db())
+        {
+            var caCertificateId = db.CertificateAuthorities.AsNoTracking().Single(c => c.Id == bench.CaId).CertificateId!.Value;
+            foreach (var i in new[] { 1, 2 })
+                db.RevokedSerialTombstones.Add(new RevokedSerialTombstoneEntity
+                {
+                    CaCertificateId = caCertificateId, CertificateAuthorityId = bench.CaId, IssuerDN = bench.IssuerDn,
+                    SerialNumber = CertificateUtil.FormatSerialNumber(S(0x300000 + i)), RevocationDate = T0, RevocationReason = "Superseded",
+                    ListedUntil = DateTime.UtcNow.AddYears(1), Note = "kept", CreatedByUsername = "test", CreatedAt = DateTime.UtcNow,
+                });
+            db.SaveChanges();
+        }
+        await bench.RestartAsync();
+        var merge = new JournalRevocationMerge(bench.Scopes, bench.Signer, bench.State, bench.Mode, NullLogger<JournalRevocationMerge>.Instance) { IndividualAuditLimit = 3 };
+
+        var result = await merge.MergeAsync(bench.CaId);
+
+        Assert.Equal(missing, result.Merged);
+        Assert.Equal(batch ? 0 : missing, bench.Audits(AuditActionType.RevocationMergedFromJournal).Count);
+        Assert.Equal(batch ? 1 : 0, bench.Audits(AuditActionType.RevocationsMergedFromJournalBatch).Count);
+        var summary = Assert.Single(bench.Audits(AuditActionType.JournalRevocationMergeCompleted)).Details;
+        Assert.Equal((batch ? "batch" : "individual", batch ? 1 : 0, 3),
+            (summary.GetProperty("AuditForm").GetString(), summary.GetProperty("BatchRecords").GetInt32(), summary.GetProperty("IndividualAuditLimit").GetInt32()));
     }
 
     /// <summary>An audit trail that stops the pass once the first batch has been saved and its first row written.</summary>

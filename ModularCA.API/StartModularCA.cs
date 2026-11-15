@@ -1340,6 +1340,10 @@ builder.Services.AddSingleton<ModularCA.Core.Services.Journal.JournalMergeState>
 builder.Services.AddSingleton<ModularCA.Core.Services.Journal.IJournalRevocationMerge, ModularCA.Core.Services.Journal.JournalRevocationMerge>();
 if (!isSetupMode && controlActive)
     builder.Services.AddHostedService<ModularCA.Core.Services.Journal.JournalMergeService>();
+// A CA made before the certificate history existed (or by bootstrap) gets its first entry, in
+// the background after the start and never while the instance is in DR mode.
+if (!isSetupMode && controlActive)
+    builder.Services.AddHostedService<ModularCA.Core.Services.CaCertificateHistoryService>();
 
 // The scheduler runs where a role that owns jobs runs: the control plane, or an enrollment
 // process for its protocol sweeps. A validation-only process hosts none. The lease is the
@@ -1470,6 +1474,8 @@ builder.Services.AddScoped<ModularCA.Core.Services.IApiKeyService, ModularCA.Cor
 
 // CA creation at runtime (root + intermediate)
 builder.Services.AddScoped<CaCreationService>();
+builder.Services.AddScoped<CaLifecycleService>();
+builder.Services.AddScoped<CaCertificateRenewalService>();
 
 // Use the already-loaded config instance instead of building a temporary provider
 var loadedConfig = config;
@@ -2060,7 +2066,10 @@ var healthChecks = builder.Services.AddHealthChecks()
     // The signer's issuance journal: its head, its size, the room on its volume and the age of
     // its last checkpoint. Degraded when it cannot be written or its volume is nearly full,
     // since issuance stops with it; never unhealthy.
-    .AddCheck<ModularCA.API.HealthChecks.JournalHealthCheck>("journal");
+    .AddCheck<ModularCA.API.HealthChecks.JournalHealthCheck>("journal")
+    // The notices about each CA's key and certificate over time (expiry, key usage period).
+    // Always healthy: a CA certificate nearing its end is acted on in months, not by a probe.
+    .AddCheck<ModularCA.API.HealthChecks.CaLifecycleHealthCheck>("ca-lifecycle");
 // A node whose remote signer did not answer at start reads the wrapped secrets in the background
 // once it does, without a restart, and reports itself not ready until then.
 if (signerSecretsState.Pending)
@@ -3376,6 +3385,16 @@ if (!needsSetup)
         }
         if (trustAnchors.Count > 0)
             Console.WriteLine($"[TrustAnchors] Loaded {trustAnchors.Count} trust anchor(s) into runtime registry.");
+
+        // A CA whose certificate was renewed has a current certificate the keystore files do
+        // not carry: they hold the certificate each key was committed with. The registry is
+        // told of the current one here, so it is the certificate the CA is known by.
+        var renewedCount = ModularCA.Core.Helpers.CaCertificateHistory.RegisterRenewedAsync(trustDb, signerBootstrap.Certificates).GetAwaiter().GetResult();
+        if (renewedCount > 0)
+            Console.WriteLine($"[TrustAnchors] Registered the current certificate of {renewedCount} renewed CA(s).");
+
+        // The first entry of each older CA's certificate history is written in the background
+        // (CaCertificateHistoryService), and not while the instance is in DR mode.
     }
     catch (Exception ex)
     {

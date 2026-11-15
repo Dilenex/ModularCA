@@ -23,11 +23,34 @@ public static class AuditActionType
     /// </summary>
     public const string RevocationMergedFromJournal = "RevocationMergedFromJournal";
     /// <summary>
-    /// One pass of the merge made revocations again for a CA: how many, and from which journaled
-    /// CRL. One row for each CA and pass, beside a <see cref="RevocationMergedFromJournal"/> row
-    /// for each revocation.
+    /// Many revocations the signer's journal holds and the database had lost were made again by
+    /// the node in one save: the form the merge uses for a CA and pass that has more to make than
+    /// its limit for records of their own (1,000). The target is the CA. Details name the CA, the
+    /// batch's number in the pass and its count, and under <c>Revocations</c> each serial with
+    /// its date, reason, what was made, the certificate where one was revoked, and its source.
+    /// It is never mixed with <see cref="RevocationMergedFromJournal"/> in one pass.
+    /// </summary>
+    public const string RevocationsMergedFromJournalBatch = "RevocationsMergedFromJournalBatch";
+    /// <summary>
+    /// One pass of the merge made revocations again for a CA: how many, from which journaled
+    /// CRL, and in which form they are audited (<c>AuditForm</c> "individual": a
+    /// <see cref="RevocationMergedFromJournal"/> row for each; "batch": <c>BatchRecords</c>
+    /// <see cref="RevocationsMergedFromJournalBatch"/> rows). One row for each CA and pass.
     /// </summary>
     public const string JournalRevocationMergeCompleted = "JournalRevocationMergeCompleted";
+    /// <summary>
+    /// An administrator revoked, in one act, every serial the signer reports missing from a
+    /// CA's refused CRL that the CA holds no certificate for. Details name the CA, the count
+    /// and the journaled CRL number the administrator confirmed, how many were recorded and
+    /// refused, the note, and in which form the serials are audited beside it.
+    /// </summary>
+    public const string AllMissingSerialsRevoked = "AllMissingSerialsRevoked";
+    /// <summary>
+    /// Many serials were recorded as revoked with no certificate in one save, as part of an
+    /// <see cref="AllMissingSerialsRevoked"/> act above the limit for records of their own.
+    /// Details carry the serials under <c>Serials</c>, each with its reason.
+    /// </summary>
+    public const string RevokedSerialsRecordedBatch = "RevokedSerialsRecordedBatch";
     /// <summary>
     /// A certificate supplied from outside was verified under a CA's key and adopted as a
     /// certificate row with no known requester. Details name the serial and subject, the note,
@@ -246,6 +269,8 @@ public static class AuditActionType
     // CA management
     public const string CaUpdated = "CaUpdated";
     public const string CaCreated = "CaCreated";
+    /// <summary>A CA's certificate was renewed over the same key: a new serial and validity; the earlier certificate stays valid.</summary>
+    public const string CaCertificateRenewed = "CaCertificateRenewed";
     // Placeholder constants for the future CA decommissioning
     // workflow. Adding them now means any later [HttpDelete] handler that forgets
     // the audit call has a compile-time candidate to reach for. CA removal is a

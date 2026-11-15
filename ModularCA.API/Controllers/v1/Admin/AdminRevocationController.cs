@@ -99,7 +99,7 @@ public class AdminRevocationController(
         try
         {
             result = await _revocationService.RevokeCertificateAsync(
-                certId, null, request.Reason, request.InvalidityDate);
+                certId, null, request.Reason, request.InvalidityDate, Actor());
         }
         catch (Exception ex)
         {
@@ -125,6 +125,7 @@ public class AdminRevocationController(
             reason = result.Reason?.ToString(),
             previousReason = result.PreviousReason?.ToString(),
             crlNumber = result.CrlNumber,
+            alsoSerialNumbers = result.AlsoSerialNumbers,
             effectiveAt = result.EffectiveAt,
         });
     }
@@ -190,7 +191,7 @@ public class AdminRevocationController(
             // Pass the resolved ID, not the serial, so the service acts on the exact row this
             // request authorized rather than re-resolving and possibly selecting a different one.
             result = await _revocationService.RevokeCertificateAsync(
-                cert.CertificateId, null, request.Reason, request.InvalidityDate);
+                cert.CertificateId, null, request.Reason, request.InvalidityDate, Actor());
         }
         catch (Exception ex)
         {
@@ -212,6 +213,7 @@ public class AdminRevocationController(
             reason = result.Reason?.ToString(),
             previousReason = result.PreviousReason?.ToString(),
             crlNumber = result.CrlNumber,
+            alsoSerialNumbers = result.AlsoSerialNumbers,
             effectiveAt = result.EffectiveAt,
         });
     }
@@ -268,7 +270,7 @@ public class AdminRevocationController(
 
             try
             {
-                var result = await _revocationService.RevokeCertificateAsync(cert.CertificateId, null, request.Reason, request.InvalidityDate);
+                var result = await _revocationService.RevokeCertificateAsync(cert.CertificateId, null, request.Reason, request.InvalidityDate, Actor());
                 var caInfo = await ResolveCaFromCertIdAsync(cert.CertificateId);
                 await _audit.LogAsync(AuditActionType.CertificateRevoked, _currentUser.User?.Id, _currentUser.User?.Username,
                     "Certificate", serial, new { request.Reason, result.PreviousReason, Bulk = true },
@@ -340,7 +342,7 @@ public class AdminRevocationController(
         Shared.Interfaces.RevocationResult holdResult;
         try
         {
-            holdResult = await _revocationService.HoldCertificateAsync(certId, null);
+            holdResult = await _revocationService.HoldCertificateAsync(certId, null, Actor());
         }
         catch (Exception ex)
         {
@@ -360,6 +362,7 @@ public class AdminRevocationController(
             serialNumber = holdResult.SerialNumber,
             newStatus = holdResult.NewStatus,
             crlNumber = holdResult.CrlNumber,
+            alsoSerialNumbers = holdResult.AlsoSerialNumbers,
             effectiveAt = holdResult.EffectiveAt,
         });
     }
@@ -395,7 +398,7 @@ public class AdminRevocationController(
         Shared.Interfaces.RevocationResult holdSnResult;
         try
         {
-            holdSnResult = await _revocationService.HoldCertificateAsync(holdCert.CertificateId, null);
+            holdSnResult = await _revocationService.HoldCertificateAsync(holdCert.CertificateId, null, Actor());
         }
         catch (Exception ex)
         {
@@ -415,6 +418,7 @@ public class AdminRevocationController(
             serialNumber = holdSnResult.SerialNumber,
             newStatus = holdSnResult.NewStatus,
             crlNumber = holdSnResult.CrlNumber,
+            alsoSerialNumbers = holdSnResult.AlsoSerialNumbers,
             effectiveAt = holdSnResult.EffectiveAt,
         });
     }
@@ -452,7 +456,7 @@ public class AdminRevocationController(
         Shared.Interfaces.RevocationResult unholdResult;
         try
         {
-            unholdResult = await _revocationService.UnholdCertificateAsync(certId, null);
+            unholdResult = await _revocationService.UnholdCertificateAsync(certId, null, Actor());
         }
         catch (Exception ex)
         {
@@ -471,6 +475,7 @@ public class AdminRevocationController(
             serialNumber = unholdResult.SerialNumber,
             newStatus = unholdResult.NewStatus,
             crlNumber = unholdResult.CrlNumber,
+            alsoSerialNumbers = unholdResult.AlsoSerialNumbers,
             effectiveAt = unholdResult.EffectiveAt,
         });
     }
@@ -505,7 +510,7 @@ public class AdminRevocationController(
         Shared.Interfaces.RevocationResult unholdSnResult;
         try
         {
-            unholdSnResult = await _revocationService.UnholdCertificateAsync(unholdCert.CertificateId, null);
+            unholdSnResult = await _revocationService.UnholdCertificateAsync(unholdCert.CertificateId, null, Actor());
         }
         catch (Exception ex)
         {
@@ -524,6 +529,7 @@ public class AdminRevocationController(
             serialNumber = unholdSnResult.SerialNumber,
             newStatus = unholdSnResult.NewStatus,
             crlNumber = unholdSnResult.CrlNumber,
+            alsoSerialNumbers = unholdSnResult.AlsoSerialNumbers,
             effectiveAt = unholdSnResult.EffectiveAt,
         });
     }
@@ -602,6 +608,67 @@ public class AdminRevocationController(
     /// <see cref="SpaceFence"/> admits it for cert.revoke. An instance-wide caller passes.
     /// Returns null on allow, NotFound on deny.
     /// </summary>
+    /// <summary>
+    /// What revoking, holding or releasing the certificate with this serial will reach, for the
+    /// console to show before the administrator confirms. For a CA certificate that a CA owns,
+    /// <c>certificates</c> lists every certificate that CA has over the same key (each with its
+    /// serial, validity, whether it is the CA's current one, and whether it is revoked or on
+    /// hold): they are revoked, held and released together, because a compromised key compromises
+    /// each of them. For any other certificate the list holds that certificate alone. Reads only.
+    /// A caller whose space fence does not admit the CA gets 404.
+    /// </summary>
+    [HttpGet("serial/{serial}/revocation-scope")]
+    [Authorize]
+    public async Task<IActionResult> GetRevocationScope(string serial)
+    {
+        var (cert, resolveError) = await ResolveUniqueCertBySerialAsync(serial);
+        if (resolveError != null) return resolveError;
+
+        var owner = cert!.IsCA ? ModularCA.Core.Helpers.IssuerChainResolver.OwnerOf(_dbContext, cert) : null;
+        var fence = SpaceFence.From(HttpContext, Capabilities.CertRevoke);
+        if (owner != null)
+        {
+            if (!fence.InstanceWide && !fence.Allows(owner.SpaceId)) return NotFound();
+        }
+        else if (await EnforceSpaceFenceForCertAsync(cert.CertificateId, null) is { } refused)
+            return refused;
+
+        var ids = owner == null
+            ? [cert.CertificateId]
+            : await ModularCA.Core.Helpers.IssuerChainResolver.SameKeyScopeAsync(_dbContext, cert.CertificateId, HttpContext.RequestAborted);
+        var ca = owner == null ? null : await _dbContext.CertificateAuthorities.AsNoTracking()
+            .Where(c => c.Id == owner.CaId).Select(c => new { c.Id, c.Name, c.CertificateId, c.ParentCaId }).FirstOrDefaultAsync();
+        var rows = await _dbContext.Certificates.AsNoTracking().Where(c => ids.Contains(c.CertificateId))
+            .Select(c => new { c.CertificateId, c.SerialNumber, c.SubjectDN, c.NotBefore, c.NotAfter, c.Revoked, c.RevocationReason })
+            .ToListAsync();
+        return Ok(new
+        {
+            isCaCertificate = owner != null,
+            caId = ca?.Id,
+            caName = ca?.Name,
+            // A root lists its own certificates on its own CRL; an intermediate's are on its parent's.
+            isRoot = ca != null && ca.ParentCaId == null,
+            certificates = rows
+                .OrderByDescending(r => ca != null && r.CertificateId == ca.CertificateId).ThenByDescending(r => r.NotAfter)
+                .Select(r => new
+                {
+                    certificateId = r.CertificateId,
+                    serialNumber = r.SerialNumber,
+                    subjectDN = r.SubjectDN,
+                    notBefore = r.NotBefore,
+                    notAfter = r.NotAfter,
+                    isCurrent = ca != null && r.CertificateId == ca.CertificateId,
+                    isRequested = r.CertificateId == cert.CertificateId,
+                    onHold = Shared.Utils.RevocationStatus.IsOnHold(r.Revoked, r.RevocationReason),
+                    revoked = Shared.Utils.RevocationStatus.IsPermanentlyRevoked(r.Revoked, r.RevocationReason),
+                }).ToList(),
+        });
+    }
+
+    /// <summary>The caller and the request's address, for the audit rows the service writes for the other certificates a CA revocation reaches.</summary>
+    private Shared.Interfaces.RevocationActor Actor()
+        => new(_currentUser.User?.Id, _currentUser.User?.Username, HttpContext.Connection.RemoteIpAddress?.ToString());
+
     private async Task<IActionResult?> EnforceSpaceFenceForCertAsync(Guid? certId, string? serial)
     {
         var fence = SpaceFence.From(HttpContext, Capabilities.CertRevoke);

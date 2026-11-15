@@ -437,7 +437,10 @@ public class MsaeEnrollmentService(
         var stored = await db.Certificates.AsNoTracking().FirstOrDefaultAsync(c => c.SerialNumber == serial);
         if (stored == null)
             throw await RefuseAsync(audit, context.Ca, $"The certificate to renew (serial {serial}) was not issued by this service.");
-        if (context.Ca!.CertificateId != null && stored.IssuerCertificateId != context.Ca.CertificateId)
+        // Issued by this CA under its current certificate or an earlier one over the same key.
+        if (context.Ca!.CertificateId is Guid caCertificateId
+            && (stored.IssuerCertificateId is not Guid storedIssuer
+                || !(await ModularCA.Core.Helpers.IssuerChainResolver.SameKeyScopeAsync(db, caCertificateId)).Contains(storedIssuer)))
             throw await RefuseAsync(audit, context.Ca, $"The certificate to renew (serial {serial}) was not issued by CA '{context.Ca.Label}'.");
         if (stored.Revoked)
             throw await RefuseAsync(audit, context.Ca, $"The certificate to renew (serial {serial}) is revoked.");

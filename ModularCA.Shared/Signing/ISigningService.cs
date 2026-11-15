@@ -9,6 +9,14 @@ namespace ModularCA.Shared.Signing;
 /// The policy the signer applies, keyed on the kind of key and the purpose:
 /// <list type="bullet">
 /// <item>a CA key signs certificates, CRLs, OCSP, SCEP and CMP responses for its own CA only;</item>
+/// <item>
+/// a CA key signs the renewed certificate of an existing CA over that CA's existing key under
+/// <see cref="SigningPurpose.CaCertificateRenewal"/> and nothing else under it: its own, for a
+/// root, or its child's. The certificate must repeat the current one in everything but its
+/// serial and validity (and, for an intermediate, where its issuer is found), and where the
+/// CA's scope requires a key ceremony an approved <c>RenewCaCertificate</c> ceremony must name
+/// that CA, its current certificate and that expiry;
+/// </item>
 /// <item>a delegated OCSP responder key signs OCSP responses for its own CA only;</item>
 /// <item>the TSA key signs timestamp tokens for its own CA only;</item>
 /// <item>a CMP protection key signs CMP responses for its own CA only;</item>
@@ -80,6 +88,7 @@ public interface ISigningService
     /// </para>
     /// <list type="bullet">
     /// <item><see cref="SigningPurpose.Certificate"/>, CA key: a v3 TBSCertificate whose issuer is the CA's subject;</item>
+    /// <item><see cref="SigningPurpose.CaCertificateRenewal"/>, CA key: a v3 <c>cA=TRUE</c> TBSCertificate over the key and subject of an existing CA, with that CA's extensions;</item>
     /// <item><see cref="SigningPurpose.Crl"/>, CA key: a TBSCertList whose issuer is the CA's subject;</item>
     /// <item><see cref="SigningPurpose.Ocsp"/>, CA or responder key: a ResponseData whose responder id is the signing key's certificate;</item>
     /// <item><see cref="SigningPurpose.Scep"/>, CA key: CMS signed attributes with content type id-data and a SCEP messageType;</item>

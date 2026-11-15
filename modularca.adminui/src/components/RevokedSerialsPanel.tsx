@@ -11,7 +11,7 @@ import { errorNotice } from '@shared-auth/api/notices';
 import { apiGet, apiPostWithMfa } from '../api/client';
 import { useStepUp } from './StepUpMfaContext';
 import { REVOCATION_REASONS, RevocationReasonHint } from '../pages/CertificateDetail';
-import { adoptionBody, serialProblem, tombstoneBody, type RevokedSerialRow } from './revokedSerials';
+import { adoptionBody, auditPathForSerial, serialProblem, tombstoneBody, type RevokedSerialRow } from './revokedSerials';
 
 /** The reasons a serial or an adopted certificate can be revoked with: every reason but the hold, which cannot be given here. */
 const TOMBSTONE_REASONS = REVOCATION_REASONS.filter((r) => r.value !== 'CertificateHold');
@@ -36,7 +36,11 @@ const columns: DataTableColumn<RevokedSerialRow>[] = [
             <span className="text-xs text-ink-muted">{r.onCrl ? 'until' : 'since'} {formatDate(r.listedUntil)}</span>
         </span>
     ) },
-    { key: 'by', header: 'Recorded by', defaultWidth: 140, sortable: true, exportValue: (r) => r.recordedBy, render: (r) => <span className="text-ink-muted truncate">{r.recordedBy || '-'}</span> },
+    { key: 'by', header: 'Recorded by', defaultWidth: 140, sortable: true, exportValue: (r) => r.recordedBy, render: (r) => (
+        // A serial the merge restored from the signer's journal, or one of a revoke-all: its audit record, which may carry many serials.
+        <Link to={auditPathForSerial(r.serialNumber)} title="The audit records that name this serial" onClick={(e) => e.stopPropagation()}
+            className="text-accent-ink underline truncate">{r.recordedBy || 'audit'}</Link>
+    ) },
     { key: 'note', header: 'Note', flex: true, exportValue: (r) => r.note, render: (r) => <span className="text-ink-muted truncate" title={r.note}>{r.note}</span> },
 ];
 

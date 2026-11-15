@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { consoleRoute, journalAttention } from '@adminui/components/journalAttention';
-import { bulkBody, missingRows, missingSummary, recordable, type MissingFromCrl, type MissingSerialRow } from '@adminui/components/missingFromCrl';
+import {
+    bulkBody, missingRows, missingSummary, recordable, revokeAllBody, revokeAllConfirmation, selectionIsWholeList,
+    type MissingFromCrl, type MissingSerialRow,
+} from '@adminui/components/missingFromCrl';
+import { auditPathForSerial } from '@adminui/components/revokedSerials';
 
 const health = (journal: unknown) => ({ status: 'healthy', checks: { journal } });
 
@@ -115,6 +119,62 @@ describe('the serials missing from a refused CRL, on the CA\'s page', () => {
             ],
             note: 'lost in the roll-back',
         });
+    });
+
+    describe('revoke all', () => {
+        const rows = [row('A1'), row('B2', true), row('C3'), row('D4')];
+        const note = 'the database was taken back';
+
+        it('shows the CA and the exact number of serials, and says what they are and that it cannot be undone', () => {
+            const c = revokeAllConfirmation(answer(rows), 'Issuing CA 1', '', note)!;
+            expect(c.caName).toBe('Issuing CA 1');
+            // Three have no certificate here; the fourth is revoked on its certificate's page.
+            expect(c.count).toBe(3);
+            expect(c.title).toBe('Revoke all 3 serials');
+            expect(c.confirmLabel).toBe('Revoke all 3 serials');
+            expect(c.statements[0]).toBe('This revokes 3 serials for the certificate authority Issuing CA 1.');
+            expect(c.statements[1]).toContain('the signer already published on CRL number 12 for this CA');
+            expect(c.statements[2]).toContain('cannot be undone');
+            expect(c.prompt).toContain('Issuing CA 1');
+        });
+
+        it('keeps the button disabled until the name of the CA is typed exactly and a note is given', () => {
+            const can = (typed: string, why = note) => revokeAllConfirmation(answer(rows), 'Issuing CA 1', typed, why)!.canConfirm;
+            expect(can('')).toBe(false);
+            expect(can('Issuing CA')).toBe(false);
+            expect(can('issuing ca 1')).toBe(false);
+            expect(can('Issuing CA 2')).toBe(false);
+            expect(can('3')).toBe(false);
+            expect(can('Issuing CA 1')).toBe(true);
+            expect(can('  Issuing CA 1 ')).toBe(true);
+            // The name alone is not enough: the act needs its reason.
+            expect(can('Issuing CA 1', '   ')).toBe(false);
+            // A CA without a name cannot be confirmed by typing nothing.
+            expect(revokeAllConfirmation(answer(rows), '', '', note)!.canConfirm).toBe(false);
+        });
+
+        it('has nothing to confirm when no serial can be recorded', () => {
+            expect(revokeAllConfirmation(null, 'CA', 'CA', note)).toBeNull();
+            expect(revokeAllConfirmation(answer([row('A1')], false), 'CA', 'CA', note)).toBeNull();
+            expect(revokeAllConfirmation(answer([row('A1', true)]), 'CA', 'CA', note)).toBeNull();
+        });
+
+        it('sends what was confirmed and no serial', () => {
+            expect(revokeAllBody(answer(rows), `  ${note} `)).toEqual({ confirmedCount: 3, journaledCrlNumber: 12, note });
+        });
+
+        it('treats a selection of every recordable serial as revoke all, and a part of them as a selection', () => {
+            expect(selectionIsWholeList([rows[0], rows[2], rows[3]], rows)).toBe(true);
+            expect(selectionIsWholeList(rows, rows)).toBe(true);
+            expect(selectionIsWholeList([rows[0], rows[2]], rows)).toBe(false);
+            expect(selectionIsWholeList([], rows)).toBe(false);
+            // A list of one: revoking it is revoking a serial.
+            expect(selectionIsWholeList([row('A1')], [row('A1'), row('B2', true)])).toBe(false);
+        });
+    });
+
+    it('links a recorded serial to the audit records that name it', () => {
+        expect(auditPathForSerial('00:a1:b2')).toBe('/audit?serial=A1B2');
     });
 
     it('says how many are missing and where each kind is revoked', () => {

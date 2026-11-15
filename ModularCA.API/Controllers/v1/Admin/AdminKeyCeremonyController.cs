@@ -810,6 +810,50 @@ public class AdminKeyCeremonyController : ControllerBase
                 return Ok(new { ceremony.Id, Status = "Executed",
                     message = $"SSH CA '{sshParams.Name}' disabled. All certificates revoked." });
             }
+            else if (ceremony.OperationType == ModularCA.Shared.Models.RenewCaCertificateCeremonyParameters.OperationType)
+            {
+                // The approved renewal of a CA's certificate over its key. The ceremony's id goes
+                // to the signer, which checks the approval, the CA and the expiry it agreed to
+                // itself before it signs.
+                var renewParams = CeremonyParametersJson.Read<ModularCA.Shared.Models.RenewCaCertificateCeremonyParameters>(ceremony.ParametersJson);
+                if (renewParams == null || renewParams.CaId == Guid.Empty)
+                    return BadRequest(new { error = "CA ID missing from RenewCaCertificate ceremony parameters." });
+
+                var renewal = HttpContext.RequestServices.GetRequiredService<ModularCA.Core.Services.CaCertificateRenewalService>();
+                var renewed = await renewal.RenewAsync(renewParams.CaId, renewParams.NotAfter, ceremony.Id, _currentUser.User.Username, HttpContext.RequestAborted);
+
+                await _ceremonySvc.MarkExecutedAsync(id);
+
+                await _audit.LogAsync(
+                    AuditActionType.CaCertificateRenewed,
+                    _currentUser.User.Id, _currentUser.User.Username,
+                    "CertificateAuthority", renewed.Ca.Id.ToString(),
+                    new
+                    {
+                        CeremonyId = id, renewed.Ca.Name, renewed.Ca.Label,
+                        PreviousSerial = renewed.Previous.SerialNumber, NewSerial = renewed.Renewed.SerialNumber,
+                        renewed.Renewed.NotBefore, renewed.Renewed.NotAfter, SameKey = true,
+                    },
+                    HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    certificateAuthorityId: renewed.Ca.Id, spaceId: renewed.Ca.SpaceId);
+                await _audit.LogAsync(
+                    AuditActionType.KeyCeremonyExecuted,
+                    _currentUser.User.Id, _currentUser.User.Username,
+                    "KeyCeremony", id.ToString(),
+                    new { CeremonyId = id, ceremony.OperationType, CaId = renewed.Ca.Id, NewSerial = renewed.Renewed.SerialNumber });
+
+                return Ok(new
+                {
+                    ceremony.Id,
+                    Status = "Executed",
+                    message = $"The certificate of CA '{renewed.Ca.Name}' was renewed. The earlier certificate (serial {renewed.Previous.SerialNumber}) stays valid until it expires and was not revoked.",
+                    caId = renewed.Ca.Id,
+                    certificateId = renewed.Renewed.CertificateId,
+                    serialNumber = renewed.Renewed.SerialNumber,
+                    previousSerialNumber = renewed.Previous.SerialNumber,
+                    notAfter = renewed.Renewed.NotAfter,
+                });
+            }
             else if (ceremony.OperationType == "RevokeCa")
             {
                 // KC-06: execute the ceremony-gated CA certificate revocation.
@@ -821,7 +865,9 @@ public class AdminKeyCeremonyController : ControllerBase
                     reason = RevocationReason.Unspecified;
 
                 var revokeResult = await _revocationSvc.RevokeCertificateAsync(
-                    revokeParams.CertificateId, null, reason);
+                    revokeParams.CertificateId, null, reason, null,
+                    new ModularCA.Shared.Interfaces.RevocationActor(_currentUser.User.Id, _currentUser.User.Username,
+                        HttpContext.Connection.RemoteIpAddress?.ToString(), ceremony.Id));
 
                 await _ceremonySvc.MarkExecutedAsync(id);
 
@@ -841,6 +887,7 @@ public class AdminKeyCeremonyController : ControllerBase
                     newStatus = revokeResult.NewStatus,
                     reason = revokeResult.Reason?.ToString(),
                     crlNumber = revokeResult.CrlNumber,
+                    alsoSerialNumbers = revokeResult.AlsoSerialNumbers,
                 });
             }
             else if (ceremony.OperationType is nameof(CeremonyType.SpacePolicyChange) or nameof(CeremonyType.InstancePolicyChange))

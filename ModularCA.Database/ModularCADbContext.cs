@@ -193,6 +193,9 @@ public partial class ModularCADbContext : DbContext
     /// <summary>Revoked serials with no certificate row: what the CRL and OCSP say about a certificate known only from outside.</summary>
     public DbSet<RevokedSerialTombstoneEntity> RevokedSerialTombstones { get; set; }
 
+    /// <summary>The certificates each CA has had over time (<c>docs/architecture/ca-certificate-renewal.md</c>).</summary>
+    public DbSet<CaCertificateEntity> CaCertificates { get; set; }
+
     /// <summary>The incarnation this database last saw; one row. See <c>docs/architecture/rollback-continuity.md</c>.</summary>
     public DbSet<InstanceIncarnationEntity> InstanceIncarnation { get; set; }
 
@@ -419,6 +422,18 @@ public partial class ModularCADbContext : DbContext
             entity.HasOne(e => e.CaCertificate)
                   .WithMany()
                   .HasForeignKey(e => e.CaCertificateId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        // A certificate belongs to one CA. Restrict: a CA certificate that is part of a CA's
+        // history is not deleted from under it.
+        modelBuilder.Entity<CaCertificateEntity>(entity =>
+        {
+            entity.HasIndex(e => e.CertificateId).IsUnique();
+            entity.HasIndex(e => e.CertificateAuthorityId);
+            entity.HasOne(e => e.Certificate)
+                  .WithMany()
+                  .HasForeignKey(e => e.CertificateId)
                   .OnDelete(DeleteBehavior.Restrict);
         });
 

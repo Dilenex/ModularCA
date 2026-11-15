@@ -758,11 +758,14 @@ public class EstService : IEstService, IEnrollmentProtocol
                 .Where(c => c.SerialNumber == clientSerialHex)
                 .Select(c => new { c.IssuerCertificateId, c.Revoked, c.RetiredAt })
                 .ToListAsync();
+            // Every certificate the issuing CA has had over this key: a CA whose certificate was
+            // renewed issued the client certificate under the earlier one.
+            var issuerScope = await ModularCA.Core.Helpers.IssuerChainResolver.SameKeyScopeAsync(_db, verifiedIssuerCertificateId);
             if (serialMatches.Any(c => c.Revoked
-                    && (c.IssuerCertificateId == null || c.IssuerCertificateId == verifiedIssuerCertificateId)))
+                    && (c.IssuerCertificateId == null || issuerScope.Contains(c.IssuerCertificateId.Value))))
                 await reject("Client certificate has been revoked and cannot be used for enrollment.");
             if (serialMatches.Any(c => c.RetiredAt != null
-                    && (c.IssuerCertificateId == null || c.IssuerCertificateId == verifiedIssuerCertificateId)))
+                    && (c.IssuerCertificateId == null || issuerScope.Contains(c.IssuerCertificateId.Value))))
                 await reject("Client certificate was retired and cannot be used for enrollment; enroll a new certificate with another credential.");
         }
 

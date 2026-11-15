@@ -30,10 +30,37 @@ internal sealed class TestKeystore : ISignerKeyRegistry
 
     public List<CertificateAuthorityIdentity> GetSigners() => _signers.Select(s => new CertificateAuthorityIdentity(s.Certificate)).ToList();
 
+    /// <summary>
+    /// By public key first, as <see cref="MultiCARegistry"/> pairs certificates with keys, so a
+    /// CA's renewed certificate finds the key its earlier one was registered with; then by serial
+    /// and subject.
+    /// </summary>
     public IPrivateKeyHandle? GetPrivateKeyFor(X509Certificate cert)
-        => _signers.FirstOrDefault(s => s.Certificate.SerialNumber.Equals(cert.SerialNumber)
+    {
+        var spki = Spki(cert);
+        var byKey = _signers.FirstOrDefault(s => spki != null && Spki(s.Certificate) is { } other && other.AsSpan().SequenceEqual(spki)).Handle;
+        return byKey ?? _signers.FirstOrDefault(s => s.Certificate.SerialNumber.Equals(cert.SerialNumber)
                                      && s.Certificate.SubjectDN.Equivalent(cert.SubjectDN))
                    .Handle;
+    }
+
+    private static byte[]? Spki(X509Certificate cert)
+    {
+        try { return SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(cert.GetPublicKey()).GetDerEncoded(); }
+        catch { return null; }
+    }
+
+    /// <summary>As <see cref="MultiCARegistry.RegisterRenewedCaCertificate"/>: trusted, and ahead of the signer entry that holds its key.</summary>
+    public void RegisterRenewedCaCertificate(X509Certificate cert)
+    {
+        RegisterTrustedCert(cert);
+        if (_signers.Any(s => s.Certificate.SerialNumber.Equals(cert.SerialNumber) && s.Certificate.SubjectDN.Equivalent(cert.SubjectDN)))
+            return;
+        var spki = Spki(cert);
+        var index = _signers.FindIndex(s => spki != null && Spki(s.Certificate) is { } other && other.AsSpan().SequenceEqual(spki));
+        if (index >= 0)
+            _signers.Insert(index, (cert, _signers[index].Handle));
+    }
 
     /// <summary>Adds a signer the way the runtime registry does, de-duplicating on serial and subject.</summary>
     public void RegisterSigner(X509Certificate certificate, IPrivateKeyHandle handle)

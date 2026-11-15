@@ -187,6 +187,7 @@ the state when this was drawn (2026-10-05); the readers made live since are list
 | `ComplianceScan.ExpiringWithinDays` | none | none since 0.4.3: retired; the scan reads each certificate's expiry warning, which its certificate profile sets. The `ProfileExpiryWarnings` migration deletes its stored row, and a config file still holding it is warned about unless it holds the written default, 30 | none | none |
 | `CertPolicy.Enabled`, `MinRsaKeySize`, `ForbiddenAlgorithms`, `RequireSans`, `AlgorithmSunsetRules`, `ExpireCheckSchedule` | d | `CertPolicyService` (issuance, enrollment role), `CertExpireJob` | live | live |
 | `CertPolicy.RsaSignaturePadding` | d | the static `KeyAlgorithmPolicy.UseRsaPss`, set once at startup | restart | live |
+| `CaLifecycle.RootExpiryNoticeDays`, `IntermediateExpiryNoticeDays`, `KeyUsagePeriodDays` | d | `CaLifecycleService` (the CA hierarchy feed, `checks.caLifecycle` in `/health/ready`); notices only, nothing is refused | live | live |
 | `AutoRenewal.Enabled`, `Schedule`, `RenewDaysBeforeExpiry`, `AutoApprove`, `RequireKeyRotation` | d | `AutoRenewalJob`, `AdminCertificateController` | live | live |
 | `IntegrationApi.Enabled`, `SpaceId` | d | `ApiKeyAuthAttribute`, `InfraController`, `IntegrationScopeCheck`, `--upgrade-check` | live (the console says restart) | live |
 | `IntegrationApi.ApiKey` | e, hashed | `ApiKeyAuthAttribute` | live | live |

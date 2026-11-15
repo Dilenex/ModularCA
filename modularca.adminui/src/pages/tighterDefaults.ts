@@ -30,6 +30,10 @@ export interface CaKeyAdvisory {
     reason: string;
     /** The sentence to show the operator. */
     message: string;
+    /** `notice` (something to plan for), `warning` (a deadline is close) or `critical`; absent from an older server. */
+    severity?: string;
+    /** A few words for a badge or a heading; absent from an older server. */
+    title?: string | null;
 }
 
 /** A CA, X.509 or SSH, whose key carries a notice. */
